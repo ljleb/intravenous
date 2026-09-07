@@ -180,12 +180,12 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 
 namespace {
     template<int I>
-    consteval iv::NodeRef make_value(iv::GraphBuilder& g)
+    iv::NodeRef make_value(iv::GraphBuilder& g)
     {
         return g.node<iv::Constant>(static_cast<float>(I)).node_ref();
     }
 
-    consteval void merged_virtual_module(iv::GraphBuilder& g)
+    void merged_virtual_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = make_value<0>(g);
@@ -220,7 +220,7 @@ TEST(IvModuleSourceIntrospection, GenericChannelOutputArgumentsArePublicOutputSo
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void generic_channel_outputs(iv::GraphBuilder& g)
+    void generic_channel_outputs(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const source = g.node<Constant>(0.25f);
@@ -259,7 +259,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableA
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void annotated_symbol_module(iv::GraphBuilder& g)
+    void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = _annotate_node_source_info(
@@ -309,7 +309,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedVirtualNode)
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void annotated_symbol_module(iv::GraphBuilder& g)
+    void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = _annotate_node_source_info(
@@ -355,7 +355,7 @@ namespace {
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };
 
-    consteval void tiled_value_module(iv::GraphBuilder& g)
+    void tiled_value_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const left = g.node<Constant>(0.25f);
@@ -425,7 +425,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBa
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void assigned_ref_module(iv::GraphBuilder& g)
+    void assigned_ref_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         NodeRef x;
@@ -457,7 +457,7 @@ TEST(IvModuleSourceIntrospection, InitializationFailsWhenDeclarationBackedRefIsA
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void assigned_twice_module(iv::GraphBuilder& g)
+    void assigned_twice_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         NodeRef x;
@@ -482,12 +482,12 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
 
 namespace {
     template<size_t Inputs>
-    consteval iv::NodeRef make_sum(iv::GraphBuilder& g)
+    iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, Inputs>>().node_ref();
     }
 
-    consteval void schema_mismatch_module(iv::GraphBuilder& g)
+    void schema_mismatch_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = make_sum<2>(g);
@@ -522,7 +522,7 @@ TEST(IvModuleSourceIntrospection, SameLvalueWithDifferentNodeTypesProducesIndepe
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void split_lvalue_types_module(iv::GraphBuilder& g)
+    void split_lvalue_types_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto make_branch = [&]<bool Add>(auto output) {
@@ -597,13 +597,13 @@ TEST(IvModuleSourceIntrospection, QueryBySpansAggregatesMixedConnectivity)
 
 namespace {
     template<int I>
-    consteval iv::NodeRef make_sum(iv::GraphBuilder& g)
+    iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         (void)I;
         return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref();
     }
 
-    consteval void mixed_connectivity_module(iv::GraphBuilder& g)
+    void mixed_connectivity_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const value = g.node<iv::Constant>(0.0f).node_ref();
@@ -740,7 +740,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExa
         R"(#include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-consteval void polyphonic_module(iv::GraphBuilder& g)
+void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 
@@ -833,7 +833,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonic
         R"(#include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-consteval void polyphonic_module(iv::GraphBuilder& g)
+void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 

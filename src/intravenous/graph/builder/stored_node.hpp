@@ -71,6 +71,7 @@ struct ConcreteNode {
   ReflectedNodeOperations operations{};
   std::shared_ptr<void const> node_storage{};
   std::shared_ptr<NodeStateStructure const> state_structure_storage{};
+  NodeConfigStringRelocations config_string_relocations{};
   NodeCodeKey code_key{};
   size_t node_size = 0;
   size_t node_alignment = 1;

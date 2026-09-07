@@ -11,10 +11,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <new>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -103,6 +105,94 @@ struct LoadedBinary {
     std::filesystem::path artifact_path;
     std::shared_ptr<DynamicLibrary> library;
 };
+
+bool is_valid_node_config_alignment(std::size_t alignment)
+{
+    return alignment != 0 && (alignment & (alignment - 1)) == 0;
+}
+
+struct OwnedNodeConfigBytes {
+    void* data = nullptr;
+    std::size_t alignment = 1;
+    std::vector<std::string> strings;
+
+    OwnedNodeConfigBytes(std::size_t size, std::size_t alignment_)
+        : alignment(alignment_)
+    {
+        data = ::operator new(size, std::align_val_t(alignment));
+    }
+
+    ~OwnedNodeConfigBytes()
+    {
+        ::operator delete(data, std::align_val_t(alignment));
+    }
+
+    OwnedNodeConfigBytes(OwnedNodeConfigBytes const&) = delete;
+    OwnedNodeConfigBytes& operator=(OwnedNodeConfigBytes const&) = delete;
+};
+
+struct MaterializedNodeConfigs {
+    std::vector<ModuleNodeConfigRecord> records;
+    std::vector<std::shared_ptr<void const>> storage;
+};
+
+MaterializedNodeConfigs materialize_node_configs(
+    std::span<ModuleNodeConfigRecord const> configs,
+    std::span<ModuleNodeConfigStringRelocationRecord const> relocations)
+{
+    std::vector<std::size_t> string_counts(configs.size());
+    std::vector<std::unordered_set<std::size_t>> string_offsets(configs.size());
+    for (auto const& relocation : relocations) {
+        if (relocation.config_ordinal >= configs.size())
+            throw std::runtime_error("module string relocation has invalid config ordinal");
+        auto const& config = configs[relocation.config_ordinal];
+        if (relocation.byte_offset > config.size
+            || config.size - relocation.byte_offset < sizeof(char const*)) {
+            throw std::runtime_error("module string relocation is outside its node config");
+        }
+        if (!relocation.string_data && relocation.string_size != 0)
+            throw std::runtime_error("module string relocation has null data");
+        if (!string_offsets[relocation.config_ordinal].insert(relocation.byte_offset).second)
+            throw std::runtime_error("module has duplicate node config string relocations");
+        ++string_counts[relocation.config_ordinal];
+    }
+
+    MaterializedNodeConfigs result;
+    result.records.reserve(configs.size());
+    result.storage.reserve(configs.size());
+    std::vector<std::shared_ptr<OwnedNodeConfigBytes>> owned;
+    owned.reserve(configs.size());
+    for (std::size_t ordinal = 0; ordinal < configs.size(); ++ordinal) {
+        auto const& config = configs[ordinal];
+        if (!config.data || config.size == 0 || !is_valid_node_config_alignment(config.alignment)) {
+            throw std::runtime_error("module node config has invalid storage");
+        }
+        auto bytes = std::make_shared<OwnedNodeConfigBytes>(config.size, config.alignment);
+        std::memcpy(bytes->data, config.data, config.size);
+        bytes->strings.reserve(string_counts[ordinal]);
+        result.storage.emplace_back(bytes, bytes->data);
+        result.records.push_back({
+            .data = bytes->data,
+            .size = config.size,
+            .alignment = config.alignment,
+        });
+        owned.push_back(std::move(bytes));
+    }
+
+    for (auto const& relocation : relocations) {
+        auto& bytes = *owned[relocation.config_ordinal];
+        auto& string = bytes.strings.emplace_back();
+        if (relocation.string_size != 0) {
+            string.assign(relocation.string_data, relocation.string_size);
+        }
+        char const* data = string.data();
+        std::memcpy(
+            static_cast<std::byte*>(bytes.data) + relocation.byte_offset,
+            &data,
+            sizeof(data));
+    }
+    return result;
+}
 
 class ScopedModuleBuildLock {
 #if defined(_WIN32)
@@ -754,9 +844,8 @@ class ModuleLoader::Impl {
             std::filesystem::path(IV_CONFIGURED_CLANG_SOURCE_INTROSPECTION_PLUGIN);
         auto const module_finalizer =
             std::filesystem::path(IV_CONFIGURED_IV_MODULE_FINALIZER);
-        if (toolchain_.source_introspection
-            && (source_introspection_plugin.empty()
-                || !std::filesystem::exists(source_introspection_plugin))) {
+        if (source_introspection_plugin.empty()
+            || !std::filesystem::exists(source_introspection_plugin)) {
             throw std::runtime_error(
                 "configured Clang source-introspection plugin does not exist: '" +
                 source_introspection_plugin.string() + "'");
@@ -796,14 +885,12 @@ class ModuleLoader::Impl {
             << "module-finalizer-stamp="
             << std::filesystem::last_write_time(module_finalizer)
                    .time_since_epoch().count() << '\n';
-        if (toolchain_.source_introspection) {
-            signature
-                << "source-introspection-plugin="
-                << source_introspection_plugin.generic_string() << '\n'
-                << "source-introspection-plugin-stamp="
-                << std::filesystem::last_write_time(source_introspection_plugin)
-                       .time_since_epoch().count() << '\n';
-        }
+        signature
+            << "source-introspection-plugin="
+            << source_introspection_plugin.generic_string() << '\n'
+            << "source-introspection-plugin-stamp="
+            << std::filesystem::last_write_time(source_introspection_plugin)
+                   .time_since_epoch().count() << '\n';
         for (auto const &module : closure.modules) {
             signature << key(module) << '\n'
                       << read_text(module.manifest_file) << '\n'
@@ -1010,34 +1097,54 @@ public:
             library->symbol("iv_module_authored_graph"));
         auto node_configs = reinterpret_cast<iv_module_node_configs_fn>(
             library->symbol("iv_module_node_configs"));
+        auto node_config_string_relocations = reinterpret_cast<iv_module_node_config_string_relocations_fn>(
+            library->symbol("iv_module_node_config_string_relocations"));
         auto node_types = reinterpret_cast<iv_module_node_types_fn>(
             library->symbol("iv_module_node_types"));
-        if (!authored_graph || !node_configs || !node_types) {
+        if (!authored_graph || !node_configs || !node_config_string_relocations || !node_types) {
             throw std::runtime_error(
                 "module '" + artifact.string() +
                 "' does not export the finalized authored-graph tables");
         }
         auto const graph_view = authored_graph();
         auto const config_view = node_configs();
+        auto const relocation_view = node_config_string_relocations();
         auto const type_view = node_types();
         if (!graph_view.data && graph_view.size != 0) {
             throw std::runtime_error("module authored graph view has null data");
         }
+        if (!config_view.data && config_view.size != 0) {
+            throw std::runtime_error("module node config view has null data");
+        }
+        if (!relocation_view.data && relocation_view.size != 0) {
+            throw std::runtime_error("module node config relocation view has null data");
+        }
+        if (!type_view.data && type_view.size != 0) {
+            throw std::runtime_error("module node type view has null data");
+        }
         if (config_view.size % sizeof(ModuleNodeConfigRecord) != 0) {
             throw std::runtime_error("module node config table has invalid size");
+        }
+        if (relocation_view.size % sizeof(ModuleNodeConfigStringRelocationRecord) != 0) {
+            throw std::runtime_error("module node config relocation table has invalid size");
         }
         if (type_view.size % sizeof(details::NodeCompilerRecord) != 0) {
             throw std::runtime_error("module node type table has invalid size");
         }
-        auto const graph_json = std::string_view(
-            static_cast<char const*>(graph_view.data), graph_view.size);
+        auto const graph_archive = std::span(
+            static_cast<std::byte const*>(graph_view.data), graph_view.size);
         auto const configs = std::span(
             static_cast<ModuleNodeConfigRecord const*>(config_view.data),
             config_view.size / sizeof(ModuleNodeConfigRecord));
+        auto const relocations = std::span(
+            static_cast<ModuleNodeConfigStringRelocationRecord const*>(relocation_view.data),
+            relocation_view.size / sizeof(ModuleNodeConfigStringRelocationRecord));
         auto const types = std::span(
             static_cast<details::NodeCompilerRecord const*>(type_view.data),
             type_view.size / sizeof(details::NodeCompilerRecord));
-        auto authored = deserialize_authored_graph(graph_json, types, configs);
+        auto materialized_configs = materialize_node_configs(configs, relocations);
+        auto authored = deserialize_authored_graph(
+            graph_archive, types, materialized_configs.records, materialized_configs.storage);
         auto plan = GraphCompiler::compile(
             GraphLowerer::lower(authored, {.execution_root = true}));
         auto runtime_root = std::make_shared<RuntimeGraphRoot>(

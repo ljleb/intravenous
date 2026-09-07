@@ -1,7 +1,9 @@
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTMutationListener.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -25,6 +27,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <set>
 #include <string>
 #include <string_view>
@@ -76,6 +79,17 @@ std::string type_string(ASTContext const& context, QualType type)
     return result;
 }
 
+bool has_concrete_template_arguments(CXXRecordDecl const* record)
+{
+    if (!record || !record->isDependentType()) return true;
+    auto const* specialization = dyn_cast<ClassTemplateSpecializationDecl>(record);
+    if (!specialization) return false;
+    auto const arguments = specialization->getTemplateArgs().asArray();
+    return std::none_of(arguments.begin(), arguments.end(), [](TemplateArgument const& argument) {
+        return argument.isDependent();
+    });
+}
+
 std::string declaration_usr(ASTContext& context, Decl const* declaration)
 {
     if (!declaration) return {};
@@ -91,6 +105,14 @@ std::string declaration_usr(ASTContext& context, Decl const* declaration)
     return buffer.str().str();
 }
 
+std::string declaration_usr_if_available(Decl const* declaration)
+{
+    if (!declaration) return {};
+    llvm::SmallString<128> buffer;
+    if (clang::index::generateUSRForDecl(declaration, buffer)) return {};
+    return buffer.str().str();
+}
+
 std::string type_usr(ASTContext& context, QualType type)
 {
     llvm::SmallString<128> buffer;
@@ -99,6 +121,40 @@ std::string type_usr(ASTContext& context, QualType type)
         return type_string(context, type);
     }
     return buffer.str().str();
+}
+
+std::uint64_t node_code_key_hash(
+    std::string_view value,
+    std::uint64_t seed)
+{
+    std::uint64_t hash = seed;
+    for (auto const ch : value) {
+        hash ^= static_cast<unsigned char>(ch);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+std::string hex_u64(std::uint64_t value)
+{
+    constexpr std::string_view digits = "0123456789abcdef";
+    std::string result(16, '0');
+    for (std::size_t index = result.size(); index-- > 0; value >>= 4)
+        result[index] = digits[value & 0xf];
+    return result;
+}
+
+llvm::json::Object node_code_key(ASTContext const& context, QualType type)
+{
+    // This reproduces iv::details::make_node_code_key. The key is deliberately
+    // not persistent metadata: it only joins this frontend's State record to
+    // the compiler record emitted by the same module build.
+    auto const spelling = type_string(context, type);
+    return llvm::json::Object{
+        {"low", hex_u64(node_code_key_hash(spelling, 14695981039346656037ull))},
+        {"high", hex_u64(node_code_key_hash(
+            spelling, 1099511628211ull ^ 0x9e3779b97f4a7c15ull))},
+    };
 }
 
 std::string record_name(QualType type)
@@ -258,13 +314,15 @@ public:
                 continue;
 
             auto const span = sources_.declaration_span(variable);
-            auto const identity = declaration_usr(context_, variable);
+            auto const identity = declaration_identity(variable, span);
             if (!span || identity.empty()) continue;
             validate_unique_graph_local(variable, *span);
 
-            // As in the GCC plugin, a declaration without an initializer is
-            // not annotated until the later assignment which initializes it.
-            if (!variable->hasInit()) continue;
+            // A class-type declaration without source syntax for an
+            // initializer (for example `NodeRef x;`) has an implicit
+            // CXXConstructExpr in Clang's AST. It is still uninitialized in
+            // the authored-graph sense and must wait for its first assignment.
+            if (!has_explicit_initializer(variable)) continue;
             append_ref({variable, identity, *span});
         }
         return true;
@@ -276,7 +334,8 @@ public:
         auto* variable = referenced_variable(expression->getSubExpr());
         if (!variable || !is_annotatable_ref(variable->getType())) return true;
         auto const span = named_expression_span(expression->getSubExpr(), variable);
-        auto const identity = declaration_usr(context_, variable);
+        auto const identity = declaration_identity(
+            variable, sources_.declaration_span(variable));
         if (span && !identity.empty()) append_ref({variable, identity, *span});
         return true;
     }
@@ -290,8 +349,9 @@ public:
             if (variable && !variable->isImplicit()
                 && annotatable_ref_kind(variable->getType()) == AnnotatableRefKind::node
                 && !variable->getType()->isReferenceType()
-                && !variable->hasInit()) {
-                auto const identity = declaration_usr(context_, variable);
+                && !has_explicit_initializer(variable)) {
+                auto const identity = declaration_identity(
+                    variable, sources_.declaration_span(variable));
                 auto const declaration_source = sources_.declaration_span(variable);
                 auto initialization_source = named_expression_span(call->getArg(0), variable);
                 if (!initialization_source)
@@ -310,7 +370,8 @@ public:
             if (variable
                 && annotatable_ref_kind(variable->getType()) == AnnotatableRefKind::node) {
                 auto const span = named_expression_span(call, variable);
-                auto const identity = declaration_usr(context_, variable);
+                auto const identity = declaration_identity(
+                    variable, sources_.declaration_span(variable));
                 if (span && !identity.empty()) append_ref({variable, identity, *span});
             }
         }
@@ -340,13 +401,6 @@ public:
             }
         }
 
-        if (method_name == "node" && method->getParent()->getName() == "GraphBuilder") {
-            if (auto* arguments = method->getTemplateSpecializationArgs();
-                arguments && arguments->size() > 0
-                && arguments->get(0).getKind() == TemplateArgument::Type) {
-                validate_node_config(arguments->get(0).getAsType(), call->getExprLoc());
-            }
-        }
         return true;
     }
 
@@ -366,6 +420,40 @@ private:
         if (auto* unary = dyn_cast<UnaryOperator>(expression))
             return referenced_variable(unary->getSubExpr());
         return nullptr;
+    }
+
+    static bool has_explicit_initializer(VarDecl const* variable)
+    {
+        if (!variable || !variable->hasInit()) return false;
+        auto const* initializer = variable->getInit();
+        auto const* construction = dyn_cast<CXXConstructExpr>(initializer);
+        if (!construction) return true;
+        if (construction->getParenOrBraceRange().isValid()) return true;
+        // A copy-initializer begins at its right-hand expression. An implicit
+        // default constructor begins at the variable name.
+        return construction->getBeginLoc() != variable->getLocation();
+    }
+
+    std::string declaration_identity(
+        VarDecl const* declaration,
+        std::optional<SourceSpanRecord> const& span) const
+    {
+        if (!declaration || !span) return declaration_usr_if_available(declaration);
+        auto const* function = enclosing_function(declaration);
+        if (!function || !function->isTemplateInstantiation()) {
+            auto result = declaration_usr_if_available(declaration);
+            if (!result.empty()) return result;
+        }
+
+        // Clang can assign a USR to a local in a generic-lambda
+        // instantiation, but that USR embeds concrete template arguments
+        // (for example the polyphonic voice index). Source annotations need
+        // the lexical declaration identity instead so equivalent callback
+        // instances aggregate by their exact authored source span. This is
+        // only a source annotation key; NodeCodeKey remains the build-local
+        // compiler-record join key.
+        return "source-local:" + span->file + ':' + std::to_string(span->begin)
+            + '@' + declaration->getNameAsString();
     }
 
     std::optional<SourceSpanRecord> named_expression_span(
@@ -434,66 +522,20 @@ private:
             << declaration->getNameAsString();
     }
 
-    void validate_node_config(QualType type, SourceLocation location)
-    {
-        std::set<void const*> visited;
-        validate_node_config_recursive(type.getCanonicalType(), location, visited);
-    }
-
-    void validate_node_config_recursive(
-        QualType type,
-        SourceLocation location,
-        std::set<void const*>& visited)
-    {
-        type = type.getNonReferenceType().getUnqualifiedType();
-        auto const* raw = type.getTypePtrOrNull();
-        if (!raw || !visited.insert(raw).second) return;
-
-        auto reject = [&](std::string_view reason) {
-            auto id = context_.getDiagnostics().getCustomDiagID(
-                DiagnosticsEngine::Error,
-                "authored node configuration must be self-contained and relocation-free: %0");
-            context_.getDiagnostics().Report(location, id) << std::string(reason);
-        };
-
-        if (type->isPointerType() || type->isReferenceType()) {
-            reject("pointer/reference fields are not allowed");
-            return;
-        }
-        if (type->isMemberPointerType()) {
-            reject("member-pointer fields are not allowed");
-            return;
-        }
-        if (auto const* array = context_.getAsConstantArrayType(type)) {
-            validate_node_config_recursive(array->getElementType(), location, visited);
-            return;
-        }
-        auto const* record = type->getAsCXXRecordDecl();
-        if (!record || !record->isCompleteDefinition()) return;
-        for (auto const& base : record->bases())
-            validate_node_config_recursive(base.getType(), location, visited);
-        for (auto* field : record->fields()) {
-            if (field->isMutable()) {
-                reject("mutable fields are not allowed");
-                continue;
-            }
-            validate_node_config_recursive(field->getType(), location, visited);
-        }
-    }
 };
 
 class HelperFinder final : public RecursiveASTVisitor<HelperFinder> {
 public:
     bool VisitFunctionTemplateDecl(FunctionTemplateDecl* declaration)
     {
-        if (declaration && declaration->getName() == "_annotate_source_info_after_statement")
+        if (declaration && declaration->getNameAsString() == "_annotate_source_info_after_statement")
             source_annotation = declaration;
         return true;
     }
 
     bool VisitFunctionDecl(FunctionDecl* declaration)
     {
-        if (declaration && declaration->getName() == "_annotate_public_output_after_statement")
+        if (declaration && declaration->getNameAsString() == "_annotate_public_output_after_statement")
             public_output_annotation = declaration;
         return true;
     }
@@ -508,7 +550,7 @@ public:
         CompilerInstance& compiler,
         SourceModel const& sources)
         : compiler_(compiler), context_(compiler.getASTContext()),
-          sema_(compiler.getSema()), sources_(sources)
+          sources_(sources)
     {}
 
     void instrument(FunctionDecl* function)
@@ -526,13 +568,17 @@ public:
             return;
         }
         instrumented_.insert(function);
+        // ASTConsumer callbacks run after the parser has restored Sema's
+        // translation-unit context.  Re-enter the owning function while
+        // synthesizing the annotations so Sema performs ordinary local-name
+        // lookup and builds a well-formed call expression for CodeGen.
+        Sema::ContextRAII function_context(sema(), function);
         function->setBody(transform_statement(function->getBody()));
     }
 
 private:
     CompilerInstance& compiler_;
     ASTContext& context_;
-    Sema& sema_;
     SourceModel const& sources_;
     llvm::DenseSet<FunctionDecl*> instrumented_;
     FunctionTemplateDecl* source_annotation_template_ = nullptr;
@@ -540,6 +586,8 @@ private:
     bool helpers_searched_ = false;
     std::unordered_map<FunctionDecl const*,
         std::unordered_map<std::string, SourceSpanRecord>> graph_locals_;
+
+    Sema& sema() { return compiler_.getSema(); }
 
     void ensure_helpers()
     {
@@ -595,7 +643,7 @@ private:
     Expr* make_decl_ref(ValueDecl* declaration, SourceLocation location)
     {
         if (!declaration) return nullptr;
-        return sema_.BuildDeclRefExpr(
+        return sema().BuildDeclRefExpr(
             declaration,
             declaration->getType().getNonReferenceType(),
             VK_LValue,
@@ -605,7 +653,7 @@ private:
     Expr* make_address(Expr* expression, SourceLocation location)
     {
         if (!expression) return nullptr;
-        auto result = sema_.BuildUnaryOp(nullptr, location, UO_AddrOf, expression);
+        auto result = sema().BuildUnaryOp(nullptr, location, UO_AddrOf, expression);
         return result.isInvalid() ? nullptr : result.get();
     }
 
@@ -635,11 +683,11 @@ private:
         SourceLocation location)
     {
         TemplateArgumentListInfo explicit_arguments(location, location);
-        explicit_arguments.addArgument(sema_.getTrivialTemplateArgumentLoc(
-            TemplateArgument(ref_type.getUnqualifiedType()), QualType{}, location));
+        explicit_arguments.addArgument(sema().getTrivialTemplateArgumentLoc(
+            TemplateArgument(ref_type), QualType{}, location));
         sema::TemplateDeductionInfo info(location);
         FunctionDecl* specialization = nullptr;
-        auto result = sema_.DeduceTemplateArguments(
+        auto result = sema().DeduceTemplateArguments(
             source_annotation_template_, &explicit_arguments,
             specialization, info, false);
         if (result != TemplateDeductionResult::Success || !specialization) {
@@ -671,7 +719,7 @@ private:
             make_u32(annotation.span.begin, location),
             make_u32(annotation.span.end, location),
         };
-        auto result = sema_.BuildCallExpr(
+        auto result = sema().BuildCallExpr(
             nullptr, callee, location, arguments, location);
         return result.isInvalid() ? nullptr : result.get();
     }
@@ -681,6 +729,12 @@ private:
         if (!builder) return nullptr;
         builder = builder->IgnoreParenImpCasts();
         if (auto* ref = dyn_cast<DeclRefExpr>(builder)) {
+            // Rebuilding an annotation for an enclosing GraphBuilder inside
+            // a lambda would require Sema to recreate its capture after the
+            // lambda has been parsed. The original outputs call remains
+            // valid; lambda-local node mapping does not need this synthetic
+            // public-output annotation.
+            if (ref->refersToEnclosingVariableOrCapture()) return nullptr;
             auto* fresh = make_decl_ref(ref->getDecl(), location);
             return make_address(fresh, location);
         }
@@ -711,7 +765,7 @@ private:
             make_u32(output.span.begin, location),
             make_u32(output.span.end, location),
         };
-        auto result = sema_.BuildCallExpr(
+        auto result = sema().BuildCallExpr(
             nullptr, callee, location, arguments, location);
         return result.isInvalid() ? nullptr : result.get();
     }
@@ -725,21 +779,40 @@ public:
 
     bool VisitCXXRecordDecl(CXXRecordDecl* record)
     {
+        record_state(record);
+        return true;
+    }
+
+    void record_state(CXXRecordDecl const* record)
+    {
         if (!record || !record->isCompleteDefinition() || record->getName() != "State")
-            return true;
+            return;
         auto* parent = dyn_cast<CXXRecordDecl>(record->getDeclContext());
-        if (!parent || parent->isLambda()) return true;
+        if (!parent || parent->isLambda()) return;
+        // An uninstantiated class template has no concrete State ABI. Asking
+        // Clang for its layout recursively instantiates its own dependent
+        // members (for example MidiVoiceAllocator's voice-count arrays),
+        // exhausting the frontend stack. A nested State declaration in a
+        // concrete class-template specialization retains a dependent pattern
+        // in Clang 23, even though its parent and fields are concrete. The
+        // parent is therefore the discriminator here.
+        if (!has_concrete_template_arguments(parent)) return;
 
         if (record->getNumBases() != 0) {
             auto id = context_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
                 "Node::State must not have base classes");
             context_.getDiagnostics().Report(record->getLocation(), id);
-            return true;
+            return;
         }
 
-        auto const node_name = qualified_record_name(parent);
-        if (!seen_node_names_.insert(node_name).second) return true;
+        auto const node_type = context_.getCanonicalTagType(parent);
+        auto const node_type_name = type_string(context_, node_type);
+        auto const node_type_usr = declaration_usr(context_, parent);
+        // The canonical declaration of every specialization is the primary
+        // class template. Deduplicate by the concrete spelling instead so
+        // each NodeCodeKey receives exactly one State record.
+        if (!seen_node_types_.insert(node_type_name).second) return;
 
         auto const& layout = context_.getASTRecordLayout(record);
         llvm::json::Array fields;
@@ -756,26 +829,26 @@ public:
             };
             if (field->isBitField()) {
                 field_record["bit_width"] = static_cast<std::int64_t>(
-                    field->getBitWidthValue(context_));
+                    field->getBitWidthValue());
             }
             fields.push_back(std::move(field_record));
         }
-        auto const state_type = context_.getTypeDeclType(record);
+        auto const state_type = context_.getCanonicalTagType(record);
         states_.push_back(llvm::json::Object{
-            {"node_type_usr", type_usr(context_, context_.getTypeDeclType(parent))},
-            {"node_type", node_name},
-            {"state_type_usr", type_usr(context_, state_type)},
+            {"node_code_key", node_code_key(context_, node_type)},
+            {"node_type_usr", node_type_usr},
+            {"node_type", node_type_name},
+            {"state_type_usr", declaration_usr(context_, record)},
             {"size_bits", static_cast<std::int64_t>(context_.getTypeSize(state_type))},
             {"alignment_bits", static_cast<std::int64_t>(context_.getTypeAlign(state_type))},
             {"fields", std::move(fields)},
         });
-        return true;
     }
 
     llvm::json::Object result() &&
     {
         return llvm::json::Object{
-            {"version", 3},
+            {"version", 4},
             {"states", std::move(states_)},
         };
     }
@@ -783,15 +856,7 @@ public:
 private:
     ASTContext& context_;
     llvm::json::Array states_;
-    std::set<std::string> seen_node_names_;
-
-    static std::string qualified_record_name(CXXRecordDecl const* record)
-    {
-        if (!record) return {};
-        auto result = record->getQualifiedNameAsString();
-        if (result.starts_with("::")) result.erase(0, 2);
-        return result;
-    }
+    std::set<std::string> seen_node_types_;
 };
 
 std::filesystem::path metadata_path(
@@ -805,6 +870,43 @@ std::filesystem::path metadata_path(
     auto name = std::filesystem::path(input).filename().string();
     if (name.empty()) name = "translation-unit";
     return directory / (name + "." + std::to_string(hash) + ".ivmeta.json");
+}
+
+void write_state_metadata(
+    CompilerInstance& compiler,
+    std::filesystem::path const& metadata_dir,
+    std::span<CXXRecordDecl const* const> completed_states = {})
+{
+    auto& context = compiler.getASTContext();
+    StateMetadataVisitor visitor(context);
+    visitor.TraverseDecl(context.getTranslationUnitDecl());
+    // Nested member-class instantiations are reported to the mutation
+    // listener but are not children in the translation unit's DeclContext.
+    // Add those exact declarations explicitly to the same per-TU snapshot.
+    for (auto const* state : completed_states) visitor.record_state(state);
+
+    std::error_code error;
+    std::filesystem::create_directories(metadata_dir, error);
+    if (error) {
+        auto id = compiler.getDiagnostics().getCustomDiagID(
+            DiagnosticsEngine::Error,
+            "cannot create IV Clang metadata directory '%0': %1");
+        compiler.getDiagnostics().Report(id)
+            << metadata_dir.string() << error.message();
+        return;
+    }
+    auto const output = metadata_path(compiler, metadata_dir);
+    llvm::raw_fd_ostream stream(output.string(), error, llvm::sys::fs::OF_Text);
+    if (error) {
+        auto id = compiler.getDiagnostics().getCustomDiagID(
+            DiagnosticsEngine::Error,
+            "cannot write IV Clang metadata '%0': %1");
+        compiler.getDiagnostics().Report(id) << output.string() << error.message();
+        return;
+    }
+    stream << llvm::formatv(
+        "{0:2}", llvm::json::Value(std::move(visitor).result()));
+    stream << '\n';
 }
 
 class FunctionDiscovery final : public RecursiveASTVisitor<FunctionDiscovery> {
@@ -823,20 +925,80 @@ private:
     FunctionInstrumenter& instrumenter_;
 };
 
+class StateMetadataMutationListener final : public ASTMutationListener {
+public:
+    StateMetadataMutationListener(
+        CompilerInstance& compiler,
+        std::filesystem::path metadata_dir,
+        FunctionInstrumenter* instrumenter)
+        : compiler_(compiler),
+          metadata_dir_(std::move(metadata_dir)),
+          instrumenter_(instrumenter)
+    {}
+
+    void FunctionDefinitionInstantiated(FunctionDecl const* definition) override
+    {
+        // Generic-lambda bodies become concrete only after normal source
+        // traversal. This callback precedes CodeGen for the instantiated
+        // definition, so the existing Sema-based rewrite remains in its IR.
+        if (instrumenter_) instrumenter_->instrument(const_cast<FunctionDecl*>(definition));
+    }
+
+    void CompletedTagDefinition(TagDecl const* definition) override
+    {
+        auto const* state = dyn_cast_or_null<CXXRecordDecl>(definition);
+        if (!state || state->getName() != "State") return;
+        auto const* parent = dyn_cast<CXXRecordDecl>(state->getDeclContext());
+        if (!parent || parent->isLambda()) return;
+        if (!has_concrete_template_arguments(parent)) return;
+        if (std::find(completed_states_.begin(), completed_states_.end(), state)
+            != completed_states_.end()) return;
+        completed_states_.push_back(state);
+        if (initial_snapshot_written_) write_snapshot();
+    }
+
+    void write_initial_snapshot()
+    {
+        write_snapshot();
+        initial_snapshot_written_ = true;
+    }
+
+private:
+    void write_snapshot()
+    {
+        write_state_metadata(
+            compiler_,
+            metadata_dir_,
+            {completed_states_.data(), completed_states_.size()});
+    }
+
+    CompilerInstance& compiler_;
+    std::filesystem::path metadata_dir_;
+    FunctionInstrumenter* instrumenter_ = nullptr;
+    std::vector<CXXRecordDecl const*> completed_states_;
+    bool initial_snapshot_written_ = false;
+};
+
 class ModuleConsumer final : public ASTConsumer {
 public:
     ModuleConsumer(
         CompilerInstance& compiler,
         std::filesystem::path core_source_dir,
-        std::filesystem::path metadata_dir)
-        : compiler_(compiler),
-          sources_(compiler.getASTContext(), std::move(core_source_dir)),
+        std::filesystem::path metadata_dir,
+        bool source_introspection)
+        : sources_(compiler.getASTContext(), std::move(core_source_dir)),
           instrumenter_(compiler, sources_),
-          metadata_dir_(std::move(metadata_dir))
+          metadata_dir_(std::move(metadata_dir)),
+          state_metadata_listener_(
+              compiler,
+              metadata_dir_,
+              source_introspection ? &instrumenter_ : nullptr),
+          source_introspection_(source_introspection)
     {}
 
     bool HandleTopLevelDecl(DeclGroupRef declarations) override
     {
+        if (!source_introspection_) return true;
         FunctionDiscovery discovery(instrumenter_);
         for (auto* declaration : declarations)
             discovery.TraverseDecl(declaration);
@@ -845,49 +1007,33 @@ public:
 
     void HandleInlineFunctionDefinition(FunctionDecl* declaration) override
     {
+        if (!source_introspection_) return;
         instrumenter_.instrument(declaration);
+    }
+
+    ASTMutationListener* GetASTMutationListener() override
+    {
+        return &state_metadata_listener_;
     }
 
     void HandleTranslationUnit(ASTContext& context) override
     {
-        // Template instantiations can be materialized after their owning
-        // top-level declaration was first seen. Catch any remaining authored
-        // function bodies before the frontend finishes.
-        FunctionDiscovery discovery(instrumenter_);
-        discovery.TraverseDecl(context.getTranslationUnitDecl());
-
-        StateMetadataVisitor visitor(context);
-        visitor.TraverseDecl(context.getTranslationUnitDecl());
-
-        std::error_code error;
-        std::filesystem::create_directories(metadata_dir_, error);
-        if (error) {
-            auto id = compiler_.getDiagnostics().getCustomDiagID(
-                DiagnosticsEngine::Error,
-                "cannot create IV Clang metadata directory '%0': %1");
-            compiler_.getDiagnostics().Report(id)
-                << metadata_dir_.string() << error.message();
-            return;
+        if (source_introspection_) {
+            // Template instantiations can be materialized after their owning
+            // top-level declaration was first seen. Catch any remaining
+            // authored function bodies before the frontend finishes.
+            FunctionDiscovery discovery(instrumenter_);
+            discovery.TraverseDecl(context.getTranslationUnitDecl());
         }
-        auto const output = metadata_path(compiler_, metadata_dir_);
-        llvm::raw_fd_ostream stream(output.string(), error, llvm::sys::fs::OF_Text);
-        if (error) {
-            auto id = compiler_.getDiagnostics().getCustomDiagID(
-                DiagnosticsEngine::Error,
-                "cannot write IV Clang metadata '%0': %1");
-            compiler_.getDiagnostics().Report(id) << output.string() << error.message();
-            return;
-        }
-        stream << llvm::formatv(
-            "{0:2}", llvm::json::Value(std::move(visitor).result()));
-        stream << '\n';
+        state_metadata_listener_.write_initial_snapshot();
     }
 
 private:
-    CompilerInstance& compiler_;
     SourceModel sources_;
     FunctionInstrumenter instrumenter_;
     std::filesystem::path metadata_dir_;
+    StateMetadataMutationListener state_metadata_listener_;
+    bool source_introspection_ = true;
 };
 
 class ModulePlugin final : public PluginASTAction {
@@ -901,10 +1047,22 @@ public:
         for (auto const& argument : args) {
             constexpr std::string_view core_prefix = "core-source-dir=";
             constexpr std::string_view metadata_prefix = "metadata-dir=";
+            constexpr std::string_view source_prefix = "source-introspection=";
             if (std::string_view(argument).starts_with(core_prefix)) {
                 core_source_dir_ = argument.substr(core_prefix.size());
             } else if (std::string_view(argument).starts_with(metadata_prefix)) {
                 metadata_dir_ = argument.substr(metadata_prefix.size());
+            } else if (std::string_view(argument).starts_with(source_prefix)) {
+                auto const value = std::string_view(argument).substr(source_prefix.size());
+                if (value == "0") source_introspection_ = false;
+                else if (value == "1") source_introspection_ = true;
+                else {
+                    auto id = compiler.getDiagnostics().getCustomDiagID(
+                        DiagnosticsEngine::Error,
+                        "iv_module_metadata source-introspection must be 0 or 1");
+                    compiler.getDiagnostics().Report(id);
+                    return false;
+                }
             } else {
                 auto id = compiler.getDiagnostics().getCustomDiagID(
                     DiagnosticsEngine::Error,
@@ -934,14 +1092,22 @@ public:
         CompilerInstance& compiler,
         llvm::StringRef) override
     {
-        return std::make_unique<ModuleConsumer>(
-            compiler, core_source_dir_, metadata_dir_);
+        // PCH generation has no Sema instance and does not compile a module
+        // translation unit. The consuming source compile runs this plugin
+        // again, where it emits the required State metadata.
+        if (compiler.getFrontendOpts().ProgramAction == frontend::GeneratePCH)
+            return std::make_unique<ASTConsumer>();
+        auto consumer = std::make_unique<ModuleConsumer>(
+            compiler, core_source_dir_, metadata_dir_, source_introspection_);
+        return consumer;
     }
 
 private:
     std::filesystem::path core_source_dir_;
     std::filesystem::path metadata_dir_;
+    bool source_introspection_ = true;
 };
+
 } // namespace
 
 static clang::FrontendPluginRegistry::Add<ModulePlugin> registration(

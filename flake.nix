@@ -2,12 +2,12 @@
   description = "Intravenous development environment";
 
   inputs = {
-    nixpkgs.url = "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1038038.421eebfd0ec7/nixexprs.tar.xz";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   outputs = { nixpkgs, ... }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
     in {
       devShells = forAllSystems (system:
@@ -25,7 +25,6 @@
             (lib.getDev llvm.llvm)
             llvm.libclang
             (lib.getDev llvm.clang-unwrapped)
-          ] ++ lib.optionals stdenv.isLinux [
             alsa-lib
             fontconfig
             freetype
@@ -40,10 +39,10 @@
             vscode-extensions.vadimcn.vscode-lldb
             nodejs
             vsce
-          ] ++ lib.optionals stdenv.isLinux [
-            linuxPackages.perf
+            perf
             flamegraph
             valgrind
+            gdb
           ];
           shell = packages: pkgs.mkShell {
             inherit packages;

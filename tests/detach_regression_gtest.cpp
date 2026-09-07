@@ -1,6 +1,6 @@
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
-#include <intravenous/graph/authored_graph_view.hpp>
+#include <authored_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/node/block_executor.h>
@@ -56,7 +56,7 @@ namespace {
         }
     };
 
-    consteval void detached_voice(
+    void detached_voice(
         iv::GraphBuilder& g,
         iv::SubgraphBuilder& boundary,
         iv::SamplePortRef dt,
@@ -73,7 +73,7 @@ namespace {
         boundary.outputs("out"_P = (warper["anti_aliased"] * amplitude));
     }
 
-    consteval auto build_detached_graph()
+    auto build_detached_graph()
     {
         iv::GraphBuilder graph;
         auto const dt = graph.node<RuntimeValueSource>(RuntimeValueSlot::dt);
@@ -89,14 +89,14 @@ namespace {
 
         sink(voice_a + voice_b);
         graph.outputs();
-        return iv::freeze_authored_graph(std::move(graph).finish());
+        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
     }
 
     iv::RuntimeGraphRoot build_runtime_root(
-        iv::AuthoredGraphView view,
+        iv::AuthoredGraphTestView view,
         bool execution_root = false)
     {
-        auto authored = iv::thaw_authored_graph(view);
+        auto authored = iv::thaw_authored_graph_for_test(view);
         auto plan = iv::GraphCompiler::compile(
             iv::GraphLowerer::lower(
                 std::move(authored), {.execution_root = execution_root}));
@@ -105,11 +105,11 @@ namespace {
 
     iv::RuntimeGraphRoot build_detached_runtime_root()
     {
-        static constexpr auto view = build_detached_graph();
+        static const auto view = build_detached_graph();
         return build_runtime_root(view);
     }
 
-    consteval auto build_static_dormancy_graph()
+    auto build_static_dormancy_graph()
     {
         iv::GraphBuilder graph;
         auto const source = graph.node<iv::Constant>(iv::Sample{0.0f});
@@ -121,19 +121,19 @@ namespace {
         }).ttl(1);
         nested("in"_P = source);
         graph.outputs("out"_P = nested);
-        return iv::freeze_authored_graph(std::move(graph).finish());
+        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
     }
 
     iv::RuntimeGraphRoot build_dormancy_runtime_root()
     {
-        static constexpr auto view = build_static_dormancy_graph();
+        static const auto view = build_static_dormancy_graph();
         return build_runtime_root(view, true);
     }
 
     // An unconnected subgraph input lowers through materialize_subgraph_default.
     // Its default must reach a block-reading node without leaving a ticking
     // Constant wrapper in the executable graph.
-    consteval auto build_static_default_sink_graph()
+    auto build_static_default_sink_graph()
     {
         iv::GraphBuilder graph;
         auto const nested = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
@@ -146,12 +146,12 @@ namespace {
         auto const sink = graph.node<RuntimeBufferSink>();
         sink(nested);
         graph.outputs();
-        return iv::freeze_authored_graph(std::move(graph).finish());
+        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
     }
 
     iv::RuntimeGraphRoot build_default_sink_runtime_root()
     {
-        static constexpr auto view = build_static_default_sink_graph();
+        static const auto view = build_static_default_sink_graph();
         return build_runtime_root(view);
     }
 
@@ -260,7 +260,3 @@ TEST(DetachRegression, StaticSubgraphDefaultUsesInitializedConstantStorage)
         EXPECT_EQ(runtime_output_values[i], iv::Sample{0.375f});
     }
 }
-
-// A graph cycle without detach() is now rejected while evaluating the consteval
-// graph build. That diagnostic belongs in compile-fail coverage; it cannot be
-// represented as a runtime EXPECT_THROW around GraphBuilder::build().

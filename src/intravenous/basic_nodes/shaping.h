@@ -154,7 +154,10 @@ namespace iv {
         };
 
         static constexpr size_t table_size = 4096;
-        static constexpr std::array<Sample, table_size + 1> table = [] {
+        // libstdc++ does not yet make std::sin constexpr under Clang 23.
+        // The table is immutable process-lifetime data, so one ordinary static
+        // initialization is sufficient and keeps module authorship runtime.
+        inline static const std::array<Sample, table_size + 1> table = [] {
             std::array<Sample, table_size + 1> table{};
 
             for (size_t i = 0; i < table_size; ++i) {

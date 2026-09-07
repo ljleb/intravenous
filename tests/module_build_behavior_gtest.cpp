@@ -23,6 +23,23 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         auto definition = loader.load_root_definition(project_dst);
         EXPECT_EQ(definition.module_id, "iv.test.behavior_project");
         ASSERT_EQ(definition.dependencies.size(), 2u);
+
+        auto executor = iv::BlockNodeExecutor::create(
+            iv::TypeErasedNode(definition.root), 8);
+        auto const has_structural_saw_state = std::ranges::any_of(
+            executor.layout().nodes,
+            [](iv::NodeLayout::NodeRecord const& record) {
+                if (!record.node_state_structure) return false;
+                return std::ranges::any_of(
+                    record.node_state_structure->fields,
+                    [](iv::NodeStateFieldStructure const& field) {
+                        return field.name == "phase" && !field.type_name.empty();
+                    });
+            });
+        // SawOscillator::State is authored in behavior_voice. Its field type
+        // reaches this host layout only through the Clang plugin, exact
+        // NodeCodeKey binding in the finalizer, and the binary archive.
+        EXPECT_TRUE(has_structural_saw_state);
     }
 
     auto const project_workspace =
@@ -105,7 +122,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     for (std::filesystem::recursive_directory_iterator it(local_workspace / "cmake-build"), end;
          it != end;
          ++it) {
-        if (it->is_regular_file() && it->path().filename() == "cmake_pch.hxx.gch") {
+        auto const filename = it->path().filename();
+        if (it->is_regular_file()
+            && (filename == "cmake_pch.hxx.gch" || filename == "cmake_pch.hxx.pch")) {
             has_precompiled_header = true;
             break;
         }

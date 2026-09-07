@@ -6,7 +6,7 @@
 namespace iv {
 namespace {
 
-consteval bool execution_plan_keeps_deterministic_topological_order()
+bool execution_plan_keeps_deterministic_topological_order()
 {
     auto const node = details::reflect_node(Constant{0.0f});
     std::vector<ReflectedNodeDescription> nodes{node, node, node, node};
@@ -35,7 +35,7 @@ consteval bool execution_plan_keeps_deterministic_topological_order()
     return execution_order == std::vector<size_t>{0, 1, 2, 3};
 }
 
-consteval bool node_adjacency_deduplicates_sample_and_event_edges()
+bool node_adjacency_deduplicates_sample_and_event_edges()
 {
     auto const node = details::reflect_node(Constant{0.0f});
     ExecutableGraphData graph;
@@ -51,7 +51,7 @@ consteval bool node_adjacency_deduplicates_sample_and_event_edges()
         && indegree == std::vector<size_t>{0, 0, 1};
 }
 
-consteval bool dormancy_groups_are_ordered_by_a_single_hierarchy_walk()
+bool dormancy_groups_are_ordered_by_a_single_hierarchy_walk()
 {
     GraphBuildArtifact artifact{};
     auto make_group = [](size_t const parent_group, size_t const member_node) {
@@ -88,7 +88,7 @@ consteval bool dormancy_groups_are_ordered_by_a_single_hierarchy_walk()
         && groups[4].member_nodes[0] == 3;
 }
 
-consteval bool reflected_nodes_share_type_operations_but_not_static_data()
+bool reflected_nodes_share_type_operations_but_not_static_data()
 {
     auto const low_gain = details::reflect_node(Constant{0.125f});
     auto const high_gain = details::reflect_node(Constant{0.875f});
@@ -101,7 +101,7 @@ consteval bool reflected_nodes_share_type_operations_but_not_static_data()
         && low.skip_block == high.skip_block;
 }
 
-consteval bool node_permutation_remaps_all_structural_references()
+bool node_permutation_remaps_all_structural_references()
 {
     auto const node = details::reflect_node(Constant{0.0f});
     ExecutableGraphData graph;

@@ -1033,6 +1033,22 @@ namespace iv::details {
             GraphNodeWrapperBuildMode::full
     )
     {
+        // GraphNodeWrapper retains only raw callback pointers. Keep the
+        // authored configuration and compiler-supplied State metadata alive
+        // for as long as those wrappers may declare or execute. Generated
+        // node storage already has this lifetime, so it is the owning graph
+        // container for both categories.
+        generated_node_storage.reserve(
+            generated_node_storage.size() + nodes.size() * 2);
+        for (auto const& node : nodes) {
+            if (node.node_storage) {
+                generated_node_storage.push_back(node.node_storage);
+            }
+            if (node.state_structure_storage) {
+                generated_node_storage.push_back(node.state_structure_storage);
+            }
+        }
+
         auto output_layout_for = [&](ConcretePortId port) {
             return port.node == GRAPH_ID
                 ? effective_channel_layout(public_inputs[port.port])

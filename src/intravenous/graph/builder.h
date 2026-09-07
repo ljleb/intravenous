@@ -551,6 +551,9 @@ constexpr void GraphBuilder::validate_output_port_configs(
 template<class Node, class... Args>
 constexpr details::node_ref_for_t<Node> GraphBuilder::node(Args&&... args) {
   using StoredNode = std::remove_cvref_t<Node>;
+  static_assert(
+      std::is_trivially_copyable_v<StoredNode>,
+      "authored node values must be trivially copyable");
   StoredNode node_value(std::forward<Args>(args)...);
   auto concrete = GraphBuilderNodeBundles::make_concrete_node(
       details::reflect_node(node_value));
@@ -565,6 +568,9 @@ constexpr details::node_ref_for_t<Node> GraphBuilder::node(Args&&... args) {
 template<class Node, class ChannelType, class... Args>
 constexpr auto GraphBuilder::node(Args&&... args) {
   using StoredNode = std::remove_cvref_t<Node>;
+  static_assert(
+      std::is_trivially_copyable_v<StoredNode>,
+      "authored node values must be trivially copyable");
   static_assert((std::copy_constructible<std::remove_cvref_t<Args>> && ...),
       "tiled-node construction requires reusable constructor arguments");
 

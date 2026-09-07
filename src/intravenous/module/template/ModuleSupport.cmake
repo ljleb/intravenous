@@ -4,7 +4,7 @@ include(${IV_SOURCE_DIR}/module/template/JuceSupport.cmake)
 include(${IV_SOURCE_DIR}/module/template/ModuleProjectInit.cmake)
 
 option(IV_MODULE_SOURCE_INTROSPECTION
-    "Collect authored IV module source/state metadata" ON)
+    "Collect authored IV module source identity metadata" ON)
 
 set(IV_MODULE_FINALIZER_OPTIMIZATION "O3" CACHE STRING
     "Optimization level used by iv-module-finalize for the final native module")
@@ -19,7 +19,9 @@ function(iv_configure_iv_module_shared_import)
     if(NOT TARGET iv_module_shared)
         set(_iv_links "")
         if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-            list(APPEND _iv_links stdc++exp)
+            find_library(_iv_module_stdcxxexp_library NAMES stdc++exp
+                HINTS ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES} REQUIRED)
+            list(APPEND _iv_links "${_iv_module_stdcxxexp_library}")
         endif()
         add_library(iv_module_shared SHARED IMPORTED GLOBAL)
         set_target_properties(iv_module_shared PROPERTIES
@@ -47,12 +49,11 @@ function(iv_add_runtime_module target)
        OR NOT EXISTS "${IV_MODULE_FINALIZER}")
         message(FATAL_ERROR "iv_add_runtime_module(${target}) requires IV_MODULE_FINALIZER")
     endif()
-    if(IV_MODULE_SOURCE_INTROSPECTION
-       AND (NOT DEFINED IV_CLANG_SOURCE_INTROSPECTION_PLUGIN
-            OR IV_CLANG_SOURCE_INTROSPECTION_PLUGIN STREQUAL ""
-            OR NOT EXISTS "${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}"))
+    if(NOT DEFINED IV_CLANG_SOURCE_INTROSPECTION_PLUGIN
+       OR IV_CLANG_SOURCE_INTROSPECTION_PLUGIN STREQUAL ""
+       OR NOT EXISTS "${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}")
         message(FATAL_ERROR
-            "iv_add_runtime_module(${target}) requires IV_CLANG_SOURCE_INTROSPECTION_PLUGIN")
+            "iv_add_runtime_module(${target}) requires IV_CLANG_SOURCE_INTROSPECTION_PLUGIN for State metadata")
     endif()
 
     iv_configure_iv_module_shared_import()
@@ -71,11 +72,15 @@ function(iv_add_runtime_module target)
     target_link_options(${target}__compile_settings INTERFACE -flto=full)
 
     if(IV_MODULE_SOURCE_INTROSPECTION)
-        target_compile_options(${target}__compile_settings INTERFACE
-            "-fplugin=${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}"
-            "-fplugin-arg-iv_module_metadata-core-source-dir=${IV_SOURCE_DIR}"
-            "-fplugin-arg-iv_module_metadata-metadata-dir=${_iv_metadata_dir}")
+        set(_iv_source_introspection 1)
+    else()
+        set(_iv_source_introspection 0)
     endif()
+    target_compile_options(${target}__compile_settings INTERFACE
+        "-fplugin=${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}"
+        "-fplugin-arg-iv_module_metadata-core-source-dir=${IV_SOURCE_DIR}"
+        "-fplugin-arg-iv_module_metadata-metadata-dir=${_iv_metadata_dir}"
+        "-fplugin-arg-iv_module_metadata-source-introspection=${_iv_source_introspection}")
 
     target_include_directories(${target}__compile_settings INTERFACE
         ${IV_INCLUDE_DIR}

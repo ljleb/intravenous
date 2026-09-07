@@ -191,12 +191,12 @@ endfunction()
 
 add_library(intravenous_graph_builder OBJECT
     graph/builder/link.cpp
+    module/authoring.cpp
 )
 iv_configure_intravenous_target(intravenous_graph_builder PUBLIC)
 
 add_library(iv_module_shared SHARED
     $<TARGET_OBJECTS:intravenous_graph_builder>
-    module/authoring.cpp
 )
 iv_configure_intravenous_target(iv_module_shared PUBLIC)
 iv_link_stacktrace_support(iv_module_shared)

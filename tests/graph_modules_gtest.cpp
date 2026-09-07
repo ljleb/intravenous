@@ -1,7 +1,7 @@
 #include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/dsl.h>
-#include <intravenous/graph/authored_graph_view.hpp>
+#include <authored_graph_test_view.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
@@ -14,7 +14,7 @@
 namespace iv {
 namespace {
 
-consteval void pass_module(GraphBuilder& g)
+void pass_module(GraphBuilder& g)
 {
     auto input = g.input<"in">(0.0f);
     auto pass = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
@@ -22,7 +22,7 @@ consteval void pass_module(GraphBuilder& g)
     g.outputs("out"_P = pass);
 }
 
-consteval void nested_module(GraphBuilder& g)
+void nested_module(GraphBuilder& g)
 {
     auto input = g.input<"in">(0.0f);
     auto child = g.module<pass_module>();
@@ -30,7 +30,7 @@ consteval void nested_module(GraphBuilder& g)
     g.outputs("out"_P = child);
 }
 
-consteval void tiled_module(GraphBuilder& g)
+void tiled_module(GraphBuilder& g)
 {
     auto input = g.input<"in">(0.0f);
     auto tiled = g.node<Sum<mono, SampleStreamLayout::planar, 1>, stereo>();
@@ -38,7 +38,7 @@ consteval void tiled_module(GraphBuilder& g)
     g.outputs("out"_P = tiled);
 }
 
-consteval void event_module(GraphBuilder& g)
+void event_module(GraphBuilder& g)
 {
     auto input = g.event_input<"event">(EventTypeId::empty);
     auto relay = g.node<EventConcatenation>(1, EventTypeId::empty);
@@ -51,23 +51,23 @@ static_assert(std::invocable<decltype(&pass_module), GraphBuilder&>);
 static_assert(std::same_as<std::invoke_result_t<decltype(&pass_module), GraphBuilder&>, void>);
 
 iv::RuntimeGraphPlan compile_graph(
-    iv::AuthoredGraphView view,
+    iv::AuthoredGraphTestView view,
     bool execution_root = false)
 {
-    auto authored = iv::thaw_authored_graph(view);
+    auto authored = iv::thaw_authored_graph_for_test(view);
     auto executable = iv::GraphLowerer::lower(
         std::move(authored), {.execution_root = execution_root});
     return iv::GraphCompiler::compile(std::move(executable));
 }
 
 struct RootSignatureAuthoring {
-    AuthoredGraphView root_view;
-    AuthoredGraphView parent_view;
+    AuthoredGraphTestView root_view;
+    AuthoredGraphTestView parent_view;
     size_t child_sample_inputs;
     size_t child_sample_outputs;
 };
 
-consteval RootSignatureAuthoring author_root_signature_graphs()
+RootSignatureAuthoring author_root_signature_graphs()
 {
     GraphBuilder root;
     pass_module(root);
@@ -80,8 +80,8 @@ consteval RootSignatureAuthoring author_root_signature_graphs()
     parent.outputs("main"_P = child["out"]);
 
     return {
-        .root_view = freeze_authored_graph(std::move(root).finish()),
-        .parent_view = freeze_authored_graph(std::move(parent).finish()),
+        .root_view = freeze_authored_graph_for_test(std::move(root).finish()),
+        .parent_view = freeze_authored_graph_for_test(std::move(parent).finish()),
         .child_sample_inputs = child_sample_inputs,
         .child_sample_outputs = child_sample_outputs,
     };
@@ -112,16 +112,16 @@ RootSignatureSnapshot root_signature_snapshot()
 }
 
 struct RecursiveModuleAuthoring {
-    AuthoredGraphView view;
+    AuthoredGraphTestView view;
 };
 
-consteval RecursiveModuleAuthoring author_recursive_module()
+RecursiveModuleAuthoring author_recursive_module()
 {
     GraphBuilder g;
     auto child = g.module<nested_module>();
     child("in"_P = 0.5f);
     g.outputs("main"_P = child["out"]);
-    return {.view = freeze_authored_graph(std::move(g).finish())};
+    return {.view = freeze_authored_graph_for_test(std::move(g).finish())};
 }
 
 struct RecursiveModuleSnapshot {
@@ -149,10 +149,10 @@ RecursiveModuleSnapshot recursive_module_snapshot()
 }
 
 struct AnnotatedModuleAuthoring {
-    AuthoredGraphView view;
+    AuthoredGraphTestView view;
 };
 
-consteval AnnotatedModuleAuthoring author_annotated_module()
+AnnotatedModuleAuthoring author_annotated_module()
 {
     GraphBuilder g;
     auto child = _annotate_node_source_info(
@@ -160,7 +160,7 @@ consteval AnnotatedModuleAuthoring author_annotated_module()
         "module-call");
     child("in"_P = 0.5f);
     g.outputs("main"_P = child["out"]);
-    return {.view = freeze_authored_graph(std::move(g).finish())};
+    return {.view = freeze_authored_graph_for_test(std::move(g).finish())};
 }
 
 struct AnnotatedModuleSnapshot {
@@ -187,14 +187,14 @@ AnnotatedModuleSnapshot annotated_module_snapshot()
 }
 
 struct TiledModuleAuthoring {
-    AuthoredGraphView view;
+    AuthoredGraphTestView view;
     size_t child_sample_inputs;
     size_t child_sample_outputs;
     ChannelTypeId output_channel_type;
     size_t output_channel_count;
 };
 
-consteval TiledModuleAuthoring author_tiled_module()
+TiledModuleAuthoring author_tiled_module()
 {
     GraphBuilder g;
     auto child = g.module<tiled_module>();
@@ -206,7 +206,7 @@ consteval TiledModuleAuthoring author_tiled_module()
     auto const output_channel_count = output.channels.size();
     g.outputs("main"_P = output);
     return {
-        .view = freeze_authored_graph(std::move(g).finish()),
+        .view = freeze_authored_graph_for_test(std::move(g).finish()),
         .child_sample_inputs = child_sample_inputs,
         .child_sample_outputs = child_sample_outputs,
         .output_channel_type = output_channel_type,
@@ -255,7 +255,7 @@ TiledModuleSnapshot tiled_module_snapshot()
     return result;
 }
 
-consteval AuthoredGraphView author_event_interfaces()
+AuthoredGraphTestView author_event_interfaces()
 {
     GraphBuilder g;
     auto child = g.module<event_module>();
@@ -264,7 +264,7 @@ consteval AuthoredGraphView author_event_interfaces()
     auto sink = g.node<DummyEventSink>();
     sink.connect_event_input(0, child.event_port("event"));
     g.outputs();
-    return freeze_authored_graph(std::move(g).finish());
+    return freeze_authored_graph_for_test(std::move(g).finish());
 }
 
 bool event_interfaces_compile()
@@ -273,7 +273,7 @@ bool event_interfaces_compile()
     return true;
 }
 
-consteval AuthoredGraphView author_functional_subgraph()
+AuthoredGraphTestView author_functional_subgraph()
 {
     GraphBuilder g;
     auto nested = g.subgraph([&](SubgraphBuilder& boundary) {
@@ -285,7 +285,7 @@ consteval AuthoredGraphView author_functional_subgraph()
 
     nested("in"_P = 0.25f);
     g.outputs("main"_P = nested["out"]);
-    return freeze_authored_graph(std::move(g).finish());
+    return freeze_authored_graph_for_test(std::move(g).finish());
 }
 
 bool functional_subgraph_compiles()
@@ -294,12 +294,12 @@ bool functional_subgraph_compiles()
     return true;
 }
 
-consteval AuthoredGraphView author_direct_public_sample_passthrough()
+AuthoredGraphTestView author_direct_public_sample_passthrough()
 {
     GraphBuilder g;
     auto input = g.input<"in">(0.0f);
     g.outputs("out"_P = input);
-    return freeze_authored_graph(std::move(g).finish());
+    return freeze_authored_graph_for_test(std::move(g).finish());
 }
 
 bool direct_public_sample_passthrough_compiles()
@@ -310,10 +310,10 @@ bool direct_public_sample_passthrough_compiles()
 }
 
 struct IntrospectionRegressionAuthoring {
-    AuthoredGraphView view;
+    AuthoredGraphTestView view;
 };
 
-consteval IntrospectionRegressionAuthoring author_introspection_regression()
+IntrospectionRegressionAuthoring author_introspection_regression()
 {
     GraphBuilder g;
     auto input = g.input<"in">(0.25f);
@@ -324,7 +324,7 @@ consteval IntrospectionRegressionAuthoring author_introspection_regression()
     g.outputs("out"_P = sum);
     (void)annotated;
     (void)event;
-    return {.view = freeze_authored_graph(std::move(g).finish())};
+    return {.view = freeze_authored_graph_for_test(std::move(g).finish())};
 }
 
 struct IntrospectionRegressionSnapshot {

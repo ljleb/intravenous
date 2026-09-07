@@ -5,6 +5,7 @@
 #include <intravenous/node/lifecycle.h>
 #include <intravenous/module/authoring.h>
 #include <intravenous/node/code_key.h>
+#include <intravenous/node/config_relocations.h>
 #include <intravenous/ports.h>
 
 
@@ -103,6 +104,7 @@ struct ReflectedNodeDescription {
     // runtime callbacks continue to receive operations.runtime.node_data.
     std::shared_ptr<void const> node_storage {};
     std::shared_ptr<NodeStateStructure const> state_structure_storage {};
+    NodeConfigStringRelocations config_string_relocations {};
     NodeCodeKey code_key {};
     std::size_t node_size = 0;
     std::size_t node_alignment = 1;
@@ -228,6 +230,17 @@ namespace details {
     }
 
     template<class Node>
+    void collect_node_config_string_relocations(
+        Node const& node, NodeConfigStringRelocations& result)
+    {
+        if constexpr (requires(Node const& node, NodeConfigStringRelocations& relocations) {
+            node.collect_config_string_relocations(relocations);
+        }) {
+            node.collect_config_string_relocations(result);
+        }
+    }
+
+    template<class Node>
     constexpr ReflectedNodeOperations reflected_node_operations(Node const* node_data)
     {
         return {
@@ -264,7 +277,35 @@ namespace details {
         ReflectedNodeRuntimeOperations runtime {};
         char const* type_name = nullptr;
         std::size_t type_name_size = 0;
+        // This is ABI data for the finalizer only. It tells the finalizer
+        // whether structural State metadata is mandatory for this record and
+        // gives it an independent ABI check before it publishes that metadata
+        // to the runtime graph compiler.
+        std::size_t state_size = 0;
+        std::size_t state_alignment = 1;
     };
+
+    template<class Node>
+    consteval std::size_t node_state_size()
+    {
+        using State = typename NodeState<Node>::Type;
+        if constexpr (std::is_void_v<State>) {
+            return 0;
+        } else {
+            return sizeof(State);
+        }
+    }
+
+    template<class Node>
+    consteval std::size_t node_state_alignment()
+    {
+        using State = typename NodeState<Node>::Type;
+        if constexpr (std::is_void_v<State>) {
+            return 1;
+        } else {
+            return alignof(State);
+        }
+    }
 
 #if defined(__APPLE__)
 #define IV_NODE_COMPILER_RECORD_ATTR __attribute__((used, section("__DATA,__iv_node_types")))
@@ -281,6 +322,8 @@ namespace details {
             .runtime = reflected_node_operations<Node>(nullptr).runtime,
             .type_name = clang_type_name<Node>().data(),
             .type_name_size = clang_type_name<Node>().size(),
+            .state_size = node_state_size<Node>(),
+            .state_alignment = node_state_alignment<Node>(),
         };
 
     // Description is independent of where the node object lives. Authoring owns
@@ -308,6 +351,7 @@ namespace details {
 
         description.operations = type_metadata.operations;
         description.operations.runtime.node_data = node_data;
+        collect_node_config_string_relocations(node, description.config_string_relocations);
         description.code_key = type_metadata.code_key;
         description.node_size = sizeof(Node);
         description.node_alignment = alignof(Node);
@@ -326,9 +370,6 @@ namespace details {
     ReflectedNodeDescription reflect_node(Node const& node)
     {
         using Value = std::remove_cvref_t<Node>;
-        static_assert(
-            std::is_trivially_copyable_v<Value>,
-            "authored node values must be trivially copyable");
         // Force the compiler record specialization into the LLVM module. The
         // authoring graph stores only its NodeCodeKey; iv-module-finalize later
         // resolves that key back to this record's direct function references.

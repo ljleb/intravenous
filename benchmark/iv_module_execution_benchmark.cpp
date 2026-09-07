@@ -181,8 +181,8 @@ void benchmark_module(std::filesystem::path const& path, Options const& options)
         throw std::runtime_error("module '" + path.string() + "' has invalid IV tables");
     }
     auto authored = iv::deserialize_authored_graph(
-        std::string_view(
-            static_cast<char const*>(graph_view.data), graph_view.size),
+        std::span(
+            static_cast<std::byte const*>(graph_view.data), graph_view.size),
         std::span(
             static_cast<iv::details::NodeCompilerRecord const*>(type_view.data),
             type_view.size / sizeof(iv::details::NodeCompilerRecord)),

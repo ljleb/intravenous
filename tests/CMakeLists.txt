@@ -32,6 +32,7 @@ function(add_iv_gtest target source)
 
     target_include_directories(${target} PRIVATE
         ${PROJECT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}
     )
 
     target_include_directories(${target} SYSTEM PRIVATE

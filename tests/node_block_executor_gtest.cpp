@@ -203,7 +203,7 @@ TEST(BlockNodeExecutor, PreparedReloadDefersStateMigrationToCommit)
     EXPECT_EQ(new_moved, 1);
 }
 
-TEST(NodeStorageMigration, CrossGenerationTypeNameRequiresExactRewrittenStructure)
+TEST(NodeStorageMigration, SameNodeNameRefusesSameSizeChangedStateFieldType)
 {
     MigratingLifecycleNode node{.id = "stable-node"};
     iv::NodeLayoutBuilder old_builder(8);
@@ -234,7 +234,57 @@ TEST(NodeStorageMigration, CrossGenerationTypeNameRequiresExactRewrittenStructur
     auto new_storage = new_layout.create_storage(resources);
     EXPECT_TRUE(new_storage.can_move_from(old_storage, 0, 0));
 
-    new_layout.nodes.front().node_state_structure->fields.front().name =
-        "renamed_value";
+    // Hot-reload identity may legitimately retain the authored node name.
+    // A field-type change can retain the same ABI size/alignment, so comparing
+    // only the node name or State byte size would permit an unsafe move.
+    new_layout.nodes.front().node_state_structure->fields.front().type_name =
+        "float";
     EXPECT_FALSE(new_storage.can_move_from(old_storage, 0, 0));
+}
+
+TEST(NodeStorageMigration, ChangedCrossGenerationStateInitializesInsteadOfMoving)
+{
+    int old_initialized = 0;
+    int old_moved = 0;
+    MigratingLifecycleNode old_node{"stable-node", &old_initialized, &old_moved};
+    iv::NodeLayoutBuilder old_builder(8);
+    iv::do_declare(old_node, old_builder);
+    auto old_layout = std::move(old_builder).build();
+
+    int new_initialized = 0;
+    int new_moved = 0;
+    MigratingLifecycleNode new_node{"stable-node", &new_initialized, &new_moved};
+    iv::NodeLayoutBuilder new_builder(8);
+    iv::do_declare(new_node, new_builder);
+    auto new_layout = std::move(new_builder).build();
+
+    auto const old_structure = iv::NodeStateStructure{
+        .size_bits = sizeof(MigratingLifecycleNode::State) * 8,
+        .alignment_bits = alignof(MigratingLifecycleNode::State) * 8,
+        .fields = {iv::NodeStateFieldStructure{
+            .name = "value",
+            .type_name = "int",
+            .bit_offset = 0,
+            .size_bits = sizeof(int) * 8,
+            .alignment_bits = alignof(int) * 8,
+        }},
+    };
+    auto new_structure = old_structure;
+    new_structure.fields.front().type_name = "float";
+    old_layout.nodes.front().node_state_structure = old_structure;
+    new_layout.nodes.front().node_state_structure = new_structure;
+    static int replacement_generation_type_token = 0;
+    new_layout.nodes.front().node_type = &replacement_generation_type_token;
+
+    iv::ResourceContext resources;
+    auto old_storage = old_layout.create_storage(resources);
+    old_storage.initialize();
+    auto new_storage = new_layout.create_storage(resources);
+    auto prepared = new_storage.prepare_migration_from(old_storage);
+    prepared.commit();
+
+    EXPECT_EQ(old_initialized, 1);
+    EXPECT_EQ(old_moved, 0);
+    EXPECT_EQ(new_initialized, 1);
+    EXPECT_EQ(new_moved, 0);
 }
