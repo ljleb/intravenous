@@ -268,12 +268,32 @@ Do not reintroduce the old implementation through a header-only operation
 table. The point is both to remove `layout.h` from the module PCH closure and
 to keep layout/storage independently compiled and debuggable.
 
-Verification after the extraction: the release build and all 439 tests passed.
-One warm O3 profile of the default `simple_sine/saw` module measured 1.537 s:
-670 ms export compilation, 839 ms link/finalization, 17.4 ms configure, and
-829.1 ms finalizer total. Its finalizer stages were 255.7 ms JIT
-materialization, 132.2 ms runtime O3, 196.5 ms native object emission, and
-217.1 ms native link. Compared with the previous single 1.667 s sample, this
-is encouraging (not a controlled benchmark): the export edge fell 21 ms and
-the finalizer 103 ms. Repeat the same profiling script after the next
-frontend cut before attributing a durable improvement to any one change.
+## Runtime IR pruning
+
+Finalizer-side IR pruning runs after the temporary builder JIT has run and
+serialized the graph. The finalizer marks the exact
+`iv_module_build` authoring closure, separately marks the runtime ABI entry
+points and their retained node-record callback closure, drops authoring-only
+entries from LLVM used lists, internalizes the remaining authoring-only
+definitions, and runs `GlobalDCEPass` before O3. It fails finalization if
+`iv_module_build` survives. The existing module-load tests exercise retained
+runtime callbacks, while the finalizer timing sidecar reports
+`authoring_ir_prune_us` so module build behavior verifies that this stage ran.
+The standalone DCE step deliberately uses LLVM's legacy pass manager, which
+is already used for object emission: the new pass manager requires explicit
+analysis registration and is inappropriate for this one isolated legacy pass.
+
+Verification: the release build and all 439 tests passed. A warm O3 profile
+of the default `simple_sine/saw` module measured 1.371 s: 677 ms export
+compilation, 666 ms link/finalization, 17.5 ms configure, and 657.2 ms
+finalizer total. Its finalizer stages were 249.5 ms JIT materialization,
+1.9 ms authoring-IR pruning, 72.2 ms runtime O3, 92.9 ms native object
+emission, and 215.7 ms native link.
+
+This is a 166 ms (10.8%) warm-reload reduction and a 171.9 ms (20.7%)
+finalizer reduction relative to the prior post-layout-split warm sample
+(1.537 s / 829.1 ms). The pruning work itself is negligible; the benefit
+comes from giving O3 and code emission a smaller runtime-only module. This is
+still one profile per configuration, not a controlled benchmark. Repeat the
+same profiling script after the next cut before attributing a durable
+improvement to any one change.

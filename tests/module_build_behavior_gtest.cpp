@@ -141,6 +141,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     auto const finalizer_timings_text = iv::test::read_text(finalizer_timings);
     EXPECT_TRUE(finalizer_timings_text.starts_with("version=1\n"));
     EXPECT_NE(finalizer_timings_text.find("module_main_us="), std::string::npos);
+    EXPECT_NE(
+        finalizer_timings_text.find("authoring_ir_prune_us="),
+        std::string::npos);
     EXPECT_NE(finalizer_timings_text.find("runtime_optimize_us="), std::string::npos);
     EXPECT_NE(finalizer_timings_text.find("native_link_us="), std::string::npos);
 

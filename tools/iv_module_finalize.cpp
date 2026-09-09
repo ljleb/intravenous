@@ -35,7 +35,9 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/Transforms/IPO/GlobalDCE.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <algorithm>
 #include <array>
@@ -525,6 +527,69 @@ std::unique_ptr<Module> clone_builder_module(Module const& master)
         if (global->isDeclaration()) return false;
         return reachable.contains(global);
     });
+}
+
+void mark_runtime_module_roots(
+    Module const& module,
+    SmallPtrSetImpl<GlobalValue const*>& reachable)
+{
+    static constexpr std::array<StringRef, 5> runtime_entry_points{
+        "iv_module_abi_version",
+        "iv_module_authored_graph",
+        "iv_module_node_configs",
+        "iv_module_node_config_string_relocations",
+        "iv_module_node_types",
+    };
+
+    for (auto const name : runtime_entry_points) {
+        auto const* entry_point = module.getFunction(name);
+        if (!entry_point || entry_point->isDeclaration()) {
+            fail("finalized LLVM module does not define runtime entry point '" +
+                 name.str() + "'");
+        }
+        mark_reachable(entry_point, reachable);
+    }
+    if (auto const* ctors = module.getGlobalVariable("llvm.global_ctors")) {
+        mark_reachable(ctors, reachable);
+    }
+    if (auto const* dtors = module.getGlobalVariable("llvm.global_dtors")) {
+        mark_reachable(dtors, reachable);
+    }
+}
+
+void prune_authoring_ir(Module& module)
+{
+    auto* build = module.getFunction("iv_module_build");
+    if (!build || build->isDeclaration()) {
+        fail("finalized LLVM module does not define iv_module_build");
+    }
+
+    SmallPtrSet<GlobalValue const*, 32> authoring_reachable;
+    mark_reachable(build, authoring_reachable);
+
+    SmallPtrSet<GlobalValue const*, 32> runtime_reachable;
+    mark_runtime_module_roots(module, runtime_reachable);
+
+    for (auto const* value : authoring_reachable) {
+        if (runtime_reachable.contains(value) || value->isDeclaration()) {
+            continue;
+        }
+        const_cast<GlobalValue*>(value)->setLinkage(GlobalValue::InternalLinkage);
+    }
+
+    removeFromUsedLists(module, [&](Constant* used) {
+        auto const* value = dyn_cast<GlobalValue>(used->stripPointerCasts());
+        return value && authoring_reachable.contains(value)
+            && !runtime_reachable.contains(value);
+    });
+
+    legacy::PassManager pipeline;
+    pipeline.add(createGlobalDCEPass());
+    pipeline.run(module);
+
+    if (module.getFunction("iv_module_build")) {
+        fail("authoring entry point survived runtime IR pruning");
+    }
 }
 
 std::vector<std::filesystem::path> library_search_paths(
@@ -1038,9 +1103,9 @@ int finalize(Options options)
     inject_module_data(master, serialized, node_records);
     timings.finish_stage("module_data_inject", stage_started_at);
 
-    if (auto* build = master.getFunction("iv_module_build")) {
-        build->setLinkage(GlobalValue::InternalLinkage);
-    }
+    stage_started_at = timings.start_stage();
+    prune_authoring_ir(master);
+    timings.finish_stage("authoring_ir_prune", stage_started_at);
 
     stage_started_at = timings.start_stage();
     optimize_runtime_module(master, options.optimize);
