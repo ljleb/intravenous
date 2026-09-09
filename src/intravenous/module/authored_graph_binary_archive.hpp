@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/authored_graph.hpp>
-#include <intravenous/graph/reflected_node.hpp>
+#include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/module/abi.h>
 
 #include <algorithm>

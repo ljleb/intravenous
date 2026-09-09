@@ -86,34 +86,39 @@ void set_builder_node_config_layouts(
     session->config_layouts = std::move(configured_layouts);
 }
 
-void capture_node_config(
-    BuilderSession* session, ReflectedNodeDescription& description)
+NodeConfigStringRelocations capture_node_config(
+    BuilderSession* session,
+    NodeCodeKey code_key,
+    void const* config,
+    std::size_t config_size)
 {
-    if (!session || !description.node_storage) {
+    if (!session || !config || config_size == 0) {
         throw std::logic_error("node configuration has no builder-owned storage");
     }
     auto const layout = std::find_if(
         session->config_layouts.begin(), session->config_layouts.end(),
         [&](auto const& candidate) {
-            return candidate.node_code_key == description.code_key;
+            return candidate.node_code_key == code_key;
         });
-    if (layout == session->config_layouts.end()) return;
+    if (layout == session->config_layouts.end()) return {};
 
-    auto const* bytes = static_cast<std::byte const*>(description.node_storage.get());
+    NodeConfigStringRelocations relocations;
+    auto const* bytes = static_cast<std::byte const*>(config);
     for (std::size_t offset : layout->c_string_offsets) {
-        if (offset > description.node_size
-            || description.node_size - offset < sizeof(char const*)) {
+        if (offset > config_size
+            || config_size - offset < sizeof(char const*)) {
             throw std::logic_error(
                 "compiler C-string field metadata is outside node configuration");
         }
         char const* value = nullptr;
         std::memcpy(&value, bytes + offset, sizeof(value));
         if (!value) continue;
-        description.config_string_relocations.push_back({
+        relocations.push_back({
             .byte_offset = offset,
             .value = value,
         });
     }
+    return relocations;
 }
 
 } // namespace iv::details

@@ -46,14 +46,14 @@ std::vector<OutputRefConfig> make_sample_output_configs(
 }
 } // namespace
 
-NodeBundleHandle GraphBuilderState::append_reflected_node(
+NodeBundleHandle GraphBuilderState::append_node_description(
     ReflectedNodeDescription description)
 {
   return _node_bundles.append_concrete(
       GraphBuilderNodeBundles::make_concrete_node(std::move(description)));
 }
 
-NodeBundleHandle GraphBuilderState::append_tiled_reflected_node(
+NodeBundleHandle GraphBuilderState::append_tiled_node_description(
     ReflectedNodeDescription const& description, ChannelLayout layout)
 {
   auto concrete = GraphBuilderNodeBundles::make_concrete_node(description);

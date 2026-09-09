@@ -1,6 +1,7 @@
 #include <intravenous/graph/builder.h>
 
 #include <intravenous/graph/builder/state.h>
+#include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/module/builder_session.h>
 
 #include <stdexcept>
@@ -17,22 +18,40 @@ GraphBuilderState const& state(GraphBuilder const& builder)
 {
     return details::builder_graph_state(const_cast<GraphBuilder&>(builder));
 }
+
+ReflectedNodeDescription materialize_node_build_request(
+    details::BuilderSession* session,
+    details::NodeBuildRequest const& request)
+{
+    if (!request.compiler_record) {
+        throw std::invalid_argument("node build request has no compiler record");
+    }
+    auto storage = details::copy_node_config_bytes(
+        request.config, request.config_size, request.config_alignment);
+    auto relocations = details::capture_node_config(
+        session,
+        request.compiler_record->code_key,
+        storage.get(),
+        request.config_size);
+    return details::materialize_node_description(
+        request, std::move(storage), std::move(relocations));
+}
 } // namespace
 
 namespace details {
-NodeBundleHandle iv_builder_append_reflected_node(
-    GraphBuilder& builder, ReflectedNodeDescription description)
+NodeBundleHandle iv_builder_append_node(
+    GraphBuilder& builder, NodeBuildRequest const& request)
 {
-    capture_node_config(builder._session, description);
-    return state(builder).append_reflected_node(std::move(description));
+    return state(builder).append_node_description(
+        materialize_node_build_request(builder._session, request));
 }
 
-NodeBundleHandle iv_builder_append_tiled_reflected_node(
-    GraphBuilder& builder, ReflectedNodeDescription description,
+NodeBundleHandle iv_builder_append_tiled_node(
+    GraphBuilder& builder, NodeBuildRequest const& request,
     ChannelLayout layout)
 {
-    capture_node_config(builder._session, description);
-    return state(builder).append_tiled_reflected_node(description, layout);
+    auto description = materialize_node_build_request(builder._session, request);
+    return state(builder).append_tiled_node_description(description, layout);
 }
 } // namespace details
 

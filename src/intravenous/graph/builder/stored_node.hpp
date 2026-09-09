@@ -2,7 +2,7 @@
 
 #include <intravenous/graph/builder/topology_port.h>
 #include <intravenous/graph/generated_node_spec.hpp>
-#include <intravenous/graph/reflected_node.hpp>
+#include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/graph/types.h>
 
 #include <memory>

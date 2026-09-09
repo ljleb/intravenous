@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/node/code_key.h>
+#include <intravenous/node/config_relocations.h>
 
 #include <cstddef>
 #include <span>
@@ -9,7 +10,6 @@ namespace iv {
 class GraphBuilder;
 class GraphBuilderState;
 struct AuthoredGraph;
-struct ReflectedNodeDescription;
 
 namespace details {
 // Compiler-derived layout facts for one node configuration type. This is an
@@ -37,7 +37,8 @@ AuthoredGraph take_built_graph(BuilderSession*);
 // source generation is still live.
 void set_builder_node_config_layouts(
     BuilderSession*, std::span<NodeConfigLayout const>);
-void capture_node_config(BuilderSession*, ReflectedNodeDescription&);
+NodeConfigStringRelocations capture_node_config(
+    BuilderSession*, NodeCodeKey, void const*, std::size_t);
 
 // Private bridge used by GraphBuilder's out-of-line facade implementation.
 // It is intentionally not a module builder API.

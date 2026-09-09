@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/builder/syntax.h>
-#include <intravenous/graph/node.h>
+#include <intravenous/node/traits.h>
 
 #include <array>
 #include <concepts>

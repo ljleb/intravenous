@@ -8,7 +8,8 @@
 #include <intravenous/graph/builder/node_refs.h>
 #include <intravenous/graph/builder/output_refs.h>
 #include <intravenous/graph/builder/subgraphs.hpp>
-#include <intravenous/graph/reflected_node.hpp>
+#include <intravenous/graph/source_info.h>
+#include <intravenous/node/build_request.h>
 
 #include <array>
 #include <concepts>
@@ -31,20 +32,20 @@ class GraphBuilderState;
 namespace details {
 struct BuilderSession;
 GraphBuilderState& builder_graph_state(GraphBuilder&);
-NodeBundleHandle iv_builder_append_reflected_node(
-    GraphBuilder&, ReflectedNodeDescription);
-NodeBundleHandle iv_builder_append_tiled_reflected_node(
-    GraphBuilder&, ReflectedNodeDescription, ChannelLayout);
+NodeBundleHandle iv_builder_append_node(
+    GraphBuilder&, NodeBuildRequest const&);
+NodeBundleHandle iv_builder_append_tiled_node(
+    GraphBuilder&, NodeBuildRequest const&, ChannelLayout);
 
 }
 
 class GraphBuilder {
   friend struct details::BuilderSession;
   friend GraphBuilderState& details::builder_graph_state(GraphBuilder&);
-  friend NodeBundleHandle details::iv_builder_append_reflected_node(
-      GraphBuilder&, ReflectedNodeDescription);
-  friend NodeBundleHandle details::iv_builder_append_tiled_reflected_node(
-      GraphBuilder&, ReflectedNodeDescription, ChannelLayout);
+  friend NodeBundleHandle details::iv_builder_append_node(
+      GraphBuilder&, details::NodeBuildRequest const&);
+  friend NodeBundleHandle details::iv_builder_append_tiled_node(
+      GraphBuilder&, details::NodeBuildRequest const&, ChannelLayout);
   friend class SubgraphBuilder;
 
   details::BuilderSession* _session = nullptr;
@@ -88,11 +89,12 @@ public:
     static_assert(std::is_trivially_copyable_v<StoredNode>,
         "node values must be trivially copyable");
     StoredNode value(std::forward<Args>(args)...);
-    // This forces the build-local NodeCompilerRecord while the node value is
-    // still live. libiv_builder synchronously takes the description and
-    // stores only graph metadata/config bytes, never this temporary callback.
-    auto handle = details::iv_builder_append_reflected_node(
-        *this, details::reflect_node(value));
+    // The request is the complete module-side boundary: it identifies the
+    // type-specific compiler record and borrows this short-lived value.  The
+    // precompiled builder synchronously copies configuration and owns the
+    // resulting graph description before this function returns.
+    auto handle = details::iv_builder_append_node(
+        *this, details::make_node_build_request(value));
     if constexpr (details::should_preserve_node_type_v<StoredNode>)
       return TypedNodeRef<StoredNode>(*this, handle);
     else
@@ -107,8 +109,8 @@ public:
     static_assert((std::copy_constructible<std::remove_cvref_t<Args>> && ...),
         "tiled-node construction requires reusable constructor arguments");
     StoredNode value(args...);
-    auto handle = details::iv_builder_append_tiled_reflected_node(
-        *this, details::reflect_node(value), {
+    auto handle = details::iv_builder_append_tiled_node(
+        *this, details::make_node_build_request(value), {
           .channel_type = ChannelTypeTraits<ChannelType>::id,
           .sample_layout = SampleStreamLayout::planar,
         });

@@ -1,5 +1,4 @@
 #include <intravenous/graph/builder.h>
-#include <intravenous/graph/reflected_node.hpp>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/authored_graph_wire.h>
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/ports.h>
+#include <intravenous/graph/source_info.h>
 #include <intravenous/graph/wiring.h>
 
 #include <compare>
@@ -122,21 +123,6 @@ namespace iv {
         size_t loop_extra_latency = 1;
 
         bool operator==(DetachedInfo const&) const = default;
-    };
-
-    struct SourceSpan {
-        std::string file_path {};
-        uint32_t begin = 0;
-        uint32_t end = 0;
-
-        bool operator==(SourceSpan const&) const = default;
-    };
-
-    struct SourceInfo {
-        std::string declaration_identity {};
-        SourceSpan span {};
-
-        bool operator==(SourceInfo const&) const = default;
     };
 
     inline constexpr size_t GRAPH_ID = std::numeric_limits<size_t>::max();

@@ -194,6 +194,7 @@ add_library(intravenous_graph_builder OBJECT
     graph/builder/builder.cpp
     graph/builder/node_refs.cpp
     graph/builder/state.cpp
+    graph/reflected_node_description.cpp
     module/builder_session.cpp
     module/source_annotations.cpp
     node/config_storage.cpp

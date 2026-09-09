@@ -14,6 +14,7 @@
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/node_refs.h>
 #include <intravenous/graph/builder/node_bundles.hpp>
+#include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/graph/builder/public_ports.hpp>
 #include <intravenous/graph/builder/subgraphs.hpp>
 #include <intravenous/graph/builder/virtual_nodes.hpp>
@@ -119,8 +120,8 @@ class GraphBuilderState {
 public:
   void bind(GraphBuilder& builder) noexcept { _facade = &builder; }
   constexpr GraphBuilderState();
-  NodeBundleHandle append_reflected_node(ReflectedNodeDescription);
-  NodeBundleHandle append_tiled_reflected_node(
+  NodeBundleHandle append_node_description(ReflectedNodeDescription);
+  NodeBundleHandle append_tiled_node_description(
       ReflectedNodeDescription const&, ChannelLayout);
   PublicSampleInputRef input();
   PublicSampleInputRef input(Sample default_value,

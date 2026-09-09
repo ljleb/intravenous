@@ -31,6 +31,14 @@ continues to use the final runtime state-compatibility rules.
   they are not part of `BuilderSession`.
 - `node/config_storage.h/.cpp` own copied node-configuration bytes and their
   host-library deleter.
+- `node/compiler_record.h` is the stable build-local record ABI consumed by
+  the finalizer. `node/build_request.h` contains the small type-specific
+  templates that make that record and enumerate one node value.
+- `graph/reflected_node_description.h/.cpp` are host-only: the `.cpp` owns
+  construction of port vectors and retained node descriptions. Module code
+  never constructs `ReflectedNodeDescription` directly.
+- `graph/node_ports.h` preserves the existing typed-reference return type
+  without pulling retained graph storage into `node_refs.h`.
 - `basic_nodes/polyphonic.h` is part of the module API; `midi.h` no longer
   exists. The module PCH includes both `dsl.h` and `polyphonic.h`.
 
@@ -38,12 +46,35 @@ continues to use the final runtime state-compatibility rules.
 port configurations, traits, and declaration/initialization/move/release/tick
 contexts. JUCE/VST support remains available through its explicit API.
 
+## Node-build request boundary
+
+`GraphBuilder::node<T>` now constructs `T` and sends a compact
+`NodeBuildRequest` to `iv_builder`. The request contains only a borrowed
+configuration address and extent, the build-local compiler record, and a
+type-specialized callback that enumerates port configs and node traits. The
+builder library immediately copies the configuration, captures C-string
+relocations, invokes the callback against the copied configuration, and owns
+the resulting `ReflectedNodeDescription`.
+
+This deliberately does not add a node trait, registration hook, or other
+boilerplate to node definitions. A precompiled library cannot discover the
+ports or lifecycle behavior of an arbitrary module-defined type by itself, so
+the callback is the irreducible type-specific portion. Dynamic containers,
+description assembly, retained storage, and validation remain in the library.
+
+The module-facing reference path no longer reaches retained node bundles, and
+shape traits include `node/traits.h` rather than the runtime `graph/node.h`.
+Those are dependency cuts, not alternate public APIs. The broad module PCH is
+still intentional and remains the baseline for all supported DSL, polyphonic,
+and VST-facing declarations.
+
 ## C-string node configuration
 
 Node definitions do not implement a serialization, relocation, or validation
 trait. The Clang metadata plugin discovers specializations of the internal
 `iv::details::node_compiler_record<T>` variable template, which
-`reflect_node<T>` instantiates for every node that actually enters a builder.
+`make_node_build_request<T>` instantiates for every node that actually enters
+a builder.
 It records byte offsets of every `char const*` configuration field under the
 build-local `NodeCodeKey`. The plugin emits the definitive metadata snapshot in
 `EndSourceFileAction`, after CodeGen has completed deferred instantiations, so
@@ -86,6 +117,10 @@ string storage does not point into an unloaded JIT generation.
   configuration layout before finalization.
 - The existing node-config materialization test still verifies alignment,
   empty strings, embedded NUL payloads, and duplicate relocation rejection.
+- `NodeBuildRequest.MaterializesHostOwnedDescriptionFromTypeSpecificCallback`
+  verifies the new boundary directly: the copied configuration becomes the
+  runtime callback data, while dynamic ports and trait values are assembled by
+  the builder-owned description.
 - The existing event-only functional-subgraph regression remains required:
   a functional scope may expose only event outputs; imported modules still
   require a sample boundary output.

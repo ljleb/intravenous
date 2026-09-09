@@ -6,7 +6,7 @@
 #include <intravenous/graph/error.h>
 #include <intravenous/graph/names.h>
 #include <intravenous/graph/node.h>
-#include <intravenous/graph/reflected_node.hpp>
+#include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/graph/types.h>
 #include <intravenous/graph/wiring.h>
 
