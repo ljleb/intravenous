@@ -66,13 +66,13 @@ public:
 
   PublicSampleInputRef input();
   template<fixed_string Name, class ChannelType = mono>
-  PublicSampleInputRef input(Sample default_value = 0.0,
+  TypedPublicSampleInputRef<ChannelType> input(Sample default_value = 0.0,
       std::optional<Sample> min = std::nullopt,
       std::optional<Sample> max = std::nullopt) {
-    return input_named(Name.view(), {
+    return TypedPublicSampleInputRef<ChannelType>{input_named(Name.view(), {
         .channel_type = ChannelTypeTraits<ChannelType>::id,
         .sample_layout = SampleStreamLayout::planar,
-      }, default_value, min, max);
+      }, default_value, min, max)};
   }
   PublicSampleInputRef input(Sample default_value,
       std::optional<Sample> min = std::nullopt,
@@ -369,12 +369,12 @@ inline PublicSampleInputRef SubgraphBuilder::input() {
       Sample{0.0f}, std::nullopt, std::nullopt);
 }
 template<fixed_string Name, class ChannelType>
-inline PublicSampleInputRef SubgraphBuilder::input(
+inline TypedPublicSampleInputRef<ChannelType> SubgraphBuilder::input(
     Sample value, std::optional<Sample> min, std::optional<Sample> max) {
-  return _builder.subgraph_input(
+  return TypedPublicSampleInputRef<ChannelType>{_builder.subgraph_input(
       _scope, Name.view(), {.channel_type = ChannelTypeTraits<ChannelType>::id,
                             .sample_layout = SampleStreamLayout::planar},
-      value, min, max);
+      value, min, max)};
 }
 inline PublicSampleInputRef SubgraphBuilder::input(
     Sample value, std::optional<Sample> min, std::optional<Sample> max) {

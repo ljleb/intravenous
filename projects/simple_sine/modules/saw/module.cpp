@@ -5,6 +5,8 @@
 #include <intravenous/node/layout.h>
 #include <intravenous/ports.h>
 #include <ranges>
+#include <cmath>
+#include <numbers>
 
 using namespace iv;
 

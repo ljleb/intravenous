@@ -611,7 +611,7 @@ void single_pan(GraphBuilder& g)
 
 void module_main(GraphBuilder& g)
 {
-    auto const in = TypedSamplePortRef<stereo>{ static_cast<SamplePortRef>(g.input<"in", stereo>()) };
+    auto const in = g.input<"in", stereo>();
     auto const center = g.input<"azimuth">(0, -180, 180);
     auto const el = g.input<"elevation">(0, -180, 180);
     auto const spread = g.input<"spread">(30, 0, 180);
@@ -621,17 +621,17 @@ void module_main(GraphBuilder& g)
     auto const v_l = g.module<single_pan>();
     auto const v_r = g.module<single_pan>();
 
-    auto const v_l_out = TypedSamplePortRef<stereo>{v_l(
+    auto const v_l_out = v_l(
         "in"_P = in[stereo::left],
         "azimuth"_P = az[stereo::left],
         "elevation"_P = el
-    )};
+    );
 
-    auto const v_r_out = TypedSamplePortRef<stereo>{v_r(
+    auto const v_r_out = v_r(
         "in"_P = in[stereo::right],
         "azimuth"_P = az[stereo::right],
         "elevation"_P = el
-    )};
+    );
 
     fir(v_l_out + v_r_out);
 

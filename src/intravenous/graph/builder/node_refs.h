@@ -65,6 +65,18 @@ namespace iv {
         NodeRef _clone_handle() const;
         SamplePortRef operator[](size_t output_port) const;
         SamplePortRef operator[](std::string_view output_name) const;
+        template<class Member>
+        auto operator[](Member member) const
+        requires requires {
+            typename std::remove_cvref_t<Member>::channel_type;
+            std::remove_cvref_t<Member>::channel_ordinal;
+        }
+        {
+            // An erased node only knows its output layout at build time.  Its
+            // conversion to SamplePortRef requires one sample output, then
+            // SamplePortRef validates the requested channel member at runtime.
+            return static_cast<SamplePortRef>(*this)[member];
+        }
         template<fixed_string Name, NamedPortKind Kind>
         auto operator[](PortName<Name, Kind>) const
         {
@@ -266,7 +278,6 @@ namespace iv {
         using requested_channel_type = ChannelType;
         using Base::Base;
         using Base::operator=;
-        using Base::operator[];
         using Base::event_port;
         using Base::_graph_builder;
         using Base::_index;
@@ -292,6 +303,19 @@ namespace iv {
                 return Self {};
             }
             return Self(*this->_graph_builder, this->_index);
+        }
+
+        // Keep the dynamic output selectors available without importing the
+        // base channel-member selector.  A tiled typed ref has its own
+        // compile-time checked channel selector below.
+        SamplePortRef operator[](size_t output_index) const
+        {
+            return Base::operator[](output_index);
+        }
+
+        SamplePortRef operator[](std::string_view output_name) const
+        {
+            return Base::operator[](output_name);
         }
 
         template<fixed_string Name, NamedPortKind Kind>
@@ -431,7 +455,12 @@ namespace iv {
     constexpr auto ChannelPortName<Name, ChannelType, ChannelOrdinal>::operator=(T&& value) const
     {
         using Value = std::remove_cvref_t<T>;
-        if constexpr (std::same_as<Value, SamplePortRef>) {
+        // Channel qualification carries the static information needed for a
+        // public port.  The source's concrete ref type is no longer useful
+        // once it crosses the builder interface, so erase it here.  This
+        // keeps variadic node/output call instantiations independent of the
+        // particular typed-ref facade that produced the sample expression.
+        if constexpr (std::convertible_to<Value, SamplePortRef>) {
             return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, SamplePortRef>{
                 .value = static_cast<SamplePortRef>(std::forward<T>(value)),
             };
@@ -456,7 +485,12 @@ namespace iv {
     constexpr auto PortName<Name, Kind>::operator=(T&& value) const
     {
         using Value = std::remove_cvref_t<T>;
-        if constexpr (std::same_as<Value, SamplePortRef>) {
+        // Preserve static typing while composing expressions, but normalize
+        // every sample source at the GraphBuilder boundary.  Node calls only
+        // use the named port's kind and name for compile-time validation; the
+        // source layout is validated by the builder at runtime.
+        if constexpr (Kind == NamedPortKind::sample &&
+                      std::convertible_to<Value, SamplePortRef>) {
             return NamedArg<Name, SamplePortRef, Kind>{ static_cast<SamplePortRef>(std::forward<T>(value)) };
         } else if constexpr (std::same_as<Value, EventPortRef>) {
             return NamedArg<Name, EventPortRef, Kind>{

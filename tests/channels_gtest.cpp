@@ -29,6 +29,7 @@
 
 namespace {
 using iv::operator""_F;
+using iv::operator""_P;
 
 iv::BorrowedSampleBlock runtime_timeline_sample_block {};
 size_t connection_conversion_call_count = 0;
@@ -1396,6 +1397,31 @@ bool named_public_inputs_preserve_requested_channel_types()
     iv::GraphBuilder graph;
     auto const default_input = graph.input<"default">(iv::Sample{0.25f});
     auto const stereo_input = graph.input<"stereo", iv::stereo>(iv::Sample{0.5f});
+    auto const stereo_left = stereo_input[iv::stereo::left];
+    auto const scaled_stereo = stereo_input * 0.5f;
+    auto const named_stereo_input = iv::PortName<"input">{} = stereo_input;
+    auto const named_stereo_channel =
+        iv::PortName<"output">{}[iv::stereo::left] = stereo_input;
+
+    static_assert(iv::TypedSamplePortLike<decltype(default_input)>);
+    static_assert(iv::TypedSamplePortLike<decltype(stereo_input)>);
+    static_assert(std::same_as<
+        typename iv::typed_sample_port_traits<
+            std::remove_cvref_t<decltype(default_input)>>::channel_type,
+        iv::mono>);
+    static_assert(std::same_as<
+        typename iv::typed_sample_port_traits<
+            std::remove_cvref_t<decltype(stereo_input)>>::channel_type,
+        iv::stereo>);
+    static_assert(iv::TypedSamplePortLike<decltype(scaled_stereo)>);
+    static_assert(std::same_as<
+        std::remove_cvref_t<decltype(named_stereo_input)>,
+        iv::NamedArg<"input", iv::SamplePortRef>>);
+    static_assert(std::same_as<
+        std::remove_cvref_t<decltype(named_stereo_channel)>,
+        iv::ChannelNamedArg<"output", iv::stereo, 0, iv::SamplePortRef>>);
+
+    auto const stereo_left_erased = static_cast<iv::SamplePortRef>(stereo_left);
     auto const inputs = iv::host::public_sample_input_families(graph);
 
     return static_cast<iv::SamplePortRef>(default_input).channel_type
@@ -1404,6 +1430,8 @@ bool named_public_inputs_preserve_requested_channel_types()
         && static_cast<iv::SamplePortRef>(stereo_input).channel_type
             == iv::ChannelTypeId::stereo
         && static_cast<iv::SamplePortRef>(stereo_input).channels().size() == 2
+        && stereo_left_erased.channel_type == iv::ChannelTypeId::mono
+        && stereo_left_erased.channels().size() == 1
         && inputs.families.size() == 2
         && inputs.families[0].channel_type == iv::ChannelTypeId::mono
         && inputs.families[0].channels.size() == 1
@@ -1414,6 +1442,57 @@ bool named_public_inputs_preserve_requested_channel_types()
 TEST(Channels, NamedPublicInputsDefaultToStereoAndAllowExplicitMono)
 {
     EXPECT_TRUE(named_public_inputs_preserve_requested_channel_types());
+}
+
+TEST(Channels, SubgraphNamedInputsRetainTheirStaticChannelType)
+{
+    iv::GraphBuilder graph;
+    bool input_was_stereo = false;
+    graph.subgraph([&](iv::SubgraphBuilder& subgraph) {
+        auto const input = subgraph.input<"in", iv::stereo>();
+        auto const left = input[iv::stereo::left];
+
+        static_assert(iv::TypedSamplePortLike<decltype(input)>);
+        static_assert(std::same_as<
+            typename iv::typed_sample_port_traits<
+                std::remove_cvref_t<decltype(input)>>::channel_type,
+            iv::stereo>);
+
+        auto const erased_left = static_cast<iv::SamplePortRef>(left);
+        input_was_stereo = static_cast<iv::SamplePortRef>(input).channel_type
+                == iv::ChannelTypeId::stereo
+            && erased_left.channel_type == iv::ChannelTypeId::mono;
+        subgraph.outputs("out"_P = input);
+    });
+
+    EXPECT_TRUE(input_was_stereo);
+}
+
+TEST(Channels, ErasedSampleAndNodeRefsUseRuntimeCheckedChannelMembers)
+{
+    iv::GraphBuilder graph;
+    iv::NodeRef left = graph.node<NamedStereoSource>().node_ref();
+    iv::NodeRef right = graph.node<NamedStereoSource>().node_ref();
+
+    auto const named_port = left["main"];
+    auto const named_left = named_port[iv::stereo::left];
+    auto const default_left = left[iv::stereo::left];
+    auto const sum = left + right;
+    auto const sum_port = static_cast<iv::SamplePortRef>(sum);
+    auto const sum_left = sum[iv::stereo::left];
+
+    EXPECT_EQ(static_cast<iv::SamplePortRef>(named_left).channel_type,
+              iv::ChannelTypeId::mono);
+    EXPECT_EQ(static_cast<iv::SamplePortRef>(default_left).channel_type,
+              iv::ChannelTypeId::mono);
+    EXPECT_EQ(sum_port.channel_type, iv::ChannelTypeId::stereo);
+    EXPECT_EQ(sum_port.channels().size(), 2u);
+    EXPECT_EQ(static_cast<iv::SamplePortRef>(sum_left).channel_type,
+              iv::ChannelTypeId::mono);
+
+    iv::NodeRef mono = graph.node<MonoPass>().node_ref();
+    EXPECT_THROW((void)named_port[iv::mono::center], std::logic_error);
+    EXPECT_THROW((void)mono[iv::stereo::left], std::logic_error);
 }
 
 TEST(Channels, TiledEventPortsBroadcastInputsAndMergeOutputs)

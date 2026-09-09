@@ -903,8 +903,7 @@ void brown_duda_source(iv::GraphBuilder& g)
 
 void module_main(iv::GraphBuilder& g)
 {
-    auto const audio_input = g.input<"main", stereo>();
-    auto const audio = TypedSamplePortRef<stereo>{ static_cast<SamplePortRef>(audio_input) };
+    auto const audio = g.input<"main", stereo>();
     auto const center = g.input<"azimuth">(0,-90, 90);
     auto const spread = g.input<"spread">(30, 0, 180);
     auto const elevation = g.input<"elevation">(0, -90, 90);
@@ -913,17 +912,17 @@ void module_main(iv::GraphBuilder& g)
 
     auto const azimuths = g.tile<stereo>(center - spread * 0.5, center + spread * 0.5);
 
-    auto const spatialized_left = TypedSamplePortRef<stereo>{source_left(
+    auto const spatialized_left = source_left(
         "source"_P = audio[stereo::left],
         "azimuth"_P = azimuths[stereo::left],
         "elevation"_P = elevation
-    )["main"_P]};
+    );
 
-    auto const spatialized_right = TypedSamplePortRef<stereo>{source_right(
+    auto const spatialized_right = source_right(
         "source"_P = audio[stereo::right],
         "azimuth"_P = azimuths[stereo::right],
         "elevation"_P = elevation
-    )["main"_P]};
+    );
 
     g.outputs("main"_P = spatialized_left + spatialized_right);
 }

@@ -191,6 +191,11 @@ namespace iv {
     };
 
     template<class ChannelType>
+    struct typed_sample_port_traits<TypedPublicSampleInputRef<ChannelType>> {
+        using channel_type = ChannelType;
+    };
+
+    template<class ChannelType>
     struct typed_sample_port_traits<TypedSamplePortTileRef<ChannelType>> {
         using channel_type = ChannelType;
     };
@@ -297,6 +302,46 @@ namespace iv {
         std::floating_point<std::remove_cvref_t<T>> ||
         std::is_same_v<std::remove_cvref_t<T>, Sample>;
 
+    template<class Node>
+    constexpr NodeRef make_runtime_binary_op(
+        GraphBuilder& graph,
+        SamplePortRef lhs,
+        SamplePortRef rhs,
+        std::string_view op_name)
+    {
+        auto validate = [](SamplePortRef const& ref) {
+            if (!is_valid_channel_type(ref.channel_type) ||
+                ref.channels().size() != channel_count(ref.channel_type)) {
+                details::error("sample operand has an invalid channel layout");
+            }
+        };
+        validate(lhs);
+        validate(rhs);
+
+        ChannelTypeId result_type = ChannelTypeId::mono;
+        if (lhs.channel_type == rhs.channel_type) {
+            result_type = lhs.channel_type;
+        } else if (lhs.channel_type == ChannelTypeId::mono) {
+            result_type = rhs.channel_type;
+        } else if (rhs.channel_type == ChannelTypeId::mono) {
+            result_type = lhs.channel_type;
+        } else {
+            details::error(std::string(op_name) +
+                ": sample operands must have matching channel types, except that mono broadcasts");
+        }
+
+        switch (result_type) {
+#define IV_RUNTIME_BINARY_CHANNEL_CASE(name, ...) \
+        case ChannelTypeId::name: \
+            return graph.node<Node, name>()(lhs, rhs).node_ref();
+            IV_CHANNEL_TYPES(IV_RUNTIME_BINARY_CHANNEL_CASE)
+#undef IV_RUNTIME_BINARY_CHANNEL_CASE
+        case ChannelTypeId::count:
+            break;
+        }
+        details::error(std::string(op_name) + ": sample operand has an invalid channel type");
+    }
+
     template<class Node, class ChannelType = void, class L, class R>
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
     constexpr auto make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
@@ -324,8 +369,10 @@ namespace iv {
         SamplePortRef lhs_sample_port = lift_sample_operand(*g, std::forward<L>(lhs));
         SamplePortRef rhs_sample_port = lift_sample_operand(*g, std::forward<R>(rhs));
 
-        if constexpr (std::same_as<ChannelType, void> ||
-                      std::same_as<ChannelType, mono>) {
+        if constexpr (std::same_as<ChannelType, void>) {
+            return make_runtime_binary_op<Node>(
+                *g, std::move(lhs_sample_port), std::move(rhs_sample_port), op_name);
+        } else if constexpr (std::same_as<ChannelType, mono>) {
             return g->node<Node>()(lhs_sample_port, rhs_sample_port);
         } else {
             return g->node<Node, ChannelType>()(lhs_sample_port, rhs_sample_port);

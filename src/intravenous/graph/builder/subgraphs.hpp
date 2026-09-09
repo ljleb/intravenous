@@ -34,7 +34,7 @@ public:
 
   PublicSampleInputRef input();
   template<fixed_string Name, class ChannelType = mono>
-  PublicSampleInputRef input(Sample default_value = 0.0,
+  TypedPublicSampleInputRef<ChannelType> input(Sample default_value = 0.0,
       std::optional<Sample> min = std::nullopt,
       std::optional<Sample> max = std::nullopt);
   PublicSampleInputRef input(Sample default_value,

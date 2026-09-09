@@ -651,6 +651,39 @@ TEST(GraphModules, FirstClassTiledNodeBundlesSurviveModuleSplicing)
     EXPECT_TRUE(snapshot.output_source_is_member);
 }
 
+TEST(GraphModules, ErasedModuleOutputsSupportRuntimeCheckedChannelOperations)
+{
+    GraphBuilder graph;
+    auto left_module = graph.module<tiled_module>();
+    auto right_module = graph.module<tiled_module>();
+    left_module("in"_P = 0.25f);
+    right_module("in"_P = 0.5f);
+
+    auto const named_output = left_module["out"];
+    auto const named_left = named_output[stereo::left];
+    auto const default_right = right_module[stereo::right];
+    auto const sum = left_module + right_module;
+    auto const sum_port = static_cast<SamplePortRef>(sum);
+    auto const sum_left = sum[stereo::left];
+    graph.outputs("main"_P = sum);
+
+    EXPECT_EQ(static_cast<SamplePortRef>(named_left).channel_type,
+              ChannelTypeId::mono);
+    EXPECT_EQ(static_cast<SamplePortRef>(default_right).channel_type,
+              ChannelTypeId::mono);
+    EXPECT_EQ(sum_port.channel_type, ChannelTypeId::stereo);
+    EXPECT_EQ(sum_port.channels().size(), 2u);
+    EXPECT_EQ(static_cast<SamplePortRef>(sum_left).channel_type,
+              ChannelTypeId::mono);
+    EXPECT_THROW((void)named_output[mono::center], std::logic_error);
+
+    auto const plan = compile_graph(
+        freeze_authored_graph_for_test(std::move(graph).finish()));
+    ASSERT_EQ(plan.graph.outputs().size(), 1u);
+    EXPECT_EQ(plan.graph.outputs().front().channel_layout.channel_type,
+              ChannelTypeId::stereo);
+}
+
 TEST(GraphModules, EventInterfacesResolveThroughTheImportedBoundary)
 {
     EXPECT_TRUE(event_interfaces_compile());

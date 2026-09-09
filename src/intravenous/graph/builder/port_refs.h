@@ -26,6 +26,8 @@ template<class ChannelType>
 class TypedSamplePortTileRef;
 template<class ChannelType, class Member>
 class TypedSamplePortTileChannelRef;
+template<class ChannelType>
+class TypedPublicSampleInputRef;
 
 // A sample expression is exactly the ordered semantic source channels that
 // participate in an authored connection. It has no execution/topology address.
@@ -51,6 +53,15 @@ struct SamplePortRef {
   SamplePortRef _clone_handle() const;
   std::span<SampleOutputChannelId const> channels() const;
   SamplePortRef select_channel(size_t channel) const;
+  // An erased port can still use a named channel member.  The member supplies
+  // the requested static type; this validates that request against the
+  // runtime semantic channel type before selecting the channel.
+  template<class Member>
+  auto operator[](Member) const
+  requires requires {
+    typename std::remove_cvref_t<Member>::channel_type;
+    std::remove_cvref_t<Member>::channel_ordinal;
+  };
   SamplePortRef detach(size_t loop_extra_latency = 1) const;
   void _annotate_source_info(
       std::string_view, std::string_view, uint32_t, uint32_t) const;
@@ -217,6 +228,53 @@ struct PublicSampleInputRef {
       std::string_view file_path,
       uint32_t begin, uint32_t end) const;
 };
+
+// A named public input has a compile-time channel type when it was declared
+// through GraphBuilder::input<Name, ChannelType>.  Keep its public-input
+// identity so source annotations still attach to the graph interface, while
+// exposing the same channel-selection API as a TypedSamplePortRef.
+template<class ChannelType>
+class TypedPublicSampleInputRef {
+  PublicSampleInputRef _input;
+
+public:
+  using channel_type = ChannelType;
+
+  constexpr TypedPublicSampleInputRef() = default;
+  constexpr explicit TypedPublicSampleInputRef(PublicSampleInputRef input)
+      : _input(std::move(input)) {}
+
+  constexpr operator SamplePortRef() const { return _input.port; }
+  constexpr SamplePortRef const& erased() const { return _input.port; }
+  constexpr void _annotate_source_info(
+      std::string_view id, std::string_view file,
+      uint32_t begin, uint32_t end) const {
+    _input._annotate_source_info(id, file, begin, end);
+  }
+
+  template<class Channel>
+  auto operator[](Channel channel) const
+  requires std::same_as<typename std::remove_cvref_t<Channel>::channel_type,
+                        ChannelType>
+  {
+    return TypedSamplePortRef<ChannelType>{_input.port}[channel];
+  }
+};
+
+template<class Member>
+auto SamplePortRef::operator[](Member member) const
+requires requires {
+  typename std::remove_cvref_t<Member>::channel_type;
+  std::remove_cvref_t<Member>::channel_ordinal;
+} {
+  using ChannelType = typename std::remove_cvref_t<Member>::channel_type;
+  if (!graph_builder ||
+      channel_type != ChannelTypeTraits<ChannelType>::id ||
+      channels().size() != ChannelType::channel_count) {
+    details::error("sample port does not match the requested channel type");
+  }
+  return TypedSamplePortRef<ChannelType>{*this}[member];
+}
 
 // Event expressions mirror SamplePortRef: only semantic source ports survive
 // authoring. A tiled source is one TiledNodeBundle event port; lowering expands
