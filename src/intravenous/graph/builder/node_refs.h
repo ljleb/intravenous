@@ -121,7 +121,6 @@ namespace iv {
     class NodeRefCrtp : public NodeRef {
         using Base = NodeRef;
 
-    private:
         constexpr Derived& derived() { return static_cast<Derived&>(*this); }
 
     public:
@@ -264,7 +263,6 @@ namespace iv {
             static_assert(I < details::static_output_count_v<NodeType>);
             return static_output<I>();
         }
-
     };
 
     template<class Node, class ChannelType>
