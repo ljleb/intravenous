@@ -99,6 +99,7 @@ add_iv_gtest(
 add_iv_gtest(
     intravenous_module_context_boundary_tests
     module_context_boundary_gtest.cpp)
+add_iv_gtest(intravenous_compat_tests compat_gtest.cpp)
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_channels_tests channels_gtest.cpp)
 add_iv_gtest(

@@ -363,6 +363,15 @@ implementation behind a compiled boundary after confirming its link ownership;
 do not delete normal module-facing standard-library types merely because they
 appear in the PCH.
 
+That diagnostic boundary is now `compat.h` / `compat.cpp`. The header preserves
+the existing declarations and `IV_ASSERT` macro, but no longer parses or emits
+file, stream, mutex, or stacktrace implementation. `compat.cpp` belongs to
+`intravenous_graph_builder`, so it is present both in host executables and in
+the `iv_builder` DSO that module JIT and final native modules already link.
+`Compat.WrapExceptionPreservesContextAndCause` guards the preserved out-of-line
+exception-formatting behavior; the module build suite exercises DSO resolution
+of the assertion path. Await a fresh trace before claiming a timing win.
+
 ## Constant node header boundary
 
 `Constant` is a primitive node used directly by the module-facing builder and

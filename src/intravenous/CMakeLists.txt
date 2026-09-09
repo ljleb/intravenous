@@ -191,6 +191,7 @@ function(iv_add_host_runtime_objects target)
 endfunction()
 
 add_library(intravenous_graph_builder OBJECT
+    compat.cpp
     graph/builder/builder.cpp
     graph/builder/node_refs.cpp
     graph/builder/state.cpp
