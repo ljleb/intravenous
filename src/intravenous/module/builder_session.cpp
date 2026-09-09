@@ -4,8 +4,10 @@
 #include <intravenous/graph/builder/state.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -17,9 +19,48 @@ struct BuilderSession {
     bool graph_taken = false;
     struct ConfigLayout {
         NodeCodeKey node_code_key{};
-        std::vector<std::size_t> c_string_offsets{};
+        std::vector<std::size_t> pointer_offsets{};
     };
     std::vector<ConfigLayout> config_layouts{};
+    std::vector<AuthoringGlobalAddress> authoring_globals{};
+    struct NodeConfigAllocation {
+        void* storage = nullptr;
+        std::size_t size = 0;
+        std::size_t alignment = 1;
+
+        NodeConfigAllocation() = default;
+        NodeConfigAllocation(void* storage_, std::size_t size_, std::size_t alignment_)
+            : storage(storage_)
+            , size(size_)
+            , alignment(alignment_)
+        {}
+        NodeConfigAllocation(NodeConfigAllocation const&) = delete;
+        NodeConfigAllocation& operator=(NodeConfigAllocation const&) = delete;
+        NodeConfigAllocation(NodeConfigAllocation&& other) noexcept
+            : storage(std::exchange(other.storage, nullptr))
+            , size(other.size)
+            , alignment(other.alignment)
+        {}
+        NodeConfigAllocation& operator=(NodeConfigAllocation&& other) noexcept
+        {
+            if (this == &other) return *this;
+            reset();
+            storage = std::exchange(other.storage, nullptr);
+            size = other.size;
+            alignment = other.alignment;
+            return *this;
+        }
+        ~NodeConfigAllocation() { reset(); }
+
+        void reset() noexcept
+        {
+            if (storage) {
+                ::operator delete(storage, std::align_val_t{alignment});
+                storage = nullptr;
+            }
+        }
+    };
+    std::vector<NodeConfigAllocation> pending_node_configs{};
 };
 
 extern "C" BuilderSession* iv_builder_session_create()
@@ -63,12 +104,12 @@ void set_builder_node_config_layouts(
     configured_layouts.reserve(layouts.size());
     for (auto const& layout : layouts) {
         if (!std::is_sorted(
-                layout.c_string_offsets.begin(), layout.c_string_offsets.end())
+                layout.pointer_offsets.begin(), layout.pointer_offsets.end())
             || std::adjacent_find(
-                   layout.c_string_offsets.begin(), layout.c_string_offsets.end())
-                != layout.c_string_offsets.end()) {
+                   layout.pointer_offsets.begin(), layout.pointer_offsets.end())
+                != layout.pointer_offsets.end()) {
             throw std::invalid_argument(
-                "node configuration C-string offsets must be sorted and unique");
+                "node configuration pointer offsets must be sorted and unique");
         }
         if (std::any_of(
                 configured_layouts.begin(), configured_layouts.end(),
@@ -80,13 +121,85 @@ void set_builder_node_config_layouts(
         }
         auto& destination = configured_layouts.emplace_back();
         destination.node_code_key = layout.node_code_key;
-        destination.c_string_offsets.assign(
-            layout.c_string_offsets.begin(), layout.c_string_offsets.end());
+        destination.pointer_offsets.assign(
+            layout.pointer_offsets.begin(), layout.pointer_offsets.end());
     }
     session->config_layouts = std::move(configured_layouts);
 }
 
-NodeConfigStringRelocations capture_node_config(
+void set_builder_authoring_globals(
+    BuilderSession* session,
+    std::span<AuthoringGlobalAddress const> globals)
+{
+    if (!session) throw std::invalid_argument("builder session is null");
+    if (session->graph_taken)
+        throw std::logic_error("cannot configure a finished builder session");
+
+    std::vector<AuthoringGlobalAddress> configured;
+    configured.reserve(globals.size());
+    for (auto const& global : globals) {
+        if (!global.address || global.size == 0 || !global.symbol) {
+            throw std::invalid_argument("authoring global has invalid address metadata");
+        }
+        configured.push_back(global);
+    }
+    session->authoring_globals = std::move(configured);
+}
+
+void* iv_builder_allocate_node_config(
+    BuilderSession* session,
+    std::size_t size,
+    std::size_t alignment)
+{
+    if (!session || session->graph_taken || size == 0 || alignment == 0) {
+        throw std::invalid_argument("invalid builder node configuration allocation");
+    }
+    auto* storage = ::operator new(size, std::align_val_t{alignment});
+    session->pending_node_configs.emplace_back(storage, size, alignment);
+    return storage;
+}
+
+void iv_builder_discard_node_config(BuilderSession* session, void* storage) noexcept
+{
+    if (!session || !storage) return;
+    auto const allocation = std::find_if(
+        session->pending_node_configs.begin(), session->pending_node_configs.end(),
+        [&](auto const& candidate) { return candidate.storage == storage; });
+    if (allocation != session->pending_node_configs.end()) {
+        session->pending_node_configs.erase(allocation);
+    }
+}
+
+std::shared_ptr<void const> take_builder_node_config(
+    BuilderSession* session,
+    void const* storage,
+    std::size_t size,
+    std::size_t alignment)
+{
+    if (!session || !storage || size == 0 || alignment == 0) {
+        throw std::invalid_argument("invalid builder-owned node configuration");
+    }
+    auto const allocation = std::find_if(
+        session->pending_node_configs.begin(), session->pending_node_configs.end(),
+        [&](auto const& candidate) {
+            return candidate.storage == storage && candidate.size == size
+                && candidate.alignment == alignment;
+        });
+    if (allocation == session->pending_node_configs.end()) {
+        throw std::logic_error("node configuration was not allocated by this builder session");
+    }
+    auto* owned = allocation->storage;
+    allocation->storage = nullptr;
+    session->pending_node_configs.erase(allocation);
+    return std::shared_ptr<void const>(
+        owned,
+        [alignment](void const* pointer) {
+            ::operator delete(
+                const_cast<void*>(pointer), std::align_val_t{alignment});
+        });
+}
+
+NodeConfigRelocations capture_node_config(
     BuilderSession* session,
     NodeCodeKey code_key,
     void const* config,
@@ -102,20 +215,37 @@ NodeConfigStringRelocations capture_node_config(
         });
     if (layout == session->config_layouts.end()) return {};
 
-    NodeConfigStringRelocations relocations;
+    NodeConfigRelocations relocations;
     auto const* bytes = static_cast<std::byte const*>(config);
-    for (std::size_t offset : layout->c_string_offsets) {
+    for (std::size_t offset : layout->pointer_offsets) {
         if (offset > config_size
-            || config_size - offset < sizeof(char const*)) {
+            || config_size - offset < sizeof(void const*)) {
             throw std::logic_error(
-                "compiler C-string field metadata is outside node configuration");
+                "compiler pointer field metadata is outside node configuration");
         }
-        char const* value = nullptr;
+        void const* value = nullptr;
         std::memcpy(&value, bytes + offset, sizeof(value));
-        if (!value) continue;
+        if (!value) {
+            relocations.push_back({.byte_offset = offset});
+            continue;
+        }
+        auto const value_address = reinterpret_cast<std::uintptr_t>(value);
+        auto const global = std::find_if(
+            session->authoring_globals.begin(), session->authoring_globals.end(),
+            [&](AuthoringGlobalAddress const& candidate) {
+                auto const begin = reinterpret_cast<std::uintptr_t>(candidate.address);
+                return value_address >= begin
+                    && value_address - begin < candidate.size;
+            });
+        if (global == session->authoring_globals.end()) {
+            throw std::logic_error(
+                "node configuration pointer does not refer to a retained authoring global");
+        }
         relocations.push_back({
             .byte_offset = offset,
-            .value = value,
+            .target = global->symbol,
+            .addend = static_cast<std::size_t>(
+                value_address - reinterpret_cast<std::uintptr_t>(global->address)),
         });
     }
     return relocations;

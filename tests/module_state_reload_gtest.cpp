@@ -259,16 +259,13 @@ namespace {
     void c_string_configuration_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        std::string first = "A first configuration string";
-        std::string second = "A second configuration string";
-        std::string trailing = "A nested configuration string";
+        char const* first = "A first configuration string";
+        char const* second = "A second configuration string";
+        char const* trailing = "A nested configuration string";
         auto const probe = g.node<CStringCaptureProbe>(CStringCaptureProbe{
-            .labels = {first.c_str(), second.c_str()},
-            .details = {trailing.c_str()},
+            .labels = {first, second},
+            .details = {trailing},
         });
-        first[0] = 'B';
-        second[0] = 'B';
-        trailing[0] = 'B';
         g.outputs("main"_P = probe);
     }
 }

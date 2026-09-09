@@ -15,7 +15,7 @@ namespace iv {
 struct AuthoredNodeConfigBytes {
     std::vector<std::byte> bytes{};
     std::size_t alignment = 1;
-    NodeConfigStringRelocations string_relocations{};
+    NodeConfigRelocations relocations{};
 };
 
 // This is the exact data copied into the finalized module. The graph archive

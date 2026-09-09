@@ -1,19 +1,20 @@
 #pragma once
 
 #include <cstddef>
-#include <string>
 #include <vector>
 
 namespace iv {
 
-// Builder-owned relocation data for C-string fields in an otherwise trivially
-// copyable node configuration. The compiler discovers the fields; node types
-// do not opt in or provide a trait.
-struct NodeConfigStringRelocation {
+// Builder-owned symbolic relocation data for pointer fields in an otherwise
+// trivially copyable node configuration. `target` is an opaque finalizer
+// handle for a retained immutable LLVM global; a null target is an explicit
+// null pointer slot. Node types do not opt in or provide a trait.
+struct NodeConfigRelocation {
     std::size_t byte_offset = 0;
-    std::string value{};
+    void const* target = nullptr;
+    std::size_t addend = 0;
 };
 
-using NodeConfigStringRelocations = std::vector<NodeConfigStringRelocation>;
+using NodeConfigRelocations = std::vector<NodeConfigRelocation>;
 
 } // namespace iv

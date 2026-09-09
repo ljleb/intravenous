@@ -1,7 +1,6 @@
 #include <intravenous/module/loader.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/authored_graph_wire.h>
-#include <intravenous/module/node_config_materialization.h>
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
@@ -1041,18 +1040,15 @@ public:
             library->symbol("iv_module_authored_graph"));
         auto node_configs = reinterpret_cast<iv_module_node_configs_fn>(
             library->symbol("iv_module_node_configs"));
-        auto node_config_string_relocations = reinterpret_cast<iv_module_node_config_string_relocations_fn>(
-            library->symbol("iv_module_node_config_string_relocations"));
         auto node_types = reinterpret_cast<iv_module_node_types_fn>(
             library->symbol("iv_module_node_types"));
-        if (!authored_graph || !node_configs || !node_config_string_relocations || !node_types) {
+        if (!authored_graph || !node_configs || !node_types) {
             throw std::runtime_error(
                 "module '" + artifact.string() +
                 "' does not export the finalized authored-graph tables");
         }
         auto const graph_view = authored_graph();
         auto const config_view = node_configs();
-        auto const relocation_view = node_config_string_relocations();
         auto const type_view = node_types();
         if (!graph_view.data && graph_view.size != 0) {
             throw std::runtime_error("module authored graph view has null data");
@@ -1060,17 +1056,11 @@ public:
         if (!config_view.data && config_view.size != 0) {
             throw std::runtime_error("module node config view has null data");
         }
-        if (!relocation_view.data && relocation_view.size != 0) {
-            throw std::runtime_error("module node config relocation view has null data");
-        }
         if (!type_view.data && type_view.size != 0) {
             throw std::runtime_error("module node type view has null data");
         }
         if (config_view.size % sizeof(ModuleNodeConfigRecord) != 0) {
             throw std::runtime_error("module node config table has invalid size");
-        }
-        if (relocation_view.size % sizeof(ModuleNodeConfigStringRelocationRecord) != 0) {
-            throw std::runtime_error("module node config relocation table has invalid size");
         }
         if (type_view.size % sizeof(details::NodeCompilerRecord) != 0) {
             throw std::runtime_error("module node type table has invalid size");
@@ -1080,15 +1070,11 @@ public:
         auto const configs = std::span(
             static_cast<ModuleNodeConfigRecord const*>(config_view.data),
             config_view.size / sizeof(ModuleNodeConfigRecord));
-        auto const relocations = std::span(
-            static_cast<ModuleNodeConfigStringRelocationRecord const*>(relocation_view.data),
-            relocation_view.size / sizeof(ModuleNodeConfigStringRelocationRecord));
         auto const types = std::span(
             static_cast<details::NodeCompilerRecord const*>(type_view.data),
             type_view.size / sizeof(details::NodeCompilerRecord));
-        auto materialized_configs = details::materialize_node_configs(configs, relocations);
         auto authored = deserialize_authored_graph(
-            graph_archive, types, materialized_configs.records, materialized_configs.storage);
+            graph_archive, types, configs);
         auto plan = GraphCompiler::compile(
             GraphLowerer::lower(authored, {.execution_root = true}));
         auto runtime_root = std::make_shared<RuntimeGraphRoot>(

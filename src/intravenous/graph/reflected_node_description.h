@@ -20,7 +20,7 @@ struct ReflectedNodeDescription {
     ReflectedNodeOperations operations {};
     std::shared_ptr<void const> node_storage {};
     std::shared_ptr<NodeStateStructure const> state_structure_storage {};
-    NodeConfigStringRelocations config_string_relocations {};
+    NodeConfigRelocations config_relocations {};
     NodeCodeKey code_key {};
     std::size_t node_size = 0;
     std::size_t node_alignment = 1;
@@ -77,7 +77,7 @@ namespace details {
 ReflectedNodeDescription materialize_node_description(
     NodeBuildRequest const&,
     std::shared_ptr<void const>,
-    NodeConfigStringRelocations = {});
+    NodeConfigRelocations = {});
 
 // Internal graph code occasionally creates built-in concrete nodes directly.
 // This helper intentionally remains outside the DSL include path.

@@ -53,9 +53,27 @@ struct ReflectedNodeOperations {
 
 namespace details {
 
+// The compiler record deliberately contains only code selected by the node
+// type.  Per-instance state belongs to ReflectedNodeRuntimeOperations, which
+// is assembled by the builder after it owns a particular node configuration.
+struct NodeCompilerOperations {
+    std::size_t (*declare_node)(
+        void const*, NodeStateStructure const*, NodeLayoutBuilder&) = nullptr;
+    void (*tick_block)(
+        void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
+    void (*skip_block)(
+        void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
+
+    constexpr bool valid() const
+    {
+        return declare_node != nullptr && tick_block != nullptr
+            && skip_block != nullptr;
+    }
+};
+
 struct NodeCompilerRecord {
     NodeCodeKey code_key {};
-    ReflectedNodeRuntimeOperations runtime {};
+    NodeCompilerOperations operations {};
     char const* type_name = nullptr;
     std::size_t type_name_size = 0;
     // Finalizer ABI data.  This independently verifies the State metadata
@@ -63,6 +81,20 @@ struct NodeCompilerRecord {
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
 };
+
+constexpr ReflectedNodeRuntimeOperations make_runtime_operations(
+    NodeCompilerRecord const& record,
+    void const* node_data,
+    NodeStateStructure const* state_structure = nullptr)
+{
+    return {
+        .node_data = node_data,
+        .state_structure = state_structure,
+        .declare_node = record.operations.declare_node,
+        .tick_block = record.operations.tick_block,
+        .skip_block = record.operations.skip_block,
+    };
+}
 
 } // namespace details
 } // namespace iv

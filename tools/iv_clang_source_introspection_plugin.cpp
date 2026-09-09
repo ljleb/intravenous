@@ -889,21 +889,13 @@ private:
     std::set<std::string> seen_node_types_;
 };
 
-bool is_config_string_pointer(QualType type)
-{
-    if (!type->isPointerType()) return false;
-    auto const pointee = type->getPointeeType();
-    return pointee.isConstQualified()
-        && pointee.getUnqualifiedType()->isCharType();
-}
-
-void collect_config_string_offsets(
+void collect_config_pointer_offsets(
     ASTContext& context,
     QualType type,
     std::uint64_t base_bit_offset,
     std::vector<std::uint64_t>& offsets)
 {
-    if (is_config_string_pointer(type)) {
+    if (type->isPointerType()) {
         if (base_bit_offset % 8 == 0) offsets.push_back(base_bit_offset / 8);
         return;
     }
@@ -912,7 +904,7 @@ void collect_config_string_offsets(
         auto const element_size = context.getTypeSize(element_type);
         auto const element_count = array->getSize().getLimitedValue();
         for (std::uint64_t index = 0; index < element_count; ++index) {
-            collect_config_string_offsets(
+            collect_config_pointer_offsets(
                 context, element_type, base_bit_offset + index * element_size,
                 offsets);
         }
@@ -930,14 +922,14 @@ void collect_config_string_offsets(
         auto const* base_record = base.getType()->getAsCXXRecordDecl();
         if (!base_record) continue;
         auto const base_offset = layout.getBaseClassOffset(base_record);
-        collect_config_string_offsets(
+        collect_config_pointer_offsets(
             context, base.getType(),
             base_bit_offset + static_cast<std::uint64_t>(base_offset.getQuantity()) * 8,
             offsets);
     }
     unsigned index = 0;
     for (auto const* field : record->fields()) {
-        collect_config_string_offsets(
+        collect_config_pointer_offsets(
             context, field->getType(),
             base_bit_offset + layout.getFieldOffset(index++), offsets);
     }
@@ -962,7 +954,7 @@ public:
         if (!seen_node_types_.insert(node_type_name).second) return;
 
         std::vector<std::uint64_t> offsets;
-        collect_config_string_offsets(context_, node_type, 0, offsets);
+        collect_config_pointer_offsets(context_, node_type, 0, offsets);
         std::ranges::sort(offsets);
         offsets.erase(std::unique(offsets.begin(), offsets.end()), offsets.end());
         llvm::json::Array json_offsets;
@@ -1111,9 +1103,9 @@ void write_state_metadata(
     }
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
-            {"version", 5},
+            {"version", 6},
             {"states", std::move(state_collector).take_states()},
-            {"config_strings", std::move(node_config_collector).take_fields()},
+            {"config_pointers", std::move(node_config_collector).take_fields()},
         }));
     stream << '\n';
 }

@@ -122,6 +122,13 @@ struct StructuredCStringConfigNode {
     }
 };
 
+constexpr char cstring_title[] = "test probe";
+constexpr char cstring_detail[] = "second string";
+constexpr char cstring_left[] = "left label";
+constexpr char cstring_right[] = "right label";
+constexpr char cstring_first[] = "first detail";
+constexpr char cstring_second[] = "second detail";
+
 static_assert(std::invocable<decltype(&pass_module), GraphBuilder&>);
 static_assert(std::same_as<std::invoke_result_t<decltype(&pass_module), GraphBuilder&>, void>);
 
@@ -513,7 +520,7 @@ TEST(GraphModules, TypedNodeCallsForwardNormalizedSampleAndEventRequests)
     EXPECT_TRUE(tiled_sink.event_input_is_connected(0));
 }
 
-TEST(GraphModules, BuilderCapturesCStringConfigurationFromCompilerFieldMetadata)
+TEST(GraphModules, BuilderCapturesPointerConfigurationAsSymbolicRelocations)
 {
     auto session = std::unique_ptr<
         details::BuilderSession,
@@ -527,16 +534,27 @@ TEST(GraphModules, BuilderCapturesCStringConfigurationFromCompilerFieldMetadata)
     };
     std::array layouts{details::NodeConfigLayout{
         .node_code_key = details::node_code_key_v<CStringConfigNode>,
-        .c_string_offsets = offsets,
+        .pointer_offsets = offsets,
     }};
     details::set_builder_node_config_layouts(session.get(), layouts);
+    std::array globals{
+        details::AuthoringGlobalAddress{
+            .address = cstring_title,
+            .size = sizeof(cstring_title),
+            .symbol = cstring_title,
+        },
+        details::AuthoringGlobalAddress{
+            .address = cstring_detail,
+            .size = sizeof(cstring_detail),
+            .symbol = cstring_detail,
+        },
+    };
+    details::set_builder_authoring_globals(session.get(), globals);
 
     GraphBuilder builder(session.get());
-    std::string title = "test probe";
-    std::string detail = "second string";
     auto probe = builder.node<CStringConfigNode>(CStringConfigNode{
-        .title = title.c_str(),
-        .detail = detail.c_str(),
+        .title = cstring_title,
+        .detail = cstring_detail,
         .optional = nullptr,
     });
     builder.outputs(probe);
@@ -544,22 +562,19 @@ TEST(GraphModules, BuilderCapturesCStringConfigurationFromCompilerFieldMetadata)
     auto archive = serialize_authored_graph(
         details::take_built_graph(session.get()));
     ASSERT_EQ(archive.node_configs.size(), 1u);
-    auto const& relocations = archive.node_configs.front().string_relocations;
-    ASSERT_EQ(relocations.size(), 2u);
+    auto const& relocations = archive.node_configs.front().relocations;
+    ASSERT_EQ(relocations.size(), 3u);
     EXPECT_EQ(relocations[0].byte_offset, offsetof(CStringConfigNode, title));
-    EXPECT_EQ(relocations[0].value, title);
+    EXPECT_EQ(relocations[0].target, cstring_title);
+    EXPECT_EQ(relocations[0].addend, 0u);
     EXPECT_EQ(relocations[1].byte_offset, offsetof(CStringConfigNode, detail));
-    EXPECT_EQ(relocations[1].value, detail);
-    char const* optional = reinterpret_cast<char const*>(1);
-    std::memcpy(
-        &optional,
-        archive.node_configs.front().bytes.data()
-            + offsetof(CStringConfigNode, optional),
-        sizeof(optional));
-    EXPECT_EQ(optional, nullptr);
+    EXPECT_EQ(relocations[1].target, cstring_detail);
+    EXPECT_EQ(relocations[1].addend, 0u);
+    EXPECT_EQ(relocations[2].byte_offset, offsetof(CStringConfigNode, optional));
+    EXPECT_EQ(relocations[2].target, nullptr);
 }
 
-TEST(GraphModules, BuilderCapturesNestedAndArrayCStringConfiguration)
+TEST(GraphModules, BuilderCapturesNestedAndArrayPointerConfiguration)
 {
     auto session = std::unique_ptr<
         details::BuilderSession,
@@ -576,38 +591,57 @@ TEST(GraphModules, BuilderCapturesNestedAndArrayCStringConfiguration)
     };
     std::array layouts{details::NodeConfigLayout{
         .node_code_key = details::node_code_key_v<StructuredCStringConfigNode>,
-        .c_string_offsets = offsets,
+        .pointer_offsets = offsets,
     }};
     details::set_builder_node_config_layouts(session.get(), layouts);
+    std::array globals{
+        details::AuthoringGlobalAddress{
+            .address = cstring_left,
+            .size = sizeof(cstring_left),
+            .symbol = cstring_left,
+        },
+        details::AuthoringGlobalAddress{
+            .address = cstring_right,
+            .size = sizeof(cstring_right),
+            .symbol = cstring_right,
+        },
+        details::AuthoringGlobalAddress{
+            .address = cstring_first,
+            .size = sizeof(cstring_first),
+            .symbol = cstring_first,
+        },
+        details::AuthoringGlobalAddress{
+            .address = cstring_second,
+            .size = sizeof(cstring_second),
+            .symbol = cstring_second,
+        },
+    };
+    details::set_builder_authoring_globals(session.get(), globals);
 
-    std::string left = "left label";
-    std::string right = "right label";
-    std::string first = "first detail";
-    std::string second = "second detail";
     GraphBuilder builder(session.get());
     auto node = builder.node<StructuredCStringConfigNode>(
         StructuredCStringConfigNode{
-            .labels = {left.c_str(), right.c_str()},
-            .details = {first.c_str(), second.c_str()},
+            .labels = {cstring_left, cstring_right},
+            .details = {cstring_first, cstring_second},
         });
     builder.outputs(node);
 
     auto archive = serialize_authored_graph(
         details::take_built_graph(session.get()));
     ASSERT_EQ(archive.node_configs.size(), 1u);
-    auto const& relocations = archive.node_configs.front().string_relocations;
+    auto const& relocations = archive.node_configs.front().relocations;
     ASSERT_EQ(relocations.size(), offsets.size());
     EXPECT_EQ(relocations[0].byte_offset, offsets[0]);
-    EXPECT_EQ(relocations[0].value, left);
+    EXPECT_EQ(relocations[0].target, cstring_left);
     EXPECT_EQ(relocations[1].byte_offset, offsets[1]);
-    EXPECT_EQ(relocations[1].value, right);
+    EXPECT_EQ(relocations[1].target, cstring_right);
     EXPECT_EQ(relocations[2].byte_offset, offsets[2]);
-    EXPECT_EQ(relocations[2].value, first);
+    EXPECT_EQ(relocations[2].target, cstring_first);
     EXPECT_EQ(relocations[3].byte_offset, offsets[3]);
-    EXPECT_EQ(relocations[3].value, second);
+    EXPECT_EQ(relocations[3].target, cstring_second);
 }
 
-TEST(GraphModules, BuilderRejectsAmbiguousCStringConfigurationLayouts)
+TEST(GraphModules, BuilderRejectsAmbiguousPointerConfigurationLayouts)
 {
     auto session = std::unique_ptr<
         details::BuilderSession,
@@ -617,7 +651,7 @@ TEST(GraphModules, BuilderRejectsAmbiguousCStringConfigurationLayouts)
     std::array<std::size_t, 2> repeated_offsets{0, 0};
     std::array malformed{details::NodeConfigLayout{
         .node_code_key = details::node_code_key_v<CStringConfigNode>,
-        .c_string_offsets = repeated_offsets,
+        .pointer_offsets = repeated_offsets,
     }};
     EXPECT_THROW(
         details::set_builder_node_config_layouts(session.get(), malformed),
@@ -627,11 +661,11 @@ TEST(GraphModules, BuilderRejectsAmbiguousCStringConfigurationLayouts)
     std::array duplicate_keys{
         details::NodeConfigLayout{
             .node_code_key = details::node_code_key_v<CStringConfigNode>,
-            .c_string_offsets = unique_offset,
+            .pointer_offsets = unique_offset,
         },
         details::NodeConfigLayout{
             .node_code_key = details::node_code_key_v<CStringConfigNode>,
-            .c_string_offsets = unique_offset,
+            .pointer_offsets = unique_offset,
         },
     };
     EXPECT_THROW(

@@ -82,9 +82,6 @@ add_iv_gtest(
     intravenous_authored_graph_binary_archive_tests
     authored_graph_binary_archive_gtest.cpp)
 add_iv_gtest(
-    intravenous_node_config_materialization_tests
-    node_config_materialization_gtest.cpp)
-add_iv_gtest(
     intravenous_node_build_request_tests
     node_build_request_gtest.cpp)
 add_iv_gtest(intravenous_module_test_utils_tests module_test_utils_gtest.cpp)

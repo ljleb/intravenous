@@ -26,8 +26,8 @@ ReflectedNodeDescription materialize_node_build_request(
     if (!request.compiler_record) {
         throw std::invalid_argument("node build request has no compiler record");
     }
-    auto storage = details::copy_node_config_bytes(
-        request.config, request.config_size, request.config_alignment);
+    auto storage = details::take_builder_node_config(
+        session, request.config, request.config_size, request.config_alignment);
     auto relocations = details::capture_node_config(
         session,
         request.compiler_record->code_key,

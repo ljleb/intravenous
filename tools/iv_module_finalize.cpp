@@ -328,14 +328,14 @@ struct StateMetadata {
     iv::NodeStateStructure structure{};
 };
 
-struct ConfigStringMetadata {
+struct ConfigPointerMetadata {
     iv::NodeCodeKey key{};
     std::vector<std::size_t> byte_offsets{};
 };
 
 struct CompilerMetadata {
     std::vector<StateMetadata> states;
-    std::vector<ConfigStringMetadata> config_strings;
+    std::vector<ConfigPointerMetadata> config_pointers;
 };
 
 std::string read_file(std::filesystem::path const& path)
@@ -356,16 +356,16 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         auto* object = parsed->getAsObject();
         if (!object) fail("metadata root is not an object in '" + entry.path().string() + "'");
         auto version = object->getInteger("version");
-        if (!version || *version != 5) {
+        if (!version || *version != 6) {
             fail("unsupported compiler metadata version in '" + entry.path().string() + "'");
         }
         auto* states = object->getArray("states");
         if (!states) {
             fail("metadata has no state array in '" + entry.path().string() + "'");
         }
-        auto* config_strings = object->getArray("config_strings");
-        if (!config_strings) {
-            fail("metadata has no config-string array in '" + entry.path().string() + "'");
+        auto* config_pointers = object->getArray("config_pointers");
+        if (!config_pointers) {
+            fail("metadata has no config-pointer array in '" + entry.path().string() + "'");
         }
         for (auto const& state_value : *states) {
             auto* state = state_value.getAsObject();
@@ -436,20 +436,20 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
             }
             result.states.push_back(std::move(metadata));
         }
-        for (auto const& field_value : *config_strings) {
+        for (auto const& field_value : *config_pointers) {
             auto* field = field_value.getAsObject();
-            if (!field) fail("config-string metadata entry is not an object in '" + entry.path().string() + "'");
+            if (!field) fail("config-pointer metadata entry is not an object in '" + entry.path().string() + "'");
             auto* key = field->getObject("node_code_key");
             auto* offsets = field->getArray("byte_offsets");
             if (!key || !offsets) {
-                fail("incomplete config-string metadata entry in '" + entry.path().string() + "'");
+                fail("incomplete config-pointer metadata entry in '" + entry.path().string() + "'");
             }
             auto low = key->getString("low");
             auto high = key->getString("high");
             if (!low || !high) {
-                fail("config-string metadata has no NodeCodeKey in '" + entry.path().string() + "'");
+                fail("config-pointer metadata has no NodeCodeKey in '" + entry.path().string() + "'");
             }
-            ConfigStringMetadata metadata{
+            ConfigPointerMetadata metadata{
                 .key = {
                     .low = parse_hex_u64(*low, entry.path(), "node_code_key.low"),
                     .high = parse_hex_u64(*high, entry.path(), "node_code_key.high"),
@@ -458,32 +458,32 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
             for (auto const& offset_value : *offsets) {
                 auto offset = offset_value.getAsInteger();
                 if (!offset) {
-                    fail("config-string field offset is not an integer in '" + entry.path().string() + "'");
+                    fail("config-pointer field offset is not an integer in '" + entry.path().string() + "'");
                 }
                 metadata.byte_offsets.push_back(
-                    metadata_size(*offset, entry.path(), "config-string field offset"));
+                    metadata_size(*offset, entry.path(), "config-pointer field offset"));
             }
             if (!std::is_sorted(
                     metadata.byte_offsets.begin(), metadata.byte_offsets.end())
                 || std::adjacent_find(
                        metadata.byte_offsets.begin(), metadata.byte_offsets.end())
                     != metadata.byte_offsets.end()) {
-                fail("config-string field offsets must be sorted and unique in '"
+                fail("config-pointer field offsets must be sorted and unique in '"
                      + entry.path().string() + "'");
             }
             auto const duplicate = std::find_if(
-                result.config_strings.begin(), result.config_strings.end(),
-                [&](ConfigStringMetadata const& existing) {
+                result.config_pointers.begin(), result.config_pointers.end(),
+                [&](ConfigPointerMetadata const& existing) {
                     return existing.key == metadata.key;
                 });
-            if (duplicate != result.config_strings.end()) {
+            if (duplicate != result.config_pointers.end()) {
                 if (duplicate->byte_offsets != metadata.byte_offsets) {
-                    fail("conflicting config-string metadata for one NodeCodeKey in '" +
+                    fail("conflicting config-pointer metadata for one NodeCodeKey in '" +
                          entry.path().string() + "'");
                 }
                 continue;
             }
-            result.config_strings.push_back(std::move(metadata));
+            result.config_pointers.push_back(std::move(metadata));
         }
     }
     return result;
@@ -513,7 +513,49 @@ void mark_reachable(Value const* value, SmallPtrSetImpl<GlobalValue const*>& rea
     }
 }
 
-std::unique_ptr<Module> clone_builder_module(Module const& master)
+struct BuilderModuleClone {
+    struct RetainedGlobal {
+        GlobalVariable const* master = nullptr;
+        std::size_t size = 0;
+    };
+
+    std::unique_ptr<Module> module;
+    std::vector<RetainedGlobal> retained_globals;
+};
+
+void add_authoring_global_address_table(
+    Module& module,
+    std::span<GlobalVariable* const> globals)
+{
+    auto& context = module.getContext();
+    auto* pointer_type = PointerType::getUnqual(context);
+    std::vector<Constant*> entries;
+    entries.reserve(globals.size());
+    for (auto* global : globals) {
+        entries.push_back(ConstantExpr::getPointerCast(global, pointer_type));
+    }
+    auto* table_type = ArrayType::get(pointer_type, entries.size());
+    auto* table = new GlobalVariable(
+        module,
+        table_type,
+        true,
+        GlobalValue::PrivateLinkage,
+        ConstantArray::get(table_type, entries),
+        "iv.authoring_global_addresses");
+    table->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+
+    auto* function_type = FunctionType::get(pointer_type, false);
+    auto* function = Function::Create(
+        function_type,
+        GlobalValue::ExternalLinkage,
+        "iv_get_authoring_global_addresses",
+        module);
+    auto* block = BasicBlock::Create(context, "entry", function);
+    IRBuilder<> builder(block);
+    builder.CreateRet(ConstantExpr::getPointerCast(table, pointer_type));
+}
+
+BuilderModuleClone clone_builder_module(Module const& master)
 {
     auto const* build = master.getFunction("iv_module_build");
     if (!build || build->isDeclaration()) fail("master LLVM module does not define iv_module_build");
@@ -524,21 +566,43 @@ std::unique_ptr<Module> clone_builder_module(Module const& master)
     if (auto const* dtors = master.getGlobalVariable("llvm.global_dtors")) mark_reachable(dtors, reachable);
 
     ValueToValueMapTy map;
-    return CloneModule(master, map, [&](GlobalValue const* global) {
+    auto cloned_module = CloneModule(master, map, [&](GlobalValue const* global) {
         if (global->isDeclaration()) return false;
         return reachable.contains(global);
     });
+
+    BuilderModuleClone result{.module = std::move(cloned_module)};
+    std::vector<GlobalVariable*> cloned_globals;
+    for (auto const& global : master.globals()) {
+        if (!global.isConstant() || global.isDeclaration() || !global.hasInitializer()) {
+            continue;
+        }
+        auto* cloned = dyn_cast_or_null<GlobalVariable>(map.lookup(&global));
+        // CloneModule records mappings for filtered-out globals too, but those
+        // values are declarations in the authoring clone. Referencing one from
+        // the address table would turn an otherwise irrelevant module symbol
+        // into an ORC lookup dependency.
+        if (!cloned || !cloned->hasInitializer()) continue;
+        auto const size = master.getDataLayout().getTypeAllocSize(global.getValueType());
+        if (size.isScalable() || size.getFixedValue() == 0) continue;
+        result.retained_globals.push_back({
+            .master = &global,
+            .size = size.getFixedValue(),
+        });
+        cloned_globals.push_back(cloned);
+    }
+    add_authoring_global_address_table(*result.module, cloned_globals);
+    return result;
 }
 
 void mark_runtime_module_roots(
     Module const& module,
     SmallPtrSetImpl<GlobalValue const*>& reachable)
 {
-    static constexpr std::array<StringRef, 5> runtime_entry_points{
+    static constexpr std::array<StringRef, 4> runtime_entry_points{
         "iv_module_abi_version",
         "iv_module_authored_graph",
         "iv_module_node_configs",
-        "iv_module_node_config_string_relocations",
         "iv_module_node_types",
     };
 
@@ -707,7 +771,12 @@ void initialize_native_target()
     InitializeNativeTargetAsmParser();
 }
 
-iv::AuthoredGraph run_builder_jit(
+struct BuilderJitResult {
+    iv::AuthoredGraph graph;
+    std::vector<BuilderModuleClone::RetainedGlobal> retained_globals;
+};
+
+BuilderJitResult run_builder_jit(
     Module const& master,
     orc::ThreadSafeContext context,
     std::span<std::string const> command,
@@ -715,7 +784,8 @@ iv::AuthoredGraph run_builder_jit(
     TimingReport& timings)
 {
     auto stage_started_at = timings.start_stage();
-    auto builder_module = clone_builder_module(master);
+    auto builder_clone = clone_builder_module(master);
+    auto builder_module = std::move(builder_clone.module);
     timings.finish_stage("authoring_module_clone", stage_started_at);
 
     stage_started_at = timings.start_stage();
@@ -742,6 +812,9 @@ iv::AuthoredGraph run_builder_jit(
         "add builder LLVM module to ORC");
     check_error(jit->initialize(jit->getMainJITDylib()), "run builder global initializers");
     auto address = take_expected(jit->lookup("iv_module_build"), "lookup iv_module_build");
+    auto global_addresses = take_expected(
+        jit->lookup("iv_get_authoring_global_addresses"),
+        "lookup authoring global address table");
     timings.finish_stage("jit_materialize", stage_started_at);
 
     using BuildFn = void (*)(iv::details::BuilderSession*);
@@ -754,14 +827,27 @@ iv::AuthoredGraph run_builder_jit(
             iv::details::iv_builder_session_destroy);
     if (!session) fail("create builder session");
     std::vector<iv::details::NodeConfigLayout> config_layouts;
-    config_layouts.reserve(metadata.config_strings.size());
-    for (auto const& entry : metadata.config_strings) {
+    config_layouts.reserve(metadata.config_pointers.size());
+    for (auto const& entry : metadata.config_pointers) {
         config_layouts.push_back({
             .node_code_key = entry.key,
-            .c_string_offsets = entry.byte_offsets,
+            .pointer_offsets = entry.byte_offsets,
         });
     }
     iv::details::set_builder_node_config_layouts(session.get(), config_layouts);
+    using GlobalAddressTableFn = void const* (*)();
+    auto const table = global_addresses.toPtr<GlobalAddressTableFn>()();
+    auto const* addresses = static_cast<void const* const*>(table);
+    std::vector<iv::details::AuthoringGlobalAddress> authoring_globals;
+    authoring_globals.reserve(builder_clone.retained_globals.size());
+    for (std::size_t i = 0; i < builder_clone.retained_globals.size(); ++i) {
+        authoring_globals.push_back({
+            .address = addresses[i],
+            .size = builder_clone.retained_globals[i].size,
+            .symbol = builder_clone.retained_globals[i].master,
+        });
+    }
+    iv::details::set_builder_authoring_globals(session.get(), authoring_globals);
     timings.finish_stage("builder_session_setup", stage_started_at);
 
     stage_started_at = timings.start_stage();
@@ -773,7 +859,10 @@ iv::AuthoredGraph run_builder_jit(
     check_error(jit->deinitialize(jit->getMainJITDylib()), "run builder global destructors");
     check_error(tracker->remove(), "release builder JIT generation");
     timings.finish_stage("jit_release", stage_started_at);
-    return graph;
+    return {
+        .graph = std::move(graph),
+        .retained_globals = std::move(builder_clone.retained_globals),
+    };
 }
 
 std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> bind_state_metadata(
@@ -816,11 +905,11 @@ void require_node_config_metadata(
 {
     for (auto const& record : records) {
         auto const layout = std::find_if(
-            metadata.config_strings.begin(), metadata.config_strings.end(),
-            [&](ConfigStringMetadata const& item) {
+            metadata.config_pointers.begin(), metadata.config_pointers.end(),
+            [&](ConfigPointerMetadata const& item) {
                 return item.key == record.key;
             });
-        if (layout == metadata.config_strings.end()) {
+        if (layout == metadata.config_pointers.end()) {
             fail("missing NodeCodeKey-bound node configuration metadata for '"
                  + record.type_name + "'");
         }
@@ -870,10 +959,92 @@ Function* emit_view_accessor(
     return function;
 }
 
+Constant* byte_array_constant(
+    LLVMContext& context,
+    std::span<std::byte const> bytes)
+{
+    std::vector<std::uint8_t> raw;
+    raw.reserve(bytes.size());
+    for (auto value : bytes) raw.push_back(std::to_integer<std::uint8_t>(value));
+    return ConstantDataArray::get(context, raw);
+}
+
+GlobalVariable* constant_node_config(
+    Module& module,
+    StringRef name,
+    iv::AuthoredNodeConfigBytes const& config,
+    std::span<BuilderModuleClone::RetainedGlobal const> retained_globals)
+{
+    auto& context = module.getContext();
+    auto* pointer_type = PointerType::getUnqual(context);
+    auto const pointer_size = module.getDataLayout().getPointerSize();
+    std::vector<Type*> field_types;
+    std::vector<Constant*> field_values;
+    std::size_t cursor = 0;
+
+    auto append_bytes = [&](std::size_t begin, std::size_t end) {
+        if (begin == end) return;
+        auto const bytes = std::span<std::byte const>(
+            config.bytes.data() + begin, end - begin);
+        auto* value = byte_array_constant(context, bytes);
+        field_types.push_back(value->getType());
+        field_values.push_back(value);
+    };
+
+    for (auto const& relocation : config.relocations) {
+        if (relocation.byte_offset < cursor
+            || relocation.byte_offset > config.bytes.size()
+            || config.bytes.size() - relocation.byte_offset < pointer_size) {
+            fail("node configuration pointer relocations overlap or are out of bounds");
+        }
+        append_bytes(cursor, relocation.byte_offset);
+
+        Constant* target = ConstantPointerNull::get(pointer_type);
+        if (relocation.target) {
+            auto const retained = std::find_if(
+                retained_globals.begin(), retained_globals.end(),
+                [&](BuilderModuleClone::RetainedGlobal const& candidate) {
+                    return candidate.master == relocation.target;
+                });
+            if (retained == retained_globals.end()
+                || relocation.addend >= retained->size) {
+                fail("node configuration references an unknown retained LLVM global");
+            }
+            auto* global = const_cast<GlobalVariable*>(retained->master);
+            target = ConstantExpr::getPointerCast(global, pointer_type);
+            if (relocation.addend != 0) {
+                std::array<Constant*, 1> index{
+                    ConstantInt::get(
+                        IntegerType::get(context, module.getDataLayout().getPointerSizeInBits()),
+                        relocation.addend),
+                };
+                target = ConstantExpr::getInBoundsGetElementPtr(
+                    Type::getInt8Ty(context), target, index);
+            }
+        }
+        field_types.push_back(pointer_type);
+        field_values.push_back(target);
+        cursor = relocation.byte_offset + pointer_size;
+    }
+    append_bytes(cursor, config.bytes.size());
+
+    auto* storage_type = StructType::get(context, field_types, true);
+    auto* global = new GlobalVariable(
+        module,
+        storage_type,
+        true,
+        GlobalValue::PrivateLinkage,
+        ConstantStruct::get(storage_type, field_values),
+        name);
+    global->setAlignment(Align(std::max<std::size_t>(1, config.alignment)));
+    return global;
+}
+
 void inject_module_data(
     Module& module,
     iv::SerializedAuthoredGraph const& authored,
-    std::span<IrNodeRecord const> node_records)
+    std::span<IrNodeRecord const> node_records,
+    std::span<BuilderModuleClone::RetainedGlobal const> retained_globals)
 {
     auto& context = module.getContext();
     auto const pointer_bits = module.getDataLayout().getPointerSizeInBits();
@@ -889,8 +1060,8 @@ void inject_module_data(
     auto* config_record_type = StructType::get(pointer_type, size_type, size_type);
     for (std::size_t i = 0; i < authored.node_configs.size(); ++i) {
         auto const& config = authored.node_configs[i];
-        auto* bytes = constant_bytes(
-            module, "iv.node_config." + std::to_string(i), config.bytes, config.alignment);
+        auto* bytes = constant_node_config(
+            module, "iv.node_config." + std::to_string(i), config, retained_globals);
         config_records.push_back(ConstantStruct::get(
             config_record_type,
             ConstantExpr::getPointerCast(bytes, pointer_type),
@@ -905,54 +1076,6 @@ void inject_module_data(
         module, "iv_module_node_configs",
         ConstantExpr::getPointerCast(config_array, pointer_type),
         config_records.size() * module.getDataLayout().getTypeAllocSize(config_record_type).getFixedValue());
-
-    auto* relocation_record_type = StructType::get(
-        size_type, size_type, pointer_type, size_type);
-    std::vector<Constant*> relocation_records;
-    std::size_t relocation_ordinal = 0;
-    for (std::size_t config_ordinal = 0; config_ordinal < authored.node_configs.size(); ++config_ordinal) {
-        for (auto const& relocation : authored.node_configs[config_ordinal].string_relocations) {
-            std::vector<std::byte> string_bytes(relocation.value.size() + 1);
-            if (!relocation.value.empty()) {
-                std::memcpy(
-                    string_bytes.data(), relocation.value.data(), relocation.value.size());
-            }
-            auto* string_data = constant_bytes(
-                module,
-                "iv.node_config_string." + std::to_string(relocation_ordinal++),
-                string_bytes,
-                1);
-            relocation_records.push_back(ConstantStruct::get(
-                relocation_record_type,
-                ConstantInt::get(size_type, config_ordinal),
-                ConstantInt::get(size_type, relocation.byte_offset),
-                ConstantExpr::getPointerCast(string_data, pointer_type),
-                ConstantInt::get(size_type, relocation.value.size())));
-        }
-    }
-    if (relocation_records.empty()) {
-        emit_view_accessor(
-            module,
-            "iv_module_node_config_string_relocations",
-            ConstantPointerNull::get(pointer_type),
-            0);
-    } else {
-        auto* relocation_array_type = ArrayType::get(
-            relocation_record_type, relocation_records.size());
-        auto* relocation_array = new GlobalVariable(
-            module,
-            relocation_array_type,
-            true,
-            GlobalValue::PrivateLinkage,
-            ConstantArray::get(relocation_array_type, relocation_records),
-            "iv.node_config_string_relocations");
-        emit_view_accessor(
-            module,
-            "iv_module_node_config_string_relocations",
-            ConstantExpr::getPointerCast(relocation_array, pointer_type),
-            relocation_records.size()
-                * module.getDataLayout().getTypeAllocSize(relocation_record_type).getFixedValue());
-    }
 
     if (node_records.empty()) fail("cannot emit empty node type table");
     auto* record_type = node_records.front().initializer->getType();
@@ -1108,11 +1231,12 @@ int finalize(Options options)
         master, context, options.link_command, metadata, timings);
 
     stage_started_at = timings.start_stage();
-    auto serialized = iv::serialize_authored_graph(authored, state_metadata);
+    auto serialized = iv::serialize_authored_graph(authored.graph, state_metadata);
     timings.finish_stage("graph_serialize", stage_started_at);
 
     stage_started_at = timings.start_stage();
-    inject_module_data(master, serialized, node_records);
+    inject_module_data(
+        master, serialized, node_records, authored.retained_globals);
     timings.finish_stage("module_data_inject", stage_started_at);
 
     stage_started_at = timings.start_stage();

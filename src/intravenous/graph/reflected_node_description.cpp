@@ -74,7 +74,7 @@ void NodeDescriptionSink::set_static_sample_value(std::optional<Sample> value) c
 ReflectedNodeDescription materialize_node_description(
     NodeBuildRequest const& request,
     std::shared_ptr<void const> storage,
-    NodeConfigStringRelocations relocations)
+    NodeConfigRelocations relocations)
 {
     if (!request.compiler_record || !request.config || !request.describe
         || request.config_size == 0 || request.config_alignment == 0 || !storage) {
@@ -82,14 +82,14 @@ ReflectedNodeDescription materialize_node_description(
     }
 
     auto const& record = *request.compiler_record;
-    if (!record.type_name && record.type_name_size != 0) {
+    if (!record.operations.valid()
+        || (!record.type_name && record.type_name_size != 0)) {
         throw std::invalid_argument("node compiler record has an invalid type name");
     }
 
     ReflectedNodeDescription result {
-        .operations = {.runtime = record.runtime},
         .node_storage = std::move(storage),
-        .config_string_relocations = std::move(relocations),
+        .config_relocations = std::move(relocations),
         .code_key = record.code_key,
         .node_size = request.config_size,
         .node_alignment = request.config_alignment,
@@ -97,7 +97,8 @@ ReflectedNodeDescription materialize_node_description(
             ? std::string_view{record.type_name, record.type_name_size}
             : std::string_view{},
     };
-    result.operations.runtime.node_data = result.node_storage.get();
+    result.operations.runtime = make_runtime_operations(
+        record, result.node_storage.get());
 
     NodeDescriptionBuilder builder(result);
     auto sink = builder.sink();

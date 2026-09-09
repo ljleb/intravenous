@@ -441,13 +441,13 @@ inline SerializedAuthoredGraph serialize_binary_authored_graph(
             config.alignment = view.node_alignment;
             config.bytes.resize(view.node_size);
             std::memcpy(config.bytes.data(), (*view.node_storage).get(), view.node_size);
-            if (view.config_string_relocations) {
-                config.string_relocations = *view.config_string_relocations;
+            if (view.config_relocations) {
+                config.relocations = *view.config_relocations;
             }
-            for (auto const& relocation : config.string_relocations) {
+            for (auto const& relocation : config.relocations) {
                 if (relocation.byte_offset > config.bytes.size()
                     || config.bytes.size() - relocation.byte_offset < sizeof(char const*)) {
-                    throw std::runtime_error("node configuration string relocation is out of bounds");
+                    throw std::runtime_error("node configuration pointer relocation is out of bounds");
                 }
             }
             result.node_configs.push_back(std::move(config));
@@ -572,8 +572,8 @@ inline AuthoredGraph deserialize_binary_authored_graph(
             record.node_storage = node_config_storage.empty()
                 ? std::shared_ptr<void const>(config.data, [](void const*) {})
                 : node_config_storage[ordinal];
-            record.operations = {.runtime = find_type(node_types, record.code_key).runtime};
-            record.operations.runtime.node_data = config.data;
+            record.operations.runtime = details::make_runtime_operations(
+                find_type(node_types, record.code_key), config.data);
             if (reader.flag()) record.lifetime.ttl_samples = reader.size();
             record.type_identity = reader.string();
             record.reflected_type_name = reader.string();

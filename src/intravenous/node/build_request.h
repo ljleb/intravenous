@@ -119,11 +119,9 @@ IV_FORCEINLINE void skip_node_block(
 }
 
 template<class Node>
-constexpr ReflectedNodeRuntimeOperations node_runtime_operations()
+constexpr NodeCompilerOperations node_compiler_operations()
 {
     return {
-        .node_data = nullptr,
-        .state_structure = nullptr,
         .declare_node = &declare_node<Node>,
         .tick_block = &tick_node_block<Node>,
         .skip_block = &skip_node_block<Node>,
@@ -164,7 +162,7 @@ template<class Node>
 IV_NODE_COMPILER_RECORD_ATTR inline const NodeCompilerRecord
     node_compiler_record {
         .code_key = node_code_key_v<Node>,
-        .runtime = node_runtime_operations<Node>(),
+        .operations = node_compiler_operations<Node>(),
         .type_name = clang_type_name<Node>().data(),
         .type_name_size = clang_type_name<Node>().size(),
         .state_size = node_state_size<Node>(),

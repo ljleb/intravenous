@@ -17,6 +17,7 @@
 #include <functional>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -36,6 +37,9 @@ NodeBundleHandle iv_builder_append_node(
     GraphBuilder&, NodeBuildRequest const&);
 NodeBundleHandle iv_builder_append_tiled_node(
     GraphBuilder&, NodeBuildRequest const&, ChannelLayout);
+void* iv_builder_allocate_node_config(
+    BuilderSession*, std::size_t size, std::size_t alignment);
+void iv_builder_discard_node_config(BuilderSession*, void* storage) noexcept;
 
 }
 
@@ -88,17 +92,21 @@ public:
     using StoredNode = std::remove_cvref_t<Node>;
     static_assert(std::is_trivially_copyable_v<StoredNode>,
         "node values must be trivially copyable");
-    StoredNode value(std::forward<Args>(args)...);
-    // The request is the complete module-side boundary: it identifies the
-    // type-specific compiler record and borrows this short-lived value.  The
-    // precompiled builder synchronously copies configuration and owns the
-    // resulting graph description before this function returns.
-    auto handle = details::iv_builder_append_node(
-        *this, details::make_node_build_request(value));
-    if constexpr (details::should_preserve_node_type_v<StoredNode>)
-      return TypedNodeRef<StoredNode>(*this, handle);
-    else
-      return NodeRef(*this, handle);
+    auto* value = static_cast<StoredNode*>(
+        details::iv_builder_allocate_node_config(
+            _session, sizeof(StoredNode), alignof(StoredNode)));
+    try {
+      std::construct_at(value, std::forward<Args>(args)...);
+      auto handle = details::iv_builder_append_node(
+          *this, details::make_node_build_request(*value));
+      if constexpr (details::should_preserve_node_type_v<StoredNode>)
+        return TypedNodeRef<StoredNode>(*this, handle);
+      else
+        return NodeRef(*this, handle);
+    } catch (...) {
+      details::iv_builder_discard_node_config(_session, value);
+      throw;
+    }
   }
 
   template<class Node, class ChannelType, class... Args>
@@ -108,13 +116,21 @@ public:
         "node values must be trivially copyable");
     static_assert((std::copy_constructible<std::remove_cvref_t<Args>> && ...),
         "tiled-node construction requires reusable constructor arguments");
-    StoredNode value(args...);
-    auto handle = details::iv_builder_append_tiled_node(
-        *this, details::make_node_build_request(value), {
-          .channel_type = ChannelTypeTraits<ChannelType>::id,
-          .sample_layout = SampleStreamLayout::planar,
-        });
-    return TiledNodeRef<StoredNode, ChannelType>(*this, handle);
+    auto* value = static_cast<StoredNode*>(
+        details::iv_builder_allocate_node_config(
+            _session, sizeof(StoredNode), alignof(StoredNode)));
+    try {
+      std::construct_at(value, args...);
+      auto handle = details::iv_builder_append_tiled_node(
+          *this, details::make_node_build_request(*value), {
+            .channel_type = ChannelTypeTraits<ChannelType>::id,
+            .sample_layout = SampleStreamLayout::planar,
+          });
+      return TiledNodeRef<StoredNode, ChannelType>(*this, handle);
+    } catch (...) {
+      details::iv_builder_discard_node_config(_session, value);
+      throw;
+    }
   }
 
   template<class ChannelType, class... Refs>
