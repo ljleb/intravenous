@@ -3,7 +3,7 @@
 #include <intravenous/basic_nodes/filters.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/basic_nodes/buffers.h>
-#include <intravenous/basic_nodes/midi.h>
+#include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/juce/vst_wrapper.h>
 
 #include <array>

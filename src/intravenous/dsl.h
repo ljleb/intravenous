@@ -5,53 +5,18 @@
 #error "dsl.h is reserved for user-authored DSL code; include graph/builder.h or module/abi.h from internal code."
 #endif
 
-#include <intravenous/basic_nodes/midi.h>
 #include <intravenous/channel_ports.h>
-#include <intravenous/module/authoring.h>
+#include <intravenous/module/source_annotations.h>
+#include <intravenous/node/module_api.h>
 
 namespace iv {
-    struct PublicOutputSourceSpan {
-        std::string_view file_path;
-        uint32_t begin;
-        uint32_t end;
-    };
-
-    namespace details {
-        constexpr void append_dsl_source_position(std::string& result, uint32_t value)
-        {
-            char digits[11] {};
-            size_t begin = sizeof(digits);
-            do {
-                digits[--begin] = static_cast<char>('0' + value % 10);
-                value /= 10;
-            } while (value != 0);
-            result.append(digits + begin, digits + sizeof(digits));
-        }
-    }
-
-    constexpr SourceInfo _public_output_source_info(PublicOutputSourceSpan span)
-    {
-        std::string declaration_identity = "public-output:";
-        declaration_identity += span.file_path;
-        declaration_identity += ':';
-        details::append_dsl_source_position(declaration_identity, span.begin);
-        declaration_identity += ':';
-        details::append_dsl_source_position(declaration_identity, span.end);
-        return SourceInfo{
-            .declaration_identity = std::move(declaration_identity),
-            .span = SourceSpan{ .file_path = std::string(span.file_path), .begin = span.begin, .end = span.end },
-        };
-    }
-
     template<class Fn>
     constexpr void _define_public_sample_outputs_with_source_info(
         GraphBuilder& builder, std::initializer_list<PublicOutputSourceSpan> spans, Fn&& define)
     {
         std::forward<Fn>(define)();
-        std::vector<SourceInfo> infos;
-        infos.reserve(spans.size());
-        for (auto span : spans) infos.push_back(_public_output_source_info(span));
-        builder.annotate_public_sample_output_source_info(infos);
+        details::iv_builder_annotate_public_output_source_spans(
+            &builder, false, spans.begin(), spans.size());
     }
 
     template<class Fn>
@@ -59,10 +24,8 @@ namespace iv {
         GraphBuilder& builder, std::initializer_list<PublicOutputSourceSpan> spans, Fn&& define)
     {
         std::forward<Fn>(define)();
-        std::vector<SourceInfo> infos;
-        infos.reserve(spans.size());
-        for (auto span : spans) infos.push_back(_public_output_source_info(span));
-        builder.annotate_public_event_output_source_info(infos);
+        details::iv_builder_annotate_public_output_source_spans(
+            &builder, true, spans.begin(), spans.size());
     }
 
     template<class Ref>
@@ -182,14 +145,8 @@ namespace iv {
         uint32_t begin,
         uint32_t end)
     {
-        auto info = _public_output_source_info({file_path, begin, end});
-        if (event) {
-            builder->annotate_public_event_output_source_info(
-                ordinal, std::move(info));
-        } else {
-            builder->annotate_public_sample_output_source_info(
-                ordinal, std::move(info));
-        }
+        details::iv_builder_annotate_public_output_source_span(
+            builder, event, ordinal, file_path, begin, end);
     }
 
     template<fixed_string Name>
@@ -655,29 +612,6 @@ namespace iv {
         return node_ref.template get<I>();
     }
 
-    template<size_t voice_count, class Fn>
-    constexpr void polyphonic(GraphBuilder& g, Fn&& make_voice)
-    {
-        static_assert(voice_count > 0, "iv::polyphonic requires at least one voice");
-
-        auto const midi = g.event_input<"midi">(EventTypeId::midi);
-        auto process_lane = [&]<size_t VoiceIndex>() {
-            auto voice = g.subgraph([&](auto& s){
-                auto const voice_midi = s.template event_input<"midi">(EventTypeId::midi);
-                auto midi_driver = g.node<MidiVoiceAllocator<VoiceIndex, voice_count>>();
-                midi_driver.connect_event_input("midi", voice_midi);
-                static_assert(requires {
-                    make_voice.template operator()<VoiceIndex>(std::move(midi_driver));
-                }, "iv::polyphonic callback must accept a compile-time voice index and its MIDI driver");
-                make_voice.template operator()<VoiceIndex>(std::move(midi_driver));
-            }, "PolyphonicVoice");
-            voice.connect_event_input("midi", midi);
-        };
-
-        [&]<size_t... VoiceIndices>(std::index_sequence<VoiceIndices...>) {
-            (process_lane.template operator()<VoiceIndices>(), ...);
-        }(std::make_index_sequence<voice_count>{});
-    }
 }
 
 namespace std {

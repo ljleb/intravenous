@@ -14,7 +14,7 @@ if(
     if(NOT TARGET iv_module_shared)
         set(_iv_module_shared_link_libraries "")
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-            # The finalizer executes authoring IR with ORC.  Preserve the
+            # The finalizer executes builder IR with ORC. Preserve the
             # concrete archive path rather than a bare -l name so ORC can
             # load the same stacktrace support library as the native link.
             find_library(_iv_module_stdcxxexp_library NAMES stdc++exp

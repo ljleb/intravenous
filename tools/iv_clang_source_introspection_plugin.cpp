@@ -1,5 +1,6 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTMutationListener.h"
+#include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ExprCXX.h"
@@ -886,18 +887,183 @@ public:
         });
     }
 
-    llvm::json::Object result() &&
-    {
-        return llvm::json::Object{
-            {"version", 4},
-            {"states", std::move(states_)},
-        };
-    }
+    llvm::json::Array take_states() && { return std::move(states_); }
 
 private:
     ASTContext& context_;
     llvm::json::Array states_;
     std::set<std::string> seen_node_types_;
+};
+
+bool is_config_string_pointer(QualType type)
+{
+    if (!type->isPointerType()) return false;
+    auto const pointee = type->getPointeeType();
+    return pointee.isConstQualified()
+        && pointee.getUnqualifiedType()->isCharType();
+}
+
+void collect_config_string_offsets(
+    ASTContext& context,
+    QualType type,
+    std::uint64_t base_bit_offset,
+    std::vector<std::uint64_t>& offsets)
+{
+    if (is_config_string_pointer(type)) {
+        if (base_bit_offset % 8 == 0) offsets.push_back(base_bit_offset / 8);
+        return;
+    }
+    if (auto const* array = dyn_cast<ConstantArrayType>(type.getTypePtr())) {
+        auto const element_type = array->getElementType();
+        auto const element_size = context.getTypeSize(element_type);
+        auto const element_count = array->getSize().getLimitedValue();
+        for (std::uint64_t index = 0; index < element_count; ++index) {
+            collect_config_string_offsets(
+                context, element_type, base_bit_offset + index * element_size,
+                offsets);
+        }
+        return;
+    }
+
+    auto const* record = type->getAsCXXRecordDecl();
+    if (!record || !record->isCompleteDefinition() || record->isUnion()
+        || !record->isTriviallyCopyable()) {
+        return;
+    }
+    auto const& layout = context.getASTRecordLayout(record);
+    for (auto const& base : record->bases()) {
+        if (base.isVirtual()) continue;
+        auto const* base_record = base.getType()->getAsCXXRecordDecl();
+        if (!base_record) continue;
+        auto const base_offset = layout.getBaseClassOffset(base_record);
+        collect_config_string_offsets(
+            context, base.getType(),
+            base_bit_offset + static_cast<std::uint64_t>(base_offset.getQuantity()) * 8,
+            offsets);
+    }
+    unsigned index = 0;
+    for (auto const* field : record->fields()) {
+        collect_config_string_offsets(
+            context, field->getType(),
+            base_bit_offset + layout.getFieldOffset(index++), offsets);
+    }
+}
+
+class NodeConfigMetadataCollector final {
+public:
+    explicit NodeConfigMetadataCollector(ASTContext& context)
+        : context_(context)
+    {}
+
+    void record_node(CXXRecordDecl const* record)
+    {
+        if (!record || !record->isCompleteDefinition() || record->isLambda()
+            || !record->isTriviallyCopyable()
+            || !has_concrete_template_arguments(record)) {
+            return;
+        }
+
+        auto const node_type = context_.getCanonicalTagType(record);
+        auto const node_type_name = type_string(context_, node_type);
+        if (!seen_node_types_.insert(node_type_name).second) return;
+
+        std::vector<std::uint64_t> offsets;
+        collect_config_string_offsets(context_, node_type, 0, offsets);
+        std::ranges::sort(offsets);
+        offsets.erase(std::unique(offsets.begin(), offsets.end()), offsets.end());
+        llvm::json::Array json_offsets;
+        for (auto offset : offsets) {
+            json_offsets.push_back(static_cast<std::int64_t>(offset));
+        }
+
+        fields_.push_back(llvm::json::Object{
+            {"node_code_key", node_code_key(context_, node_type)},
+            {"byte_offsets", std::move(json_offsets)},
+        });
+    }
+
+    llvm::json::Array take_fields() && { return std::move(fields_); }
+
+private:
+    ASTContext& context_;
+    llvm::json::Array fields_;
+    std::set<std::string> seen_node_types_;
+};
+
+CXXRecordDecl const* node_type_from_compiler_record_specialization(
+    VarTemplateSpecializationDecl const* specialization)
+{
+    if (!specialization) return nullptr;
+    auto const* primary_template = specialization->getSpecializedTemplate();
+    if (!primary_template || primary_template->getQualifiedNameAsString()
+            != "iv::details::node_compiler_record") {
+        return nullptr;
+    }
+    auto const values = specialization->getTemplateArgs().asArray();
+    if (values.empty() || values.front().getKind() != TemplateArgument::Type) {
+        return nullptr;
+    }
+    return values.front().getAsType()->getAsCXXRecordDecl();
+}
+
+class ReflectedNodeDiscovery final {
+public:
+    explicit ReflectedNodeDiscovery(ASTContext& context)
+    {
+        auto const iv_name = DeclarationName{&context.Idents.get("iv")};
+        auto const details_name = DeclarationName{&context.Idents.get("details")};
+        auto const record_name = DeclarationName{
+            &context.Idents.get("node_compiler_record")};
+
+        for (auto const* iv_declaration
+             : context.getTranslationUnitDecl()->lookup(iv_name)) {
+            auto const* iv_namespace = dyn_cast<NamespaceDecl>(iv_declaration);
+            if (!iv_namespace) continue;
+            for (auto const* details_declaration
+                 : iv_namespace->lookup(details_name)) {
+                auto const* details_namespace =
+                    dyn_cast<NamespaceDecl>(details_declaration);
+                if (!details_namespace) continue;
+                for (auto const* declaration : details_namespace->lookup(record_name)) {
+                    record_template(dyn_cast<VarTemplateDecl>(declaration));
+                }
+            }
+        }
+    }
+
+    std::span<CXXRecordDecl const* const> nodes() const
+    {
+        return {nodes_.data(), nodes_.size()};
+    }
+
+private:
+    void record_template(VarTemplateDecl const* variable_template)
+    {
+        if (!variable_template) return;
+
+        auto const* primary_template = variable_template->getCanonicalDecl();
+        if (primary_template->getQualifiedNameAsString()
+                != "iv::details::node_compiler_record") {
+            return;
+        }
+
+        // `reflect_node<T>` instantiates this variable template for every
+        // node that actually enters a GraphBuilder. This remains available
+        // even when the surrounding GraphBuilder::node<T> specialization is
+        // materialized lazily during code generation.
+        for (auto const* specialization : primary_template->specializations()) {
+            auto const* node =
+                node_type_from_compiler_record_specialization(specialization);
+            if (!node
+                || std::find(nodes_.begin(), nodes_.end(), node)
+                    != nodes_.end()) {
+                continue;
+            }
+            nodes_.push_back(node);
+        }
+    }
+
+    std::vector<CXXRecordDecl const*> nodes_;
 };
 
 std::filesystem::path metadata_path(
@@ -916,15 +1082,27 @@ std::filesystem::path metadata_path(
 void write_state_metadata(
     CompilerInstance& compiler,
     std::filesystem::path const& metadata_dir,
-    std::span<CXXRecordDecl const* const> completed_nodes = {})
+    std::span<CXXRecordDecl const* const> completed_state_nodes = {})
 {
     auto& context = compiler.getASTContext();
-    StateMetadataVisitor visitor(context);
-    visitor.TraverseDecl(context.getTranslationUnitDecl());
+    StateMetadataVisitor state_visitor(context);
+    state_visitor.TraverseDecl(context.getTranslationUnitDecl());
+    NodeConfigMetadataCollector node_config_collector(context);
+    ReflectedNodeDiscovery reflected_node_discovery(context);
     // Concrete class-template specializations can be completed after their
-    // owning top-level declaration was first traversed. Add those exact node
-    // declarations to the same per-TU snapshot.
-    for (auto const* node : completed_nodes) visitor.record_node(node);
+    // owning top-level declaration was first traversed. Add those exact nodes
+    // to the State snapshot. C-string metadata comes from the compiler record
+    // instantiated by reflect_node<T>, which is emitted for every node that
+    // actually enters the builder.
+    for (auto const* node : completed_state_nodes) {
+        state_visitor.record_node(node);
+    }
+    // The AST lookup includes records loaded from the PCH and, for the final
+    // post-CodeGen snapshot, records materialized after initial source
+    // traversal.
+    for (auto const* node : reflected_node_discovery.nodes()) {
+        node_config_collector.record_node(node);
+    }
 
     std::error_code error;
     std::filesystem::create_directories(metadata_dir, error);
@@ -946,7 +1124,11 @@ void write_state_metadata(
         return;
     }
     stream << llvm::formatv(
-        "{0:2}", llvm::json::Value(std::move(visitor).result()));
+        "{0:2}", llvm::json::Value(llvm::json::Object{
+            {"version", 5},
+            {"states", std::move(state_visitor).take_states()},
+            {"config_strings", std::move(node_config_collector).take_fields()},
+        }));
     stream << '\n';
 }
 
@@ -1014,6 +1196,8 @@ public:
         initial_snapshot_written_ = true;
     }
 
+    void write_final_snapshot() { write_snapshot(); }
+
 private:
     void write_snapshot()
     {
@@ -1065,6 +1249,11 @@ public:
     ASTMutationListener* GetASTMutationListener() override
     {
         return &state_metadata_listener_;
+    }
+
+    void write_final_metadata()
+    {
+        state_metadata_listener_.write_final_snapshot();
     }
 
     void HandleTranslationUnit(ASTContext& context) override
@@ -1146,17 +1335,31 @@ public:
         // PCH generation has no Sema instance and does not compile a module
         // translation unit. The consuming source compile runs this plugin
         // again, where it emits the required State metadata.
-        if (compiler.getFrontendOpts().ProgramAction == frontend::GeneratePCH)
+        if (compiler.getFrontendOpts().ProgramAction == frontend::GeneratePCH) {
+            consumer_ = nullptr;
             return std::make_unique<ASTConsumer>();
+        }
         auto consumer = std::make_unique<ModuleConsumer>(
             compiler, core_source_dir_, metadata_dir_, source_introspection_);
+        consumer_ = consumer.get();
         return consumer;
+    }
+
+    void EndSourceFileAction() override
+    {
+        // AddBeforeMainAction receives HandleTranslationUnit before CodeGen.
+        // Emit the definitive snapshot only after the multiplexed main action
+        // has completed all deferred instantiations.
+        if (consumer_) consumer_->write_final_metadata();
+        consumer_ = nullptr;
+        PluginASTAction::EndSourceFileAction();
     }
 
 private:
     std::filesystem::path core_source_dir_;
     std::filesystem::path metadata_dir_;
     bool source_introspection_ = true;
+    ModuleConsumer* consumer_ = nullptr;
 };
 
 } // namespace

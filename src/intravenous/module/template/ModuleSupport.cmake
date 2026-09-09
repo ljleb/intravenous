@@ -65,7 +65,7 @@ function(iv_add_runtime_module target)
     target_compile_features(${target}__compile_settings INTERFACE cxx_std_26)
     # Every source that contributes code to the runtime-module target remains
     # LLVM bitcode until the target link step. iv_module_finalize consumes
-    # these objects, executes the authoring slice through ORC, injects the
+    # these objects, executes the graph-building slice through ORC, injects the
     # authored graph/configuration tables, emits one native replacement object,
     # and then resumes CMake's original link command.
     target_compile_options(${target}__compile_settings INTERFACE -O0 -flto=full)
@@ -110,7 +110,19 @@ function(iv_add_runtime_module target)
         target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=0)
     endif()
 
-    add_library(${target} SHARED ${IV_MODULE_EXPORT_FILE} ${IVM_SOURCES})
+    set(_iv_module_sources ${IV_MODULE_EXPORT_FILE} ${IVM_SOURCES})
+    add_library(${target} SHARED ${_iv_module_sources})
+    # The metadata plugin runs during each module-source compilation but is
+    # loaded only through a compiler flag. CMake otherwise cannot know that a
+    # rebuilt plugin invalidates existing LLVM bitcode and its metadata JSON.
+    # Make it an explicit object dependency so a host rebuild recompiles
+    # persistent module workspaces instead of relinking stale metadata.
+    set_property(SOURCE ${_iv_module_sources} APPEND PROPERTY OBJECT_DEPENDS
+        "${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}")
+    # The finalizer transforms the bitcode at link time. Its executable is not
+    # a normal linker input, so make updates to it invalidate the link result.
+    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
+        "${IV_MODULE_FINALIZER}")
     set_target_properties(${target} PROPERTIES
         CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
         CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES

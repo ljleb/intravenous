@@ -3,9 +3,9 @@
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/node/lifecycle.h>
-#include <intravenous/module/authoring.h>
 #include <intravenous/node/code_key.h>
 #include <intravenous/node/config_relocations.h>
+#include <intravenous/node/config_storage.h>
 #include <intravenous/ports.h>
 
 
@@ -99,8 +99,8 @@ struct ReflectedNodeOperations {
 struct ReflectedNodeDescription {
     NodePorts ports {};
     ReflectedNodeOperations operations {};
-    // Authored node configuration is ordinary immutable C++ data. Keep the
-    // object alive independently from the authoring stack/JIT generation; the
+    // Node configuration is ordinary immutable C++ data. Keep the object
+    // alive independently from the module build stack/JIT generation; the
     // runtime callbacks continue to receive operations.runtime.node_data.
     std::shared_ptr<void const> node_storage {};
     std::shared_ptr<NodeStateStructure const> state_structure_storage {};
@@ -230,17 +230,6 @@ namespace details {
     }
 
     template<class Node>
-    void collect_node_config_string_relocations(
-        Node const& node, NodeConfigStringRelocations& result)
-    {
-        if constexpr (requires(Node const& node, NodeConfigStringRelocations& relocations) {
-            node.collect_config_string_relocations(relocations);
-        }) {
-            node.collect_config_string_relocations(result);
-        }
-    }
-
-    template<class Node>
     constexpr ReflectedNodeOperations reflected_node_operations(Node const* node_data)
     {
         return {
@@ -351,7 +340,6 @@ namespace details {
 
         description.operations = type_metadata.operations;
         description.operations.runtime.node_data = node_data;
-        collect_node_config_string_relocations(node, description.config_string_relocations);
         description.code_key = type_metadata.code_key;
         description.node_size = sizeof(Node);
         description.node_alignment = alignof(Node);
@@ -371,11 +359,11 @@ namespace details {
     {
         using Value = std::remove_cvref_t<Node>;
         // Force the compiler record specialization into the LLVM module. The
-        // authoring graph stores only its NodeCodeKey; iv-module-finalize later
+        // built graph stores only its NodeCodeKey; iv-module-finalize later
         // resolves that key back to this record's direct function references.
         (void)&node_compiler_record<Value>;
 
-        auto storage = copy_authored_node_bytes(
+        auto storage = copy_node_config_bytes(
             std::addressof(node), sizeof(Value), alignof(Value));
         auto const* stored = static_cast<Value const*>(storage.get());
         auto description = describe_reflected_node(*stored, stored);

@@ -1,32 +1,30 @@
 #pragma once
 
-#include <intravenous/graph/builder/public_ports.hpp>
+#include <intravenous/graph/builder/output_refs.h>
 
 #include <initializer_list>
 #include <optional>
 #include <span>
 #include <string_view>
-#include <utility>
 
 namespace iv {
 class GraphBuilder;
+namespace details {
+struct SubgraphBuildScope;
+}
 
-// Callback-facing facade for authoring one functional subgraph boundary.
-// Nodes remain authored on the owning GraphBuilder; this type owns only the
-// semantic interface state for the boundary created by GraphBuilder::subgraph.
+// Callback-facing facade for one functional subgraph boundary. Nodes remain
+// built on the enclosing GraphBuilder; the opaque scope selects the boundary
+// interface held by libiv_builder.
 class SubgraphBuilder {
   friend class GraphBuilder;
 
   GraphBuilder& _builder;
-  GraphBuilderPublicPorts _ports;
+  details::SubgraphBuildScope* _scope;
 
-  constexpr explicit SubgraphBuilder(GraphBuilder&, NodeBundleHandle);
-
-  constexpr PublicSampleInputRef input_named(
-      std::string_view name, Sample default_value,
-      std::optional<Sample> min, std::optional<Sample> max);
-  constexpr PublicEventInputRef event_input_named(
-      std::string_view name, EventTypeId type);
+  explicit SubgraphBuilder(
+      GraphBuilder& builder, details::SubgraphBuildScope* scope)
+      : _builder(builder), _scope(scope) {}
 
 public:
   SubgraphBuilder(SubgraphBuilder const&) = delete;
@@ -34,34 +32,23 @@ public:
   SubgraphBuilder(SubgraphBuilder&&) = delete;
   SubgraphBuilder& operator=(SubgraphBuilder&&) = delete;
 
-  constexpr PublicSampleInputRef input();
-  template<fixed_string Name>
-  constexpr PublicSampleInputRef input(
-      Sample default_value = 0.0,
-      std::optional<Sample> min = std::nullopt,
-      std::optional<Sample> max = std::nullopt) {
-    return input_named(Name.view(), default_value, min, max);
-  }
-  constexpr PublicSampleInputRef input(
-      Sample default_value,
+  PublicSampleInputRef input();
+  template<fixed_string Name, class ChannelType = mono>
+  PublicSampleInputRef input(Sample default_value = 0.0,
       std::optional<Sample> min = std::nullopt,
       std::optional<Sample> max = std::nullopt);
-
+  PublicSampleInputRef input(Sample default_value,
+      std::optional<Sample> min = std::nullopt,
+      std::optional<Sample> max = std::nullopt);
   template<fixed_string Name>
-  constexpr PublicEventInputRef event_input(EventTypeId type) {
-    return event_input_named(Name.view(), type);
-  }
-  constexpr PublicEventInputRef event_input(EventTypeId type);
+  PublicEventInputRef event_input(EventTypeId type);
+  PublicEventInputRef event_input(EventTypeId type);
 
-  template<class... Refs>
-  constexpr void event_outputs(Refs&&... refs);
-  constexpr void event_outputs(std::span<EventOutputRefConfig const> refs);
-
-  template<class... Refs>
-  constexpr void outputs(Refs&&... refs);
-  constexpr void outputs(std::initializer_list<NamedRef> refs);
-  constexpr void outputs(std::span<OutputRefConfig const> refs);
-  constexpr void outputs(std::span<NamedRef const> refs);
+  template<class... Refs> void outputs(Refs&&... refs);
+  void outputs(std::initializer_list<NamedRef>);
+  void outputs(std::span<NamedRef const>);
+  void outputs(std::span<SampleOutputRequest const>);
+  template<class... Refs> void event_outputs(Refs&&... refs);
+  void event_outputs(std::span<EventOutputRequest const>);
 };
-
 } // namespace iv

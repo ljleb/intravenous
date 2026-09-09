@@ -855,6 +855,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExa
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_polyphonic_exact_spans",
         R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/basic_nodes/shaping.h>
 
 void polyphonic_module(iv::GraphBuilder& g)
@@ -881,7 +882,7 @@ void polyphonic_module(iv::GraphBuilder& g)
 
     auto const result = app.query_by_spans(
         module_cpp,
-        {{.start = {.line = 11, .column = 20}, .end = {.line = 11, .column = 20}}});
+        {{.start = {.line = 12, .column = 20}, .end = {.line = 12, .column = 20}}});
 
     ASSERT_EQ(result.nodes.size(), 1u);
     auto const& virtual_node = result.nodes.front();
@@ -948,6 +949,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonic
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_polyphonic_interior_span",
         R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/basic_nodes/shaping.h>
 
 void polyphonic_module(iv::GraphBuilder& g)
@@ -974,7 +976,7 @@ void polyphonic_module(iv::GraphBuilder& g)
 
     auto const result = app.query_by_spans(
         module_cpp,
-        {{.start = {.line = 11, .column = 20}, .end = {.line = 11, .column = 20}}});
+        {{.start = {.line = 12, .column = 20}, .end = {.line = 12, .column = 20}}});
 
     ASSERT_EQ(result.nodes.size(), 1u);
     EXPECT_EQ(result.nodes.front().kind, "iv::SawOscillator");

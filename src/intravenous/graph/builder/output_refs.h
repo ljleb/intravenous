@@ -3,9 +3,11 @@
 #include <intravenous/graph/builder/port_refs.h>
 
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <variant>
 
 namespace iv {
@@ -43,4 +45,29 @@ namespace iv {
         EventPortRef ref;
         EventOutputConfig config;
     };
+
+    // Module-facing output declarations carry only borrowed views and fixed
+    // size handles. libiv_builder copies the strings and materializes the
+    // owning OutputConfig records before the call returns.
+    struct SampleOutputRequest {
+        SamplePortRef ref;
+        std::string_view name;
+        ChannelLayout channel_layout;
+        std::string_view family_name;
+        ChannelTypeId family_channel_type = ChannelTypeId::mono;
+        bool whole_stream = true;
+        size_t target_channel_ordinal = std::numeric_limits<size_t>::max();
+
+        constexpr bool targets_single_channel() const {
+            return target_channel_ordinal != std::numeric_limits<size_t>::max();
+        }
+    };
+
+    struct EventOutputRequest {
+        EventPortRef ref;
+        std::string_view name;
+    };
+
+    static_assert(std::is_trivially_copyable_v<SampleOutputRequest>);
+    static_assert(std::is_trivially_copyable_v<EventOutputRequest>);
 }

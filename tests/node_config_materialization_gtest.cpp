@@ -1,5 +1,4 @@
 #include <intravenous/module/node_config_materialization.h>
-#include <intravenous/node/config_string.h>
 
 #include <gtest/gtest.h>
 
@@ -12,15 +11,15 @@
 namespace {
 
 struct alignas(32) StringConfig {
-    iv::NodeConfigString payload;
-    iv::NodeConfigString empty;
+    char const* payload = nullptr;
+    std::size_t payload_size = 0;
+    char const* empty = nullptr;
+    std::size_t empty_size = 0;
     std::uint32_t marker;
 };
 
-constexpr auto payload_offset =
-    offsetof(StringConfig, payload) + offsetof(iv::NodeConfigString, data);
-constexpr auto empty_offset =
-    offsetof(StringConfig, empty) + offsetof(iv::NodeConfigString, data);
+constexpr auto payload_offset = offsetof(StringConfig, payload);
+constexpr auto empty_offset = offsetof(StringConfig, empty);
 
 TEST(NodeConfigMaterialization, CopiesAlignedConfigAndOwnsEmptyAndEmbeddedNulStrings)
 {
@@ -29,8 +28,10 @@ TEST(NodeConfigMaterialization, CopiesAlignedConfigAndOwnsEmptyAndEmbeddedNulStr
         std::string payload{"A\0B", 3};
         std::string empty;
         StringConfig source{
-            .payload = iv::NodeConfigString{std::string_view{payload}},
-            .empty = iv::NodeConfigString{std::string_view{empty}},
+            .payload = payload.data(),
+            .payload_size = payload.size(),
+            .empty = empty.data(),
+            .empty_size = empty.size(),
             .marker = 0xabcdu,
         };
         std::array configs{iv::ModuleNodeConfigRecord{
@@ -71,8 +72,12 @@ TEST(NodeConfigMaterialization, CopiesAlignedConfigAndOwnsEmptyAndEmbeddedNulStr
     auto const* copied = static_cast<StringConfig const*>(materialized.records.front().data);
     EXPECT_EQ(copied->marker, 0xabcdu);
     auto const expected_payload = std::string_view{"A\0B", 3};
-    EXPECT_EQ(copied->payload.view(), expected_payload);
-    EXPECT_TRUE(copied->empty.view().empty());
+    auto const copied_payload = std::string_view{
+        copied->payload, copied->payload_size};
+    auto const copied_empty = std::string_view{
+        copied->empty, copied->empty_size};
+    EXPECT_EQ(copied_payload, expected_payload);
+    EXPECT_TRUE(copied_empty.empty());
 }
 
 } // namespace

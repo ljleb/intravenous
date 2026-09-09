@@ -2,6 +2,7 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
+#include <intravenous/graph/builder/host.hpp>
 #include <authored_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
@@ -18,8 +19,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <ranges>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -457,16 +460,16 @@ SampleRefAuthoring author_sample_ref()
     auto left = static_cast<iv::SamplePortRef>(stream[iv::stereo::left]);
 
     bool ok = erased.channel_type == iv::ChannelTypeId::stereo
-        && erased.channels.size() == 2
-        && erased.channels[0].bundle == source.node_bundle_handle()
-        && erased.channels[0].port == 0
-        && erased.channels[0].channel == 0
-        && erased.channels[1].bundle == source.node_bundle_handle()
-        && erased.channels[1].port == 0
-        && erased.channels[1].channel == 1
+        && erased.channels().size() == 2
+        && erased.channels()[0].bundle == source.node_bundle_handle()
+        && erased.channels()[0].port == 0
+        && erased.channels()[0].channel == 0
+        && erased.channels()[1].bundle == source.node_bundle_handle()
+        && erased.channels()[1].port == 0
+        && erased.channels()[1].channel == 1
         && left.channel_type == iv::ChannelTypeId::mono
-        && left.channels.size() == 1
-        && left.channels.front() == erased.channels.front();
+        && left.channels().size() == 1
+        && left.channels().front() == erased.channels().front();
 
     g.outputs();
     return {
@@ -502,9 +505,9 @@ StructuralTileAuthoring author_structural_tile()
     auto erased = static_cast<iv::SamplePortRef>(tiled);
 
     bool ok = erased.channel_type == iv::ChannelTypeId::stereo
-        && erased.channels.size() == 2
-        && erased.channels[0].bundle == left.node_bundle_handle()
-        && erased.channels[1].bundle == right.node_bundle_handle();
+        && erased.channels().size() == 2
+        && erased.channels()[0].bundle == left.node_bundle_handle()
+        && erased.channels()[1].bundle == right.node_bundle_handle();
 
     g.outputs();
     return {
@@ -638,11 +641,11 @@ TiledEventAuthoring author_tiled_event()
     sink.connect_event_input(0, merged);
     g.outputs();
 
-    auto const virtual_ports = g.virtual_ports();
+    auto const virtual_ports = iv::host::virtual_ports(g);
     auto const tiled_handle = tiled.node_bundle_handle();
     auto const tiled_event_input_connected = tiled.event_input_is_connected(0);
-    bool const merged_ok = merged.sources.size() == 1
-        && merged.sources.front().bundle == tiled_handle;
+    bool const merged_ok = merged.sources().size() == 1
+        && merged.sources().front().bundle == tiled_handle;
     bool const virtual_ok = virtual_ports.event_inputs.size() == 1
         && virtual_ports.event_outputs.size() == 1
         && virtual_ports.event_inputs.front().node_bundle_ports.size() == 1
@@ -683,8 +686,8 @@ ChannelTopologySnapshot annotation_snapshot()
     iv::GraphBuilder g;
     auto node = iv::_annotate_node_source_info(
         g.node<MonoPass, iv::stereo>(), "tiled-pass");
-    auto const inputs = g.virtual_sample_input_families();
-    auto const outputs = g.virtual_sample_output_families();
+    auto const inputs = iv::host::virtual_sample_input_families(g);
+    auto const outputs = iv::host::virtual_sample_output_families(g);
     bool ok = inputs.families.size() == 1
         && outputs.families.size() == 1;
     if (!ok) return {.ok = false};
@@ -778,9 +781,9 @@ ChannelTopologySnapshot typed_operator_snapshot()
         static_cast<iv::SamplePortRef>(reverse_scaled);
     return {
         .ok = scaled_erased.channel_type == iv::ChannelTypeId::stereo
-            && scaled_erased.channels.size() == 2
+            && scaled_erased.channels().size() == 2
             && reverse_scaled_erased.channel_type == iv::ChannelTypeId::stereo
-            && reverse_scaled_erased.channels.size() == 2,
+            && reverse_scaled_erased.channels().size() == 2,
     };
 }
 
@@ -798,7 +801,7 @@ StereoScalarProductAuthoring author_stereo_scalar_product()
     auto stream = source[iv::PortName<"main">{}];
     auto scaled = stream * 0.1f * modulation;
     g.outputs(scaled);
-    auto const public_outputs = g.public_sample_output_families();
+    auto const public_outputs = iv::host::public_sample_output_families(g);
     bool ok = public_outputs.families.size() == 1
         && public_outputs.families.front().channel_type
             == iv::ChannelTypeId::stereo
@@ -834,7 +837,7 @@ iv::AuthoredGraphTestView author_reconstructed_sequence_reversed()
     auto reconstructed = iv::SamplePortRef(
         g, iv::ChannelTypeId::stereo,
         std::vector<iv::SampleOutputChannelId>{
-            erased.channels[1], erased.channels[0]});
+            erased.channels()[1], erased.channels()[0]});
     auto pass = g.node<iv::Sum<iv::stereo, iv::SampleStreamLayout::planar, 1>>();
     pass(reconstructed);
     g.outputs(pass);
@@ -851,7 +854,7 @@ iv::AuthoredGraphTestView author_reconstructed_sequence_ordered()
     auto reconstructed = iv::SamplePortRef(
         g, iv::ChannelTypeId::stereo,
         std::vector<iv::SampleOutputChannelId>{
-            erased.channels[0], erased.channels[1]});
+            erased.channels()[0], erased.channels()[1]});
     auto pass = g.node<iv::Sum<iv::stereo, iv::SampleStreamLayout::planar, 1>>();
     pass(reconstructed);
     g.outputs(pass);
@@ -1338,6 +1341,36 @@ TEST(Channels, SampleRefsExposeOrderedStructuralChannelIdentity)
     EXPECT_TRUE(snapshot.ok);
 }
 
+TEST(Channels, PortExpressionHandlesAreBuilderOwnedAndValidated)
+{
+    iv::GraphBuilder source_builder;
+    auto sample_node = source_builder.node<iv::Constant>(iv::Sample{0.25f});
+    auto event_node = source_builder.node<iv::EventConcatenation>(
+        0, iv::EventTypeId::trigger);
+    iv::SamplePortRef sample = sample_node;
+    iv::EventPortRef event = event_node.event_port();
+    auto const sample_copy = sample;
+    auto const event_copy = event;
+
+    EXPECT_NE(sample.handle, std::numeric_limits<size_t>::max());
+    EXPECT_NE(event.handle, std::numeric_limits<size_t>::max());
+    EXPECT_EQ(sample_copy.handle, sample.handle);
+    EXPECT_EQ(event_copy.handle, event.handle);
+    EXPECT_TRUE(std::ranges::equal(sample_copy.channels(), sample.channels()));
+    EXPECT_TRUE(std::ranges::equal(event_copy.sources(), event.sources()));
+
+    auto invalid_sample = sample;
+    invalid_sample.handle = std::numeric_limits<size_t>::max();
+    EXPECT_THROW((void)invalid_sample.channels(), std::logic_error);
+    auto invalid_event = event;
+    invalid_event.handle = std::numeric_limits<size_t>::max();
+    EXPECT_THROW((void)invalid_event.sources(), std::logic_error);
+
+    iv::GraphBuilder other_builder;
+    EXPECT_THROW(other_builder.outputs(sample), std::logic_error);
+    EXPECT_THROW(other_builder.event_outputs(event), std::logic_error);
+}
+
 TEST(Channels, GraphBuilderTileIsPureStructuralComposition)
 {
     auto snapshot = structural_tile_snapshot();
@@ -1363,14 +1396,14 @@ bool named_public_inputs_preserve_requested_channel_types()
     iv::GraphBuilder graph;
     auto const default_input = graph.input<"default">(iv::Sample{0.25f});
     auto const stereo_input = graph.input<"stereo", iv::stereo>(iv::Sample{0.5f});
-    auto const inputs = graph.public_sample_input_families();
+    auto const inputs = iv::host::public_sample_input_families(graph);
 
     return static_cast<iv::SamplePortRef>(default_input).channel_type
             == iv::ChannelTypeId::mono
-        && static_cast<iv::SamplePortRef>(default_input).channels.size() == 1
+        && static_cast<iv::SamplePortRef>(default_input).channels().size() == 1
         && static_cast<iv::SamplePortRef>(stereo_input).channel_type
             == iv::ChannelTypeId::stereo
-        && static_cast<iv::SamplePortRef>(stereo_input).channels.size() == 2
+        && static_cast<iv::SamplePortRef>(stereo_input).channels().size() == 2
         && inputs.families.size() == 2
         && inputs.families[0].channel_type == iv::ChannelTypeId::mono
         && inputs.families[0].channels.size() == 1

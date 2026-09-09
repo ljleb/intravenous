@@ -1,5 +1,6 @@
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
+#include <intravenous/graph/builder/host.hpp>
 #include <authored_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
@@ -42,7 +43,7 @@ VirtualOutputSnapshot single_sample_output_snapshot(bool connected)
         auto sink = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
         sink(node);
     }
-    auto const outputs = g.virtual_outputs();
+    auto const outputs = iv::host::virtual_outputs(g);
     return {
         .sample_count = outputs.sample.size(),
         .event_count = outputs.event.size(),
@@ -63,7 +64,7 @@ VirtualOutputSnapshot event_output_snapshot()
         "event-source");
     auto sink = g.node<DummyEventSink>();
     sink.connect_event_input(0, source.event_port());
-    auto const outputs = g.virtual_outputs();
+    auto const outputs = iv::host::virtual_outputs(g);
     return {
         .sample_count = outputs.sample.size(),
         .event_count = outputs.event.size(),
@@ -80,7 +81,7 @@ bool public_event_input_connected()
     auto input = g.event_input(EventTypeId::empty);
     auto sink = g.node<DummyEventSink>();
     sink.connect_event_input(0, input);
-    return g.public_event_input_is_connected(0);
+    return iv::host::public_event_input_is_connected(g, 0);
 }
 
 VirtualOutputSnapshot shared_virtual_output_snapshot()
@@ -92,7 +93,7 @@ VirtualOutputSnapshot shared_virtual_output_snapshot()
         g.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(), "shared");
     (void)a;
     (void)b;
-    auto const outputs = g.virtual_outputs();
+    auto const outputs = iv::host::virtual_outputs(g);
     return {
         .sample_count = outputs.sample.size(),
         .id_prefix = outputs.sample.size() >= 1
@@ -127,7 +128,7 @@ FamilySnapshot stereo_family_snapshot(bool connect_left)
         auto sink = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
         sink(source.static_output<0>()[stereo::left]);
     }
-    auto const families = g.virtual_sample_output_families();
+    auto const families = iv::host::virtual_sample_output_families(g);
     FamilySnapshot result{.family_count = families.families.size()};
     if (families.families.empty()) return result;
     auto const& family = families.families.front();
@@ -179,7 +180,7 @@ TypedIdentitySnapshot typed_identity_snapshot()
         single.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(),
         "shared");
     (void)single_sum;
-    auto const single_id = single.virtual_outputs().sample.front().virtual_node_id;
+    auto const single_id = iv::host::virtual_outputs(single).sample.front().virtual_node_id;
 
     GraphBuilder split;
     auto split_sum = _annotate_node_source_info(
@@ -190,7 +191,7 @@ TypedIdentitySnapshot typed_identity_snapshot()
         "shared");
     (void)split_sum;
     (void)split_events;
-    auto const outputs = split.virtual_outputs();
+    auto const outputs = iv::host::virtual_outputs(split);
     return {
         .sample_matches_single = outputs.sample.size() == 1
             && outputs.sample.front().virtual_node_id == single_id,
@@ -225,7 +226,7 @@ NamedChannelOutputAuthoring author_named_channel_output()
     GraphBuilder g;
     g.outputs("main"_P[stereo::left] = 0.0f,
               "main"_P[stereo::right] = 0.0f);
-    auto const families = g.public_sample_output_families();
+    auto const families = iv::host::public_sample_output_families(g);
     auto const family_count = families.families.size();
     auto const family_channels = families.families.empty()
         ? 0 : families.families.front().channels.size();
@@ -277,7 +278,7 @@ RepeatedOutputAuthoring author_repeated_named_output()
     GraphBuilder g;
     g.outputs("main"_P = 0.25f);
     g.outputs("main"_P = 0.5f);
-    auto const families = g.public_sample_output_families();
+    auto const families = iv::host::public_sample_output_families(g);
     return {
         .view = freeze_authored_graph_for_test(std::move(g).finish()),
         .family_count = families.families.size(),
@@ -312,7 +313,7 @@ RepeatedOutputAuthoring author_repeated_unnamed_output()
     GraphBuilder g;
     g.outputs(0.25f);
     g.outputs(0.5f);
-    auto const families = g.public_sample_output_families();
+    auto const families = iv::host::public_sample_output_families(g);
     return {
         .view = freeze_authored_graph_for_test(std::move(g).finish()),
         .family_count = families.families.size(),
@@ -356,7 +357,7 @@ WholeAndChannelAuthoring author_whole_and_channel_output()
     auto stereo_source = g.node<Sum<stereo, SampleStreamLayout::interleaved, 1>>();
     g.outputs("main"_P = stereo_source);
     g.outputs("main"_P[stereo::left] = 0.25f);
-    auto const families = g.public_sample_output_families();
+    auto const families = iv::host::public_sample_output_families(g);
     auto const family_count = families.families.size();
     auto const family_channels = families.families.empty()
         ? 0 : families.families.front().channels.size();

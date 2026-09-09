@@ -726,7 +726,11 @@ class ModuleLoader::Impl {
             ? std::string("iv/modules-global/") + root.manifest.id
             : std::string("iv/modules/") + root.manifest.id;
         std::ostringstream export_tu;
-        export_tu << "#include <intravenous/dsl.h>\n"
+        // The generated root owns the module ABI symbols, so it must include
+        // their declaration directly rather than rely on the DSL's transitive
+        // includes.
+        export_tu << "#include <intravenous/module/abi.h>\n"
+                  << "#include <intravenous/dsl.h>\n"
                   << "#include <" << root_include << ">\n";
         export_tu
             << "extern \"C\" IV_MODULE_EXPORT std::uint32_t "
@@ -734,9 +738,9 @@ class ModuleLoader::Impl {
             << "  return iv::IV_MODULE_ABI_VERSION;\n"
             << "}\n"
             << "extern \"C\" void "
-               "iv_module_author(iv::GraphBuilder* builder) {\n"
-            << "  if (!builder) return;\n"
-            << "  " << root.manifest.main << "(*builder);\n"
+               "iv_module_build(iv::details::BuilderSession* session) {\n"
+            << "  iv::GraphBuilder builder{session};\n"
+            << "  " << root.manifest.main << "(builder);\n"
             << "}\n";
         write_text_if_different(export_file, export_tu.str());
 
@@ -790,7 +794,7 @@ class ModuleLoader::Impl {
                   << directory_stamp(repo_root_ / "src/intravenous")
                          .time_since_epoch().count() << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/abi.h") << '\n'
-                  << read_text(repo_root_ / "src/intravenous/module/authoring.h") << '\n'
+                  << read_text(repo_root_ / "src/intravenous/module/builder_session.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n';
         signature
             << "module-finalizer=" << module_finalizer.generic_string() << '\n'

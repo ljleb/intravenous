@@ -184,8 +184,11 @@ Future changes that add variable-length trivially-copyable configuration must
 declare and test their pointer relocations; arbitrary pointers still cannot be
 serialized as raw config bytes.
 
-The Nix compiler is Clang 23.1.0, but its current wrapper still supplies the
-Nix GCC libstdc++ headers/runtime. Moving to a pure LLVM libc++ toolchain is a
-separate toolchain migration, not a substitute for or a remaining correctness
-step in this module-reload work; it needs an explicit stdenv/stdlib decision
-and a fresh full-suite validation.
+The development shell deliberately uses the normal Nixpkgs Clang 23.1.0
+wrapper (`llvmPackages_23.clang`) and exports it as both `CC` and `CXX`; there
+is no custom stdenv or alternate C++-library layer in this repository. On
+Linux, that standard wrapper uses GCC's low-level startup/unwind support. The
+Nixpkgs `libcxxStdenv` alternative still does so, while also creating a
+potential libc++/libstdc++ ABI mix with the packaged LLVM and Clang libraries.
+A literal zero-GCC toolchain would therefore require a custom compiler-rt,
+libunwind, lld, LLVM/Clang, and dependency rebuild—not a minimal flake change.

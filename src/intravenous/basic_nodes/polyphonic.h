@@ -1,13 +1,16 @@
 #pragma once
 
 #include <intravenous/fast_bitset.h>
+#include <intravenous/graph/builder.h>
 #include <intravenous/node/lifecycle.h>
 #include <intravenous/note_number_lookup_table.h>
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cmath>
 #include <cstdint>
+#include <utility>
 
 namespace iv {
     namespace details {
@@ -395,4 +398,30 @@ namespace iv {
             push_until(ctx.block_size, cursor);
         }
     };
+
+    // Voice allocation is a graph-building helper, not a core graph
+    // primitive. It is precompiled with the module API.
+    template<size_t voice_count, class Fn>
+    constexpr void polyphonic(GraphBuilder& g, Fn&& make_voice)
+    {
+        static_assert(voice_count > 0, "iv::polyphonic requires at least one voice");
+
+        auto const midi = g.event_input<"midi">(EventTypeId::midi);
+        auto process_lane = [&]<size_t VoiceIndex>() {
+            auto voice = g.subgraph([&](auto& s){
+                auto const voice_midi = s.template event_input<"midi">(EventTypeId::midi);
+                auto midi_driver = g.node<MidiVoiceAllocator<VoiceIndex, voice_count>>();
+                midi_driver.connect_event_input("midi", voice_midi);
+                static_assert(requires {
+                    make_voice.template operator()<VoiceIndex>(std::move(midi_driver));
+                }, "iv::polyphonic callback must accept a compile-time voice index and its MIDI driver");
+                make_voice.template operator()<VoiceIndex>(std::move(midi_driver));
+            }, "PolyphonicVoice");
+            voice.connect_event_input("midi", midi);
+        };
+
+        [&]<size_t... VoiceIndices>(std::index_sequence<VoiceIndices...>) {
+            (process_lane.template operator()<VoiceIndices>(), ...);
+        }(std::make_index_sequence<voice_count>{});
+    }
 }

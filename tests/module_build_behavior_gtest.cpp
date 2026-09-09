@@ -19,6 +19,16 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
 
+    auto const module_pch = iv::test::read_text(
+        iv::test::repo_root()
+        / "src/intravenous/module/template/module_pch.h");
+    EXPECT_NE(
+        module_pch.find("<intravenous/basic_nodes/polyphonic.h>"),
+        std::string::npos);
+    EXPECT_NE(
+        module_pch.find("<intravenous/juce/vst_wrapper.h>"),
+        std::string::npos);
+
     {
         auto definition = loader.load_root_definition(project_dst);
         EXPECT_EQ(definition.module_id, "iv.test.behavior_project");
@@ -49,9 +59,16 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 
     auto const generated_export = iv::test::read_text(
         project_workspace / "generated" / "root_export.cpp");
+    EXPECT_NE(
+        generated_export.find("#include <intravenous/module/abi.h>"),
+        std::string::npos);
     EXPECT_EQ(generated_export.find("GraphLowerer::lower("), std::string::npos);
     EXPECT_NE(
-        generated_export.find("iv_module_author(iv::GraphBuilder* builder)"),
+        generated_export.find(
+            "iv_module_build(iv::details::BuilderSession* session)"),
+        std::string::npos);
+    EXPECT_NE(
+        generated_export.find("iv::GraphBuilder builder{session}"),
         std::string::npos);
     EXPECT_EQ(
         generated_export.find("iv_module_authored_graph"),
@@ -135,5 +152,46 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     if (expected_generator == "Ninja") {
         EXPECT_TRUE(std::filesystem::exists(project_workspace / "cmake-build" / "build.ninja"));
         EXPECT_TRUE(std::filesystem::exists(local_workspace / "cmake-build" / "build.ninja"));
+
+        auto const local_cache_text = iv::test::read_text(local_cache);
+        auto cache_path = [&](std::string const& name) {
+            auto const prefix = name + ":UNINITIALIZED=";
+            auto const begin = local_cache_text.find(prefix);
+            if (begin == std::string::npos) return std::string{};
+            auto const value_begin = begin + prefix.size();
+            auto const end = local_cache_text.find('\n', value_begin);
+            return local_cache_text.substr(
+                value_begin,
+                end == std::string::npos ? std::string::npos : end - value_begin);
+        };
+        auto const plugin_path = cache_path("IV_CLANG_SOURCE_INTROSPECTION_PLUGIN");
+        auto const finalizer_path = cache_path("IV_MODULE_FINALIZER");
+        ASSERT_FALSE(plugin_path.empty());
+        ASSERT_FALSE(finalizer_path.empty());
+
+        auto const local_ninja = iv::test::read_text(
+            local_workspace / "cmake-build" / "build.ninja");
+        auto rule_line = [&](std::string const& needle) {
+            auto const match = local_ninja.find(needle);
+            if (match == std::string::npos) return std::string{};
+            auto const begin = local_ninja.rfind('\n', match);
+            auto const end = local_ninja.find('\n', match);
+            auto const line_begin = begin == std::string::npos ? 0 : begin + 1;
+            return local_ninja.substr(
+                line_begin,
+                end == std::string::npos ? std::string::npos : end - line_begin);
+        };
+        auto const object_rule = rule_line(
+            "root_export.cpp.o: CXX_COMPILER__iv_runtime_module");
+        auto const link_rule = rule_line(
+            "libiv_module_iv_test_local_cmake.so: CXX_SHARED_LIBRARY_LINKER__iv_runtime_module");
+        ASSERT_FALSE(object_rule.empty());
+        ASSERT_FALSE(link_rule.empty());
+        // Compiler plugins and linker launchers are command-line tools, not
+        // ordinary CMake inputs. Their paths must be explicit Ninja
+        // dependencies so persistent module workspaces rebuild when either
+        // host tool changes.
+        EXPECT_NE(object_rule.find(plugin_path), std::string::npos);
+        EXPECT_NE(link_rule.find(finalizer_path), std::string::npos);
     }
 }

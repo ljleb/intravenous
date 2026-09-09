@@ -6,7 +6,7 @@
 #include <authored_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
-#include <intravenous/module/authoring.h>
+#include <intravenous/module/builder_session.h>
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
 #include <intravenous/runtime/iv_module_definitions.h>
@@ -501,6 +501,7 @@ TEST(Integration, SampleInputMutationsFlowThroughLiveSnapshots)
     auto const workspace = shared_inline_module_workspace(
         "runtime_integration_live_input_snapshots",
         R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/basic_nodes/shaping.h>
 
 void polyphonic_module(iv::GraphBuilder& g)
@@ -527,7 +528,7 @@ void polyphonic_module(iv::GraphBuilder& g)
 
     auto const result = app.query_by_spans(
         module_cpp,
-        {{.start = {.line = 11, .column = 20}, .end = {.line = 11, .column = 20}}});
+        {{.start = {.line = 12, .column = 20}, .end = {.line = 12, .column = 20}}});
     ASSERT_EQ(result.nodes.size(), 1u);
     auto const virtual_id = result.nodes.front().id;
 

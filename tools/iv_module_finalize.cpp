@@ -1,5 +1,6 @@
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/reflected_node.hpp>
+#include <intravenous/module/builder_session.h>
 #include <intravenous/module/authored_graph_wire.h>
 
 #include "llvm/ADT/SmallPtrSet.h"
@@ -274,8 +275,14 @@ struct StateMetadata {
     iv::NodeStateStructure structure{};
 };
 
+struct ConfigStringMetadata {
+    iv::NodeCodeKey key{};
+    std::vector<std::size_t> byte_offsets{};
+};
+
 struct CompilerMetadata {
     std::vector<StateMetadata> states;
+    std::vector<ConfigStringMetadata> config_strings;
 };
 
 std::string read_file(std::filesystem::path const& path)
@@ -296,12 +303,16 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         auto* object = parsed->getAsObject();
         if (!object) fail("metadata root is not an object in '" + entry.path().string() + "'");
         auto version = object->getInteger("version");
-        if (!version || *version != 4) {
-            fail("unsupported state metadata version in '" + entry.path().string() + "'");
+        if (!version || *version != 5) {
+            fail("unsupported compiler metadata version in '" + entry.path().string() + "'");
         }
         auto* states = object->getArray("states");
         if (!states) {
             fail("metadata has no state array in '" + entry.path().string() + "'");
+        }
+        auto* config_strings = object->getArray("config_strings");
+        if (!config_strings) {
+            fail("metadata has no config-string array in '" + entry.path().string() + "'");
         }
         for (auto const& state_value : *states) {
             auto* state = state_value.getAsObject();
@@ -372,6 +383,55 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
             }
             result.states.push_back(std::move(metadata));
         }
+        for (auto const& field_value : *config_strings) {
+            auto* field = field_value.getAsObject();
+            if (!field) fail("config-string metadata entry is not an object in '" + entry.path().string() + "'");
+            auto* key = field->getObject("node_code_key");
+            auto* offsets = field->getArray("byte_offsets");
+            if (!key || !offsets) {
+                fail("incomplete config-string metadata entry in '" + entry.path().string() + "'");
+            }
+            auto low = key->getString("low");
+            auto high = key->getString("high");
+            if (!low || !high) {
+                fail("config-string metadata has no NodeCodeKey in '" + entry.path().string() + "'");
+            }
+            ConfigStringMetadata metadata{
+                .key = {
+                    .low = parse_hex_u64(*low, entry.path(), "node_code_key.low"),
+                    .high = parse_hex_u64(*high, entry.path(), "node_code_key.high"),
+                },
+            };
+            for (auto const& offset_value : *offsets) {
+                auto offset = offset_value.getAsInteger();
+                if (!offset) {
+                    fail("config-string field offset is not an integer in '" + entry.path().string() + "'");
+                }
+                metadata.byte_offsets.push_back(
+                    metadata_size(*offset, entry.path(), "config-string field offset"));
+            }
+            if (!std::is_sorted(
+                    metadata.byte_offsets.begin(), metadata.byte_offsets.end())
+                || std::adjacent_find(
+                       metadata.byte_offsets.begin(), metadata.byte_offsets.end())
+                    != metadata.byte_offsets.end()) {
+                fail("config-string field offsets must be sorted and unique in '"
+                     + entry.path().string() + "'");
+            }
+            auto const duplicate = std::find_if(
+                result.config_strings.begin(), result.config_strings.end(),
+                [&](ConfigStringMetadata const& existing) {
+                    return existing.key == metadata.key;
+                });
+            if (duplicate != result.config_strings.end()) {
+                if (duplicate->byte_offsets != metadata.byte_offsets) {
+                    fail("conflicting config-string metadata for one NodeCodeKey in '" +
+                         entry.path().string() + "'");
+                }
+                continue;
+            }
+            result.config_strings.push_back(std::move(metadata));
+        }
     }
     return result;
 }
@@ -400,13 +460,13 @@ void mark_reachable(Value const* value, SmallPtrSetImpl<GlobalValue const*>& rea
     }
 }
 
-std::unique_ptr<Module> clone_authoring_module(Module const& master)
+std::unique_ptr<Module> clone_builder_module(Module const& master)
 {
-    auto const* author = master.getFunction("iv_module_author");
-    if (!author || author->isDeclaration()) fail("master LLVM module does not define iv_module_author");
+    auto const* build = master.getFunction("iv_module_build");
+    if (!build || build->isDeclaration()) fail("master LLVM module does not define iv_module_build");
 
     SmallPtrSet<GlobalValue const*, 32> reachable;
-    mark_reachable(author, reachable);
+    mark_reachable(build, reachable);
     if (auto const* ctors = master.getGlobalVariable("llvm.global_ctors")) mark_reachable(ctors, reachable);
     if (auto const* dtors = master.getGlobalVariable("llvm.global_dtors")) mark_reachable(dtors, reachable);
 
@@ -494,7 +554,7 @@ void add_external_generators(
 
     auto const search_paths = library_search_paths(command);
     // The native linker output may already exist from a previous module
-    // generation. It is an output, not an authoring-time dependency; loading
+    // generation. It is an output, not a build-time dependency; loading
     // it here makes finalization depend on a stale module's ABI and can also
     // execute stale initializers.
     auto const output = std::filesystem::weakly_canonical(output_path(command));
@@ -531,29 +591,44 @@ void initialize_native_target()
     InitializeNativeTargetAsmParser();
 }
 
-iv::AuthoredGraph run_authoring_jit(
+iv::AuthoredGraph run_builder_jit(
     Module const& master,
     orc::ThreadSafeContext context,
-    std::span<std::string const> command)
+    std::span<std::string const> command,
+    CompilerMetadata const& metadata)
 {
-    auto authoring = clone_authoring_module(master);
+    auto builder_module = clone_builder_module(master);
     initialize_native_target();
     auto jit = take_expected(orc::LLJITBuilder().create(), "create ORC LLJIT");
     add_external_generators(*jit, command);
     auto tracker = jit->getMainJITDylib().createResourceTracker();
     check_error(jit->addIRModule(
-        tracker, orc::ThreadSafeModule(std::move(authoring), context)),
-        "add authoring LLVM module to ORC");
-    check_error(jit->initialize(jit->getMainJITDylib()), "run authoring global initializers");
-    auto address = take_expected(jit->lookup("iv_module_author"), "lookup iv_module_author");
-    using AuthorFn = void (*)(iv::GraphBuilder*);
-    auto author = address.toPtr<AuthorFn>();
-    iv::GraphBuilder builder;
-    author(&builder);
-    auto authored = std::move(builder).finish();
-    check_error(jit->deinitialize(jit->getMainJITDylib()), "run authoring global destructors");
-    check_error(tracker->remove(), "release authoring JIT generation");
-    return authored;
+        tracker, orc::ThreadSafeModule(std::move(builder_module), context)),
+        "add builder LLVM module to ORC");
+    check_error(jit->initialize(jit->getMainJITDylib()), "run builder global initializers");
+    auto address = take_expected(jit->lookup("iv_module_build"), "lookup iv_module_build");
+    using BuildFn = void (*)(iv::details::BuilderSession*);
+    auto build = address.toPtr<BuildFn>();
+    auto session = std::unique_ptr<
+        iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>(
+            iv::details::iv_builder_session_create(),
+            iv::details::iv_builder_session_destroy);
+    if (!session) fail("create builder session");
+    std::vector<iv::details::NodeConfigLayout> config_layouts;
+    config_layouts.reserve(metadata.config_strings.size());
+    for (auto const& entry : metadata.config_strings) {
+        config_layouts.push_back({
+            .node_code_key = entry.key,
+            .c_string_offsets = entry.byte_offsets,
+        });
+    }
+    iv::details::set_builder_node_config_layouts(session.get(), config_layouts);
+    build(session.get());
+    auto graph = iv::details::take_built_graph(session.get());
+    check_error(jit->deinitialize(jit->getMainJITDylib()), "run builder global destructors");
+    check_error(tracker->remove(), "release builder JIT generation");
+    return graph;
 }
 
 std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> bind_state_metadata(
@@ -588,6 +663,23 @@ std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> bind_state_metad
         result.emplace_back(record.key, state->structure);
     }
     return result;
+}
+
+void require_node_config_metadata(
+    std::span<IrNodeRecord const> records,
+    CompilerMetadata const& metadata)
+{
+    for (auto const& record : records) {
+        auto const layout = std::find_if(
+            metadata.config_strings.begin(), metadata.config_strings.end(),
+            [&](ConfigStringMetadata const& item) {
+                return item.key == record.key;
+            });
+        if (layout == metadata.config_strings.end()) {
+            fail("missing NodeCodeKey-bound node configuration metadata for '"
+                 + record.type_name + "'");
+        }
+    }
 }
 
 GlobalVariable* constant_bytes(
@@ -748,7 +840,7 @@ std::filesystem::path output_path(std::span<std::string const> command)
 
 void optimize_runtime_module(Module& module, bool optimize)
 {
-    // The source TUs deliberately stop at O0 LLVM IR. Only after authoring has
+    // The source TUs deliberately stop at O0 LLVM IR. Only after graph building has
     // executed do we spend optimization time on the retained runtime module.
     PassBuilder pass_builder;
     LoopAnalysisManager loops;
@@ -853,11 +945,13 @@ int finalize(Options options)
     auto node_records = scan_node_records(master);
     auto metadata = load_metadata(options.metadata_dir);
     auto state_metadata = bind_state_metadata(node_records, metadata);
-    auto authored = run_authoring_jit(master, context, options.link_command);
+    require_node_config_metadata(node_records, metadata);
+    auto authored = run_builder_jit(
+        master, context, options.link_command, metadata);
     auto serialized = iv::serialize_authored_graph(authored, state_metadata);
     inject_module_data(master, serialized, node_records);
-    if (auto* author = master.getFunction("iv_module_author")) {
-        author->setLinkage(GlobalValue::InternalLinkage);
+    if (auto* build = master.getFunction("iv_module_build")) {
+        build->setLinkage(GlobalValue::InternalLinkage);
     }
     optimize_runtime_module(master, options.optimize);
 

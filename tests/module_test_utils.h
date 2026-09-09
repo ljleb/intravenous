@@ -49,6 +49,11 @@ namespace iv::test {
         return repo_root() / "tests" / "test_modules";
     }
 
+    inline std::filesystem::path configured_build_root()
+    {
+        return IV_CONFIGURED_BINARY_DIR;
+    }
+
     inline std::filesystem::path duplicate_modules_root()
     {
         return repo_root() / "tests" / "test_modules_duplicate";
@@ -95,17 +100,17 @@ namespace iv::test {
 
     inline std::filesystem::path runtime_modules_root()
     {
-        return repo_root() / "build" / "test_runtime_modules" / test_process_namespace();
+        return configured_build_root() / "test_runtime_modules" / test_process_namespace();
     }
 
     inline std::filesystem::path runtime_module_cache_root()
     {
-        return repo_root() / "build" / "test_module_locks";
+        return configured_build_root() / "test_module_locks";
     }
 
     inline std::filesystem::path shared_test_fixtures_root()
     {
-        return repo_root() / "build" / "test_shared_fixtures";
+        return configured_build_root() / "test_shared_fixtures";
     }
 
     inline std::string sanitize_module_id(std::string_view id)
@@ -227,7 +232,7 @@ namespace iv::test {
 
     inline std::string configured_build_generator()
     {
-        auto const cache_path = repo_root() / "build" / "CMakeCache.txt";
+        auto const cache_path = configured_build_root() / "CMakeCache.txt";
         std::ifstream in(cache_path);
         require(static_cast<bool>(in), "failed to open top-level CMakeCache.txt");
         for (std::string line; std::getline(in, line);) {
