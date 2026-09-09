@@ -7,6 +7,7 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
+#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
@@ -719,7 +720,18 @@ iv::AuthoredGraph run_builder_jit(
 
     stage_started_at = timings.start_stage();
     initialize_native_target();
-    auto jit = take_expected(orc::LLJITBuilder().create(), "create ORC LLJIT");
+    auto jit_target = take_expected(
+        orc::JITTargetMachineBuilder::detectHost(),
+        "detect ORC JIT target");
+    // This module is executed once to construct an AuthoredGraph, then
+    // discarded. Its machine code never serves DSP execution: the retained
+    // runtime module is independently optimized at O3 below.
+    jit_target.setCodeGenOptLevel(CodeGenOptLevel::None);
+    auto jit = take_expected(
+        orc::LLJITBuilder()
+            .setJITTargetMachineBuilder(std::move(jit_target))
+            .create(),
+        "create ORC LLJIT");
     timings.finish_stage("jit_create", stage_started_at);
 
     stage_started_at = timings.start_stage();

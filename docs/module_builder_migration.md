@@ -297,3 +297,23 @@ comes from giving O3 and code emission a smaller runtime-only module. This is
 still one profile per configuration, not a controlled benchmark. Repeat the
 same profiling script after the next cut before attributing a durable
 improvement to any one change.
+
+## Authoring JIT code generation
+
+The temporary ORC JIT compiles only the cloned `iv_module_build` closure. It
+executes once to create `AuthoredGraph`, then its resource tracker releases
+the generated code before runtime IR optimization begins. Its machine code is
+therefore not DSP code. Configure its host `JITTargetMachineBuilder` with
+`CodeGenOptLevel::None`, instead of accepting LLVM's default JIT codegen
+level. This is intentionally separate from the retained runtime module,
+which remains O3-only.
+
+The measured motivation is strong: after IR pruning, warm `jit_materialize`
+was 249.5 ms while graph construction itself (`module_main`) was 0.36 ms.
+Verification: all 439 tests passed. The subsequent warm O3 profile measured
+1.234 s, with `jit_materialize` at 106.5 ms and finalizer total at 509.7 ms.
+Relative to the preceding 1.371 s / 657.2 ms sample, that is another 137 ms
+(10.0%) end-to-end and 147.5 ms (22.4%) finalizer reduction. The saved time
+tracks the 143 ms JIT-materialization reduction; runtime O3 remained 73.3 ms
+and the final native link remained 208.6 ms. This again is one profile per
+configuration, not a controlled benchmark.
