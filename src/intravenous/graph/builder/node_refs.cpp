@@ -4,8 +4,40 @@
 #include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace iv {
+namespace details {
+SamplePortRef make_tiled_sample_port(
+    ChannelTypeId type, SamplePortRef const* members, size_t member_count)
+{
+    if (member_count == 0) {
+        error("cannot tile an empty sample output");
+    }
+
+    auto* const builder = members[0].graph_builder;
+    if (!builder) {
+        error("cannot tile an empty sample output");
+    }
+
+    std::vector<SampleOutputChannelId> channels;
+    channels.reserve(member_count);
+    for (size_t i = 0; i < member_count; ++i) {
+        auto const& member = members[i];
+        if (member.graph_builder != builder) {
+            error("cannot tile sample outputs from different builders");
+        }
+        auto const member_channels = member.channels();
+        if (member.channel_type != ChannelTypeId::mono
+            || member_channels.size() != 1) {
+            error("each g.tile channel must be a scalar sample expression");
+        }
+        channels.push_back(member_channels.front());
+    }
+    return SamplePortRef(*builder, type, channels);
+}
+} // namespace details
+
 SamplePortRef::SamplePortRef(GraphBuilder& builder, NodeBundlePortId port)
 {
     *this = builder.sample_port_from_output(port);

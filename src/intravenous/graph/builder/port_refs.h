@@ -73,6 +73,11 @@ struct SamplePortRef {
 // variable-length expression data.
 static_assert(std::is_trivially_copyable_v<SamplePortRef>);
 
+namespace details {
+SamplePortRef make_tiled_sample_port(
+    ChannelTypeId, SamplePortRef const*, size_t);
+}
+
 template<class ChannelType>
 class TypedSamplePortRef {
   SamplePortRef _port;
@@ -127,33 +132,15 @@ template<class ChannelType>
 class TypedSamplePortTileRef {
   SamplePortRef _port{};
 
-  static SamplePortRef make_port(
-      std::array<SamplePortRef, ChannelType::channel_count> const& members) {
-    static_assert(ChannelType::channel_count > 0);
-    auto* builder = members.front().graph_builder;
-    if (!builder) details::error("cannot tile an empty sample output");
-
-    std::array<SampleOutputChannelId, ChannelType::channel_count> channels;
-    size_t channel = 0;
-    for (auto const& member : members) {
-      if (member.graph_builder != builder)
-        details::error("cannot tile sample outputs from different builders");
-      if (member.channel_type != ChannelTypeId::mono ||
-          member.channels().size() != 1)
-        details::error("each g.tile channel must be a scalar sample expression");
-      channels[channel++] = member.channels().front();
-    }
-    return SamplePortRef(*builder, ChannelTypeTraits<ChannelType>::id,
-                         channels);
-  }
-
 public:
   using channel_type = ChannelType;
 
   constexpr TypedSamplePortTileRef() = default;
   explicit TypedSamplePortTileRef(
       std::array<SamplePortRef, ChannelType::channel_count> members)
-      : _port(make_port(members)) {}
+      : _port(details::make_tiled_sample_port(
+            ChannelTypeTraits<ChannelType>::id,
+            members.data(), members.size())) {}
   explicit TypedSamplePortTileRef(SamplePortRef port)
       : _port(std::move(port)) {
     if (!_port.graph_builder ||

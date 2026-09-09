@@ -1,12 +1,5 @@
-#include "intravenous/channel_ports.h"
-#include "intravenous/channel_layout.h"
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
-#include <intravenous/node/layout.h>
-#include <intravenous/ports.h>
-#include <ranges>
-#include <cmath>
-#include <numbers>
 
 using namespace iv;
 
