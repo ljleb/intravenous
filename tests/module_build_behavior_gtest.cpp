@@ -209,8 +209,31 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         // host tool changes.
         EXPECT_NE(object_rule.find(plugin_path), std::string::npos);
         EXPECT_NE(link_rule.find(finalizer_path), std::string::npos);
+        EXPECT_NE(local_ninja.find("-fuse-ld=lld"), std::string::npos);
         // Ninja puts the per-target launcher arguments in the generated link
         // rule, while the target edge contains its dependency inputs.
         EXPECT_NE(local_rules.find("--timings-file="), std::string::npos);
     }
+
+    iv::ModuleLoader time_trace_loader(
+        iv::test::repo_root(), {},
+        iv::ModuleLoaderToolchainConfig{.clang_time_trace = true});
+    (void)time_trace_loader.load_root_definition(local_dst);
+
+    auto const traced_compile_database = iv::test::read_text(
+        local_workspace / "cmake-build" / "compile_commands.json");
+    EXPECT_NE(traced_compile_database.find("-ftime-trace"), std::string::npos);
+
+    bool has_clang_time_trace = false;
+    for (std::filesystem::recursive_directory_iterator it(local_workspace / "cmake-build"), end;
+         it != end;
+         ++it) {
+        if (it->is_regular_file()
+            && it->path().extension() == ".json"
+            && it->path().string().contains("CMakeFiles")) {
+            has_clang_time_trace = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(has_clang_time_trace);
 }

@@ -796,6 +796,8 @@ class ModuleLoader::Impl {
                   << toolchain_.source_introspection << '\n'
                   << "precompiled-header="
                   << toolchain_.precompiled_header << '\n'
+                  << "clang-time-trace="
+                  << toolchain_.clang_time_trace << '\n'
                   << "generated-export=" << export_tu.str() << '\n'
                   << "core-source-stamp="
                   << directory_stamp(repo_root_ / "src/intravenous")
@@ -874,6 +876,9 @@ class ModuleLoader::Impl {
         }
         if (!toolchain_.precompiled_header) {
             configure << " -DIV_MODULE_PCH_HEADER=";
+        }
+        if (toolchain_.clang_time_trace) {
+            configure << " -DIV_MODULE_CLANG_TIME_TRACE=ON";
         }
         if (std::string_view(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY).size()) {
             configure << " -DIV_MODULE_SHARED_LIBRARY=" << quote(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY);

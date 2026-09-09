@@ -10,6 +10,7 @@ optimization="O3"
 skip_build=0
 simple_sine_modules=0
 verbose=0
+clang_time_trace=1
 
 usage() {
     cat <<'EOF'
@@ -26,6 +27,8 @@ Options:
   --workspace PATH     Managed benchmark workspace.
   --optimization O0|O3 Finalizer optimization level (default: O3).
   --skip-build         Reuse an already-built iv_module_build_benchmark.
+  --no-clang-time-trace
+                       Do not write Clang frontend time-trace JSON.
   --verbose            Print the full CMake/Ninja and compiler transcript.
   --help               Show this help.
 
@@ -60,6 +63,10 @@ while (($#)); do
         ;;
     --skip-build)
         skip_build=1
+        shift
+        ;;
+    --no-clang-time-trace)
+        clang_time_trace=0
         shift
         ;;
     --verbose)
@@ -159,11 +166,17 @@ for module_index in "${!module_paths[@]}"; do
     fi
 
     run_log="$log_directory/$((module_index + 1))-$module_name.log"
-    if ! "$build_dir/benchmark/iv_module_build_benchmark" \
-        --module "$module_path" \
-        --workspace "$module_workspace" \
-        --optimization "$optimization" \
-        --keep >"$run_log" 2>&1; then
+    benchmark_command=(
+        "$build_dir/benchmark/iv_module_build_benchmark"
+        --module "$module_path"
+        --workspace "$module_workspace"
+        --optimization "$optimization"
+        --keep)
+    if (( clang_time_trace )); then
+        benchmark_command+=(--clang-time-trace)
+    fi
+    if ! "${benchmark_command[@]}" \
+        >"$run_log" 2>&1; then
         printf 'IV-module benchmark failed for %s; full log follows: %s\n' \
             "$module_path" "$run_log" >&2
         cat "$run_log" >&2
@@ -179,6 +192,9 @@ for module_index in "${!module_paths[@]}"; do
     fi
     if (( verbose )); then
         cat "$run_log"
+    fi
+    if (( clang_time_trace )); then
+        printf 'Clang time traces: %s\n' "$module_workspace/clang-time-traces"
     fi
 done
 

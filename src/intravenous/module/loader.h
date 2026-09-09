@@ -45,6 +45,7 @@ namespace iv {
         ModuleOptimization optimization = ModuleOptimization::O3;
         bool source_introspection = true;
         bool precompiled_header = true;
+        bool clang_time_trace = false;
     };
 
     class ModuleLoader {

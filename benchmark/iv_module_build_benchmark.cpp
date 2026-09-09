@@ -56,6 +56,7 @@ struct Options {
     iv::ModuleOptimization optimization = iv::ModuleOptimization::O3;
     bool source_introspection = true;
     bool precompiled_header = true;
+    bool clang_time_trace = false;
     SourceShape source_shape = SourceShape::full;
     std::optional<std::filesystem::path> source_module;
     std::optional<std::filesystem::path> c_compiler;
@@ -223,6 +224,8 @@ Options parse_options(int argc, char** argv)
             options.source_introspection = false;
         } else if (arg == "--no-pch") {
             options.precompiled_header = false;
+        } else if (arg == "--clang-time-trace") {
+            options.clang_time_trace = true;
         } else if (arg == "--source-shape") {
             options.source_shape = parse_source_shape(require_value(arg));
         } else if (arg == "--module") {
@@ -239,7 +242,7 @@ Options parse_options(int argc, char** argv)
                 << " [--source-shape empty|input|nodes|connected|full]"
                 << " [--module PATH]"
                 << " [--c-compiler PATH] [--cxx-compiler PATH]"
-                << " [--no-source-introspection] [--no-pch]"
+                << " [--no-source-introspection] [--no-pch] [--clang-time-trace]"
                 << " [--keep]\n";
             std::exit(0);
         } else {
@@ -346,6 +349,45 @@ std::filesystem::path find_finalizer_timings(std::filesystem::path const& worksp
             "expected one finalizer timing report below '" + workspace.string() + "'");
     }
     return candidates.front();
+}
+
+std::vector<std::filesystem::path> clang_time_traces(
+    std::filesystem::path const& cmake_build_directory)
+{
+    std::vector<std::filesystem::path> result;
+    for (std::filesystem::recursive_directory_iterator it(cmake_build_directory), end;
+         it != end;
+         ++it) {
+        if (!it->is_regular_file() || it->path().extension() != ".json") continue;
+        auto const relative = it->path().lexically_relative(cmake_build_directory);
+        for (auto const& component : relative) {
+            if (component == "CMakeFiles") {
+                result.push_back(it->path());
+                break;
+            }
+        }
+    }
+    return result;
+}
+
+void retain_clang_time_traces(
+    std::filesystem::path const& cmake_build_directory,
+    std::filesystem::path const& destination)
+{
+    auto const traces = clang_time_traces(cmake_build_directory);
+    if (traces.empty()) {
+        throw std::runtime_error(
+            "Clang time tracing was requested, but no trace JSON was produced below '" +
+            cmake_build_directory.string() + "'");
+    }
+    std::filesystem::remove_all(destination);
+    for (auto const& trace : traces) {
+        auto const relative = trace.lexically_relative(cmake_build_directory);
+        auto const copy = destination / relative;
+        std::filesystem::create_directories(copy.parent_path());
+        std::filesystem::copy_file(
+            trace, copy, std::filesystem::copy_options::overwrite_existing);
+    }
 }
 
 std::vector<std::pair<std::string, std::int64_t>> finalizer_timings(
@@ -513,6 +555,7 @@ void run(Options const& options)
                 .optimization = options.optimization,
                 .source_introspection = options.source_introspection,
                 .precompiled_header = options.precompiled_header,
+                .clang_time_trace = options.clang_time_trace,
             },
             [&](std::string const& entry) { loader_log.push_back(entry); });
 
@@ -523,6 +566,10 @@ void run(Options const& options)
         auto const cold_log = read(ninja_log);
         auto const cold_finalizer_timings = finalizer_timings(
             find_finalizer_timings(options.workspace));
+        if (options.clang_time_trace) {
+            retain_clang_time_traces(
+                ninja_log.parent_path(), options.workspace / "clang-time-traces" / "cold");
+        }
         print(
             "cold", workload, options.compile_stage, options.optimization,
             options.source_shape,
@@ -542,6 +589,10 @@ void run(Options const& options)
         auto const hot_log = read(ninja_log);
         auto const hot_finalizer_timings = finalizer_timings(
             find_finalizer_timings(options.workspace));
+        if (options.clang_time_trace) {
+            retain_clang_time_traces(
+                ninja_log.parent_path(), options.workspace / "clang-time-traces" / "hot");
+        }
         print(
             "hot", workload, options.compile_stage, options.optimization,
             options.source_shape,

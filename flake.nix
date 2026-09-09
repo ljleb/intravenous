@@ -21,6 +21,7 @@
             juce
             llvm.clang
             llvm.clang-tools
+            llvm.lld
             llvm.llvm
             (lib.getDev llvm.llvm)
             llvm.libclang

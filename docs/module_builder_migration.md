@@ -335,6 +335,20 @@ complete CMake/Ninja/compiler transcripts are retained in the sibling
 `<workspace>.logs` directory and printed on failure (or with `--verbose`).
 Use that corpus for the next profile-driven choice.
 
+The current O0-authoring-JIT corpus baseline has hot pipeline times from
+1.216 s (`saw`) to 1.656 s (`q24_icosphere_pan`). Source export is 0.679–0.881
+s, while the finalizer is 0.498–0.825 s. The final native link is consistently
+about 0.21 s; the `q24_icosphere_pan` outlier instead spends 0.180 s in runtime
+O3 and 0.222 s emitting its native object. Treat those as separate cost centres
+rather than extrapolating from `saw` alone.
+
+The module target now selects `lld` through the Clang driver. The profiler also
+enables Clang's `-ftime-trace` by default and preserves distinct cold and hot
+JSON traces under `<workspace>/clang-time-traces`. Use
+`--no-clang-time-trace` only when measuring the instrumentation overhead. The
+trace is a diagnostic input; compare its named phases with the uninstrumented
+corpus baseline rather than treating its wall-clock result as the new baseline.
+
 ## Constant node header boundary
 
 `Constant` is a primitive node used directly by the module-facing builder and

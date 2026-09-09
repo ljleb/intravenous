@@ -13,6 +13,9 @@ set_property(CACHE IV_MODULE_FINALIZER_OPTIMIZATION PROPERTY STRINGS O0 O3)
 set(IV_MODULE_FINALIZER_TIMINGS_FILE "" CACHE FILEPATH
     "Optional path for iv-module-finalize stage timings")
 
+option(IV_MODULE_CLANG_TIME_TRACE
+    "Write Clang frontend time-trace JSON for each IV module compilation" OFF)
+
 function(iv_configure_iv_module_shared_import)
     set(IV_MODULE_SHARED_LIBRARY "${IV_MODULE_SHARED_LIBRARY}" CACHE FILEPATH
         "Path to the built iv_module_shared library")
@@ -72,7 +75,11 @@ function(iv_add_runtime_module target)
     # authored graph/configuration tables, emits one native replacement object,
     # and then resumes CMake's original link command.
     target_compile_options(${target}__compile_settings INTERFACE -O0 -flto=full)
-    target_link_options(${target}__compile_settings INTERFACE -flto=full)
+    target_link_options(${target}__compile_settings INTERFACE -flto=full -fuse-ld=lld)
+
+    if(IV_MODULE_CLANG_TIME_TRACE)
+        target_compile_options(${target}__compile_settings INTERFACE -ftime-trace)
+    endif()
 
     if(IV_MODULE_SOURCE_INTROSPECTION)
         set(_iv_source_introspection 1)
