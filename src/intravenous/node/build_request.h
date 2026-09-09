@@ -6,7 +6,7 @@
 // graph description, dynamic containers, configuration storage, and
 // validation.
 
-#include <intravenous/basic_nodes/type_erased.h>
+#include <intravenous/basic_nodes/constant.h>
 #include <intravenous/node/compiler_record.h>
 #include <intravenous/node/lifecycle.h>
 

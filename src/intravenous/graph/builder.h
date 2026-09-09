@@ -3,7 +3,7 @@
 // Module-facing builder facade. It owns no graph containers: all mutable
 // graph state belongs to the opaque BuilderSession in libiv_builder.
 
-#include <intravenous/basic_nodes/arithmetic.h>
+#include <intravenous/basic_nodes/constant.h>
 #include <intravenous/channel_ports.h>
 #include <intravenous/graph/builder/node_refs.h>
 #include <intravenous/graph/builder/output_refs.h>

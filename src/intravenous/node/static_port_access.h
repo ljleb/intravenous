@@ -193,6 +193,10 @@ namespace iv::details {
         {
             return Axis(_port, frame, _block_size);
         }
+        operator InputPort const&() const
+        {
+            return _port;
+        }
     };
 
     template<ChannelTypeId Type, SampleStreamLayout Layout>
@@ -230,6 +234,10 @@ namespace iv::details {
             {
                 IV_ASSERT(frame < _block_size, "sample frame index out of bounds");
                 return Cell(_port, frame, _outer);
+            }
+            operator OutputPort&()
+            {
+                return _port;
             }
         };
 

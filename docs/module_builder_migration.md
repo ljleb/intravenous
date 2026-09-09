@@ -317,3 +317,33 @@ Relative to the preceding 1.371 s / 657.2 ms sample, that is another 137 ms
 tracks the 143 ms JIT-materialization reduction; runtime O3 remained 73.3 ms
 and the final native link remained 208.6 ms. This again is one profile per
 configuration, not a controlled benchmark.
+
+The module sources themselves have always produced O0 bitcode; the separate
+ORC target-machine level had previously been LLVM's default (O2-equivalent).
+On the saw-module warm sample, `jit_materialize` was 249.5 ms at that
+original level (1.371 s total), 250.9 ms at O1
+(`CodeGenOptLevel::Less`, 1.387 s total), and 106.5 ms at O0
+(`CodeGenOptLevel::None`, 1.234 s total). O0 is therefore the retained
+authoring-JIT policy. None of those experiments changes the retained runtime
+O3 pipeline.
+
+Do not make further decisions from the saw module alone. The profiling script
+accepts repeated `--module` paths and `--simple-sine-modules`, which profiles
+all five `projects/simple_sine/modules` targets in isolated retained
+sub-workspaces. Its normal output is two compact timing lines per module;
+complete CMake/Ninja/compiler transcripts are retained in the sibling
+`<workspace>.logs` directory and printed on failure (or with `--verbose`).
+Use that corpus for the next profile-driven choice.
+
+## Constant node header boundary
+
+`Constant` is a primitive node used directly by the module-facing builder and
+by the special static-value description path in `node/build_request.h`. Its
+definition lives in `basic_nodes/constant.h`, rather than requiring the
+unrelated `TypeErasedNode` implementation or arithmetic-node templates.
+`type_erased.h` deliberately does not re-export it: consumers that name
+`Constant` include its defining header. `dsl.h` explicitly provides both
+`constant.h` and `arithmetic.h` as part of the supported DSL surface; because
+the module PCH includes `dsl.h` first, both are parsed into the PCH rather than
+reparsed by module sources. This is a narrow dependency cut; it changes no
+node-traits or user-facing behavior.

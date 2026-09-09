@@ -2,31 +2,16 @@
 
 #include <intravenous/node/lifecycle.h>
 
-#include <array>
-#include <limits>
+#include <cstddef>
 #include <memory>
 #include <optional>
-#include <sstream>
-#include <stdexcept>
+#include <span>
 #include <type_traits>
 #include <typeinfo>
+#include <utility>
 #include <vector>
 
 namespace iv {
-    struct Constant {
-        Sample _value;
-
-        static constexpr auto outputs()
-        {
-            return std::array<OutputConfig, 1>{};
-        }
-
-        void tick(TickSampleContext<Constant> const& state) const
-        {
-            state.outputs[0].push(_value);
-        }
-    };
-
     class TypeErasedNode {
         using NodeStoragePtr = std::unique_ptr<void, void(*)(void*)>;
 
