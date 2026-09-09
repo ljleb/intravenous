@@ -267,6 +267,104 @@ private:
 };
 
 namespace details {
+template<class... Args>
+auto make_node_call_requests(GraphBuilder& builder, Args&&... args)
+{
+  using Requests = NodeCallRequests<
+      sample_input_arg_count_v<Args...>, event_input_arg_count_v<Args...>>;
+  Requests requests;
+  size_t sample_index = 0;
+  size_t event_index = 0;
+
+  auto append = [&]<class Arg>(Arg&& arg) {
+    using Value = std::remove_cvref_t<Arg>;
+    if constexpr (is_named_arg_v<Value>) {
+      if constexpr (Value::kind == NamedPortKind::sample) {
+        requests.sample_inputs[sample_index++] = {
+            .source = builder.lift_to_sample_port(
+                std::forward<Arg>(arg).value),
+            .name = Value::name.view(),
+            .input_ordinal = 0,
+            .target = NodeCallInputTarget::named,
+        };
+      } else {
+        requests.event_inputs[event_index++] = {
+            .source = lift_node_call_event_operand(
+                std::forward<Arg>(arg).value),
+            .name = Value::name.view(),
+            .input_ordinal = 0,
+            .target = NodeCallInputTarget::named,
+        };
+      }
+    } else if constexpr (graph_builder_event_port_like<Arg>) {
+      requests.event_inputs[event_index++] = {
+          .source = static_cast<EventPortRef>(std::forward<Arg>(arg)),
+          .name = {},
+          .input_ordinal = 0,
+          .target = NodeCallInputTarget::positional,
+      };
+    } else {
+      requests.sample_inputs[sample_index++] = {
+          .source = builder.lift_to_sample_port(std::forward<Arg>(arg)),
+          .name = {},
+          .input_ordinal = 0,
+          .target = NodeCallInputTarget::positional,
+      };
+    }
+  };
+  (append(std::forward<Args>(args)), ...);
+  return requests;
+}
+
+template<class Node, class... Args>
+auto make_tiled_node_call_requests(GraphBuilder& builder, Args&&... args)
+    -> NodeCallRequests<
+        tiled_sample_input_arg_count_v<Args...>,
+        tiled_event_input_arg_count_v<Args...>>
+{
+  using Requests = NodeCallRequests<
+      tiled_sample_input_arg_count_v<Args...>,
+      tiled_event_input_arg_count_v<Args...>>;
+  Requests requests;
+  size_t positional_sample = 0;
+  size_t sample_index = 0;
+  size_t event_index = 0;
+
+  auto append = [&]<class Arg>(Arg&& arg) {
+    using Value = std::remove_cvref_t<Arg>;
+    if constexpr (is_named_arg_v<Value>) {
+      if constexpr (Value::kind == NamedPortKind::sample) {
+        constexpr auto input_ordinal =
+            static_input_port_index<Node, Value::name>();
+        requests.sample_inputs[sample_index++] = {
+            .source = builder.lift_to_sample_port(
+                std::forward<Arg>(arg).value),
+            .name = {},
+            .input_ordinal = input_ordinal,
+            .target = NodeCallInputTarget::explicit_ordinal,
+        };
+      } else {
+        requests.event_inputs[event_index++] = {
+            .source = lift_node_call_event_operand(
+                std::forward<Arg>(arg).value),
+            .name = Value::name.view(),
+            .input_ordinal = 0,
+            .target = NodeCallInputTarget::named,
+        };
+      }
+    } else {
+      requests.sample_inputs[sample_index++] = {
+          .source = builder.lift_to_sample_port(std::forward<Arg>(arg)),
+          .name = {},
+          .input_ordinal = positional_sample++,
+          .target = NodeCallInputTarget::explicit_ordinal,
+      };
+    }
+  };
+  (append(std::forward<Args>(args)), ...);
+  return requests;
+}
+
 template<class Sink, class... Refs>
 inline void author_sample_output_requests(
     GraphBuilder& builder, Sink&& sink, Refs&&... refs) {
@@ -443,27 +541,11 @@ inline NodeRef NodeRef::connect_input(std::string_view name, T&& value) const {
 template<class... Args>
 inline NodeRef NodeRef::operator()(Args&&... args) const {
   if (!_graph_builder) details::error("attempted to use a null NodeRef");
-  size_t sample = 0;
-  size_t event = 0;
-  auto add = [&](auto&& arg) {
-    using Arg = std::remove_cvref_t<decltype(arg)>;
-    if constexpr (details::is_named_arg_v<Arg>) {
-      if constexpr (Arg::kind == NamedPortKind::sample)
-        connect_input(_graph_builder->sample_port_index(
-            _index, true, Arg::name.view()),
-            std::forward<decltype(arg)>(arg).value);
-      else
-        connect_event_input(_graph_builder->event_port_index(
-            _index, true, Arg::name.view()),
-            static_cast<EventPortRef>(std::forward<decltype(arg)>(arg).value));
-    } else if constexpr (std::convertible_to<Arg, EventPortRef>) {
-      connect_event_input(event++,
-          static_cast<EventPortRef>(std::forward<decltype(arg)>(arg)));
-    } else {
-      connect_input(sample++, std::forward<decltype(arg)>(arg));
-    }
-  };
-  (add(std::forward<Args>(args)), ...);
+  auto requests = details::make_node_call_requests(
+      *_graph_builder, std::forward<Args>(args)...);
+  apply_node_call(
+      {.data = requests.sample_inputs.data(), .size = requests.sample_inputs.size()},
+      {.data = requests.event_inputs.data(), .size = requests.event_inputs.size()});
   return _clone_handle();
 }
 template<class Node, class Projection>
@@ -522,52 +604,11 @@ template<class... Args>
 inline TypedNodeRef<Node, Projection>
 TypedNodeRef<Node, Projection>::operator()(Args&&... args) const {
   if (!_graph_builder) details::error("attempted to use a null NodeRef");
-  auto inputs = get_inputs(ports());
-  auto const& events = ports().event_inputs();
-  auto sample = [&](SamplePortRef const& ref, size_t i) {
-    if (i >= inputs.size()) details::error("too many sample inputs");
-    if (ref.graph_builder != _graph_builder)
-      details::error("sample source belongs to another builder");
-    _graph_builder->connect_sample_input({_index, PortKind::sample, i}, ref);
-  };
-  auto event = [&](EventPortRef ref, size_t i) {
-    if (i >= events.size()) details::error("too many event inputs");
-    if (ref.graph_builder != _graph_builder)
-      details::error("event source belongs to another builder");
-    _graph_builder->connect_event_input({_index, PortKind::event, i}, ref);
-  };
-  size_t positional_sample = 0;
-  size_t positional_event = 0;
-  auto process = [&](auto&& arg) {
-    using Arg = std::remove_cvref_t<decltype(arg)>;
-    if constexpr (details::is_named_arg_v<Arg>) {
-      if constexpr (Arg::kind == NamedPortKind::event) {
-        for (size_t i = 0; i < events.size(); ++i) {
-          if (events[i].name == Arg::name.view()) {
-            event(lift_event_operand(arg.value), i);
-            return;
-          }
-        }
-        details::error("named event input does not exist");
-      } else {
-        for (size_t i = 0; i < inputs.size(); ++i) {
-          if (inputs[i].name == Arg::name.view()) {
-            sample(_graph_builder->lift_to_sample_port(arg.value), i);
-            return;
-          }
-        }
-        details::error("named sample input does not exist");
-      }
-    } else if constexpr (details::graph_builder_event_port_like<decltype(arg)>) {
-      event(static_cast<EventPortRef>(std::forward<decltype(arg)>(arg)),
-            positional_event++);
-    } else {
-      sample(_graph_builder->lift_to_sample_port(
-                 std::forward<decltype(arg)>(arg)),
-             positional_sample++);
-    }
-  };
-  (process(std::forward<Args>(args)), ...);
+  auto requests = details::make_node_call_requests(
+      *_graph_builder, std::forward<Args>(args)...);
+  this->apply_node_call(
+      {.data = requests.sample_inputs.data(), .size = requests.sample_inputs.size()},
+      {.data = requests.event_inputs.data(), .size = requests.event_inputs.size()});
   return this->_clone_handle();
 }
 template<class Node, class Projection>

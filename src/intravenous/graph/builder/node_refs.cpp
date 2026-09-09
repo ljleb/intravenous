@@ -200,6 +200,65 @@ bool NodeRef::event_input_is_connected(size_t port) const
         {_index, PortKind::event, port});
 }
 
+void NodeRef::apply_node_call(
+    details::NodeCallSampleInputList sample_inputs,
+    details::NodeCallEventInputList event_inputs) const
+{
+    if (!_graph_builder) details::error("attempted to use a null NodeRef");
+
+    size_t positional_sample = 0;
+    for (size_t i = 0; i < sample_inputs.size; ++i) {
+        auto const& input = sample_inputs.data[i];
+        size_t input_port = 0;
+        switch (input.target) {
+        case details::NodeCallInputTarget::positional:
+            input_port = positional_sample++;
+            break;
+        case details::NodeCallInputTarget::named:
+            input_port = _graph_builder->sample_port_index(
+                _index, true, input.name);
+            break;
+        case details::NodeCallInputTarget::explicit_ordinal:
+            input_port = input.input_ordinal;
+            break;
+        }
+        if (input_port >= sample_input_count()) {
+            details::error("too many sample inputs");
+        }
+        if (input.source.graph_builder != _graph_builder) {
+            details::error("sample source belongs to another builder");
+        }
+        _graph_builder->connect_sample_input(
+            {_index, PortKind::sample, input_port}, input.source);
+    }
+
+    size_t positional_event = 0;
+    for (size_t i = 0; i < event_inputs.size; ++i) {
+        auto const& input = event_inputs.data[i];
+        size_t input_port = 0;
+        switch (input.target) {
+        case details::NodeCallInputTarget::positional:
+            input_port = positional_event++;
+            break;
+        case details::NodeCallInputTarget::named:
+            input_port = _graph_builder->event_port_index(
+                _index, true, input.name);
+            break;
+        case details::NodeCallInputTarget::explicit_ordinal:
+            input_port = input.input_ordinal;
+            break;
+        }
+        if (input_port >= event_input_count()) {
+            details::error("too many event inputs");
+        }
+        if (input.source.graph_builder != _graph_builder) {
+            details::error("event source belongs to another builder");
+        }
+        _graph_builder->connect_event_input(
+            {_index, PortKind::event, input_port}, input.source);
+    }
+}
+
 NodeRef NodeRef::connect_event_input(size_t port, EventPortRef value) const
 {
     if (!_graph_builder) details::error("attempted to use a null NodeRef");

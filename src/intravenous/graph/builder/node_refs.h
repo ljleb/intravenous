@@ -8,9 +8,9 @@
 
 #include <concepts>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -28,6 +28,57 @@ namespace iv {
     template<class Node, class ChannelType>
     using TiledNodeRef = TypedNodeRef<Node, TiledPortProjection<ChannelType>>;
 
+    namespace details {
+        // These are the erased, short-lived result of a typed node-call
+        // argument pack. They cross into the precompiled builder before the
+        // call returns, so no module-owned data is retained here.
+        enum class NodeCallInputTarget : uint8_t {
+            positional,
+            named,
+            explicit_ordinal,
+        };
+
+        struct NodeCallSampleInput {
+            SamplePortRef source;
+            std::string_view name;
+            size_t input_ordinal;
+            NodeCallInputTarget target;
+        };
+
+        struct NodeCallEventInput {
+            EventPortRef source;
+            std::string_view name;
+            size_t input_ordinal;
+            NodeCallInputTarget target;
+        };
+
+        // Unlike std::span, these two tiny concrete views do not make the
+        // standard library instantiate range machinery for every module-side
+        // node-call argument pack. They are internal and only valid for the
+        // synchronous apply_node_call invocation.
+        struct NodeCallSampleInputList {
+            NodeCallSampleInput const* data;
+            size_t size;
+        };
+
+        struct NodeCallEventInputList {
+            NodeCallEventInput const* data;
+            size_t size;
+        };
+
+        template<size_t SampleCount, size_t EventCount>
+        struct NodeCallRequests {
+            std::array<NodeCallSampleInput, SampleCount> sample_inputs {};
+            std::array<NodeCallEventInput, EventCount> event_inputs {};
+        };
+
+        template<class Node, class... Args>
+        NodeCallRequests<
+            tiled_sample_input_arg_count_v<Args...>,
+            tiled_event_input_arg_count_v<Args...>>
+        make_tiled_node_call_requests(GraphBuilder&, Args&&...);
+    }
+
     // The untyped handle is the public base for every node-bundle case.
     // It deliberately addresses a NodeBundle, never an assumed concrete node.
     class NodeRef {
@@ -41,6 +92,10 @@ namespace iv {
 
         friend class GraphBuilder;
         friend class GraphBuilderAnnotations;
+
+        void apply_node_call(
+            details::NodeCallSampleInputList,
+            details::NodeCallEventInputList) const;
 
     public:
         constexpr NodeRef() = default;
@@ -408,35 +463,13 @@ namespace iv {
             if (!this->_graph_builder) {
                 details::error("attempted to use a null tiled TypedNodeRef");
             }
-            static constexpr auto inputs = NodeType::inputs();
-            size_t positional_input = 0;
-            auto connect_input = [&]<class Value>(size_t input_ordinal,
-                                                   Value&& value) {
-                if (input_ordinal >= inputs.size()) {
-                    details::error("too many sample inputs for tiled node");
-                }
-                auto source = this->_graph_builder->lift_to_sample_port(
-                    std::forward<Value>(value));
-                this->_graph_builder->connect_sample_input(
-                    {this->_index, PortKind::sample, input_ordinal},
-                    std::move(source));
-            };
-            auto process = [&](auto&& arg) {
-                using Arg = std::remove_cvref_t<decltype(arg)>;
-                if constexpr (details::is_named_arg_v<Arg>) {
-                    if constexpr (Arg::kind == NamedPortKind::sample) {
-                        constexpr auto input_ordinal =
-                            details::static_input_port_index<NodeType, Arg::name>();
-                        connect_input(input_ordinal, std::forward<decltype(arg)>(arg).value);
-                    } else {
-                        connect_event_input(std::string_view{Arg::name.value},
-                                            std::forward<decltype(arg)>(arg).value);
-                    }
-                } else {
-                    connect_input(positional_input++, std::forward<decltype(arg)>(arg));
-                }
-            };
-            (process(std::forward<Args>(args)), ...);
+            auto requests = details::make_tiled_node_call_requests<NodeType>(
+                *this->_graph_builder, std::forward<Args>(args)...);
+            this->apply_node_call(
+                {.data = requests.sample_inputs.data(),
+                 .size = requests.sample_inputs.size()},
+                {.data = requests.event_inputs.data(),
+                 .size = requests.event_inputs.size()});
             return _clone_handle();
         }
     };

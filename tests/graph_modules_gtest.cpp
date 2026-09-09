@@ -72,6 +72,36 @@ struct CStringConfigNode {
     }
 };
 
+struct NodeCallEventSource {
+    static constexpr auto event_outputs()
+    {
+        return std::array<EventOutputConfig, 1>{EventOutputConfig {
+            .name = "trigger", .type = EventTypeId::trigger,
+        }};
+    }
+
+    void tick_block(TickBlockContext<NodeCallEventSource> const&) const {}
+};
+
+struct NodeCallMixedSink {
+    static constexpr auto inputs()
+    {
+        return std::array<InputConfig, 2>{
+            InputConfig {.name = "left"},
+            InputConfig {.name = "right"},
+        };
+    }
+
+    static constexpr auto event_inputs()
+    {
+        return std::array<EventInputConfig, 1>{EventInputConfig {
+            .name = "trigger", .type = EventTypeId::trigger,
+        }};
+    }
+
+    void tick_block(TickBlockContext<NodeCallMixedSink> const&) const {}
+};
+
 struct CStringConfigDetails {
     char const* first = "first";
     char const* second = "second";
@@ -455,6 +485,32 @@ TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
     auto const plan = compile_graph(view);
     ASSERT_EQ(plan.graph.outputs().size(), 1u);
     EXPECT_EQ(plan.graph.outputs().front().name, "out");
+}
+
+TEST(GraphModules, TypedNodeCallsForwardNormalizedSampleAndEventRequests)
+{
+    GraphBuilder graph;
+    auto left = graph.input<"left">(0.0f);
+    auto right = graph.input<"right">(0.0f);
+    auto source = graph.node<NodeCallEventSource>();
+    auto sink = graph.node<NodeCallMixedSink>();
+    auto tiled_sink = graph.node<NodeCallMixedSink, stereo>();
+
+    sink(
+        "left"_P = left,
+        "right"_P = right,
+        "trigger"_F = source);
+    tiled_sink(
+        "right"_P = right,
+        "left"_P = left,
+        "trigger"_F = source.event_port());
+
+    EXPECT_TRUE(sink.input_is_connected(0));
+    EXPECT_TRUE(sink.input_is_connected(1));
+    EXPECT_TRUE(sink.event_input_is_connected(0));
+    EXPECT_TRUE(tiled_sink.input_is_connected(0));
+    EXPECT_TRUE(tiled_sink.input_is_connected(1));
+    EXPECT_TRUE(tiled_sink.event_input_is_connected(0));
 }
 
 TEST(GraphModules, BuilderCapturesCStringConfigurationFromCompilerFieldMetadata)

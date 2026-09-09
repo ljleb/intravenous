@@ -4,7 +4,11 @@
 
 #include <array>
 #include <cstddef>
-#include <iostream>
+
+namespace iv::details {
+    void write_debug_probe_sample(
+        char const* label, size_t tick_index, Sample sample);
+}
 
 struct DebugProbe {
     char const* label = "debug";
@@ -24,8 +28,7 @@ struct DebugProbe {
     {
         auto const sample = ctx.inputs[0].get();
         if (every_n_ticks != 0 && (ctx.index % every_n_ticks) == 0) {
-            std::cout << label;
-            std::cout << "[" << ctx.index << "] = " << sample << '\n';
+            iv::details::write_debug_probe_sample(label, ctx.index, sample);
         }
         ctx.outputs[0].push(sample);
     }

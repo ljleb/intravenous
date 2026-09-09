@@ -6,6 +6,7 @@
 
 #include <concepts>
 #include <type_traits>
+#include <utility>
 
 namespace iv::details {
     template<class T>
@@ -13,6 +14,27 @@ namespace iv::details {
 
     template<class T>
     concept graph_builder_event_port_like = std::convertible_to<std::remove_cvref_t<T>, EventPortRef>;
+
+    // This intentionally does not depend on the DSL's NodeLike concept. The
+    // builder reference layer needs the same event lifting before dsl.h has
+    // introduced its convenience concepts.
+    template<class T>
+    concept graph_builder_single_event_output_like = requires(
+        std::remove_cvref_t<T> const& value) {
+        { value.node_ref().event_port() } -> std::same_as<EventPortRef>;
+    };
+
+    template<class T>
+    constexpr EventPortRef lift_node_call_event_operand(T&& value)
+    {
+        if constexpr (graph_builder_event_port_like<T>) {
+            return static_cast<EventPortRef>(std::forward<T>(value));
+        } else {
+            static_assert(graph_builder_single_event_output_like<T>,
+                "an event input requires an event port or a node with one event output");
+            return std::forward<T>(value).node_ref().event_port();
+        }
+    }
 
     template<class T>
     struct is_named_arg : std::false_type {};
@@ -101,6 +123,27 @@ namespace iv::details {
     template<class... Args>
     inline constexpr size_t event_input_arg_count_v =
         (0 + ... + (arg_targets_event_input_v<std::remove_cvref_t<Args>> ? 1u : 0u));
+
+    // Tiled refs retain compile-time lookup for named sample ports. Their
+    // positional arguments have historically all been sample inputs, while
+    // only named event arguments target event ports.
+    template<class T>
+    inline constexpr bool tiled_arg_targets_sample_input_v =
+        !is_named_arg_v<std::remove_cvref_t<T>>
+        || arg_targets_sample_input_v<std::remove_cvref_t<T>>;
+
+    template<class T>
+    inline constexpr bool tiled_arg_targets_event_input_v =
+        is_named_arg_v<std::remove_cvref_t<T>>
+        && arg_targets_event_input_v<std::remove_cvref_t<T>>;
+
+    template<class... Args>
+    inline constexpr size_t tiled_sample_input_arg_count_v =
+        (0 + ... + (tiled_arg_targets_sample_input_v<Args> ? 1u : 0u));
+
+    template<class... Args>
+    inline constexpr size_t tiled_event_input_arg_count_v =
+        (0 + ... + (tiled_arg_targets_event_input_v<Args> ? 1u : 0u));
 
     template<class... Args>
     inline constexpr bool valid_node_call_args_v =

@@ -356,11 +356,9 @@ The hot `root_export.cpp` traces show that the PCH is not the remaining warm
 cost (`ReadAST` is about 2 ms). Clang frontend work is 0.58–0.80 s, whereas its
 backend is only 0.023–0.040 s. The dominant frontend categories are
 node-specific template instantiation, concept-constraint checking, and parsing
-of the module's own large node classes. `compat.h` also exposes inline
-diagnostic/stacktrace code that triggers libstdc++ format instantiations in
-every module. If a further common frontend cut is wanted, move that diagnostic
-implementation behind a compiled boundary after confirming its link ownership;
-do not delete normal module-facing standard-library types merely because they
+of the module's own large node classes. `compat.h` also exposed inline
+diagnostic/stacktrace code that warranted moving behind a compiled boundary.
+Do not delete normal module-facing standard-library types merely because they
 appear in the PCH.
 
 That diagnostic boundary is now `compat.h` / `compat.cpp`. The header preserves
@@ -370,7 +368,70 @@ file, stream, mutex, or stacktrace implementation. `compat.cpp` belongs to
 the `iv_builder` DSO that module JIT and final native modules already link.
 `Compat.WrapExceptionPreservesContextAndCause` guards the preserved out-of-line
 exception-formatting behavior; the module build suite exercises DSO resolution
-of the assertion path. Await a fresh trace before claiming a timing win.
+of the assertion path.
+
+The subsequent five-module profile is not a controlled before/after result:
+the uninstrumented hot pipeline ranged from 1.056 s (`saw`) to 1.464 s
+(`q24_icosphere_pan`), with 0.690--0.868 s in the source export edge and
+0.302--0.607 s in finalization. It does not establish a material end-to-end
+win from the compat extraction. More importantly, the fresh hot traces still
+show two common libstdc++ format instantiations taking about 13--19 ms each.
+`node/traits.h`'s unused `iv::info(Node&&)` diagnostic helper was one needless
+`<iostream>` dependency, so the helper, its stale commented-out call in
+`noisy_saw`, and the `<iostream>`/`<string>` dependencies were deleted. This is
+an explicit removal of obsolete API rather than a change to the node-traits
+contract. Subsequent corpus traces showed it was not the dominant source of
+the recurring format work.
+
+`basic_nodes/debug_probe.h` also included `<iostream>`, so `DebugProbe` now
+retains its same `char const* label` and runtime tick behavior while delegating
+printing to `iv::details::write_debug_probe_sample` in
+`basic_nodes/debug_probe.cpp`. That source belongs to
+`intravenous_graph_builder`, so both the authoring JIT and finalized module DSO
+resolve it from `libiv_builder`; module-facing code only parses the small
+function declaration. The behavior-project module constructs a `DebugProbe`,
+exercising the linked-node path. This boundary is correct, but the subsequent
+corpus trace showed it was not the main common format-instantiation source.
+
+The recurring source is `node/tick.h`'s non-template `remaining_buffer()`.
+Although it is only called by the templated nested-context adapter, it built a
+diagnostic `std::ostringstream` in the module-facing header. It now has a
+declaration in `tick.h` and its unchanged validation/error implementation in
+`node/tick.cpp`, which belongs to `intravenous_graph_builder`. The nested
+context template keeps only the call across the precompiled boundary; this is
+the appropriate fix for the current format-instantiation cost.
+
+### Node-call request normalization
+
+The concrete `TypedNodeRef<Node>::operator()(Args...)` path previously
+instantiated its full argument dispatcher, runtime port lookup, bounds checks,
+builder-ownership checks, and connection recording for every `Node` and
+argument-pack combination. It now retains only `node_call_enabled<Node,
+Args...>` as its type-specific validation, normalizes the pack into fixed
+arrays of erased sample/event requests, and calls the compiled
+`NodeRef::apply_node_call` implementation. The normalizer remains specialized
+by the argument pack, but is independent of the destination node type, so the
+same argument shape can be shared across typed nodes. The compiled method owns
+runtime port lookup and all connection validation. Named event arguments retain
+the existing ability to accept either an `EventPortRef` or a node with exactly
+one event output.
+
+The first corpus profile did not establish an end-to-end win, and the traces
+identified repeated `std::span` range machinery at this otherwise synchronous,
+internal boundary. `apply_node_call` therefore takes two tiny concrete
+pointer-and-count views rather than spans. This avoids a standard-library range
+instantiation per module-side node-call shape without changing any public API.
+
+Tiled typed references now use the same compiled application path rather than
+retaining a second templated dispatcher. Their normalizer still resolves every
+named sample input with `static_input_port_index<Node, Name>()` and sends that
+explicit ordinal to the compiled method, preserving the compile-time unknown
+or duplicate-name diagnostics. Positional tiled arguments retain their prior
+sample-input meaning; only named event arguments target event inputs.
+`GraphModules.TypedNodeCallsForwardNormalizedSampleAndEventRequests` covers
+both a concrete and tiled sink with two named sample inputs and a named event.
+Profile the full module corpus after test verification before assigning a
+timing improvement to this reduction.
 
 ## Constant node header boundary
 

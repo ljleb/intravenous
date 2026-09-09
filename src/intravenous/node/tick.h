@@ -4,7 +4,6 @@
 #include <intravenous/node/resources.h>
 #include <intravenous/node/static_port_access.h>
 
-#include <sstream>
 #include <memory>
 #include <span>
 
@@ -151,25 +150,8 @@ namespace iv {
     template<typename Node>
     void do_skip_block(Node const& node, SkipBlockContext<Node> const& state);
 
-    IV_FORCEINLINE std::span<std::byte> remaining_buffer(std::span<std::byte> buffer, std::byte* state_base)
-    {
-        if (!state_base) {
-            throw std::logic_error("nested node state pointer cannot be null");
-        }
-
-        auto* const buffer_begin = buffer.data();
-        auto* const buffer_end = buffer_begin + buffer.size();
-        if (state_base < buffer_begin || state_base > buffer_end) {
-            std::ostringstream oss;
-            oss << "nested node state pointer is outside the enclosing buffer"
-                << " (state=" << static_cast<void*>(state_base)
-                << ", begin=" << static_cast<void*>(buffer_begin)
-                << ", end=" << static_cast<void*>(buffer_end) << ")";
-            throw std::logic_error(oss.str());
-        }
-
-        return { state_base, static_cast<size_t>(buffer_end - state_base) };
-    }
+    std::span<std::byte> remaining_buffer(
+        std::span<std::byte> buffer, std::byte* state_base);
 
     template<typename NestedNode, typename OuterNode>
     IV_FORCEINLINE TickContext<NestedNode> make_nested_tick_context(
