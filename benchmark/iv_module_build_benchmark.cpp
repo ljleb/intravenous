@@ -361,7 +361,8 @@ std::vector<std::filesystem::path> clang_time_traces(
         if (!it->is_regular_file() || it->path().extension() != ".json") continue;
         auto const relative = it->path().lexically_relative(cmake_build_directory);
         for (auto const& component : relative) {
-            if (component == "CMakeFiles") {
+            if (component == "CMakeFiles"
+                && read(it->path()).contains("\"traceEvents\"")) {
                 result.push_back(it->path());
                 break;
             }
@@ -370,11 +371,34 @@ std::vector<std::filesystem::path> clang_time_traces(
     return result;
 }
 
+using ClangTimeTraceSnapshot = std::vector<
+    std::pair<std::filesystem::path, std::filesystem::file_time_type>>;
+
+ClangTimeTraceSnapshot clang_time_trace_snapshot(
+    std::filesystem::path const& cmake_build_directory)
+{
+    ClangTimeTraceSnapshot result;
+    for (auto const& trace : clang_time_traces(cmake_build_directory)) {
+        result.emplace_back(trace, std::filesystem::last_write_time(trace));
+    }
+    return result;
+}
+
 void retain_clang_time_traces(
     std::filesystem::path const& cmake_build_directory,
-    std::filesystem::path const& destination)
+    std::filesystem::path const& destination,
+    ClangTimeTraceSnapshot const& previous = {})
 {
-    auto const traces = clang_time_traces(cmake_build_directory);
+    std::vector<std::filesystem::path> traces;
+    for (auto const& trace : clang_time_traces(cmake_build_directory)) {
+        auto const before = std::find_if(
+            previous.begin(), previous.end(),
+            [&](auto const& entry) { return entry.first == trace; });
+        if (before == previous.end()
+            || before->second != std::filesystem::last_write_time(trace)) {
+            traces.push_back(trace);
+        }
+    }
     if (traces.empty()) {
         throw std::runtime_error(
             "Clang time tracing was requested, but no trace JSON was produced below '" +
@@ -570,6 +594,9 @@ void run(Options const& options)
             retain_clang_time_traces(
                 ninja_log.parent_path(), options.workspace / "clang-time-traces" / "cold");
         }
+        auto const traces_before_hot = options.clang_time_trace
+            ? clang_time_trace_snapshot(ninja_log.parent_path())
+            : ClangTimeTraceSnapshot{};
         print(
             "cold", workload, options.compile_stage, options.optimization,
             options.source_shape,
@@ -591,7 +618,8 @@ void run(Options const& options)
             find_finalizer_timings(options.workspace));
         if (options.clang_time_trace) {
             retain_clang_time_traces(
-                ninja_log.parent_path(), options.workspace / "clang-time-traces" / "hot");
+                ninja_log.parent_path(), options.workspace / "clang-time-traces" / "hot",
+                traces_before_hot);
         }
         print(
             "hot", workload, options.compile_stage, options.optimization,

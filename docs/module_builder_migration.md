@@ -342,12 +342,26 @@ about 0.21 s; the `q24_icosphere_pan` outlier instead spends 0.180 s in runtime
 O3 and 0.222 s emitting its native object. Treat those as separate cost centres
 rather than extrapolating from `saw` alone.
 
-The module target now selects `lld` through the Clang driver. The profiler also
-enables Clang's `-ftime-trace` by default and preserves distinct cold and hot
-JSON traces under `<workspace>/clang-time-traces`. Use
-`--no-clang-time-trace` only when measuring the instrumentation overhead. The
-trace is a diagnostic input; compare its named phases with the uninstrumented
-corpus baseline rather than treating its wall-clock result as the new baseline.
+The module target now selects `lld` through the Clang driver. In the first
+instrumented five-module run, final native link fell from the prior ~0.21 s to
+0.033–0.041 s, and finalizer totals fell to 0.315–0.628 s. The profiler also
+enables Clang's `-ftime-trace` by default and preserves only the JSON traces
+written in each distinct cold or hot phase under
+`<workspace>/clang-time-traces`. Use `--no-clang-time-trace` only when
+measuring the instrumentation overhead. The trace is a diagnostic input;
+compare its named phases with the uninstrumented corpus baseline rather than
+treating its wall-clock result as the new baseline.
+
+The hot `root_export.cpp` traces show that the PCH is not the remaining warm
+cost (`ReadAST` is about 2 ms). Clang frontend work is 0.58–0.80 s, whereas its
+backend is only 0.023–0.040 s. The dominant frontend categories are
+node-specific template instantiation, concept-constraint checking, and parsing
+of the module's own large node classes. `compat.h` also exposes inline
+diagnostic/stacktrace code that triggers libstdc++ format instantiations in
+every module. If a further common frontend cut is wanted, move that diagnostic
+implementation behind a compiled boundary after confirming its link ownership;
+do not delete normal module-facing standard-library types merely because they
+appear in the PCH.
 
 ## Constant node header boundary
 
