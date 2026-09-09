@@ -10,6 +10,9 @@ set(IV_MODULE_FINALIZER_OPTIMIZATION "O3" CACHE STRING
     "Optimization level used by iv-module-finalize for the final native module")
 set_property(CACHE IV_MODULE_FINALIZER_OPTIMIZATION PROPERTY STRINGS O0 O3)
 
+set(IV_MODULE_FINALIZER_TIMINGS_FILE "" CACHE FILEPATH
+    "Optional path for iv-module-finalize stage timings")
+
 function(iv_configure_iv_module_shared_import)
     set(IV_MODULE_SHARED_LIBRARY "${IV_MODULE_SHARED_LIBRARY}" CACHE FILEPATH
         "Path to the built iv_module_shared library")
@@ -123,6 +126,19 @@ function(iv_add_runtime_module target)
     # a normal linker input, so make updates to it invalidate the link result.
     set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
         "${IV_MODULE_FINALIZER}")
+    set(_iv_module_finalizer_launcher
+        "${IV_MODULE_FINALIZER}"
+        "--metadata-dir=${_iv_metadata_dir}"
+        "--optimization=${IV_MODULE_FINALIZER_OPTIMIZATION}")
+    set(_iv_module_finalizer_timings_file "${IV_MODULE_FINALIZER_TIMINGS_FILE}")
+    if(NOT _iv_module_finalizer_timings_file)
+        set(_iv_module_finalizer_timings_file
+            "${CMAKE_CURRENT_BINARY_DIR}/iv-module-finalizer-timings.txt")
+    endif()
+    list(APPEND _iv_module_finalizer_launcher
+        "--timings-file=${_iv_module_finalizer_timings_file}")
+    list(APPEND _iv_module_finalizer_launcher "--")
+
     set_target_properties(${target} PROPERTIES
         CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
         CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES
@@ -133,8 +149,7 @@ function(iv_add_runtime_module target)
         LIBRARY_OUTPUT_DIRECTORY ${IV_MODULE_OUTPUT_DIR}
         LIBRARY_OUTPUT_DIRECTORY_DEBUG ${IV_MODULE_OUTPUT_DIR}
         LIBRARY_OUTPUT_DIRECTORY_RELEASE ${IV_MODULE_OUTPUT_DIR}
-        CXX_LINKER_LAUNCHER
-            "${IV_MODULE_FINALIZER};--metadata-dir=${_iv_metadata_dir};--optimization=${IV_MODULE_FINALIZER_OPTIMIZATION};--")
+        CXX_LINKER_LAUNCHER "${_iv_module_finalizer_launcher}")
     target_link_libraries(${target} PRIVATE ${target}__compile_settings)
 
     if(TARGET iv_module_shared)

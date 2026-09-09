@@ -135,6 +135,15 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     EXPECT_NE(local_compile_database.find("-include "), std::string::npos);
     EXPECT_NE(local_compile_database.find("cmake_pch.hxx"), std::string::npos);
 
+    auto const finalizer_timings =
+        local_workspace / "cmake-build" / "iv-module-finalizer-timings.txt";
+    ASSERT_TRUE(std::filesystem::exists(finalizer_timings));
+    auto const finalizer_timings_text = iv::test::read_text(finalizer_timings);
+    EXPECT_TRUE(finalizer_timings_text.starts_with("version=1\n"));
+    EXPECT_NE(finalizer_timings_text.find("module_main_us="), std::string::npos);
+    EXPECT_NE(finalizer_timings_text.find("runtime_optimize_us="), std::string::npos);
+    EXPECT_NE(finalizer_timings_text.find("native_link_us="), std::string::npos);
+
     bool has_precompiled_header = false;
     for (std::filesystem::recursive_directory_iterator it(local_workspace / "cmake-build"), end;
          it != end;
@@ -152,6 +161,8 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     if (expected_generator == "Ninja") {
         EXPECT_TRUE(std::filesystem::exists(project_workspace / "cmake-build" / "build.ninja"));
         EXPECT_TRUE(std::filesystem::exists(local_workspace / "cmake-build" / "build.ninja"));
+        ASSERT_TRUE(std::filesystem::exists(
+            local_workspace / "cmake-build" / "CMakeFiles" / "rules.ninja"));
 
         auto const local_cache_text = iv::test::read_text(local_cache);
         auto cache_path = [&](std::string const& name) {
@@ -171,6 +182,8 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 
         auto const local_ninja = iv::test::read_text(
             local_workspace / "cmake-build" / "build.ninja");
+        auto const local_rules = iv::test::read_text(
+            local_workspace / "cmake-build" / "CMakeFiles" / "rules.ninja");
         auto rule_line = [&](std::string const& needle) {
             auto const match = local_ninja.find(needle);
             if (match == std::string::npos) return std::string{};
@@ -193,5 +206,8 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         // host tool changes.
         EXPECT_NE(object_rule.find(plugin_path), std::string::npos);
         EXPECT_NE(link_rule.find(finalizer_path), std::string::npos);
+        // Ninja puts the per-target launcher arguments in the generated link
+        // rule, while the target edge contains its dependency inputs.
+        EXPECT_NE(local_rules.find("--timings-file="), std::string::npos);
     }
 }

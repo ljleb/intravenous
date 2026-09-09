@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -63,8 +64,52 @@ using namespace llvm;
 
 struct Options {
     std::filesystem::path metadata_dir;
+    std::optional<std::filesystem::path> timings_file;
     bool optimize = true;
     std::vector<std::string> link_command;
+};
+
+[[noreturn]] void fail(std::string const& message);
+
+class TimingReport {
+    using Clock = std::chrono::steady_clock;
+
+    Clock::time_point const started_at_ = Clock::now();
+    std::vector<std::pair<std::string, std::chrono::microseconds>> stages_;
+
+public:
+    [[nodiscard]] Clock::time_point start_stage() const noexcept
+    {
+        return Clock::now();
+    }
+
+    void finish_stage(std::string_view name, Clock::time_point started_at)
+    {
+        stages_.emplace_back(
+            name,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                Clock::now() - started_at));
+    }
+
+    void write(std::filesystem::path const& path) const
+    {
+        if (!path.parent_path().empty()) {
+            std::filesystem::create_directories(path.parent_path());
+        }
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        if (!output) fail("cannot write timing report '" + path.string() + "'");
+        output << "version=1\n";
+        for (auto const& [name, duration] : stages_) {
+            output << name << "_us=" << duration.count() << '\n';
+        }
+        output << "total_us="
+               << std::chrono::duration_cast<std::chrono::microseconds>(
+                      Clock::now() - started_at_)
+                      .count()
+               << '\n';
+        output.flush();
+        if (!output) fail("cannot finish timing report '" + path.string() + "'");
+    }
 };
 
 [[noreturn]] void fail(std::string const& message)
@@ -105,6 +150,12 @@ Options parse_options(int argc, char** argv)
         }
         if (!command && arg.starts_with("--metadata-dir=")) {
             result.metadata_dir = std::string(arg.substr(std::string_view("--metadata-dir=").size()));
+            continue;
+        }
+        if (!command && arg.starts_with("--timings-file=")) {
+            auto const path = arg.substr(std::string_view("--timings-file=").size());
+            if (path.empty()) fail("empty --timings-file");
+            result.timings_file = std::string(path);
             continue;
         }
         if (!command && arg.starts_with("--optimization=")) {
@@ -594,11 +645,19 @@ iv::AuthoredGraph run_builder_jit(
     Module const& master,
     orc::ThreadSafeContext context,
     std::span<std::string const> command,
-    CompilerMetadata const& metadata)
+    CompilerMetadata const& metadata,
+    TimingReport& timings)
 {
+    auto stage_started_at = timings.start_stage();
     auto builder_module = clone_builder_module(master);
+    timings.finish_stage("authoring_module_clone", stage_started_at);
+
+    stage_started_at = timings.start_stage();
     initialize_native_target();
     auto jit = take_expected(orc::LLJITBuilder().create(), "create ORC LLJIT");
+    timings.finish_stage("jit_create", stage_started_at);
+
+    stage_started_at = timings.start_stage();
     add_external_generators(*jit, command);
     auto tracker = jit->getMainJITDylib().createResourceTracker();
     check_error(jit->addIRModule(
@@ -606,8 +665,11 @@ iv::AuthoredGraph run_builder_jit(
         "add builder LLVM module to ORC");
     check_error(jit->initialize(jit->getMainJITDylib()), "run builder global initializers");
     auto address = take_expected(jit->lookup("iv_module_build"), "lookup iv_module_build");
+    timings.finish_stage("jit_materialize", stage_started_at);
+
     using BuildFn = void (*)(iv::details::BuilderSession*);
     auto build = address.toPtr<BuildFn>();
+    stage_started_at = timings.start_stage();
     auto session = std::unique_ptr<
         iv::details::BuilderSession,
         decltype(&iv::details::iv_builder_session_destroy)>(
@@ -623,10 +685,17 @@ iv::AuthoredGraph run_builder_jit(
         });
     }
     iv::details::set_builder_node_config_layouts(session.get(), config_layouts);
+    timings.finish_stage("builder_session_setup", stage_started_at);
+
+    stage_started_at = timings.start_stage();
     build(session.get());
     auto graph = iv::details::take_built_graph(session.get());
+    timings.finish_stage("module_main", stage_started_at);
+
+    stage_started_at = timings.start_stage();
     check_error(jit->deinitialize(jit->getMainJITDylib()), "run builder global destructors");
     check_error(tracker->remove(), "release builder JIT generation");
+    timings.finish_stage("jit_release", stage_started_at);
     return graph;
 }
 
@@ -928,12 +997,16 @@ int run_link_command(
 
 int finalize(Options options)
 {
-    options.link_command = expand_response_files(std::move(options.link_command));
+    TimingReport timings;
 
+    auto stage_started_at = timings.start_stage();
+    options.link_command = expand_response_files(std::move(options.link_command));
     auto context = orc::ThreadSafeContext(std::make_unique<LLVMContext>());
     auto linked = context.withContextDo([&](LLVMContext* llvm_context) {
         return link_bitcode_inputs(options.link_command, *llvm_context);
     });
+    timings.finish_stage("bitcode_parse_link", stage_started_at);
+
     auto& master = *linked.module;
     if (master.getDataLayout().isDefault()) {
         // Clang normally writes a data layout into every LTO object. Refuse to
@@ -941,26 +1014,53 @@ int finalize(Options options)
         fail("master LLVM module has no target data layout");
     }
 
+    stage_started_at = timings.start_stage();
     auto node_records = scan_node_records(master);
+    timings.finish_stage("node_record_scan", stage_started_at);
+
+    stage_started_at = timings.start_stage();
     auto metadata = load_metadata(options.metadata_dir);
+    timings.finish_stage("metadata_load", stage_started_at);
+
+    stage_started_at = timings.start_stage();
     auto state_metadata = bind_state_metadata(node_records, metadata);
     require_node_config_metadata(node_records, metadata);
+    timings.finish_stage("metadata_bind", stage_started_at);
+
     auto authored = run_builder_jit(
-        master, context, options.link_command, metadata);
+        master, context, options.link_command, metadata, timings);
+
+    stage_started_at = timings.start_stage();
     auto serialized = iv::serialize_authored_graph(authored, state_metadata);
+    timings.finish_stage("graph_serialize", stage_started_at);
+
+    stage_started_at = timings.start_stage();
     inject_module_data(master, serialized, node_records);
+    timings.finish_stage("module_data_inject", stage_started_at);
+
     if (auto* build = master.getFunction("iv_module_build")) {
         build->setLinkage(GlobalValue::InternalLinkage);
     }
+
+    stage_started_at = timings.start_stage();
     optimize_runtime_module(master, options.optimize);
+    timings.finish_stage("runtime_optimize", stage_started_at);
 
     auto output = output_path(options.link_command);
     auto replacement = output;
     replacement += ".iv-finalized.o";
+
+    stage_started_at = timings.start_stage();
     emit_native_object(master, replacement, options.optimize);
+    timings.finish_stage("native_object_emit", stage_started_at);
+
+    stage_started_at = timings.start_stage();
     auto const result = run_link_command(options.link_command, linked.bitcode_inputs, replacement);
+    timings.finish_stage("native_link", stage_started_at);
+
     std::error_code ec;
     std::filesystem::remove(replacement, ec);
+    if (options.timings_file) timings.write(*options.timings_file);
     return result;
 }
 

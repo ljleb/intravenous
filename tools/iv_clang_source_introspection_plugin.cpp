@@ -810,17 +810,11 @@ std::optional<QualType> node_state_type(
     return node_state_type(context, node, visited);
 }
 
-class StateMetadataVisitor final : public RecursiveASTVisitor<StateMetadataVisitor> {
+class StateMetadataCollector final {
 public:
-    explicit StateMetadataVisitor(ASTContext& context)
+    explicit StateMetadataCollector(ASTContext& context)
         : context_(context)
     {}
-
-    bool VisitCXXRecordDecl(CXXRecordDecl* record)
-    {
-        record_node(record);
-        return true;
-    }
 
     void record_node(CXXRecordDecl const* node)
     {
@@ -1081,26 +1075,18 @@ std::filesystem::path metadata_path(
 
 void write_state_metadata(
     CompilerInstance& compiler,
-    std::filesystem::path const& metadata_dir,
-    std::span<CXXRecordDecl const* const> completed_state_nodes = {})
+    std::filesystem::path const& metadata_dir)
 {
     auto& context = compiler.getASTContext();
-    StateMetadataVisitor state_visitor(context);
-    state_visitor.TraverseDecl(context.getTranslationUnitDecl());
+    StateMetadataCollector state_collector(context);
     NodeConfigMetadataCollector node_config_collector(context);
     ReflectedNodeDiscovery reflected_node_discovery(context);
-    // Concrete class-template specializations can be completed after their
-    // owning top-level declaration was first traversed. Add those exact nodes
-    // to the State snapshot. C-string metadata comes from the compiler record
-    // instantiated by reflect_node<T>, which is emitted for every node that
-    // actually enters the builder.
-    for (auto const* node : completed_state_nodes) {
-        state_visitor.record_node(node);
-    }
-    // The AST lookup includes records loaded from the PCH and, for the final
-    // post-CodeGen snapshot, records materialized after initial source
-    // traversal.
+    // A compiler record is emitted only for a type passed to GraphBuilder.
+    // Calls at HandleTranslationUnit see ordinary records; the exact
+    // variable-template listener re-runs this small collection when CodeGen
+    // materializes a deferred record. Neither path walks unrelated AST nodes.
     for (auto const* node : reflected_node_discovery.nodes()) {
+        state_collector.record_node(node);
         node_config_collector.record_node(node);
     }
 
@@ -1126,7 +1112,7 @@ void write_state_metadata(
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
             {"version", 5},
-            {"states", std::move(state_visitor).take_states()},
+            {"states", std::move(state_collector).take_states()},
             {"config_strings", std::move(node_config_collector).take_fields()},
         }));
     stream << '\n';
@@ -1167,27 +1153,19 @@ public:
         if (instrumenter_) instrumenter_->instrument(const_cast<FunctionDecl*>(definition));
     }
 
-    void CompletedTagDefinition(TagDecl const* definition) override
+    void AddedCXXTemplateSpecialization(
+        VarTemplateDecl const*,
+        VarTemplateSpecializationDecl const* specialization) override
     {
-        auto const* record = dyn_cast_or_null<CXXRecordDecl>(definition);
-        if (!record) return;
-        remember_node(record);
-        // A nested State of a late class-template specialization can complete
-        // after its parent was traversed. Reconsider that parent now that its
-        // State layout is complete.
-        remember_node(dyn_cast<CXXRecordDecl>(record->getDeclContext()));
-    }
-
-    void remember_node(CXXRecordDecl const* node)
-    {
-        if (!node || node->isLambda() || !has_concrete_template_arguments(node)
-            || !node_state_type(compiler_.getASTContext(), node)) {
-            return;
+        // A node_compiler_record<T> specialization is the precise signal that
+        // a concrete T entered GraphBuilder. Some are deferred until CodeGen,
+        // after HandleTranslationUnit has written the initial sidecar. Refresh
+        // only for that event; unrelated completed AST records must neither
+        // trigger a snapshot nor become node metadata.
+        if (initial_snapshot_written_
+            && node_type_from_compiler_record_specialization(specialization)) {
+            write_snapshot();
         }
-        if (std::find(completed_nodes_.begin(), completed_nodes_.end(), node)
-            != completed_nodes_.end()) return;
-        completed_nodes_.push_back(node);
-        if (initial_snapshot_written_) write_snapshot();
     }
 
     void write_initial_snapshot()
@@ -1196,21 +1174,19 @@ public:
         initial_snapshot_written_ = true;
     }
 
-    void write_final_snapshot() { write_snapshot(); }
-
 private:
     void write_snapshot()
     {
-        write_state_metadata(
-            compiler_,
-            metadata_dir_,
-            {completed_nodes_.data(), completed_nodes_.size()});
+        // This walks only the small set of node_compiler_record variable
+        // specializations, not the translation unit. The finalizer runs after
+        // the compiler has finished, so its sidecar read observes the latest
+        // replacement snapshot.
+        write_state_metadata(compiler_, metadata_dir_);
     }
 
     CompilerInstance& compiler_;
     std::filesystem::path metadata_dir_;
     FunctionInstrumenter* instrumenter_ = nullptr;
-    std::vector<CXXRecordDecl const*> completed_nodes_;
     bool initial_snapshot_written_ = false;
 };
 
@@ -1223,10 +1199,9 @@ public:
         bool source_introspection)
         : sources_(compiler.getASTContext(), std::move(core_source_dir)),
           instrumenter_(compiler, sources_),
-          metadata_dir_(std::move(metadata_dir)),
-          state_metadata_listener_(
+          mutation_listener_(
               compiler,
-              metadata_dir_,
+              std::move(metadata_dir),
               source_introspection ? &instrumenter_ : nullptr),
           source_introspection_(source_introspection)
     {}
@@ -1248,12 +1223,7 @@ public:
 
     ASTMutationListener* GetASTMutationListener() override
     {
-        return &state_metadata_listener_;
-    }
-
-    void write_final_metadata()
-    {
-        state_metadata_listener_.write_final_snapshot();
+        return &mutation_listener_;
     }
 
     void HandleTranslationUnit(ASTContext& context) override
@@ -1265,14 +1235,16 @@ public:
             FunctionDiscovery discovery(instrumenter_);
             discovery.TraverseDecl(context.getTranslationUnitDecl());
         }
-        state_metadata_listener_.write_initial_snapshot();
+        // AddBeforeMainAction reaches this point before CodeGen. It contains
+        // all ordinary node compiler records. Deferred ones update the same
+        // sidecar through AddedCXXTemplateSpecialization above.
+        mutation_listener_.write_initial_snapshot();
     }
 
 private:
     SourceModel sources_;
     FunctionInstrumenter instrumenter_;
-    std::filesystem::path metadata_dir_;
-    ModuleMutationListener state_metadata_listener_;
+    ModuleMutationListener mutation_listener_;
     bool source_introspection_ = true;
 };
 
@@ -1336,30 +1308,16 @@ public:
         // translation unit. The consuming source compile runs this plugin
         // again, where it emits the required State metadata.
         if (compiler.getFrontendOpts().ProgramAction == frontend::GeneratePCH) {
-            consumer_ = nullptr;
             return std::make_unique<ASTConsumer>();
         }
-        auto consumer = std::make_unique<ModuleConsumer>(
+        return std::make_unique<ModuleConsumer>(
             compiler, core_source_dir_, metadata_dir_, source_introspection_);
-        consumer_ = consumer.get();
-        return consumer;
-    }
-
-    void EndSourceFileAction() override
-    {
-        // AddBeforeMainAction receives HandleTranslationUnit before CodeGen.
-        // Emit the definitive snapshot only after the multiplexed main action
-        // has completed all deferred instantiations.
-        if (consumer_) consumer_->write_final_metadata();
-        consumer_ = nullptr;
-        PluginASTAction::EndSourceFileAction();
     }
 
 private:
     std::filesystem::path core_source_dir_;
     std::filesystem::path metadata_dir_;
     bool source_introspection_ = true;
-    ModuleConsumer* consumer_ = nullptr;
 };
 
 } // namespace

@@ -77,9 +77,17 @@ trait. The Clang metadata plugin discovers specializations of the internal
 a builder.
 It records byte offsets of every `char const*` configuration field under the
 build-local `NodeCodeKey`. The plugin emits the definitive metadata snapshot in
-`EndSourceFileAction`, after CodeGen has completed deferred instantiations, so
-the final AST and LLVM node-record set agree even for nodes materialized by
-header-only builder helpers such as scalar lifting to `Constant`.
+`HandleTranslationUnit` writes the initial metadata sidecar. If CodeGen later
+materializes a deferred compiler record—such as scalar lifting to `Constant`—a
+Clang variable-template-specialization notification refreshes that sidecar.
+Both paths derive state and C-string metadata solely from actual compiler
+records rather than traversing every record in the translation unit. Unrelated
+types that happen to declare a nested `State` therefore cannot become
+accidental node ABI inputs.
+`PluginASTAction::EndSourceFileAction` is not a usable flush point for this
+`AddBeforeMainAction` consumer: it does not retain the consumer at the required
+post-CodeGen point. Do not move the sidecar write there without proving the
+module-link finalizer can still observe generated metadata.
 `node_compiler_record` is compiler plumbing, not a node-traits or module-facing
 API. That includes ordinary non-virtual base classes, nested trivially-copyable
 configuration records, and fixed arrays. It emits an empty layout for node
@@ -115,6 +123,10 @@ string storage does not point into an unloaded JIT generation.
   `g.node<Constant>` call. A scalar input materializes `Constant` during
   `GraphBuilder::node<T>` template instantiation, and it must receive an empty
   configuration layout before finalization.
+- `ModuleCompilerMetadata.IgnoresUnusedTypesThatOnlyResembleNodes` proves that
+  State ABI validation follows actual `g.node<T>` compiler records rather than
+  all AST records. An unused type deliberately has an invalid node-style State;
+  the used node still receives complete state metadata and initializes normally.
 - The existing node-config materialization test still verifies alignment,
   empty strings, embedded NUL payloads, and duplicate relocation rejection.
 - `NodeBuildRequest.MaterializesHostOwnedDescriptionFromTypeSpecificCallback`
@@ -157,3 +169,75 @@ The generated `root_export.cpp` explicitly includes `module/abi.h`. It owns
 the exported ABI symbols and therefore must not depend on an incidental DSL or
 builder-header include to provide `IV_MODULE_EXPORT`; the module-build behavior
 test asserts this include is present.
+
+## Reload-performance follow-up
+
+The next objective is not to remove normal standard-library facilities from
+the DSL. The intentional target is less per-module frontend work and less IR
+sent through final optimization. `std::span`, `std::string_view`,
+`std::optional`, and ordinary traits are acceptable when they describe the
+module contract directly.
+
+Before another large architecture change, measure a source-only warm reload.
+`iv_module_build_benchmark` now records the full build boundary: CMake
+configure, Ninja, PCH/export/link edges, generation copying, and finalizer
+sub-stages. The finalizer writes a replacement sidecar at
+`cmake-build/iv-module-finalizer-timings.txt`; it contains microsecond timings
+for bitcode parse/link, metadata, authoring-module clone, JIT creation and
+materialization, `module_main`, graph serialization/injection, runtime O3,
+native object emission, and the native link. `ModuleLoader` also reports
+generation copying, dynamic-library loading, and runtime graph materialization
+through its existing `LogSink`.
+
+The focused entry point is `scripts/profile_module_reload.sh`. It builds only
+the profiling executable and measures a cold build followed by a source-only
+hot reload in an isolated, retained workspace. The broader
+`scripts/verify_release_performance.sh` remains a release verification script:
+it rebuilds, runs every release test, and then measures execution as well.
+
+Baseline recorded on 2026-09-09 for the default `simple_sine/saw` module at
+O3: hot end-to-end reload was 1.633 s. CMake configure was 18.6 ms, Ninja was
+1.613 s, and the finalizer was 879.7 ms: 283.4 ms JIT materialization,
+143.4 ms runtime O3, 215.2 ms native object emission, and 209.9 ms native
+link. The export compile edge was 715 ms and the link edge 889 ms. Thus
+unnecessary metadata-plugin traversal is the first measured frontend cut;
+splitting configure invalidation is useful cleanup but not the immediate
+hot-path priority.
+
+After replacing whole-translation-unit metadata traversal with actual
+compiler-record collection, the same workload measured 1.667 s hot: 691 ms
+export compilation, 943 ms link/finalization, 21.8 ms CMake configure, and a
+932.3 ms finalizer. The export edge improved from the earlier 715 ms, but the
+full difference is within ordinary machine variation. The finalizer remains
+the dominant cost: 305.5 ms JIT materialization, 156.6 ms runtime O3,
+230.1 ms native object emission, and 209.5 ms native link. Do not spend more
+time on CMake configure before these larger stages; the next module-frontend
+cut remains thinning `node/layout.h`.
+
+Do not begin the following work until the new report identifies the dominant
+stage:
+
+1. Split `node/layout.h` so the four node contexts are thin facades over
+   precompiled layout/storage implementation rather than importing migration,
+   allocation, and container machinery into every module.
+2. Remove low-value module-facing includes (`basic_nodes/arithmetic.h` from
+   `graph/builder.h`, and the `Constant`-driven `type_erased.h` dependency from
+   `node/build_request.h`) without introducing a node-traits hook or other
+   node-definition boilerplate.
+3. Separate port declarations used by node definitions from port runtime
+   storage/buffer management where that does not weaken node `tick()` APIs.
+4. The metadata plugin now snapshots actual `node_compiler_record<T>`
+   specializations initially, then only when a deferred compiler record is
+   materialized; confirm the next profile records the expected export-stage
+   reduction before selecting another frontend cut.
+5. Split module configuration identity from source/build identity: source-only
+   edits should invoke Ninja without an unnecessary CMake configure, while
+   changes to CMake, manifests, imports, include paths, toolchain, or generated
+   source lists must still reconfigure.
+6. After `module_main` has run, prune authoring-only IR before the runtime O3
+   pass, preserving all symbols reachable from retained node compiler records.
+   This requires a reachability test; it must not discard runtime callbacks.
+
+Only compare O2/O3 or introduce IR/content caching after these measurements.
+The future destination—specializing an authored graph into a real-time graph
+kernel—is separate work and must not be mixed into this reload-cost reduction.

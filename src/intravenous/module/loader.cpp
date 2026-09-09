@@ -454,10 +454,17 @@ void run(
     if (output_log) {
         invocation += " >> " + quote(*output_log) + " 2>&1";
     }
+    auto const started_at = std::chrono::steady_clock::now();
     int rc = std::system(invocation.c_str());
     if (rc != 0) {
         throw std::runtime_error(
             "command failed with exit code " + std::to_string(rc) + ": " + command);
+    }
+    if (sink) {
+        sink(
+            "[" + std::string(phase) + "] elapsed_us=" +
+            std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - started_at).count()));
     }
 }
 } // namespace
@@ -918,10 +925,17 @@ class ModuleLoader::Impl {
         auto const generation_dir = owner_root / "generations" / build_key / generation;
         std::filesystem::create_directories(generation_dir);
         auto const generation_artifact = generation_dir / artifact.filename();
+        auto const copy_started_at = std::chrono::steady_clock::now();
         std::filesystem::copy_file(
             artifact,
             generation_artifact,
             std::filesystem::copy_options::overwrite_existing);
+        if (log_sink_) {
+            log_sink_(
+                "[generation-copy] elapsed_us=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - copy_started_at).count()));
+        }
         return generation_artifact;
     }
 
@@ -993,7 +1007,16 @@ public:
         auto& closure = compiled.closure;
         auto& artifact = compiled.artifact;
 
+        auto const dynamic_library_started_at = std::chrono::steady_clock::now();
         auto library = std::make_shared<DynamicLibrary>(artifact);
+        if (log_sink_) {
+            log_sink_(
+                "[dynamic-library-load] elapsed_us=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - dynamic_library_started_at).count()));
+        }
+
+        auto const graph_materialization_started_at = std::chrono::steady_clock::now();
         auto abi_version = reinterpret_cast<iv_module_abi_version_fn>(
             library->symbol("iv_module_abi_version"));
         if (!abi_version) {
@@ -1067,6 +1090,12 @@ public:
             std::move(plan.graph));
         WeakTypeErasedNode root_node(*runtime_root);
         auto introspection = std::move(plan.introspection);
+        if (log_sink_) {
+            log_sink_(
+                "[runtime-graph-materialization] elapsed_us=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - graph_materialization_started_at).count()));
+        }
 
         auto binary = std::make_shared<LoadedBinary>(LoadedBinary{
             root.manifest.id,

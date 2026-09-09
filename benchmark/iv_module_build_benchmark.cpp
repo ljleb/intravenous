@@ -31,6 +31,10 @@ struct PhaseResult {
     std::int64_t pch_ms = 0;
     std::int64_t export_ms = 0;
     std::int64_t link_ms = 0;
+    std::int64_t configure_us = 0;
+    std::int64_t ninja_build_us = 0;
+    std::int64_t generation_copy_us = 0;
+    std::vector<std::pair<std::string, std::int64_t>> finalizer_timings;
     bool ninja_log_delta_available = true;
 };
 
@@ -328,6 +332,45 @@ std::filesystem::path find_ninja_log(std::filesystem::path const& workspace)
     return candidates.front();
 }
 
+std::filesystem::path find_finalizer_timings(std::filesystem::path const& workspace)
+{
+    std::vector<std::filesystem::path> candidates;
+    for (std::filesystem::recursive_directory_iterator it(workspace), end; it != end; ++it) {
+        if (it->is_regular_file()
+            && it->path().filename() == "iv-module-finalizer-timings.txt") {
+            candidates.push_back(it->path());
+        }
+    }
+    if (candidates.size() != 1) {
+        throw std::runtime_error(
+            "expected one finalizer timing report below '" + workspace.string() + "'");
+    }
+    return candidates.front();
+}
+
+std::vector<std::pair<std::string, std::int64_t>> finalizer_timings(
+    std::filesystem::path const& path)
+{
+    std::istringstream lines(read(path));
+    std::string line;
+    if (!std::getline(lines, line) || line != "version=1") {
+        throw std::runtime_error("invalid finalizer timing report '" + path.string() + "'");
+    }
+
+    std::vector<std::pair<std::string, std::int64_t>> result;
+    for (; std::getline(lines, line);) {
+        auto const separator = line.find('=');
+        if (separator == std::string::npos
+            || !line.substr(0, separator).ends_with("_us")) {
+            throw std::runtime_error("invalid finalizer timing entry in '" + path.string() + "'");
+        }
+        result.emplace_back(
+            line.substr(0, separator - std::string_view("_us").size()),
+            std::stoll(line.substr(separator + 1)));
+    }
+    return result;
+}
+
 std::vector<NinjaEdge> ninja_edges(std::string_view log)
 {
     std::vector<NinjaEdge> edges;
@@ -359,18 +402,31 @@ std::optional<std::vector<NinjaEdge>> appended_ninja_edges(
 
 PhaseResult summarize(
     Clock::duration elapsed,
-    std::optional<std::vector<NinjaEdge>> const& edges)
+    std::optional<std::vector<NinjaEdge>> const& edges,
+    std::vector<std::string> const& loader_log,
+    std::vector<std::pair<std::string, std::int64_t>> finalizer_timing)
 {
     PhaseResult result{
         .pipeline_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+        .finalizer_timings = std::move(finalizer_timing),
         .ninja_log_delta_available = edges.has_value(),
     };
-    if (!edges) return result;
-    for (auto const& edge : *edges) {
-        if (edge.output.ends_with("cmake_pch.hxx.gch")) result.pch_ms += edge.duration_ms;
-        if (edge.output.ends_with("root_export.cpp.o")) result.export_ms += edge.duration_ms;
-        if (edge.output.ends_with(".so") || edge.output.ends_with(".dylib")
-            || edge.output.ends_with(".dll")) result.link_ms += edge.duration_ms;
+    for (auto const& entry : loader_log) {
+        auto const parse = [&](std::string_view phase, std::int64_t& output) {
+            auto const prefix = "[" + std::string(phase) + "] elapsed_us=";
+            if (entry.starts_with(prefix)) output = std::stoll(entry.substr(prefix.size()));
+        };
+        parse("configure", result.configure_us);
+        parse("build", result.ninja_build_us);
+        parse("generation-copy", result.generation_copy_us);
+    }
+    if (edges) {
+        for (auto const& edge : *edges) {
+            if (edge.output.ends_with("cmake_pch.hxx.gch")) result.pch_ms += edge.duration_ms;
+            if (edge.output.ends_with("root_export.cpp.o")) result.export_ms += edge.duration_ms;
+            if (edge.output.ends_with(".so") || edge.output.ends_with(".dylib")
+                || edge.output.ends_with(".dll")) result.link_ms += edge.duration_ms;
+        }
     }
     return result;
 }
@@ -397,7 +453,15 @@ void print(
               << " pch_ms=" << result.pch_ms
               << " export_ms=" << result.export_ms
               << " link_ms=" << result.link_ms
+              << " configure_us=" << result.configure_us
+              << " ninja_build_us=" << result.ninja_build_us
+              << " generation_copy_us=" << result.generation_copy_us
               << " ninja_log_delta=" << result.ninja_log_delta_available << '\n';
+    for (auto const& [name, elapsed_us] : result.finalizer_timings) {
+        std::cout << "iv-module-build-benchmark"
+                  << " phase=" << phase
+                  << " finalizer_" << name << "_us=" << elapsed_us << '\n';
+    }
 }
 
 void run(Options const& options)
@@ -439,6 +503,7 @@ void run(Options const& options)
     auto source = read(hot_source);
 
     {
+        std::vector<std::string> loader_log;
         iv::ModuleLoader loader(
             std::filesystem::current_path(), {},
             iv::ModuleLoaderToolchainConfig{
@@ -448,30 +513,44 @@ void run(Options const& options)
                 .optimization = options.optimization,
                 .source_introspection = options.source_introspection,
                 .precompiled_header = options.precompiled_header,
-            });
+            },
+            [&](std::string const& entry) { loader_log.push_back(entry); });
 
         auto const cold_start = Clock::now();
         (void)loader.compile_root_definition(module);
         auto const cold_elapsed = Clock::now() - cold_start;
         auto const ninja_log = find_ninja_log(options.workspace);
         auto const cold_log = read(ninja_log);
+        auto const cold_finalizer_timings = finalizer_timings(
+            find_finalizer_timings(options.workspace));
         print(
             "cold", workload, options.compile_stage, options.optimization,
             options.source_shape,
             options.source_introspection, options.precompiled_header,
-            summarize(cold_elapsed, ninja_edges(cold_log)));
+            summarize(
+                cold_elapsed,
+                ninja_edges(cold_log),
+                loader_log,
+                cold_finalizer_timings));
 
         source += "// Hot-reload marker.\n";
         write(hot_source, source);
+        loader_log.clear();
         auto const hot_start = Clock::now();
         (void)loader.compile_root_definition(module);
         auto const hot_elapsed = Clock::now() - hot_start;
         auto const hot_log = read(ninja_log);
+        auto const hot_finalizer_timings = finalizer_timings(
+            find_finalizer_timings(options.workspace));
         print(
             "hot", workload, options.compile_stage, options.optimization,
             options.source_shape,
             options.source_introspection, options.precompiled_header,
-            summarize(hot_elapsed, appended_ninja_edges(cold_log, hot_log)));
+            summarize(
+                hot_elapsed,
+                appended_ninja_edges(cold_log, hot_log),
+                loader_log,
+                hot_finalizer_timings));
 
     }
 

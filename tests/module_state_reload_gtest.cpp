@@ -357,4 +357,68 @@ namespace {
     EXPECT_EQ(definition.module_id, "iv.test.implicit_constant_configuration_module");
 }
 
+TEST(ModuleCompilerMetadata, IgnoresUnusedTypesThatOnlyResembleNodes)
+{
+    auto const workspace = iv::test_support::make_inline_module_workspace(
+        "module_metadata_ignores_unused_state_carrier",
+        R"(#include <intravenous/dsl.h>
+
+#include <array>
+#include <cstdint>
+
+namespace {
+    struct MetadataOnlyBase {};
+
+    // This is not a graph node: it is never passed to g.node(). In particular,
+    // its State is intentionally outside the node-state ABI contract.
+    struct UnusedStateCarrier {
+        struct State : MetadataOnlyBase {
+            std::int32_t ignored = 0;
+        };
+    };
+
+    struct UsedNode {
+        struct State {
+            std::int32_t value = 0;
+        };
+
+        static constexpr auto outputs()
+        {
+            return std::array<iv::OutputConfig, 1>{{{
+                .name = "out",
+            }}};
+        }
+
+        void initialize(iv::InitializationContext<UsedNode> const& ctx) const
+        {
+            ctx.state().value = 17;
+        }
+
+        void tick(iv::TickSampleContext<UsedNode> const& ctx) const
+        {
+            ctx.outputs[0].push(0.0f);
+        }
+    };
+
+    void metadata_ignores_unused_state_carrier_module(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto const node = g.node<UsedNode>();
+        g.outputs("main"_P = node);
+    }
+}
+)");
+
+    iv::ModuleLoader loader(iv::test::repo_root(), {});
+    auto const definition = loader.load_root_definition(workspace);
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(definition.root), 8);
+
+    auto const node = state_node(executor, "value");
+    ASSERT_NE(node, executor.layout().nodes.end());
+    auto const node_index = static_cast<std::size_t>(
+        std::distance(executor.layout().nodes.begin(), node));
+    EXPECT_EQ(*static_cast<std::int32_t*>(executor.storage().state_ptr(node_index)), 17);
+}
+
 } // namespace
