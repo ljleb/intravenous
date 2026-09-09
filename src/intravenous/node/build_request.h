@@ -63,7 +63,8 @@ std::size_t declare_node(
     auto const& node = *static_cast<Node const*>(node_data);
     DeclarationContext<Node> ctx(builder, node);
     if (state_structure) {
-        builder.override_node_state_structure(ctx.node_index(), *state_structure);
+        details::override_node_state_structure(
+            builder, ctx.node_index(), *state_structure);
     }
     if constexpr (has_declare<Node>) {
         node.declare(ctx);

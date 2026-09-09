@@ -198,6 +198,7 @@ add_library(intravenous_graph_builder OBJECT
     module/builder_session.cpp
     module/source_annotations.cpp
     node/config_storage.cpp
+    node/layout.cpp
 )
 iv_configure_intravenous_target(intravenous_graph_builder PUBLIC)
 

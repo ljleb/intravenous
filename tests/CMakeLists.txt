@@ -96,6 +96,9 @@ add_iv_gtest(
     intravenous_module_state_reload_tests
     module_state_reload_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
+add_iv_gtest(
+    intravenous_module_context_boundary_tests
+    module_context_boundary_gtest.cpp)
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_channels_tests channels_gtest.cpp)
 add_iv_gtest(

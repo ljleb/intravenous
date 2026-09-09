@@ -217,27 +217,63 @@ cut remains thinning `node/layout.h`.
 Do not begin the following work until the new report identifies the dominant
 stage:
 
-1. Split `node/layout.h` so the four node contexts are thin facades over
-   precompiled layout/storage implementation rather than importing migration,
-   allocation, and container machinery into every module.
-2. Remove low-value module-facing includes (`basic_nodes/arithmetic.h` from
+1. Remove low-value module-facing includes (`basic_nodes/arithmetic.h` from
    `graph/builder.h`, and the `Constant`-driven `type_erased.h` dependency from
    `node/build_request.h`) without introducing a node-traits hook or other
    node-definition boilerplate.
-3. Separate port declarations used by node definitions from port runtime
+2. Separate port declarations used by node definitions from port runtime
    storage/buffer management where that does not weaken node `tick()` APIs.
-4. The metadata plugin now snapshots actual `node_compiler_record<T>`
+3. The metadata plugin now snapshots actual `node_compiler_record<T>`
    specializations initially, then only when a deferred compiler record is
    materialized; confirm the next profile records the expected export-stage
    reduction before selecting another frontend cut.
-5. Split module configuration identity from source/build identity: source-only
+4. Split module configuration identity from source/build identity: source-only
    edits should invoke Ninja without an unnecessary CMake configure, while
    changes to CMake, manifests, imports, include paths, toolchain, or generated
    source lists must still reconfigure.
-6. After `module_main` has run, prune authoring-only IR before the runtime O3
+5. After `module_main` has run, prune authoring-only IR before the runtime O3
    pass, preserving all symbols reachable from retained node compiler records.
    This requires a reachability test; it must not discard runtime callbacks.
 
 Only compare O2/O3 or introduce IR/content caching after these measurements.
 The future destination—specializing an authored graph into a real-time graph
 kernel—is separate work and must not be mixed into this reload-cost reduction.
+
+### Node-layout extraction
+
+The completed extraction keeps the node-definition API unchanged:
+`DeclarationContext<T>`, `InitializationContext<T>`, `MoveContext<T>`, and
+`ReleaseContext<T>` remain typed facades. They retain the small amount of
+template code that cannot be precompiled: State casts, span assignment lambdas,
+and lifecycle callbacks for a module-defined `T`.
+
+Everything else moves behind an internal untyped layout-operation boundary in
+the builder library: NodeLayout records, state and array region allocation,
+dependency ordering, exported-array lookup, storage initialization, migration,
+and release. `node/layout.h` and `node/layout.cpp` remain the host pair;
+`node/context.h` becomes the module-facing header included by `lifecycle.h`.
+`build_request.h` must use the same boundary when applying finalizer-provided
+`NodeStateStructure`, rather than requiring the complete host builder type.
+
+`NodeLayoutBuilder` and `NodeStorage` implementation now lives in
+`node/layout.cpp`, linked through `intravenous_graph_builder`. The builder
+state, allocation, migration, and exported-array lookup are absent from the
+module-facing header closure. State ABI values used by finalizer/archive code
+live separately in `node/node_state_structure.h`; that data dependency does
+not require layout or storage implementation. `ModuleContextBoundary.DslKeepsLayoutAndStorageIncomplete`
+includes the actual `dsl.h` and statically verifies that neither host type is
+complete there; this is the regression guard for the dependency cut.
+
+Do not reintroduce the old implementation through a header-only operation
+table. The point is both to remove `layout.h` from the module PCH closure and
+to keep layout/storage independently compiled and debuggable.
+
+Verification after the extraction: the release build and all 439 tests passed.
+One warm O3 profile of the default `simple_sine/saw` module measured 1.537 s:
+670 ms export compilation, 839 ms link/finalization, 17.4 ms configure, and
+829.1 ms finalizer total. Its finalizer stages were 255.7 ms JIT
+materialization, 132.2 ms runtime O3, 196.5 ms native object emission, and
+217.1 ms native link. Compared with the previous single 1.667 s sample, this
+is encouraging (not a controlled benchmark): the export edge fell 21 ms and
+the finalizer 103 ms. Repeat the same profiling script after the next
+frontend cut before attributing a durable improvement to any one change.
