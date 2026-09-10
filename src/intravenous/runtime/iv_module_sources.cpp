@@ -1,5 +1,6 @@
 #include <intravenous/runtime/iv_module_sources.h>
 
+#include <intravenous/module/source_manifest.h>
 #include <intravenous/runtime/iv_module_sources_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
@@ -32,6 +33,15 @@ std::optional<SourceManifest> read_manifest(std::filesystem::path const& path)
     } catch (nlohmann::json::exception const&) {
         return std::nullopt;
     }
+}
+
+std::optional<std::filesystem::path> find_source_manifest(
+    std::filesystem::path const& directory)
+{
+    auto const source_manifest = directory / IV_SOURCE_MANIFEST_FILE;
+    return std::filesystem::exists(source_manifest)
+        ? std::optional<std::filesystem::path>{source_manifest}
+        : std::nullopt;
 }
 
 bool valid_source_name(std::string const& name)
@@ -84,9 +94,12 @@ std::vector<IvModuleSourceInfo> IvModuleSources::list_sources() const
         if (!std::filesystem::exists(root, error)) return;
         for (std::filesystem::recursive_directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
             auto const& entry = *it;
-            if (!entry.is_regular_file() || entry.path().filename() != "iv_module.json") continue;
+            if (!entry.is_regular_file()
+                || !is_iv_source_manifest_file(entry.path().filename().string())) continue;
             auto const directory = entry.path().parent_path();
-            auto manifest = read_manifest(entry.path());
+            auto manifest_path = find_source_manifest(directory);
+            if (!manifest_path || *manifest_path != entry.path()) continue;
+            auto manifest = read_manifest(*manifest_path);
             if (!manifest) continue;
             if (!std::filesystem::is_regular_file(directory / manifest->entry)) continue;
             result.push_back({.module_id = manifest->id, .module_root = directory, .project_local = local});
@@ -149,9 +162,14 @@ IvModuleSourceInfo IvModuleSources::create_project_source(std::string const& nam
     auto const id = module_identifier(name);
     try {
         nlohmann::json manifest{{"schema", 1}, {"id", id}, {"entry", "module.cpp"}, {"main", "module_main"}};
-        std::ofstream manifest_out(root / "iv_module.json", std::ios::binary | std::ios::noreplace);
+        std::ofstream manifest_out(
+            root / std::string(IV_SOURCE_MANIFEST_FILE),
+            std::ios::binary | std::ios::noreplace);
         manifest_out << manifest.dump(2) << '\n';
-        if (!manifest_out) throw std::runtime_error("cannot write iv_module.json");
+        if (!manifest_out) {
+            throw std::runtime_error(
+                "cannot write " + std::string(IV_SOURCE_MANIFEST_FILE));
+        }
 
         std::ofstream source(root / "module.cpp", std::ios::binary | std::ios::noreplace);
         source << source_template();

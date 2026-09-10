@@ -52,6 +52,9 @@ TEST(IvModuleSources, NewProjectSourcesReceiveTheSameTemplateCompileDatabase)
     auto const first = sources.create_project_source("first");
     auto const second = sources.create_project_source("second");
 
+    EXPECT_TRUE(std::filesystem::exists(first.module_root / "iv_source.json"));
+    EXPECT_TRUE(std::filesystem::exists(second.module_root / "iv_source.json"));
+
     auto read = [](std::filesystem::path const& path) {
         std::ifstream in(path, std::ios::binary);
         return std::string(std::istreambuf_iterator<char>(in), {});
@@ -61,6 +64,11 @@ TEST(IvModuleSources, NewProjectSourcesReceiveTheSameTemplateCompileDatabase)
 
     EXPECT_FALSE(first_database.empty());
     EXPECT_EQ(second_database, first_database);
+
+    auto const listed = sources.list_sources();
+    ASSERT_EQ(listed.size(), 2u);
+    EXPECT_EQ(listed[0].module_id, first.module_id);
+    EXPECT_EQ(listed[1].module_id, second.module_id);
 
     std::filesystem::remove_all(project_root);
 }

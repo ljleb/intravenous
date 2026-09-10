@@ -169,7 +169,7 @@ TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourc
     auto const moved_root = workspace / "modules" / "saw2";
     std::filesystem::create_directories(moved_root);
     iv::test_support::write_text(
-        moved_root / "iv_module.json",
+        moved_root / "iv_source.json",
         "{\"schema\":1,\"id\":\"iv.test.module\",\"entry\":\"module.cpp\",\"main\":\"module_main\"}\n");
     iv::test_support::write_text(
         moved_root / "module.cpp",

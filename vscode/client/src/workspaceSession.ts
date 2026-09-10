@@ -1287,8 +1287,9 @@ export class WorkspaceSession {
         if (nextSourceFilePath !== this.activeSourceFilePath) {
             this.activeSourceFilePath = nextSourceFilePath;
             const sourceDirectory = path.dirname(nextSourceFilePath);
+            const hasSourceManifest = fs.existsSync(path.join(sourceDirectory, "iv_source.json"));
             this.activeModuleRoot = path.basename(nextSourceFilePath) === "module.cpp"
-                && fs.existsSync(path.join(sourceDirectory, "iv_module.json"))
+                && hasSourceManifest
                 ? sourceDirectory
                 : null;
             const result = await this.rpc.getIvModuleInstances(nextSourceFilePath);

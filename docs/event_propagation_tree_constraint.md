@@ -26,7 +26,7 @@ inside the application. Sources are not necessarily modules. Examples:
 - the main function;
 - a client message arriving in the JSON-RPC transport;
 - a project file (`iv_project.json`) being loaded;
-- a module file (`iv_module.json`) changing on disk;
+- an IV-source manifest (`iv_source.json`) changing on disk;
 - the audio callback boundary.
 
 The architecture's constraint is that each such source induces a well-formed

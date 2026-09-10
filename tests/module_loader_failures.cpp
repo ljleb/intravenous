@@ -16,7 +16,7 @@ int main()
         std::filesystem::create_directories(missing_dir);
         iv::test::expect_failure(
             [&] { (void)loader.load_root_definition(missing_dir); },
-            "iv_module.json",
+            "iv_source.json",
             "missing manifest should fail");
     }
 
@@ -24,8 +24,8 @@ int main()
         auto loader = iv::test::make_loader();
         iv::test::expect_failure(
             [&] { (void)loader.load_root_definition(fixtures / "missing_export"); },
-            "iv_module.json",
-            "legacy source without manifest should fail");
+            "iv_source.json",
+            "source without manifest should fail");
     }
 
     {

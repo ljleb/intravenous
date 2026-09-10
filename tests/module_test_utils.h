@@ -372,7 +372,7 @@ namespace iv::test {
                  << "  \"entry\": \"module.cpp\",\n"
                  << "  \"main\": \"" << main << "\"\n"
                  << "}\n";
-        write_text(workspace / "iv_module.json", manifest.str());
+        write_text(workspace / "iv_source.json", manifest.str());
     }
 
     inline std::filesystem::path make_inline_module_workspace(

@@ -1,6 +1,7 @@
 #include <intravenous/module/loader.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/authored_graph_wire.h>
+#include <intravenous/module/source_manifest.h>
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
@@ -43,6 +44,15 @@ struct Manifest {
     std::filesystem::path entry;
     std::string main;
 };
+
+std::optional<std::filesystem::path> find_source_manifest(
+    std::filesystem::path const& directory)
+{
+    auto const source_manifest = directory / IV_SOURCE_MANIFEST_FILE;
+    return std::filesystem::exists(source_manifest)
+        ? std::optional<std::filesystem::path>{source_manifest}
+        : std::nullopt;
+}
 
 struct ResolvedModule {
     Manifest manifest;
@@ -216,25 +226,26 @@ Manifest parse_manifest(std::filesystem::path const &file)
         manifest.entry = json.at("entry").get<std::string>();
         manifest.main = json.at("main").get<std::string>();
     } catch (nlohmann::json::exception const &e) {
-        throw std::runtime_error("invalid module manifest '" + file.string() + "': " + e.what());
+        throw std::runtime_error("invalid IV source manifest '" + file.string() + "': " + e.what());
     }
 
     if (manifest.schema != 1) {
         throw std::runtime_error(
-            "manifest '" + file.string() + "' uses unsupported schema " +
+            "IV source manifest '" + file.string() + "' uses unsupported schema " +
             std::to_string(manifest.schema));
     }
     if (manifest.id.empty() || manifest.id == "." || manifest.id == ".." ||
         manifest.id.contains('/') || manifest.id.contains('\\')) {
         throw std::runtime_error(
-            "manifest '" + file.string() + "' id must be a non-empty single path component");
+            "IV source manifest '" + file.string() +
+            "' id must be a non-empty single path component");
     }
     if (manifest.entry.empty() || manifest.entry.is_absolute()) {
         throw std::runtime_error(
-            "manifest '" + file.string() + "' entry must be a relative path");
+            "IV source manifest '" + file.string() + "' entry must be a relative path");
     }
     if (manifest.main.empty()) {
-        throw std::runtime_error("manifest '" + file.string() + "' has empty main");
+        throw std::runtime_error("IV source manifest '" + file.string() + "' has empty main");
     }
     return manifest;
 }
@@ -500,28 +511,29 @@ class ModuleLoader::Impl {
     ResolvedModule resolve_dir(std::filesystem::path dir, bool global) const
     {
         dir = normalize(dir);
-        auto manifest_file = dir / "iv_module.json";
-        if (!std::filesystem::exists(manifest_file)) {
+        auto manifest_file = find_source_manifest(dir);
+        if (!manifest_file) {
             throw std::runtime_error(
-                "module directory '" + dir.string() + "' does not contain iv_module.json");
+                "IV source directory '" + dir.string() + "' does not contain " +
+                std::string(IV_SOURCE_MANIFEST_FILE));
         }
 
-        auto manifest = parse_manifest(manifest_file);
+        auto manifest = parse_manifest(*manifest_file);
         auto entry = normalize(dir / manifest.entry);
         if (!std::filesystem::exists(entry) || !std::filesystem::is_regular_file(entry)) {
             throw std::runtime_error(
-                "manifest '" + manifest_file.string() + "' entry does not exist: " +
+                "IV source manifest '" + manifest_file->string() + "' entry does not exist: " +
                 manifest.entry.string());
         }
         if (!is_within(entry, dir)) {
             throw std::runtime_error(
-                "manifest entry escapes module directory: " + manifest.entry.string());
+                "IV source manifest entry escapes source directory: " + manifest.entry.string());
         }
 
         return {
             .manifest = std::move(manifest),
             .module_dir = dir,
-            .manifest_file = normalize(manifest_file),
+            .manifest_file = normalize(*manifest_file),
             .entry_file = entry,
             .global = global,
             .source_stamp = directory_stamp(dir),
@@ -551,15 +563,21 @@ class ModuleLoader::Impl {
                 }
                 continue;
             }
-            if (!it->is_regular_file() || it->path().filename() != "iv_module.json") {
+            if (!it->is_regular_file()
+                || !is_iv_source_manifest_file(it->path().filename().string())) {
                 continue;
             }
 
-            auto resolved = resolve_dir(it->path().parent_path(), global);
+            auto const source_dir = it->path().parent_path();
+            auto manifest = find_source_manifest(source_dir);
+            if (!manifest || normalize(it->path()) != normalize(*manifest)) {
+                continue;
+            }
+            auto resolved = resolve_dir(source_dir, global);
             auto [position, inserted] = out.emplace(resolved.manifest.id, resolved);
             if (!inserted && position->second.manifest_file != resolved.manifest_file) {
                 throw std::runtime_error(
-                    "duplicate module id '" + resolved.manifest.id + "' in '" +
+                    "duplicate IV source id '" + resolved.manifest.id + "' in '" +
                     position->second.manifest_file.string() + "' and '" +
                     resolved.manifest_file.string() + "'");
             }
@@ -583,8 +601,8 @@ class ModuleLoader::Impl {
                 if (auto global = registry.global.find(id); global != registry.global.end()) {
                     if (log_sink_) {
                         log_sink_(
-                            "warning: project module '" + id + "' at '" +
-                            module.manifest_file.string() + "' shadows global module at '" +
+                            "warning: project IV source '" + id + "' at '" +
+                            module.manifest_file.string() + "' shadows global IV source at '" +
                             global->second.manifest_file.string() + "'");
                     }
                 }
@@ -609,9 +627,9 @@ class ModuleLoader::Impl {
         auto found = scope.find(import.id);
         if (found == scope.end()) {
             throw std::runtime_error(
-                "module '" + from.manifest.id + "' imports missing " +
+                    "IV source '" + from.manifest.id + "' imports missing " +
                 std::string((from.global || import.global_only) ? "global" : "project/global") +
-                " module '" + import.id + "'");
+                " IV source '" + import.id + "'");
         }
         return found->second;
     }
@@ -629,7 +647,7 @@ class ModuleLoader::Impl {
             if (visited.contains(module_key)) return;
             if (!visiting.insert(module_key).second) {
                 throw std::runtime_error(
-                    "cyclic IV module import involving '" + module.manifest.id + "'");
+                    "cyclic IV source import involving '" + module.manifest.id + "'");
             }
 
             auto &deps = closure.dependency_keys[module_key];
@@ -967,11 +985,12 @@ public:
     {
         auto module_path = normalize(path);
         if (std::filesystem::is_regular_file(module_path)) {
-            if (module_path.filename() == "iv_module.json") {
+            if (is_iv_source_manifest_file(module_path.filename().string())) {
                 module_path = module_path.parent_path();
             } else {
                 throw std::runtime_error(
-                    "root module path must be a module directory or iv_module.json");
+                    "root source path must be an IV source directory, " +
+                    std::string(IV_SOURCE_MANIFEST_FILE));
             }
         }
 

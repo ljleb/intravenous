@@ -335,6 +335,20 @@ The future whole-project finalizer should not assume that blindly running the fu
 
 ## 5. Architectural direction: independently registered graph units
 
+### 5.0 Branch boundary
+
+The implementation begins with the **IV-source/registry representation** in
+this branch. The first source-only change makes `iv_source.json` the sole
+source-package manifest; follow-on work in this branch adds registration
+identities, source-local authoring outputs, and their cache/invalidation
+boundaries. The current finalizer continues to produce and load the existing
+runtime graph while that work lands.
+
+The whole-project finalizer and the generated execution model (sections 12
+through 25) are deliberately deferred to a separate branch. They must consume
+the source/registry representation published here, rather than shape it around
+the current per-module runtime.
+
 ### 5.1 Decided: callers create nodes by stable ID
 
 The preferred C++ authoring operation becomes:
@@ -423,7 +437,7 @@ An IV source may provide:
 
 This is intentionally not called an iv module. An iv module is a graph definition; an IV source is the package the loader watches/builds.
 
-The existing `iv_module.json` can remain temporarily for migration, but its conceptual role changes. Long-term, a name such as `iv_source.json` would be more accurate.
+`iv_source.json` is the IV-source manifest. Its role is build/package discovery, not a redundant registry of identities already registered in C++.
 
 The manifest should describe how to build the source, not redundantly enumerate identities already registered in C++ unless a real use case requires that duplication.
 
@@ -2272,7 +2286,6 @@ The following should remain open until prototypes or profiling provide evidence.
 - exact macro expansion for `IV_NODE` / `IV_MODULE`;
 - exact Clang 23 Sema mechanism for introducing fresh local `node_interface<Id>` data;
 - whether local/imported interfaces use separate internal traits or another compiler-supported mechanism;
-- exact manifest migration from `iv_module.json` to IV-source semantics;
 - exact declaration of imported IDs if generated interfaces are force-included per source.
 
 ### Public arguments/configuration

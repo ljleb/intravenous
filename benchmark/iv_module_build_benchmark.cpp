@@ -260,17 +260,17 @@ std::filesystem::path module_directory(std::filesystem::path path)
 {
     path = std::filesystem::absolute(path).lexically_normal();
     if (std::filesystem::is_regular_file(path)) {
-        if (path.filename() != "iv_module.json") {
+        if (path.filename() != "iv_source.json") {
             throw std::runtime_error(
-                "module path must be a directory or iv_module.json: '" +
+                "source path must be a directory or iv_source.json: '" +
                 path.string() + "'");
         }
         path = path.parent_path();
     }
     if (!std::filesystem::is_directory(path)
-        || !std::filesystem::exists(path / "iv_module.json")) {
+        || !std::filesystem::exists(path / "iv_source.json")) {
         throw std::runtime_error(
-            "module path is missing iv_module.json: '" + path.string() + "'");
+            "source path is missing iv_source.json: '" + path.string() + "'");
     }
     return path;
 }
@@ -563,7 +563,7 @@ void run(Options const& options)
         module = options.workspace / "modules" / "compile_benchmark";
         hot_source = module / "module.cpp";
         write(options.workspace / "iv_project.jsonl", "");
-        write(module / "iv_module.json", R"({"schema":1,"id":"iv.benchmark.compile","entry":"module.cpp","main":"module_main"})");
+        write(module / "iv_source.json", R"({"schema":1,"id":"iv.benchmark.compile","entry":"module.cpp","main":"module_main"})");
         write(hot_source, benchmark_source(options.voices, options.source_shape));
     }
     auto source = read(hot_source);

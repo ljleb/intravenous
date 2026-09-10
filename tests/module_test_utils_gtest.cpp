@@ -19,7 +19,7 @@ bool has_complete_fixture_contract_fixture()
         auto const workspace = iv::test::read_only_module_fixture_workspace("fixture_contract");
         auto const module_source = workspace / "module.cpp";
         if (!std::filesystem::is_regular_file(module_source) ||
-            !std::filesystem::is_regular_file(workspace / "iv_module.json") ||
+            !std::filesystem::is_regular_file(workspace / "iv_source.json") ||
             !std::filesystem::is_regular_file(workspace / "CMakeLists.txt")) {
             return false;
         }
