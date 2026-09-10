@@ -912,17 +912,17 @@ void module_main(iv::GraphBuilder& g)
 
     auto const azimuths = g.tile<stereo>(center - spread * 0.5, center + spread * 0.5);
 
-    auto const spatialized_left = source_left(
+    auto const spatialized_left = TypedSamplePortRef<stereo>{source_left(
         "source"_P = audio[stereo::left],
         "azimuth"_P = azimuths[stereo::left],
         "elevation"_P = elevation
-    );
+    )["main"_P]};
 
-    auto const spatialized_right = source_right(
+    auto const spatialized_right = TypedSamplePortRef<stereo>{source_right(
         "source"_P = audio[stereo::right],
         "azimuth"_P = azimuths[stereo::right],
         "elevation"_P = elevation
-    );
+    )["main"_P]};
 
     g.outputs("main"_P = spatialized_left + spatialized_right);
 }

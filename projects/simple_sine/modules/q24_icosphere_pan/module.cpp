@@ -1621,6 +1621,7 @@ struct BaselineFir256
     }
 };
 
+
 void single_pan(GraphBuilder& g)
 {
     auto const in = g.input<"in">();
@@ -1637,6 +1638,7 @@ void single_pan(GraphBuilder& g)
 
     g.outputs(hrtf);
 }
+
 
 void module_main(GraphBuilder& g)
 {
