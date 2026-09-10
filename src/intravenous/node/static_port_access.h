@@ -193,6 +193,11 @@ namespace iv::details {
         {
             return Axis(_port, frame, _block_size);
         }
+
+        operator InputPort const&() const
+        {
+            return _port;
+        }
     };
 
     template<ChannelTypeId Type, SampleStreamLayout Layout>
