@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -170,7 +171,7 @@ TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourc
     std::filesystem::create_directories(moved_root);
     iv::test_support::write_text(
         moved_root / "iv_source.json",
-        "{\"schema\":1,\"id\":\"iv.test.module\",\"entry\":\"module.cpp\",\"main\":\"module_main\"}\n");
+        "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
     iv::test_support::write_text(
         moved_root / "module.cpp",
         "#include <intravenous/dsl.h>\n\n"
@@ -178,7 +179,8 @@ TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourc
         "{\n"
         "    using namespace iv;\n"
         "    g.outputs();\n"
-        "}\n");
+        "}\n\n"
+        "IV_MODULE(\"iv.test.module\", module_main);\n");
 
     iv::IvModuleInstances instances;
     iv::IvModuleSources sources(workspace, {});
@@ -197,6 +199,40 @@ TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourc
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 1u);
     EXPECT_EQ(witness.listed_instances->front().module_root, expected_root);
+}
+
+TEST_F(IvModuleInstancesTest, SourceDiscoveryListsEveryModuleRegisteredByOneSource)
+{
+    auto const workspace =
+        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_many_source_modules");
+    auto const source_root = workspace / "modules" / "many";
+    std::filesystem::create_directories(source_root);
+    iv::test_support::write_text(
+        source_root / "iv_source.json",
+        "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
+    iv::test_support::write_text(
+        source_root / "module.cpp",
+        "#include <intravenous/dsl.h>\n\n"
+        "void primary(iv::GraphBuilder& g) { g.outputs(); }\n"
+        "void secondary(iv::GraphBuilder& g) { g.outputs(); }\n\n"
+        "IV_MODULE(\"iv.test.module\", primary);\n"
+        "IV_MODULE(\"iv.test.module.secondary\", secondary);\n");
+
+    iv::IvModuleSources sources(workspace, {});
+    auto const discovered = sources.list_sources();
+
+    ASSERT_EQ(discovered.size(), 2u);
+    auto const primary = std::ranges::find(
+        discovered, module_id, &iv::IvModuleSourceInfo::module_id);
+    auto const secondary = std::ranges::find(
+        discovered,
+        "iv.test.module.secondary",
+        &iv::IvModuleSourceInfo::module_id);
+    ASSERT_NE(primary, discovered.end());
+    ASSERT_NE(secondary, discovered.end());
+    auto const expected_root = std::filesystem::weakly_canonical(source_root);
+    EXPECT_EQ(primary->module_root, expected_root);
+    EXPECT_EQ(secondary->module_root, expected_root);
 }
 
 TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPublishesDiff)

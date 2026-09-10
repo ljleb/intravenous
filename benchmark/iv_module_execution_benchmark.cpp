@@ -160,21 +160,26 @@ void benchmark_module(std::filesystem::path const& path, Options const& options)
     DynamicLibrary library(path);
     auto const abi_version = reinterpret_cast<iv_module_abi_version_fn>(
         library.symbol("iv_module_abi_version"));
-    auto const authored_graph = reinterpret_cast<iv_module_authored_graph_fn>(
-        library.symbol("iv_module_authored_graph"));
-    auto const node_configs = reinterpret_cast<iv_module_node_configs_fn>(
-        library.symbol("iv_module_node_configs"));
+    auto const source_module_count = reinterpret_cast<iv_source_module_count_fn>(
+        library.symbol("iv_source_module_count"));
+    auto const authored_graph = reinterpret_cast<iv_source_module_authored_graph_fn>(
+        library.symbol("iv_source_module_authored_graph"));
+    auto const node_configs = reinterpret_cast<iv_source_module_node_configs_fn>(
+        library.symbol("iv_source_module_node_configs"));
     auto const node_types = reinterpret_cast<iv_module_node_types_fn>(
         library.symbol("iv_module_node_types"));
-    if (!abi_version || !authored_graph || !node_configs || !node_types) {
+    if (!abi_version || !source_module_count || !authored_graph || !node_configs || !node_types) {
         throw std::runtime_error("module '" + path.string() + "' is missing IV exports");
     }
     if (abi_version() != iv::IV_MODULE_ABI_VERSION) {
         throw std::runtime_error("module '" + path.string() + "' has an incompatible ABI");
     }
 
-    auto const graph_view = authored_graph();
-    auto const config_view = node_configs();
+    if (source_module_count() == 0) {
+        throw std::runtime_error("IV source '" + path.string() + "' has no IV modules");
+    }
+    auto const graph_view = authored_graph(0);
+    auto const config_view = node_configs(0);
     auto const type_view = node_types();
     if (config_view.size % sizeof(iv::ModuleNodeConfigRecord) != 0
         || type_view.size % sizeof(iv::details::NodeCompilerRecord) != 0) {

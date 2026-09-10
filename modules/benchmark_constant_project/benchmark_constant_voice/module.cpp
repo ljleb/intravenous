@@ -17,3 +17,5 @@ void benchmark_constant_voice(iv::GraphBuilder& g)
 
     g.outputs("out"_P = saw * amplitude);
 }
+
+IV_MODULE("iv.test.benchmark_constant_project.voice", benchmark_constant_voice);

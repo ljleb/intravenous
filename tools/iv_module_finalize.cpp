@@ -281,7 +281,6 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
             .initializer = record,
         });
     }
-    if (result.empty()) fail("module emitted no iv_node_types compiler records");
     std::sort(result.begin(), result.end(), [](auto const& a, auto const& b) {
         if (a.key.high != b.key.high) return a.key.high < b.key.high;
         return a.key.low < b.key.low;
@@ -356,7 +355,7 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         auto* object = parsed->getAsObject();
         if (!object) fail("metadata root is not an object in '" + entry.path().string() + "'");
         auto version = object->getInteger("version");
-        if (!version || *version != 6) {
+        if (!version || *version != 7) {
             fail("unsupported compiler metadata version in '" + entry.path().string() + "'");
         }
         auto* states = object->getArray("states");
@@ -366,6 +365,26 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         auto* config_pointers = object->getArray("config_pointers");
         if (!config_pointers) {
             fail("metadata has no config-pointer array in '" + entry.path().string() + "'");
+        }
+        auto* registered_definitions = object->getArray("registered_definitions");
+        if (!registered_definitions) {
+            fail("metadata has no registered-definition array in '"
+                 + entry.path().string() + "'");
+        }
+        for (auto const& definition_value : *registered_definitions) {
+            auto* definition = definition_value.getAsObject();
+            if (!definition) {
+                fail("registered-definition metadata entry is not an object in '"
+                     + entry.path().string() + "'");
+            }
+            auto id = definition->getString("id");
+            auto kind = definition->getString("kind");
+            auto declaration_usr = definition->getString("declaration_usr");
+            if (!id || id->empty() || !kind || !declaration_usr
+                || (kind->str() != "node" && kind->str() != "module")) {
+                fail("incomplete registered-definition metadata entry in '"
+                     + entry.path().string() + "'");
+            }
         }
         for (auto const& state_value : *states) {
             auto* state = state_value.getAsObject();
@@ -557,11 +576,20 @@ void add_authoring_global_address_table(
 
 BuilderModuleClone clone_builder_module(Module const& master)
 {
-    auto const* build = master.getFunction("iv_module_build");
-    if (!build || build->isDeclaration()) fail("master LLVM module does not define iv_module_build");
-
     SmallPtrSet<GlobalValue const*, 32> reachable;
-    mark_reachable(build, reachable);
+    static constexpr std::array<StringRef, 3> authoring_entry_points{
+        "iv_source_registered_module_count",
+        "iv_source_registered_module_id",
+        "iv_source_build_registered_module",
+    };
+    for (auto const name : authoring_entry_points) {
+        auto const* entry_point = master.getFunction(name);
+        if (!entry_point || entry_point->isDeclaration()) {
+            fail("master LLVM module does not define authoring entry point '"
+                 + name.str() + "'");
+        }
+        mark_reachable(entry_point, reachable);
+    }
     if (auto const* ctors = master.getGlobalVariable("llvm.global_ctors")) mark_reachable(ctors, reachable);
     if (auto const* dtors = master.getGlobalVariable("llvm.global_dtors")) mark_reachable(dtors, reachable);
 
@@ -599,10 +627,12 @@ void mark_runtime_module_roots(
     Module const& module,
     SmallPtrSetImpl<GlobalValue const*>& reachable)
 {
-    static constexpr std::array<StringRef, 4> runtime_entry_points{
+    static constexpr std::array<StringRef, 6> runtime_entry_points{
         "iv_module_abi_version",
-        "iv_module_authored_graph",
-        "iv_module_node_configs",
+        "iv_source_module_count",
+        "iv_source_module_id",
+        "iv_source_module_authored_graph",
+        "iv_source_module_node_configs",
         "iv_module_node_types",
     };
 
@@ -622,16 +652,106 @@ void mark_runtime_module_roots(
     }
 }
 
-void prune_authoring_ir(Module& module)
+bool is_source_registration_initializer(Function const& function)
 {
-    auto* build = module.getFunction("iv_module_build");
-    if (!build || build->isDeclaration()) {
-        fail("finalized LLVM module does not define iv_module_build");
+    auto const name = function.getName();
+    return name.contains("iv_source_module_registration_ctor_")
+        || name.contains("iv_source_node_registration_ctor_");
+}
+
+// Source registrations exist only to populate the builder-library registry
+// while the temporary ORC generation is alive. Leaving their constructors in
+// llvm.global_ctors would make the registration thunks runtime roots, which
+// in turn prevents authoring IR from being pruned from the final artifact.
+// Keep every other initializer: user globals may still be referenced by
+// retained node configuration or runtime code.
+void remove_source_registration_initializers(Module& module)
+{
+    auto* ctors = module.getGlobalVariable("llvm.global_ctors");
+    if (!ctors || !ctors->hasInitializer()) return;
+    auto const* entries = dyn_cast<ConstantArray>(ctors->getInitializer());
+    if (!entries) return;
+
+    std::vector<Constant*> retained;
+    retained.reserve(entries->getNumOperands());
+    bool removed = false;
+    for (auto const& operand : entries->operands()) {
+        auto* value = operand.get();
+        auto* entry = dyn_cast<ConstantStruct>(value);
+        if (!entry || entry->getNumOperands() < 2) {
+            retained.push_back(cast<Constant>(value));
+            continue;
+        }
+        auto const* callback = dyn_cast<Function>(
+            entry->getOperand(1)->stripPointerCasts());
+        if (!callback || !is_source_registration_initializer(*callback)) {
+            retained.push_back(cast<Constant>(value));
+            continue;
+        }
+        removed = true;
+    }
+    if (!removed) return;
+
+    auto const name = ctors->getName().str();
+    if (retained.empty()) {
+        // Keep the old global allocated until the already-computed authoring
+        // reachability set has been consumed below. Its new name means object
+        // lowering will not treat it as a runtime constructor list.
+        ctors->setName(name + ".source-registration-old");
+        return;
     }
 
-    SmallPtrSet<GlobalValue const*, 32> authoring_reachable;
-    mark_reachable(build, authoring_reachable);
+    auto const* existing_type = cast<ArrayType>(entries->getType());
+    auto* array_type = ArrayType::get(
+        existing_type->getElementType(), retained.size());
+    auto* replacement = new GlobalVariable(
+        module,
+        array_type,
+        ctors->isConstant(),
+        ctors->getLinkage(),
+        ConstantArray::get(array_type, retained),
+        name + ".source-registration-removed");
+    replacement->setSection(ctors->getSection());
+    replacement->setVisibility(ctors->getVisibility());
+    replacement->setDLLStorageClass(ctors->getDLLStorageClass());
+    replacement->setUnnamedAddr(ctors->getUnnamedAddr());
+    if (ctors->getAlign()) replacement->setAlignment(*ctors->getAlign());
 
+    // llvm.global_ctors is identified by name during object lowering. Keep
+    // the original global alive under a private name until authoring-root
+    // processing finishes; GlobalDCE then drops it with its source-only
+    // initializer closure.
+    ctors->setName(name + ".source-registration-old");
+    replacement->setName(name);
+}
+
+void prune_authoring_ir(Module& module)
+{
+    SmallPtrSet<GlobalValue const*, 32> authoring_reachable;
+    static constexpr std::array<StringRef, 3> authoring_entry_points{
+        "iv_source_registered_module_count",
+        "iv_source_registered_module_id",
+        "iv_source_build_registered_module",
+    };
+    for (auto const name : authoring_entry_points) {
+        auto* entry_point = module.getFunction(name);
+        if (!entry_point || entry_point->isDeclaration()) {
+            fail("finalized LLVM module does not define authoring entry point '"
+                 + name.str() + "'");
+        }
+        mark_reachable(entry_point, authoring_reachable);
+    }
+    // Registered module/node thunks are reached through the temporary
+    // builder-library registry rather than a direct LLVM call from the root
+    // dispatcher. Their only static edge is the source registration ctor.
+    if (auto const* ctors = module.getGlobalVariable("llvm.global_ctors")) {
+        mark_reachable(ctors, authoring_reachable);
+    }
+    if (auto const* dtors = module.getGlobalVariable("llvm.global_dtors")) {
+        mark_reachable(dtors, authoring_reachable);
+    }
+
+    remove_source_registration_initializers(module);
     SmallPtrSet<GlobalValue const*, 32> runtime_reachable;
     mark_runtime_module_roots(module, runtime_reachable);
 
@@ -652,8 +772,11 @@ void prune_authoring_ir(Module& module)
     pipeline.add(createGlobalDCEPass());
     pipeline.run(module);
 
-    if (module.getFunction("iv_module_build")) {
-        fail("authoring entry point survived runtime IR pruning");
+    for (auto const name : authoring_entry_points) {
+        if (module.getFunction(name)) {
+            fail("authoring entry point survived runtime IR pruning: '"
+                 + name.str() + "'");
+        }
     }
 }
 
@@ -771,8 +894,13 @@ void initialize_native_target()
     InitializeNativeTargetAsmParser();
 }
 
-struct BuilderJitResult {
+struct BuilderJitModule {
+    std::string id;
     iv::AuthoredGraph graph;
+};
+
+struct BuilderJitResult {
+    std::vector<BuilderJitModule> modules;
     std::vector<BuilderModuleClone::RetainedGlobal> retained_globals;
 };
 
@@ -811,21 +939,27 @@ BuilderJitResult run_builder_jit(
         tracker, orc::ThreadSafeModule(std::move(builder_module), context)),
         "add builder LLVM module to ORC");
     check_error(jit->initialize(jit->getMainJITDylib()), "run builder global initializers");
-    auto address = take_expected(jit->lookup("iv_module_build"), "lookup iv_module_build");
+    auto build_count = take_expected(
+        jit->lookup("iv_source_registered_module_count"),
+        "lookup iv_source_registered_module_count");
+    auto build_id = take_expected(
+        jit->lookup("iv_source_registered_module_id"),
+        "lookup iv_source_registered_module_id");
+    auto build_address = take_expected(
+        jit->lookup("iv_source_build_registered_module"),
+        "lookup iv_source_build_registered_module");
     auto global_addresses = take_expected(
         jit->lookup("iv_get_authoring_global_addresses"),
         "lookup authoring global address table");
     timings.finish_stage("jit_materialize", stage_started_at);
 
-    using BuildFn = void (*)(iv::details::BuilderSession*);
-    auto build = address.toPtr<BuildFn>();
+    using BuildCountFn = std::size_t (*)();
+    using BuildIdFn = iv::ModuleDataView (*)(std::size_t);
+    using BuildFn = void (*)(std::size_t, iv::details::BuilderSession*);
+    auto const module_count = build_count.toPtr<BuildCountFn>()();
+    auto const module_id = build_id.toPtr<BuildIdFn>();
+    auto const build = build_address.toPtr<BuildFn>();
     stage_started_at = timings.start_stage();
-    auto session = std::unique_ptr<
-        iv::details::BuilderSession,
-        decltype(&iv::details::iv_builder_session_destroy)>(
-            iv::details::iv_builder_session_create(),
-            iv::details::iv_builder_session_destroy);
-    if (!session) fail("create builder session");
     std::vector<iv::details::NodeConfigLayout> config_layouts;
     config_layouts.reserve(metadata.config_pointers.size());
     for (auto const& entry : metadata.config_pointers) {
@@ -834,7 +968,6 @@ BuilderJitResult run_builder_jit(
             .pointer_offsets = entry.byte_offsets,
         });
     }
-    iv::details::set_builder_node_config_layouts(session.get(), config_layouts);
     using GlobalAddressTableFn = void const* (*)();
     auto const table = global_addresses.toPtr<GlobalAddressTableFn>()();
     auto const* addresses = static_cast<void const* const*>(table);
@@ -847,20 +980,43 @@ BuilderJitResult run_builder_jit(
             .symbol = builder_clone.retained_globals[i].master,
         });
     }
-    iv::details::set_builder_authoring_globals(session.get(), authoring_globals);
     timings.finish_stage("builder_session_setup", stage_started_at);
 
     stage_started_at = timings.start_stage();
-    build(session.get());
-    auto graph = iv::details::take_built_graph(session.get());
-    timings.finish_stage("module_main", stage_started_at);
+    std::vector<BuilderJitModule> modules;
+    modules.reserve(module_count);
+    std::set<std::string> module_ids;
+    for (std::size_t index = 0; index < module_count; ++index) {
+        auto const id = module_id(index);
+        if (!id.data || id.size == 0) {
+            fail("IV source module registration has an empty ID");
+        }
+        auto name = std::string(static_cast<char const*>(id.data), id.size);
+        if (!module_ids.insert(name).second) {
+            fail("duplicate IV_MODULE ID within one IV source: '" + name + "'");
+        }
+        auto module_session = std::unique_ptr<
+            iv::details::BuilderSession,
+            decltype(&iv::details::iv_builder_session_destroy)>(
+                iv::details::iv_builder_session_create(),
+                iv::details::iv_builder_session_destroy);
+        if (!module_session) fail("create IV source module builder session");
+        iv::details::set_builder_node_config_layouts(module_session.get(), config_layouts);
+        iv::details::set_builder_authoring_globals(module_session.get(), authoring_globals);
+        build(index, module_session.get());
+        modules.push_back({
+            .id = std::move(name),
+            .graph = iv::details::take_built_graph(module_session.get()),
+        });
+    }
+    timings.finish_stage("source_modules_authoring", stage_started_at);
 
     stage_started_at = timings.start_stage();
     check_error(jit->deinitialize(jit->getMainJITDylib()), "run builder global destructors");
     check_error(tracker->remove(), "release builder JIT generation");
     timings.finish_stage("jit_release", stage_started_at);
     return {
-        .graph = std::move(graph),
+        .modules = std::move(modules),
         .retained_globals = std::move(builder_clone.retained_globals),
     };
 }
@@ -1040,9 +1196,56 @@ GlobalVariable* constant_node_config(
     return global;
 }
 
-void inject_module_data(
+Function* emit_indexed_view_accessor(
     Module& module,
-    iv::SerializedAuthoredGraph const& authored,
+    StringRef name,
+    GlobalVariable* views,
+    std::size_t count)
+{
+    auto& context = module.getContext();
+    auto const pointer_bits = module.getDataLayout().getPointerSizeInBits();
+    auto* size_type = IntegerType::get(context, pointer_bits);
+    auto* pointer_type = PointerType::getUnqual(context);
+    auto* view_type = StructType::get(pointer_type, size_type);
+    auto* function_type = FunctionType::get(view_type, {size_type}, false);
+    auto* function = Function::Create(
+        function_type, GlobalValue::ExternalLinkage, name, module);
+    function->setVisibility(GlobalValue::DefaultVisibility);
+#if defined(_WIN32)
+    function->setDLLStorageClass(GlobalValue::DLLExportStorageClass);
+#endif
+    auto* block = BasicBlock::Create(context, "entry", function);
+    IRBuilder<> builder(block);
+    if (count == 0) {
+        builder.CreateRet(ConstantAggregateZero::get(view_type));
+        return function;
+    }
+    auto* index = function->getArg(0);
+    auto* valid = builder.CreateICmpULT(
+        index, ConstantInt::get(size_type, count));
+    auto* valid_block = BasicBlock::Create(context, "valid", function);
+    auto* invalid_block = BasicBlock::Create(context, "invalid", function);
+    builder.CreateCondBr(valid, valid_block, invalid_block);
+
+    builder.SetInsertPoint(valid_block);
+    auto* element = builder.CreateInBoundsGEP(
+        views->getValueType(), views, {ConstantInt::get(size_type, 0), index});
+    auto* value = builder.CreateLoad(view_type, element);
+    builder.CreateRet(value);
+
+    builder.SetInsertPoint(invalid_block);
+    builder.CreateRet(ConstantAggregateZero::get(view_type));
+    return function;
+}
+
+struct SerializedSourceModule {
+    std::string id;
+    iv::SerializedAuthoredGraph authored;
+};
+
+void inject_source_data(
+    Module& module,
+    std::span<SerializedSourceModule const> authored_modules,
     std::span<IrNodeRecord const> node_records,
     std::span<BuilderModuleClone::RetainedGlobal const> retained_globals)
 {
@@ -1050,34 +1253,108 @@ void inject_module_data(
     auto const pointer_bits = module.getDataLayout().getPointerSizeInBits();
     auto* size_type = IntegerType::get(context, pointer_bits);
     auto* pointer_type = PointerType::getUnqual(context);
-
-    auto graph_bytes = std::span<std::byte const>(authored.bytes.data(), authored.bytes.size());
-    auto* graph = constant_bytes(module, "iv.authored_graph", graph_bytes, 1);
-    auto* graph_ptr = ConstantExpr::getPointerCast(graph, pointer_type);
-    emit_view_accessor(module, "iv_module_authored_graph", graph_ptr, authored.bytes.size());
-
-    std::vector<Constant*> config_records;
+    auto* view_type = StructType::get(pointer_type, size_type);
     auto* config_record_type = StructType::get(pointer_type, size_type, size_type);
-    for (std::size_t i = 0; i < authored.node_configs.size(); ++i) {
-        auto const& config = authored.node_configs[i];
-        auto* bytes = constant_node_config(
-            module, "iv.node_config." + std::to_string(i), config, retained_globals);
-        config_records.push_back(ConstantStruct::get(
-            config_record_type,
-            ConstantExpr::getPointerCast(bytes, pointer_type),
-            ConstantInt::get(size_type, config.bytes.size()),
-            ConstantInt::get(size_type, config.alignment)));
-    }
-    auto* config_array_type = ArrayType::get(config_record_type, config_records.size());
-    auto* config_array = new GlobalVariable(
-        module, config_array_type, true, GlobalValue::PrivateLinkage,
-        ConstantArray::get(config_array_type, config_records), "iv.node_configs");
-    emit_view_accessor(
-        module, "iv_module_node_configs",
-        ConstantExpr::getPointerCast(config_array, pointer_type),
-        config_records.size() * module.getDataLayout().getTypeAllocSize(config_record_type).getFixedValue());
 
-    if (node_records.empty()) fail("cannot emit empty node type table");
+    std::vector<Constant*> id_views;
+    std::vector<Constant*> graph_views;
+    std::vector<Constant*> config_views;
+    id_views.reserve(authored_modules.size());
+    graph_views.reserve(authored_modules.size());
+    config_views.reserve(authored_modules.size());
+    for (std::size_t module_index = 0; module_index < authored_modules.size(); ++module_index) {
+        auto const& source_module = authored_modules[module_index];
+        auto const id_bytes = std::as_bytes(std::span(
+            source_module.id.data(), source_module.id.size()));
+        auto* id = constant_bytes(
+            module, "iv.source_module_id." + std::to_string(module_index), id_bytes, 1);
+        id_views.push_back(ConstantStruct::get(
+            view_type,
+            ConstantExpr::getPointerCast(id, pointer_type),
+            ConstantInt::get(size_type, source_module.id.size())));
+
+        auto const graph_bytes = std::span<std::byte const>(
+            source_module.authored.bytes.data(), source_module.authored.bytes.size());
+        auto* graph = constant_bytes(
+            module, "iv.source_authored_graph." + std::to_string(module_index), graph_bytes, 1);
+        graph_views.push_back(ConstantStruct::get(
+            view_type,
+            ConstantExpr::getPointerCast(graph, pointer_type),
+            ConstantInt::get(size_type, source_module.authored.bytes.size())));
+
+        std::vector<Constant*> config_records;
+        config_records.reserve(source_module.authored.node_configs.size());
+        for (std::size_t config_index = 0;
+             config_index < source_module.authored.node_configs.size();
+             ++config_index) {
+            auto const& config = source_module.authored.node_configs[config_index];
+            auto* bytes = constant_node_config(
+                module,
+                "iv.source_node_config." + std::to_string(module_index)
+                    + "." + std::to_string(config_index),
+                config,
+                retained_globals);
+            config_records.push_back(ConstantStruct::get(
+                config_record_type,
+                ConstantExpr::getPointerCast(bytes, pointer_type),
+                ConstantInt::get(size_type, config.bytes.size()),
+                ConstantInt::get(size_type, config.alignment)));
+        }
+        auto* config_array_type = ArrayType::get(config_record_type, config_records.size());
+        auto* config_array = new GlobalVariable(
+            module,
+            config_array_type,
+            true,
+            GlobalValue::PrivateLinkage,
+            ConstantArray::get(config_array_type, config_records),
+            "iv.source_node_configs." + std::to_string(module_index));
+        config_views.push_back(ConstantStruct::get(
+            view_type,
+            ConstantExpr::getPointerCast(config_array, pointer_type),
+            ConstantInt::get(
+                size_type,
+                config_records.size()
+                    * module.getDataLayout().getTypeAllocSize(config_record_type)
+                          .getFixedValue())));
+    }
+
+    auto make_views = [&](StringRef name, std::vector<Constant*> const& entries) {
+        auto* type = ArrayType::get(view_type, entries.size());
+        return new GlobalVariable(
+            module,
+            type,
+            true,
+            GlobalValue::PrivateLinkage,
+            ConstantArray::get(type, entries),
+            name);
+    };
+    auto* id_table = make_views("iv.source_module_ids", id_views);
+    auto* graph_table = make_views("iv.source_authored_graphs", graph_views);
+    auto* config_table = make_views("iv.source_node_config_views", config_views);
+    auto* count_type = FunctionType::get(size_type, false);
+    auto* count = Function::Create(
+        count_type, GlobalValue::ExternalLinkage, "iv_source_module_count", module);
+    count->setVisibility(GlobalValue::DefaultVisibility);
+#if defined(_WIN32)
+    count->setDLLStorageClass(GlobalValue::DLLExportStorageClass);
+#endif
+    auto* count_block = BasicBlock::Create(context, "entry", count);
+    IRBuilder<> count_builder(count_block);
+    count_builder.CreateRet(ConstantInt::get(size_type, authored_modules.size()));
+    emit_indexed_view_accessor(module, "iv_source_module_id", id_table, authored_modules.size());
+    emit_indexed_view_accessor(
+        module, "iv_source_module_authored_graph", graph_table, authored_modules.size());
+    emit_indexed_view_accessor(
+        module, "iv_source_module_node_configs", config_table, authored_modules.size());
+
+    if (node_records.empty()) {
+        emit_view_accessor(
+            module,
+            "iv_module_node_types",
+            ConstantPointerNull::get(pointer_type),
+            0);
+        return;
+    }
     auto* record_type = node_records.front().initializer->getType();
     std::vector<Constant*> type_records;
     type_records.reserve(node_records.size());
@@ -1231,13 +1508,21 @@ int finalize(Options options)
         master, context, options.link_command, metadata, timings);
 
     stage_started_at = timings.start_stage();
-    auto serialized = iv::serialize_authored_graph(authored.graph, state_metadata);
-    timings.finish_stage("graph_serialize", stage_started_at);
+    std::vector<SerializedSourceModule> serialized;
+    serialized.reserve(authored.modules.size());
+    for (auto& source_module : authored.modules) {
+        serialized.push_back({
+            .id = std::move(source_module.id),
+            .authored = iv::serialize_authored_graph(
+                source_module.graph, state_metadata),
+        });
+    }
+    timings.finish_stage("source_graphs_serialize", stage_started_at);
 
     stage_started_at = timings.start_stage();
-    inject_module_data(
+    inject_source_data(
         master, serialized, node_records, authored.retained_globals);
-    timings.finish_stage("module_data_inject", stage_started_at);
+    timings.finish_stage("source_data_inject", stage_started_at);
 
     stage_started_at = timings.start_stage();
     prune_authoring_ir(master);

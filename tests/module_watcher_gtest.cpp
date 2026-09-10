@@ -19,7 +19,7 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     iv::test::copy_directory(voice_src, voice_dst);
 
     auto loader = iv::test::make_loader({});
-    auto graph = loader.load_root_definition(project_dst);
+    auto graph = loader.load_source_definitions(project_dst).front();
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);
@@ -64,7 +64,7 @@ TEST(ModuleWatcher, MissingDependencyDirectoryIsReportedAsChangeWithoutThrowing)
     iv::test::copy_directory(voice_src, voice_dst);
 
     auto loader = iv::test::make_loader({});
-    auto graph = loader.load_root_definition(project_dst);
+    auto graph = loader.load_source_definitions(project_dst).front();
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);

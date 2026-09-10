@@ -19,32 +19,35 @@ int main()
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
 
-    auto definition = loader.load_root_definition(project_dst);
+    auto definitions = loader.load_source_definitions(project_dst);
+    auto const definition = std::ranges::find(
+        definitions,
+        "iv.test.behavior_project",
+        &iv::ModuleLoader::LoadedDefinition::module_id);
     iv::test::require(
-        definition.module_id == "iv.test.behavior_project",
+        definition != definitions.end(),
         "behavior project should load");
     iv::test::require(
-        definition.dependencies.size() == 2,
+        definition->dependencies.size() == 2,
         "behavior project should depend on exactly its root and voice closure");
 
-    auto const project_workspace =
-        iv::test::runtime_module_workspace("iv.test.behavior_project", project_dst);
+    auto const project_workspace = iv::test::runtime_module_workspace(project_dst);
     auto const project_cache = project_workspace / "cmake-build" / "CMakeCache.txt";
     iv::test::require(
         std::filesystem::exists(project_cache),
         "root module should configure in the project-local build/iv tree");
 
-    auto const import_root = runtime_root / "build" / "iv" / "imports" / "iv" / "modules";
+    auto const import_root = runtime_root / "build" / "iv" / "imports" / "iv" / "nodes";
     auto const project_import = import_root / "iv.test.behavior_project";
     auto const voice_import = import_root / "iv.test.behavior_voice";
     iv::test::require(std::filesystem::exists(project_import), "root import should exist");
     iv::test::require(std::filesystem::exists(voice_import), "dependency import should exist");
     iv::test::require(
-        iv::test::read_text(project_import).contains(project_dst.generic_string()),
-        "root import should forward to its authored entry");
+        !iv::test::read_text(project_import).contains(project_dst.generic_string()),
+        "root import should not expose its authored entry");
     iv::test::require(
-        iv::test::read_text(voice_import).contains(voice_dst.generic_string()),
-        "dependency import should forward to its authored entry");
+        !iv::test::read_text(voice_import).contains(voice_dst.generic_string()),
+        "dependency import should not expose its authored entry");
 
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
     auto const project_needle = std::string("    using namespace iv;");
@@ -57,7 +60,7 @@ int main()
         project_replacement);
     iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
 
-    (void)loader.load_root_definition(project_dst);
+    (void)loader.load_source_definitions(project_dst);
 
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
     auto const voice_needle =
@@ -71,18 +74,17 @@ int main()
         voice_replacement);
     iv::test::write_text_advancing_timestamp(voice_dst / "module.cpp", voice_source);
 
-    (void)loader.load_root_definition(project_dst);
+    (void)loader.load_source_definitions(project_dst);
 
-    (void)loader.load_root_definition(local_dst);
+    (void)loader.load_source_definitions(local_dst);
     auto local_cmake = iv::test::read_text(local_dst / "CMakeLists.txt");
     local_cmake +=
         "\n# behavior cmake marker\n"
         "set(IV_TEST_CUSTOM_CMAKE_MARKER ON CACHE BOOL \"test marker\")\n";
     iv::test::write_text_advancing_timestamp(local_dst / "CMakeLists.txt", local_cmake);
-    (void)loader.load_root_definition(local_dst);
+    (void)loader.load_source_definitions(local_dst);
 
-    auto const local_workspace =
-        iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst);
+    auto const local_workspace = iv::test::runtime_module_workspace(local_dst);
     auto const local_cache = local_workspace / "cmake-build" / "CMakeCache.txt";
     iv::test::require(
         iv::test::read_text(local_cache).contains("IV_TEST_CUSTOM_CMAKE_MARKER:BOOL=ON"),

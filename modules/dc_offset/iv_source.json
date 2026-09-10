@@ -1,6 +1,1 @@
-{
-  "schema": 1,
-  "id": "iv.test.dc_offset",
-  "entry": "module.cpp",
-  "main": "dc_offset"
-}
+{"schema":2,"entry":"module.cpp"}

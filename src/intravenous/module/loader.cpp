@@ -18,6 +18,7 @@
 #include <iterator>
 #include <mutex>
 #include <regex>
+#include <ranges>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -40,9 +41,7 @@ namespace iv {
 namespace {
 struct Manifest {
     int schema = 0;
-    std::string id;
     std::filesystem::path entry;
-    std::string main;
 };
 
 std::optional<std::filesystem::path> find_source_manifest(
@@ -56,6 +55,7 @@ std::optional<std::filesystem::path> find_source_manifest(
 
 struct ResolvedModule {
     Manifest manifest;
+    std::string source_key;
     std::filesystem::path module_dir;
     std::filesystem::path manifest_file;
     std::filesystem::path entry_file;
@@ -67,6 +67,95 @@ struct ModuleImport {
     std::string id;
     bool global_only = false;
 };
+
+std::string read_text(std::filesystem::path const& path);
+
+enum class SourceDefinitionKind {
+    node,
+    module,
+};
+
+struct SourceDefinitionInterface {
+    std::string id;
+    SourceDefinitionKind kind{};
+    std::string function;
+};
+
+std::vector<SourceDefinitionInterface> scan_source_definitions(
+    std::filesystem::path const& entry)
+{
+    // IV_MODULE is intentionally a simple declaration spelling.  The source
+    // introspection plugin remains authoritative for rich metadata, while
+    // this small loader scan creates the generated C++ import declaration
+    // before that source has been built.
+    static std::regex const module_registration(
+        R"iv(IV_MODULE\s*\(\s*"([^"]+)"\s*,\s*([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*\))iv");
+    static std::regex const node_registration(
+        R"iv(IV_NODE\s*\(\s*"([^"]+)"\s*,\s*([A-Za-z_][A-Za-z0-9_:]*)\s*\))iv");
+    std::vector<SourceDefinitionInterface> result;
+    auto const source = read_text(entry);
+    auto append = [&](SourceDefinitionInterface interface) {
+        if (interface.id.empty()) {
+            throw std::runtime_error(
+                "IV source registration has an empty stable ID in '" + entry.string() + "'");
+        }
+        if (interface.id.contains('/') || interface.id.contains('\\')) {
+            throw std::runtime_error(
+                "IV source registration ID must not contain a path separator in '"
+                + entry.string() + "'");
+        }
+        auto const duplicate = std::find_if(
+            result.begin(), result.end(), [&](SourceDefinitionInterface const& existing) {
+                return existing.id == interface.id;
+            });
+        if (duplicate != result.end()) {
+            throw std::runtime_error(
+                "duplicate stable IV source registration '" + interface.id + "' in '"
+                + entry.string() + "'");
+        }
+        result.push_back(std::move(interface));
+    };
+    for (std::sregex_iterator it(
+             source.begin(), source.end(), module_registration), end;
+         it != end; ++it) {
+        append({
+            .id = (*it)[1].str(),
+            .kind = SourceDefinitionKind::module,
+            .function = (*it)[2].str(),
+        });
+    }
+    for (std::sregex_iterator it(source.begin(), source.end(), node_registration), end;
+         it != end; ++it) {
+        append({
+            .id = (*it)[1].str(),
+            .kind = SourceDefinitionKind::node,
+            .function = {},
+        });
+    }
+    return result;
+}
+
+void emit_module_function_declaration(
+    std::ostream& output,
+    std::string_view qualified_function)
+{
+    std::vector<std::string_view> components;
+    for (std::size_t begin = 0; begin < qualified_function.size();) {
+        auto const end = qualified_function.find("::", begin);
+        components.push_back(qualified_function.substr(
+            begin,
+            end == std::string_view::npos ? std::string_view::npos : end - begin));
+        if (end == std::string_view::npos) break;
+        begin = end + 2;
+    }
+    for (std::size_t index = 0; index + 1 < components.size(); ++index) {
+        output << "namespace " << components[index] << " {\n";
+    }
+    output << "void " << components.back() << "(iv::GraphBuilder&);\n";
+    for (std::size_t index = components.size(); index-- > 1;) {
+        output << "} // namespace " << components[index - 1] << "\n";
+    }
+}
 
 struct DynamicLibrary {
 #if defined(_WIN32)
@@ -222,32 +311,43 @@ Manifest parse_manifest(std::filesystem::path const &file)
     try {
         auto const json = nlohmann::json::parse(in);
         manifest.schema = json.at("schema").get<int>();
-        manifest.id = json.at("id").get<std::string>();
         manifest.entry = json.at("entry").get<std::string>();
-        manifest.main = json.at("main").get<std::string>();
     } catch (nlohmann::json::exception const &e) {
         throw std::runtime_error("invalid IV source manifest '" + file.string() + "': " + e.what());
     }
 
-    if (manifest.schema != 1) {
+    if (manifest.schema != 2) {
         throw std::runtime_error(
             "IV source manifest '" + file.string() + "' uses unsupported schema " +
             std::to_string(manifest.schema));
-    }
-    if (manifest.id.empty() || manifest.id == "." || manifest.id == ".." ||
-        manifest.id.contains('/') || manifest.id.contains('\\')) {
-        throw std::runtime_error(
-            "IV source manifest '" + file.string() +
-            "' id must be a non-empty single path component");
     }
     if (manifest.entry.empty() || manifest.entry.is_absolute()) {
         throw std::runtime_error(
             "IV source manifest '" + file.string() + "' entry must be a relative path");
     }
-    if (manifest.main.empty()) {
-        throw std::runtime_error("IV source manifest '" + file.string() + "' has empty main");
-    }
     return manifest;
+}
+
+std::string source_key_for(std::filesystem::path const& directory)
+{
+    auto const normalized = normalize(directory);
+    auto modules = normalized.end();
+    for (auto it = normalized.begin(); it != normalized.end(); ++it) {
+        if (*it == "modules") modules = it;
+    }
+    if (modules != normalized.end()) {
+        auto relative = std::filesystem::path{};
+        for (auto it = std::next(modules); it != normalized.end(); ++it) {
+            relative /= *it;
+        }
+        if (!relative.empty()) return relative.generic_string();
+    }
+    auto const name = normalized.filename().generic_string();
+    if (name.empty() || name == "." || name == "..") {
+        throw std::runtime_error(
+            "cannot derive IV source package key from '" + normalized.string() + "'");
+    }
+    return name;
 }
 
 std::filesystem::file_time_type directory_stamp(std::filesystem::path const &dir)
@@ -285,7 +385,7 @@ std::filesystem::file_time_type directory_stamp(std::filesystem::path const &dir
 std::vector<ModuleImport> scan_imports(std::filesystem::path const &entry)
 {
     static std::regex const pattern(
-        R"(^\s*#\s*include\s*<iv/(modules-global|modules)/([^>]+)>\s*$)");
+        R"(^\s*#\s*include\s*<iv/(nodes-global|nodes)/([^>]+)>\s*$)");
 
     std::vector<ModuleImport> imports;
     std::istringstream stream(read_text(entry));
@@ -296,11 +396,11 @@ std::vector<ModuleImport> scan_imports(std::filesystem::path const &entry)
         }
         ModuleImport import{
             .id = match[2].str(),
-            .global_only = match[1].str() == "modules-global",
+            .global_only = match[1].str() == "nodes-global",
         };
         if (import.id.empty() || import.id.contains('/') || import.id.contains('\\')) {
             throw std::runtime_error(
-                "invalid IV module import <iv/" + match[1].str() + "/" + import.id +
+                "invalid IV node interface import <iv/" + match[1].str() + "/" + import.id +
                 "> in '" + entry.string() + "'");
         }
         imports.push_back(std::move(import));
@@ -505,7 +605,23 @@ class ModuleLoader::Impl {
 
     static std::string key(ResolvedModule const &module)
     {
-        return std::string(module.global ? "global:" : "project:") + module.manifest.id;
+        return std::string(module.global ? "global:" : "project:")
+            + normalize(module.module_dir).generic_string();
+    }
+
+    static void register_source_definitions(
+        ResolvedModule const& source,
+        std::unordered_map<std::string, ResolvedModule>& registry)
+    {
+        for (auto const& definition : scan_source_definitions(source.entry_file)) {
+            auto [position, inserted] = registry.emplace(definition.id, source);
+            if (!inserted && position->second.manifest_file != source.manifest_file) {
+                throw std::runtime_error(
+                    "duplicate stable IV definition ID '" + definition.id + "' in '"
+                    + position->second.manifest_file.string() + "' and '"
+                    + source.manifest_file.string() + "'");
+            }
+        }
     }
 
     ResolvedModule resolve_dir(std::filesystem::path dir, bool global) const
@@ -532,6 +648,7 @@ class ModuleLoader::Impl {
 
         return {
             .manifest = std::move(manifest),
+            .source_key = source_key_for(dir),
             .module_dir = dir,
             .manifest_file = normalize(*manifest_file),
             .entry_file = entry,
@@ -574,13 +691,7 @@ class ModuleLoader::Impl {
                 continue;
             }
             auto resolved = resolve_dir(source_dir, global);
-            auto [position, inserted] = out.emplace(resolved.manifest.id, resolved);
-            if (!inserted && position->second.manifest_file != resolved.manifest_file) {
-                throw std::runtime_error(
-                    "duplicate IV source id '" + resolved.manifest.id + "' in '" +
-                    position->second.manifest_file.string() + "' and '" +
-                    resolved.manifest_file.string() + "'");
-            }
+            register_source_definitions(resolved, out);
             it.disable_recursion_pending();
         }
     }
@@ -608,9 +719,9 @@ class ModuleLoader::Impl {
                 }
                 registry.effective[id] = module;
             }
-            registry.effective[root.manifest.id] = root;
+            register_source_definitions(root, registry.effective);
         } else {
-            registry.global[root.manifest.id] = root;
+            register_source_definitions(root, registry.global);
             registry.effective = registry.global;
         }
         return registry;
@@ -627,7 +738,7 @@ class ModuleLoader::Impl {
         auto found = scope.find(import.id);
         if (found == scope.end()) {
             throw std::runtime_error(
-                    "IV source '" + from.manifest.id + "' imports missing " +
+                    "IV source '" + from.source_key + "' imports missing " +
                 std::string((from.global || import.global_only) ? "global" : "project/global") +
                 " IV source '" + import.id + "'");
         }
@@ -647,7 +758,7 @@ class ModuleLoader::Impl {
             if (visited.contains(module_key)) return;
             if (!visiting.insert(module_key).second) {
                 throw std::runtime_error(
-                    "cyclic IV source import involving '" + module.manifest.id + "'");
+                    "cyclic IV source import involving '" + module.source_key + "'");
             }
 
             auto &deps = closure.dependency_keys[module_key];
@@ -685,25 +796,10 @@ class ModuleLoader::Impl {
         return {IV_CONFIGURED_C_COMPILER, IV_CONFIGURED_CXX_COMPILER};
     }
 
-    static std::string generated_import_path(ResolvedModule const &module)
-    {
-        return std::string("iv/") +
-            (module.global ? "modules-global/" : "modules/") +
-            module.manifest.id;
-    }
-
-    static std::filesystem::path import_for(
-        ResolvedModule const &module,
-        std::filesystem::path const &project_import_root,
-        std::filesystem::path const &global_import_root)
-    {
-        auto const &root = module.global ? global_import_root : project_import_root;
-        return root / generated_import_path(module);
-    }
-
     std::filesystem::path build(
         ResolvedModule const &root,
         Closure const &closure,
+        Registry const& registry,
         std::filesystem::path const &project_root) const
     {
         auto const global_import_root = global_cache_root_ / "imports";
@@ -712,7 +808,7 @@ class ModuleLoader::Impl {
             ? global_import_root
             : project_iv_root / "imports";
         auto const owner_root = root.global ? global_cache_root_ : project_iv_root;
-        auto const build_key = sanitize(root.manifest.id) + "_" + stable_hash(root.module_dir);
+        auto const build_key = sanitize(root.source_key) + "_" + stable_hash(root.module_dir);
         auto const workspace = owner_root / "build" / build_key / config_name();
         auto const build_dir = workspace / "cmake-build";
         auto const output_dir = workspace / "out";
@@ -728,43 +824,82 @@ class ModuleLoader::Impl {
         ScopedModuleBuildLock const build_lock(workspace / "build.lock");
         std::filesystem::create_directories(output_dir);
         std::filesystem::create_directories(generated_dir);
-        std::filesystem::create_directories(project_import_root / "iv/modules");
-        std::filesystem::create_directories(global_import_root / "iv/modules");
-        std::filesystem::create_directories(global_import_root / "iv/modules-global");
+        std::filesystem::create_directories(project_import_root / "iv/nodes");
+        std::filesystem::create_directories(global_import_root / "iv/nodes");
+        std::filesystem::create_directories(global_import_root / "iv/nodes-global");
 
-        for (auto const &module : closure.modules) {
-            auto const generated_import = import_for(
-                module, project_import_root, global_import_root);
-            write_text_if_different(
-                generated_import,
-                "#pragma once\n#include " + quote(module.entry_file) + "\n");
-            if (module.global) {
-                auto const forwarder = global_import_root / "iv/modules" / module.manifest.id;
-                write_text_if_different(
-                    forwarder,
-                    "#pragma once\n#include <iv/modules-global/" + module.manifest.id + ">\n");
+        // Interface headers are generated for every discovered definition,
+        // not merely this source's import closure.  That makes the generated
+        // tree a project/application registry view while CMake still compiles
+        // only the closure needed by this source artifact.
+        std::vector<ResolvedModule> header_sources;
+        std::unordered_set<std::string> seen_header_sources;
+        auto collect_header_sources = [&](auto const& providers) {
+            for (auto const& [_, provider] : providers) {
+                if (seen_header_sources.insert(key(provider)).second) {
+                    header_sources.push_back(provider);
+                }
+            }
+        };
+        collect_header_sources(registry.effective);
+        // A project provider may shadow a global ID in <iv/nodes/...>, but
+        // <iv/nodes-global/...> is an explicit escape hatch and still needs
+        // its global definition header generated.
+        collect_header_sources(registry.global);
+        std::ranges::sort(header_sources, {}, [](ResolvedModule const& source) {
+            return source.manifest_file.generic_string();
+        });
+        for (auto const &module : header_sources) {
+            for (auto const& registration : scan_source_definitions(module.entry_file)) {
+                auto const definition_import = (module.global
+                    ? global_import_root / "iv/nodes-global"
+                    : project_import_root / "iv/nodes") / registration.id;
+                std::ostringstream interface;
+                interface << "#pragma once\n"
+                          << "#include <intravenous/dsl.h>\n";
+                if (registration.kind == SourceDefinitionKind::module) {
+                    emit_module_function_declaration(interface, registration.function);
+                    interface << "IV_MODULE_INTERFACE(\"" << registration.id << "\", "
+                              << registration.function << ");\n";
+                } else {
+                    interface << "IV_NODE_INTERFACE(\"" << registration.id << "\");\n";
+                }
+                write_text_if_different(definition_import, interface.str());
+                if (module.global) {
+                    auto const forwarder = global_import_root / "iv/nodes" / registration.id;
+                    write_text_if_different(
+                        forwarder,
+                        "#pragma once\n#include <iv/nodes-global/" + registration.id + ">\n");
+                }
             }
         }
 
-        auto const root_include = root.global
-            ? std::string("iv/modules-global/") + root.manifest.id
-            : std::string("iv/modules/") + root.manifest.id;
         std::ostringstream export_tu;
         // The generated root owns the module ABI symbols, so it must include
         // their declaration directly rather than rely on the DSL's transitive
         // includes.
         export_tu << "#include <intravenous/module/abi.h>\n"
                   << "#include <intravenous/dsl.h>\n"
-                  << "#include <" << root_include << ">\n";
+                  << "#include <cstddef>\n";
         export_tu
             << "extern \"C\" IV_MODULE_EXPORT std::uint32_t "
                "iv_module_abi_version() {\n"
             << "  return iv::IV_MODULE_ABI_VERSION;\n"
             << "}\n"
+            << "extern \"C\" std::size_t "
+               "iv_source_registered_module_count() {\n"
+            << "  return iv::details::source_module_count();\n"
+            << "}\n"
+            << "extern \"C\" iv::ModuleDataView "
+               "iv_source_registered_module_id(std::size_t index) {\n"
+            << "  auto const registration = iv::details::source_module_at(index);\n"
+            << "  return {registration.id, registration.id_size};\n"
+            << "}\n"
             << "extern \"C\" void "
-               "iv_module_build(iv::details::BuilderSession* session) {\n"
+               "iv_source_build_registered_module(std::size_t index, "
+               "iv::details::BuilderSession* session) {\n"
             << "  iv::GraphBuilder builder{session};\n"
-            << "  " << root.manifest.main << "(builder);\n"
+            << "  iv::details::source_module_at(index).module_build(builder);\n"
             << "}\n";
         write_text_if_different(export_file, export_tu.str());
 
@@ -842,7 +977,7 @@ class ModuleLoader::Impl {
             signature << read_text(custom_cmake) << '\n';
         }
         auto const signature_file = workspace / "build.signature";
-        auto const artifact_name = library_name("iv_module_" + sanitize(root.manifest.id));
+        auto const artifact_name = library_name("iv_source_" + sanitize(root.source_key));
         auto artifact = output_dir / artifact_name;
         bool const needs_build =
             !std::filesystem::exists(artifact) ||
@@ -860,6 +995,11 @@ class ModuleLoader::Impl {
         for (size_t i = 0; i < include_dirs.size(); ++i) {
             if (i) include_list << ';';
             include_list << include_dirs[i].generic_string();
+        }
+        std::ostringstream source_list;
+        for (std::size_t i = 0; i < closure.modules.size(); ++i) {
+            if (i) source_list << ';';
+            source_list << closure.modules[i].entry_file.generic_string();
         }
 
         std::ostringstream configure;
@@ -881,8 +1021,9 @@ class ModuleLoader::Impl {
                   << " -DIV_MODULE_GENERATED_INCLUDE_DIR=" << quote(project_import_root)
                   << " -DIV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR=" << quote(global_import_root)
                   << " -DIV_MODULE_INCLUDE_DIRS=\"" << include_list.str() << "\""
+                  << " -DIV_MODULE_SOURCE_FILES=\"" << source_list.str() << "\""
                   << " -DIV_MODULE_OUTPUT_DIR=" << quote(output_dir)
-                  << " -DIV_MODULE_OUTPUT_NAME=iv_module_" << sanitize(root.manifest.id)
+                  << " -DIV_MODULE_OUTPUT_NAME=iv_source_" << sanitize(root.source_key)
                   << " -DIV_CLANG_SOURCE_INTROSPECTION_PLUGIN="
                   << quote(source_introspection_plugin)
                   << " -DIV_MODULE_FINALIZER=" << quote(module_finalizer)
@@ -980,7 +1121,7 @@ public:
         }
     }
 
-    CompiledRoot compile_root_definition_unlocked(
+    CompiledRoot compile_source_unlocked(
         std::filesystem::path const& path) const
     {
         auto module_path = normalize(path);
@@ -1003,7 +1144,7 @@ public:
             : discover_project_root(root.module_dir);
         auto registry = registry_for(root, project_root);
         auto closure = reachable_modules(root, registry);
-        auto artifact = build(root, closure, project_root);
+        auto artifact = build(root, closure, registry, project_root);
         return {
             .root = std::move(root),
             .closure = std::move(closure),
@@ -1011,21 +1152,22 @@ public:
         };
     }
 
-    std::filesystem::path compile_root_definition(
+    std::filesystem::path compile_source(
         std::filesystem::path const& path) const
     {
         std::lock_guard lock(mutex_);
-        return compile_root_definition_unlocked(path).artifact;
+        return compile_source_unlocked(path).artifact;
     }
 
-    LoadedDefinition load_root_definition(std::filesystem::path const &path) const
+    ModuleLoader::LoadedSource load_source(
+        std::filesystem::path const &path) const
     {
         std::lock_guard lock(mutex_);
         if (toolchain_.compile_stage != ModuleCompileStage::full) {
             throw std::logic_error(
                 "only the full module compile stage can be loaded");
         }
-        auto compiled = compile_root_definition_unlocked(path);
+        auto compiled = compile_source_unlocked(path);
         auto& root = compiled.root;
         auto& closure = compiled.closure;
         auto& artifact = compiled.artifact;
@@ -1055,60 +1197,35 @@ public:
                 std::to_string(loaded_abi_version) + " (expected " +
                 std::to_string(IV_MODULE_ABI_VERSION) + ")");
         }
-        auto authored_graph = reinterpret_cast<iv_module_authored_graph_fn>(
-            library->symbol("iv_module_authored_graph"));
-        auto node_configs = reinterpret_cast<iv_module_node_configs_fn>(
-            library->symbol("iv_module_node_configs"));
+        auto source_module_count = reinterpret_cast<iv_source_module_count_fn>(
+            library->symbol("iv_source_module_count"));
+        auto source_module_id = reinterpret_cast<iv_source_module_id_fn>(
+            library->symbol("iv_source_module_id"));
+        auto authored_graph = reinterpret_cast<iv_source_module_authored_graph_fn>(
+            library->symbol("iv_source_module_authored_graph"));
+        auto node_configs = reinterpret_cast<iv_source_module_node_configs_fn>(
+            library->symbol("iv_source_module_node_configs"));
         auto node_types = reinterpret_cast<iv_module_node_types_fn>(
             library->symbol("iv_module_node_types"));
-        if (!authored_graph || !node_configs || !node_types) {
+        if (!source_module_count || !source_module_id || !authored_graph
+            || !node_configs || !node_types) {
             throw std::runtime_error(
-                "module '" + artifact.string() +
-                "' does not export the finalized authored-graph tables");
+                "IV source artifact '" + artifact.string()
+                + "' does not export the finalized source definition tables");
         }
-        auto const graph_view = authored_graph();
-        auto const config_view = node_configs();
         auto const type_view = node_types();
-        if (!graph_view.data && graph_view.size != 0) {
-            throw std::runtime_error("module authored graph view has null data");
-        }
-        if (!config_view.data && config_view.size != 0) {
-            throw std::runtime_error("module node config view has null data");
-        }
         if (!type_view.data && type_view.size != 0) {
-            throw std::runtime_error("module node type view has null data");
-        }
-        if (config_view.size % sizeof(ModuleNodeConfigRecord) != 0) {
-            throw std::runtime_error("module node config table has invalid size");
+            throw std::runtime_error("IV source node type view has null data");
         }
         if (type_view.size % sizeof(details::NodeCompilerRecord) != 0) {
-            throw std::runtime_error("module node type table has invalid size");
+            throw std::runtime_error("IV source node type table has invalid size");
         }
-        auto const graph_archive = std::span(
-            static_cast<std::byte const*>(graph_view.data), graph_view.size);
-        auto const configs = std::span(
-            static_cast<ModuleNodeConfigRecord const*>(config_view.data),
-            config_view.size / sizeof(ModuleNodeConfigRecord));
         auto const types = std::span(
             static_cast<details::NodeCompilerRecord const*>(type_view.data),
             type_view.size / sizeof(details::NodeCompilerRecord));
-        auto authored = deserialize_authored_graph(
-            graph_archive, types, configs);
-        auto plan = GraphCompiler::compile(
-            GraphLowerer::lower(authored, {.execution_root = true}));
-        auto runtime_root = std::make_shared<RuntimeGraphRoot>(
-            std::move(plan.graph));
-        WeakTypeErasedNode root_node(*runtime_root);
-        auto introspection = std::move(plan.introspection);
-        if (log_sink_) {
-            log_sink_(
-                "[runtime-graph-materialization] elapsed_us=" +
-                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - graph_materialization_started_at).count()));
-        }
 
         auto binary = std::make_shared<LoadedBinary>(LoadedBinary{
-            root.manifest.id,
+            root.source_key,
             artifact,
             library,
         });
@@ -1117,7 +1234,7 @@ public:
         dependencies.reserve(closure.modules.size());
         for (auto const &module : closure.modules) {
             dependencies.push_back({
-                module.manifest.id,
+                module.source_key,
                 module.module_dir,
                 module.entry_file,
                 module.source_stamp,
@@ -1131,16 +1248,63 @@ public:
                 return a.module_dir < b.module_dir;
             });
 
-        std::vector<ModuleRef> refs;
-        refs.push_back(binary);
-        refs.push_back(runtime_root);
-        return LoadedDefinition(
-            std::move(refs),
-            root_node,
-            std::move(introspection),
-            root.module_dir,
-            root.manifest.id,
-            std::move(dependencies));
+        auto const module_count = source_module_count();
+        std::vector<LoadedDefinition> definitions;
+        definitions.reserve(module_count);
+        std::unordered_set<std::string> module_ids;
+        for (std::size_t index = 0; index < module_count; ++index) {
+            auto const id_view = source_module_id(index);
+            auto const graph_view = authored_graph(index);
+            auto const config_view = node_configs(index);
+            if (!id_view.data || id_view.size == 0) {
+                throw std::runtime_error("IV source module ID view is empty");
+            }
+            if (!graph_view.data && graph_view.size != 0) {
+                throw std::runtime_error("IV source authored graph view has null data");
+            }
+            if (!config_view.data && config_view.size != 0) {
+                throw std::runtime_error("IV source node config view has null data");
+            }
+            if (config_view.size % sizeof(ModuleNodeConfigRecord) != 0) {
+                throw std::runtime_error("IV source node config table has invalid size");
+            }
+            auto module_id = std::string(
+                static_cast<char const*>(id_view.data), id_view.size);
+            if (!module_ids.insert(module_id).second) {
+                throw std::runtime_error(
+                    "IV source artifact contains duplicate module ID '" + module_id + "'");
+            }
+            auto const graph_archive = std::span(
+                static_cast<std::byte const*>(graph_view.data), graph_view.size);
+            auto const configs = std::span(
+                static_cast<ModuleNodeConfigRecord const*>(config_view.data),
+                config_view.size / sizeof(ModuleNodeConfigRecord));
+            auto authored = deserialize_authored_graph(graph_archive, types, configs);
+            auto plan = GraphCompiler::compile(
+                GraphLowerer::lower(authored, {.execution_root = true}));
+            auto runtime_root = std::make_shared<RuntimeGraphRoot>(
+                std::move(plan.graph));
+            std::vector<ModuleRef> refs;
+            refs.push_back(binary);
+            refs.push_back(runtime_root);
+            definitions.emplace_back(
+                std::move(refs),
+                WeakTypeErasedNode(*runtime_root),
+                std::move(plan.introspection),
+                root.module_dir,
+                std::move(module_id),
+                dependencies);
+        }
+        if (log_sink_) {
+            log_sink_(
+                "[runtime-graph-materialization] elapsed_us=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - graph_materialization_started_at).count()));
+        }
+        return {
+            .definitions = std::move(definitions),
+            .dependencies = std::move(dependencies),
+        };
     }
 };
 
@@ -1154,7 +1318,7 @@ ModuleLoader::LoadedDefinition::LoadedDefinition(
     : module_refs(std::move(refs)),
       root(root_),
       introspection(std::move(introspection_)),
-      module_path(std::move(path)),
+      source_path(std::move(path)),
       module_id(std::move(id)),
       dependencies(std::move(deps))
 {}
@@ -1175,16 +1339,23 @@ ModuleLoader::~ModuleLoader() = default;
 ModuleLoader::ModuleLoader(ModuleLoader &&) noexcept = default;
 ModuleLoader &ModuleLoader::operator=(ModuleLoader &&) noexcept = default;
 
-ModuleLoader::LoadedDefinition ModuleLoader::load_root_definition(
+ModuleLoader::LoadedSource ModuleLoader::load_source(
     std::filesystem::path const &path) const
 {
-    return _impl->load_root_definition(path);
+    return _impl->load_source(path);
 }
 
-std::filesystem::path ModuleLoader::compile_root_definition(
+std::vector<ModuleLoader::LoadedDefinition> ModuleLoader::load_source_definitions(
+    std::filesystem::path const &path) const
+{
+    auto source = load_source(path);
+    return std::move(source.definitions);
+}
+
+std::filesystem::path ModuleLoader::compile_source(
     std::filesystem::path const& path) const
 {
-    return _impl->compile_root_definition(path);
+    return _impl->compile_source(path);
 }
 
 std::vector<std::filesystem::path> const &ModuleLoader::extra_search_roots() const

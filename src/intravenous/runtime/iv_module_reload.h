@@ -18,6 +18,7 @@
 namespace iv {
 struct TasksRunnerBeforePass;
 struct IvModuleReloadedDefinition {
+    std::string source_id{};
     std::string definition_id{};
     std::filesystem::path module_root{};
     std::string module_id{};
@@ -33,7 +34,17 @@ struct IvModuleReloadFailure {
     std::string message{};
 };
 
+struct IvModuleReloadedSource {
+    std::string definition_id{};
+    std::filesystem::path module_root{};
+    std::vector<ModuleDependency> dependencies{};
+};
+
 struct IvModuleReloadResults {
+    // A successful source result is present even when the source currently
+    // publishes zero IV modules, allowing transactional removal of its prior
+    // definitions.
+    std::vector<IvModuleReloadedSource> sources{};
     std::vector<IvModuleReloadedDefinition> loaded{};
     std::vector<IvModuleReloadFailure> failed{};
 };

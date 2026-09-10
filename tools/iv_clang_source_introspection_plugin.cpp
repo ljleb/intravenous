@@ -28,6 +28,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <set>
 #include <string>
@@ -1052,6 +1053,69 @@ private:
     std::vector<CXXRecordDecl const*> nodes_;
 };
 
+class RegisteredDefinitionCollector final
+    : public RecursiveASTVisitor<RegisteredDefinitionCollector> {
+public:
+    explicit RegisteredDefinitionCollector(ASTContext& context)
+        : context_(context)
+    {}
+
+    bool VisitVarDecl(VarDecl* declaration)
+    {
+        if (!declaration || !declaration->hasInit()) return true;
+        auto const* record = declaration->getType()->getAsCXXRecordDecl();
+        if (!record) return true;
+        auto const name = record->getQualifiedNameAsString();
+        if (name != "iv::details::SourceModuleRegistration"
+            && name != "iv::details::SourceNodeRegistration") {
+            return true;
+        }
+        auto const* construction = dyn_cast<CXXConstructExpr>(
+            declaration->getInit()->IgnoreParenImpCasts());
+        if (!construction || construction->getNumArgs() < 1) return true;
+        auto const* literal = dyn_cast<StringLiteral>(
+            construction->getArg(0)->IgnoreParenImpCasts());
+        if (!literal || literal->getString().empty()) return true;
+
+        auto id = literal->getString().str();
+        if (!seen_.insert(id).second) return true;
+        llvm::json::Object metadata{
+            {"id", std::move(id)},
+            {"kind", name == "iv::details::SourceModuleRegistration"
+                ? "module" : "node"},
+            {"declaration_usr", declaration_usr(context_, declaration)},
+        };
+        if (name == "iv::details::SourceModuleRegistration"
+            && construction->getNumArgs() >= 3) {
+            auto* expression = construction->getArg(2)->IgnoreParenImpCasts();
+            if (auto const* address = dyn_cast<UnaryOperator>(expression)) {
+                expression = address->getSubExpr()->IgnoreParenImpCasts();
+            }
+            if (auto const* reference = dyn_cast<DeclRefExpr>(expression)) {
+                metadata["implementation_usr"] = declaration_usr(
+                    context_, reference->getDecl());
+            }
+        }
+        definitions_.push_back(std::move(metadata));
+        return true;
+    }
+
+    llvm::json::Array take_definitions() &&
+    {
+        std::ranges::sort(definitions_, [](llvm::json::Value const& lhs,
+                                           llvm::json::Value const& rhs) {
+            return lhs.getAsObject()->getString("id")->str()
+                < rhs.getAsObject()->getString("id")->str();
+        });
+        return std::move(definitions_);
+    }
+
+private:
+    ASTContext& context_;
+    llvm::json::Array definitions_;
+    std::set<std::string> seen_;
+};
+
 std::filesystem::path metadata_path(
     CompilerInstance& compiler,
     std::filesystem::path const& directory)
@@ -1073,6 +1137,8 @@ void write_state_metadata(
     StateMetadataCollector state_collector(context);
     NodeConfigMetadataCollector node_config_collector(context);
     ReflectedNodeDiscovery reflected_node_discovery(context);
+    RegisteredDefinitionCollector registered_definition_collector(context);
+    registered_definition_collector.TraverseDecl(context.getTranslationUnitDecl());
     // A compiler record is emitted only for a type passed to GraphBuilder.
     // Calls at HandleTranslationUnit see ordinary records; the exact
     // variable-template listener re-runs this small collection when CodeGen
@@ -1103,9 +1169,10 @@ void write_state_metadata(
     }
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
-            {"version", 6},
+            {"version", 7},
             {"states", std::move(state_collector).take_states()},
             {"config_pointers", std::move(node_config_collector).take_fields()},
+            {"registered_definitions", std::move(registered_definition_collector).take_definitions()},
         }));
     stream << '\n';
 }

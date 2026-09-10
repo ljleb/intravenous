@@ -30,12 +30,16 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         std::string::npos);
 
     {
-        auto definition = loader.load_root_definition(project_dst);
-        EXPECT_EQ(definition.module_id, "iv.test.behavior_project");
-        ASSERT_EQ(definition.dependencies.size(), 2u);
+        auto definitions = loader.load_source_definitions(project_dst);
+        auto const definition = std::ranges::find(
+            definitions,
+            "iv.test.behavior_project",
+            &iv::ModuleLoader::LoadedDefinition::module_id);
+        ASSERT_NE(definition, definitions.end());
+        ASSERT_EQ(definition->dependencies.size(), 2u);
 
         auto executor = iv::BlockNodeExecutor::create(
-            iv::TypeErasedNode(definition.root), 8);
+            iv::TypeErasedNode(definition->root), 8);
         auto const has_structural_saw_state = std::ranges::any_of(
             executor.layout().nodes,
             [](iv::NodeLayout::NodeRecord const& record) {
@@ -52,8 +56,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         EXPECT_TRUE(has_structural_saw_state);
     }
 
-    auto const project_workspace =
-        iv::test::runtime_module_workspace("iv.test.behavior_project", project_dst);
+    auto const project_workspace = iv::test::runtime_module_workspace(project_dst);
     auto const project_cache = project_workspace / "cmake-build" / "CMakeCache.txt";
     EXPECT_TRUE(std::filesystem::exists(project_cache));
 
@@ -65,22 +68,22 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     EXPECT_EQ(generated_export.find("GraphLowerer::lower("), std::string::npos);
     EXPECT_NE(
         generated_export.find(
-            "iv_module_build(iv::details::BuilderSession* session)"),
+            "iv_source_build_registered_module(std::size_t index,"),
         std::string::npos);
     EXPECT_NE(
         generated_export.find("iv::GraphBuilder builder{session}"),
         std::string::npos);
     EXPECT_EQ(
-        generated_export.find("iv_module_authored_graph"),
+        generated_export.find("iv_source_module_authored_graph"),
         std::string::npos);
 
-    auto const import_root = runtime_root / "build" / "iv" / "imports" / "iv" / "modules";
+    auto const import_root = runtime_root / "build" / "iv" / "imports" / "iv" / "nodes";
     auto const project_import = import_root / "iv.test.behavior_project";
     auto const voice_import = import_root / "iv.test.behavior_voice";
     EXPECT_TRUE(std::filesystem::exists(project_import));
     EXPECT_TRUE(std::filesystem::exists(voice_import));
-    EXPECT_NE(iv::test::read_text(project_import).find(project_dst.generic_string()), std::string::npos);
-    EXPECT_NE(iv::test::read_text(voice_import).find(voice_dst.generic_string()), std::string::npos);
+    EXPECT_EQ(iv::test::read_text(project_import).find(project_dst.generic_string()), std::string::npos);
+    EXPECT_EQ(iv::test::read_text(voice_import).find(voice_dst.generic_string()), std::string::npos);
 
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
     auto const project_needle = std::string("    using namespace iv;");
@@ -93,7 +96,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         project_replacement);
     iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
 
-    (void)loader.load_root_definition(project_dst);
+    (void)loader.load_source_definitions(project_dst);
 
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
     auto const voice_needle =
@@ -107,10 +110,10 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         voice_replacement);
     iv::test::write_text_advancing_timestamp(voice_dst / "module.cpp", voice_source);
 
-    (void)loader.load_root_definition(project_dst);
+    (void)loader.load_source_definitions(project_dst);
 
     {
-        auto definition = loader.load_root_definition(local_dst);
+        auto definition = loader.load_source_definitions(local_dst).front();
         EXPECT_EQ(definition.module_id, "iv.test.local_cmake");
     }
 
@@ -120,10 +123,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         "set(IV_TEST_CUSTOM_CMAKE_MARKER ON CACHE BOOL \"test marker\")\n";
     iv::test::write_text_advancing_timestamp(local_dst / "CMakeLists.txt", local_cmake);
 
-    (void)loader.load_root_definition(local_dst);
+    (void)loader.load_source_definitions(local_dst);
 
-    auto const local_workspace =
-        iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst);
+    auto const local_workspace = iv::test::runtime_module_workspace(local_dst);
     auto const local_cache = local_workspace / "cmake-build" / "CMakeCache.txt";
     ASSERT_TRUE(std::filesystem::exists(local_cache));
     EXPECT_NE(
@@ -140,7 +142,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     ASSERT_TRUE(std::filesystem::exists(finalizer_timings));
     auto const finalizer_timings_text = iv::test::read_text(finalizer_timings);
     EXPECT_TRUE(finalizer_timings_text.starts_with("version=1\n"));
-    EXPECT_NE(finalizer_timings_text.find("module_main_us="), std::string::npos);
+    EXPECT_NE(finalizer_timings_text.find("source_modules_authoring_us="), std::string::npos);
     EXPECT_NE(
         finalizer_timings_text.find("authoring_ir_prune_us="),
         std::string::npos);
@@ -200,7 +202,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         auto const object_rule = rule_line(
             "root_export.cpp.o: CXX_COMPILER__iv_runtime_module");
         auto const link_rule = rule_line(
-            "libiv_module_iv_test_local_cmake.so: CXX_SHARED_LIBRARY_LINKER__iv_runtime_module");
+            "libiv_source_behavior_local.so: CXX_SHARED_LIBRARY_LINKER__iv_runtime_module");
         ASSERT_FALSE(object_rule.empty());
         ASSERT_FALSE(link_rule.empty());
         // Compiler plugins and linker launchers are command-line tools, not
@@ -218,7 +220,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     iv::ModuleLoader time_trace_loader(
         iv::test::repo_root(), {},
         iv::ModuleLoaderToolchainConfig{.clang_time_trace = true});
-    (void)time_trace_loader.load_root_definition(local_dst);
+    (void)time_trace_loader.load_source_definitions(local_dst);
 
     auto const traced_compile_database = iv::test::read_text(
         local_workspace / "cmake-build" / "compile_commands.json");

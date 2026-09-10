@@ -29,6 +29,8 @@ namespace iv {
 struct AuthoredGraph;
 class GraphBuilder;
 class GraphBuilderState;
+template<fixed_string Id>
+struct node_interface;
 
 namespace details {
 struct BuilderSession;
@@ -114,6 +116,16 @@ public:
       details::iv_builder_discard_node_config(_session, value);
       throw;
     }
+  }
+
+  // Registered IDs are the source-facing node creation API.  A local
+  // IV_NODE declaration specializes node_interface immediately, so a source
+  // never waits for a server-generated header to see its own edited
+  // interface.  Imported specializations are supplied by the generated
+  // interface protocol.
+  template<fixed_string Id, class... Args>
+  auto node(Args&&... args) {
+    return node_interface<Id>::author(*this, std::forward<Args>(args)...);
   }
 
   template<class Node, class ChannelType, class... Args>

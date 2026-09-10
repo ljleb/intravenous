@@ -15,3 +15,5 @@ void local_cmake_module(iv::GraphBuilder& g)
         "main"_P[iv::stereo::right] = tone
     );
 }
+
+IV_MODULE("iv.test.local_cmake", local_cmake_module);

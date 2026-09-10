@@ -238,7 +238,7 @@ clone authoring-reachable IR      retain master LLVM
 ORC JIT                              node code
     |                                  |
     v                                  |
-run module_main(GraphBuilder&)        |
+dispatch registered IV_MODULE builders |
     |                                  |
     v                                  |
 AuthoredGraph                         |
@@ -287,7 +287,7 @@ The finalizer:
 5. adds a JIT-global-address table so executed pointer values can later be related back to retained LLVM globals;
 6. loads native dependencies needed by authoring;
 7. runs global initializers;
-8. executes `module_main()` against `BuilderSession`/`GraphBuilder`;
+8. executes each registered `IV_MODULE` builder against its own `BuilderSession`/`GraphBuilder`;
 9. captures the resulting `AuthoredGraph`;
 10. resolves relocatable configuration pointers;
 11. removes the authoring JIT generation;
@@ -339,10 +339,33 @@ The future whole-project finalizer should not assume that blindly running the fu
 
 The implementation begins with the **IV-source/registry representation** in
 this branch. The first source-only change makes `iv_source.json` the sole
-source-package manifest; follow-on work in this branch adds registration
-identities, source-local authoring outputs, and their cache/invalidation
-boundaries. The current finalizer continues to produce and load the existing
-runtime graph while that work lands.
+source-package manifest; it contains build discovery data only, never a
+module identity or entry function. `IV_MODULE`/`IV_NODE` registrations are the
+source of stable definition identities, and one source reload publishes its
+complete definition set (including zero or many iv modules).
+
+Generated imports are definition-addressed, not source-addressed:
+
+```text
+iv/nodes/<node-or-module-id>
+iv/nodes-global/<global-node-or-module-id>
+```
+
+The application/project generates one interface header for every discovered
+registered definition. Those headers are distillations of a definition and
+must not include provider implementation source. A source remains the unit
+watched, compiled, and transactionally replaced; `GraphInputLanes` and module
+instances consume published iv-module definitions, never an IV source.
+
+The initial source refinement publishes dynamic, zero-argument C++
+interfaces: `g.node<"id">()`. General cross-source construction arguments and
+typed interface recovery remain follow-on registry work; they are not part of
+the deferred whole-graph execution rewrite.
+
+Follow-on work in this branch adds registration identities, source-local
+authoring outputs, and their cache/invalidation boundaries. The current
+finalizer continues to produce and load the existing runtime graph while that
+work lands.
 
 The whole-project finalizer and the generated execution model (sections 12
 through 25) are deliberately deferred to a separate branch. They must consume

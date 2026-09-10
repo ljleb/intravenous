@@ -1668,3 +1668,5 @@ void module_main(GraphBuilder& g)
 
     g.outputs("main"_P = fir);
 }
+
+IV_MODULE("iv.project.q24_icosphere_pan", module_main);

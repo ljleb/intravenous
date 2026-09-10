@@ -1,7 +1,7 @@
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
-#include <iv/modules/iv.test.benchmark_constant_project.voice>
+#include <iv/nodes/iv.test.benchmark_constant_project.voice>
 
 void benchmark_constant_project(iv::GraphBuilder& g)
 {
@@ -9,7 +9,7 @@ void benchmark_constant_project(iv::GraphBuilder& g)
     auto const phase = g.node<PhaseIntegrator>();
 
     phase(0.0);
-    auto const voice = g.module<benchmark_constant_voice>();
+    auto const voice = g.node<"iv.test.benchmark_constant_project.voice">();
     auto const tone = voice(
         "amplitude"_P = 0.1,
         "frequency"_P = 110.0,
@@ -18,3 +18,5 @@ void benchmark_constant_project(iv::GraphBuilder& g)
 
     g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
 }
+
+IV_MODULE("iv.test.benchmark_constant_project", benchmark_constant_project);

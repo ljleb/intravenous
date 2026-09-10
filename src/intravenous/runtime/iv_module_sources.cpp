@@ -9,13 +9,18 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <iterator>
 #include <optional>
+#include <regex>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace iv {
 namespace {
 struct SourceManifest {
-    std::string id;
     std::filesystem::path entry;
 };
 
@@ -25,11 +30,10 @@ std::optional<SourceManifest> read_manifest(std::filesystem::path const& path)
     if (!in) return std::nullopt;
     try {
         auto json = nlohmann::json::parse(in);
-        if (json.value("schema", 0) != 1 || !json.contains("id") || !json.contains("entry")) return std::nullopt;
-        auto id = json.at("id").get<std::string>();
+        if (json.value("schema", 0) != 2 || !json.contains("entry")) return std::nullopt;
         auto entry = std::filesystem::path(json.at("entry").get<std::string>());
-        if (id.empty() || entry.empty() || entry.is_absolute()) return std::nullopt;
-        return SourceManifest{std::move(id), std::move(entry)};
+        if (entry.empty() || entry.is_absolute()) return std::nullopt;
+        return SourceManifest{std::move(entry)};
     } catch (nlohmann::json::exception const&) {
         return std::nullopt;
     }
@@ -60,14 +64,33 @@ std::string module_identifier(std::string const& name)
     return identifier;
 }
 
-std::string source_template()
+std::string source_template(std::string_view module_id)
 {
     return "#include <intravenous/dsl.h>\n\n"
         "void module_main(iv::GraphBuilder& g)\n"
         "{\n"
         "    using namespace iv;\n"
         "    \n"
-        "}\n";
+        "}\n\n"
+        "IV_MODULE(\"" + std::string(module_id) + "\", module_main);\n";
+}
+
+std::vector<std::string> registered_module_ids(std::filesystem::path const& source)
+{
+    std::ifstream input(source, std::ios::binary);
+    if (!input) return {};
+    auto const text = std::string(
+        std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    static std::regex const registration(
+        R"iv(IV_MODULE\s*\(\s*"([^"]+)"\s*,\s*[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*\s*\))iv");
+    std::vector<std::string> ids;
+    for (std::sregex_iterator it(text.begin(), text.end(), registration), end;
+         it != end; ++it) {
+        auto id = (*it)[1].str();
+        if (id.empty() || std::find(ids.begin(), ids.end(), id) != ids.end()) continue;
+        ids.push_back(std::move(id));
+    }
+    return ids;
 }
 
 void copy_initial_compile_commands(std::filesystem::path const& destination)
@@ -102,7 +125,13 @@ std::vector<IvModuleSourceInfo> IvModuleSources::list_sources() const
             auto manifest = read_manifest(*manifest_path);
             if (!manifest) continue;
             if (!std::filesystem::is_regular_file(directory / manifest->entry)) continue;
-            result.push_back({.module_id = manifest->id, .module_root = directory, .project_local = local});
+            for (auto const& module_id : registered_module_ids(directory / manifest->entry)) {
+                result.push_back({
+                    .module_id = module_id,
+                    .module_root = directory,
+                    .project_local = local,
+                });
+            }
             it.disable_recursion_pending();
         }
     };
@@ -161,7 +190,7 @@ IvModuleSourceInfo IvModuleSources::create_project_source(std::string const& nam
 
     auto const id = module_identifier(name);
     try {
-        nlohmann::json manifest{{"schema", 1}, {"id", id}, {"entry", "module.cpp"}, {"main", "module_main"}};
+        nlohmann::json manifest{{"schema", 2}, {"entry", "module.cpp"}};
         std::ofstream manifest_out(
             root / std::string(IV_SOURCE_MANIFEST_FILE),
             std::ios::binary | std::ios::noreplace);
@@ -172,7 +201,7 @@ IvModuleSourceInfo IvModuleSources::create_project_source(std::string const& nam
         }
 
         std::ofstream source(root / "module.cpp", std::ios::binary | std::ios::noreplace);
-        source << source_template();
+        source << source_template(id);
         if (!source) throw std::runtime_error("cannot write module.cpp");
         copy_initial_compile_commands(root / "compile_commands.json");
     } catch (...) {

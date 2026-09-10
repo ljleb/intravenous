@@ -272,11 +272,11 @@ to keep layout/storage independently compiled and debuggable.
 
 Finalizer-side IR pruning runs after the temporary builder JIT has run and
 serialized the graph. The finalizer marks the exact
-`iv_module_build` authoring closure, separately marks the runtime ABI entry
+`iv_source_build_registered_module` authoring closure, separately marks the runtime ABI entry
 points and their retained node-record callback closure, drops authoring-only
 entries from LLVM used lists, internalizes the remaining authoring-only
 definitions, and runs `GlobalDCEPass` before O3. It fails finalization if
-`iv_module_build` survives. The existing module-load tests exercise retained
+`iv_source_build_registered_module` survives. The existing module-load tests exercise retained
 runtime callbacks, while the finalizer timing sidecar reports
 `authoring_ir_prune_us` so module build behavior verifies that this stage ran.
 The standalone DCE step deliberately uses LLVM's legacy pass manager, which
@@ -300,7 +300,7 @@ improvement to any one change.
 
 ## Authoring JIT code generation
 
-The temporary ORC JIT compiles only the cloned `iv_module_build` closure. It
+The temporary ORC JIT compiles only the cloned `iv_source_build_registered_module` closure. It
 executes once to create `AuthoredGraph`, then its resource tracker releases
 the generated code before runtime IR optimization begins. Its machine code is
 therefore not DSP code. Configure its host `JITTargetMachineBuilder` with
@@ -309,7 +309,7 @@ level. This is intentionally separate from the retained runtime module,
 which remains O3-only.
 
 The measured motivation is strong: after IR pruning, warm `jit_materialize`
-was 249.5 ms while graph construction itself (`module_main`) was 0.36 ms.
+was 249.5 ms while registered-source-module graph construction was 0.36 ms.
 Verification: all 439 tests passed. The subsequent warm O3 profile measured
 1.234 s, with `jit_materialize` at 106.5 ms and finalizer total at 509.7 ms.
 Relative to the preceding 1.371 s / 657.2 ms sample, that is another 137 ms

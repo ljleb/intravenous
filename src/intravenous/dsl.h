@@ -9,6 +9,7 @@
 
 #include <intravenous/channel_ports.h>
 #include <intravenous/module/source_annotations.h>
+#include <intravenous/module/source_registration.h>
 #include <intravenous/node/module_api.h>
 
 #include <cstddef>

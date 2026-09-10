@@ -31,8 +31,9 @@ struct AuthoringGlobalAddress {
 
 // The host creates this opaque session before running a module's temporary ORC
 // build generation. The generation may borrow its GraphBuilder only while
-// `iv_module_build` is executing; the completed AuthoredGraph remains host
-// owned and is taken before that generation is released.
+// `iv_source_build_registered_module` is executing; the completed
+// AuthoredGraph remains host owned and is taken before that generation is
+// released.
 struct BuilderSession;
 
 extern "C" BuilderSession* iv_builder_session_create();

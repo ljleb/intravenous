@@ -1,6 +1,1 @@
-{
-  "schema": 1,
-  "id": "iv.project.saw",
-  "entry": "module.cpp",
-  "main": "module_main"
-}
+{"schema":2,"entry":"module.cpp"}

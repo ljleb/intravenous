@@ -15,7 +15,7 @@ int main()
         auto missing_dir = runtime_root / "missing_entry";
         std::filesystem::create_directories(missing_dir);
         iv::test::expect_failure(
-            [&] { (void)loader.load_root_definition(missing_dir); },
+            [&] { (void)loader.load_source_definitions(missing_dir); },
             "iv_source.json",
             "missing manifest should fail");
     }
@@ -23,7 +23,7 @@ int main()
     {
         auto loader = iv::test::make_loader();
         iv::test::expect_failure(
-            [&] { (void)loader.load_root_definition(fixtures / "missing_export"); },
+            [&] { (void)loader.load_source_definitions(fixtures / "missing_export"); },
             "iv_source.json",
             "source without manifest should fail");
     }
@@ -31,7 +31,7 @@ int main()
     {
         auto loader = iv::test::make_loader();
         iv::test::expect_failure(
-            [&] { (void)loader.load_root_definition(fixtures / "build_failure"); },
+            [&] { (void)loader.load_source_definitions(fixtures / "build_failure"); },
             "command failed",
             "build failure should propagate");
     }
@@ -39,7 +39,7 @@ int main()
     {
         auto loader = iv::test::make_loader();
         iv::test::expect_failure(
-            [&] { (void)loader.load_root_definition(fixtures / "missing_dependency"); },
+            [&] { (void)loader.load_source_definitions(fixtures / "missing_dependency"); },
             "imports missing",
             "missing dependency id should fail");
     }
@@ -47,8 +47,8 @@ int main()
     {
         auto loader = iv::test::make_loader({fixtures, iv::test::duplicate_modules_root()});
         iv::test::expect_failure(
-            [&] { (void)loader.load_root_definition(fixtures / "nested_loader_project"); },
-            "duplicate module id",
+            [&] { (void)loader.load_source_definitions(fixtures / "nested_loader_project"); },
+            "duplicate stable IV definition ID",
             "duplicate module id should fail");
     }
 

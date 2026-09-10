@@ -83,7 +83,7 @@ namespace {
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
-    auto first = loader.load_root_definition(workspace);
+    auto first = loader.load_source_definitions(workspace).front();
     // The executor holds raw callbacks into both generations while it retires
     // the old state. Keep the loaded module references alive past executor
     // teardown, just as a live module instance does.
@@ -115,7 +115,7 @@ namespace {
         new_initialization);
     iv::test::write_text_advancing_timestamp(workspace / "module.cpp", source);
 
-    second.emplace(loader.load_root_definition(workspace));
+    second.emplace(loader.load_source_definitions(workspace).front());
     executor.reload(iv::TypeErasedNode(second->root));
 
     auto new_node = state_node(executor, "value");
@@ -210,7 +210,7 @@ namespace {
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
-    auto definition = loader.load_root_definition(workspace);
+    auto definition = loader.load_source_definitions(workspace).front();
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(definition.root), 8);
 
@@ -272,7 +272,7 @@ namespace {
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
-    auto definition = loader.load_root_definition(workspace);
+    auto definition = loader.load_source_definitions(workspace).front();
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(definition.root), 8);
 
@@ -350,7 +350,7 @@ namespace {
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
-    auto const definition = loader.load_root_definition(workspace);
+    auto const definition = loader.load_source_definitions(workspace).front();
     EXPECT_EQ(definition.module_id, "iv.test.implicit_constant_configuration_module");
 }
 
@@ -407,7 +407,7 @@ namespace {
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
-    auto const definition = loader.load_root_definition(workspace);
+    auto const definition = loader.load_source_definitions(workspace).front();
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(definition.root), 8);
 

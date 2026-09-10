@@ -15,6 +15,8 @@ namespace iv {
 using ModuleRef = std::shared_ptr<void>;
 
 struct IvModuleDefinitionDeclaration {
+    // A declaration schedules one IV source build. Its definition_id is the
+    // source package key only at this private/reload boundary.
     std::string definition_id{};
     std::filesystem::path module_root{};
 };
@@ -26,6 +28,7 @@ struct IvModuleDefinitionDeclarationsChanged {
 };
 
 struct IvModuleDefinition {
+    // Published definitions are keyed by registered IV module ID.
     std::string definition_id{};
     std::filesystem::path module_root{};
     std::string module_id{};
@@ -62,8 +65,10 @@ public:
 
 private:
     mutable std::mutex mutex;
-    std::unordered_map<std::string, IvModuleDefinitionDeclaration> declarations_by_id;
-    std::unordered_map<std::string, std::unique_ptr<DefinitionState>> loaded_definitions_by_id;
+    std::unordered_map<std::string, IvModuleDefinitionDeclaration> declarations_by_source_id;
+    std::unordered_map<std::string, std::unique_ptr<DefinitionState>> loaded_definitions_by_module_id;
+    std::unordered_map<std::string, std::string> source_id_by_module_id;
+    std::unordered_map<std::string, std::vector<std::string>> module_ids_by_source_id;
 
     void emit_notification(IvModuleDefinitionsNotification notification) const;
     void emit_message(std::string level, std::string message, std::filesystem::path module_root = {}) const;
@@ -72,7 +77,7 @@ public:
     ~IvModuleDefinitions();
 
     std::string declare_definition(
-        std::string module_id,
+        std::string definition_id,
         std::filesystem::path module_root);
     void remove_definition(std::string const &definition_id);
 

@@ -201,20 +201,36 @@ namespace iv::test {
         return module_dir;
     }
 
-    inline std::filesystem::path runtime_module_workspace_root(
-        std::string_view id,
-        std::filesystem::path const& module_dir)
+    inline std::string source_package_key(std::filesystem::path const& source_dir)
     {
-        auto const project_root = project_root_for_module(module_dir);
+        auto const normalized = std::filesystem::weakly_canonical(source_dir).lexically_normal();
+        auto modules = normalized.end();
+        for (auto it = normalized.begin(); it != normalized.end(); ++it) {
+            if (*it == "modules") modules = it;
+        }
+        if (modules != normalized.end()) {
+            auto relative = std::filesystem::path{};
+            for (auto it = std::next(modules); it != normalized.end(); ++it) {
+                relative /= *it;
+            }
+            if (!relative.empty()) return relative.generic_string();
+        }
+        return normalized.filename().generic_string();
+    }
+
+    inline std::filesystem::path runtime_module_workspace_root(
+        std::filesystem::path const& source_dir)
+    {
+        auto const project_root = project_root_for_module(source_dir);
         return project_root / "build" / "iv" / "build" /
-            (sanitize_module_id(id) + "_" + stable_path_hash(module_dir));
+            (sanitize_module_id(source_package_key(source_dir)) + "_"
+                + stable_path_hash(source_dir));
     }
 
     inline std::filesystem::path runtime_module_workspace(
-        std::string_view id,
-        std::filesystem::path const& module_dir)
+        std::filesystem::path const& source_dir)
     {
-        return runtime_module_workspace_root(id, module_dir) / active_build_config();
+        return runtime_module_workspace_root(source_dir) / active_build_config();
     }
 
     inline void require(bool condition, char const* message)
@@ -361,18 +377,21 @@ namespace iv::test {
     }
 
     inline void write_inline_module_manifest(
-        std::filesystem::path const& workspace,
+        std::filesystem::path const& workspace)
+    {
+        write_text(
+            workspace / "iv_source.json",
+            "{\n  \"schema\": 2,\n  \"entry\": \"module.cpp\"\n}\n");
+    }
+
+    inline std::string registered_inline_module_source(
+        std::string module_text,
         std::string const& id,
         std::string const& main)
     {
-        std::ostringstream manifest;
-        manifest << "{\n"
-                 << "  \"schema\": 1,\n"
-                 << "  \"id\": \"" << id << "\",\n"
-                 << "  \"entry\": \"module.cpp\",\n"
-                 << "  \"main\": \"" << main << "\"\n"
-                 << "}\n";
-        write_text(workspace / "iv_source.json", manifest.str());
+        if (module_text.contains("IV_MODULE(")) return module_text;
+        module_text += "\nIV_MODULE(\"" + id + "\", " + main + ");\n";
+        return module_text;
     }
 
     inline std::filesystem::path make_inline_module_workspace(
@@ -384,8 +403,10 @@ namespace iv::test {
         std::filesystem::create_directories(workspace);
         write_text(workspace / "iv_project.jsonl", "");
         auto const [id, main] = inline_module_metadata(module_text);
-        write_inline_module_manifest(workspace, id, main);
-        write_text(workspace / "module.cpp", module_text);
+        write_inline_module_manifest(workspace);
+        write_text(
+            workspace / "module.cpp",
+            registered_inline_module_source(module_text, id, main));
         return workspace;
     }
 
@@ -399,8 +420,10 @@ namespace iv::test {
         std::filesystem::create_directories(workspace);
         write_text(workspace / "iv_project.jsonl", "");
         auto const [id, main] = inline_module_metadata(module_text);
-        write_inline_module_manifest(workspace, id, main);
-        write_text(workspace / "module.cpp", module_text);
+        write_inline_module_manifest(workspace);
+        write_text(
+            workspace / "module.cpp",
+            registered_inline_module_source(module_text, id, main));
         return workspace;
     }
 
@@ -449,7 +472,7 @@ namespace iv::test {
         auto const load_lock = ScopedFileLock(
             runtime_module_cache_root() / ("load_" + stable_path_hash(normalized_module_root) + ".lock"));
         iv::ModuleLoader loader(config.discovery_start, config.search_roots, config.toolchain);
-        auto loaded_graph = loader.load_root_definition(module_root);
+        auto loaded_graph = loader.load_source_definitions(module_root).front();
         return iv::IvModuleReloadedDefinition{
             .definition_id = loaded_graph.module_id,
             .module_root = normalized_module_root,

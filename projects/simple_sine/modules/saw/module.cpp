@@ -41,3 +41,5 @@ void module_main(iv::GraphBuilder& g)
         }
     }
 }
+
+IV_MODULE("iv.project.saw", module_main);

@@ -31,3 +31,5 @@ void simple_sink(iv::GraphBuilder& g)
 
     g.outputs("main"_P = g.tile<stereo>(left, right));
 }
+
+IV_MODULE("iv.test.simple_sink", simple_sink);

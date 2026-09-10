@@ -59,7 +59,7 @@ namespace iv {
             std::vector<ModuleRef> module_refs;
             WeakTypeErasedNode root;
             GraphIntrospectionMetadata introspection;
-            std::filesystem::path module_path;
+            std::filesystem::path source_path;
             std::string module_id;
             std::vector<ModuleDependency> dependencies;
 
@@ -67,10 +67,15 @@ namespace iv {
                 std::vector<ModuleRef> module_refs_,
                 WeakTypeErasedNode root_,
                 GraphIntrospectionMetadata introspection_,
-                std::filesystem::path module_path_,
+                std::filesystem::path source_path_,
                 std::string module_id_,
                 std::vector<ModuleDependency> dependencies_
             );
+        };
+
+        struct LoadedSource {
+            std::vector<LoadedDefinition> definitions;
+            std::vector<ModuleDependency> dependencies;
         };
 
         explicit ModuleLoader(
@@ -86,17 +91,22 @@ namespace iv {
         ModuleLoader(ModuleLoader const&) = delete;
         ModuleLoader& operator=(ModuleLoader const&) = delete;
 
-        // Loading a graph definition is deliberately independent of runtime
-        // render configuration. Sample rate and other device/runtime values are
-        // supplied only when DSP nodes execute through TickContext.
-        LoadedDefinition load_root_definition(
-            std::filesystem::path const& module_path
+        // Loads one IV source package independently of runtime render
+        // configuration. A valid source may publish no IV modules, so source
+        // dependencies are reported independently of the definition vector
+        // for watching and transactional reload.
+        LoadedSource load_source(
+            std::filesystem::path const& source_path
+        ) const;
+
+        std::vector<LoadedDefinition> load_source_definitions(
+            std::filesystem::path const& source_path
         ) const;
 
         // Builds the generated module artifact without loading it. This is
         // primarily useful for compile-time profiling stages.
-        std::filesystem::path compile_root_definition(
-            std::filesystem::path const& module_path
+        std::filesystem::path compile_source(
+            std::filesystem::path const& source_path
         ) const;
 
         std::vector<std::filesystem::path> const& extra_search_roots() const;

@@ -153,6 +153,10 @@ void write(std::filesystem::path const& path, std::string_view text)
 std::string benchmark_source(size_t voices, SourceShape shape)
 {
     std::ostringstream source;
+    auto finish = [&] {
+        source << "\nIV_MODULE(\"iv.benchmark.compile\", module_main);\n";
+        return source.str();
+    };
     source << "#include <intravenous/dsl.h>\n";
     if (shape == SourceShape::nodes
         || shape == SourceShape::connected
@@ -164,20 +168,20 @@ std::string benchmark_source(size_t voices, SourceShape shape)
     if (shape == SourceShape::empty) {
         source << "    (void)g;\n"
                << "}\n";
-        return source.str();
+        return finish();
     }
     source << "    using namespace iv;\n"
            << "    auto const frequency = g.input<\"frequency\">(220.0f);\n";
     if (shape == SourceShape::input) {
         source << "}\n";
-        return source.str();
+        return finish();
     }
     for (size_t voice = 0; voice < voices; ++voice) {
         source << "    auto const osc" << voice << " = g.node<SawOscillator>();\n";
     }
     if (shape == SourceShape::nodes) {
         source << "}\n";
-        return source.str();
+        return finish();
     }
     for (size_t voice = 0; voice < voices; ++voice) {
         source << "    osc" << voice << "(\"frequency\"_P = frequency + "
@@ -186,7 +190,7 @@ std::string benchmark_source(size_t voices, SourceShape shape)
     }
     if (shape == SourceShape::connected) {
         source << "}\n";
-        return source.str();
+        return finish();
     }
     source << "    g.outputs(\"main\"_P = ";
     if (voices == 0) {
@@ -198,7 +202,7 @@ std::string benchmark_source(size_t voices, SourceShape shape)
         }
     }
     source << ");\n}\n";
-    return source.str();
+    return finish();
 }
 
 Options parse_options(int argc, char** argv)
@@ -563,7 +567,7 @@ void run(Options const& options)
         module = options.workspace / "modules" / "compile_benchmark";
         hot_source = module / "module.cpp";
         write(options.workspace / "iv_project.jsonl", "");
-        write(module / "iv_source.json", R"({"schema":1,"id":"iv.benchmark.compile","entry":"module.cpp","main":"module_main"})");
+        write(module / "iv_source.json", R"({"schema":2,"entry":"module.cpp"})");
         write(hot_source, benchmark_source(options.voices, options.source_shape));
     }
     auto source = read(hot_source);
@@ -584,7 +588,7 @@ void run(Options const& options)
             [&](std::string const& entry) { loader_log.push_back(entry); });
 
         auto const cold_start = Clock::now();
-        (void)loader.compile_root_definition(module);
+        (void)loader.compile_source(module);
         auto const cold_elapsed = Clock::now() - cold_start;
         auto const ninja_log = find_ninja_log(options.workspace);
         auto const cold_log = read(ninja_log);
@@ -611,7 +615,7 @@ void run(Options const& options)
         write(hot_source, source);
         loader_log.clear();
         auto const hot_start = Clock::now();
-        (void)loader.compile_root_definition(module);
+        (void)loader.compile_source(module);
         auto const hot_elapsed = Clock::now() - hot_start;
         auto const hot_log = read(ninja_log);
         auto const hot_finalizer_timings = finalizer_timings(

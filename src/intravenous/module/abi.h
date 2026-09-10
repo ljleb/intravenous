@@ -4,7 +4,7 @@
 #include <cstdint>
 
 namespace iv {
-inline constexpr std::uint32_t IV_MODULE_ABI_VERSION = 9;
+inline constexpr std::uint32_t IV_MODULE_ABI_VERSION = 10;
 
 struct ModuleDataView {
     void const* data = nullptr;
@@ -21,8 +21,10 @@ struct ModuleNodeConfigRecord {
 
 extern "C" {
 using iv_module_abi_version_fn = std::uint32_t (*)();
-using iv_module_authored_graph_fn = iv::ModuleDataView (*)();
-using iv_module_node_configs_fn = iv::ModuleDataView (*)();
+using iv_source_module_count_fn = std::size_t (*)();
+using iv_source_module_id_fn = iv::ModuleDataView (*)(std::size_t);
+using iv_source_module_authored_graph_fn = iv::ModuleDataView (*)(std::size_t);
+using iv_source_module_node_configs_fn = iv::ModuleDataView (*)(std::size_t);
 using iv_module_node_types_fn = iv::ModuleDataView (*)();
 }
 
