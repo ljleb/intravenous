@@ -40,6 +40,13 @@ NodeBundleHandle iv_builder_append_tiled_node(
 void* iv_builder_allocate_node_config(
     BuilderSession*, std::size_t size, std::size_t alignment);
 void iv_builder_discard_node_config(BuilderSession*, void* storage) noexcept;
+// Unary DSL connection validation is shared authoring behavior. These helpers
+// return only the runtime result the DSL needs to preserve its static return
+// type.
+bool iv_builder_connect_unary_sample(
+    NodeRef const&, SamplePortRef, std::string_view operation);
+EventPortRef iv_builder_connect_unary_event(
+    NodeRef const&, EventPortRef, std::string_view operation);
 
 }
 
@@ -114,13 +121,11 @@ public:
     using StoredNode = std::remove_cvref_t<Node>;
     static_assert(std::is_trivially_copyable_v<StoredNode>,
         "node values must be trivially copyable");
-    static_assert((std::copy_constructible<std::remove_cvref_t<Args>> && ...),
-        "tiled-node construction requires reusable constructor arguments");
     auto* value = static_cast<StoredNode*>(
         details::iv_builder_allocate_node_config(
             _session, sizeof(StoredNode), alignof(StoredNode)));
     try {
-      std::construct_at(value, args...);
+      std::construct_at(value, std::forward<Args>(args)...);
       auto handle = details::iv_builder_append_tiled_node(
           *this, details::make_node_build_request(*value), {
             .channel_type = ChannelTypeTraits<ChannelType>::id,

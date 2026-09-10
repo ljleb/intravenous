@@ -7,6 +7,7 @@
 
 #include <array>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace iv {
@@ -54,6 +55,51 @@ NodeBundleHandle iv_builder_append_tiled_node(
 {
     auto description = materialize_node_build_request(builder._session, request);
     return state(builder).append_tiled_node_description(description, layout);
+}
+
+bool iv_builder_connect_unary_sample(
+    NodeRef const& target, SamplePortRef source, std::string_view operation)
+{
+    auto const input_count = target.sample_input_count();
+    auto const output_count = target.sample_output_count();
+    if (input_count != 1) {
+        error(
+            std::string(operation) + " requires target to have exactly 1 input; got "
+            + std::to_string(input_count) + " inputs on " + target.to_string());
+    }
+
+    target.connect_input(0, std::move(source));
+    if (output_count > 1) {
+        error(
+            std::string(operation)
+            + " requires target to have at most 1 output when used as an expression; got "
+            + std::to_string(output_count) + " outputs on " + target.to_string());
+    }
+    return output_count == 1;
+}
+
+EventPortRef iv_builder_connect_unary_event(
+    NodeRef const& target, EventPortRef source, std::string_view operation)
+{
+    auto const input_count = target.event_input_count();
+    auto const output_count = target.event_output_count();
+    if (input_count != 1) {
+        error(
+            std::string(operation) + " requires target to have exactly 1 event input; got "
+            + std::to_string(input_count) + " event inputs on " + target.to_string());
+    }
+
+    target.connect_event_input(0, source);
+    if (output_count == 0) {
+        return source;
+    }
+    if (output_count != 1) {
+        error(
+            std::string(operation)
+            + " requires target to have at most 1 event output when used as an expression; got "
+            + std::to_string(output_count) + " event outputs on " + target.to_string());
+    }
+    return target.event_port(0);
 }
 } // namespace details
 

@@ -492,33 +492,12 @@ namespace iv {
     {
         SamplePortRef source = static_cast<SamplePortRef>(std::forward<L>(lhs));
         NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
-
-        auto const input_count = target.sample_input_count();
-        auto const output_count = target.sample_output_count();
-
-        if (input_count != 1) {
-            details::error(
-                std::string(op_name) + " requires target to have exactly 1 input; got " +
-                std::to_string(input_count) + " inputs on " + target.to_string()
-            );
-        }
-
-        target.connect_input(0, source);
-        if (output_count == 0) {
-            if constexpr (NodeLike<L>) {
-                return target;
-            } else {
-                return source;
-            }
-        }
-        if (output_count != 1) {
-            details::error(
-                std::string(op_name) + " requires target to have at most 1 output when used as an expression; got " +
-                std::to_string(output_count) + " outputs on " + target.to_string()
-            );
-        }
+        bool const has_output = details::iv_builder_connect_unary_sample(
+            target, source, op_name);
         if constexpr (NodeLike<L>) {
             return target;
+        } else if (!has_output) {
+            return source;
         } else {
             return static_cast<SamplePortRef>(target);
         }
@@ -553,28 +532,8 @@ namespace iv {
     {
         EventPortRef source = std::forward<L>(lhs);
         NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
-
-        auto const event_input_count = target.event_input_count();
-        auto const event_output_count = target.event_output_count();
-
-        if (event_input_count != 1) {
-            details::error(
-                std::string(op_name) + " requires target to have exactly 1 event input; got " +
-                std::to_string(event_input_count) + " event inputs on " + target.to_string()
-            );
-        }
-
-        target.connect_event_input(0, source);
-        if (event_output_count == 0) {
-            return source;
-        }
-        if (event_output_count != 1) {
-            details::error(
-                std::string(op_name) + " requires target to have at most 1 event output when used as an expression; got " +
-                std::to_string(event_output_count) + " event outputs on " + target.to_string()
-            );
-        }
-        return target.event_port(0);
+        return details::iv_builder_connect_unary_event(
+            target, std::move(source), op_name);
     }
 
     template<class L, class R>
