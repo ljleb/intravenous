@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/authored_graph.hpp>
 #include <intravenous/graph/reflected_node_description.h>
+#include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/node/node_state_structure.h>
 

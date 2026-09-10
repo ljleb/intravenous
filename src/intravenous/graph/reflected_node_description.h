@@ -5,6 +5,7 @@
 // to libiv_builder instead.
 
 #include <intravenous/graph/node_ports.h>
+#include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/node/build_request.h>
 #include <intravenous/node/config_relocations.h>
 #include <intravenous/node/config_storage.h>

@@ -11,7 +11,6 @@
 #include <intravenous/module/source_annotations.h>
 #include <intravenous/node/module_api.h>
 
-#include <array>
 #include <cstddef>
 
 namespace iv {
@@ -289,11 +288,7 @@ namespace iv {
     constexpr SamplePortRef lift_sample_operand(GraphBuilder& g, T&& x)
     {
         if constexpr (SamplePortLike<T>) {
-            SamplePortRef s = static_cast<SamplePortRef>(std::forward<T>(x));
-            if (s.graph_builder != &g) {
-                details::error("operand belongs to a different builder");
-            }
-            return s;
+            return static_cast<SamplePortRef>(std::forward<T>(x));
         } else {
             return g.node<Constant>(static_cast<Sample>(x))();
         }
@@ -304,32 +299,6 @@ namespace iv {
         std::integral<std::remove_cvref_t<T>> ||
         std::floating_point<std::remove_cvref_t<T>> ||
         std::is_same_v<std::remove_cvref_t<T>, Sample>;
-
-    template<class Node, class ChannelType>
-    constexpr NodeRef author_runtime_binary_node(
-        GraphBuilder& graph, SamplePortRef lhs, SamplePortRef rhs)
-    {
-        // This is deliberately the retained module-side part: it instantiates
-        // the node's compiler record and its LLVM-visible execution thunks.
-        return graph.node<Node, ChannelType>()(
-            std::move(lhs), std::move(rhs)).node_ref();
-    }
-
-    template<class Node>
-    inline constexpr std::array<details::RuntimeBinaryNodeFactory,
-        static_cast<size_t>(ChannelTypeId::count)> runtime_binary_node_factories{
-#define IV_RUNTIME_BINARY_CHANNEL_FACTORY(name, ...) \
-        &author_runtime_binary_node<Node, name>,
-        IV_CHANNEL_TYPES(IV_RUNTIME_BINARY_CHANNEL_FACTORY)
-#undef IV_RUNTIME_BINARY_CHANNEL_FACTORY
-    };
-
-    template<class Node>
-    constexpr details::RuntimeBinaryNodeFactories runtime_binary_factories_for()
-    {
-        auto const& factories = runtime_binary_node_factories<Node>;
-        return {.data = factories.data(), .size = factories.size()};
-    }
 
     template<class Node, class ChannelType = void, class L, class R>
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
@@ -346,8 +315,6 @@ namespace iv {
             SamplePortRef s = static_cast<SamplePortRef>(rhs);
             if (!g) {
                 g = s.graph_builder;
-            } else if (s.graph_builder != g) {
-                details::error(std::string(op_name) + ": operands belong to different builders");
             }
         }
 
@@ -359,11 +326,10 @@ namespace iv {
         SamplePortRef rhs_sample_port = lift_sample_operand(*g, std::forward<R>(rhs));
 
         if constexpr (std::same_as<ChannelType, void>) {
-            return g->author_runtime_binary_op(
+            return g->author_runtime_binary_op<Node>(
                 std::move(lhs_sample_port),
                 std::move(rhs_sample_port),
-                op_name,
-                runtime_binary_factories_for<Node>());
+                op_name);
         } else if constexpr (std::same_as<ChannelType, mono>) {
             return g->node<Node>()(lhs_sample_port, rhs_sample_port);
         } else {

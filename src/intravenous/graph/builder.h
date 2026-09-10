@@ -139,9 +139,6 @@ public:
         "g.tile<ChannelType>(...) requires exactly one source per channel");
     std::array<SamplePortRef, ChannelType::channel_count> members{
         lift_to_sample_port(std::forward<Refs>(refs))...};
-    for (auto const& member : members)
-      if (member.channel_type != ChannelTypeId::mono || member.channels().size() != 1)
-        details::error("g.tile<ChannelType>(...) requires scalar sample sources");
     return TypedSamplePortTileRef<ChannelType>{std::move(members)};
   }
 
@@ -155,14 +152,34 @@ public:
   void event_outputs(Refs&&... refs);
   void event_outputs(std::span<EventOutputRequest const>);
 
-  // Runtime channel negotiation belongs to the shared authoring library.
-  // Module code contributes only the type-specialized node construction
-  // thunks in `factories`.
+  // Runtime channel negotiation, graph mutation, and connection validation
+  // belong to the shared authoring library. The templated overload below is
+  // the only node-type-specific part of this path.
   NodeRef author_runtime_binary_op(
       SamplePortRef lhs,
       SamplePortRef rhs,
       std::string_view op_name,
-      details::RuntimeBinaryNodeFactories factories);
+      details::NodeBuildRequest const& request);
+
+  template<class Node>
+  NodeRef author_runtime_binary_op(
+      SamplePortRef lhs, SamplePortRef rhs, std::string_view op_name) {
+    using StoredNode = std::remove_cvref_t<Node>;
+    static_assert(std::is_trivially_copyable_v<StoredNode>,
+        "node values must be trivially copyable");
+    auto* value = static_cast<StoredNode*>(
+        details::iv_builder_allocate_node_config(
+            _session, sizeof(StoredNode), alignof(StoredNode)));
+    try {
+      std::construct_at(value);
+      return author_runtime_binary_op(
+          std::move(lhs), std::move(rhs), op_name,
+          details::make_node_build_request(*value));
+    } catch (...) {
+      details::iv_builder_discard_node_config(_session, value);
+      throw;
+    }
+  }
 
   template<auto Module>
   NodeRef module(std::string_view kind = "Module") {

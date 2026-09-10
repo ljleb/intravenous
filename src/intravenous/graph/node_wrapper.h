@@ -3,6 +3,7 @@
 #include <intravenous/graph/event_port_data_node.h>
 #include <intravenous/graph/port_data_node.h>
 #include <intravenous/graph/reflected_node_description.h>
+#include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/graph/types.h>
 #include <intravenous/graph/wiring.h>
 

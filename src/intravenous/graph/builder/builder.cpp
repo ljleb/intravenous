@@ -5,6 +5,7 @@
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/module/builder_session.h>
 
+#include <array>
 #include <stdexcept>
 #include <utility>
 
@@ -140,7 +141,7 @@ NodeRef GraphBuilder::author_runtime_binary_op(
     SamplePortRef lhs,
     SamplePortRef rhs,
     std::string_view op_name,
-    details::RuntimeBinaryNodeFactories factories)
+    details::NodeBuildRequest const& request)
 {
     if (lhs.graph_builder != this || rhs.graph_builder != this) {
         details::error(std::string(op_name)
@@ -167,13 +168,25 @@ NodeRef GraphBuilder::author_runtime_binary_op(
             + ": sample operands must have matching channel types, except that mono broadcasts");
     }
 
-    auto const factory_index = static_cast<size_t>(result_type);
-    if (factory_index >= factories.size || !factories.data
-        || !factories.data[factory_index]) {
-        details::error(std::string(op_name)
-            + ": sample operand has an invalid channel type");
-    }
-    return factories.data[factory_index](*this, std::move(lhs), std::move(rhs));
+    auto handle = details::iv_builder_append_tiled_node(
+        *this, request, {
+            .channel_type = result_type,
+            .sample_layout = SampleStreamLayout::planar,
+        });
+    NodeRef result(*this, handle);
+    std::array<details::NodeCallSampleInput, 2> inputs{{
+        {.source = std::move(lhs),
+         .name = {},
+         .input_ordinal = 0,
+         .target = details::NodeCallInputTarget::explicit_ordinal},
+        {.source = std::move(rhs),
+         .name = {},
+         .input_ordinal = 1,
+         .target = details::NodeCallInputTarget::explicit_ordinal},
+    }};
+    result.apply_node_call(
+        {.data = inputs.data(), .size = inputs.size()}, {});
+    return result;
 }
 
 SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef const& value)

@@ -7,6 +7,7 @@
 // validation.
 
 #include <intravenous/basic_nodes/constant.h>
+#include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/node/compiler_record.h>
 #include <intravenous/node/lifecycle.h>
 

@@ -66,18 +66,6 @@ namespace iv {
             size_t size;
         };
 
-        // Selecting a channel-specialized node implementation is the only
-        // type-dependent part of a dynamic binary expression. The module
-        // supplies this small table of thunks; libiv_builder owns channel
-        // negotiation, validation, and diagnostics.
-        using RuntimeBinaryNodeFactory = NodeRef (*) (
-            GraphBuilder&, SamplePortRef, SamplePortRef);
-
-        struct RuntimeBinaryNodeFactories {
-            RuntimeBinaryNodeFactory const* data = nullptr;
-            size_t size = 0;
-        };
-
         template<size_t SampleCount, size_t EventCount>
         struct NodeCallRequests {
             std::array<NodeCallSampleInput, SampleCount> sample_inputs {};
