@@ -11,6 +11,9 @@
 #include <intravenous/module/source_annotations.h>
 #include <intravenous/node/module_api.h>
 
+#include <array>
+#include <cstddef>
+
 namespace iv {
     template<class Fn>
     constexpr void _define_public_sample_outputs_with_source_info(
@@ -302,44 +305,30 @@ namespace iv {
         std::floating_point<std::remove_cvref_t<T>> ||
         std::is_same_v<std::remove_cvref_t<T>, Sample>;
 
-    template<class Node>
-    constexpr NodeRef make_runtime_binary_op(
-        GraphBuilder& graph,
-        SamplePortRef lhs,
-        SamplePortRef rhs,
-        std::string_view op_name)
+    template<class Node, class ChannelType>
+    constexpr NodeRef author_runtime_binary_node(
+        GraphBuilder& graph, SamplePortRef lhs, SamplePortRef rhs)
     {
-        auto validate = [](SamplePortRef const& ref) {
-            if (!is_valid_channel_type(ref.channel_type) ||
-                ref.channels().size() != channel_count(ref.channel_type)) {
-                details::error("sample operand has an invalid channel layout");
-            }
-        };
-        validate(lhs);
-        validate(rhs);
+        // This is deliberately the retained module-side part: it instantiates
+        // the node's compiler record and its LLVM-visible execution thunks.
+        return graph.node<Node, ChannelType>()(
+            std::move(lhs), std::move(rhs)).node_ref();
+    }
 
-        ChannelTypeId result_type = ChannelTypeId::mono;
-        if (lhs.channel_type == rhs.channel_type) {
-            result_type = lhs.channel_type;
-        } else if (lhs.channel_type == ChannelTypeId::mono) {
-            result_type = rhs.channel_type;
-        } else if (rhs.channel_type == ChannelTypeId::mono) {
-            result_type = lhs.channel_type;
-        } else {
-            details::error(std::string(op_name) +
-                ": sample operands must have matching channel types, except that mono broadcasts");
-        }
+    template<class Node>
+    inline constexpr std::array<details::RuntimeBinaryNodeFactory,
+        static_cast<size_t>(ChannelTypeId::count)> runtime_binary_node_factories{
+#define IV_RUNTIME_BINARY_CHANNEL_FACTORY(name, ...) \
+        &author_runtime_binary_node<Node, name>,
+        IV_CHANNEL_TYPES(IV_RUNTIME_BINARY_CHANNEL_FACTORY)
+#undef IV_RUNTIME_BINARY_CHANNEL_FACTORY
+    };
 
-        switch (result_type) {
-#define IV_RUNTIME_BINARY_CHANNEL_CASE(name, ...) \
-        case ChannelTypeId::name: \
-            return graph.node<Node, name>()(lhs, rhs).node_ref();
-            IV_CHANNEL_TYPES(IV_RUNTIME_BINARY_CHANNEL_CASE)
-#undef IV_RUNTIME_BINARY_CHANNEL_CASE
-        case ChannelTypeId::count:
-            break;
-        }
-        details::error(std::string(op_name) + ": sample operand has an invalid channel type");
+    template<class Node>
+    constexpr details::RuntimeBinaryNodeFactories runtime_binary_factories_for()
+    {
+        auto const& factories = runtime_binary_node_factories<Node>;
+        return {.data = factories.data(), .size = factories.size()};
     }
 
     template<class Node, class ChannelType = void, class L, class R>
@@ -370,8 +359,11 @@ namespace iv {
         SamplePortRef rhs_sample_port = lift_sample_operand(*g, std::forward<R>(rhs));
 
         if constexpr (std::same_as<ChannelType, void>) {
-            return make_runtime_binary_op<Node>(
-                *g, std::move(lhs_sample_port), std::move(rhs_sample_port), op_name);
+            return g->author_runtime_binary_op(
+                std::move(lhs_sample_port),
+                std::move(rhs_sample_port),
+                op_name,
+                runtime_binary_factories_for<Node>());
         } else if constexpr (std::same_as<ChannelType, mono>) {
             return g->node<Node>()(lhs_sample_port, rhs_sample_port);
         } else {

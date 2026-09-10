@@ -26,6 +26,9 @@ std::vector<OutputRefConfig> make_sample_output_configs(
   std::vector<OutputRefConfig> configs;
   configs.reserve(refs.size());
   for (auto const& ref : refs) {
+    if (ref.name.starts_with("__")) {
+      details::error("generated channel assignments are not public outputs");
+    }
     configs.push_back({
         .ref = ref.ref,
         .config = {

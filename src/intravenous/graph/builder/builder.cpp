@@ -1,5 +1,6 @@
 #include <intravenous/graph/builder.h>
 
+#include <intravenous/channel_layout.h>
 #include <intravenous/graph/builder/state.h>
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/module/builder_session.h>
@@ -133,6 +134,46 @@ void GraphBuilder::outputs(std::span<SampleOutputRequest const> refs)
 void GraphBuilder::event_outputs(std::span<EventOutputRequest const> refs)
 {
     state(*this).event_outputs(refs);
+}
+
+NodeRef GraphBuilder::author_runtime_binary_op(
+    SamplePortRef lhs,
+    SamplePortRef rhs,
+    std::string_view op_name,
+    details::RuntimeBinaryNodeFactories factories)
+{
+    if (lhs.graph_builder != this || rhs.graph_builder != this) {
+        details::error(std::string(op_name)
+            + ": operands belong to different builders");
+    }
+    auto validate = [](SamplePortRef const& ref) {
+        if (!is_valid_channel_type(ref.channel_type)
+            || ref.channels().size() != channel_count(ref.channel_type)) {
+            details::error("sample operand has an invalid channel layout");
+        }
+    };
+    validate(lhs);
+    validate(rhs);
+
+    ChannelTypeId result_type = ChannelTypeId::mono;
+    if (lhs.channel_type == rhs.channel_type) {
+        result_type = lhs.channel_type;
+    } else if (lhs.channel_type == ChannelTypeId::mono) {
+        result_type = rhs.channel_type;
+    } else if (rhs.channel_type == ChannelTypeId::mono) {
+        result_type = lhs.channel_type;
+    } else {
+        details::error(std::string(op_name)
+            + ": sample operands must have matching channel types, except that mono broadcasts");
+    }
+
+    auto const factory_index = static_cast<size_t>(result_type);
+    if (factory_index >= factories.size || !factories.data
+        || !factories.data[factory_index]) {
+        details::error(std::string(op_name)
+            + ": sample operand has an invalid channel type");
+    }
+    return factories.data[factory_index](*this, std::move(lhs), std::move(rhs));
 }
 
 SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef const& value)

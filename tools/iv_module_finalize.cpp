@@ -571,7 +571,7 @@ BuilderModuleClone clone_builder_module(Module const& master)
         return reachable.contains(global);
     });
 
-    BuilderModuleClone result{.module = std::move(cloned_module)};
+    BuilderModuleClone result{.module = std::move(cloned_module), .retained_globals = {}};
     std::vector<GlobalVariable*> cloned_globals;
     for (auto const& global : master.globals()) {
         if (!global.isConstant() || global.isDeclaration() || !global.hasInitializer()) {

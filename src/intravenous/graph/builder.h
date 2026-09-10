@@ -155,6 +155,15 @@ public:
   void event_outputs(Refs&&... refs);
   void event_outputs(std::span<EventOutputRequest const>);
 
+  // Runtime channel negotiation belongs to the shared authoring library.
+  // Module code contributes only the type-specialized node construction
+  // thunks in `factories`.
+  NodeRef author_runtime_binary_op(
+      SamplePortRef lhs,
+      SamplePortRef rhs,
+      std::string_view op_name,
+      details::RuntimeBinaryNodeFactories factories);
+
   template<auto Module>
   NodeRef module(std::string_view kind = "Module") {
     static_assert(std::invocable<decltype(Module), GraphBuilder&>);
@@ -381,9 +390,9 @@ auto make_tiled_node_call_requests(GraphBuilder& builder, Args&&... args)
   return requests;
 }
 
-template<class Sink, class... Refs>
-inline void author_sample_output_requests(
-    GraphBuilder& builder, Sink&& sink, Refs&&... refs) {
+template<class... Refs>
+inline auto make_sample_output_requests(
+    GraphBuilder& builder, Refs&&... refs) {
   constexpr size_t count = sizeof...(Refs);
   std::array<SampleOutputRequest, count> requests{};
   size_t index = 0;
@@ -409,8 +418,6 @@ inline void author_sample_output_requests(
       request.family_channel_type = ChannelTypeTraits<Channel>::id;
       request.target_channel_ordinal = Value::channel_ordinal;
     } else if constexpr (is_named_arg_v<Value>) {
-      if constexpr (Value::name.view().starts_with("__"))
-        error("generated channel assignments are not public outputs");
       request.ref = builder.lift_to_sample_port(ref.value);
       request.name = Value::name.view();
       request.channel_layout = {.channel_type = request.ref.channel_type,
@@ -429,13 +436,11 @@ inline void author_sample_output_requests(
     }
   };
   (append(std::forward<Refs>(refs)), ...);
-  std::invoke(std::forward<Sink>(sink),
-      std::span<SampleOutputRequest const>(requests));
+  return requests;
 }
 
-template<class Sink, class... Refs>
-inline void author_event_output_requests(
-    Sink&& sink, Refs&&... refs) {
+template<class... Refs>
+inline auto make_event_output_requests(Refs&&... refs) {
   constexpr size_t count = sizeof...(Refs);
   std::array<EventOutputRequest, count> requests{};
   size_t index = 0;
@@ -452,28 +457,22 @@ inline void author_event_output_requests(
     }
   };
   (append(std::forward<Refs>(refs)), ...);
-  std::invoke(std::forward<Sink>(sink),
-      std::span<EventOutputRequest const>(requests));
+  return requests;
 }
 } // namespace details
 
 template<class... Refs>
 inline void GraphBuilder::outputs(Refs&&... refs) {
-  details::author_sample_output_requests(
-      *this,
-      [this](std::span<SampleOutputRequest const> requests) {
-        outputs(requests);
-      },
-      std::forward<Refs>(refs)...);
+  auto requests = details::make_sample_output_requests(
+      *this, std::forward<Refs>(refs)...);
+  outputs(std::span<SampleOutputRequest const>(requests));
 }
 
 template<class... Refs>
 inline void GraphBuilder::event_outputs(Refs&&... refs) {
-  details::author_event_output_requests(
-      [this](std::span<EventOutputRequest const> requests) {
-        event_outputs(requests);
-      },
+  auto requests = details::make_event_output_requests(
       std::forward<Refs>(refs)...);
+  event_outputs(std::span<EventOutputRequest const>(requests));
 }
 
 inline PublicSampleInputRef SubgraphBuilder::input() {
@@ -506,12 +505,10 @@ inline PublicEventInputRef SubgraphBuilder::event_input(EventTypeId type) {
 }
 template<class... Refs>
 inline void SubgraphBuilder::outputs(Refs&&... refs) {
-  details::author_sample_output_requests(
-      _builder,
-      [this](std::span<SampleOutputRequest const> requests) {
-        _builder.subgraph_outputs(_scope, requests);
-      },
-      std::forward<Refs>(refs)...);
+  auto requests = details::make_sample_output_requests(
+      _builder, std::forward<Refs>(refs)...);
+  _builder.subgraph_outputs(
+      _scope, std::span<SampleOutputRequest const>(requests));
 }
 inline void SubgraphBuilder::outputs(std::initializer_list<NamedRef> refs) {
   outputs(std::span<NamedRef const>(refs.begin(), refs.size()));
@@ -524,11 +521,10 @@ inline void SubgraphBuilder::outputs(std::span<SampleOutputRequest const> refs) 
 }
 template<class... Refs>
 inline void SubgraphBuilder::event_outputs(Refs&&... refs) {
-  details::author_event_output_requests(
-      [this](std::span<EventOutputRequest const> requests) {
-        _builder.subgraph_event_outputs(_scope, requests);
-      },
+  auto requests = details::make_event_output_requests(
       std::forward<Refs>(refs)...);
+  _builder.subgraph_event_outputs(
+      _scope, std::span<EventOutputRequest const>(requests));
 }
 inline void SubgraphBuilder::event_outputs(std::span<EventOutputRequest const> refs) {
   _builder.subgraph_event_outputs(_scope, refs);
@@ -566,53 +562,28 @@ inline NodeRef NodeRef::operator()(Args&&... args) const {
 }
 template<class Node, class Projection>
 inline SamplePortRef TypedNodeRef<Node, Projection>::operator[](size_t i) const {
-  if (i >= get_num_outputs(ports()))
-    details::error("sample output port is out of bounds on " + this->to_string());
   return NodeRef::operator[](i);
 }
 template<class Node, class Projection>
 inline SamplePortRef TypedNodeRef<Node, Projection>::operator[](std::string_view name) const {
-  if (!_graph_builder) details::error("attempted to use a null NodeRef");
-  auto outputs = get_outputs(ports());
-  std::optional<size_t> match;
-  for (size_t i = 0; i < outputs.size(); ++i) {
-    if (outputs[i].name != name) continue;
-    if (match) details::error("output name is ambiguous");
-    match = i;
-  }
-  if (!match) details::error("output port does not exist on " + this->to_string());
-  return NodeRef::operator[](*match);
+  return NodeRef::operator[](name);
 }
 template<class Node, class Projection>
 inline EventPortRef TypedNodeRef<Node, Projection>::event_port(size_t i) const {
-  if (i >= ports().event_outputs().size())
-    details::error("event output port is out of bounds");
   return NodeRef::event_port(i);
 }
 template<class Node, class Projection>
 inline EventPortRef TypedNodeRef<Node, Projection>::event_port(
     std::string_view name) const {
-  auto const& outputs = ports().event_outputs();
-  std::optional<size_t> match;
-  for (size_t i = 0; i < outputs.size(); ++i) {
-    if (outputs[i].name != name) continue;
-    if (match) details::error("event output name is ambiguous");
-    match = i;
-  }
-  if (!match) details::error("event output port does not exist on " + this->to_string());
-  return NodeRef::event_port(*match);
+  return NodeRef::event_port(name);
 }
 template<class Node, class Projection>
 inline EventPortRef TypedNodeRef<Node, Projection>::event_port() const {
-  if (ports().event_outputs().size() != 1)
-    details::error(this->to_string() + " does not have exactly 1 event output port");
-  return event_port(0);
+  return NodeRef::event_port();
 }
 template<class Node, class Projection>
 inline TypedNodeRef<Node, Projection>::operator SamplePortRef() const {
-  if (get_num_outputs(ports()) != 1)
-    details::error(this->to_string() + " does not have exactly 1 output port");
-  return SamplePortRef(*_graph_builder, {_index, PortKind::sample, 0});
+  return static_cast<SamplePortRef>(static_cast<NodeRef const&>(*this));
 }
 template<class Node, class Projection>
 template<class... Args>
@@ -631,53 +602,27 @@ template<class Node, class Projection>
 template<class T>
 inline TypedNodeRef<Node, Projection>
 TypedNodeRef<Node, Projection>::connect_input(size_t i, T&& value) const {
-  auto inputs = get_inputs(ports());
-  if (i >= inputs.size()) details::error("sample input out of bounds");
-  auto ref = _graph_builder->lift_to_sample_port(std::forward<T>(value));
-  if (ref.graph_builder != _graph_builder)
-    details::error("sample source belongs to another builder");
-  _graph_builder->connect_sample_input({_index, PortKind::sample, i}, ref);
-  return this->_clone_handle();
+  return Base::connect_input(i, std::forward<T>(value));
 }
 template<class Node, class Projection>
 template<class T>
 inline TypedNodeRef<Node, Projection>
 TypedNodeRef<Node, Projection>::connect_input(
     std::string_view name, T&& value) const {
-  auto inputs = get_inputs(ports());
-  std::optional<size_t> match;
-  for (size_t i = 0; i < inputs.size(); ++i) {
-    if (inputs[i].name != name) continue;
-    if (match) details::error("input name is ambiguous");
-    match = i;
-  }
-  if (!match) details::error("input port does not exist");
-  return connect_input(*match, std::forward<T>(value));
+  return Base::connect_input(name, std::forward<T>(value));
 }
 template<class Node, class Projection>
 inline TypedNodeRef<Node, Projection>
 TypedNodeRef<Node, Projection>::connect_event_input(
     size_t i, EventPortRef value) const {
-  if (i >= ports().event_inputs().size())
-    details::error("event input out of bounds");
-  if (value.graph_builder != _graph_builder)
-    details::error("event source belongs to another builder");
-  _graph_builder->connect_event_input({_index, PortKind::event, i}, value);
-  return this->_clone_handle();
+  return Base::connect_event_input(i, std::move(value));
 }
 template<class Node, class Projection>
 inline TypedNodeRef<Node, Projection>
 TypedNodeRef<Node, Projection>::connect_event_input(
     std::string_view name, EventPortRef value) const {
-  auto const& inputs = ports().event_inputs();
-  std::optional<size_t> match;
-  for (size_t i = 0; i < inputs.size(); ++i) {
-    if (inputs[i].name != name) continue;
-    if (match) details::error("event input name is ambiguous");
-    match = i;
-  }
-  if (!match) details::error("event input port does not exist");
-  return connect_event_input(*match, std::move(value));
+  NodeRef::connect_event_input(name, std::move(value));
+  return this->_clone_handle();
 }
 template<class Node, class Projection>
 inline SamplePortRef TypedNodeRef<Node, Projection>::detach(size_t latency) const {

@@ -66,6 +66,18 @@ namespace iv {
             size_t size;
         };
 
+        // Selecting a channel-specialized node implementation is the only
+        // type-dependent part of a dynamic binary expression. The module
+        // supplies this small table of thunks; libiv_builder owns channel
+        // negotiation, validation, and diagnostics.
+        using RuntimeBinaryNodeFactory = NodeRef (*) (
+            GraphBuilder&, SamplePortRef, SamplePortRef);
+
+        struct RuntimeBinaryNodeFactories {
+            RuntimeBinaryNodeFactory const* data = nullptr;
+            size_t size = 0;
+        };
+
         template<size_t SampleCount, size_t EventCount>
         struct NodeCallRequests {
             std::array<NodeCallSampleInput, SampleCount> sample_inputs {};
@@ -424,36 +436,23 @@ namespace iv {
 
         EventPortRef event_port(size_t output_ordinal) const
         {
-            if (!this->_graph_builder) {
-                details::error("attempted to use a null tiled TypedNodeRef");
-            }
-            return this->_graph_builder->event_output(
-                {this->_index, PortKind::event, output_ordinal});
+            return NodeRef::event_port(output_ordinal);
         }
 
         EventPortRef event_port(std::string_view name) const
         {
-            return event_port(this->_graph_builder->event_port_index(
-                this->_index, false, name));
+            return NodeRef::event_port(name);
         }
 
         Self connect_event_input(size_t input_ordinal, EventPortRef source) const
         {
-            if (!this->_graph_builder) {
-                details::error("attempted to use a null tiled TypedNodeRef");
-            }
-            this->_graph_builder->connect_event_input(
-                {this->_index, PortKind::event, input_ordinal}, source);
-            return _clone_handle();
+            return Base::connect_event_input(input_ordinal, std::move(source));
         }
 
         Self connect_event_input(std::string_view name, EventPortRef source) const
         {
-            if (!this->_graph_builder) {
-                details::error("attempted to use a null tiled TypedNodeRef");
-            }
-            return connect_event_input(this->_graph_builder->event_port_index(
-                this->_index, true, name), source);
+            NodeRef::connect_event_input(name, std::move(source));
+            return _clone_handle();
         }
 
         template<class... Args>
