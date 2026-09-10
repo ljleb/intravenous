@@ -1,5 +1,6 @@
 #include <intravenous/module/loader.h>
 #include <intravenous/module/abi.h>
+#include <intravenous/module/authored_graph_wire.h>
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -451,10 +453,17 @@ void run(
     if (output_log) {
         invocation += " >> " + quote(*output_log) + " 2>&1";
     }
+    auto const started_at = std::chrono::steady_clock::now();
     int rc = std::system(invocation.c_str());
     if (rc != 0) {
         throw std::runtime_error(
             "command failed with exit code " + std::to_string(rc) + ": " + command);
+    }
+    if (sink) {
+        sink(
+            "[" + std::string(phase) + "] elapsed_us=" +
+            std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - started_at).count()));
     }
 }
 } // namespace
@@ -723,152 +732,29 @@ class ModuleLoader::Impl {
             ? std::string("iv/modules-global/") + root.manifest.id
             : std::string("iv/modules/") + root.manifest.id;
         std::ostringstream export_tu;
-        export_tu << "#include <intravenous/dsl.h>\n"
-                  << "#include <intravenous/graph/authored_graph_view.hpp>\n"
-                  << "namespace iv::details::source_introspection_plugin_bridge {\n"
-                  << "template<class Ref> constexpr void "
-                     "_annotate_source_info_after_statement(\n"
-                  << "    Ref* ref, char const* declaration_identity, "
-                     "char const* file_path,\n"
-                  << "    std::uint32_t begin, std::uint32_t end) {\n"
-                  << "  iv::_annotate_source_info_after_statement(\n"
-                  << "      ref, declaration_identity, file_path, begin, end);\n"
-                  << "}\n"
-                  << "constexpr void _annotate_public_output_after_statement(\n"
-                  << "    iv::GraphBuilder* builder, bool event, std::size_t ordinal,\n"
-                  << "    char const* file_path, std::uint32_t begin, "
-                     "std::uint32_t end) {\n"
-                  << "  iv::_annotate_public_output_after_statement(\n"
-                  << "      builder, event, ordinal, file_path, begin, end);\n"
-                  << "}\n"
-                  << "}\n"
+        // The generated root owns the module ABI symbols, so it must include
+        // their declaration directly rather than rely on the DSL's transitive
+        // includes.
+        export_tu << "#include <intravenous/module/abi.h>\n"
+                  << "#include <intravenous/dsl.h>\n"
                   << "#include <" << root_include << ">\n";
-        switch (toolchain_.compile_stage) {
-        case ModuleCompileStage::full:
-            export_tu
-                << "namespace {\n"
-                << "consteval iv::AuthoredGraphView "
-                   "iv_generated_authored_graph_value() {\n"
-                << "  iv::GraphBuilder builder;\n"
-                << "  " << root.manifest.main << "(builder);\n"
-                << "  auto authored = std::move(builder).finish();\n"
-                << "  return iv::freeze_authored_graph(authored);\n"
-                << "}\n"
-                << "inline constexpr auto iv_generated_authored_graph = "
-                   "iv_generated_authored_graph_value();\n"
-                << "}\n"
-                << "extern \"C\" IV_MODULE_EXPORT std::uint32_t "
-                   "iv_module_abi_version() {\n"
-                << "  return iv::IV_MODULE_ABI_VERSION;\n"
-                << "}\n"
-                << "extern \"C\" IV_MODULE_EXPORT iv::AuthoredGraphView "
-                   "iv_module_authored_graph() {\n"
-                << "  return iv_generated_authored_graph;\n"
-                << "}\n";
-            break;
-        case ModuleCompileStage::authoring:
-            export_tu
-                << "namespace {\n"
-                << "consteval std::size_t iv_generated_profile_value() {\n"
-                << "  iv::GraphBuilder builder;\n"
-                << "  " << root.manifest.main << "(builder);\n"
-                << "  auto authored = std::move(builder).finish();\n"
-                << "  return authored.node_bundles.size();\n"
-                << "}\n"
-                << "inline constexpr auto iv_generated_profile = "
-                   "iv_generated_profile_value();\n"
-                << "}\n";
-            break;
-        case ModuleCompileStage::lowering_topology:
-        case ModuleCompileStage::lowering_materialization:
-        case ModuleCompileStage::lowering_normalization: {
-            auto const stage_name = toolchain_.compile_stage
-                    == ModuleCompileStage::lowering_topology
-                ? "iv::GraphLoweringProfileStage::topology"
-                : toolchain_.compile_stage
-                        == ModuleCompileStage::lowering_materialization
-                    ? "iv::GraphLoweringProfileStage::materialization"
-                    : "iv::GraphLoweringProfileStage::normalization";
-            export_tu
-                << "namespace {\n"
-                << "consteval std::size_t iv_generated_profile_value() {\n"
-                << "  iv::GraphBuilder builder;\n"
-                << "  " << root.manifest.main << "(builder);\n"
-                << "  auto authored = std::move(builder).finish();\n"
-                << "  return iv::GraphLowerer::profile(\n"
-                   "      authored, {.execution_root = true}, "
-                << stage_name << ");\n"
-                << "}\n"
-                << "inline constexpr auto iv_generated_profile = "
-                   "iv_generated_profile_value();\n"
-                << "}\n";
-            break;
-        }
-        case ModuleCompileStage::lowering:
-            export_tu
-                << "namespace {\n"
-                << "consteval std::size_t iv_generated_profile_value() {\n"
-                << "  iv::GraphBuilder builder;\n"
-                << "  " << root.manifest.main << "(builder);\n"
-                << "  auto authored = std::move(builder).finish();\n"
-                << "  auto executable = iv::GraphLowerer::lower(\n"
-                   "      authored, {.execution_root = true});\n"
-                << "  return executable.graph.nodes.size()\n"
-                   "      + executable.graph.edges.size()\n"
-                   "      + executable.graph.event_edges.size()\n"
-                   "      + executable.introspection.virtual_nodes.size();\n"
-                << "}\n"
-                << "inline constexpr auto iv_generated_profile = "
-                   "iv_generated_profile_value();\n"
-                << "}\n";
-            break;
-        case ModuleCompileStage::compilation:
-            export_tu
-                << "namespace {\n"
-                << "consteval std::size_t iv_generated_profile_value() {\n"
-                << "  iv::GraphBuilder builder;\n"
-                << "  " << root.manifest.main << "(builder);\n"
-                << "  auto authored = std::move(builder).finish();\n"
-                << "  auto compiled = iv::GraphCompiler::compile(\n"
-                   "      iv::GraphLowerer::lower(\n"
-                   "          authored, {.execution_root = true}));\n"
-                << "  return compiled.metadata.concrete_node_type_identities.size()\n"
-                   "      + compiled.introspection.virtual_nodes.size();\n"
-                << "}\n"
-                << "inline constexpr auto iv_generated_profile = "
-                   "iv_generated_profile_value();\n"
-                << "}\n";
-            break;
-        case ModuleCompileStage::static_metadata:
-            export_tu
-                << "namespace {\n"
-                << "consteval std::size_t iv_generated_profile_value() {\n"
-                << "  iv::GraphBuilder builder;\n"
-                << "  " << root.manifest.main << "(builder);\n"
-                << "  auto authored = std::move(builder).finish();\n"
-                << "  auto compiled = iv::GraphCompiler::compile(\n"
-                   "      iv::GraphLowerer::lower(\n"
-                   "          authored, {.execution_root = true}));\n"
-                << "  auto metadata = iv::details::define_static_metadata(\n"
-                   "      compiled.introspection);\n"
-                << "  return metadata.virtual_nodes.size\n"
-                   "      + metadata.public_sample_inputs.size\n"
-                   "      + metadata.public_event_inputs.size\n"
-                   "      + metadata.public_sample_outputs.size\n"
-                   "      + metadata.public_event_outputs.size;\n"
-                << "}\n"
-                << "inline constexpr auto iv_generated_profile = "
-                   "iv_generated_profile_value();\n"
-                << "}\n";
-            break;
-        }
+        export_tu
+            << "extern \"C\" IV_MODULE_EXPORT std::uint32_t "
+               "iv_module_abi_version() {\n"
+            << "  return iv::IV_MODULE_ABI_VERSION;\n"
+            << "}\n"
+            << "extern \"C\" void "
+               "iv_module_build(iv::details::BuilderSession* session) {\n"
+            << "  iv::GraphBuilder builder{session};\n"
+            << "  " << root.manifest.main << "(builder);\n"
+            << "}\n";
         write_text_if_different(export_file, export_tu.str());
 
         if (!std::filesystem::exists(custom_cmake)) {
             std::filesystem::create_directories(default_source_dir);
             write_text_if_different(
                 default_source_dir / "CMakeLists.txt",
-                "cmake_minimum_required(VERSION 3.20)\n"
+                "cmake_minimum_required(VERSION 3.21)\n"
                 "project(iv_runtime_module LANGUAGES CXX)\n"
                 "set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n"
                 "include(${IV_SOURCE_DIR}/module/template/ModuleSupport.cmake)\n"
@@ -877,13 +763,19 @@ class ModuleLoader::Impl {
 
         auto const [cc, cxx] = compilers();
         auto const source_introspection_plugin =
-            std::filesystem::path(IV_CONFIGURED_GCC_SOURCE_INTROSPECTION_PLUGIN);
-        if (toolchain_.source_introspection
-            && (source_introspection_plugin.empty()
-                || !std::filesystem::exists(source_introspection_plugin))) {
+            std::filesystem::path(IV_CONFIGURED_CLANG_SOURCE_INTROSPECTION_PLUGIN);
+        auto const module_finalizer =
+            std::filesystem::path(IV_CONFIGURED_IV_MODULE_FINALIZER);
+        if (source_introspection_plugin.empty()
+            || !std::filesystem::exists(source_introspection_plugin)) {
             throw std::runtime_error(
-                "configured GCC source-introspection plugin does not exist: '" +
+                "configured Clang source-introspection plugin does not exist: '" +
                 source_introspection_plugin.string() + "'");
+        }
+        if (module_finalizer.empty() || !std::filesystem::exists(module_finalizer)) {
+            throw std::runtime_error(
+                "configured IV module finalizer does not exist: '" +
+                module_finalizer.string() + "'");
         }
         std::string generator = toolchain_.cmake_generator.value_or(
             std::string(IV_CONFIGURED_CMAKE_GENERATOR));
@@ -895,7 +787,6 @@ class ModuleLoader::Impl {
                   << "cc=" << cc.generic_string() << '\n'
                   << "cxx=" << cxx.generic_string() << '\n'
                   << "generator=" << generator << '\n'
-                  << "gcc-time-report=" << toolchain_.gcc_time_report << '\n'
                   << "compile-stage="
                   << compile_stage_name(toolchain_.compile_stage) << '\n'
                   << "optimization="
@@ -904,24 +795,26 @@ class ModuleLoader::Impl {
                   << toolchain_.source_introspection << '\n'
                   << "precompiled-header="
                   << toolchain_.precompiled_header << '\n'
-                  << "constexpr-cache-depth="
-                  << toolchain_.constexpr_cache_depth.value_or(0) << '\n'
+                  << "clang-time-trace="
+                  << toolchain_.clang_time_trace << '\n'
                   << "generated-export=" << export_tu.str() << '\n'
                   << "core-source-stamp="
                   << directory_stamp(repo_root_ / "src/intravenous")
                          .time_since_epoch().count() << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/abi.h") << '\n'
-                  << read_text(repo_root_ / "src/intravenous/module/authoring.h") << '\n'
-                  << read_text(repo_root_ / "src/intravenous/graph/static_metadata.hpp") << '\n'
+                  << read_text(repo_root_ / "src/intravenous/module/builder_session.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n';
-        if (toolchain_.source_introspection) {
-            signature
-                << "source-introspection-plugin="
-                << source_introspection_plugin.generic_string() << '\n'
-                << "source-introspection-plugin-stamp="
-                << std::filesystem::last_write_time(source_introspection_plugin)
-                       .time_since_epoch().count() << '\n';
-        }
+        signature
+            << "module-finalizer=" << module_finalizer.generic_string() << '\n'
+            << "module-finalizer-stamp="
+            << std::filesystem::last_write_time(module_finalizer)
+                   .time_since_epoch().count() << '\n';
+        signature
+            << "source-introspection-plugin="
+            << source_introspection_plugin.generic_string() << '\n'
+            << "source-introspection-plugin-stamp="
+            << std::filesystem::last_write_time(source_introspection_plugin)
+                   .time_since_epoch().count() << '\n';
         for (auto const &module : closure.modules) {
             signature << key(module) << '\n'
                       << read_text(module.manifest_file) << '\n'
@@ -972,43 +865,30 @@ class ModuleLoader::Impl {
                   << " -DIV_MODULE_INCLUDE_DIRS=\"" << include_list.str() << "\""
                   << " -DIV_MODULE_OUTPUT_DIR=" << quote(output_dir)
                   << " -DIV_MODULE_OUTPUT_NAME=iv_module_" << sanitize(root.manifest.id)
-                  << " -DIV_GCC_SOURCE_INTROSPECTION_PLUGIN="
-                  << quote(source_introspection_plugin);
-        if (toolchain_.gcc_time_report) {
-            configure << " -DIV_MODULE_GCC_TIME_REPORT=ON";
-        }
+                  << " -DIV_CLANG_SOURCE_INTROSPECTION_PLUGIN="
+                  << quote(source_introspection_plugin)
+                  << " -DIV_MODULE_FINALIZER=" << quote(module_finalizer)
+                  << " -DIV_MODULE_FINALIZER_OPTIMIZATION="
+                  << module_optimization_name(toolchain_.optimization);
         if (!toolchain_.source_introspection) {
             configure << " -DIV_MODULE_SOURCE_INTROSPECTION=OFF";
         }
         if (!toolchain_.precompiled_header) {
             configure << " -DIV_MODULE_PCH_HEADER=";
         }
-        if (toolchain_.constexpr_cache_depth) {
-            configure << " -DIV_MODULE_CONSTEXPR_CACHE_DEPTH="
-                      << *toolchain_.constexpr_cache_depth;
+        if (toolchain_.clang_time_trace) {
+            configure << " -DIV_MODULE_CLANG_TIME_TRACE=ON";
         }
         if (std::string_view(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY).size()) {
             configure << " -DIV_MODULE_SHARED_LIBRARY=" << quote(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY);
         }
         if (needs_build || !std::filesystem::exists(build_dir / "CMakeCache.txt")) {
-            auto const compiler_report = workspace / "compiler.time.log";
-            if (toolchain_.gcc_time_report) {
-                std::ofstream clear_report(compiler_report, std::ios::trunc);
-                if (!clear_report) {
-                    throw std::runtime_error(
-                        "failed to create compiler time report '" +
-                        compiler_report.string() + "'");
-                }
-            }
-            auto const* report_log = toolchain_.gcc_time_report
-                ? &compiler_report
-                : nullptr;
-            run(configure.str(), log_sink_, "configure", report_log);
+            run(configure.str(), log_sink_, "configure");
             run(
                 quote(cmake_program()) + " --build " + quote(build_dir) +
                     " --config " + config_name() + " --parallel 16",
                 log_sink_,
-                "build", report_log);
+                "build");
             write_text_if_different(signature_file, signature.str());
         }
 
@@ -1049,10 +929,17 @@ class ModuleLoader::Impl {
         auto const generation_dir = owner_root / "generations" / build_key / generation;
         std::filesystem::create_directories(generation_dir);
         auto const generation_artifact = generation_dir / artifact.filename();
+        auto const copy_started_at = std::chrono::steady_clock::now();
         std::filesystem::copy_file(
             artifact,
             generation_artifact,
             std::filesystem::copy_options::overwrite_existing);
+        if (log_sink_) {
+            log_sink_(
+                "[generation-copy] elapsed_us=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - copy_started_at).count()));
+        }
         return generation_artifact;
     }
 
@@ -1124,7 +1011,16 @@ public:
         auto& closure = compiled.closure;
         auto& artifact = compiled.artifact;
 
+        auto const dynamic_library_started_at = std::chrono::steady_clock::now();
         auto library = std::make_shared<DynamicLibrary>(artifact);
+        if (log_sink_) {
+            log_sink_(
+                "[dynamic-library-load] elapsed_us=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - dynamic_library_started_at).count()));
+        }
+
+        auto const graph_materialization_started_at = std::chrono::steady_clock::now();
         auto abi_version = reinterpret_cast<iv_module_abi_version_fn>(
             library->symbol("iv_module_abi_version"));
         if (!abi_version) {
@@ -1142,18 +1038,55 @@ public:
         }
         auto authored_graph = reinterpret_cast<iv_module_authored_graph_fn>(
             library->symbol("iv_module_authored_graph"));
-        if (!authored_graph) {
+        auto node_configs = reinterpret_cast<iv_module_node_configs_fn>(
+            library->symbol("iv_module_node_configs"));
+        auto node_types = reinterpret_cast<iv_module_node_types_fn>(
+            library->symbol("iv_module_node_types"));
+        if (!authored_graph || !node_configs || !node_types) {
             throw std::runtime_error(
                 "module '" + artifact.string() +
-                "' does not export iv_module_authored_graph");
+                "' does not export the finalized authored-graph tables");
         }
-        auto authored = thaw_authored_graph(authored_graph());
+        auto const graph_view = authored_graph();
+        auto const config_view = node_configs();
+        auto const type_view = node_types();
+        if (!graph_view.data && graph_view.size != 0) {
+            throw std::runtime_error("module authored graph view has null data");
+        }
+        if (!config_view.data && config_view.size != 0) {
+            throw std::runtime_error("module node config view has null data");
+        }
+        if (!type_view.data && type_view.size != 0) {
+            throw std::runtime_error("module node type view has null data");
+        }
+        if (config_view.size % sizeof(ModuleNodeConfigRecord) != 0) {
+            throw std::runtime_error("module node config table has invalid size");
+        }
+        if (type_view.size % sizeof(details::NodeCompilerRecord) != 0) {
+            throw std::runtime_error("module node type table has invalid size");
+        }
+        auto const graph_archive = std::span(
+            static_cast<std::byte const*>(graph_view.data), graph_view.size);
+        auto const configs = std::span(
+            static_cast<ModuleNodeConfigRecord const*>(config_view.data),
+            config_view.size / sizeof(ModuleNodeConfigRecord));
+        auto const types = std::span(
+            static_cast<details::NodeCompilerRecord const*>(type_view.data),
+            type_view.size / sizeof(details::NodeCompilerRecord));
+        auto authored = deserialize_authored_graph(
+            graph_archive, types, configs);
         auto plan = GraphCompiler::compile(
             GraphLowerer::lower(authored, {.execution_root = true}));
         auto runtime_root = std::make_shared<RuntimeGraphRoot>(
             std::move(plan.graph));
         WeakTypeErasedNode root_node(*runtime_root);
         auto introspection = std::move(plan.introspection);
+        if (log_sink_) {
+            log_sink_(
+                "[runtime-graph-materialization] elapsed_us=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - graph_materialization_started_at).count()));
+        }
 
         auto binary = std::make_shared<LoadedBinary>(LoadedBinary{
             root.manifest.id,

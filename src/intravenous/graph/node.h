@@ -19,8 +19,9 @@ namespace iv {
     struct Graph {
         std::string _graph_id {};
         std::vector<GraphSccWrapper> _scc_wrappers {};
-        // Keeps compiler-generated node_data pointers alive for as long as
-        // their wrappers can execute.
+        // Keeps every node callback's configuration and State metadata alive
+        // for as long as wrappers can declare or execute. This includes both
+        // compiler-generated nodes and module-authored node configurations.
         std::vector<std::shared_ptr<void const>> _generated_node_storage {};
         std::vector<GraphPortDataNode> _ingress_port_data_nodes {};
         std::vector<SampleOutputBinding> _ingress_targets {};

@@ -3,19 +3,18 @@
 #include <intravenous/basic_nodes/filters.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/basic_nodes/buffers.h>
-#include <intravenous/basic_nodes/midi.h>
+#include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/juce/vst_wrapper.h>
 
 #include <array>
 #include <iostream>
 #include <string>
 
-consteval void noisy_saw_project(iv::GraphBuilder& g)
+void noisy_saw_project(iv::GraphBuilder& g)
 {
     using namespace iv;
 
     // auto const sup = juce::vst(g, "ValhallaSupermassive");
-    // info(sup.node());
     // sup(
     //     "Mix"_P = 0.2,
     //     "DelayWarp"_P = 1.0,

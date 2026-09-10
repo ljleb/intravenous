@@ -4,12 +4,10 @@
 
 #include <concepts>
 #include <cstddef>
-#include <iostream>
 #include <iterator>
 #include <limits>
 #include <optional>
 #include <span>
-#include <string>
 #include <type_traits>
 
 namespace iv {
@@ -304,20 +302,4 @@ namespace iv {
         }
     }
 
-    template <typename Node>
-    void info(Node&& node)
-    {
-        std::cout << "internal latency: " << get_internal_latency(node) << "\n";
-
-        auto const block_size = get_max_block_size(node);
-        std::cout << "max block size: " << ((block_size == MAX_BLOCK_SIZE) ? std::string("unbounded") : std::to_string(block_size)) << "\n";
-        std::cout << "params:\n";
-
-        for (auto const& in : get_inputs(node)) {
-            std::cout << "    in: " << in.name << " (" << in.default_value << ")\n";
-        }
-        for (auto const& out : get_outputs(node)) {
-            std::cout << "    out: " << out.name << "\n";
-        }
-    }
 }

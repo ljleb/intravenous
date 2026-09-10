@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/connection_node.hpp>
-#include <intravenous/graph/reflected_node.hpp>
+#include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/graph/runtime_binding_nodes.hpp>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_nodes/type_erased.h>
@@ -61,8 +61,10 @@ inline RuntimeGeneratedNode materialize_compiler_node(Node node)
         std::copy_constructible<Node>,
         "compiler-generated node values must be copy constructible");
     auto storage = std::make_shared<Node>(std::move(node));
+    auto description = materialize_node_description(
+        make_node_build_request(*storage), storage);
     return {
-        .description = describe_reflected_node(*storage, storage.get()),
+        .description = std::move(description),
         .storage = std::move(storage),
     };
 }

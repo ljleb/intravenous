@@ -19,10 +19,37 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
 
+    auto const module_pch = iv::test::read_text(
+        iv::test::repo_root()
+        / "src/intravenous/module/template/module_pch.h");
+    EXPECT_NE(
+        module_pch.find("<intravenous/basic_nodes/polyphonic.h>"),
+        std::string::npos);
+    EXPECT_NE(
+        module_pch.find("<intravenous/juce/vst_wrapper.h>"),
+        std::string::npos);
+
     {
         auto definition = loader.load_root_definition(project_dst);
         EXPECT_EQ(definition.module_id, "iv.test.behavior_project");
         ASSERT_EQ(definition.dependencies.size(), 2u);
+
+        auto executor = iv::BlockNodeExecutor::create(
+            iv::TypeErasedNode(definition.root), 8);
+        auto const has_structural_saw_state = std::ranges::any_of(
+            executor.layout().nodes,
+            [](iv::NodeLayout::NodeRecord const& record) {
+                if (!record.node_state_structure) return false;
+                return std::ranges::any_of(
+                    record.node_state_structure->fields,
+                    [](iv::NodeStateFieldStructure const& field) {
+                        return field.name == "phase" && !field.type_name.empty();
+                    });
+            });
+        // SawOscillator::State is authored in behavior_voice. Its field type
+        // reaches this host layout only through the Clang plugin, exact
+        // NodeCodeKey binding in the finalizer, and the binary archive.
+        EXPECT_TRUE(has_structural_saw_state);
     }
 
     auto const project_workspace =
@@ -32,11 +59,18 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 
     auto const generated_export = iv::test::read_text(
         project_workspace / "generated" / "root_export.cpp");
+    EXPECT_NE(
+        generated_export.find("#include <intravenous/module/abi.h>"),
+        std::string::npos);
     EXPECT_EQ(generated_export.find("GraphLowerer::lower("), std::string::npos);
     EXPECT_NE(
-        generated_export.find("freeze_authored_graph(authored)"),
+        generated_export.find(
+            "iv_module_build(iv::details::BuilderSession* session)"),
         std::string::npos);
     EXPECT_NE(
+        generated_export.find("iv::GraphBuilder builder{session}"),
+        std::string::npos);
+    EXPECT_EQ(
         generated_export.find("iv_module_authored_graph"),
         std::string::npos);
 
@@ -101,11 +135,25 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     EXPECT_NE(local_compile_database.find("-include "), std::string::npos);
     EXPECT_NE(local_compile_database.find("cmake_pch.hxx"), std::string::npos);
 
+    auto const finalizer_timings =
+        local_workspace / "cmake-build" / "iv-module-finalizer-timings.txt";
+    ASSERT_TRUE(std::filesystem::exists(finalizer_timings));
+    auto const finalizer_timings_text = iv::test::read_text(finalizer_timings);
+    EXPECT_TRUE(finalizer_timings_text.starts_with("version=1\n"));
+    EXPECT_NE(finalizer_timings_text.find("module_main_us="), std::string::npos);
+    EXPECT_NE(
+        finalizer_timings_text.find("authoring_ir_prune_us="),
+        std::string::npos);
+    EXPECT_NE(finalizer_timings_text.find("runtime_optimize_us="), std::string::npos);
+    EXPECT_NE(finalizer_timings_text.find("native_link_us="), std::string::npos);
+
     bool has_precompiled_header = false;
     for (std::filesystem::recursive_directory_iterator it(local_workspace / "cmake-build"), end;
          it != end;
          ++it) {
-        if (it->is_regular_file() && it->path().filename() == "cmake_pch.hxx.gch") {
+        auto const filename = it->path().filename();
+        if (it->is_regular_file()
+            && (filename == "cmake_pch.hxx.gch" || filename == "cmake_pch.hxx.pch")) {
             has_precompiled_header = true;
             break;
         }
@@ -116,5 +164,76 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     if (expected_generator == "Ninja") {
         EXPECT_TRUE(std::filesystem::exists(project_workspace / "cmake-build" / "build.ninja"));
         EXPECT_TRUE(std::filesystem::exists(local_workspace / "cmake-build" / "build.ninja"));
+        ASSERT_TRUE(std::filesystem::exists(
+            local_workspace / "cmake-build" / "CMakeFiles" / "rules.ninja"));
+
+        auto const local_cache_text = iv::test::read_text(local_cache);
+        auto cache_path = [&](std::string const& name) {
+            auto const prefix = name + ":UNINITIALIZED=";
+            auto const begin = local_cache_text.find(prefix);
+            if (begin == std::string::npos) return std::string{};
+            auto const value_begin = begin + prefix.size();
+            auto const end = local_cache_text.find('\n', value_begin);
+            return local_cache_text.substr(
+                value_begin,
+                end == std::string::npos ? std::string::npos : end - value_begin);
+        };
+        auto const plugin_path = cache_path("IV_CLANG_SOURCE_INTROSPECTION_PLUGIN");
+        auto const finalizer_path = cache_path("IV_MODULE_FINALIZER");
+        ASSERT_FALSE(plugin_path.empty());
+        ASSERT_FALSE(finalizer_path.empty());
+
+        auto const local_ninja = iv::test::read_text(
+            local_workspace / "cmake-build" / "build.ninja");
+        auto const local_rules = iv::test::read_text(
+            local_workspace / "cmake-build" / "CMakeFiles" / "rules.ninja");
+        auto rule_line = [&](std::string const& needle) {
+            auto const match = local_ninja.find(needle);
+            if (match == std::string::npos) return std::string{};
+            auto const begin = local_ninja.rfind('\n', match);
+            auto const end = local_ninja.find('\n', match);
+            auto const line_begin = begin == std::string::npos ? 0 : begin + 1;
+            return local_ninja.substr(
+                line_begin,
+                end == std::string::npos ? std::string::npos : end - line_begin);
+        };
+        auto const object_rule = rule_line(
+            "root_export.cpp.o: CXX_COMPILER__iv_runtime_module");
+        auto const link_rule = rule_line(
+            "libiv_module_iv_test_local_cmake.so: CXX_SHARED_LIBRARY_LINKER__iv_runtime_module");
+        ASSERT_FALSE(object_rule.empty());
+        ASSERT_FALSE(link_rule.empty());
+        // Compiler plugins and linker launchers are command-line tools, not
+        // ordinary CMake inputs. Their paths must be explicit Ninja
+        // dependencies so persistent module workspaces rebuild when either
+        // host tool changes.
+        EXPECT_NE(object_rule.find(plugin_path), std::string::npos);
+        EXPECT_NE(link_rule.find(finalizer_path), std::string::npos);
+        EXPECT_NE(local_ninja.find("-fuse-ld=lld"), std::string::npos);
+        // Ninja puts the per-target launcher arguments in the generated link
+        // rule, while the target edge contains its dependency inputs.
+        EXPECT_NE(local_rules.find("--timings-file="), std::string::npos);
     }
+
+    iv::ModuleLoader time_trace_loader(
+        iv::test::repo_root(), {},
+        iv::ModuleLoaderToolchainConfig{.clang_time_trace = true});
+    (void)time_trace_loader.load_root_definition(local_dst);
+
+    auto const traced_compile_database = iv::test::read_text(
+        local_workspace / "cmake-build" / "compile_commands.json");
+    EXPECT_NE(traced_compile_database.find("-ftime-trace"), std::string::npos);
+
+    bool has_clang_time_trace = false;
+    for (std::filesystem::recursive_directory_iterator it(local_workspace / "cmake-build"), end;
+         it != end;
+         ++it) {
+        if (it->is_regular_file()
+            && it->path().extension() == ".json"
+            && it->path().string().contains("CMakeFiles")) {
+            has_clang_time_trace = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(has_clang_time_trace);
 }

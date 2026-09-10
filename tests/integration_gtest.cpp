@@ -3,10 +3,10 @@
 #include <intravenous/bridge.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
-#include <intravenous/graph/authored_graph_view.hpp>
+#include <authored_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
-#include <intravenous/module/authoring.h>
+#include <intravenous/module/builder_session.h>
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
 #include <intravenous/runtime/iv_module_definitions.h>
@@ -283,7 +283,7 @@ void apply_timeline_batch_to_execution_and_runner(
         }));
 }
 
-consteval void focused_stereo_saw_module(iv::GraphBuilder& graph)
+void focused_stereo_saw_module(iv::GraphBuilder& graph)
 {
     using namespace iv;
     auto const frequencies = graph.node<Constant, stereo>(220.0f);
@@ -297,18 +297,18 @@ consteval void focused_stereo_saw_module(iv::GraphBuilder& graph)
         "main"_P[stereo::right] = voice[stereo::right] * 0.1f);
 }
 
-consteval iv::AuthoredGraphView focused_stereo_saw_authored_graph_value()
+iv::AuthoredGraphTestView focused_stereo_saw_authored_graph_value()
 {
     iv::GraphBuilder builder;
     focused_stereo_saw_module(builder);
-    return iv::freeze_authored_graph(std::move(builder).finish());
+    return iv::freeze_authored_graph_for_test(std::move(builder).finish());
 }
 
 iv::WeakTypeErasedNode focused_stereo_saw_root()
 {
-    static constexpr auto view = focused_stereo_saw_authored_graph_value();
+    static const auto view = focused_stereo_saw_authored_graph_value();
     static auto graph = [] {
-        auto authored = iv::thaw_authored_graph(view);
+        auto authored = iv::thaw_authored_graph_for_test(view);
         auto plan = iv::GraphCompiler::compile(
             iv::GraphLowerer::lower(
                 std::move(authored), {.execution_root = true}));
@@ -319,8 +319,8 @@ iv::WeakTypeErasedNode focused_stereo_saw_root()
 
 iv::GraphIntrospectionMetadata focused_stereo_saw_metadata()
 {
-    static constexpr auto view = focused_stereo_saw_authored_graph_value();
-    auto authored = iv::thaw_authored_graph(view);
+    static const auto view = focused_stereo_saw_authored_graph_value();
+    auto authored = iv::thaw_authored_graph_for_test(view);
     return iv::GraphCompiler::compile(
         iv::GraphLowerer::lower(std::move(authored))).introspection;
 }
@@ -359,7 +359,7 @@ TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutd
 #include <intravenous/basic_nodes/shaping.h>
 
 namespace {
-    consteval void graph_input_module(iv::GraphBuilder& g)
+    void graph_input_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const voice = g.node<SawOscillator>();
@@ -501,9 +501,10 @@ TEST(Integration, SampleInputMutationsFlowThroughLiveSnapshots)
     auto const workspace = shared_inline_module_workspace(
         "runtime_integration_live_input_snapshots",
         R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-consteval void polyphonic_module(iv::GraphBuilder& g)
+void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 
@@ -527,7 +528,7 @@ consteval void polyphonic_module(iv::GraphBuilder& g)
 
     auto const result = app.query_by_spans(
         module_cpp,
-        {{.start = {.line = 11, .column = 20}, .end = {.line = 11, .column = 20}}});
+        {{.start = {.line = 12, .column = 20}, .end = {.line = 12, .column = 20}}});
     ASSERT_EQ(result.nodes.size(), 1u);
     auto const virtual_id = result.nodes.front().id;
 

@@ -32,6 +32,7 @@ function(add_iv_gtest target source)
 
     target_include_directories(${target} PRIVATE
         ${PROJECT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}
     )
 
     target_include_directories(${target} SYSTEM PRIVATE
@@ -77,11 +78,25 @@ add_iv_gtest(
     intravenous_module_build_behavior_tests
     module_build_behavior_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
+add_iv_gtest(
+    intravenous_authored_graph_binary_archive_tests
+    authored_graph_binary_archive_gtest.cpp)
+add_iv_gtest(
+    intravenous_node_build_request_tests
+    node_build_request_gtest.cpp)
 add_iv_gtest(intravenous_module_test_utils_tests module_test_utils_gtest.cpp)
 add_iv_gtest(
     intravenous_module_watcher_tests
     module_watcher_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
+add_iv_gtest(
+    intravenous_module_state_reload_tests
+    module_state_reload_gtest.cpp
+    ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
+add_iv_gtest(
+    intravenous_module_context_boundary_tests
+    module_context_boundary_gtest.cpp)
+add_iv_gtest(intravenous_compat_tests compat_gtest.cpp)
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_channels_tests channels_gtest.cpp)
 add_iv_gtest(

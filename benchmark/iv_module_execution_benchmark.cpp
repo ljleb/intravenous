@@ -1,5 +1,5 @@
 #include <intravenous/module/abi.h>
-#include <intravenous/graph/authored_graph_view.hpp>
+#include <intravenous/module/authored_graph_wire.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/node/block_executor.h>
@@ -162,15 +162,33 @@ void benchmark_module(std::filesystem::path const& path, Options const& options)
         library.symbol("iv_module_abi_version"));
     auto const authored_graph = reinterpret_cast<iv_module_authored_graph_fn>(
         library.symbol("iv_module_authored_graph"));
-    if (!abi_version || !authored_graph) {
+    auto const node_configs = reinterpret_cast<iv_module_node_configs_fn>(
+        library.symbol("iv_module_node_configs"));
+    auto const node_types = reinterpret_cast<iv_module_node_types_fn>(
+        library.symbol("iv_module_node_types"));
+    if (!abi_version || !authored_graph || !node_configs || !node_types) {
         throw std::runtime_error("module '" + path.string() + "' is missing IV exports");
     }
     if (abi_version() != iv::IV_MODULE_ABI_VERSION) {
         throw std::runtime_error("module '" + path.string() + "' has an incompatible ABI");
     }
 
-    auto view = authored_graph();
-    auto authored = iv::thaw_authored_graph(view);
+    auto const graph_view = authored_graph();
+    auto const config_view = node_configs();
+    auto const type_view = node_types();
+    if (config_view.size % sizeof(iv::ModuleNodeConfigRecord) != 0
+        || type_view.size % sizeof(iv::details::NodeCompilerRecord) != 0) {
+        throw std::runtime_error("module '" + path.string() + "' has invalid IV tables");
+    }
+    auto authored = iv::deserialize_authored_graph(
+        std::span(
+            static_cast<std::byte const*>(graph_view.data), graph_view.size),
+        std::span(
+            static_cast<iv::details::NodeCompilerRecord const*>(type_view.data),
+            type_view.size / sizeof(iv::details::NodeCompilerRecord)),
+        std::span(
+            static_cast<iv::ModuleNodeConfigRecord const*>(config_view.data),
+            config_view.size / sizeof(iv::ModuleNodeConfigRecord)));
     auto plan = iv::GraphCompiler::compile(
         iv::GraphLowerer::lower(
             std::move(authored), {.execution_root = true}));

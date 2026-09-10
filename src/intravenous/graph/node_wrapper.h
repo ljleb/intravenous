@@ -2,7 +2,8 @@
 
 #include <intravenous/graph/event_port_data_node.h>
 #include <intravenous/graph/port_data_node.h>
-#include <intravenous/graph/reflected_node.hpp>
+#include <intravenous/graph/reflected_node_description.h>
+#include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/graph/types.h>
 #include <intravenous/graph/wiring.h>
 
@@ -320,6 +321,7 @@ namespace iv {
             }
             ctx.declare_reflected_child(
                 _operations.node_data,
+                _operations.state_structure,
                 _operations.declare_node);
 
             for (size_t input_i = 0; input_i < num_inputs; ++input_i) {

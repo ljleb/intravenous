@@ -13,7 +13,7 @@
 #include <intravenous/graph/hash.hpp>
 #include <intravenous/graph/connection_node.hpp>
 #include <intravenous/graph/runtime_binding_nodes.hpp>
-#include <intravenous/graph/reflected_node.hpp>
+#include <intravenous/graph/reflected_node_description.h>
 
 #include <algorithm>
 #include <flat_map>

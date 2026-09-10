@@ -13,6 +13,7 @@
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/timeline.h>
+#include <intravenous/node/block_executor.h>
 
 #include <gtest/gtest.h>
 
@@ -172,6 +173,122 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
     EXPECT_TRUE(has_any_port);
 }
 
+TEST(IvModuleSourceIntrospection, AliasedStateIsFinalizedWithStructuralMetadata)
+{
+    auto const workspace = make_inline_module_workspace(
+        "iv_module_source_introspection_aliased_state",
+        R"(#include <intravenous/dsl.h>
+
+#include <cstdint>
+
+namespace {
+    struct StatePayload {
+        unsigned int phase = 7;
+        float gain = 0.5f;
+    };
+
+    struct StateCarrier {
+        using State = StatePayload;
+    };
+
+    struct AliasedStateNode {
+        using State = StatePayload;
+
+        static constexpr auto outputs()
+        {
+            return std::array<iv::OutputConfig, 1>{};
+        }
+
+        void tick(iv::TickSampleContext<AliasedStateNode> const& ctx) const
+        {
+            auto& state = ctx.state();
+            ctx.outputs[0].push(state.gain);
+            ++state.phase;
+        }
+    };
+
+    struct InheritedStateNode : StateCarrier {
+        static constexpr auto outputs()
+        {
+            return std::array<iv::OutputConfig, 1>{};
+        }
+
+        void tick(iv::TickSampleContext<InheritedStateNode> const& ctx) const
+        {
+            auto& state = ctx.state();
+            ctx.outputs[0].push(state.gain);
+            ++state.phase;
+        }
+    };
+
+    struct ScalarStateNode {
+        using State = std::int32_t;
+
+        static constexpr auto outputs()
+        {
+            return std::array<iv::OutputConfig, 1>{};
+        }
+
+        void initialize(iv::InitializationContext<ScalarStateNode> const& ctx) const
+        {
+            ctx.state() = 11;
+        }
+
+        void tick(iv::TickSampleContext<ScalarStateNode> const& ctx) const
+        {
+            ctx.outputs[0].push(static_cast<float>(ctx.state()));
+        }
+    };
+
+    void aliased_state_module(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto const direct = g.node<AliasedStateNode>();
+        auto const inherited = g.node<InheritedStateNode>();
+        auto const scalar = g.node<ScalarStateNode>();
+        g.outputs(
+            "direct"_P = direct,
+            "inherited"_P = inherited,
+            "scalar"_P = scalar);
+    }
+}
+)");
+
+    iv::ModuleLoader loader(iv::test::repo_root(), {});
+    auto definition = loader.load_root_definition(workspace);
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(definition.root), 8);
+
+    auto structural_state_nodes = 0u;
+    for (auto const& record : executor.layout().nodes) {
+        auto const has_phase = record.node_state_structure
+            && std::ranges::any_of(
+                record.node_state_structure->fields,
+                [](iv::NodeStateFieldStructure const& field) {
+                    return field.name == "phase";
+                });
+        if (has_phase) {
+            ++structural_state_nodes;
+            ASSERT_EQ(record.node_state_structure->fields.size(), 2u);
+            EXPECT_FALSE(record.node_state_structure->fields.front().type_name.empty());
+        }
+    }
+    // NodeState<Node>::Type accepts both a direct alias and an alias found by
+    // normal base-class lookup. Both must reach the finalized runtime layout.
+    EXPECT_EQ(structural_state_nodes, 2u);
+
+    auto scalar_state_nodes = 0u;
+    for (auto const& record : executor.layout().nodes) {
+        if (!record.node_state_structure
+            || record.node_state_structure->size_bits != sizeof(std::int32_t) * 8
+            || !record.node_state_structure->fields.empty()) {
+            continue;
+        }
+        ++scalar_state_nodes;
+    }
+    EXPECT_EQ(scalar_state_nodes, 1u);
+}
+
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 {
     auto const workspace = shared_inline_module_workspace(
@@ -180,12 +297,12 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 
 namespace {
     template<int I>
-    consteval iv::NodeRef make_value(iv::GraphBuilder& g)
+    iv::NodeRef make_value(iv::GraphBuilder& g)
     {
         return g.node<iv::Constant>(static_cast<float>(I)).node_ref();
     }
 
-    consteval void merged_virtual_module(iv::GraphBuilder& g)
+    void merged_virtual_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = make_value<0>(g);
@@ -220,7 +337,7 @@ TEST(IvModuleSourceIntrospection, GenericChannelOutputArgumentsArePublicOutputSo
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void generic_channel_outputs(iv::GraphBuilder& g)
+    void generic_channel_outputs(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const source = g.node<Constant>(0.25f);
@@ -259,7 +376,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableA
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void annotated_symbol_module(iv::GraphBuilder& g)
+    void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = _annotate_node_source_info(
@@ -309,7 +426,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedVirtualNode)
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void annotated_symbol_module(iv::GraphBuilder& g)
+    void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = _annotate_node_source_info(
@@ -355,7 +472,7 @@ namespace {
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };
 
-    consteval void tiled_value_module(iv::GraphBuilder& g)
+    void tiled_value_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const left = g.node<Constant>(0.25f);
@@ -425,7 +542,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBa
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void assigned_ref_module(iv::GraphBuilder& g)
+    void assigned_ref_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         NodeRef x;
@@ -457,7 +574,7 @@ TEST(IvModuleSourceIntrospection, InitializationFailsWhenDeclarationBackedRefIsA
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void assigned_twice_module(iv::GraphBuilder& g)
+    void assigned_twice_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         NodeRef x;
@@ -482,12 +599,12 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
 
 namespace {
     template<size_t Inputs>
-    consteval iv::NodeRef make_sum(iv::GraphBuilder& g)
+    iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, Inputs>>().node_ref();
     }
 
-    consteval void schema_mismatch_module(iv::GraphBuilder& g)
+    void schema_mismatch_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = make_sum<2>(g);
@@ -522,7 +639,7 @@ TEST(IvModuleSourceIntrospection, SameLvalueWithDifferentNodeTypesProducesIndepe
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    consteval void split_lvalue_types_module(iv::GraphBuilder& g)
+    void split_lvalue_types_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto make_branch = [&]<bool Add>(auto output) {
@@ -597,13 +714,13 @@ TEST(IvModuleSourceIntrospection, QueryBySpansAggregatesMixedConnectivity)
 
 namespace {
     template<int I>
-    consteval iv::NodeRef make_sum(iv::GraphBuilder& g)
+    iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         (void)I;
         return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref();
     }
 
-    consteval void mixed_connectivity_module(iv::GraphBuilder& g)
+    void mixed_connectivity_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const value = g.node<iv::Constant>(0.0f).node_ref();
@@ -738,9 +855,10 @@ TEST(IvModuleSourceIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExa
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_polyphonic_exact_spans",
         R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-consteval void polyphonic_module(iv::GraphBuilder& g)
+void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 
@@ -764,7 +882,7 @@ consteval void polyphonic_module(iv::GraphBuilder& g)
 
     auto const result = app.query_by_spans(
         module_cpp,
-        {{.start = {.line = 11, .column = 20}, .end = {.line = 11, .column = 20}}});
+        {{.start = {.line = 12, .column = 20}, .end = {.line = 12, .column = 20}}});
 
     ASSERT_EQ(result.nodes.size(), 1u);
     auto const& virtual_node = result.nodes.front();
@@ -831,9 +949,10 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonic
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_polyphonic_interior_span",
         R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-consteval void polyphonic_module(iv::GraphBuilder& g)
+void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 
@@ -857,7 +976,7 @@ consteval void polyphonic_module(iv::GraphBuilder& g)
 
     auto const result = app.query_by_spans(
         module_cpp,
-        {{.start = {.line = 11, .column = 20}, .end = {.line = 11, .column = 20}}});
+        {{.start = {.line = 12, .column = 20}, .end = {.line = 12, .column = 20}}});
 
     ASSERT_EQ(result.nodes.size(), 1u);
     EXPECT_EQ(result.nodes.front().kind, "iv::SawOscillator");

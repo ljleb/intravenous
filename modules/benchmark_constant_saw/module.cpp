@@ -2,7 +2,7 @@
 #include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-consteval void benchmark_constant_saw(iv::GraphBuilder& g)
+void benchmark_constant_saw(iv::GraphBuilder& g)
 {
     using namespace iv;
 

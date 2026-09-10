@@ -1,11 +1,17 @@
+#pragma once
+
 #include <intravenous/node/lifecycle.h>
 
 #include <array>
-#include <iostream>
-#include <string>
+#include <cstddef>
+
+namespace iv::details {
+    void write_debug_probe_sample(
+        char const* label, size_t tick_index, Sample sample);
+}
 
 struct DebugProbe {
-    std::string label = "debug";
+    char const* label = "debug";
     size_t every_n_ticks = 4800;
 
     static constexpr auto inputs()
@@ -22,7 +28,7 @@ struct DebugProbe {
     {
         auto const sample = ctx.inputs[0].get();
         if (every_n_ticks != 0 && (ctx.index % every_n_ticks) == 0) {
-            std::cout << label << "[" << ctx.index << "] = " << sample << '\n';
+            iv::details::write_debug_probe_sample(label, ctx.index, sample);
         }
         ctx.outputs[0].push(sample);
     }

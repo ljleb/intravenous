@@ -17,14 +17,14 @@
 #include <vector>
 
 namespace iv {
-class GetAudioDevicesRequest;
+struct GetAudioDevicesRequest;
 class ProjectAckBuilder;
 class ProjectAudioDevicesBuilder;
 class ProjectPersistenceBuilder;
 struct ProjectOverrideSettingsRequest;
 struct ProjectSetAudioDeviceLaneIdsRequest;
 struct ProjectSetAudioDevicesRequest;
-class SetAudioDevicesRequest;
+struct SetAudioDevicesRequest;
 class SocketRpcAudioDevicesResultBuilder;
 
 struct SeekRequest;

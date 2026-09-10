@@ -1,4 +1,5 @@
 #include <intravenous/node/lifecycle.h>
+#include <intravenous/node/layout.h>
 #include "module_test_utils.h"
 #include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/dsl.h>

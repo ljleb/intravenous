@@ -94,8 +94,8 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(nlohmann_json)
-# nlohmann/json 3.11.3 predates GCC 16 and still uses deprecated
-# std::is_trivial.  It is an external header-only dependency, so present its
+# nlohmann/json 3.11.3 still uses deprecated std::is_trivial. It is an
+# external header-only dependency, so present its
 # headers as system headers to consumers instead of suppressing the warning
 # for project sources.
 set_property(TARGET nlohmann_json PROPERTY SYSTEM ON)
@@ -128,6 +128,7 @@ function(iv_add_host_runtime_objects target)
         IV_CONFIGURED_JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
         IV_CONFIGURED_JUCE_USE_CURL=${JUCE_USE_CURL}
         IV_CONFIGURED_CMAKE_COMMAND="${CMAKE_COMMAND}"
+        IV_CONFIGURED_BINARY_DIR="${CMAKE_BINARY_DIR}"
         IV_CONFIGURED_CMAKE_GENERATOR="${CMAKE_GENERATOR}"
         IV_CONFIGURED_MAKE_PROGRAM="${CMAKE_MAKE_PROGRAM}"
         IV_CONFIGURED_C_COMPILER="${CMAKE_C_COMPILER}"
@@ -190,13 +191,28 @@ function(iv_add_host_runtime_objects target)
 endfunction()
 
 add_library(intravenous_graph_builder OBJECT
-    graph/builder/link.cpp
+    basic_nodes/debug_probe.cpp
+    compat.cpp
+    graph/builder/builder.cpp
+    graph/builder/node_refs.cpp
+    graph/builder/state.cpp
+    graph/reflected_node_description.cpp
+    module/builder_session.cpp
+    module/source_annotations.cpp
+    node/config_storage.cpp
+    node/layout.cpp
+    node/tick.cpp
 )
 iv_configure_intravenous_target(intravenous_graph_builder PUBLIC)
 
 add_library(iv_module_shared SHARED
     $<TARGET_OBJECTS:intravenous_graph_builder>
 )
+# The temporary module-building JIT resolves this library directly. Keep the
+# established target name for project-template compatibility, but make the
+# produced DSO describe its actual responsibility.
+add_library(iv_builder ALIAS iv_module_shared)
+set_target_properties(iv_module_shared PROPERTIES OUTPUT_NAME iv_builder)
 iv_configure_intravenous_target(iv_module_shared PUBLIC)
 iv_link_stacktrace_support(iv_module_shared)
 
@@ -435,6 +451,8 @@ if(JUCE_FOUND)
         ${IV_JUCE_CORE_TARGET}
     )
 
+    # This library remains the runtime-symbol provider for JUCE/VST node
+    # modules. The builder boundary must not remove that opt-in capability.
     target_compile_definitions(iv_module_shared PUBLIC
         IV_ENABLE_JUCE_VST=1
         JUCE_PLUGINHOST_VST3=1

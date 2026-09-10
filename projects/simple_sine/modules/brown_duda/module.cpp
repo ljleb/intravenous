@@ -864,7 +864,7 @@ struct BrownDudaPinna
     }
 };
 
-consteval void brown_duda_source(iv::GraphBuilder& g)
+void brown_duda_source(iv::GraphBuilder& g)
 {
     auto const source = g.input<"source">();
     auto const azimuth = g.input<"azimuth">(0.0f);
@@ -901,10 +901,9 @@ consteval void brown_duda_source(iv::GraphBuilder& g)
     g.outputs("main"_P = pinna);
 }
 
-consteval void module_main(iv::GraphBuilder& g)
+void module_main(iv::GraphBuilder& g)
 {
-    auto const audio_input = g.input<"main", stereo>();
-    auto const audio = TypedSamplePortRef<stereo>{ static_cast<SamplePortRef>(audio_input) };
+    auto const audio = g.input<"main", stereo>();
     auto const center = g.input<"azimuth">(0,-90, 90);
     auto const spread = g.input<"spread">(30, 0, 180);
     auto const elevation = g.input<"elevation">(0, -90, 90);

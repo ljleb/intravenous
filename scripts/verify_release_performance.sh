@@ -20,7 +20,6 @@ for stage in \
         --module "$module_path" \
         --workspace "$benchmark_workspace" \
         --stage "$stage" \
-        --gcc-time-report \
         --keep
 done
 

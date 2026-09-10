@@ -3,14 +3,14 @@
 #include <intravenous/basic_nodes/filters.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/basic_nodes/buffers.h>
-#include <intravenous/basic_nodes/midi.h>
+#include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/juce/vst_wrapper.h>
 
 #include <array>
 #include <iostream>
 #include <string>
 
-consteval void dc_offset(iv::GraphBuilder& g)
+void dc_offset(iv::GraphBuilder& g)
 {
     using namespace iv;
     g.outputs("main"_P[stereo::left] = 0.01, "main"_P[stereo::right] = 0.01);

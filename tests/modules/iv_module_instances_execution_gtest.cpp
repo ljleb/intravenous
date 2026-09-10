@@ -2,7 +2,7 @@
 #include <intravenous/runtime/iv_module_instances_iv_module_instances_execution_bridge.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
-#include <intravenous/graph/authored_graph_view.hpp>
+#include <authored_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/graph/runtime_binding_nodes.hpp>
@@ -143,26 +143,26 @@ namespace {
             });
     }
 
-    consteval auto make_runtime_sample_binding_graph()
+    auto make_runtime_sample_binding_graph()
     {
         iv::GraphBuilder graph;
         auto input = graph.input<"input">(iv::Sample{0.0f});
         graph.outputs(iv::PortName<"output">{} = input);
-        return iv::freeze_authored_graph(std::move(graph).finish());
+        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
     }
 
-    consteval auto make_runtime_event_binding_graph()
+    auto make_runtime_event_binding_graph()
     {
         iv::GraphBuilder graph;
         auto input = graph.event_input<"input">(iv::EventTypeId::trigger);
         graph.event_outputs(iv::PortName<"output">{} = input);
         graph.outputs();
-        return iv::freeze_authored_graph(std::move(graph).finish());
+        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
     }
 
-    iv::RuntimeGraphRoot build_runtime_binding_root(iv::AuthoredGraphView view)
+    iv::RuntimeGraphRoot build_runtime_binding_root(iv::AuthoredGraphTestView view)
     {
-        auto authored = iv::thaw_authored_graph(view);
+        auto authored = iv::thaw_authored_graph_for_test(view);
         auto plan = iv::GraphCompiler::compile(
             iv::GraphLowerer::lower(
                 std::move(authored), {.execution_root = true}));
@@ -171,14 +171,14 @@ namespace {
 
     iv::RuntimeGraphRoot const& runtime_sample_binding_root()
     {
-        static constexpr auto view = make_runtime_sample_binding_graph();
+        static const auto view = make_runtime_sample_binding_graph();
         static auto root = build_runtime_binding_root(view);
         return root;
     }
 
     iv::RuntimeGraphRoot const& runtime_event_binding_root()
     {
-        static constexpr auto view = make_runtime_event_binding_graph();
+        static const auto view = make_runtime_event_binding_graph();
         static auto root = build_runtime_binding_root(view);
         return root;
     }

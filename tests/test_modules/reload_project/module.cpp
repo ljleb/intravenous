@@ -2,7 +2,7 @@
 #include <intravenous/basic_nodes/shaping.h>
 #include <iv/modules/iv.test.reload_voice>
 
-consteval void reload_project(iv::GraphBuilder& g)
+void reload_project(iv::GraphBuilder& g)
 {
     using namespace iv;
     auto const left_phase = g.node<PhaseIntegrator>();

@@ -1,37 +1,51 @@
-cmake_minimum_required(VERSION 3.20)
-
-project(iv_gcc_source_introspection_plugin LANGUAGES CXX)
-
-if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
-   OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
-    message(FATAL_ERROR
-        "iv_gcc_source_introspection_plugin requires GCC 16 or newer; "
-        "configured compiler is ${CMAKE_CXX_COMPILER_ID} "
-        "${CMAKE_CXX_COMPILER_VERSION} (${CMAKE_CXX_COMPILER})")
-endif()
-
-execute_process(
-    COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=plugin
-    OUTPUT_VARIABLE IV_GCC_PLUGIN_DIR
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    RESULT_VARIABLE IV_GCC_PLUGIN_DIR_RESULT)
-if(NOT IV_GCC_PLUGIN_DIR_RESULT EQUAL 0
-   OR NOT EXISTS "${IV_GCC_PLUGIN_DIR}/include/gcc-plugin.h")
-    message(FATAL_ERROR
-        "GCC plugin headers were not found under '${IV_GCC_PLUGIN_DIR}/include'.")
-endif()
-
-add_library(iv_gcc_source_introspection_plugin MODULE
-    iv_gcc_source_introspection_plugin.cpp)
-set_target_properties(iv_gcc_source_introspection_plugin PROPERTIES
+add_library(iv_clang_source_introspection_plugin MODULE
+    iv_clang_source_introspection_plugin.cpp)
+set_target_properties(iv_clang_source_introspection_plugin PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
     PREFIX "")
-target_include_directories(iv_gcc_source_introspection_plugin PRIVATE
-    "${IV_GCC_PLUGIN_DIR}/include")
-target_compile_options(iv_gcc_source_introspection_plugin PRIVATE
-    -fno-rtti
-    -Wall
-    -Wextra
-    -Wpedantic)
+target_include_directories(iv_clang_source_introspection_plugin PRIVATE
+    ${LLVM_INCLUDE_DIRS}
+    ${CLANG_INCLUDE_DIRS})
+target_compile_definitions(iv_clang_source_introspection_plugin PRIVATE
+    ${LLVM_DEFINITIONS})
+if(TARGET clang-cpp)
+    target_link_libraries(iv_clang_source_introspection_plugin PRIVATE clang-cpp)
+else()
+    target_link_libraries(iv_clang_source_introspection_plugin PRIVATE
+        clangAST
+        clangBasic
+        clangFrontend
+        clangIndex
+        clangLex
+        clangSema
+        clangSerialization)
+endif()
+
+target_compile_options(iv_clang_source_introspection_plugin PRIVATE
+    -Wall -Wextra -Wpedantic)
+
+add_executable(iv_module_finalize iv_module_finalize.cpp)
+target_include_directories(iv_module_finalize PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(iv_module_finalize PRIVATE
+    IV_INTERNAL_TRANSLATION_UNIT=1
+    ${LLVM_DEFINITIONS})
+llvm_map_components_to_libnames(IV_MODULE_FINALIZER_LLVM_LIBS
+    bitreader
+    core
+    executionengine
+    linker
+    native
+    nativecodegen
+    orcjit
+    passes
+    support
+    target)
+target_link_libraries(iv_module_finalize PRIVATE
+    ${IV_MODULE_FINALIZER_LLVM_LIBS}
+    iv_module_shared)
+target_compile_options(iv_module_finalize PRIVATE
+    -Wall -Wextra -Wpedantic)

@@ -1,20 +1,29 @@
 #include <intravenous/basic_nodes/arithmetic.h>
+#include <intravenous/basic_nodes/debug_probe.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/dsl.h>
-#include <intravenous/graph/authored_graph_view.hpp>
+#include <authored_graph_test_view.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
+#include <intravenous/module/authored_graph_wire.h>
+#include <intravenous/module/builder_session.h>
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstring>
+#include <memory>
 #include <ranges>
+#include <stdexcept>
+#include <string>
 
 namespace iv {
 namespace {
 
-consteval void pass_module(GraphBuilder& g)
+void pass_module(GraphBuilder& g)
 {
     auto input = g.input<"in">(0.0f);
     auto pass = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
@@ -22,7 +31,7 @@ consteval void pass_module(GraphBuilder& g)
     g.outputs("out"_P = pass);
 }
 
-consteval void nested_module(GraphBuilder& g)
+void nested_module(GraphBuilder& g)
 {
     auto input = g.input<"in">(0.0f);
     auto child = g.module<pass_module>();
@@ -30,7 +39,7 @@ consteval void nested_module(GraphBuilder& g)
     g.outputs("out"_P = child);
 }
 
-consteval void tiled_module(GraphBuilder& g)
+void tiled_module(GraphBuilder& g)
 {
     auto input = g.input<"in">(0.0f);
     auto tiled = g.node<Sum<mono, SampleStreamLayout::planar, 1>, stereo>();
@@ -38,7 +47,7 @@ consteval void tiled_module(GraphBuilder& g)
     g.outputs("out"_P = tiled);
 }
 
-consteval void event_module(GraphBuilder& g)
+void event_module(GraphBuilder& g)
 {
     auto input = g.event_input<"event">(EventTypeId::empty);
     auto relay = g.node<EventConcatenation>(1, EventTypeId::empty);
@@ -47,27 +56,100 @@ consteval void event_module(GraphBuilder& g)
     g.outputs();
 }
 
+struct CStringConfigNode {
+    char const* title = "title";
+    char const* detail = "detail";
+    char const* optional = nullptr;
+
+    static constexpr auto outputs()
+    {
+        return std::array<OutputConfig, 1>{};
+    }
+
+    void tick(TickSampleContext<CStringConfigNode> const& ctx) const
+    {
+        ctx.outputs[0].push(0.0f);
+    }
+};
+
+struct NodeCallEventSource {
+    static constexpr auto event_outputs()
+    {
+        return std::array<EventOutputConfig, 1>{EventOutputConfig {
+            .name = "trigger", .type = EventTypeId::trigger,
+        }};
+    }
+
+    void tick_block(TickBlockContext<NodeCallEventSource> const&) const {}
+};
+
+struct NodeCallMixedSink {
+    static constexpr auto inputs()
+    {
+        return std::array<InputConfig, 2>{
+            InputConfig {.name = "left"},
+            InputConfig {.name = "right"},
+        };
+    }
+
+    static constexpr auto event_inputs()
+    {
+        return std::array<EventInputConfig, 1>{EventInputConfig {
+            .name = "trigger", .type = EventTypeId::trigger,
+        }};
+    }
+
+    void tick_block(TickBlockContext<NodeCallMixedSink> const&) const {}
+};
+
+struct CStringConfigDetails {
+    char const* first = "first";
+    char const* second = "second";
+};
+
+struct StructuredCStringConfigNode {
+    char const* labels[2] = {"left", "right"};
+    CStringConfigDetails details{};
+
+    static constexpr auto outputs()
+    {
+        return std::array<OutputConfig, 1>{};
+    }
+
+    void tick(TickSampleContext<StructuredCStringConfigNode> const& ctx) const
+    {
+        ctx.outputs[0].push(0.0f);
+    }
+};
+
+constexpr char cstring_title[] = "test probe";
+constexpr char cstring_detail[] = "second string";
+constexpr char cstring_left[] = "left label";
+constexpr char cstring_right[] = "right label";
+constexpr char cstring_first[] = "first detail";
+constexpr char cstring_second[] = "second detail";
+
 static_assert(std::invocable<decltype(&pass_module), GraphBuilder&>);
 static_assert(std::same_as<std::invoke_result_t<decltype(&pass_module), GraphBuilder&>, void>);
 
 iv::RuntimeGraphPlan compile_graph(
-    iv::AuthoredGraphView view,
+    iv::AuthoredGraphTestView view,
     bool execution_root = false)
 {
-    auto authored = iv::thaw_authored_graph(view);
+    auto authored = iv::thaw_authored_graph_for_test(view);
     auto executable = iv::GraphLowerer::lower(
         std::move(authored), {.execution_root = execution_root});
     return iv::GraphCompiler::compile(std::move(executable));
 }
 
 struct RootSignatureAuthoring {
-    AuthoredGraphView root_view;
-    AuthoredGraphView parent_view;
+    AuthoredGraphTestView root_view;
+    AuthoredGraphTestView parent_view;
     size_t child_sample_inputs;
     size_t child_sample_outputs;
 };
 
-consteval RootSignatureAuthoring author_root_signature_graphs()
+RootSignatureAuthoring author_root_signature_graphs()
 {
     GraphBuilder root;
     pass_module(root);
@@ -80,8 +162,8 @@ consteval RootSignatureAuthoring author_root_signature_graphs()
     parent.outputs("main"_P = child["out"]);
 
     return {
-        .root_view = freeze_authored_graph(std::move(root).finish()),
-        .parent_view = freeze_authored_graph(std::move(parent).finish()),
+        .root_view = freeze_authored_graph_for_test(std::move(root).finish()),
+        .parent_view = freeze_authored_graph_for_test(std::move(parent).finish()),
         .child_sample_inputs = child_sample_inputs,
         .child_sample_outputs = child_sample_outputs,
     };
@@ -112,16 +194,16 @@ RootSignatureSnapshot root_signature_snapshot()
 }
 
 struct RecursiveModuleAuthoring {
-    AuthoredGraphView view;
+    AuthoredGraphTestView view;
 };
 
-consteval RecursiveModuleAuthoring author_recursive_module()
+RecursiveModuleAuthoring author_recursive_module()
 {
     GraphBuilder g;
     auto child = g.module<nested_module>();
     child("in"_P = 0.5f);
     g.outputs("main"_P = child["out"]);
-    return {.view = freeze_authored_graph(std::move(g).finish())};
+    return {.view = freeze_authored_graph_for_test(std::move(g).finish())};
 }
 
 struct RecursiveModuleSnapshot {
@@ -149,10 +231,10 @@ RecursiveModuleSnapshot recursive_module_snapshot()
 }
 
 struct AnnotatedModuleAuthoring {
-    AuthoredGraphView view;
+    AuthoredGraphTestView view;
 };
 
-consteval AnnotatedModuleAuthoring author_annotated_module()
+AnnotatedModuleAuthoring author_annotated_module()
 {
     GraphBuilder g;
     auto child = _annotate_node_source_info(
@@ -160,7 +242,7 @@ consteval AnnotatedModuleAuthoring author_annotated_module()
         "module-call");
     child("in"_P = 0.5f);
     g.outputs("main"_P = child["out"]);
-    return {.view = freeze_authored_graph(std::move(g).finish())};
+    return {.view = freeze_authored_graph_for_test(std::move(g).finish())};
 }
 
 struct AnnotatedModuleSnapshot {
@@ -187,14 +269,14 @@ AnnotatedModuleSnapshot annotated_module_snapshot()
 }
 
 struct TiledModuleAuthoring {
-    AuthoredGraphView view;
+    AuthoredGraphTestView view;
     size_t child_sample_inputs;
     size_t child_sample_outputs;
     ChannelTypeId output_channel_type;
     size_t output_channel_count;
 };
 
-consteval TiledModuleAuthoring author_tiled_module()
+TiledModuleAuthoring author_tiled_module()
 {
     GraphBuilder g;
     auto child = g.module<tiled_module>();
@@ -203,10 +285,10 @@ consteval TiledModuleAuthoring author_tiled_module()
     child("in"_P = 0.5f);
     auto output = child["out"];
     auto const output_channel_type = output.channel_type;
-    auto const output_channel_count = output.channels.size();
+    auto const output_channel_count = output.channels().size();
     g.outputs("main"_P = output);
     return {
-        .view = freeze_authored_graph(std::move(g).finish()),
+        .view = freeze_authored_graph_for_test(std::move(g).finish()),
         .child_sample_inputs = child_sample_inputs,
         .child_sample_outputs = child_sample_outputs,
         .output_channel_type = output_channel_type,
@@ -255,7 +337,7 @@ TiledModuleSnapshot tiled_module_snapshot()
     return result;
 }
 
-consteval AuthoredGraphView author_event_interfaces()
+AuthoredGraphTestView author_event_interfaces()
 {
     GraphBuilder g;
     auto child = g.module<event_module>();
@@ -264,7 +346,7 @@ consteval AuthoredGraphView author_event_interfaces()
     auto sink = g.node<DummyEventSink>();
     sink.connect_event_input(0, child.event_port("event"));
     g.outputs();
-    return freeze_authored_graph(std::move(g).finish());
+    return freeze_authored_graph_for_test(std::move(g).finish());
 }
 
 bool event_interfaces_compile()
@@ -273,7 +355,7 @@ bool event_interfaces_compile()
     return true;
 }
 
-consteval AuthoredGraphView author_functional_subgraph()
+AuthoredGraphTestView author_functional_subgraph()
 {
     GraphBuilder g;
     auto nested = g.subgraph([&](SubgraphBuilder& boundary) {
@@ -285,7 +367,7 @@ consteval AuthoredGraphView author_functional_subgraph()
 
     nested("in"_P = 0.25f);
     g.outputs("main"_P = nested["out"]);
-    return freeze_authored_graph(std::move(g).finish());
+    return freeze_authored_graph_for_test(std::move(g).finish());
 }
 
 bool functional_subgraph_compiles()
@@ -294,12 +376,12 @@ bool functional_subgraph_compiles()
     return true;
 }
 
-consteval AuthoredGraphView author_direct_public_sample_passthrough()
+AuthoredGraphTestView author_direct_public_sample_passthrough()
 {
     GraphBuilder g;
     auto input = g.input<"in">(0.0f);
     g.outputs("out"_P = input);
-    return freeze_authored_graph(std::move(g).finish());
+    return freeze_authored_graph_for_test(std::move(g).finish());
 }
 
 bool direct_public_sample_passthrough_compiles()
@@ -310,10 +392,10 @@ bool direct_public_sample_passthrough_compiles()
 }
 
 struct IntrospectionRegressionAuthoring {
-    AuthoredGraphView view;
+    AuthoredGraphTestView view;
 };
 
-consteval IntrospectionRegressionAuthoring author_introspection_regression()
+IntrospectionRegressionAuthoring author_introspection_regression()
 {
     GraphBuilder g;
     auto input = g.input<"in">(0.25f);
@@ -324,7 +406,7 @@ consteval IntrospectionRegressionAuthoring author_introspection_regression()
     g.outputs("out"_P = sum);
     (void)annotated;
     (void)event;
-    return {.view = freeze_authored_graph(std::move(g).finish())};
+    return {.view = freeze_authored_graph_for_test(std::move(g).finish())};
 }
 
 struct IntrospectionRegressionSnapshot {
@@ -388,6 +470,233 @@ TEST(GraphModules, ModuleFunctionUsesTheRootGraphBuilderSignature)
     EXPECT_TRUE(snapshot.nested_output_named_main);
 }
 
+TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
+{
+    auto session = std::unique_ptr<
+        details::BuilderSession,
+        decltype(&details::iv_builder_session_destroy)>(
+            details::iv_builder_session_create(),
+            details::iv_builder_session_destroy);
+    ASSERT_NE(session, nullptr);
+
+    GraphBuilder builder(session.get());
+    pass_module(builder);
+
+    auto view = freeze_authored_graph_for_test(
+        details::take_built_graph(session.get()));
+    EXPECT_THROW(
+        (void)details::take_built_graph(session.get()),
+        std::logic_error);
+    session.reset();
+
+    auto const plan = compile_graph(view);
+    ASSERT_EQ(plan.graph.outputs().size(), 1u);
+    EXPECT_EQ(plan.graph.outputs().front().name, "out");
+}
+
+TEST(GraphModules, TypedNodeCallsForwardNormalizedSampleAndEventRequests)
+{
+    GraphBuilder graph;
+    auto left = graph.input<"left">(0.0f);
+    auto right = graph.input<"right">(0.0f);
+    auto source = graph.node<NodeCallEventSource>();
+    auto sink = graph.node<NodeCallMixedSink>();
+    auto tiled_sink = graph.node<NodeCallMixedSink, stereo>();
+
+    sink(
+        "left"_P = left,
+        "right"_P = right,
+        "trigger"_F = source);
+    tiled_sink(
+        "right"_P = right,
+        "left"_P = left,
+        "trigger"_F = source.event_port());
+
+    EXPECT_TRUE(sink.input_is_connected(0));
+    EXPECT_TRUE(sink.input_is_connected(1));
+    EXPECT_TRUE(sink.event_input_is_connected(0));
+    EXPECT_TRUE(tiled_sink.input_is_connected(0));
+    EXPECT_TRUE(tiled_sink.input_is_connected(1));
+    EXPECT_TRUE(tiled_sink.event_input_is_connected(0));
+}
+
+TEST(GraphModules, BuilderCapturesPointerConfigurationAsSymbolicRelocations)
+{
+    auto session = std::unique_ptr<
+        details::BuilderSession,
+        decltype(&details::iv_builder_session_destroy)>(
+            details::iv_builder_session_create(),
+            details::iv_builder_session_destroy);
+    std::array offsets{
+        offsetof(CStringConfigNode, title),
+        offsetof(CStringConfigNode, detail),
+        offsetof(CStringConfigNode, optional),
+    };
+    std::array layouts{details::NodeConfigLayout{
+        .node_code_key = details::node_code_key_v<CStringConfigNode>,
+        .pointer_offsets = offsets,
+    }};
+    details::set_builder_node_config_layouts(session.get(), layouts);
+    std::array globals{
+        details::AuthoringGlobalAddress{
+            .address = cstring_title,
+            .size = sizeof(cstring_title),
+            .symbol = cstring_title,
+        },
+        details::AuthoringGlobalAddress{
+            .address = cstring_detail,
+            .size = sizeof(cstring_detail),
+            .symbol = cstring_detail,
+        },
+    };
+    details::set_builder_authoring_globals(session.get(), globals);
+
+    GraphBuilder builder(session.get());
+    auto probe = builder.node<CStringConfigNode>(CStringConfigNode{
+        .title = cstring_title,
+        .detail = cstring_detail,
+        .optional = nullptr,
+    });
+    builder.outputs(probe);
+
+    auto archive = serialize_authored_graph(
+        details::take_built_graph(session.get()));
+    ASSERT_EQ(archive.node_configs.size(), 1u);
+    auto const& relocations = archive.node_configs.front().relocations;
+    ASSERT_EQ(relocations.size(), 3u);
+    EXPECT_EQ(relocations[0].byte_offset, offsetof(CStringConfigNode, title));
+    EXPECT_EQ(relocations[0].target, cstring_title);
+    EXPECT_EQ(relocations[0].addend, 0u);
+    EXPECT_EQ(relocations[1].byte_offset, offsetof(CStringConfigNode, detail));
+    EXPECT_EQ(relocations[1].target, cstring_detail);
+    EXPECT_EQ(relocations[1].addend, 0u);
+    EXPECT_EQ(relocations[2].byte_offset, offsetof(CStringConfigNode, optional));
+    EXPECT_EQ(relocations[2].target, nullptr);
+}
+
+TEST(GraphModules, BuilderCapturesNestedAndArrayPointerConfiguration)
+{
+    auto session = std::unique_ptr<
+        details::BuilderSession,
+        decltype(&details::iv_builder_session_destroy)>(
+            details::iv_builder_session_create(),
+            details::iv_builder_session_destroy);
+    std::array offsets{
+        offsetof(StructuredCStringConfigNode, labels),
+        offsetof(StructuredCStringConfigNode, labels) + sizeof(char const*),
+        offsetof(StructuredCStringConfigNode, details)
+            + offsetof(CStringConfigDetails, first),
+        offsetof(StructuredCStringConfigNode, details)
+            + offsetof(CStringConfigDetails, second),
+    };
+    std::array layouts{details::NodeConfigLayout{
+        .node_code_key = details::node_code_key_v<StructuredCStringConfigNode>,
+        .pointer_offsets = offsets,
+    }};
+    details::set_builder_node_config_layouts(session.get(), layouts);
+    std::array globals{
+        details::AuthoringGlobalAddress{
+            .address = cstring_left,
+            .size = sizeof(cstring_left),
+            .symbol = cstring_left,
+        },
+        details::AuthoringGlobalAddress{
+            .address = cstring_right,
+            .size = sizeof(cstring_right),
+            .symbol = cstring_right,
+        },
+        details::AuthoringGlobalAddress{
+            .address = cstring_first,
+            .size = sizeof(cstring_first),
+            .symbol = cstring_first,
+        },
+        details::AuthoringGlobalAddress{
+            .address = cstring_second,
+            .size = sizeof(cstring_second),
+            .symbol = cstring_second,
+        },
+    };
+    details::set_builder_authoring_globals(session.get(), globals);
+
+    GraphBuilder builder(session.get());
+    auto node = builder.node<StructuredCStringConfigNode>(
+        StructuredCStringConfigNode{
+            .labels = {cstring_left, cstring_right},
+            .details = {cstring_first, cstring_second},
+        });
+    builder.outputs(node);
+
+    auto archive = serialize_authored_graph(
+        details::take_built_graph(session.get()));
+    ASSERT_EQ(archive.node_configs.size(), 1u);
+    auto const& relocations = archive.node_configs.front().relocations;
+    ASSERT_EQ(relocations.size(), offsets.size());
+    EXPECT_EQ(relocations[0].byte_offset, offsets[0]);
+    EXPECT_EQ(relocations[0].target, cstring_left);
+    EXPECT_EQ(relocations[1].byte_offset, offsets[1]);
+    EXPECT_EQ(relocations[1].target, cstring_right);
+    EXPECT_EQ(relocations[2].byte_offset, offsets[2]);
+    EXPECT_EQ(relocations[2].target, cstring_first);
+    EXPECT_EQ(relocations[3].byte_offset, offsets[3]);
+    EXPECT_EQ(relocations[3].target, cstring_second);
+}
+
+TEST(GraphModules, BuilderRejectsAmbiguousPointerConfigurationLayouts)
+{
+    auto session = std::unique_ptr<
+        details::BuilderSession,
+        decltype(&details::iv_builder_session_destroy)>(
+            details::iv_builder_session_create(),
+            details::iv_builder_session_destroy);
+    std::array<std::size_t, 2> repeated_offsets{0, 0};
+    std::array malformed{details::NodeConfigLayout{
+        .node_code_key = details::node_code_key_v<CStringConfigNode>,
+        .pointer_offsets = repeated_offsets,
+    }};
+    EXPECT_THROW(
+        details::set_builder_node_config_layouts(session.get(), malformed),
+        std::invalid_argument);
+
+    std::array<std::size_t, 1> unique_offset{0};
+    std::array duplicate_keys{
+        details::NodeConfigLayout{
+            .node_code_key = details::node_code_key_v<CStringConfigNode>,
+            .pointer_offsets = unique_offset,
+        },
+        details::NodeConfigLayout{
+            .node_code_key = details::node_code_key_v<CStringConfigNode>,
+            .pointer_offsets = unique_offset,
+        },
+    };
+    EXPECT_THROW(
+        details::set_builder_node_config_layouts(session.get(), duplicate_keys),
+        std::invalid_argument);
+}
+
+TEST(GraphModules, OutputRequestCopiesBorrowedStringsIntoTheSession)
+{
+    GraphBuilder builder;
+    auto source = builder.node<Constant>(Sample{0.25f});
+    std::string name = "main";
+    auto const request = SampleOutputRequest{
+        .ref = static_cast<SamplePortRef>(source),
+        .name = name,
+        .channel_layout = {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        },
+        .family_name = name,
+        .family_channel_type = ChannelTypeId::mono,
+    };
+    builder.outputs(std::span<SampleOutputRequest const>(&request, 1));
+    name[0] = 'x';
+
+    auto plan = compile_graph(
+        freeze_authored_graph_for_test(std::move(builder).finish()));
+    ASSERT_EQ(plan.graph.outputs().size(), 1u);
+    EXPECT_EQ(plan.graph.outputs().front().name, "main");
+}
+
 TEST(GraphModules, PublicInputCanFeedPublicOutputWithoutAnInternalNode)
 {
     EXPECT_TRUE(direct_public_sample_passthrough_compiles());
@@ -432,6 +741,39 @@ TEST(GraphModules, FirstClassTiledNodeBundlesSurviveModuleSplicing)
     EXPECT_TRUE(snapshot.output_source_is_member);
 }
 
+TEST(GraphModules, ErasedModuleOutputsSupportRuntimeCheckedChannelOperations)
+{
+    GraphBuilder graph;
+    auto left_module = graph.module<tiled_module>();
+    auto right_module = graph.module<tiled_module>();
+    left_module("in"_P = 0.25f);
+    right_module("in"_P = 0.5f);
+
+    auto const named_output = left_module["out"];
+    auto const named_left = named_output[stereo::left];
+    auto const default_right = right_module[stereo::right];
+    auto const sum = left_module + right_module;
+    auto const sum_port = static_cast<SamplePortRef>(sum);
+    auto const sum_left = sum[stereo::left];
+    graph.outputs("main"_P = sum);
+
+    EXPECT_EQ(static_cast<SamplePortRef>(named_left).channel_type,
+              ChannelTypeId::mono);
+    EXPECT_EQ(static_cast<SamplePortRef>(default_right).channel_type,
+              ChannelTypeId::mono);
+    EXPECT_EQ(sum_port.channel_type, ChannelTypeId::stereo);
+    EXPECT_EQ(sum_port.channels().size(), 2u);
+    EXPECT_EQ(static_cast<SamplePortRef>(sum_left).channel_type,
+              ChannelTypeId::mono);
+    EXPECT_THROW((void)named_output[mono::center], std::logic_error);
+
+    auto const plan = compile_graph(
+        freeze_authored_graph_for_test(std::move(graph).finish()));
+    ASSERT_EQ(plan.graph.outputs().size(), 1u);
+    EXPECT_EQ(plan.graph.outputs().front().channel_layout.channel_type,
+              ChannelTypeId::stereo);
+}
+
 TEST(GraphModules, EventInterfacesResolveThroughTheImportedBoundary)
 {
     EXPECT_TRUE(event_interfaces_compile());
@@ -440,6 +782,43 @@ TEST(GraphModules, EventInterfacesResolveThroughTheImportedBoundary)
 TEST(GraphModules, FunctionalSubgraphRemainsAnExplicitBoundaryFacade)
 {
     EXPECT_TRUE(functional_subgraph_compiles());
+
+    auto const built = compile_graph(author_functional_subgraph());
+    ASSERT_EQ(built.metadata.lowered_subgraphs.size(), 1u);
+    auto const& scope = built.metadata.lowered_subgraphs.front();
+    EXPECT_EQ(scope.parent_scope, GRAPH_ID);
+    ASSERT_EQ(scope.sample_inputs.size(), 1u);
+    EXPECT_EQ(scope.sample_inputs.front().name, "in");
+    ASSERT_EQ(scope.sample_outputs.size(), 1u);
+    EXPECT_EQ(scope.sample_outputs.front().name, "out");
+    ASSERT_EQ(scope.sample_output_sources.size(), 1u);
+    EXPECT_TRUE(std::ranges::contains(
+        scope.member_nodes, scope.sample_output_sources.front().node));
+}
+
+TEST(GraphModules, EventOnlyFunctionalSubgraphDoesNotRequireSampleOutputs)
+{
+    GraphBuilder g;
+    auto const source = g.event_input<"event">(EventTypeId::empty);
+    auto const scope = g.subgraph([&](SubgraphBuilder& boundary) {
+        auto const input = boundary.event_input<"event">(EventTypeId::empty);
+        auto const relay = g.node<EventConcatenation>(1, EventTypeId::empty);
+        relay.connect_event_input(0, input);
+        g.event_outputs("event"_P = relay.event_port());
+    });
+    scope.connect_event_input("event", source);
+    g.outputs();
+
+    auto const built = compile_graph(
+        freeze_authored_graph_for_test(std::move(g).finish()));
+    ASSERT_EQ(built.metadata.lowered_subgraphs.size(), 1u);
+    auto const& lowered_scope = built.metadata.lowered_subgraphs.front();
+    EXPECT_TRUE(lowered_scope.sample_outputs.empty());
+    ASSERT_EQ(lowered_scope.event_inputs.size(), 1u);
+    EXPECT_EQ(lowered_scope.event_inputs.front().name, "event");
+    ASSERT_EQ(built.graph.outputs().size(), 0u);
+    ASSERT_EQ(built.graph.event_outputs().size(), 1u);
+    EXPECT_EQ(built.graph.event_outputs().front().name, "event");
 }
 
 } // namespace iv

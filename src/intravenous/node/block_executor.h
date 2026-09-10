@@ -2,6 +2,7 @@
 
 #include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/compat.h>
+#include <intravenous/node/layout.h>
 #include <intravenous/node/lifecycle.h>
 
 #include <optional>

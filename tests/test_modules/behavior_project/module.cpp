@@ -1,11 +1,16 @@
 #include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/debug_probe.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <iv/modules/iv.test.behavior_voice>
 
-consteval void behavior_project(iv::GraphBuilder& g)
+void behavior_project(iv::GraphBuilder& g)
 {
     using namespace iv;
     auto const phase = g.node<PhaseIntegrator>();
+    auto const probe = g.node<DebugProbe>(DebugProbe{
+        .label = "behavior probe",
+        .every_n_ticks = 0,
+    });
     auto const voice = g.module<behavior_voice>();
     phase(0.0);
     auto const tone = voice(
@@ -13,5 +18,6 @@ consteval void behavior_project(iv::GraphBuilder& g)
         "frequency"_P = 220.0,
         "phase_offset"_P = phase
     );
-    g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
+    probe(tone);
+    g.outputs("main"_P[stereo::left] = probe, "main"_P[stereo::right] = probe);
 }

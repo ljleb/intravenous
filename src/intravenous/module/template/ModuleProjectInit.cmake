@@ -14,7 +14,13 @@ if(
     if(NOT TARGET iv_module_shared)
         set(_iv_module_shared_link_libraries "")
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-            list(APPEND _iv_module_shared_link_libraries stdc++exp)
+            # The finalizer executes builder IR with ORC. Preserve the
+            # concrete archive path rather than a bare -l name so ORC can
+            # load the same stacktrace support library as the native link.
+            find_library(_iv_module_stdcxxexp_library NAMES stdc++exp
+                HINTS ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES} REQUIRED)
+            list(APPEND _iv_module_shared_link_libraries
+                "${_iv_module_stdcxxexp_library}")
         endif()
 
         add_library(iv_module_shared SHARED IMPORTED GLOBAL)

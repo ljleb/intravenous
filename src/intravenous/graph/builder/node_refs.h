@@ -1,16 +1,16 @@
 #pragma once
 
-#include <intravenous/graph/builder/stored_node.hpp>
 #include <intravenous/graph/builder/node_call.h>
 #include <intravenous/graph/builder/output_refs.h>
 #include <intravenous/graph/error.h>
+#include <intravenous/graph/node_ports.h>
 #include <intravenous/node/static_port_access.h>
 
 #include <concepts>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -28,16 +28,74 @@ namespace iv {
     template<class Node, class ChannelType>
     using TiledNodeRef = TypedNodeRef<Node, TiledPortProjection<ChannelType>>;
 
+    namespace details {
+        // These are the erased, short-lived result of a typed node-call
+        // argument pack. They cross into the precompiled builder before the
+        // call returns, so no module-owned data is retained here.
+        enum class NodeCallInputTarget : uint8_t {
+            positional,
+            named,
+            explicit_ordinal,
+        };
+
+        struct NodeCallSampleInput {
+            SamplePortRef source;
+            std::string_view name;
+            size_t input_ordinal;
+            NodeCallInputTarget target;
+        };
+
+        struct NodeCallEventInput {
+            EventPortRef source;
+            std::string_view name;
+            size_t input_ordinal;
+            NodeCallInputTarget target;
+        };
+
+        // Unlike std::span, these two tiny concrete views do not make the
+        // standard library instantiate range machinery for every module-side
+        // node-call argument pack. They are internal and only valid for the
+        // synchronous apply_node_call invocation.
+        struct NodeCallSampleInputList {
+            NodeCallSampleInput const* data;
+            size_t size;
+        };
+
+        struct NodeCallEventInputList {
+            NodeCallEventInput const* data;
+            size_t size;
+        };
+
+        template<size_t SampleCount, size_t EventCount>
+        struct NodeCallRequests {
+            std::array<NodeCallSampleInput, SampleCount> sample_inputs {};
+            std::array<NodeCallEventInput, EventCount> event_inputs {};
+        };
+
+        template<class Node, class... Args>
+        NodeCallRequests<
+            tiled_sample_input_arg_count_v<Args...>,
+            tiled_event_input_arg_count_v<Args...>>
+        make_tiled_node_call_requests(GraphBuilder&, Args&&...);
+    }
+
     // The untyped handle is the public base for every node-bundle case.
     // It deliberately addresses a NodeBundle, never an assumed concrete node.
     class NodeRef {
     protected:
         GraphBuilder* _graph_builder{};
         size_t _index{};
-        mutable std::string _virtual_declaration_id {};
+        // The declaration identity itself is recorded in the host annotation
+        // table. The façade only needs this bit to preserve the one-time
+        // initialization rule for annotated virtual refs.
+        mutable bool _has_source_identity = false;
 
         friend class GraphBuilder;
         friend class GraphBuilderAnnotations;
+
+        void apply_node_call(
+            details::NodeCallSampleInputList,
+            details::NodeCallEventInputList) const;
 
     public:
         constexpr NodeRef() = default;
@@ -48,10 +106,10 @@ namespace iv {
             _index(index)
         {}
 
-        constexpr NodeRef& operator=(NodeRef const& rhs);
-        constexpr NodeRef& operator=(NodeRef&& rhs);
+        NodeRef& operator=(NodeRef const& rhs);
+        NodeRef& operator=(NodeRef&& rhs);
 
-        constexpr NodeRef node_ref() const;
+        NodeRef node_ref() const;
         constexpr size_t node_bundle_handle() const
         {
             if (!_graph_builder) {
@@ -59,11 +117,23 @@ namespace iv {
             }
             return _index;
         }
-        constexpr NodeRef _clone_handle() const;
-        constexpr SamplePortRef operator[](size_t output_port) const;
-        constexpr SamplePortRef operator[](std::string_view output_name) const;
+        NodeRef _clone_handle() const;
+        SamplePortRef operator[](size_t output_port) const;
+        SamplePortRef operator[](std::string_view output_name) const;
+        template<class Member>
+        auto operator[](Member member) const
+        requires requires {
+            typename std::remove_cvref_t<Member>::channel_type;
+            std::remove_cvref_t<Member>::channel_ordinal;
+        }
+        {
+            // An erased node only knows its output layout at build time.  Its
+            // conversion to SamplePortRef requires one sample output, then
+            // SamplePortRef validates the requested channel member at runtime.
+            return static_cast<SamplePortRef>(*this)[member];
+        }
         template<fixed_string Name, NamedPortKind Kind>
-        constexpr auto operator[](PortName<Name, Kind>) const
+        auto operator[](PortName<Name, Kind>) const
         {
             if constexpr (Kind == NamedPortKind::sample) {
                 return (*this)[Name.view()];
@@ -71,28 +141,28 @@ namespace iv {
                 return event_port(Name.view());
             }
         }
-        constexpr operator SamplePortRef() const;
-        constexpr size_t sample_input_count() const;
-        constexpr size_t sample_output_count() const;
-        constexpr size_t event_input_count() const;
-        constexpr size_t event_output_count() const;
-        constexpr bool input_is_connected(size_t input_port) const;
-        constexpr bool event_input_is_connected(size_t input_port) const;
+        operator SamplePortRef() const;
+        size_t sample_input_count() const;
+        size_t sample_output_count() const;
+        size_t event_input_count() const;
+        size_t event_output_count() const;
+        bool input_is_connected(size_t input_port) const;
+        bool event_input_is_connected(size_t input_port) const;
         template<class T>
-        consteval NodeRef connect_input(size_t input_port, T&& value) const;
+        NodeRef connect_input(size_t input_port, T&& value) const;
         template<class T>
-        consteval NodeRef connect_input(std::string_view input_name, T&& value) const;
+        NodeRef connect_input(std::string_view input_name, T&& value) const;
         template<class... Args>
-        consteval NodeRef operator()(Args&&... args) const;
-        constexpr NodeRef connect_event_input(size_t input_port, EventPortRef value) const;
-        constexpr NodeRef connect_event_input(std::string_view input_name, EventPortRef value) const;
-        constexpr EventPortRef event_port(size_t output_port) const;
-        constexpr EventPortRef event_port(std::string_view output_name) const;
-        constexpr EventPortRef event_port() const;
-        constexpr NodeRef ttl(size_t samples) const;
-        constexpr NodeRef no_ttl() const;
+        NodeRef operator()(Args&&... args) const;
+        NodeRef connect_event_input(size_t input_port, EventPortRef value) const;
+        NodeRef connect_event_input(std::string_view input_name, EventPortRef value) const;
+        EventPortRef event_port(size_t output_port) const;
+        EventPortRef event_port(std::string_view output_name) const;
+        EventPortRef event_port() const;
+        NodeRef ttl(size_t samples) const;
+        NodeRef no_ttl() const;
         std::string to_string() const;
-        constexpr void _annotate_source_info(
+        void _annotate_source_info(
             std::string_view declaration_identity,
             std::string_view file_path,
             uint32_t begin,
@@ -106,25 +176,24 @@ namespace iv {
     class NodeRefCrtp : public NodeRef {
         using Base = NodeRef;
 
-    private:
         constexpr Derived& derived() { return static_cast<Derived&>(*this); }
 
     public:
         using Base::Base;
 
-        constexpr Derived& operator=(Derived const& rhs)
+        Derived& operator=(Derived const& rhs)
         {
             Base::operator=(static_cast<NodeRef const&>(rhs));
             return derived();
         }
 
-        constexpr Derived& operator=(Derived&& rhs)
+        Derived& operator=(Derived&& rhs)
         {
             Base::operator=(static_cast<NodeRef&&>(rhs));
             return derived();
         }
 
-        constexpr Derived _clone_handle() const
+        Derived _clone_handle() const
         {
             if (!this->_graph_builder) {
                 return Derived{};
@@ -132,33 +201,33 @@ namespace iv {
             return Derived(*this->_graph_builder, this->_index);
         }
 
-        constexpr Derived ttl(size_t samples) const
+        Derived ttl(size_t samples) const
         {
             Base::ttl(samples);
             return _clone_handle();
         }
 
         template<class T>
-        consteval Derived connect_input(size_t input_port, T&& value) const
+        Derived connect_input(size_t input_port, T&& value) const
         {
             Base::connect_input(input_port, std::forward<T>(value));
             return _clone_handle();
         }
 
         template<class T>
-        consteval Derived connect_input(std::string_view input_name, T&& value) const
+        Derived connect_input(std::string_view input_name, T&& value) const
         {
             Base::connect_input(input_name, std::forward<T>(value));
             return _clone_handle();
         }
 
-        constexpr Derived connect_event_input(size_t input_port, EventPortRef value) const
+        Derived connect_event_input(size_t input_port, EventPortRef value) const
         {
             Base::connect_event_input(input_port, std::move(value));
             return _clone_handle();
         }
 
-        constexpr Derived no_ttl() const
+        Derived no_ttl() const
         {
             Base::no_ttl();
             return _clone_handle();
@@ -185,18 +254,18 @@ namespace iv {
         TypedNodeRef(TypedNodeRef const&) = delete;
         TypedNodeRef(TypedNodeRef&&) noexcept = default;
         TypedNodeRef& operator=(TypedNodeRef const&) = delete;
-        constexpr TypedNodeRef& operator=(TypedNodeRef&& rhs)
+        TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
             Base::operator=(std::move(rhs));
             return *this;
         }
-        constexpr NodePorts const& ports() const;
+        NodePorts const& ports() const;
 
-        constexpr SamplePortRef operator[](size_t output_index) const;
-        constexpr SamplePortRef operator[](std::string_view output_name) const;
+        SamplePortRef operator[](size_t output_index) const;
+        SamplePortRef operator[](std::string_view output_name) const;
 
         template<fixed_string Name, NamedPortKind Kind>
-        constexpr auto operator[](PortName<Name, Kind>) const
+        auto operator[](PortName<Name, Kind>) const
         {
             if constexpr (Kind == NamedPortKind::sample) {
                 constexpr auto output_index = details::static_output_port_index<NodeType, Name>();
@@ -211,29 +280,29 @@ namespace iv {
                 return event_port(Name.view());
             }
         }
-        constexpr EventPortRef event_port(size_t output_index) const;
-        constexpr EventPortRef event_port(std::string_view output_name) const;
-        constexpr EventPortRef event_port() const;
-        constexpr operator SamplePortRef() const;
+        EventPortRef event_port(size_t output_index) const;
+        EventPortRef event_port(std::string_view output_name) const;
+        EventPortRef event_port() const;
+        operator SamplePortRef() const;
         template<class... Args>
         requires(details::node_call_enabled<NodeType, Args...>)
-        consteval TypedNodeRef operator()(Args&&... args) const;
+        TypedNodeRef operator()(Args&&... args) const;
 
         template<class... Args>
         requires(!details::node_call_enabled<NodeType, Args...>)
         TypedNodeRef operator()(Args&&... args) const = delete;
 
         template<class T>
-        consteval TypedNodeRef connect_input(size_t input_port, T&& value) const;
+        TypedNodeRef connect_input(size_t input_port, T&& value) const;
         template<class T>
-        consteval TypedNodeRef connect_input(std::string_view input_name, T&& value) const;
-        constexpr TypedNodeRef connect_event_input(size_t input_port, EventPortRef value) const;
-        constexpr TypedNodeRef connect_event_input(std::string_view input_name, EventPortRef value) const;
+        TypedNodeRef connect_input(std::string_view input_name, T&& value) const;
+        TypedNodeRef connect_event_input(size_t input_port, EventPortRef value) const;
+        TypedNodeRef connect_event_input(std::string_view input_name, EventPortRef value) const;
 
-        consteval SamplePortRef detach(size_t loop_extra_latency = 1) const;
+        SamplePortRef detach(size_t loop_extra_latency = 1) const;
 
         template<size_t I>
-        constexpr auto static_output() const
+        auto static_output() const
         {
             constexpr auto layout = details::static_output_port_layout_at<NodeType, I>();
             using ChannelType = typename RuntimeChannelTypeTraits<layout.channel_type>::type;
@@ -244,12 +313,11 @@ namespace iv {
         // Every typed node has constexpr output configurations. `get` is the
         // tuple spelling for selecting one of them.
         template<size_t I>
-        constexpr auto get() const
+        auto get() const
         {
             static_assert(I < details::static_output_count_v<NodeType>);
             return static_output<I>();
         }
-
     };
 
     template<class Node, class ChannelType>
@@ -263,7 +331,6 @@ namespace iv {
         using requested_channel_type = ChannelType;
         using Base::Base;
         using Base::operator=;
-        using Base::operator[];
         using Base::event_port;
         using Base::_graph_builder;
         using Base::_index;
@@ -277,13 +344,13 @@ namespace iv {
         TypedNodeRef(TypedNodeRef&&) noexcept = default;
 
         TypedNodeRef& operator=(TypedNodeRef const&) = delete;
-        constexpr TypedNodeRef& operator=(TypedNodeRef&& rhs)
+        TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
             Base::operator=(std::move(rhs));
             return *this;
         }
 
-        constexpr Self _clone_handle() const
+        Self _clone_handle() const
         {
             if (!this->_graph_builder) {
                 return Self {};
@@ -291,8 +358,21 @@ namespace iv {
             return Self(*this->_graph_builder, this->_index);
         }
 
+        // Keep the dynamic output selectors available without importing the
+        // base channel-member selector.  A tiled typed ref has its own
+        // compile-time checked channel selector below.
+        SamplePortRef operator[](size_t output_index) const
+        {
+            return Base::operator[](output_index);
+        }
+
+        SamplePortRef operator[](std::string_view output_name) const
+        {
+            return Base::operator[](output_name);
+        }
+
         template<fixed_string Name, NamedPortKind Kind>
-        constexpr auto operator[](PortName<Name, Kind>) const
+        auto operator[](PortName<Name, Kind>) const
         {
             if constexpr (Kind == NamedPortKind::sample) {
                 return static_output<details::static_output_port_index<NodeType, Name>()>();
@@ -302,7 +382,7 @@ namespace iv {
         }
 
         template<class Member>
-        constexpr auto operator[](Member) const
+        auto operator[](Member) const
         requires std::same_as<typename std::remove_cvref_t<Member>::channel_type,
                               ChannelType>
         {
@@ -313,12 +393,12 @@ namespace iv {
             }
             return ConcreteRef(
                 *this->_graph_builder,
-                this->_graph_builder->_node_bundles.tiled_member(
+                this->_graph_builder->tiled_member(
                     this->_index, MemberType::channel_ordinal));
         }
 
         template<size_t I>
-        constexpr auto static_output() const
+        auto static_output() const
         {
             static_assert(I < details::static_output_count_v<NodeType>);
             if (!this->_graph_builder) {
@@ -329,89 +409,54 @@ namespace iv {
                     NodeBundlePortId{this->_index, PortKind::sample, I}}};
         }
 
-        constexpr operator TypedSamplePortTileRef<ChannelType>() const
+        operator TypedSamplePortTileRef<ChannelType>() const
         requires (details::static_output_count_v<NodeType> == 1)
         {
             return static_output<0>();
         }
 
         template<size_t I>
-        constexpr auto get() const
+        auto get() const
         {
             static_assert(I < details::static_output_count_v<NodeType>);
             return static_output<I>();
         }
 
-        constexpr EventPortRef event_port(size_t output_ordinal) const
+        EventPortRef event_port(size_t output_ordinal) const
         {
-            if (!this->_graph_builder) {
-                details::error("attempted to use a null tiled TypedNodeRef");
-            }
-            return this->_graph_builder->event_output(
-                {this->_index, PortKind::event, output_ordinal});
+            return NodeRef::event_port(output_ordinal);
         }
 
-        constexpr EventPortRef event_port(std::string_view name) const
+        EventPortRef event_port(std::string_view name) const
         {
-            return event_port(this->_graph_builder->event_port_index(
-                this->_index, false, name));
+            return NodeRef::event_port(name);
         }
 
-        constexpr Self connect_event_input(size_t input_ordinal, EventPortRef source) const
+        Self connect_event_input(size_t input_ordinal, EventPortRef source) const
         {
-            if (!this->_graph_builder) {
-                details::error("attempted to use a null tiled TypedNodeRef");
-            }
-            this->_graph_builder->connect_event_input(
-                {this->_index, PortKind::event, input_ordinal}, source);
+            return Base::connect_event_input(input_ordinal, std::move(source));
+        }
+
+        Self connect_event_input(std::string_view name, EventPortRef source) const
+        {
+            NodeRef::connect_event_input(name, std::move(source));
             return _clone_handle();
-        }
-
-        constexpr Self connect_event_input(std::string_view name, EventPortRef source) const
-        {
-            if (!this->_graph_builder) {
-                details::error("attempted to use a null tiled TypedNodeRef");
-            }
-            return connect_event_input(this->_graph_builder->event_port_index(
-                this->_index, true, name), source);
         }
 
         template<class... Args>
         requires details::valid_node_call_args_v<Args...>
-        constexpr Self operator()(Args&&... args) const
+        Self operator()(Args&&... args) const
         {
             if (!this->_graph_builder) {
                 details::error("attempted to use a null tiled TypedNodeRef");
             }
-            static constexpr auto inputs = NodeType::inputs();
-            size_t positional_input = 0;
-            auto connect_input = [&]<class Value>(size_t input_ordinal,
-                                                   Value&& value) {
-                if (input_ordinal >= inputs.size()) {
-                    details::error("too many sample inputs for tiled node");
-                }
-                auto source = this->_graph_builder->lift_to_sample_port(
-                    std::forward<Value>(value));
-                this->_graph_builder->connect_sample_input(
-                    {this->_index, PortKind::sample, input_ordinal},
-                    std::move(source));
-            };
-            auto process = [&](auto&& arg) {
-                using Arg = std::remove_cvref_t<decltype(arg)>;
-                if constexpr (details::is_named_arg_v<Arg>) {
-                    if constexpr (Arg::kind == NamedPortKind::sample) {
-                        constexpr auto input_ordinal =
-                            details::static_input_port_index<NodeType, Arg::name>();
-                        connect_input(input_ordinal, std::forward<decltype(arg)>(arg).value);
-                    } else {
-                        connect_event_input(std::string_view{Arg::name.value},
-                                            std::forward<decltype(arg)>(arg).value);
-                    }
-                } else {
-                    connect_input(positional_input++, std::forward<decltype(arg)>(arg));
-                }
-            };
-            (process(std::forward<Args>(args)), ...);
+            auto requests = details::make_tiled_node_call_requests<NodeType>(
+                *this->_graph_builder, std::forward<Args>(args)...);
+            this->apply_node_call(
+                {.data = requests.sample_inputs.data(),
+                 .size = requests.sample_inputs.size()},
+                {.data = requests.event_inputs.data(),
+                 .size = requests.event_inputs.size()});
             return _clone_handle();
         }
     };
@@ -428,7 +473,12 @@ namespace iv {
     constexpr auto ChannelPortName<Name, ChannelType, ChannelOrdinal>::operator=(T&& value) const
     {
         using Value = std::remove_cvref_t<T>;
-        if constexpr (std::same_as<Value, SamplePortRef>) {
+        // Channel qualification carries the static information needed for a
+        // public port.  The source's concrete ref type is no longer useful
+        // once it crosses the builder interface, so erase it here.  This
+        // keeps variadic node/output call instantiations independent of the
+        // particular typed-ref facade that produced the sample expression.
+        if constexpr (std::convertible_to<Value, SamplePortRef>) {
             return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, SamplePortRef>{
                 .value = static_cast<SamplePortRef>(std::forward<T>(value)),
             };
@@ -453,7 +503,12 @@ namespace iv {
     constexpr auto PortName<Name, Kind>::operator=(T&& value) const
     {
         using Value = std::remove_cvref_t<T>;
-        if constexpr (std::same_as<Value, SamplePortRef>) {
+        // Preserve static typing while composing expressions, but normalize
+        // every sample source at the GraphBuilder boundary.  Node calls only
+        // use the named port's kind and name for compile-time validation; the
+        // source layout is validated by the builder at runtime.
+        if constexpr (Kind == NamedPortKind::sample &&
+                      std::convertible_to<Value, SamplePortRef>) {
             return NamedArg<Name, SamplePortRef, Kind>{ static_cast<SamplePortRef>(std::forward<T>(value)) };
         } else if constexpr (std::same_as<Value, EventPortRef>) {
             return NamedArg<Name, EventPortRef, Kind>{

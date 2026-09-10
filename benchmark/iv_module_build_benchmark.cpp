@@ -31,13 +31,13 @@ struct PhaseResult {
     std::int64_t pch_ms = 0;
     std::int64_t export_ms = 0;
     std::int64_t link_ms = 0;
+    std::int64_t configure_us = 0;
+    std::int64_t ninja_build_us = 0;
+    std::int64_t generation_copy_us = 0;
+    std::vector<std::pair<std::string, std::int64_t>> finalizer_timings;
     bool ninja_log_delta_available = true;
 };
 
-struct CompilerPhase {
-    std::int64_t wall_ms = 0;
-    std::string ggc_memory;
-};
 
 enum class SourceShape {
     empty,
@@ -52,17 +52,15 @@ struct Options {
         std::filesystem::temp_directory_path() / "intravenous-module-build-benchmark";
     size_t voices = 1;
     bool keep_workspace = false;
-    bool gcc_time_report = false;
     iv::ModuleCompileStage compile_stage = iv::ModuleCompileStage::full;
     iv::ModuleOptimization optimization = iv::ModuleOptimization::O3;
     bool source_introspection = true;
     bool precompiled_header = true;
-    std::optional<size_t> constexpr_cache_depth;
+    bool clang_time_trace = false;
     SourceShape source_shape = SourceShape::full;
     std::optional<std::filesystem::path> source_module;
     std::optional<std::filesystem::path> c_compiler;
     std::optional<std::filesystem::path> cxx_compiler;
-    std::optional<std::filesystem::path> gcc_source_introspection_plugin;
 };
 
 std::string_view source_shape_name(SourceShape shape)
@@ -161,7 +159,7 @@ std::string benchmark_source(size_t voices, SourceShape shape)
         || shape == SourceShape::full) {
         source << "#include <intravenous/basic_nodes/shaping.h>\n";
     }
-    source << "\nconsteval void module_main(iv::GraphBuilder& g)\n"
+    source << "\nvoid module_main(iv::GraphBuilder& g)\n"
            << "{\n";
     if (shape == SourceShape::empty) {
         source << "    (void)g;\n"
@@ -218,8 +216,6 @@ Options parse_options(int argc, char** argv)
             options.voices = std::stoull(std::string(require_value(arg)));
         } else if (arg == "--keep") {
             options.keep_workspace = true;
-        } else if (arg == "--gcc-time-report") {
-            options.gcc_time_report = true;
         } else if (arg == "--stage") {
             options.compile_stage = parse_compile_stage(require_value(arg));
         } else if (arg == "--optimization") {
@@ -228,12 +224,8 @@ Options parse_options(int argc, char** argv)
             options.source_introspection = false;
         } else if (arg == "--no-pch") {
             options.precompiled_header = false;
-        } else if (arg == "--constexpr-cache-depth") {
-            auto const value = std::stoull(std::string(require_value(arg)));
-            if (value == 0) {
-                throw std::runtime_error("constexpr cache depth must be positive");
-            }
-            options.constexpr_cache_depth = value;
+        } else if (arg == "--clang-time-trace") {
+            options.clang_time_trace = true;
         } else if (arg == "--source-shape") {
             options.source_shape = parse_source_shape(require_value(arg));
         } else if (arg == "--module") {
@@ -242,8 +234,6 @@ Options parse_options(int argc, char** argv)
             options.c_compiler = require_value(arg);
         } else if (arg == "--cxx-compiler") {
             options.cxx_compiler = require_value(arg);
-        } else if (arg == "--gcc-source-introspection-plugin") {
-            options.gcc_source_introspection_plugin = require_value(arg);
         } else if (arg == "--help") {
             std::cout
                 << "Usage: iv_module_build_benchmark [--voices N] [--workspace PATH]"
@@ -252,10 +242,8 @@ Options parse_options(int argc, char** argv)
                 << " [--source-shape empty|input|nodes|connected|full]"
                 << " [--module PATH]"
                 << " [--c-compiler PATH] [--cxx-compiler PATH]"
-                << " [--gcc-source-introspection-plugin PATH]"
-                << " [--no-source-introspection] [--no-pch]"
-                << " [--constexpr-cache-depth N]"
-                << " [--keep] [--gcc-time-report]\n";
+                << " [--no-source-introspection] [--no-pch] [--clang-time-trace]"
+                << " [--keep]\n";
             std::exit(0);
         } else {
             throw std::runtime_error("unknown argument '" + std::string(arg) + "'");
@@ -347,6 +335,108 @@ std::filesystem::path find_ninja_log(std::filesystem::path const& workspace)
     return candidates.front();
 }
 
+std::filesystem::path find_finalizer_timings(std::filesystem::path const& workspace)
+{
+    std::vector<std::filesystem::path> candidates;
+    for (std::filesystem::recursive_directory_iterator it(workspace), end; it != end; ++it) {
+        if (it->is_regular_file()
+            && it->path().filename() == "iv-module-finalizer-timings.txt") {
+            candidates.push_back(it->path());
+        }
+    }
+    if (candidates.size() != 1) {
+        throw std::runtime_error(
+            "expected one finalizer timing report below '" + workspace.string() + "'");
+    }
+    return candidates.front();
+}
+
+std::vector<std::filesystem::path> clang_time_traces(
+    std::filesystem::path const& cmake_build_directory)
+{
+    std::vector<std::filesystem::path> result;
+    for (std::filesystem::recursive_directory_iterator it(cmake_build_directory), end;
+         it != end;
+         ++it) {
+        if (!it->is_regular_file() || it->path().extension() != ".json") continue;
+        auto const relative = it->path().lexically_relative(cmake_build_directory);
+        for (auto const& component : relative) {
+            if (component == "CMakeFiles"
+                && read(it->path()).contains("\"traceEvents\"")) {
+                result.push_back(it->path());
+                break;
+            }
+        }
+    }
+    return result;
+}
+
+using ClangTimeTraceSnapshot = std::vector<
+    std::pair<std::filesystem::path, std::filesystem::file_time_type>>;
+
+ClangTimeTraceSnapshot clang_time_trace_snapshot(
+    std::filesystem::path const& cmake_build_directory)
+{
+    ClangTimeTraceSnapshot result;
+    for (auto const& trace : clang_time_traces(cmake_build_directory)) {
+        result.emplace_back(trace, std::filesystem::last_write_time(trace));
+    }
+    return result;
+}
+
+void retain_clang_time_traces(
+    std::filesystem::path const& cmake_build_directory,
+    std::filesystem::path const& destination,
+    ClangTimeTraceSnapshot const& previous = {})
+{
+    std::vector<std::filesystem::path> traces;
+    for (auto const& trace : clang_time_traces(cmake_build_directory)) {
+        auto const before = std::find_if(
+            previous.begin(), previous.end(),
+            [&](auto const& entry) { return entry.first == trace; });
+        if (before == previous.end()
+            || before->second != std::filesystem::last_write_time(trace)) {
+            traces.push_back(trace);
+        }
+    }
+    if (traces.empty()) {
+        throw std::runtime_error(
+            "Clang time tracing was requested, but no trace JSON was produced below '" +
+            cmake_build_directory.string() + "'");
+    }
+    std::filesystem::remove_all(destination);
+    for (auto const& trace : traces) {
+        auto const relative = trace.lexically_relative(cmake_build_directory);
+        auto const copy = destination / relative;
+        std::filesystem::create_directories(copy.parent_path());
+        std::filesystem::copy_file(
+            trace, copy, std::filesystem::copy_options::overwrite_existing);
+    }
+}
+
+std::vector<std::pair<std::string, std::int64_t>> finalizer_timings(
+    std::filesystem::path const& path)
+{
+    std::istringstream lines(read(path));
+    std::string line;
+    if (!std::getline(lines, line) || line != "version=1") {
+        throw std::runtime_error("invalid finalizer timing report '" + path.string() + "'");
+    }
+
+    std::vector<std::pair<std::string, std::int64_t>> result;
+    for (; std::getline(lines, line);) {
+        auto const separator = line.find('=');
+        if (separator == std::string::npos
+            || !line.substr(0, separator).ends_with("_us")) {
+            throw std::runtime_error("invalid finalizer timing entry in '" + path.string() + "'");
+        }
+        result.emplace_back(
+            line.substr(0, separator - std::string_view("_us").size()),
+            std::stoll(line.substr(separator + 1)));
+    }
+    return result;
+}
+
 std::vector<NinjaEdge> ninja_edges(std::string_view log)
 {
     std::vector<NinjaEdge> edges;
@@ -378,66 +468,33 @@ std::optional<std::vector<NinjaEdge>> appended_ninja_edges(
 
 PhaseResult summarize(
     Clock::duration elapsed,
-    std::optional<std::vector<NinjaEdge>> const& edges)
+    std::optional<std::vector<NinjaEdge>> const& edges,
+    std::vector<std::string> const& loader_log,
+    std::vector<std::pair<std::string, std::int64_t>> finalizer_timing)
 {
     PhaseResult result{
         .pipeline_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+        .finalizer_timings = std::move(finalizer_timing),
         .ninja_log_delta_available = edges.has_value(),
     };
-    if (!edges) return result;
-    for (auto const& edge : *edges) {
-        if (edge.output.ends_with("cmake_pch.hxx.gch")) result.pch_ms += edge.duration_ms;
-        if (edge.output.ends_with("root_export.cpp.o")) result.export_ms += edge.duration_ms;
-        if (edge.output.ends_with(".so") || edge.output.ends_with(".dylib")
-            || edge.output.ends_with(".dll")) result.link_ms += edge.duration_ms;
-    }
-    return result;
-}
-
-std::optional<CompilerPhase> compiler_phase(
-    std::string_view report,
-    std::string_view name)
-{
-    std::optional<CompilerPhase> result;
-    std::istringstream lines{std::string(report)};
-    for (std::string line; std::getline(lines, line);) {
-        auto const prefix = " " + std::string(name);
-        if (!line.starts_with(prefix)) continue;
-        auto const colon = line.find(':', prefix.size());
-        if (colon == std::string::npos) continue;
-        std::istringstream values(line.substr(colon + 1));
-        double seconds = 0;
-        if (!(values >> seconds)) continue;
-        auto const memory_begin = line.find_last_of(" \t");
-        result = CompilerPhase{
-            .wall_ms = static_cast<std::int64_t>(std::llround(seconds * 1000.0)),
-            .ggc_memory = memory_begin == std::string::npos
-                ? std::string{}
-                : line.substr(memory_begin + 1),
+    for (auto const& entry : loader_log) {
+        auto const parse = [&](std::string_view phase, std::int64_t& output) {
+            auto const prefix = "[" + std::string(phase) + "] elapsed_us=";
+            if (entry.starts_with(prefix)) output = std::stoll(entry.substr(prefix.size()));
         };
+        parse("configure", result.configure_us);
+        parse("build", result.ninja_build_us);
+        parse("generation-copy", result.generation_copy_us);
     }
-    return result;
-}
-
-void print_compiler_summary(std::filesystem::path const& path)
-{
-    auto const report = read(path);
-    auto const total = compiler_phase(report, "TOTAL");
-    if (!total) return;
-    std::cout << "iv-module-build-benchmark gcc_hot"
-              << " total_ms=" << total->wall_ms
-              << " ggc=" << total->ggc_memory;
-    for (auto const& [label, field] : {
-             std::pair{"constant expression evaluation", "constexpr_ms"},
-             std::pair{"template instantiation", "template_ms"},
-             std::pair{"phase lang. deferred", "deferred_ms"},
-             std::pair{"phase opt and generate", "opt_codegen_ms"},
-         }) {
-        if (auto const phase = compiler_phase(report, label)) {
-            std::cout << ' ' << field << '=' << phase->wall_ms;
+    if (edges) {
+        for (auto const& edge : *edges) {
+            if (edge.output.ends_with("cmake_pch.hxx.gch")) result.pch_ms += edge.duration_ms;
+            if (edge.output.ends_with("root_export.cpp.o")) result.export_ms += edge.duration_ms;
+            if (edge.output.ends_with(".so") || edge.output.ends_with(".dylib")
+                || edge.output.ends_with(".dll")) result.link_ms += edge.duration_ms;
         }
     }
-    std::cout << '\n';
+    return result;
 }
 
 void print(
@@ -448,7 +505,6 @@ void print(
     SourceShape shape,
     bool source_introspection,
     bool precompiled_header,
-    std::optional<size_t> constexpr_cache_depth,
     PhaseResult const& result)
 {
     std::cout << "iv-module-build-benchmark"
@@ -459,13 +515,19 @@ void print(
               << " source_shape=" << source_shape_name(shape)
               << " source_introspection=" << source_introspection
               << " pch=" << precompiled_header
-              << " constexpr_cache_depth="
-              << constexpr_cache_depth.value_or(0)
               << " pipeline_ms=" << result.pipeline_ms
               << " pch_ms=" << result.pch_ms
               << " export_ms=" << result.export_ms
               << " link_ms=" << result.link_ms
+              << " configure_us=" << result.configure_us
+              << " ninja_build_us=" << result.ninja_build_us
+              << " generation_copy_us=" << result.generation_copy_us
               << " ninja_log_delta=" << result.ninja_log_delta_available << '\n';
+    for (auto const& [name, elapsed_us] : result.finalizer_timings) {
+        std::cout << "iv-module-build-benchmark"
+                  << " phase=" << phase
+                  << " finalizer_" << name << "_us=" << elapsed_us << '\n';
+    }
 }
 
 void run(Options const& options)
@@ -506,57 +568,72 @@ void run(Options const& options)
     }
     auto source = read(hot_source);
 
-    std::optional<std::filesystem::path> compiler_report;
     {
+        std::vector<std::string> loader_log;
         iv::ModuleLoader loader(
             std::filesystem::current_path(), {},
             iv::ModuleLoaderToolchainConfig{
                 .c_compiler = options.c_compiler,
                 .cxx_compiler = options.cxx_compiler,
-                .gcc_time_report = options.gcc_time_report,
                 .compile_stage = options.compile_stage,
                 .optimization = options.optimization,
                 .source_introspection = options.source_introspection,
                 .precompiled_header = options.precompiled_header,
-                .constexpr_cache_depth = options.constexpr_cache_depth,
-            });
+                .clang_time_trace = options.clang_time_trace,
+            },
+            [&](std::string const& entry) { loader_log.push_back(entry); });
 
         auto const cold_start = Clock::now();
         (void)loader.compile_root_definition(module);
         auto const cold_elapsed = Clock::now() - cold_start;
         auto const ninja_log = find_ninja_log(options.workspace);
         auto const cold_log = read(ninja_log);
+        auto const cold_finalizer_timings = finalizer_timings(
+            find_finalizer_timings(options.workspace));
+        if (options.clang_time_trace) {
+            retain_clang_time_traces(
+                ninja_log.parent_path(), options.workspace / "clang-time-traces" / "cold");
+        }
+        auto const traces_before_hot = options.clang_time_trace
+            ? clang_time_trace_snapshot(ninja_log.parent_path())
+            : ClangTimeTraceSnapshot{};
         print(
             "cold", workload, options.compile_stage, options.optimization,
             options.source_shape,
             options.source_introspection, options.precompiled_header,
-            options.constexpr_cache_depth,
-            summarize(cold_elapsed, ninja_edges(cold_log)));
+            summarize(
+                cold_elapsed,
+                ninja_edges(cold_log),
+                loader_log,
+                cold_finalizer_timings));
 
         source += "// Hot-reload marker.\n";
         write(hot_source, source);
+        loader_log.clear();
         auto const hot_start = Clock::now();
         (void)loader.compile_root_definition(module);
         auto const hot_elapsed = Clock::now() - hot_start;
         auto const hot_log = read(ninja_log);
+        auto const hot_finalizer_timings = finalizer_timings(
+            find_finalizer_timings(options.workspace));
+        if (options.clang_time_trace) {
+            retain_clang_time_traces(
+                ninja_log.parent_path(), options.workspace / "clang-time-traces" / "hot",
+                traces_before_hot);
+        }
         print(
             "hot", workload, options.compile_stage, options.optimization,
             options.source_shape,
             options.source_introspection, options.precompiled_header,
-            options.constexpr_cache_depth,
-            summarize(hot_elapsed, appended_ninja_edges(cold_log, hot_log)));
+            summarize(
+                hot_elapsed,
+                appended_ninja_edges(cold_log, hot_log),
+                loader_log,
+                hot_finalizer_timings));
 
-        if (options.gcc_time_report) {
-            compiler_report = ninja_log.parent_path().parent_path() / "compiler.time.log";
-        }
     }
 
-    if (compiler_report) {
-        print_compiler_summary(*compiler_report);
-        std::cout << "iv-module-build-benchmark compiler_time_report="
-                  << compiler_report->string() << '\n';
-    }
-    if (options.keep_workspace || options.gcc_time_report) {
+    if (options.keep_workspace) {
         std::cout << "iv-module-build-benchmark workspace="
                   << options.workspace.string() << '\n';
     } else {

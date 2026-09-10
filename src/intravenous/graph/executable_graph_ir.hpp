@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/build_types.h>
-#include <intravenous/graph/reflected_node.hpp>
+#include <intravenous/graph/reflected_node_description.h>
 
 #include <flat_map>
 #include <flat_set>
