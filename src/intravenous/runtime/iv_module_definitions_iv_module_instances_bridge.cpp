@@ -13,6 +13,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     &IvModuleInstances::handle_iv_module_definitions_changed);
 IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_definitions_iv_module_instances_bridge,
+    iv_runtime_iv_module_definition_lookup_event,
+    &IvModuleDefinitions::handle_iv_module_definition_lookup);
+IV_SUBSCRIBE_LINKER_EVENT(
+    iv_module_definitions_iv_module_instances_bridge,
     iv_runtime_iv_module_required_definitions_changed_event,
     &IvModuleDefinitions::handle_required_definitions_changed);
 } // namespace iv

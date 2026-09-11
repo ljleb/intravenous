@@ -97,6 +97,17 @@ private:
     std::unordered_map<std::string, std::vector<ModuleRef>> realized_module_refs_by_id;
     std::unordered_map<std::string, WeakTypeErasedNode> realized_roots_by_id;
 
+    bool realize_instance_locked(
+        std::string const& instance_id,
+        IvModuleDefinition const& definition,
+        bool update_existing,
+        IvModuleInstancesChanged& instance_diff,
+        IvModuleInstanceBuildersChanged& builders_diff);
+    void publish_instance_changes(
+        IvModuleInstancesChanged instance_diff,
+        IvModuleInstanceBuildersChanged builders_diff,
+        bool list_changed);
+
 public:
     IvModuleInstances() = default;
 

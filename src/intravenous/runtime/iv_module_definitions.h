@@ -102,6 +102,7 @@ struct IvModuleReloadedNodeType {
 
 struct IvModuleRequiredDefinitionsChanged;
 struct IvModuleReloadResults;
+class IvModuleDefinitionLookupBuilder;
 
 class IvModuleDefinitions {
 public:
@@ -155,6 +156,9 @@ public:
 
     void handle_required_definitions_changed(
         IvModuleRequiredDefinitionsChanged const &diff);
+    void handle_iv_module_definition_lookup(
+        std::string const& definition_id,
+        IvModuleDefinitionLookupBuilder& builder) const;
     void handle_reload_results(IvModuleReloadResults const &results);
 
     void seed_loaded_definition(IvModuleReloadedDefinition loaded_definition);

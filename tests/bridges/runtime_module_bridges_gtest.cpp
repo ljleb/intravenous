@@ -113,6 +113,33 @@ TEST(IntrospectionBridges, InstancesToDefinitionsRequiresBinding)
     EXPECT_TRUE(definitions.loaded_definitions().empty());
 }
 
+TEST(InstanceDefinitionBridges, InstanceCreatedAfterDefinitionPublicationRealizesImmediately)
+{
+    auto const workspace =
+        fresh_module_fixture_workspace("runtime_bridges_definition_before_instance");
+    auto const package_root = std::filesystem::weakly_canonical(workspace);
+    constexpr std::string_view module_id = "iv.test.definition_before_instance";
+
+    iv::IvModuleInstances instances;
+    iv::IvModuleDefinitions definitions;
+    auto bridge_scope =
+        iv::iv_module_definitions_iv_module_instances_bridge::bind(
+            definitions,
+            instances);
+
+    definitions.seed_loaded_definition(
+        make_loaded_definition(package_root, std::string(module_id)));
+    EXPECT_TRUE(instances.list_instances().empty());
+
+    auto const instance_id = instances.create_instance(module_id, package_root);
+    auto const listed = instances.list_instances();
+
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed.front().instance_id, instance_id);
+    EXPECT_EQ(listed.front().definition_id, module_id);
+    EXPECT_TRUE(listed.front().realized);
+}
+
 TEST(ExecutionTaskRunnerBridge, ReleasesDeferredGraphsOnTheRunnersOwnAfterPass)
 {
     iv::IvModuleInstancesExecution execution;

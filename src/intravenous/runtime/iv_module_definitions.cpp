@@ -233,6 +233,17 @@ void IvModuleDefinitions::handle_required_definitions_changed(
     // package's complete candidate set can be atomically replaced on the next edit.
 }
 
+void IvModuleDefinitions::handle_iv_module_definition_lookup(
+    std::string const& definition_id,
+    IvModuleDefinitionLookupBuilder& builder) const
+{
+    std::scoped_lock lock(mutex);
+    auto const definition = loaded_definitions_by_module_id.find(definition_id);
+    builder.succeed(definition == loaded_definitions_by_module_id.end()
+        ? std::optional<IvModuleDefinition>{}
+        : std::optional<IvModuleDefinition>{definition->second->snapshot});
+}
+
 void IvModuleDefinitions::rebuild_published_registry_locked(
     IvModuleDefinitionsChanged& diff,
     IvNodeTypeDefinitionsChanged& node_type_diff,
