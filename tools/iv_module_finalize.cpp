@@ -739,10 +739,15 @@ void preserve_source_authoring_ir(Module& module)
     // free to internalize source-local symbols.
     SmallPtrSet<GlobalValue const*, 32> runtime_reachable;
     mark_runtime_module_roots(module, runtime_reachable);
-    SmallVector<GlobalValue*, 7> retained_entries;
-    retained_entries.reserve(authoring_entry_points.size());
-    for (auto const name : authoring_entry_points) {
-        retained_entries.push_back(module.getFunction(name));
+    SmallVector<GlobalValue*, 32> retained_entries;
+    retained_entries.reserve(runtime_reachable.size());
+    for (auto const* value : runtime_reachable) {
+        if (value->isDeclaration()
+            || value->getName() == "llvm.used"
+            || value->getName() == "llvm.compiler.used") {
+            continue;
+        }
+        retained_entries.push_back(const_cast<GlobalValue*>(value));
     }
     appendToUsed(module, retained_entries);
     legacy::PassManager pipeline;
