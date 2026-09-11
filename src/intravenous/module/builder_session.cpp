@@ -268,7 +268,7 @@ BuilderDefinition find_builder_definition(
             if (found) {
                 throw std::runtime_error(
                     "IV package definition '" + std::string(id)
-                    + "' has multiple providers in the loaded IV packages");
+                    + "' has multiple providers in the loaded package definitions");
             }
             found = BuilderDefinition{
                 .definition = definition,
@@ -279,7 +279,7 @@ BuilderDefinition find_builder_definition(
     if (found) return *found;
     throw std::runtime_error(
         "IV package definition '" + std::string(id)
-        + "' is unavailable in the loaded IV packages");
+        + "' is unavailable in the loaded package definitions");
 }
 
 std::vector<std::size_t> builder_used_packages(BuilderSession const* session)

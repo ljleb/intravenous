@@ -33,7 +33,7 @@ TEST(ModuleLoaderFailures, MissingManifestFails)
         "iv_package.json");
 }
 
-TEST(ModuleLoaderSources, CanonicalSourceManifestLoads)
+TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
 {
     auto const runtime_root = iv::test::runtime_modules_root()
         / "canonical_source_manifest";
@@ -67,7 +67,7 @@ TEST(ModuleLoaderSources, CanonicalSourceManifestLoads)
     EXPECT_TRUE(static_cast<bool>(secondary->root));
 }
 
-TEST(ModuleLoaderSources, RootSourceDoesNotPublishImportedModuleDefinitions)
+TEST(ModuleLoaderPackages, RootPackageDoesNotPublishOtherPackageDefinitions)
 {
     auto const fixtures = iv::test::test_modules_root();
     auto loader = iv::test::make_loader();
@@ -79,7 +79,7 @@ TEST(ModuleLoaderSources, RootSourceDoesNotPublishImportedModuleDefinitions)
     EXPECT_TRUE(static_cast<bool>(loaded.front().root));
 }
 
-TEST(ModuleLoaderSources, RegisteredSourceNodeIsResolvedInConfigurationGeneration)
+TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefinitions)
 {
     auto const project_root = iv::test::runtime_modules_root()
         / "registered_source_node";
@@ -97,18 +97,18 @@ TEST(ModuleLoaderSources, RegisteredSourceNodeIsResolvedInConfigurationGeneratio
         "#include <intravenous/dsl.h>\n"
         "#include <array>\n\n"
         "namespace {\n"
-        "struct RegisteredSourceNode {\n"
+        "struct RegisteredPackageNode {\n"
         "    static constexpr auto outputs()\n"
         "    {\n"
         "        return std::array<iv::OutputConfig, 1>{};\n"
         "    }\n\n"
-        "    void tick(iv::TickSampleContext<RegisteredSourceNode> const& ctx) const\n"
+        "    void tick(iv::TickSampleContext<RegisteredPackageNode> const& ctx) const\n"
         "    {\n"
         "        ctx.outputs[0].push(0.25);\n"
         "    }\n"
         "};\n"
         "}\n\n"
-        "IV_NODE(\"iv.test.registered_source_node\", RegisteredSourceNode);\n");
+        "IV_NODE(\"iv.test.registered_source_node\", RegisteredPackageNode);\n");
     iv::test::write_text(
         consumer_source / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
@@ -154,7 +154,7 @@ TEST(ModuleLoaderFailures, MissingDependencyFails)
     auto loader = iv::test::make_loader();
     expect_failure_contains(
         [&] { (void)loader.load_package_definitions(fixtures / "missing_dependency"); },
-        "is unavailable in the current configuration generation");
+        "is unavailable in the loaded package definitions");
 }
 
 TEST(ModuleLoaderFailures, UnrelatedDuplicateSourceIdsDoNotBlockLoading)
