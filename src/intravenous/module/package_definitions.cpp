@@ -46,14 +46,14 @@ NodeRef configure_package_definition(
     std::span<ConfigurationArgument> arguments)
 {
     if (!builder._session) {
-        throw std::logic_error("registered IV definition requires a BuilderSession");
+        throw std::logic_error("IV package definition requires a BuilderSession");
     }
     auto const found = find_builder_definition(builder._session, id);
     auto const& definition = found.definition;
     if (definition.kind == PackageDefinitionKind::node) {
         if (!arguments.empty()) {
             throw std::invalid_argument(
-                "registered node types do not take graph configuration arguments");
+                "node type definitions do not take graph configuration arguments");
         }
         PackageSelection const package(builder._session, found.package_index);
         return definition.node_build(builder);
@@ -66,6 +66,6 @@ NodeRef configure_package_definition(
             iv_builder_session_destroy);
     GraphBuilder child(child_session.get());
     definition.module_build(child, arguments);
-    return builder.embed_child(child, "Registered IV module");
+    return builder.embed_child(child, "IV module definition");
 }
 } // namespace iv::details

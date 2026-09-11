@@ -191,7 +191,7 @@ void GraphBuilder::event_outputs(std::span<EventOutputRequest const> refs)
     state(*this).event_outputs(refs);
 }
 
-NodeRef GraphBuilder::author_runtime_binary_op(
+NodeRef GraphBuilder::configure_runtime_binary_op(
     SamplePortRef lhs,
     SamplePortRef rhs,
     std::string_view op_name,

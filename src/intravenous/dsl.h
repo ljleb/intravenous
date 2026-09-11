@@ -327,7 +327,7 @@ namespace iv {
         SamplePortRef rhs_sample_port = lift_sample_operand(*g, std::forward<R>(rhs));
 
         if constexpr (std::same_as<ChannelType, void>) {
-            return g->author_runtime_binary_op<Node>(
+            return g->configure_runtime_binary_op<Node>(
                 std::move(lhs_sample_port),
                 std::move(rhs_sample_port),
                 op_name);

@@ -126,7 +126,7 @@ private:
     std::unordered_map<std::string, std::unique_ptr<NodeTypeState>> loaded_node_types_by_id;
     // One shared ownership map enforces the single stable-ID namespace across
     // primitive node types and iv modules.
-    std::unordered_map<std::string, std::string> package_id_by_registered_id;
+    std::unordered_map<std::string, std::string> package_id_by_definition_id;
     std::unordered_map<std::string, std::vector<std::string>> module_ids_by_package_id;
     // Candidate sets are independent from publication. Moving a definition between
     // packages can temporarily create a duplicate ID without discarding either

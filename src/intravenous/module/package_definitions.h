@@ -1,6 +1,6 @@
 #pragma once
 
-// Stable definitions emitted by IV_NODE / IV_MODULE. Registration is data,
+// Stable package definitions emitted by IV_NODE / IV_MODULE. Definitions are data,
 // not a process-global side effect: the finalizer collects these records into
 // each IV package, and BuilderSession receives the records from the loaded IV
 // packages used for one graph configuration.
@@ -52,7 +52,7 @@ inline constexpr std::string_view package_definition_section =
 
 // g.node<"id"> resolves synchronously through the definitions attached to
 // this GraphBuilder's BuilderSession. An iv module is fully configured before
-// this function returns; no unresolved registered-node bundle is preserved.
+// this function returns; no unresolved package-definition node is preserved.
 NodeRef configure_package_definition(
     GraphBuilder&, std::string_view id, std::span<ConfigurationArgument> arguments);
 

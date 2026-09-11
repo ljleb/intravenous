@@ -149,7 +149,7 @@ struct RootSignatureConfiguration {
     size_t child_sample_outputs;
 };
 
-RootSignatureConfiguration author_root_signature_graphs()
+RootSignatureConfiguration configure_root_signature_graphs()
 {
     GraphBuilder root;
     pass_module(root);
@@ -178,7 +178,7 @@ struct RootSignatureSnapshot {
 
 RootSignatureSnapshot root_signature_snapshot()
 {
-    auto const configuration = author_root_signature_graphs();
+    auto const configuration = configure_root_signature_graphs();
     auto const root_plan = compile_graph(configuration.root_view);
     auto const parent_plan = compile_graph(configuration.parent_view);
     return {
@@ -197,7 +197,7 @@ struct RecursiveModuleConfiguration {
     ConfiguredGraphTestView view;
 };
 
-RecursiveModuleConfiguration author_recursive_module()
+RecursiveModuleConfiguration configure_recursive_module()
 {
     GraphBuilder g;
     auto child = g.module<nested_module>();
@@ -214,7 +214,7 @@ struct RecursiveModuleSnapshot {
 
 RecursiveModuleSnapshot recursive_module_snapshot()
 {
-    auto const configured = author_recursive_module();
+    auto const configured = configure_recursive_module();
     auto const built = compile_graph(configured.view);
     RecursiveModuleSnapshot result{
         .lowered_subgraph_count = built.metadata.lowered_subgraphs.size(),
@@ -234,7 +234,7 @@ struct AnnotatedModuleConfiguration {
     ConfiguredGraphTestView view;
 };
 
-AnnotatedModuleConfiguration author_annotated_module()
+AnnotatedModuleConfiguration configure_annotated_module()
 {
     GraphBuilder g;
     auto child = _annotate_node_source_info(
@@ -253,7 +253,7 @@ struct AnnotatedModuleSnapshot {
 
 AnnotatedModuleSnapshot annotated_module_snapshot()
 {
-    auto const configured = author_annotated_module();
+    auto const configured = configure_annotated_module();
     auto const metadata = compile_graph(configured.view).introspection;
     auto const matching_nodes = std::ranges::count_if(
         metadata.virtual_nodes,
@@ -276,7 +276,7 @@ struct TiledModuleConfiguration {
     size_t output_channel_count;
 };
 
-TiledModuleConfiguration author_tiled_module()
+TiledModuleConfiguration configure_tiled_module()
 {
     GraphBuilder g;
     auto child = g.module<tiled_module>();
@@ -310,7 +310,7 @@ struct TiledModuleSnapshot {
 
 TiledModuleSnapshot tiled_module_snapshot()
 {
-    auto const configured = author_tiled_module();
+    auto const configured = configure_tiled_module();
     auto const built = compile_graph(configured.view);
     TiledModuleSnapshot result;
     result.child_sample_inputs = configured.child_sample_inputs;
@@ -337,7 +337,7 @@ TiledModuleSnapshot tiled_module_snapshot()
     return result;
 }
 
-ConfiguredGraphTestView author_event_interfaces()
+ConfiguredGraphTestView configure_event_interfaces()
 {
     GraphBuilder g;
     auto child = g.module<event_module>();
@@ -351,11 +351,11 @@ ConfiguredGraphTestView author_event_interfaces()
 
 bool event_interfaces_compile()
 {
-    (void)compile_graph(author_event_interfaces());
+    (void)compile_graph(configure_event_interfaces());
     return true;
 }
 
-ConfiguredGraphTestView author_functional_subgraph()
+ConfiguredGraphTestView configure_functional_subgraph()
 {
     GraphBuilder g;
     auto nested = g.subgraph([&](SubgraphBuilder& boundary) {
@@ -372,11 +372,11 @@ ConfiguredGraphTestView author_functional_subgraph()
 
 bool functional_subgraph_compiles()
 {
-    (void)compile_graph(author_functional_subgraph());
+    (void)compile_graph(configure_functional_subgraph());
     return true;
 }
 
-ConfiguredGraphTestView author_direct_public_sample_passthrough()
+ConfiguredGraphTestView configure_direct_public_sample_passthrough()
 {
     GraphBuilder g;
     auto input = g.input<"in">(0.0f);
@@ -386,7 +386,7 @@ ConfiguredGraphTestView author_direct_public_sample_passthrough()
 
 bool direct_public_sample_passthrough_compiles()
 {
-    auto const built = compile_graph(author_direct_public_sample_passthrough());
+    auto const built = compile_graph(configure_direct_public_sample_passthrough());
     return built.graph.inputs().size() == 1
         && built.graph.outputs().size() == 1;
 }
@@ -395,7 +395,7 @@ struct IntrospectionRegressionConfiguration {
     ConfiguredGraphTestView view;
 };
 
-IntrospectionRegressionConfiguration author_introspection_regression()
+IntrospectionRegressionConfiguration configure_introspection_regression()
 {
     GraphBuilder g;
     auto input = g.input<"in">(0.25f);
@@ -418,7 +418,7 @@ struct IntrospectionRegressionSnapshot {
 
 IntrospectionRegressionSnapshot introspection_regression_snapshot()
 {
-    auto const configured = author_introspection_regression();
+    auto const configured = configure_introspection_regression();
     auto const compiled = compile_graph(configured.view, true);
     auto const& metadata = compiled.introspection;
     auto const& execution = compiled.introspection;
@@ -783,7 +783,7 @@ TEST(GraphModules, FunctionalSubgraphRemainsAnExplicitBoundaryFacade)
 {
     EXPECT_TRUE(functional_subgraph_compiles());
 
-    auto const built = compile_graph(author_functional_subgraph());
+    auto const built = compile_graph(configure_functional_subgraph());
     ASSERT_EQ(built.metadata.lowered_subgraphs.size(), 1u);
     auto const& scope = built.metadata.lowered_subgraphs.front();
     EXPECT_EQ(scope.parent_scope, GRAPH_ID);

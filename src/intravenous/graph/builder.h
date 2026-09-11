@@ -123,7 +123,7 @@ public:
     }
   }
 
-  // Registered IDs are the source-facing node creation API. The bootstrap
+  // Package definition IDs are the package-facing node creation API. The bootstrap
   // dynamic path is available for every ID without a generated interface
   // header. The loaded IV packages resolve the provider immediately, so
   // this returns the provider's genuine realized NodeRef.
@@ -180,14 +180,14 @@ public:
   // Runtime channel negotiation, graph mutation, and connection validation
   // belong to the shared configuration library. The templated overload below is
   // the only node-type-specific part of this path.
-  NodeRef author_runtime_binary_op(
+  NodeRef configure_runtime_binary_op(
       SamplePortRef lhs,
       SamplePortRef rhs,
       std::string_view op_name,
       details::NodeBuildRequest const& request);
 
   template<class Node>
-  NodeRef author_runtime_binary_op(
+  NodeRef configure_runtime_binary_op(
       SamplePortRef lhs, SamplePortRef rhs, std::string_view op_name) {
     using StoredNode = std::remove_cvref_t<Node>;
     static_assert(std::is_trivially_copyable_v<StoredNode>,
@@ -197,7 +197,7 @@ public:
             _session, sizeof(StoredNode), alignof(StoredNode)));
     try {
       std::construct_at(value);
-      return author_runtime_binary_op(
+      return configure_runtime_binary_op(
           std::move(lhs), std::move(rhs), op_name,
           details::make_node_build_request(*value));
     } catch (...) {

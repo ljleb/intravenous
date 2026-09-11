@@ -147,7 +147,7 @@ FamilySnapshot stereo_family_snapshot(bool connect_left)
     return result;
 }
 
-ConfiguredGraphTestView author_stereo_metadata_graph()
+ConfiguredGraphTestView configure_stereo_metadata_graph()
 {
     GraphBuilder g;
     auto source = g.node<Sum<stereo, SampleStreamLayout::planar, 1>>();
@@ -160,7 +160,7 @@ ConfiguredGraphTestView author_stereo_metadata_graph()
 
 VirtualPortConnectivity stereo_metadata_connectivity()
 {
-    auto const metadata = compile_graph(author_stereo_metadata_graph()).introspection;
+    auto const metadata = compile_graph(configure_stereo_metadata_graph()).introspection;
     for (auto const& node : metadata.virtual_nodes) {
         if (node.source_identity == "stereo" && !node.sample_outputs.empty())
             return node.sample_outputs.front().connectivity;
@@ -221,7 +221,7 @@ struct NamedChannelOutputConfiguration {
     bool right_maps_to_zero;
 };
 
-NamedChannelOutputConfiguration author_named_channel_output()
+NamedChannelOutputConfiguration configure_named_channel_output()
 {
     GraphBuilder g;
     g.outputs("main"_P[stereo::left] = 0.0f,
@@ -249,7 +249,7 @@ NamedChannelOutputConfiguration author_named_channel_output()
 
 PublicOutputSnapshot named_channel_output_snapshot()
 {
-    auto const configured = author_named_channel_output();
+    auto const configured = configure_named_channel_output();
     auto const built = compile_graph(configured.view);
     PublicOutputSnapshot result{
         .graph_output_count = built.graph.outputs().size(),
@@ -273,7 +273,7 @@ struct RepeatedOutputConfiguration {
     bool left_maps_to_zero;
 };
 
-RepeatedOutputConfiguration author_repeated_named_output()
+RepeatedOutputConfiguration configure_repeated_named_output()
 {
     GraphBuilder g;
     g.outputs("main"_P = 0.25f);
@@ -293,7 +293,7 @@ RepeatedOutputConfiguration author_repeated_named_output()
 
 PublicOutputSnapshot repeated_named_output_snapshot()
 {
-    auto const configured = author_repeated_named_output();
+    auto const configured = configure_repeated_named_output();
     auto const built = compile_graph(configured.view);
     return {
         .graph_output_count = built.graph.outputs().size(),
@@ -308,7 +308,7 @@ PublicOutputSnapshot repeated_named_output_snapshot()
     };
 }
 
-RepeatedOutputConfiguration author_repeated_unnamed_output()
+RepeatedOutputConfiguration configure_repeated_unnamed_output()
 {
     GraphBuilder g;
     g.outputs(0.25f);
@@ -328,7 +328,7 @@ RepeatedOutputConfiguration author_repeated_unnamed_output()
 
 PublicOutputSnapshot repeated_unnamed_output_snapshot()
 {
-    auto const configured = author_repeated_unnamed_output();
+    auto const configured = configure_repeated_unnamed_output();
     auto const built = compile_graph(configured.view);
     return {
         .graph_output_count = built.graph.outputs().size(),
@@ -351,7 +351,7 @@ struct WholeAndChannelConfiguration {
     bool right_maps_to_zero;
 };
 
-WholeAndChannelConfiguration author_whole_and_channel_output()
+WholeAndChannelConfiguration configure_whole_and_channel_output()
 {
     GraphBuilder g;
     auto stereo_source = g.node<Sum<stereo, SampleStreamLayout::interleaved, 1>>();
@@ -380,7 +380,7 @@ WholeAndChannelConfiguration author_whole_and_channel_output()
 
 PublicOutputSnapshot whole_and_channel_output_snapshot()
 {
-    auto const configured = author_whole_and_channel_output();
+    auto const configured = configure_whole_and_channel_output();
     auto const built = compile_graph(configured.view);
     PublicOutputSnapshot result{
         .graph_output_count = built.graph.outputs().size(),
@@ -400,7 +400,7 @@ PublicOutputSnapshot whole_and_channel_output_snapshot()
     return result;
 }
 
-ConfiguredGraphTestView author_named_channel_contributions()
+ConfiguredGraphTestView configure_named_channel_contributions()
 {
     GraphBuilder g;
     g.outputs("main"_P[stereo::left] = 0.25f,
@@ -410,12 +410,12 @@ ConfiguredGraphTestView author_named_channel_contributions()
 
 bool named_channel_contributions_share_family()
 {
-    auto const built = compile_graph(author_named_channel_contributions());
+    auto const built = compile_graph(configure_named_channel_contributions());
     return built.graph.outputs().size() == 1
         && built.graph.outputs().front().name == "main";
 }
 
-ConfiguredGraphTestView author_functional_subgraph_output()
+ConfiguredGraphTestView configure_functional_subgraph_output()
 {
     GraphBuilder g;
     auto nested = g.subgraph([&](SubgraphBuilder& boundary) {
@@ -431,11 +431,11 @@ ConfiguredGraphTestView author_functional_subgraph_output()
 
 bool functional_subgraph_has_main_output()
 {
-    auto const built = compile_graph(author_functional_subgraph_output());
+    auto const built = compile_graph(configure_functional_subgraph_output());
     return built.graph.outputs().size() == 1
         && built.graph.outputs().front().name == "main";
 }
-ConfiguredGraphTestView author_nested_functional_subgraphs()
+ConfiguredGraphTestView configure_nested_functional_subgraphs()
 
 {
     GraphBuilder g;
@@ -457,7 +457,7 @@ ConfiguredGraphTestView author_nested_functional_subgraphs()
 
 bool nested_functional_subgraphs_compile()
 {
-    (void)compile_graph(author_nested_functional_subgraphs());
+    (void)compile_graph(configure_nested_functional_subgraphs());
     return true;
 }
 

@@ -267,7 +267,7 @@ BuilderDefinition find_builder_definition(
             if (std::string_view(definition.id, definition.id_size) != id) continue;
             if (found) {
                 throw std::runtime_error(
-                    "registered IV definition '" + std::string(id)
+                    "IV package definition '" + std::string(id)
                     + "' has multiple providers in the loaded IV packages");
             }
             found = BuilderDefinition{
@@ -278,7 +278,7 @@ BuilderDefinition find_builder_definition(
     }
     if (found) return *found;
     throw std::runtime_error(
-        "registered IV definition '" + std::string(id)
+        "IV package definition '" + std::string(id)
         + "' is unavailable in the loaded IV packages");
 }
 

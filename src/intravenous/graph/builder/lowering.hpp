@@ -1316,7 +1316,7 @@ class GraphLowerer {
     for (NodeBundleHandle handle=0; handle<bundles.size(); ++handle) {
       auto const& bundle = bundles.bundle(handle);
       auto& p = out.bundle_projections[handle];
-      // A registered-ID placeholder is resolved by appending its provider
+      // A nested configured subgraph is resolved by appending its provider
       // bundles after the caller's original handle. Project all concrete and
       // boundary bundles first; subgraphs are projected in reverse order
       // below so every child subgraph has already acquired topology nodes.
@@ -1339,24 +1339,24 @@ class GraphLowerer {
           out.bundle_by_lowered_node.at(*member_node) = handle;
         }
         for(size_t port=0;port<bundle.sample_input_count();++port){
-          std::vector<TopologyPortId> endpoints;
-          for(auto member:members) endpoints.push_back(out.bundle_projections.at(member).sample_inputs.at(port).at(0));
-          p.sample_inputs.push_back(std::move(endpoints));
+          std::vector<TopologyPortId> ports;
+          for(auto member:members) ports.push_back(out.bundle_projections.at(member).sample_inputs.at(port).at(0));
+          p.sample_inputs.push_back(std::move(ports));
         }
         for(size_t port=0;port<bundle.sample_output_count();++port){
-          std::vector<TopologyPortId> endpoints;
-          for(auto member:members) endpoints.push_back(out.bundle_projections.at(member).sample_outputs.at(port).at(0));
-          p.sample_outputs.push_back(std::move(endpoints));
+          std::vector<TopologyPortId> ports;
+          for(auto member:members) ports.push_back(out.bundle_projections.at(member).sample_outputs.at(port).at(0));
+          p.sample_outputs.push_back(std::move(ports));
         }
         for(size_t port=0;port<bundle.event_input_count();++port){
-          std::vector<TopologyPortId> endpoints;
-          for(auto member:members) endpoints.push_back(out.bundle_projections.at(member).event_inputs.at(port).at(0));
-          p.event_inputs.push_back(std::move(endpoints));
+          std::vector<TopologyPortId> ports;
+          for(auto member:members) ports.push_back(out.bundle_projections.at(member).event_inputs.at(port).at(0));
+          p.event_inputs.push_back(std::move(ports));
         }
         for(size_t port=0;port<bundle.event_output_count();++port){
-          std::vector<TopologyPortId> endpoints;
-          for(auto member:members) endpoints.push_back(out.bundle_projections.at(member).event_outputs.at(port).at(0));
-          p.event_outputs.push_back(std::move(endpoints));
+          std::vector<TopologyPortId> ports;
+          for(auto member:members) ports.push_back(out.bundle_projections.at(member).event_outputs.at(port).at(0));
+          p.event_outputs.push_back(std::move(ports));
         }
       } else if (bundle.is_boundary()) {
         if (handle == root_boundary) {
@@ -1893,13 +1893,13 @@ class GraphLowerer {
   }
 
   constexpr TopologyPortId materialize_event_source(ConfiguredEventConnection const& c) {
-    std::vector<TopologyPortId> endpoints;
+    std::vector<TopologyPortId> ports;
     for(auto source:c.sources) {
       NodeBundlePortId const logical{
           source.bundle, PortKind::event, source.port};
       auto const config=bundles.resolve_event_output(logical).config;
       if(config.type!=c.source_type)details::error("event source type changed before lowering");
-      endpoints.push_back(materialize_event_output_port(logical, c.source_type));
+      ports.push_back(materialize_event_output_port(logical, c.source_type));
     }
     if(endpoints.empty())details::error("event source has no lowered endpoint");
     if(endpoints.size()==1)return endpoints.front();

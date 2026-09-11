@@ -38,7 +38,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         ASSERT_NE(definition, definitions.end());
         // A source artifact owns and watches only its implementation package.
         // behavior_voice is an independently built provider selected through
-        // the registered-ID registry, not a recursive C++ build dependency of
+        // the package definition table, not a recursive C++ build dependency of
         // behavior_project.
         ASSERT_EQ(definition->dependencies.size(), 1u);
         EXPECT_EQ(

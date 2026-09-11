@@ -283,7 +283,7 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
             auto package = declarations_by_package_id.find(providers.front().package_id);
             failures.push_back({
                 .level = "error",
-                .message = "registered IV definition ID '" + id
+                .message = "IV package definition ID '" + id
                     + "' is provided by multiple IV packages",
                 .package_root = package == declarations_by_package_id.end()
                     ? std::filesystem::path{}
@@ -369,7 +369,7 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
     // complete snapshot, never a mixture of old and candidate providers.
     loaded_definitions_by_module_id = std::move(next_modules);
     loaded_node_types_by_id = std::move(next_node_types);
-    package_id_by_registered_id = std::move(next_owners);
+    package_id_by_definition_id = std::move(next_owners);
     module_ids_by_package_id = std::move(next_modules_by_package);
 }
 

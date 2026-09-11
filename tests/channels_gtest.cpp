@@ -403,7 +403,7 @@ struct StaticConstantFanoutSnapshot {
     size_t static_alias_count = 0;
 };
 
-iv::ConfiguredGraphTestView author_boundary_adapter()
+iv::ConfiguredGraphTestView configure_boundary_adapter()
 {
     iv::GraphBuilder g;
     (void)g.node<iv::ChannelPack<iv::stereo>>();
@@ -414,11 +414,11 @@ iv::ConfiguredGraphTestView author_boundary_adapter()
 
 ChannelTopologySnapshot boundary_adapter_snapshot()
 {
-    auto const built = compile_graph(author_boundary_adapter());
+    auto const built = compile_graph(configure_boundary_adapter());
     return {.ok = built.graph.outputs().empty()};
 }
 
-iv::ConfiguredGraphTestView author_tiled_source()
+iv::ConfiguredGraphTestView configure_tiled_source()
 {
     iv::GraphBuilder g;
     auto source = g.node<iv::Constant, iv::stereo>(iv::Sample{0.25f});
@@ -438,7 +438,7 @@ iv::ConfiguredGraphTestView author_tiled_source()
 
 ChannelTopologySnapshot tiled_source_snapshot()
 {
-    auto const built = compile_graph(author_tiled_source());
+    auto const built = compile_graph(configure_tiled_source());
     return {
         .ok = built.graph.outputs().size() == 1
             && built.graph.outputs().front().channel_layout.channel_type
@@ -451,7 +451,7 @@ struct SampleRefConfiguration {
     bool configured_ok;
 };
 
-SampleRefConfiguration author_sample_ref()
+SampleRefConfiguration configure_sample_ref()
 {
     iv::GraphBuilder g;
     auto source = g.node<NamedStereoSource>(
@@ -481,7 +481,7 @@ SampleRefConfiguration author_sample_ref()
 
 ChannelTopologySnapshot sample_ref_snapshot()
 {
-    auto const configured = author_sample_ref();
+    auto const configured = configure_sample_ref();
     auto const built = compile_graph(configured.view);
     return {
         .ok = configured.configured_ok
@@ -497,7 +497,7 @@ struct StructuralTileConfiguration {
     bool configured_ok;
 };
 
-StructuralTileConfiguration author_structural_tile()
+StructuralTileConfiguration configure_structural_tile()
 {
     iv::GraphBuilder g;
     auto left = g.node<iv::Constant>(iv::Sample{0.25f});
@@ -519,7 +519,7 @@ StructuralTileConfiguration author_structural_tile()
 
 ChannelTopologySnapshot structural_tile_snapshot()
 {
-    auto const configured = author_structural_tile();
+    auto const configured = configure_structural_tile();
     auto const built = compile_graph(configured.view);
     return {
         .ok = configured.configured_ok
@@ -538,7 +538,7 @@ struct QualifiedOutputConfiguration {
     size_t right_handle;
 };
 
-QualifiedOutputConfiguration author_qualified_output()
+QualifiedOutputConfiguration configure_qualified_output()
 {
     iv::GraphBuilder g;
     auto left = g.node<iv::Constant>(iv::Sample{0.25f});
@@ -559,7 +559,7 @@ QualifiedOutputConfiguration author_qualified_output()
 
 ChannelTopologySnapshot qualified_output_snapshot()
 {
-    auto const configured = author_qualified_output();
+    auto const configured = configure_qualified_output();
     auto const built = compile_graph(configured.view);
     auto const connection_nodes = std::ranges::count_if(
         built.metadata.concrete_node_type_identities,
@@ -585,7 +585,7 @@ struct DetachConfiguration {
     size_t right_handle;
 };
 
-DetachConfiguration author_detach()
+DetachConfiguration configure_detach()
 {
     iv::GraphBuilder g;
     auto left = g.node<iv::Constant>(iv::Sample{0.25f});
@@ -603,7 +603,7 @@ DetachConfiguration author_detach()
 
 ChannelTopologySnapshot detach_snapshot()
 {
-    auto const configured = author_detach();
+    auto const configured = configure_detach();
     auto const built = compile_graph(configured.view);
     auto const connection_nodes = std::ranges::count_if(
         built.metadata.concrete_node_type_identities,
@@ -630,7 +630,7 @@ struct TiledEventConfiguration {
     bool virtual_event_output_ok;
 };
 
-TiledEventConfiguration author_tiled_event()
+TiledEventConfiguration configure_tiled_event()
 {
     iv::GraphBuilder g;
     auto tiled = iv::_annotate_node_source_info(
@@ -666,7 +666,7 @@ TiledEventConfiguration author_tiled_event()
 
 ChannelTopologySnapshot tiled_event_snapshot()
 {
-    auto const configured = author_tiled_event();
+    auto const configured = configure_tiled_event();
     auto const built = compile_graph(configured.view);
     auto const merge_count = std::ranges::count_if(
         built.metadata.concrete_node_type_identities,
@@ -711,7 +711,7 @@ ChannelTopologySnapshot annotation_snapshot()
     return {.ok = ok};
 }
 
-iv::ConfiguredGraphTestView author_introspection()
+iv::ConfiguredGraphTestView configure_introspection()
 {
     iv::GraphBuilder g;
     (void)iv::_annotate_node_source_info(
@@ -725,7 +725,7 @@ iv::ConfiguredGraphTestView author_introspection()
 
 ChannelTopologySnapshot introspection_snapshot()
 {
-    auto const metadata = compile_graph(author_introspection()).introspection;
+    auto const metadata = compile_graph(configure_introspection()).introspection;
     bool ok = metadata.virtual_nodes.size() == 1;
     if (!ok) return {.ok = false};
     auto const& virtual_node = metadata.virtual_nodes.front();
@@ -793,7 +793,7 @@ struct StereoScalarProductConfiguration {
     bool configured_ok;
 };
 
-StereoScalarProductConfiguration author_stereo_scalar_product()
+StereoScalarProductConfiguration configure_stereo_scalar_product()
 {
     iv::GraphBuilder g;
     auto source = g.node<NamedStereoSource>(
@@ -815,7 +815,7 @@ StereoScalarProductConfiguration author_stereo_scalar_product()
 
 ChannelTopologySnapshot stereo_scalar_product_snapshot()
 {
-    auto const configured = author_stereo_scalar_product();
+    auto const configured = configure_stereo_scalar_product();
     auto const built = compile_graph(configured.view);
     if (!configured.configured_ok) return {.ok = false};
     if (built.graph.outputs().size() != 1) {
@@ -828,7 +828,7 @@ ChannelTopologySnapshot stereo_scalar_product_snapshot()
     return {.ok = true};
 }
 
-iv::ConfiguredGraphTestView author_reconstructed_sequence_reversed()
+iv::ConfiguredGraphTestView configure_reconstructed_sequence_reversed()
 {
     iv::GraphBuilder g;
     auto source = g.node<NamedStereoSource>(
@@ -845,7 +845,7 @@ iv::ConfiguredGraphTestView author_reconstructed_sequence_reversed()
     return iv::freeze_configured_graph_for_test(std::move(g).finish());
 }
 
-iv::ConfiguredGraphTestView author_reconstructed_sequence_ordered()
+iv::ConfiguredGraphTestView configure_reconstructed_sequence_ordered()
 {
     iv::GraphBuilder g;
     auto source = g.node<NamedStereoSource>(
@@ -865,8 +865,8 @@ iv::ConfiguredGraphTestView author_reconstructed_sequence_ordered()
 ChannelTopologySnapshot reconstructed_sequence_snapshot(bool reverse)
 {
     auto const built = compile_graph(reverse
-        ? author_reconstructed_sequence_reversed()
-        : author_reconstructed_sequence_ordered());
+        ? configure_reconstructed_sequence_reversed()
+        : configure_reconstructed_sequence_ordered());
     auto const connection_nodes = std::ranges::count_if(
         built.metadata.concrete_node_type_identities,
         [](auto const& type) {
@@ -878,7 +878,7 @@ ChannelTopologySnapshot reconstructed_sequence_snapshot(bool reverse)
     };
 }
 
-iv::ConfiguredGraphTestView author_tiled_mono_direct_route()
+iv::ConfiguredGraphTestView configure_tiled_mono_direct_route()
 {
     iv::GraphBuilder g;
     auto source = g.node<iv::Constant>(iv::Sample{0.25f});
@@ -890,7 +890,7 @@ iv::ConfiguredGraphTestView author_tiled_mono_direct_route()
 
 ChannelTopologySnapshot tiled_mono_direct_route_snapshot()
 {
-    auto const built = compile_graph(author_tiled_mono_direct_route());
+    auto const built = compile_graph(configure_tiled_mono_direct_route());
     auto const connection_nodes = std::ranges::count_if(
         built.metadata.concrete_node_type_identities,
         [](auto const& type) {
@@ -902,7 +902,7 @@ ChannelTopologySnapshot tiled_mono_direct_route_snapshot()
     };
 }
 
-iv::ConfiguredGraphTestView author_static_constant_fanout()
+iv::ConfiguredGraphTestView configure_static_constant_fanout()
 {
     iv::GraphBuilder g;
     auto source = g.node<iv::Constant>(iv::Sample{0.25f});
@@ -918,7 +918,7 @@ iv::ConfiguredGraphTestView author_static_constant_fanout()
 
 StaticConstantFanoutSnapshot static_constant_fanout_uses_one_initialized_buffer_owner()
 {
-    auto const built = compile_graph(author_static_constant_fanout());
+    auto const built = compile_graph(configure_static_constant_fanout());
     StaticConstantFanoutSnapshot result {};
     if (has_generated_type(
             built.metadata.concrete_node_type_identities, "Broadcast")) {
@@ -974,7 +974,7 @@ bool sample_lowering_plan_groups_connections_by_target_port()
 }
 
 template<bool Connected>
-iv::ConfiguredGraphTestView author_connection_lowering()
+iv::ConfiguredGraphTestView configure_connection_lowering()
 {
     iv::GraphBuilder g;
     auto pass = g.node<DefaultMonoPass>();
@@ -989,8 +989,8 @@ iv::ConfiguredGraphTestView author_connection_lowering()
 ChannelTopologySnapshot connection_lowering_snapshot(bool connected)
 {
     auto const built = compile_graph(connected
-        ? author_connection_lowering<true>()
-        : author_connection_lowering<false>());
+        ? configure_connection_lowering<true>()
+        : configure_connection_lowering<false>());
     return {
         .ok = true,
         .connection_nodes = static_cast<size_t>(std::ranges::count_if(
@@ -1002,7 +1002,7 @@ ChannelTopologySnapshot connection_lowering_snapshot(bool connected)
 }
 
 template<bool Connected>
-iv::ConfiguredGraphTestView author_sample_lowering_pass_graph()
+iv::ConfiguredGraphTestView configure_sample_lowering_pass_graph()
 {
     iv::GraphBuilder g;
     auto pass = g.node<DefaultMonoPass>();
@@ -1018,15 +1018,15 @@ sample_lowering_pass_facts(bool connected)
     return iv::details::GraphLowererTestAccess::sample_lowering_pass_facts(
         iv::thaw_configured_graph_for_test(
             connected
-            ? author_sample_lowering_pass_graph<true>()
-            : author_sample_lowering_pass_graph<false>()));
+            ? configure_sample_lowering_pass_graph<true>()
+            : configure_sample_lowering_pass_graph<false>()));
 }
 
 struct ExecutionRootConfiguration {
     iv::ConfiguredGraphTestView view;
 };
 
-ExecutionRootConfiguration author_execution_root()
+ExecutionRootConfiguration configure_execution_root()
 {
     iv::GraphBuilder g;
     auto input = g.input<"in">(iv::Sample{-1.0f});
@@ -1044,7 +1044,7 @@ struct ExecutionRootSnapshot {
 
 ExecutionRootSnapshot execution_root_snapshot()
 {
-    auto const built = compile_graph(author_execution_root().view, true);
+    auto const built = compile_graph(configure_execution_root().view, true);
     return {
         .closed_interface = built.graph.inputs().empty()
             && built.graph.outputs().empty()
@@ -1578,7 +1578,7 @@ TEST(Channels, SampleLoweringPassesHaveExplicitConnectedAndVacantHandOffs)
     EXPECT_EQ(vacant.assigned_subgraph_outputs, 0u);
 }
 
-iv::ConfiguredGraphTestView author_explicit_three_stage()
+iv::ConfiguredGraphTestView configure_explicit_three_stage()
 {
     iv::GraphBuilder builder;
     auto source = builder.node<iv::Constant>(iv::Sample{0.25f});
@@ -1588,14 +1588,14 @@ iv::ConfiguredGraphTestView author_explicit_three_stage()
 
 bool explicit_three_stage_pipeline_builds_a_graph()
 {
-    auto configured = iv::thaw_configured_graph_for_test(author_explicit_three_stage());
+    auto configured = iv::thaw_configured_graph_for_test(configure_explicit_three_stage());
     auto executable = iv::GraphLowerer::lower(std::move(configured));
     auto compiled = iv::GraphCompiler::compile(std::move(executable));
     return compiled.graph.outputs().size() == 1
         && compiled.introspection.public_sample_outputs.size() == 1;
 }
 
-iv::ConfiguredGraphTestView author_builder_finish()
+iv::ConfiguredGraphTestView configure_builder_finish()
 {
     iv::GraphBuilder builder;
     builder.outputs(builder.node<iv::Constant>(iv::Sample{0.5f}));
@@ -1605,7 +1605,7 @@ iv::ConfiguredGraphTestView author_builder_finish()
 bool builder_build_consumes_the_finished_configuration_value()
 {
     auto compiled = compile_graph(
-        author_builder_finish());
+        configure_builder_finish());
     return compiled.graph.outputs().size() == 1
         && compiled.introspection.public_sample_outputs.size() == 1;
 }

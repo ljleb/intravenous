@@ -366,59 +366,59 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         }
         auto* package_definitions = object->getArray("package_definitions");
         if (!package_definitions) {
-            fail("metadata has no registered-definition array in '"
+            fail("metadata has no package-definition array in '"
                  + entry.path().string() + "'");
         }
         for (auto const& definition_value : *package_definitions) {
-            auto* definition = definition_value.getAsObject();
-            if (!definition) {
-                fail("registered-definition metadata entry is not an object in '"
+            auto* definition_object = definition_value.getAsObject();
+            if (!definition_object) {
+                fail("package-definition metadata entry is not an object in '"
                      + entry.path().string() + "'");
             }
-            auto id = definition->getString("id");
-            auto kind = definition->getString("kind");
-            auto declaration_usr = definition->getString("declaration_usr");
+            auto id = definition_object->getString("id");
+            auto kind = definition_object->getString("kind");
+            auto declaration_usr = definition_object->getString("declaration_usr");
             if (!id || id->empty() || !kind || !declaration_usr
                 || (kind->str() != "node" && kind->str() != "module")) {
-                fail("incomplete registered-definition metadata entry in '"
+                fail("incomplete package-definition metadata entry in '"
                      + entry.path().string() + "'");
             }
-            PackageDefinitionMetadata registered{
+            PackageDefinitionMetadata metadata_definition{
                 .id = id->str(),
                 .kind = kind->str(),
                 .declaration_usr = declaration_usr->str(),
                 .source_file = {},
                 .node_code_key = {},
             };
-            if (auto source_file = definition->getString("source_file")) {
-                registered.source_file = source_file->str();
+            if (auto source_file = definition_object->getString("source_file")) {
+                metadata_definition.source_file = source_file->str();
             }
-            if (registered.kind == "node") {
-                auto* key = definition->getObject("node_code_key");
+            if (metadata_definition.kind == "node") {
+                auto* key = definition_object->getObject("node_code_key");
                 if (!key) {
-                    fail("node registered-definition metadata has no NodeCodeKey in '"
+                    fail("node package-definition metadata has no NodeCodeKey in '"
                          + entry.path().string() + "'");
                 }
                 auto low = key->getString("low");
                 auto high = key->getString("high");
                 if (!low || !high) {
-                    fail("node registered-definition metadata has invalid NodeCodeKey in '"
+                    fail("node package-definition metadata has invalid NodeCodeKey in '"
                          + entry.path().string() + "'");
                 }
-                registered.node_code_key = {
-                    .low = parse_hex_u64(*low, entry.path(), "registered node_code_key.low"),
-                    .high = parse_hex_u64(*high, entry.path(), "registered node_code_key.high"),
+                metadata_definition.node_code_key = {
+                    .low = parse_hex_u64(*low, entry.path(), "package definition node_code_key.low"),
+                    .high = parse_hex_u64(*high, entry.path(), "package definition node_code_key.high"),
                 };
             }
             auto const duplicate = std::find_if(
                 result.package_definitions.begin(),
                 result.package_definitions.end(),
                 [&](PackageDefinitionMetadata const& existing) {
-                    return existing.id == registered.id
-                        && existing.declaration_usr == registered.declaration_usr;
+                    return existing.id == metadata_definition.id
+                        && existing.declaration_usr == metadata_definition.declaration_usr;
                 });
             if (duplicate == result.package_definitions.end()) {
-                result.package_definitions.push_back(std::move(registered));
+                result.package_definitions.push_back(std::move(metadata_definition));
             }
         }
         for (auto const& state_value : *states) {
@@ -636,15 +636,15 @@ iv::NodeCodeKey compiler_record_key(Constant* pointer)
 {
     auto const* global = dyn_cast<GlobalVariable>(getUnderlyingObject(pointer));
     if (!global || !global->hasInitializer()) {
-        fail("registered node type does not reference a compiler record global");
+        fail("node type definition does not reference a compiler record global");
     }
     auto const* record = dyn_cast<ConstantStruct>(global->getInitializer());
     if (!record || record->getNumOperands() != 6) {
-        fail("registered node type references a malformed compiler record");
+        fail("node type definition references a malformed compiler record");
     }
     auto const* key = dyn_cast<ConstantStruct>(record->getOperand(0));
     if (!key || key->getNumOperands() != 2) {
-        fail("registered node type references a malformed compiler record key");
+        fail("node type definition references a malformed compiler record key");
     }
     return {
         .low = constant_u64(key->getOperand(0)),
@@ -682,7 +682,7 @@ void validate_package_definitions(
             fail("one IV package emitted definitions for multiple package roots");
         }
         if (!runtime.emplace(kind, id).second) {
-            fail("duplicate registered IV definition ID within one IV package: '" + id + "'");
+            fail("duplicate IV package definition ID within one IV package: '" + id + "'");
         }
 
         auto const compiler = std::find_if(
@@ -692,13 +692,13 @@ void validate_package_definitions(
                 return definition.kind == kind && definition.id == id;
             });
         if (compiler == metadata.package_definitions.end()) {
-            fail("registered IV " + kind + " '" + id
+            fail("IV " + kind + " '" + id
                 + "' has no matching compiler definition metadata");
         }
         if (kind == "node" && compiler->node_code_key) {
             auto const key = compiler_record_key(record->getOperand(9));
             if (key != *compiler->node_code_key) {
-                fail("registered IV node '" + id
+                fail("IV node '" + id
                     + "' compiler record does not match compiler metadata");
             }
         }
@@ -706,7 +706,7 @@ void validate_package_definitions(
 
     for (auto const& definition : metadata.package_definitions) {
         if (!runtime.contains({definition.kind, definition.id})) {
-            fail("compiler metadata registered " + definition.kind + " '"
+            fail("compiler metadata describes " + definition.kind + " '"
                 + definition.id + "' but the IV package definition table did not");
         }
     }
