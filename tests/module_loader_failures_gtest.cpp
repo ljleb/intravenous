@@ -29,8 +29,8 @@ TEST(ModuleLoaderFailures, MissingManifestFails)
     auto missing_dir = runtime_root / "missing_entry";
     std::filesystem::create_directories(missing_dir);
     expect_failure_contains(
-        [&] { (void)loader.load_source_definitions(missing_dir); },
-        "iv_source.json");
+        [&] { (void)loader.load_package_definitions(missing_dir); },
+        "iv_package.json");
 }
 
 TEST(ModuleLoaderSources, CanonicalSourceManifestLoads)
@@ -41,7 +41,7 @@ TEST(ModuleLoaderSources, CanonicalSourceManifestLoads)
     std::filesystem::create_directories(runtime_root);
     iv::test::write_text(runtime_root / "iv_project.jsonl", "");
     iv::test::write_text(
-        runtime_root / "iv_source.json",
+        runtime_root / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
     iv::test::write_text(
         runtime_root / "module.cpp",
@@ -52,7 +52,7 @@ TEST(ModuleLoaderSources, CanonicalSourceManifestLoads)
         "IV_MODULE(\"iv.test.canonical_source.secondary\", module_secondary);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_source_definitions(runtime_root);
+    auto loaded = loader.load_package_definitions(runtime_root);
 
     ASSERT_EQ(loaded.size(), 2);
     auto const primary = std::ranges::find(
@@ -72,7 +72,7 @@ TEST(ModuleLoaderSources, RootSourceDoesNotPublishImportedModuleDefinitions)
     auto const fixtures = iv::test::test_modules_root();
     auto loader = iv::test::make_loader();
 
-    auto loaded = loader.load_source_definitions(fixtures / "nested_loader_project");
+    auto loaded = loader.load_package_definitions(fixtures / "nested_loader_project");
 
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.nested_loader_project");
@@ -90,7 +90,7 @@ TEST(ModuleLoaderSources, RegisteredSourceNodeIsResolvedInConfigurationGeneratio
     std::filesystem::create_directories(consumer_source);
     iv::test::write_text(project_root / "iv_project.jsonl", "");
     iv::test::write_text(
-        node_source / "iv_source.json",
+        node_source / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
     iv::test::write_text(
         node_source / "module.cpp",
@@ -110,7 +110,7 @@ TEST(ModuleLoaderSources, RegisteredSourceNodeIsResolvedInConfigurationGeneratio
         "}\n\n"
         "IV_NODE(\"iv.test.registered_source_node\", RegisteredSourceNode);\n");
     iv::test::write_text(
-        consumer_source / "iv_source.json",
+        consumer_source / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
     iv::test::write_text(
         consumer_source / "module.cpp",
@@ -122,7 +122,7 @@ TEST(ModuleLoaderSources, RegisteredSourceNodeIsResolvedInConfigurationGeneratio
         "IV_MODULE(\"iv.test.registered_node_consumer\", registered_node_consumer);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_source_definitions(consumer_source);
+    auto loaded = loader.load_package_definitions(consumer_source);
 
     ASSERT_EQ(loaded.size(), 1);
     EXPECT_EQ(loaded.front().module_id, "iv.test.registered_node_consumer");
@@ -135,8 +135,8 @@ TEST(ModuleLoaderFailures, SourceWithoutManifestFails)
     auto const fixtures = iv::test::test_modules_root();
     auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_source_definitions(fixtures / "missing_export"); },
-        "iv_source.json");
+        [&] { (void)loader.load_package_definitions(fixtures / "missing_export"); },
+        "iv_package.json");
 }
 
 TEST(ModuleLoaderFailures, BuildFailurePropagates)
@@ -144,7 +144,7 @@ TEST(ModuleLoaderFailures, BuildFailurePropagates)
     auto const fixtures = iv::test::test_modules_root();
     auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_source_definitions(fixtures / "build_failure"); },
+        [&] { (void)loader.load_package_definitions(fixtures / "build_failure"); },
         "command failed");
 }
 
@@ -153,7 +153,7 @@ TEST(ModuleLoaderFailures, MissingDependencyFails)
     auto const fixtures = iv::test::test_modules_root();
     auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_source_definitions(fixtures / "missing_dependency"); },
+        [&] { (void)loader.load_package_definitions(fixtures / "missing_dependency"); },
         "is unavailable in the current configuration generation");
 }
 
@@ -161,7 +161,7 @@ TEST(ModuleLoaderFailures, UnrelatedDuplicateSourceIdsDoNotBlockLoading)
 {
     auto const fixtures = iv::test::test_modules_root();
     auto loader = iv::test::make_loader({fixtures, iv::test::duplicate_modules_root()});
-    auto const definitions = loader.load_source_definitions(
+    auto const definitions = loader.load_package_definitions(
         fixtures / "nested_loader_project");
     EXPECT_EQ(definitions.size(), 1u);
     EXPECT_EQ(definitions.front().module_id, "iv.test.nested_loader_project");

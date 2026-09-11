@@ -20,7 +20,7 @@ using ModuleRef = std::shared_ptr<void>;
 struct ConfiguredGraph;
 
 struct IvModuleDefinitionDeclaration {
-    // A declaration schedules one IV source build. Its definition_id is the
+    // A declaration schedules one IV package build. Its definition_id is the
     // source package key only at this private/reload boundary.
     std::string definition_id{};
     std::filesystem::path module_root{};
@@ -118,7 +118,7 @@ public:
     };
 
 private:
-    struct SourceCandidate {
+    struct PackageCandidate {
         std::vector<IvModuleReloadedDefinition> modules{};
         std::vector<IvModuleReloadedNodeType> node_types{};
     };
@@ -129,13 +129,13 @@ private:
     std::unordered_map<std::string, std::unique_ptr<NodeTypeState>> loaded_node_types_by_id;
     // One shared ownership map enforces the single stable-ID namespace across
     // primitive node types and iv modules.
-    std::unordered_map<std::string, std::string> source_id_by_registered_id;
+    std::unordered_map<std::string, std::string> package_id_by_registered_id;
     std::unordered_map<std::string, std::vector<std::string>> module_ids_by_source_id;
     // Candidate sets are independent from publication.  A source move can
     // temporarily create a duplicate ID without discarding the destination
     // candidate, and the remaining candidate becomes live as soon as its
     // conflict disappears.
-    std::unordered_map<std::string, SourceCandidate> candidates_by_source_id;
+    std::unordered_map<std::string, PackageCandidate> candidates_by_package_id;
 
     void emit_notification(IvModuleDefinitionsNotification notification) const;
     void emit_message(std::string level, std::string message, std::filesystem::path module_root = {}) const;
@@ -151,7 +151,7 @@ public:
     std::string declare_definition(
         std::string definition_id,
         std::filesystem::path module_root);
-    // Replace the manifest-discovered IV source package set as one snapshot.
+    // Replace the manifest-discovered IV package package set as one snapshot.
     // Registration IDs are not inputs here: they are supplied only by a
     // successful compiler/finalizer source result.
     void sync_source_declarations(

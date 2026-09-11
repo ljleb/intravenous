@@ -178,7 +178,7 @@ SocketRpcJson iv_module_source_json(IvModuleSourceInfo const &source)
     };
 }
 
-SocketRpcJson iv_module_sources_json(std::vector<IvModuleSourceInfo> const &sources)
+SocketRpcJson iv_packages_json(std::vector<IvModuleSourceInfo> const &sources)
 {
     SocketRpcJson json = SocketRpcJson::array();
     for (auto const &source : sources) {

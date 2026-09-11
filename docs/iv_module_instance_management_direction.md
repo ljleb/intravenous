@@ -115,12 +115,12 @@ first instance once. An adjacent `Create new instance` action is always
 available; creation selects the new instance immediately.
 
 Module discovery remains server-owned. The server discovers sources only when
-they contain both `iv_source.json` and `module.cpp`:
+they contain both `iv_package.json` and `module.cpp`:
 
 - the project-local `<project>/modules/` root is always included;
 - shared source roots come from `IV_MODULE_SEARCH_PATH`;
 - each module lives in its own directory;
-- `iv_source.json` is an IV-source JSON manifest, not a duplicate project or
+- `iv_package.json` is an IV-source JSON manifest, not a duplicate project or
   toolchain configuration surface.
 
 The creation flow writes a project-local module from the standard source and

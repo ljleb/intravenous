@@ -17,45 +17,45 @@
 
 namespace iv::details {
 namespace {
-struct BuilderSource {
+struct BuilderPackage {
     std::string source_root{};
-    std::vector<SourceRegistrationView> registrations{};
+    std::vector<PackageRegistrationView> registrations{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
 };
 
 struct BuilderConfiguration {
-    std::vector<BuilderSource> sources{};
+    std::vector<BuilderPackage> sources{};
     std::vector<std::string> module_stack{};
 };
 
-void validate_registration(SourceRegistrationView const& registration)
+void validate_registration(PackageRegistrationView const& registration)
 {
     if (!registration.id || registration.id_size == 0) {
-        throw std::invalid_argument("IV source registration has an empty stable ID");
+        throw std::invalid_argument("IV package registration has an empty stable ID");
     }
     auto const id = std::string_view(registration.id, registration.id_size);
     if (id.find('\0') != std::string_view::npos) {
-        throw std::invalid_argument("IV source registration ID contains a null byte");
+        throw std::invalid_argument("IV package registration ID contains a null byte");
     }
     if (!registration.source_file || registration.source_file_size == 0) {
-        throw std::invalid_argument("IV source registration has no source file");
+        throw std::invalid_argument("IV package registration has no source file");
     }
     if (!registration.source_root || registration.source_root_size == 0) {
-        throw std::invalid_argument("IV source registration has no source package root");
+        throw std::invalid_argument("IV package registration has no source package root");
     }
-    if (registration.kind == SourceRegistrationKind::module) {
+    if (registration.kind == PackageRegistrationKind::module) {
         if (!registration.module_build || registration.node_build
             || registration.node_compiler_record) {
             throw std::invalid_argument("IV module registration is invalid");
         }
-    } else if (registration.kind == SourceRegistrationKind::node) {
+    } else if (registration.kind == PackageRegistrationKind::node) {
         if (registration.module_build || !registration.node_build
             || !registration.node_compiler_record) {
             throw std::invalid_argument("IV node registration is invalid");
         }
     } else {
-        throw std::invalid_argument("IV source registration has invalid kind");
+        throw std::invalid_argument("IV package registration has invalid kind");
     }
 }
 
@@ -165,8 +165,8 @@ ConfiguredGraph take_built_graph(BuilderSession* session)
     return std::move(*state).finish();
 }
 
-void set_builder_sources(
-    BuilderSession* session, std::span<BuilderSourceView const> sources)
+void set_builder_packages(
+    BuilderSession* session, std::span<BuilderPackageView const> sources)
 {
     if (!session) throw std::invalid_argument("builder session is null");
     if (session->graph_taken) {
@@ -194,7 +194,7 @@ void set_builder_sources(
                 registration.source_root, registration.source_root_size);
             if (root != destination.source_root) {
                 throw std::invalid_argument(
-                    "IV source registration belongs to a different source root");
+                    "IV package registration belongs to a different source root");
             }
         }
         for (auto const& global : destination.retained_globals) {
@@ -207,33 +207,33 @@ void set_builder_sources(
     session->source_index = static_cast<std::size_t>(-1);
 }
 
-std::size_t builder_source_index(
+std::size_t builder_package_index(
     BuilderSession const* session, std::string_view source_root)
 {
     if (!session || !session->configuration) {
         throw std::invalid_argument("builder session is null");
     }
     auto const source = std::ranges::find(
-        session->configuration->sources, source_root, &BuilderSource::source_root);
+        session->configuration->sources, source_root, &BuilderPackage::source_root);
     if (source == session->configuration->sources.end()) {
         throw std::runtime_error(
-            "IV source '" + std::string(source_root)
+            "IV package '" + std::string(source_root)
             + "' is unavailable while configuring the graph");
     }
     return static_cast<std::size_t>(source - session->configuration->sources.begin());
 }
 
-std::size_t builder_selected_source(BuilderSession const* session) noexcept
+std::size_t builder_selected_package(BuilderSession const* session) noexcept
 {
     return session ? session->source_index : static_cast<std::size_t>(-1);
 }
 
-void restore_builder_source(BuilderSession* session, std::size_t source_index) noexcept
+void restore_builder_package(BuilderSession* session, std::size_t source_index) noexcept
 {
     if (session) session->source_index = source_index;
 }
 
-void select_builder_source(BuilderSession* session, std::size_t source_index)
+void select_builder_package(BuilderSession* session, std::size_t source_index)
 {
     if (!session || !session->configuration) {
         throw std::invalid_argument("builder session is null");
@@ -259,7 +259,7 @@ BuilderRegistration find_builder_registration(
             if (found) {
                 throw std::runtime_error(
                     "registered IV definition '" + std::string(id)
-                    + "' has multiple providers in the loaded IV sources");
+                    + "' has multiple providers in the loaded IV packages");
             }
             found = BuilderRegistration{
                 .registration = registration,
@@ -270,7 +270,7 @@ BuilderRegistration find_builder_registration(
     if (found) return *found;
     throw std::runtime_error(
         "registered IV definition '" + std::string(id)
-        + "' is unavailable in the loaded IV sources");
+        + "' is unavailable in the loaded IV packages");
 }
 
 void begin_builder_module(BuilderSession* session, std::string_view id)

@@ -114,27 +114,27 @@ function(iv_add_runtime_module target)
         target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=0)
     endif()
 
-    # This target contains only files owned by its IV source package.
+    # This target contains only files owned by its IV package package.
     # Registered IDs resolve in the host graph configuration; provider
     # implementation files are never merged into a consumer target. Custom
     # projects may add additional same-source translation units through
     # SOURCES; duplicates are harmlessly removed here.
-    set(_iv_module_sources
+    set(_iv_packages
         ${IV_MODULE_EXPORT_FILE}
         ${IV_MODULE_SOURCE_FILES}
         ${IVM_SOURCES})
-    list(REMOVE_DUPLICATES _iv_module_sources)
-    add_library(${target} SHARED ${_iv_module_sources})
+    list(REMOVE_DUPLICATES _iv_packages)
+    add_library(${target} SHARED ${_iv_packages})
     # Registration ownership is source-package identity, never the compiler's
     # spelling of __FILE__. This includes sibling sources from custom CMake.
     target_compile_definitions(${target} PRIVATE
-        "IV_SOURCE_REGISTRATION_ROOT=\"${IV_MODULE_SOURCE_DIR}\"")
+        "IV_PACKAGE_ROOT=\"${IV_MODULE_SOURCE_DIR}\"")
     # The metadata plugin runs during each module-source compilation but is
     # loaded only through a compiler flag. CMake otherwise cannot know that a
     # rebuilt plugin invalidates existing LLVM bitcode and its metadata JSON.
     # Make it an explicit object dependency so a host rebuild recompiles
     # persistent module workspaces instead of relinking stale metadata.
-    set_property(SOURCE ${_iv_module_sources} APPEND PROPERTY OBJECT_DEPENDS
+    set_property(SOURCE ${_iv_packages} APPEND PROPERTY OBJECT_DEPENDS
         "${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}")
     # The finalizer transforms the bitcode at link time. Its executable is not
     # a normal linker input, so make updates to it invalidate the link result.

@@ -216,7 +216,7 @@ IvModuleReloadResults IvModuleReload::reload_declarations(
 
     for (auto const &declaration : declarations) {
         try {
-            auto loaded_source = loader.load_source(declaration.module_root);
+            auto loaded_source = loader.load_package(declaration.module_root);
             auto dependencies = std::move(loaded_source.dependencies);
             {
                 std::scoped_lock lock(mutex);
@@ -317,8 +317,8 @@ void IvModuleReload::compile_dirty_definitions()
         "info",
         "rebuildStarted",
         declarations.size() == 1
-            ? "Building IV source"
-            : "Building " + std::to_string(declarations.size()) + " IV sources",
+            ? "Building IV package"
+            : "Building " + std::to_string(declarations.size()) + " IV packages",
         declarations.size() == 1 ? declarations.front().module_root : std::filesystem::path{});
 
     auto const rebuild_started_at = std::chrono::steady_clock::now();
@@ -344,7 +344,7 @@ void IvModuleReload::compile_dirty_definitions()
         emit_status(
             "info",
             "rebuildFinished",
-            "IV source build ready to apply in " + rebuild_duration,
+            "IV package build ready to apply in " + rebuild_duration,
             source_root);
     }
 

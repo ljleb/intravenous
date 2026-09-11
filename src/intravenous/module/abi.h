@@ -57,10 +57,10 @@ static_assert(std::is_trivially_copyable_v<SourceNodeTypeData>);
 extern "C" {
 using iv_module_abi_version_fn = std::uint32_t (*)();
 using iv_module_node_types_fn = iv::ModuleDataView (*)();
-using iv_source_node_types_fn = iv::ModuleDataView (*)();
-using iv_source_registrations_fn = iv::ModuleDataView (*)();
-using iv_source_node_config_pointer_fields_fn = iv::ModuleDataView (*)();
-using iv_source_retained_globals_fn = iv::ModuleDataView (*)();
+using iv_package_node_types_fn = iv::ModuleDataView (*)();
+using iv_package_registrations_fn = iv::ModuleDataView (*)();
+using iv_package_node_config_pointer_fields_fn = iv::ModuleDataView (*)();
+using iv_package_retained_globals_fn = iv::ModuleDataView (*)();
 }
 
 #if defined(_WIN32)

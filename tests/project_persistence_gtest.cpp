@@ -10,13 +10,13 @@
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/project_persistence_events.h>
 #include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_sources.h>
+#include <intravenous/runtime/iv_packages.h>
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/project_persistence_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_reload_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_sources_bridge.h>
+#include <intravenous/runtime/iv_module_instances_iv_packages_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_execution_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -55,15 +55,15 @@ std::string runtime_node_id(std::string_view instance_id, std::string_view virtu
 }
 
 struct ProjectIvModuleInstancesBindings {
-    iv::iv_module_instances_iv_module_sources_bridge::scope sources_scope;
+    iv::iv_module_instances_iv_packages_bridge::scope sources_scope;
     iv::project_persistence_iv_module_instances_bridge::scope persistence_scope;
 
     ProjectIvModuleInstancesBindings(
         iv::ProjectPersistence &persistence,
         iv::IvModuleInstances &instances,
-        iv::IvModuleSources &sources)
+        iv::IvPackages &sources)
         : sources_scope(
-              iv::iv_module_instances_iv_module_sources_bridge::bind(
+              iv::iv_module_instances_iv_packages_bridge::bind(
                   instances,
                   sources)),
           persistence_scope(
@@ -251,7 +251,7 @@ constexpr std::string_view local_cmake_module_id = "iv.test.local_cmake";
 
 struct LocalCmakeSources {
     iv::IvModuleDefinitions definitions{};
-    iv::IvModuleSources sources;
+    iv::IvPackages sources;
 
     explicit LocalCmakeSources(std::filesystem::path const& workspace)
         : sources(workspace, {workspace}, &definitions)
@@ -265,7 +265,7 @@ struct LocalCmakeSources {
         });
     }
 
-    operator iv::IvModuleSources&() { return sources; }
+    operator iv::IvPackages&() { return sources; }
 };
 
 LocalCmakeSources local_cmake_sources(std::filesystem::path const& workspace)

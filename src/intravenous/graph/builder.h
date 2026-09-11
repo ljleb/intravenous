@@ -121,7 +121,7 @@ public:
 
   // Registered IDs are the source-facing node creation API. The bootstrap
   // dynamic path is available for every ID without a generated interface
-  // header. The loaded IV sources resolve the provider immediately, so
+  // header. The loaded IV packages resolve the provider immediately, so
   // this returns the provider's genuine realized NodeRef.
   template<fixed_string Id, class... Args>
   auto node(Args&&...) {

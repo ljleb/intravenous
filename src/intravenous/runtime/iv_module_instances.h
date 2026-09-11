@@ -17,7 +17,7 @@
 #include <vector>
 
 namespace iv {
-class IvModuleSources;
+class IvPackages;
 class ProjectAckBuilder;
 class ProjectPersistenceBuilder;
 class ProjectStringBuilder;
@@ -110,7 +110,7 @@ public:
         std::string const &instance_id,
         size_t default_silence_ttl_samples);
     void update_instances(std::vector<Update> updates);
-    void refresh_source_roots(IvModuleSources const &sources);
+    void refresh_source_roots(IvPackages const &sources);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
 
     void handle_iv_module_definitions_changed(

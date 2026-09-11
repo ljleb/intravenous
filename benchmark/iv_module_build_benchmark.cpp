@@ -264,17 +264,17 @@ std::filesystem::path module_directory(std::filesystem::path path)
 {
     path = std::filesystem::absolute(path).lexically_normal();
     if (std::filesystem::is_regular_file(path)) {
-        if (path.filename() != "iv_source.json") {
+        if (path.filename() != "iv_package.json") {
             throw std::runtime_error(
-                "source path must be a directory or iv_source.json: '" +
+                "source path must be a directory or iv_package.json: '" +
                 path.string() + "'");
         }
         path = path.parent_path();
     }
     if (!std::filesystem::is_directory(path)
-        || !std::filesystem::exists(path / "iv_source.json")) {
+        || !std::filesystem::exists(path / "iv_package.json")) {
         throw std::runtime_error(
-            "source path is missing iv_source.json: '" + path.string() + "'");
+            "source path is missing iv_package.json: '" + path.string() + "'");
     }
     return path;
 }
@@ -567,7 +567,7 @@ void run(Options const& options)
         module = options.workspace / "modules" / "compile_benchmark";
         hot_source = module / "module.cpp";
         write(options.workspace / "iv_project.jsonl", "");
-        write(module / "iv_source.json", R"({"schema":2,"entry":"module.cpp"})");
+        write(module / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");
         write(hot_source, benchmark_source(options.voices, options.source_shape));
     }
     auto source = read(hot_source);
@@ -588,7 +588,7 @@ void run(Options const& options)
             [&](std::string const& entry) { loader_log.push_back(entry); });
 
         auto const cold_start = Clock::now();
-        (void)loader.compile_source(module);
+        (void)loader.compile_package(module);
         auto const cold_elapsed = Clock::now() - cold_start;
         auto const ninja_log = find_ninja_log(options.workspace);
         auto const cold_log = read(ninja_log);
@@ -615,7 +615,7 @@ void run(Options const& options)
         write(hot_source, source);
         loader_log.clear();
         auto const hot_start = Clock::now();
-        (void)loader.compile_source(module);
+        (void)loader.compile_package(module);
         auto const hot_elapsed = Clock::now() - hot_start;
         auto const hot_log = read(ninja_log);
         auto const hot_finalizer_timings = finalizer_timings(

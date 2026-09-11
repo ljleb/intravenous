@@ -255,7 +255,7 @@ namespace {
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
-    auto definition = loader.load_source_definitions(workspace).front();
+    auto definition = loader.load_package_definitions(workspace).front();
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(definition.root), 8);
 

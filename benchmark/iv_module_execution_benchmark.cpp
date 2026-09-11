@@ -176,7 +176,7 @@ void benchmark_module(std::filesystem::path const& path, Options const& options)
     }
 
     if (source_module_count() == 0) {
-        throw std::runtime_error("IV source '" + path.string() + "' has no IV modules");
+        throw std::runtime_error("IV package '" + path.string() + "' has no IV modules");
     }
     auto const graph_view = configured_graph(0);
     auto const config_view = node_configs(0);

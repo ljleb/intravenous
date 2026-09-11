@@ -61,7 +61,7 @@ namespace iv {
             std::vector<ModuleRef> module_refs;
             WeakTypeErasedNode root;
             GraphIntrospectionMetadata introspection;
-            std::filesystem::path source_path;
+            std::filesystem::path package_path;
             std::string module_id;
             std::vector<ModuleDependency> dependencies;
             // The immutable source-configured graph is retained above the
@@ -73,7 +73,7 @@ namespace iv {
                 std::vector<ModuleRef> module_refs_,
                 WeakTypeErasedNode root_,
                 GraphIntrospectionMetadata introspection_,
-                std::filesystem::path source_path_,
+                std::filesystem::path package_path_,
                 std::string module_id_,
                 std::vector<ModuleDependency> dependencies_,
                 std::shared_ptr<ConfiguredGraph const> configured_graph_
@@ -85,19 +85,19 @@ namespace iv {
             // are artifact-local compiler data held alive by module_refs.
             std::string node_type_id;
             details::NodeCompilerRecord compiler_record{};
-            std::filesystem::path source_path;
+            std::filesystem::path package_path;
             std::vector<ModuleRef> module_refs;
             std::shared_ptr<ConfiguredGraph const> configured_graph;
         };
 
-        struct LoadedSource {
+        struct LoadedPackage {
             std::vector<LoadedDefinition> definitions;
             std::vector<LoadedNodeType> node_types;
             std::vector<ModuleDependency> dependencies;
-            // Opaque ownership of the loaded IV source binary. Definitions and
+            // Opaque ownership of the loaded IV package binary. Definitions and
             // configured graphs retain this while any callback or immutable
             // source-global address from that binary can still be referenced.
-            ModuleRef source_binary{};
+            ModuleRef package_code{};
         };
 
         explicit ModuleLoader(
@@ -113,22 +113,22 @@ namespace iv {
         ModuleLoader(ModuleLoader const&) = delete;
         ModuleLoader& operator=(ModuleLoader const&) = delete;
 
-        // Loads one IV source package independently of runtime render
+        // Loads one IV package package independently of runtime render
         // configuration. A valid source may publish no IV modules, so source
         // dependencies are reported independently of the definition vector
         // for watching and transactional reload.
-        LoadedSource load_source(
-            std::filesystem::path const& source_path
+        LoadedPackage load_package(
+            std::filesystem::path const& package_path
         ) const;
 
-        std::vector<LoadedDefinition> load_source_definitions(
-            std::filesystem::path const& source_path
+        std::vector<LoadedDefinition> load_package_definitions(
+            std::filesystem::path const& package_path
         ) const;
 
         // Builds the generated module artifact without loading it. This is
         // primarily useful for compile-time profiling stages.
-        std::filesystem::path compile_source(
-            std::filesystem::path const& source_path
+        std::filesystem::path compile_package(
+            std::filesystem::path const& package_path
         ) const;
 
         std::vector<std::filesystem::path> const& extra_search_roots() const;

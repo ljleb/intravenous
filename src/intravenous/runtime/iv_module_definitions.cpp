@@ -119,7 +119,7 @@ void IvModuleDefinitions::sync_source_declarations(
     next.reserve(declarations.size());
     for (auto& [source_id, source_root] : declarations) {
         if (source_id.empty()) {
-            throw std::runtime_error("discovered IV source has an empty source ID");
+            throw std::runtime_error("discovered IV package has an empty source ID");
         }
         auto declaration = IvModuleDefinitionDeclaration{
             .definition_id = std::move(source_id),
@@ -127,7 +127,7 @@ void IvModuleDefinitions::sync_source_declarations(
         };
         if (!next.emplace(declaration.definition_id, declaration).second) {
             throw std::runtime_error(
-                "discovered IV source snapshot contains duplicate source ID '"
+                "discovered IV package snapshot contains duplicate source ID '"
                 + declaration.definition_id + "'");
         }
     }
@@ -154,7 +154,7 @@ void IvModuleDefinitions::sync_source_declarations(
         }
 
         for (auto const& source_id : removed_source_ids) {
-            candidates_by_source_id.erase(source_id);
+            candidates_by_package_id.erase(source_id);
         }
         declarations_by_source_id = std::move(next);
         if (!removed_source_ids.empty()) {
@@ -192,7 +192,7 @@ void IvModuleDefinitions::remove_definition(std::string const& source_id)
         std::scoped_lock lock(mutex);
         removed = declarations_by_source_id.erase(source_id) > 0;
         if (removed) {
-            candidates_by_source_id.erase(source_id);
+            candidates_by_package_id.erase(source_id);
             rebuild_published_registry_locked(
                 definition_diff, node_type_diff, failures,
                 std::unordered_set<std::string>{source_id});
@@ -256,7 +256,7 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
     std::unordered_map<std::string, std::vector<ModuleProvider>> module_providers;
     std::unordered_map<std::string, std::vector<NodeTypeProvider>> node_type_providers;
     std::unordered_map<std::string, std::vector<RegisteredProvider>> providers_by_id;
-    for (auto const& [source_id, candidate] : candidates_by_source_id) {
+    for (auto const& [source_id, candidate] : candidates_by_package_id) {
         if (!declarations_by_source_id.contains(source_id)) continue;
         for (auto const& definition : candidate.modules) {
             module_providers[definition.module_id].push_back({
@@ -288,7 +288,7 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
             failures.push_back({
                 .level = "error",
                 .message = "registered IV definition ID '" + id
-                    + "' is provided by multiple IV sources",
+                    + "' is provided by multiple IV packages",
                 .module_root = source == declarations_by_source_id.end()
                     ? std::filesystem::path{}
                     : source->second.module_root,
@@ -373,7 +373,7 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
     // complete snapshot, never a mixture of old and candidate providers.
     loaded_definitions_by_module_id = std::move(next_modules);
     loaded_node_types_by_id = std::move(next_node_types);
-    source_id_by_registered_id = std::move(next_owners);
+    package_id_by_registered_id = std::move(next_owners);
     module_ids_by_source_id = std::move(next_modules_by_source);
 }
 
@@ -400,7 +400,7 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
             auto declaration = declarations_by_source_id.find(source.definition_id);
             if (declaration == declarations_by_source_id.end()) continue;
 
-            SourceCandidate candidate;
+            PackageCandidate candidate;
             std::unordered_set<std::string> registered_ids;
             std::string error;
             if (auto modules = modules_by_source_id.find(source.definition_id);
@@ -408,11 +408,11 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
                 candidate.modules.reserve(modules->second.size());
                 for (auto const* module : modules->second) {
                     if (module->module_id.empty()) {
-                        error = "IV source published an IV module with an empty ID";
+                        error = "IV package published an IV module with an empty ID";
                         break;
                     }
                     if (!registered_ids.insert(module->module_id).second) {
-                        error = "IV source published duplicate registered IV definition ID '"
+                        error = "IV package published duplicate registered IV definition ID '"
                             + module->module_id + "'";
                         break;
                     }
@@ -424,16 +424,16 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
                 candidate.node_types.reserve(node_types->second.size());
                 for (auto const* node_type : node_types->second) {
                     if (node_type->node_type_id.empty()) {
-                        error = "IV source published a node type with an empty ID";
+                        error = "IV package published a node type with an empty ID";
                         break;
                     }
                     if (!node_type->configured_graph) {
-                        error = "IV source node type '" + node_type->node_type_id
+                        error = "IV package node type '" + node_type->node_type_id
                             + "' has no configured graph";
                         break;
                     }
                     if (!registered_ids.insert(node_type->node_type_id).second) {
-                        error = "IV source published duplicate registered IV definition ID '"
+                        error = "IV package published duplicate registered IV definition ID '"
                             + node_type->node_type_id + "'";
                         break;
                     }
@@ -449,7 +449,7 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
                 continue;
             }
 
-            candidates_by_source_id[source.definition_id] = std::move(candidate);
+            candidates_by_package_id[source.definition_id] = std::move(candidate);
             changed_source_ids.insert(source.definition_id);
         }
         if (!changed_source_ids.empty()) {

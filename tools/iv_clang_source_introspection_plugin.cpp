@@ -565,7 +565,7 @@ public:
         if (!source_annotation_template_ || !public_output_annotation_function_) {
             auto id = compiler_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
-                "IV source annotation helpers were not found; include <intravenous/dsl.h> before configured module code");
+                "IV package annotation helpers were not found; include <intravenous/dsl.h> before configured module code");
             compiler_.getDiagnostics().Report(function->getLocation(), id);
             return;
         }
@@ -695,7 +695,7 @@ private:
         if (result != TemplateDeductionResult::Success || !specialization) {
             auto id = compiler_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
-                "cannot instantiate IV source annotation helper for type '%0'");
+                "cannot instantiate IV package annotation helper for type '%0'");
             compiler_.getDiagnostics().Report(location, id)
                 << type_string(context_, ref_type);
             return nullptr;
@@ -1066,7 +1066,7 @@ public:
         auto const* record = declaration->getType()->getAsCXXRecordDecl();
         if (!record
             || record->getQualifiedNameAsString()
-                != "iv::details::SourceRegistrationView") {
+                != "iv::details::PackageRegistrationView") {
             return true;
         }
 

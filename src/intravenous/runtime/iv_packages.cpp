@@ -1,8 +1,8 @@
-#include <intravenous/runtime/iv_module_sources.h>
+#include <intravenous/runtime/iv_packages.h>
 
-#include <intravenous/module/source_manifest.h>
+#include <intravenous/module/package_manifest.h>
 #include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_sources_events.h>
+#include <intravenous/runtime/iv_packages_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <nlohmann/json.hpp>
@@ -43,7 +43,7 @@ std::optional<SourceManifest> read_manifest(std::filesystem::path const& path)
 std::optional<std::filesystem::path> find_source_manifest(
     std::filesystem::path const& directory)
 {
-    auto const source_manifest = directory / IV_SOURCE_MANIFEST_FILE;
+    auto const source_manifest = directory / IV_PACKAGE_MANIFEST_FILE;
     return std::filesystem::exists(source_manifest)
         ? std::optional<std::filesystem::path>{source_manifest}
         : std::nullopt;
@@ -89,7 +89,7 @@ void copy_initial_compile_commands(std::filesystem::path const& destination)
 }
 }
 
-IvModuleSources::IvModuleSources(
+IvPackages::IvPackages(
     std::filesystem::path project_root,
     std::vector<std::filesystem::path> shared_roots,
     IvModuleDefinitions const* definitions)
@@ -98,7 +98,7 @@ IvModuleSources::IvModuleSources(
     , definitions_(definitions)
 {}
 
-std::vector<IvModuleSourceInfo> IvModuleSources::list_sources() const
+std::vector<IvModuleSourceInfo> IvPackages::list_sources() const
 {
     std::vector<IvModuleSourceInfo> result;
     auto scan = [&](std::filesystem::path const& root, bool local) {
@@ -114,7 +114,7 @@ std::vector<IvModuleSourceInfo> IvModuleSources::list_sources() const
                 continue;
             }
             if (!entry.is_regular_file()
-                || !is_iv_source_manifest_file(entry.path().filename().string())) continue;
+                || !is_iv_package_manifest_file(entry.path().filename().string())) continue;
             auto const directory = entry.path().parent_path();
             auto manifest_path = find_source_manifest(directory);
             if (!manifest_path || *manifest_path != entry.path()) continue;
@@ -157,7 +157,7 @@ std::vector<IvModuleSourceInfo> IvModuleSources::list_sources() const
     return result;
 }
 
-std::optional<IvModuleSourceInfo> IvModuleSources::find_source(
+std::optional<IvModuleSourceInfo> IvPackages::find_source(
     std::string const& module_id) const
 {
     if (!definitions_) return std::nullopt;
@@ -182,7 +182,7 @@ std::optional<IvModuleSourceInfo> IvModuleSources::find_source(
 }
 
 std::vector<std::pair<std::string, std::filesystem::path>>
-IvModuleSources::source_declarations() const
+IvPackages::source_declarations() const
 {
     std::vector<std::pair<std::string, std::filesystem::path>> declarations;
     for (auto const& source : list_sources()) {
@@ -191,21 +191,21 @@ IvModuleSources::source_declarations() const
     return declarations;
 }
 
-void IvModuleSources::handle_iv_module_source_lookup(
+void IvPackages::handle_iv_module_source_lookup(
     std::string const &module_id,
     IvModuleSourceLookupBuilder &builder) const
 {
     builder.succeed(find_source(module_id));
 }
 
-void IvModuleSources::handle_socket_rpc_get_iv_module_sources(
-    GetIvModuleSourcesRequest const &,
-    SocketRpcIvModuleSourcesResultBuilder &builder) const
+void IvPackages::handle_socket_rpc_get_iv_packages(
+    GetIvPackagesRequest const &,
+    SocketRpcIvPackagesResultBuilder &builder) const
 {
     builder.succeed(list_sources());
 }
 
-void IvModuleSources::handle_socket_rpc_create_iv_module_source(
+void IvPackages::handle_socket_rpc_create_iv_module_source(
     CreateIvModuleSourceRequest const &request,
     SocketRpcIvModuleSourceResultBuilder &builder) const
 {
@@ -216,7 +216,7 @@ void IvModuleSources::handle_socket_rpc_create_iv_module_source(
     }
 }
 
-IvModuleSourceInfo IvModuleSources::create_project_source(std::string const& name) const
+IvModuleSourceInfo IvPackages::create_project_source(std::string const& name) const
 {
     if (!valid_source_name(name)) {
         throw std::runtime_error("module source name must start with a letter or '_' and contain only letters, digits, '_' or '-'");
@@ -234,12 +234,12 @@ IvModuleSourceInfo IvModuleSources::create_project_source(std::string const& nam
     try {
         nlohmann::json manifest{{"schema", 2}, {"entry", "module.cpp"}};
         std::ofstream manifest_out(
-            root / std::string(IV_SOURCE_MANIFEST_FILE),
+            root / std::string(IV_PACKAGE_MANIFEST_FILE),
             std::ios::binary | std::ios::noreplace);
         manifest_out << manifest.dump(2) << '\n';
         if (!manifest_out) {
             throw std::runtime_error(
-                "cannot write " + std::string(IV_SOURCE_MANIFEST_FILE));
+                "cannot write " + std::string(IV_PACKAGE_MANIFEST_FILE));
         }
 
         std::ofstream source(root / "module.cpp", std::ios::binary | std::ios::noreplace);

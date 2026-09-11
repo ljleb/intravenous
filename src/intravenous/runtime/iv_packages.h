@@ -10,9 +10,9 @@ namespace iv {
 class IvModuleDefinitions;
 class IvModuleSourceLookupBuilder;
 class SocketRpcIvModuleSourceResultBuilder;
-class SocketRpcIvModuleSourcesResultBuilder;
+class SocketRpcIvPackagesResultBuilder;
 struct CreateIvModuleSourceRequest;
-struct GetIvModuleSourcesRequest;
+struct GetIvPackagesRequest;
 
 struct IvModuleSourceInfo {
     // This describes an independently discoverable IV *source package*, not
@@ -28,12 +28,12 @@ struct IvModuleSourceInfo {
     std::vector<std::string> node_type_ids;
 };
 
-class IvModuleSources {
+class IvPackages {
     std::filesystem::path project_root_;
     std::vector<std::filesystem::path> shared_roots_;
     IvModuleDefinitions const* definitions_ = nullptr;
 public:
-    IvModuleSources(
+    IvPackages(
         std::filesystem::path project_root,
         std::vector<std::filesystem::path> shared_roots,
         IvModuleDefinitions const* definitions = nullptr);
@@ -52,9 +52,9 @@ public:
     void handle_iv_module_source_lookup(
         std::string const &module_id,
         IvModuleSourceLookupBuilder &builder) const;
-    void handle_socket_rpc_get_iv_module_sources(
-        GetIvModuleSourcesRequest const &request,
-        SocketRpcIvModuleSourcesResultBuilder &builder) const;
+    void handle_socket_rpc_get_iv_packages(
+        GetIvPackagesRequest const &request,
+        SocketRpcIvPackagesResultBuilder &builder) const;
     void handle_socket_rpc_create_iv_module_source(
         CreateIvModuleSourceRequest const &request,
         SocketRpcIvModuleSourceResultBuilder &builder) const;

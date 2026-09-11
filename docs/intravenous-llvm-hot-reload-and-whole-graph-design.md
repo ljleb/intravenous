@@ -61,7 +61,7 @@ The preferred words are:
 - **node**: something that appears as one node to graph configuration and project wiring;
 - **node type**: a primitive C++ implementation registered independently with the server;
 - **iv module**: a registered graph-producing definition that owns/manages a subgraph and can itself be instantiated as one node;
-- **IV source**: an independently discovered, watched, built source package that may provide any number of node types and iv modules;
+- **IV package**: an independently discovered, watched, built source package that may provide any number of node types and iv modules;
 - **module instance**: an instance of a registered iv module in another graph or in the project;
 - **virtual node**: the existing stable source-level identity used to address a node and, where applicable, its direct members;
 - **subgraph**: local structure created inside one `GraphBuilder`; it does not imply an optimizer boundary;
@@ -139,7 +139,7 @@ struct NodeCompilerRecord {
 
 `NodeCodeKey` is deliberately build-local. It is a compiler join between an configured node instance and LLVM functions in that build, not a persistent server identity.
 
-The current source plugin discovers node types through emitted `node_compiler_record<T>` specializations. This is a precise signal for the current migration, but it is not the desired long-term ownership model because using the same C++ node type in many IV sources can cause its compiler-facing implementation to be emitted repeatedly.
+The current source plugin discovers node types through emitted `node_compiler_record<T>` specializations. This is a precise signal for the current migration, but it is not the desired long-term ownership model because using the same C++ node type in many IV packages can cause its compiler-facing implementation to be emitted repeatedly.
 
 ### 3.4 Current Clang source plugin
 
@@ -215,7 +215,7 @@ source edit
 DependencyWatcher / IvModuleReload
     |
     v
-discover IV source packages
+discover IV package packages
     |
     v
 existing custom CMake OR default CMake
@@ -297,7 +297,7 @@ configuration generation is available.  This is what permits `g.node<"id">()` to
 resolve another source without merging that source's C++ files into the
 consumer target.
 
-This separation should remain conceptually intact even as registered node types and multiple iv modules per IV source are introduced.
+This separation should remain conceptually intact even as registered node types and multiple iv modules per IV package are introduced.
 
 ### 4.4 CMake remains authoritative
 
@@ -346,7 +346,7 @@ The future whole-project finalizer should not assume that blindly running the fu
 ### 5.0 Branch boundary
 
 The implementation begins with the **IV-source/registry representation** in
-this branch. The first source-only change makes `iv_source.json` the sole
+this branch. The first source-only change makes `iv_package.json` the sole
 source-package manifest; it contains build discovery data only, never a
 module identity or entry function. `IV_MODULE`/`IV_NODE` registrations are the
 source of stable definition identities, and one source reload publishes its
@@ -360,7 +360,7 @@ auto node = g.node<"some.registered.id">();
 
 The stable string is sufficient for C++ compilation.  A source remains the
 unit watched, compiled, and transactionally replaced; `GraphInputLanes` and
-module instances consume published iv-module definitions, never an IV source.
+module instances consume published iv-module definitions, never an IV package.
 Compiler-produced registration data, not a scan of source text or generated
 includes, is authoritative for associating an ID with a source artifact.
 
@@ -458,11 +458,11 @@ IV_MODULE("iv.filter", filter_graph)
 
 The registry should not permit two active providers of the same ID, even if their implementations happen to be compatible or identical.
 
-### 5.4 IV source
+### 5.4 IV package
 
-An **IV source** is the loader/build-level unit.
+An **IV package** is the loader/build-level unit.
 
-An IV source may provide:
+An IV package may provide:
 
 - zero or more node types;
 - zero or more iv modules;
@@ -471,9 +471,9 @@ An IV source may provide:
 - an experimental node type immediately beside an iv module using it;
 - multiple C++ translation units under custom CMake.
 
-This is intentionally not called an iv module. An iv module is a graph definition; an IV source is the package the loader watches/builds.
+This is intentionally not called an iv module. An iv module is a graph definition; an IV package is the package the loader watches/builds.
 
-`iv_source.json` is the IV-source manifest. Its role is build/package discovery, not a redundant registry of identities already registered in C++.
+`iv_package.json` is the IV-source manifest. Its role is build/package discovery, not a redundant registry of identities already registered in C++.
 
 Every compilation belonging to a source package carries that package's
 canonical source-root identity. Registration ownership must use this explicit
@@ -530,9 +530,9 @@ IvModuleId
 
 The internal implementation remains a `GraphBuilder` function, but consumers only see the ID and public interface.
 
-### 6.3 Registry updates are transactional per IV source
+### 6.3 Registry updates are transactional per IV package
 
-Each IV source build should publish a complete candidate set of definitions:
+Each IV package build should publish a complete candidate set of definitions:
 
 ```text
 SourceDefinitions {
@@ -549,15 +549,15 @@ previous complete generation.
 
 Validation includes at least:
 
-- duplicate stable IDs across IV sources;
-- duplicate IDs within one IV source;
+- duplicate stable IDs across IV packages;
+- duplicate IDs within one IV package;
 - missing referenced IDs;
 - incompatible/generated interface data;
 - iv-module dependency cycles.
 
 The live project/kernel should remain on the last valid generation while the candidate registry is invalid.
 
-### 6.4 Moving definitions between IV sources
+### 6.4 Moving definitions between IV packages
 
 This transactional model deliberately supports cut/paste moves where files are saved in either order.
 
@@ -618,7 +618,7 @@ dynamic configuration.
 
 ### 7.2 Imported interfaces do not include implementation code
 
-An IV source using another registered ID must not parse that node's/iv module's
+An IV package using another registered ID must not parse that node's/iv module's
 implementation headers merely to call it. The generic ID API removes the need
 for generated headers during bootstrap entirely.
 
@@ -802,7 +802,7 @@ which makes semantic port accesses easier to resolve and specialize.
 
 ### 9.1 Do not reproduce arbitrary implementation constructors in consumers
 
-A consuming IV source should not have to include a provider's arbitrary C++ parameter types, overload sets, helper headers, or default-expression dependencies merely to instantiate a registered ID.
+A consuming IV package should not have to include a provider's arbitrary C++ parameter types, overload sets, helper headers, or default-expression dependencies merely to instantiate a registered ID.
 
 The generated interface therefore describes a **public argument/configuration contract** that is sufficient to author the instance without seeing the implementation type.
 
@@ -826,7 +826,7 @@ This can cover strings, lookup tables, immutable arrays, immutable structs, and 
 
 ### 9.3 Caller-owned global dependencies
 
-If an configured argument points into a global defined by the **calling IV source**, but the registered primitive node implementation belongs to another source, the cached configured graph still depends on the retained global definition from the caller.
+If an configured argument points into a global defined by the **calling IV package**, but the registered primitive node implementation belongs to another source, the cached configured graph still depends on the retained global definition from the caller.
 
 The cache/finalizer must therefore preserve the source LLVM/global artifact needed to materialize such symbolic references. It must not assume every configuration global belongs to the node type's implementation artifact.
 
@@ -934,7 +934,7 @@ definition hash
 
 If only a primitive definition changes:
 
-- consumer IV sources do not need to recompile;
+- consumer IV packages do not need to recompile;
 - projects using the ID need a new finalized kernel.
 
 If an iv-module definition changes, its transitive configuration dependents are
@@ -943,7 +943,7 @@ Clang frontend pass unless a C++ compilation interface changed.
 
 If the interface changes:
 
-- consuming IV sources that use that ID may need to recompile/reauthor;
+- consuming IV packages that use that ID may need to recompile/reauthor;
 - project kernels also need to rebuild.
 
 This distinction is central to fast graph reload.
@@ -961,7 +961,7 @@ Do not cache `BuilderSession`.
 The durable source artifact boundary is:
 
 ```text
-Clang once per changed IV source
+Clang once per changed IV package
     -> reusable source configuration artifact
     -> current configuration generation
 
@@ -1012,9 +1012,9 @@ Primitive code belongs to the node-type registry/cache.
 
 This changes the ownership model from today's per-TU `NodeCompilerRecord<T>` emission.
 
-### 11.4 IV source compiler artifact may still retain globals
+### 11.4 IV package compiler artifact may still retain globals
 
-Although node implementation LLVM is registered independently, an IV source may still need retained LLVM globals because configured arguments/configurations can symbolically point into them.
+Although node implementation LLVM is registered independently, an IV package may still need retained LLVM globals because configured arguments/configurations can symbolically point into them.
 
 The module/source cache therefore may need a compiler artifact alongside its configured graphs containing only source-owned retained globals or other configuration data that must survive into project finalization.
 
@@ -1762,7 +1762,7 @@ invalidate:
     finalized project kernels using it
 
 preserve:
-    consuming IV source compilations
+    consuming IV package compilations
     cached iv-module realizations that do not instantiate it
 ```
 
@@ -1770,7 +1770,7 @@ If the public interface changes:
 
 ```text
 also invalidate:
-    IV sources that import/use that ID's interface
+    IV packages that import/use that ID's interface
     their affected ConfiguredGraphs
 ```
 
@@ -1779,7 +1779,7 @@ also invalidate:
 If the C++ graph-building implementation changes:
 
 ```text
-recompile/re-author that IV source as necessary
+recompile/re-author that IV package as necessary
 replace that module's cached ConfiguredGraph
 invalidate finalized projects containing instances of it
 ```
@@ -1795,7 +1795,7 @@ A project connection edit should invalidate only whole-project work:
 ```text
 reuse:
     node type artifacts
-    IV source/interface caches
+    IV package/interface caches
     cached ConfiguredGraphs
 
 redo:
@@ -1829,7 +1829,7 @@ Source annotations, presentation hierarchy, tags, query metadata, and similar no
 
 ### 23.8 Summary table
 
-| Change | Rebuild node type? | Rebuild consuming IV source? | Re-author iv module? | Re-finalize project kernel? |
+| Change | Rebuild node type? | Rebuild consuming IV package? | Re-author iv module? | Re-finalize project kernel? |
 |---|---:|---:|---:|---:|
 | primitive tick implementation only | yes | no | no | yes |
 | primitive public interface | yes | yes, users | yes, affected users | yes |
@@ -1849,7 +1849,7 @@ Source annotations, presentation hierarchy, tags, query metadata, and similar no
 
 The following is the consolidated stage model.
 
-### Stage 1 — IV source compilation
+### Stage 1 — IV package compilation
 
 Input:
 
@@ -1863,7 +1863,7 @@ Work:
 
 - Clang frontend;
 - source plugin registration/introspection;
-- LLVM generation for node implementations defined by this IV source;
+- LLVM generation for node implementations defined by this IV package;
 - compiler metadata/records;
 - retained globals needed by configured configurations.
 
@@ -1892,7 +1892,7 @@ contains no unresolved registered-ID boundary.
 
 ### Stage 3 — source registry validation/publication
 
-The server combines the candidate definitions from all IV sources and checks:
+The server combines the candidate definitions from all IV packages and checks:
 
 ```text
 ID collisions
@@ -2184,11 +2184,11 @@ The design is intentionally staged so the existing 443-test runtime can remain t
 
 ### Phase A — registration and source vocabulary
 
-1. Introduce IV source as the loader-level concept without necessarily renaming all files/classes immediately.
+1. Introduce IV package as the loader-level concept without necessarily renaming all files/classes immediately.
 2. Add stable registration IDs for node types and iv modules.
 3. Build the server registry with transactional source updates and collision checking.
 4. Preserve node implementation LLVM independently from iv-module definitions.
-5. Allow one IV source to register any number of nodes/modules, including node-only sources.
+5. Allow one IV package to register any number of nodes/modules, including node-only sources.
 6. Add cycle detection for iv-module ID dependencies.
 
 ### Phase B — ID-based GraphBuilder API
@@ -2324,14 +2324,14 @@ The existing test suite is a behavioral specification. The new kernel does not n
 The following are treated as strong architectural decisions unless implementation reveals a contradiction.
 
 1. **Clang/LLVM only.** No GCC fallback/back-compat path.
-2. **One C++ frontend pass per changed IV source/TU.** Reuse LLVM for configuration and implementation extraction.
+2. **One C++ frontend pass per changed IV package/TU.** Reuse LLVM for configuration and implementation extraction.
 3. **`ConfiguredGraph` is the initial iv-module cache object.** Do not cache `BuilderSession`.
 4. **`ConfiguredGraph` remains lossless.** Do not discard virtual/tiled/subgraph/addressability information merely to make lowering simpler.
 5. **Node types are registered independently from iv modules.** Primitive implementation LLVM belongs to the node-type registry.
 6. **Stable string IDs identify registered graph nodes.** An ID may be implemented by a primitive node type or an iv module.
 7. **The normal cross-source configuration API is `g.node<"id">(...)`.** Callers do not name implementation C++ types.
 8. **Typed-vs-untyped depends on public-port staticness, not implementation kind.** Static interface -> typed ref; dynamic/config-dependent interface -> `NodeRef`.
-9. **IV sources may register many nodes and iv modules.** A node-only IV source is valid; experimental inline definitions remain convenient.
+9. **IV packages may register many nodes and iv modules.** A node-only IV package is valid; experimental inline definitions remain convenient.
 10. **Same-TU registered IDs are immediately usable.** The generic dynamic API does not rely on a second save/build or a generated `node_interface` specialization.
 11. **Project cross-module connections use stable virtual-node/direct-member port identity, not concrete configured node IDs.**
 12. **Project connections do not mutate cached `ConfiguredGraph`s.**
@@ -2411,7 +2411,7 @@ A practical first sequence is:
 ```text
 1. independently registered node types
 2. independently registered iv modules
-3. IV source publishes multiple registrations transactionally
+3. IV package publishes multiple registrations transactionally
 4. reusable source configuration artifacts and a shared configuration generation
 5. generic `g.node<Id>()` with immediate registered-definition resolution
 6. fully realized `ConfiguredGraph` invocation results and configuration-cycle checks
@@ -2515,6 +2515,6 @@ This ordering is important because the whole-graph execution compiler should be 
 
 The key architectural split is now short enough to state directly:
 
-> **IV sources compile definitions. `ConfiguredGraph`s cache iv-module configuration. The node-type registry owns primitive implementation code. Project connections address stable virtual-node/member ports. The finalizer is the first place all active graphs meet, and only there are scheduling, connection wiring, temporal storage, buffer reuse, TTL, and LLVM execution decisions made.**
+> **IV packages compile definitions. `ConfiguredGraph`s cache iv-module configuration. The node-type registry owns primitive implementation code. Project connections address stable virtual-node/member ports. The finalizer is the first place all active graphs meet, and only there are scheduling, connection wiring, temporal storage, buffer reuse, TTL, and LLVM execution decisions made.**
 
 That is the foundation for both fast whole-project graph reload and the later unified project graph.

@@ -308,9 +308,9 @@ void SocketRpcServer::handle_client(int fd) {
                             builder.fail("iv module instance service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, GetIvModuleSourcesRequest>) {
-                        SocketRpcIvModuleSourcesResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_module_sources_event, event_request, builder);
+                    } else if constexpr (std::same_as<Request, GetIvPackagesRequest>) {
+                        SocketRpcIvPackagesResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_packages_event, event_request, builder);
                         if (!builder.has_response()) {
                             builder.fail("iv module source service is unavailable");
                         }

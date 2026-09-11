@@ -34,7 +34,7 @@ parallelism differs from the defaults.
 
 The first line for each `cold` and `hot` phase reports:
 
-- `pipeline_ms`: complete `ModuleLoader::compile_source` wall time.
+- `pipeline_ms`: complete `ModuleLoader::compile_package` wall time.
 - `configure_us` and `ninja_build_us`: the two external build invocations.
 - `pch_ms`, `export_ms`, and `link_ms`: newly appended Ninja edge durations.
 - `generation_copy_us`: copying the finished DSO into its unique generation

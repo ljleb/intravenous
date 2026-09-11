@@ -386,7 +386,7 @@ export class WorkspaceSession {
         };
     }
 
-    private parseIvModuleSources(payload: unknown): ModuleSourceInfo[] {
+    private parseIvPackages(payload: unknown): ModuleSourceInfo[] {
         if (!Array.isArray(payload)) return [];
         return payload.map((source) => this.parseIvModuleSource(source))
             .filter((source): source is ModuleSourceInfo => source !== null);
@@ -911,10 +911,10 @@ export class WorkspaceSession {
     async refreshModulesPanel(): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) return;
         const [sources, instances] = await Promise.all([
-            this.rpc.getIvModuleSources(),
+            this.rpc.getIvPackages(),
             this.rpc.getIvModuleInstances(),
         ]);
-        this.ivModuleSources = this.parseIvModuleSources(sources.sources);
+        this.ivModuleSources = this.parseIvPackages(sources.sources);
         this.projectModuleInstances = this.parseIvModuleInstances(instances.instances);
         this.refreshLaneInstanceNames();
         this.refreshModulesPanelState();
@@ -1005,8 +1005,8 @@ export class WorkspaceSession {
     private async moduleIdForRoot(moduleRoot: string): Promise<string> {
         let source = this.ivModuleSources.find((candidate) => candidate.moduleRoot === moduleRoot);
         if (!source && this.rpc) {
-            const result = await this.rpc.getIvModuleSources();
-            this.ivModuleSources = this.parseIvModuleSources(result.sources);
+            const result = await this.rpc.getIvPackages();
+            this.ivModuleSources = this.parseIvPackages(result.sources);
             source = this.ivModuleSources.find((candidate) => candidate.moduleRoot === moduleRoot);
         }
         if (!source) {
@@ -1303,7 +1303,7 @@ export class WorkspaceSession {
         if (nextSourceFilePath !== this.activeSourceFilePath) {
             this.activeSourceFilePath = nextSourceFilePath;
             const sourceDirectory = path.dirname(nextSourceFilePath);
-            const hasSourceManifest = fs.existsSync(path.join(sourceDirectory, "iv_source.json"));
+            const hasSourceManifest = fs.existsSync(path.join(sourceDirectory, "iv_package.json"));
             this.activeModuleRoot = path.basename(nextSourceFilePath) === "module.cpp"
                 && hasSourceManifest
                 ? sourceDirectory

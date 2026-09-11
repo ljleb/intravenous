@@ -41,7 +41,7 @@ export class WorkspaceRpc {
         return this.client.request("ivModuleInstances.update", { updates });
     }
 
-    getIvModuleSources(): Promise<{ sources?: Array<Record<string, unknown>> }> {
+    getIvPackages(): Promise<{ sources?: Array<Record<string, unknown>> }> {
         return this.client.request("ivModuleSources.list", {});
     }
 

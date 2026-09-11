@@ -329,7 +329,7 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
     if (method == "ivModuleSources.list") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,
-            .payload = GetIvModuleSourcesRequest{},
+            .payload = GetIvPackagesRequest{},
         };
     }
     if (method == "ivModuleSources.create") {

@@ -1,4 +1,4 @@
-#include <intravenous/module/source_registration.h>
+#include <intravenous/module/package_registration.h>
 
 #include <intravenous/graph/builder.h>
 #include <intravenous/module/builder_session.h>
@@ -22,20 +22,20 @@ public:
     ~ModuleStackEntry() { end_builder_module(session_); }
 };
 
-class SourceSelection {
+class PackageSelection {
     BuilderSession* session_ = nullptr;
     std::size_t previous_ = static_cast<std::size_t>(-1);
 public:
-    SourceSelection(BuilderSession* session, std::size_t source_index)
-        : session_(session), previous_(builder_selected_source(session))
+    PackageSelection(BuilderSession* session, std::size_t source_index)
+        : session_(session), previous_(builder_selected_package(session))
     {
-        select_builder_source(session_, source_index);
+        select_builder_package(session_, source_index);
     }
-    SourceSelection(SourceSelection const&) = delete;
-    SourceSelection& operator=(SourceSelection const&) = delete;
-    ~SourceSelection()
+    PackageSelection(PackageSelection const&) = delete;
+    PackageSelection& operator=(PackageSelection const&) = delete;
+    ~PackageSelection()
     {
-        restore_builder_source(session_, previous_);
+        restore_builder_package(session_, previous_);
     }
 };
 }
@@ -47,8 +47,8 @@ NodeRef author_registered_source_definition(GraphBuilder& builder, std::string_v
     }
     auto const found = find_builder_registration(builder._session, id);
     auto const& registration = found.registration;
-    if (registration.kind == SourceRegistrationKind::node) {
-        SourceSelection const source(builder._session, found.source_index);
+    if (registration.kind == PackageRegistrationKind::node) {
+        PackageSelection const source(builder._session, found.source_index);
         return registration.node_build(builder);
     }
 

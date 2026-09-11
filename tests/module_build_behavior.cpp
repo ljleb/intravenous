@@ -19,7 +19,7 @@ int main()
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
 
-    auto definitions = loader.load_source_definitions(project_dst);
+    auto definitions = loader.load_package_definitions(project_dst);
     auto const definition = std::ranges::find(
         definitions,
         "iv.test.behavior_project",
@@ -60,7 +60,7 @@ int main()
         project_replacement);
     iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
 
-    (void)loader.load_source_definitions(project_dst);
+    (void)loader.load_package_definitions(project_dst);
 
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
     auto const voice_needle =
@@ -74,15 +74,15 @@ int main()
         voice_replacement);
     iv::test::write_text_advancing_timestamp(voice_dst / "module.cpp", voice_source);
 
-    (void)loader.load_source_definitions(project_dst);
+    (void)loader.load_package_definitions(project_dst);
 
-    (void)loader.load_source_definitions(local_dst);
+    (void)loader.load_package_definitions(local_dst);
     auto local_cmake = iv::test::read_text(local_dst / "CMakeLists.txt");
     local_cmake +=
         "\n# behavior cmake marker\n"
         "set(IV_TEST_CUSTOM_CMAKE_MARKER ON CACHE BOOL \"test marker\")\n";
     iv::test::write_text_advancing_timestamp(local_dst / "CMakeLists.txt", local_cmake);
-    (void)loader.load_source_definitions(local_dst);
+    (void)loader.load_package_definitions(local_dst);
 
     auto const local_workspace = iv::test::runtime_module_workspace(local_dst);
     auto const local_cache = local_workspace / "cmake-build" / "CMakeCache.txt";

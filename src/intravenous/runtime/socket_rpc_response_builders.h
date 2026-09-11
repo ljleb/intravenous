@@ -4,7 +4,7 @@
 
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_sources.h>
+#include <intravenous/runtime/iv_packages.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/query/lane_query_schema.h>
 #include <intravenous/query/lane_query_completion.h>
@@ -120,7 +120,7 @@ namespace iv {
         [[nodiscard]] std::string build(int request_id) const;
     };
 
-    class SocketRpcIvModuleSourcesResultBuilder {
+    class SocketRpcIvPackagesResultBuilder {
         int error_code = -32000;
         std::string error_message;
         std::optional<std::vector<IvModuleSourceInfo>> result;

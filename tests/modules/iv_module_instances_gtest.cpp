@@ -3,7 +3,7 @@
 #include <intravenous/bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
-#include <intravenous/runtime/iv_module_sources.h>
+#include <intravenous/runtime/iv_packages.h>
 
 #include <gtest/gtest.h>
 
@@ -170,7 +170,7 @@ TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourc
     auto const moved_root = workspace / "modules" / "saw2";
     std::filesystem::create_directories(moved_root);
     iv::test_support::write_text(
-        moved_root / "iv_source.json",
+        moved_root / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
     iv::test_support::write_text(
         moved_root / "module.cpp",
@@ -188,7 +188,7 @@ TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourc
         moved_root, std::string(module_id));
     loaded.source_id = std::filesystem::weakly_canonical(moved_root).generic_string();
     definitions.seed_loaded_definition(std::move(loaded));
-    iv::IvModuleSources sources(workspace, {}, &definitions);
+    iv::IvPackages sources(workspace, {}, &definitions);
 
     (void)instances.create_instance(module_id, stale_root);
     witness.reset();
@@ -213,7 +213,7 @@ TEST_F(IvModuleInstancesTest, SourceDiscoveryListsPackagesWithoutScanningRegistr
     auto const source_root = workspace / "modules" / "many";
     std::filesystem::create_directories(source_root);
     iv::test_support::write_text(
-        source_root / "iv_source.json",
+        source_root / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
     iv::test_support::write_text(
         source_root / "module.cpp",
@@ -223,7 +223,7 @@ TEST_F(IvModuleInstancesTest, SourceDiscoveryListsPackagesWithoutScanningRegistr
         "IV_MODULE(\"iv.test.module\", primary);\n"
         "IV_MODULE(\"iv.test.module.secondary\", secondary);\n");
 
-    iv::IvModuleSources sources(workspace, {});
+    iv::IvPackages sources(workspace, {});
     auto const discovered = sources.list_sources();
 
     ASSERT_EQ(discovered.size(), 1u);

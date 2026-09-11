@@ -33,7 +33,7 @@
 #include <intravenous/runtime/lanes_visualization_timeline_bridge.h>
 #include <intravenous/runtime/task_runner_lanes_visualization_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
-#include <intravenous/runtime/iv_module_sources.h>
+#include <intravenous/runtime/iv_packages.h>
 #include <intravenous/module/search_paths.h>
 #include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
@@ -41,7 +41,7 @@
 #include <intravenous/runtime/project_persistence_project_autosave_bridge.h>
 #include <intravenous/runtime/project_persistence_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_graph_input_lanes_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_sources_bridge.h>
+#include <intravenous/runtime/iv_module_instances_iv_packages_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_reload_bridge.h>
@@ -54,7 +54,7 @@
 #include <intravenous/runtime/socket_rpc_lane_query_completion_bridge.h>
 #include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
-#include <intravenous/runtime/socket_rpc_iv_module_sources_bridge.h>
+#include <intravenous/runtime/socket_rpc_iv_packages_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
@@ -111,7 +111,7 @@ namespace iv {
             IvModuleReload* reload_ = nullptr;
             IvModuleDefinitions* definitions_ = nullptr;
             IvModuleInstances* instances_ = nullptr;
-            IvModuleSources* sources_ = nullptr;
+            IvPackages* sources_ = nullptr;
             std::optional<std::jthread> thread_ {};
 
         public:
@@ -119,7 +119,7 @@ namespace iv {
                 IvModuleReload& reload,
                 IvModuleDefinitions& definitions,
                 IvModuleInstances& instances,
-                IvModuleSources& sources)
+                IvPackages& sources)
                 : reload_(&reload)
                 , definitions_(&definitions)
                 , instances_(&instances)
@@ -295,7 +295,7 @@ namespace iv {
                 std::chrono::milliseconds(33),
                 startup.execution.block_size);
             IvModuleSourceIntrospection introspection;
-            IvModuleSources iv_module_sources(
+            IvPackages iv_packages(
                 startup.workspace_root,
                 parse_search_path_env(),
                 &iv_module_definitions);
@@ -316,7 +316,7 @@ namespace iv {
                 iv_module_reload,
                 iv_module_definitions,
                 iv_module_instances,
-                iv_module_sources);
+                iv_packages);
             std::function<void()> shutdown = [&]() {
                 iv_module_reload_watcher.request_shutdown();
                 project_autosave_service.request_shutdown();
@@ -376,10 +376,10 @@ namespace iv {
                 timeline_execution_iv_module_instances_execution_bridge::bind(
                     timeline_execution,
                     iv_module_instances_execution);
-            auto iv_module_instances_iv_module_sources_scope =
-                iv_module_instances_iv_module_sources_bridge::bind(
+            auto iv_module_instances_iv_packages_scope =
+                iv_module_instances_iv_packages_bridge::bind(
                     iv_module_instances,
-                    iv_module_sources);
+                    iv_packages);
             auto iv_module_definitions_iv_module_reload_scope =
                 iv_module_definitions_iv_module_reload_bridge::bind(
                     iv_module_definitions,
@@ -467,10 +467,10 @@ namespace iv {
                 socket_rpc_iv_module_instances_bridge::bind(
                     server,
                     iv_module_instances);
-            auto socket_rpc_iv_module_sources_scope =
-                socket_rpc_iv_module_sources_bridge::bind(
+            auto socket_rpc_iv_packages_scope =
+                socket_rpc_iv_packages_bridge::bind(
                     server,
-                    iv_module_sources);
+                    iv_packages);
             auto socket_rpc_timeline_execution_scope =
                 socket_rpc_timeline_execution_bridge::bind(server, timeline_execution);
             auto socket_rpc_iv_module_source_introspection_scope =
@@ -495,7 +495,7 @@ namespace iv {
             // then let the compiler-produced registrations establish the
             // module-ID registry used by that request.
             iv_module_definitions.sync_source_declarations(
-                iv_module_sources.source_declarations());
+                iv_packages.source_declarations());
             iv_module_reload.compile_dirty_definitions();
             iv_module_reload.apply_pending_results();
 

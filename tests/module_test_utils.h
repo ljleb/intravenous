@@ -380,7 +380,7 @@ namespace iv::test {
         std::filesystem::path const& workspace)
     {
         write_text(
-            workspace / "iv_source.json",
+            workspace / "iv_package.json",
             "{\n  \"schema\": 2,\n  \"entry\": \"module.cpp\"\n}\n");
     }
 
@@ -472,7 +472,7 @@ namespace iv::test {
         auto const load_lock = ScopedFileLock(
             runtime_module_cache_root() / ("load_" + stable_path_hash(normalized_module_root) + ".lock"));
         iv::ModuleLoader loader(config.discovery_start, config.search_roots, config.toolchain);
-        auto loaded_graph = loader.load_source_definitions(module_root).front();
+        auto loaded_graph = loader.load_package_definitions(module_root).front();
         return iv::IvModuleReloadedDefinition{
             .definition_id = loaded_graph.module_id,
             .module_root = normalized_module_root,

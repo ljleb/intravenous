@@ -1,4 +1,4 @@
-#include <intravenous/runtime/iv_module_sources_events.h>
+#include <intravenous/runtime/iv_packages_events.h>
 
 namespace iv {
 void IvModuleSourceLookupBuilder::succeed(std::optional<IvModuleSourceInfo> source)

@@ -160,9 +160,9 @@ This file should own:
 - project-owned settings
 - project overrides of installation defaults
 
-### IV-source `iv_source.json`
+### IV-source `iv_package.json`
 
-The `iv_source.json` manifest should be a single JSON object reserved for
+The `iv_package.json` manifest should be a single JSON object reserved for
 IV-source-local settings only. An empty manifest is `{}`.
 
 It should not contain:
@@ -182,7 +182,7 @@ The runtime now uses:
 - `iv_project.jsonl` as the project-owned JSONL command/settings file
 - `.intravenous_defaults` as the installation defaults file
 
-IV-source `iv_source.json` manifests are reserved for IV-source-local
+IV-source `iv_package.json` manifests are reserved for IV-source-local
 settings, but current project persistence work does not rely on them.
 
 ## One route per purpose

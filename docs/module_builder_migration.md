@@ -277,7 +277,7 @@ plus exported `iv_source_registered_*` configuration entrypoints through
 `GlobalDCE`.  The host later joins independently built source artifacts into
 one configuration generation and invokes an iv-module entry only there.
 
-The timing sidecar now reports `source_registration_validation_us` and
+The timing sidecar now reports `package_registration_validation_us` and
 `source_configuration_ir_preserve_us`.  Runtime O3 remains the compatibility
 execution path; the retained configuration entrypoints are source-package inputs,
 not DSP roots of their own.
@@ -286,7 +286,7 @@ not DSP roots of their own.
 
 The finalizer still uses a temporary O0 ORC clone to validate and serialize
 primitive-node configuration data. It does not execute registered iv-module
-builders there, because their providers may live in other IV source artifacts.
+builders there, because their providers may live in other IV package artifacts.
 The host's shared configuration generation performs that invocation after all
 relevant source artifacts are loaded. Its code is configuration-only, never DSP
 execution code.

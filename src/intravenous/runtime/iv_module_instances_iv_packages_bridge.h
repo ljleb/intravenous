@@ -4,10 +4,10 @@
 
 namespace iv {
 class IvModuleInstances;
-class IvModuleSources;
+class IvPackages;
 
 IV_DECLARE_BRIDGE(
-    iv_module_instances_iv_module_sources_bridge,
+    iv_module_instances_iv_packages_bridge,
     IvModuleInstances,
-    IvModuleSources);
+    IvPackages);
 } // namespace iv

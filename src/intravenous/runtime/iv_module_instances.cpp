@@ -3,8 +3,8 @@
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/iv_module_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
-#include <intravenous/runtime/iv_module_sources.h>
-#include <intravenous/runtime/iv_module_sources_events.h>
+#include <intravenous/runtime/iv_packages.h>
+#include <intravenous/runtime/iv_packages_events.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/project_persistence_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -275,7 +275,7 @@ void IvModuleInstances::update_instances(std::vector<Update> updates)
     }
 }
 
-void IvModuleInstances::refresh_source_roots(IvModuleSources const &sources)
+void IvModuleInstances::refresh_source_roots(IvPackages const &sources)
 {
     IvModuleRequiredDefinitionsChanged required_diff{};
     bool list_changed = false;

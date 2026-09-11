@@ -30,7 +30,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         std::string::npos);
 
     {
-        auto definitions = loader.load_source_definitions(project_dst);
+        auto definitions = loader.load_package_definitions(project_dst);
         auto const definition = std::ranges::find(
             definitions,
             "iv.test.behavior_project",
@@ -101,7 +101,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         project_replacement);
     iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
 
-    (void)loader.load_source_definitions(project_dst);
+    (void)loader.load_package_definitions(project_dst);
 
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
     auto const voice_needle =
@@ -115,10 +115,10 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         voice_replacement);
     iv::test::write_text_advancing_timestamp(voice_dst / "module.cpp", voice_source);
 
-    (void)loader.load_source_definitions(project_dst);
+    (void)loader.load_package_definitions(project_dst);
 
     {
-        auto definition = loader.load_source_definitions(local_dst).front();
+        auto definition = loader.load_package_definitions(local_dst).front();
         EXPECT_EQ(definition.module_id, "iv.test.local_cmake");
     }
 
@@ -128,7 +128,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         "set(IV_TEST_CUSTOM_CMAKE_MARKER ON CACHE BOOL \"test marker\")\n";
     iv::test::write_text_advancing_timestamp(local_dst / "CMakeLists.txt", local_cmake);
 
-    (void)loader.load_source_definitions(local_dst);
+    (void)loader.load_package_definitions(local_dst);
 
     auto const local_workspace = iv::test::runtime_module_workspace(local_dst);
     auto const local_cache = local_workspace / "cmake-build" / "CMakeCache.txt";
@@ -148,7 +148,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     auto const finalizer_timings_text = iv::test::read_text(finalizer_timings);
     EXPECT_TRUE(finalizer_timings_text.starts_with("version=1\n"));
     EXPECT_NE(
-        finalizer_timings_text.find("source_registration_validation_us="),
+        finalizer_timings_text.find("package_registration_validation_us="),
         std::string::npos);
     EXPECT_NE(
         finalizer_timings_text.find("source_configuration_ir_preserve_us="),
@@ -230,7 +230,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     iv::ModuleLoader time_trace_loader(
         iv::test::repo_root(), {},
         iv::ModuleLoaderToolchainConfig{.clang_time_trace = true});
-    (void)time_trace_loader.load_source_definitions(local_dst);
+    (void)time_trace_loader.load_package_definitions(local_dst);
 
     auto const traced_compile_database = iv::test::read_text(
         local_workspace / "cmake-build" / "compile_commands.json");

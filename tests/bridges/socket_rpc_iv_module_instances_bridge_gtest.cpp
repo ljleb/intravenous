@@ -2,12 +2,12 @@
 
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
-#include <intravenous/runtime/iv_module_sources.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_sources_bridge.h>
+#include <intravenous/runtime/iv_packages.h>
+#include <intravenous/runtime/iv_module_instances_iv_packages_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
-#include <intravenous/runtime/socket_rpc_iv_module_sources_bridge.h>
+#include <intravenous/runtime/socket_rpc_iv_packages_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -42,18 +42,18 @@ TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventLeavesResponseUnbuilt)
     EXPECT_THROW(static_cast<void>(builder.build(1)), std::runtime_error);
 }
 
-TEST(IvModuleSources, NewProjectSourcesReceiveTheSameTemplateCompileDatabase)
+TEST(IvPackages, NewProjectSourcesReceiveTheSameTemplateCompileDatabase)
 {
     auto const project_root = std::filesystem::temp_directory_path()
-        / "intravenous_iv_module_sources_compile_commands_test";
+        / "intravenous_iv_packages_compile_commands_test";
     std::filesystem::remove_all(project_root);
 
-    iv::IvModuleSources sources(project_root, {});
+    iv::IvPackages sources(project_root, {});
     auto const first = sources.create_project_source("first");
     auto const second = sources.create_project_source("second");
 
-    EXPECT_TRUE(std::filesystem::exists(first.source_root / "iv_source.json"));
-    EXPECT_TRUE(std::filesystem::exists(second.source_root / "iv_source.json"));
+    EXPECT_TRUE(std::filesystem::exists(first.source_root / "iv_package.json"));
+    EXPECT_TRUE(std::filesystem::exists(second.source_root / "iv_package.json"));
 
     auto read = [](std::filesystem::path const& path) {
         std::ifstream in(path, std::ios::binary);
@@ -83,11 +83,11 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
         module_root, "iv.test.local_cmake");
     definition.source_id = std::filesystem::weakly_canonical(module_root).generic_string();
     definitions.seed_loaded_definition(std::move(definition));
-    iv::IvModuleSources sources("/tmp", {module_root}, &definitions);
+    iv::IvPackages sources("/tmp", {module_root}, &definitions);
     iv::ProjectPersistence persistence("/tmp", {});
     iv::SocketRpcServer server("/tmp", -1);
-    auto iv_module_instances_iv_module_sources_scope =
-        iv::iv_module_instances_iv_module_sources_bridge::bind(instances, sources);
+    auto iv_module_instances_iv_packages_scope =
+        iv::iv_module_instances_iv_packages_bridge::bind(instances, sources);
     auto project_persistence_iv_module_instances_scope =
         iv::project_persistence_iv_module_instances_bridge::bind(
             persistence,
@@ -98,8 +98,8 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
             introspection);
     auto socket_rpc_iv_module_instances_scope =
         iv::socket_rpc_iv_module_instances_bridge::bind(server, instances);
-    auto socket_rpc_iv_module_sources_scope =
-        iv::socket_rpc_iv_module_sources_bridge::bind(server, sources);
+    auto socket_rpc_iv_packages_scope =
+        iv::socket_rpc_iv_packages_bridge::bind(server, sources);
     auto socket_rpc_project_persistence_scope =
         iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
 
@@ -137,11 +137,11 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
         module_root, "iv.test.local_cmake");
     definition.source_id = std::filesystem::weakly_canonical(module_root).generic_string();
     definitions.seed_loaded_definition(std::move(definition));
-    iv::IvModuleSources sources("/tmp", {module_root}, &definitions);
+    iv::IvPackages sources("/tmp", {module_root}, &definitions);
     iv::ProjectPersistence persistence("/tmp", {});
     iv::SocketRpcServer server("/tmp", -1);
-    auto iv_module_instances_iv_module_sources_scope =
-        iv::iv_module_instances_iv_module_sources_bridge::bind(instances, sources);
+    auto iv_module_instances_iv_packages_scope =
+        iv::iv_module_instances_iv_packages_bridge::bind(instances, sources);
     auto project_persistence_iv_module_instances_scope =
         iv::project_persistence_iv_module_instances_bridge::bind(
             persistence,
@@ -152,8 +152,8 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
             introspection);
     auto socket_rpc_iv_module_instances_scope =
         iv::socket_rpc_iv_module_instances_bridge::bind(server, instances);
-    auto socket_rpc_iv_module_sources_scope =
-        iv::socket_rpc_iv_module_sources_bridge::bind(server, sources);
+    auto socket_rpc_iv_packages_scope =
+        iv::socket_rpc_iv_packages_bridge::bind(server, sources);
     auto socket_rpc_project_persistence_scope =
         iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
 

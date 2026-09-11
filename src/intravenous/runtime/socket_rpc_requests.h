@@ -39,7 +39,7 @@ namespace iv {
         std::optional<std::string> display_name{};
     };
 
-    struct GetIvModuleSourcesRequest {};
+    struct GetIvPackagesRequest {};
 
     struct CreateIvModuleSourceRequest {
         std::string name{};
@@ -169,7 +169,7 @@ namespace iv {
         GetVirtualNodeRequest,
         GetVirtualNodesRequest,
         CreateIvModuleInstanceRequest,
-        GetIvModuleSourcesRequest,
+        GetIvPackagesRequest,
         CreateIvModuleSourceRequest,
         GetIvModuleInstancesRequest,
         DeleteIvModuleInstanceRequest,

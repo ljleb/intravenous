@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/module/abi.h>
-#include <intravenous/module/source_registration.h>
+#include <intravenous/module/package_registration.h>
 #include <intravenous/node/config_relocations.h>
 
 #include <cstddef>
@@ -16,18 +16,18 @@ struct ConfiguredGraph;
 
 namespace details {
 // All source-specific data needed while configuring a graph. The loader builds
-// these views from the IV sources that are loaded for the configuration; the
+// these views from the IV packages that are loaded for the configuration; the
 // BuilderSession copies the records so nested iv-module calls use one stable
 // lookup set even if other sources are reloaded concurrently.
-struct BuilderSourceView {
+struct BuilderPackageView {
     std::string_view source_root{};
-    std::span<SourceRegistrationView const> registrations{};
+    std::span<PackageRegistrationView const> registrations{};
     std::span<NodeConfigPointerFieldData const> config_pointer_fields{};
     std::span<RetainedGlobalData const> retained_globals{};
 };
 
 struct BuilderRegistration {
-    SourceRegistrationView registration{};
+    PackageRegistrationView registration{};
     std::size_t source_index = 0;
 };
 
@@ -43,13 +43,13 @@ BuilderSession* iv_builder_child_session_create(
 
 ConfiguredGraph take_built_graph(BuilderSession*);
 
-void set_builder_sources(
-    BuilderSession*, std::span<BuilderSourceView const> sources);
-std::size_t builder_source_index(
+void set_builder_packages(
+    BuilderSession*, std::span<BuilderPackageView const> sources);
+std::size_t builder_package_index(
     BuilderSession const*, std::string_view source_root);
-std::size_t builder_selected_source(BuilderSession const*) noexcept;
-void restore_builder_source(BuilderSession*, std::size_t source_index) noexcept;
-void select_builder_source(BuilderSession*, std::size_t source_index);
+std::size_t builder_selected_package(BuilderSession const*) noexcept;
+void restore_builder_package(BuilderSession*, std::size_t source_index) noexcept;
+void select_builder_package(BuilderSession*, std::size_t source_index);
 BuilderRegistration find_builder_registration(
     BuilderSession const*, std::string_view id);
 void begin_builder_module(BuilderSession*, std::string_view id);

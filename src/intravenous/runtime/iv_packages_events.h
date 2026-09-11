@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/linker_event.h>
-#include <intravenous/runtime/iv_module_sources.h>
+#include <intravenous/runtime/iv_packages.h>
 
 #include <optional>
 #include <string>

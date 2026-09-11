@@ -625,7 +625,7 @@ BuilderModuleClone clone_builder_module(Module const& master)
 {
     SmallPtrSet<GlobalValue const*, 32> reachable;
     static constexpr std::array<StringRef, 1> configuration_entry_points{
-        "iv_source_registrations",
+        "iv_package_registrations",
     };
     for (auto const name : configuration_entry_points) {
         auto const* entry_point = master.getFunction(name);
@@ -678,10 +678,10 @@ void mark_runtime_module_roots(
     static constexpr std::array<StringRef, 6> runtime_entry_points{
         "iv_module_abi_version",
         "iv_module_node_types",
-        "iv_source_node_types",
-        "iv_source_registrations",
-        "iv_source_node_config_pointer_fields",
-        "iv_source_retained_globals",
+        "iv_package_node_types",
+        "iv_package_registrations",
+        "iv_package_node_config_pointer_fields",
+        "iv_package_retained_globals",
     };
 
     for (auto const name : runtime_entry_points) {
@@ -720,9 +720,9 @@ void preserve_source_configuration_ir(Module& module)
     pipeline.run(module);
 
     static constexpr std::array<StringRef, 3> configuration_entry_points{
-        "iv_source_registrations",
-        "iv_source_node_config_pointer_fields",
-        "iv_source_retained_globals",
+        "iv_package_registrations",
+        "iv_package_node_config_pointer_fields",
+        "iv_package_retained_globals",
     };
     for (auto const name : configuration_entry_points) {
         if (!module.getFunction(name) || module.getFunction(name)->isDeclaration()) {
@@ -837,10 +837,10 @@ BuilderJitResult run_builder_jit(
         "add configuration LLVM module to ORC");
     check_error(
         jit->initialize(jit->getMainJITDylib()),
-        "run IV source global initializers");
+        "run IV package global initializers");
     auto registrations_address = take_expected(
-        jit->lookup("iv_source_registrations"),
-        "lookup iv_source_registrations");
+        jit->lookup("iv_package_registrations"),
+        "lookup iv_package_registrations");
     auto global_addresses = take_expected(
         jit->lookup("iv_get_retained_global_addresses"),
         "lookup retained LLVM global address table");
@@ -850,27 +850,27 @@ BuilderJitResult run_builder_jit(
     auto const registration_view =
         registrations_address.toPtr<RegistrationsFn>()();
     if (!registration_view.data && registration_view.size != 0) {
-        fail("IV source registration table has null data");
+        fail("IV package registration table has null data");
     }
-    if (registration_view.size % sizeof(iv::details::SourceRegistrationView) != 0) {
-        fail("IV source registration table has invalid size");
+    if (registration_view.size % sizeof(iv::details::PackageRegistrationView) != 0) {
+        fail("IV package registration table has invalid size");
     }
     auto const registrations = std::span(
-        static_cast<iv::details::SourceRegistrationView const*>(registration_view.data),
-        registration_view.size / sizeof(iv::details::SourceRegistrationView));
+        static_cast<iv::details::PackageRegistrationView const*>(registration_view.data),
+        registration_view.size / sizeof(iv::details::PackageRegistrationView));
 
     std::string source_root;
     if (!registrations.empty()) {
         auto const& first = registrations.front();
         if (!first.source_root || first.source_root_size == 0) {
-            fail("IV source registration has no source root");
+            fail("IV package registration has no source root");
         }
         source_root.assign(first.source_root, first.source_root_size);
         for (auto const& registration : registrations) {
             if (!registration.source_root
                 || std::string_view(registration.source_root, registration.source_root_size)
                     != source_root) {
-                fail("one IV source emitted registrations for multiple source roots");
+                fail("one IV package emitted registrations for multiple source roots");
             }
         }
     }
@@ -908,15 +908,15 @@ BuilderJitResult run_builder_jit(
 
     for (auto const& registration : registrations) {
         if (!registration.id || registration.id_size == 0) {
-            fail("IV source registration has an empty ID");
+            fail("IV package registration has an empty ID");
         }
         auto name = std::string(registration.id, registration.id_size);
         if (!registered_ids.insert(name).second) {
-            fail("duplicate registered IV definition ID within one IV source: '"
+            fail("duplicate registered IV definition ID within one IV package: '"
                  + name + "'");
         }
 
-        if (registration.kind == iv::details::SourceRegistrationKind::module) {
+        if (registration.kind == iv::details::PackageRegistrationKind::module) {
             if (!registration.module_build) {
                 fail("registered IV module '" + name + "' has no build function");
             }
@@ -936,7 +936,7 @@ BuilderJitResult run_builder_jit(
             continue;
         }
 
-        if (registration.kind != iv::details::SourceRegistrationKind::node
+        if (registration.kind != iv::details::PackageRegistrationKind::node
             || !registration.node_build || !registration.node_compiler_record) {
             fail("registered IV node '" + name + "' is incomplete");
         }
@@ -963,15 +963,15 @@ BuilderJitResult run_builder_jit(
             decltype(&iv::details::iv_builder_session_destroy)>(
                 iv::details::iv_builder_session_create(),
                 iv::details::iv_builder_session_destroy);
-        if (!node_session) fail("create IV source node-type builder session");
-        iv::details::BuilderSourceView const source{
+        if (!node_session) fail("create IV package node-type builder session");
+        iv::details::BuilderPackageView const source{
             .source_root = source_root,
             .registrations = registrations,
             .config_pointer_fields = pointer_fields,
             .retained_globals = retained_globals,
         };
-        iv::details::set_builder_sources(node_session.get(), std::span(&source, 1));
-        iv::details::select_builder_source(node_session.get(), 0);
+        iv::details::set_builder_packages(node_session.get(), std::span(&source, 1));
+        iv::details::select_builder_package(node_session.get(), 0);
         iv::GraphBuilder builder(node_session.get());
         auto node = registration.node_build(builder);
         configure_node_type_ports(builder, node);
@@ -994,13 +994,13 @@ BuilderJitResult run_builder_jit(
             }
         }
     }
-    timings.finish_stage("source_registration_validation", stage_started_at);
+    timings.finish_stage("package_registration_validation", stage_started_at);
 
     stage_started_at = timings.start_stage();
     check_error(
         jit->deinitialize(jit->getMainJITDylib()),
-        "run IV source global destructors");
-    check_error(tracker->remove(), "release IV source JIT code");
+        "run IV package global destructors");
+    check_error(tracker->remove(), "release IV package JIT code");
     timings.finish_stage("jit_release", stage_started_at);
     return {
         .node_types = std::move(node_types),
@@ -1103,11 +1103,11 @@ Function* emit_view_accessor(
 }
 
 
-void inject_source_registration_table(Module& module)
+void inject_package_registration_table(Module& module)
 {
     std::vector<GlobalVariable*> registrations;
     for (auto& global : module.globals()) {
-        if (global.getSection() == iv::details::source_registration_section
+        if (global.getSection() == iv::details::package_registration_section
             && global.isConstant() && global.hasInitializer()) {
             registrations.push_back(&global);
         }
@@ -1119,7 +1119,7 @@ void inject_source_registration_table(Module& module)
     if (registrations.empty()) {
         emit_view_accessor(
             module,
-            "iv_source_registrations",
+            "iv_package_registrations",
             ConstantPointerNull::get(PointerType::getUnqual(module.getContext())),
             0);
         return;
@@ -1128,13 +1128,13 @@ void inject_source_registration_table(Module& module)
     auto* record_type = registrations.front()->getValueType();
     for (auto const* registration : registrations) {
         if (registration->getValueType() != record_type) {
-            fail("IV source registration records have inconsistent LLVM types");
+            fail("IV package registration records have inconsistent LLVM types");
         }
     }
     auto const record_size = module.getDataLayout().getTypeAllocSize(record_type);
     if (record_size.isScalable()
-        || record_size.getFixedValue() != sizeof(iv::details::SourceRegistrationView)) {
-        fail("IV source registration record ABI does not match SourceRegistrationView");
+        || record_size.getFixedValue() != sizeof(iv::details::PackageRegistrationView)) {
+        fail("IV package registration record ABI does not match PackageRegistrationView");
     }
 
     std::vector<Constant*> values;
@@ -1149,10 +1149,10 @@ void inject_source_registration_table(Module& module)
         true,
         GlobalValue::PrivateLinkage,
         ConstantArray::get(array_type, values),
-        "iv.source_registrations");
+        "iv.package_registrations");
     emit_view_accessor(
         module,
-        "iv_source_registrations",
+        "iv_package_registrations",
         ConstantExpr::getPointerCast(table, PointerType::getUnqual(module.getContext())),
         values.size() * record_size.getFixedValue());
 }
@@ -1185,7 +1185,7 @@ void inject_source_configuration_metadata(
     if (pointer_fields.empty()) {
         emit_view_accessor(
             module,
-            "iv_source_node_config_pointer_fields",
+            "iv_package_node_config_pointer_fields",
             ConstantPointerNull::get(pointer_type),
             0);
     } else {
@@ -1199,7 +1199,7 @@ void inject_source_configuration_metadata(
             "iv.source_node_config_pointer_fields");
         emit_view_accessor(
             module,
-            "iv_source_node_config_pointer_fields",
+            "iv_package_node_config_pointer_fields",
             ConstantExpr::getPointerCast(table, pointer_type),
             pointer_fields.size()
                 * module.getDataLayout().getTypeAllocSize(pointer_field_type).getFixedValue());
@@ -1220,7 +1220,7 @@ void inject_source_configuration_metadata(
     if (globals.empty()) {
         emit_view_accessor(
             module,
-            "iv_source_retained_globals",
+            "iv_package_retained_globals",
             ConstantPointerNull::get(pointer_type),
             0);
     } else {
@@ -1234,7 +1234,7 @@ void inject_source_configuration_metadata(
             "iv.source_retained_globals");
         emit_view_accessor(
             module,
-            "iv_source_retained_globals",
+            "iv_package_retained_globals",
             ConstantExpr::getPointerCast(table, pointer_type),
             globals.size()
                 * module.getDataLayout().getTypeAllocSize(retained_global_type).getFixedValue());
@@ -1386,7 +1386,7 @@ void inject_source_data(
     if (source_node_types.empty()) {
         emit_view_accessor(
             module,
-            "iv_source_node_types",
+            "iv_package_node_types",
             ConstantPointerNull::get(pointer_type),
             0);
     } else {
@@ -1469,7 +1469,7 @@ void inject_source_data(
             "iv.source_node_types");
         emit_view_accessor(
             module,
-            "iv_source_node_types",
+            "iv_package_node_types",
             ConstantExpr::getPointerCast(source_node_type_array, pointer_type),
             source_node_type_records.size()
                 * module.getDataLayout().getTypeAllocSize(source_node_type_type)
@@ -1634,8 +1634,8 @@ int finalize(Options options)
     timings.finish_stage("metadata_bind", stage_started_at);
 
     stage_started_at = timings.start_stage();
-    inject_source_registration_table(master);
-    timings.finish_stage("source_registration_table", stage_started_at);
+    inject_package_registration_table(master);
+    timings.finish_stage("package_registration_table", stage_started_at);
 
     auto configured = run_builder_jit(
         master, context, options.link_command, metadata, timings);
