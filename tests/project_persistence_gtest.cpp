@@ -9,6 +9,7 @@
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/project_persistence_events.h>
+#include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_sources.h>
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/project_persistence_audio_device_lanes_bridge.h>
@@ -246,12 +247,31 @@ iv::StartupConfigState make_startup(std::filesystem::path const &workspace)
     };
 }
 
-iv::IvModuleSources local_cmake_sources(std::filesystem::path const &workspace)
-{
-    return iv::IvModuleSources(workspace, {workspace});
-}
-
 constexpr std::string_view local_cmake_module_id = "iv.test.local_cmake";
+
+struct LocalCmakeSources {
+    iv::IvModuleDefinitions definitions{};
+    iv::IvModuleSources sources;
+
+    explicit LocalCmakeSources(std::filesystem::path const& workspace)
+        : sources(workspace, {workspace}, &definitions)
+    {
+        auto const root = std::filesystem::weakly_canonical(workspace);
+        definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
+            .source_id = root.generic_string(),
+            .definition_id = root.generic_string(),
+            .module_root = root,
+            .module_id = std::string(local_cmake_module_id),
+        });
+    }
+
+    operator iv::IvModuleSources&() { return sources; }
+};
+
+LocalCmakeSources local_cmake_sources(std::filesystem::path const& workspace)
+{
+    return LocalCmakeSources(workspace);
+}
 
 iv::TimelineLaneBatchUpdate timeline_batch_with_two_lanes()
 {
