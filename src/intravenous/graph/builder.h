@@ -10,6 +10,7 @@
 #include <intravenous/graph/builder/subgraphs.hpp>
 #include <intravenous/graph/source_info.h>
 #include <intravenous/node/build_request.h>
+#include <intravenous/module/configuration_argument.h>
 
 #include <array>
 #include <concepts>
@@ -23,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <tuple>
 #include <utility>
 
 namespace iv {
@@ -32,7 +34,8 @@ class GraphBuilderState;
 
 namespace details {
 struct BuilderSession;
-NodeRef configure_registered_definition(GraphBuilder&, std::string_view);
+NodeRef configure_registered_definition(
+    GraphBuilder&, std::string_view, std::span<ConfigurationArgument>);
 GraphBuilderState& builder_graph_state(GraphBuilder&);
 NodeBundleHandle iv_builder_append_node(
     GraphBuilder&, NodeBuildRequest const&);
@@ -59,7 +62,8 @@ class GraphBuilder {
   friend NodeBundleHandle details::iv_builder_append_tiled_node(
       GraphBuilder&, details::NodeBuildRequest const&, ChannelLayout);
   friend NodeRef details::configure_registered_definition(
-      GraphBuilder&, std::string_view);
+      GraphBuilder&, std::string_view,
+      std::span<details::ConfigurationArgument>);
   friend class SubgraphBuilder;
 
   details::BuilderSession* _session = nullptr;
@@ -124,10 +128,12 @@ public:
   // header. The loaded IV packages resolve the provider immediately, so
   // this returns the provider's genuine realized NodeRef.
   template<fixed_string Id, class... Args>
-  auto node(Args&&...) {
-    static_assert(sizeof...(Args) == 0,
-        "registered IV definitions do not yet declare public configured arguments");
-    return details::configure_registered_definition(*this, Id.view());
+  auto node(Args&&... args) {
+    auto values = std::tuple<std::remove_cvref_t<Args>...>(
+        std::forward<Args>(args)...);
+    auto arguments = details::configuration_arguments(values);
+    return details::configure_registered_definition(
+        *this, Id.view(), arguments);
   }
 
   template<class Node, class ChannelType, class... Args>

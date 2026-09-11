@@ -52,8 +52,6 @@ struct Options {
         std::filesystem::temp_directory_path() / "intravenous-module-build-benchmark";
     size_t voices = 1;
     bool keep_workspace = false;
-    iv::ModuleCompileStage compile_stage = iv::ModuleCompileStage::full;
-    iv::ModuleOptimization optimization = iv::ModuleOptimization::O3;
     bool source_introspection = true;
     bool precompiled_header = true;
     bool clang_time_trace = false;
@@ -83,56 +81,6 @@ SourceShape parse_source_shape(std::string_view value)
     if (value == "connected") return SourceShape::connected;
     if (value == "full") return SourceShape::full;
     throw std::runtime_error("invalid source shape '" + std::string(value) + "'");
-}
-
-std::string_view compile_stage_name(iv::ModuleCompileStage stage)
-{
-    switch (stage) {
-    case iv::ModuleCompileStage::full: return "full";
-    case iv::ModuleCompileStage::configuration: return "configuration";
-    case iv::ModuleCompileStage::lowering_topology:
-        return "lowering-topology";
-    case iv::ModuleCompileStage::lowering_materialization:
-        return "lowering-materialization";
-    case iv::ModuleCompileStage::lowering_normalization:
-        return "lowering-normalization";
-    case iv::ModuleCompileStage::lowering: return "lowering";
-    case iv::ModuleCompileStage::compilation: return "compilation";
-    case iv::ModuleCompileStage::static_metadata: return "static-metadata";
-    }
-    throw std::logic_error("invalid module compile stage");
-}
-
-iv::ModuleCompileStage parse_compile_stage(std::string_view value)
-{
-    if (value == "full") return iv::ModuleCompileStage::full;
-    if (value == "configuration") return iv::ModuleCompileStage::configuration;
-    if (value == "lowering-topology")
-        return iv::ModuleCompileStage::lowering_topology;
-    if (value == "lowering-materialization")
-        return iv::ModuleCompileStage::lowering_materialization;
-    if (value == "lowering-normalization")
-        return iv::ModuleCompileStage::lowering_normalization;
-    if (value == "lowering") return iv::ModuleCompileStage::lowering;
-    if (value == "compilation") return iv::ModuleCompileStage::compilation;
-    if (value == "static-metadata") return iv::ModuleCompileStage::static_metadata;
-    throw std::runtime_error("invalid compile stage '" + std::string(value) + "'");
-}
-
-std::string_view optimization_name(iv::ModuleOptimization optimization)
-{
-    switch (optimization) {
-    case iv::ModuleOptimization::O0: return "O0";
-    case iv::ModuleOptimization::O3: return "O3";
-    }
-    throw std::logic_error("invalid module optimization");
-}
-
-iv::ModuleOptimization parse_optimization(std::string_view value)
-{
-    if (value == "O0") return iv::ModuleOptimization::O0;
-    if (value == "O3") return iv::ModuleOptimization::O3;
-    throw std::runtime_error("invalid optimization '" + std::string(value) + "'");
 }
 
 std::string read(std::filesystem::path const& path)
@@ -504,8 +452,6 @@ PhaseResult summarize(
 void print(
     std::string_view phase,
     std::string_view workload,
-    iv::ModuleCompileStage stage,
-    iv::ModuleOptimization optimization,
     SourceShape shape,
     bool source_introspection,
     bool precompiled_header,
@@ -514,8 +460,7 @@ void print(
     std::cout << "iv-module-build-benchmark"
               << " phase=" << phase
               << " workload=" << workload
-              << " stage=" << compile_stage_name(stage)
-              << " optimization=" << optimization_name(optimization)
+              << " package_llvm=O0"
               << " source_shape=" << source_shape_name(shape)
               << " source_introspection=" << source_introspection
               << " pch=" << precompiled_header
@@ -579,8 +524,6 @@ void run(Options const& options)
             iv::ModuleLoaderToolchainConfig{
                 .c_compiler = options.c_compiler,
                 .cxx_compiler = options.cxx_compiler,
-                .compile_stage = options.compile_stage,
-                .optimization = options.optimization,
                 .source_introspection = options.source_introspection,
                 .precompiled_header = options.precompiled_header,
                 .clang_time_trace = options.clang_time_trace,
@@ -602,7 +545,7 @@ void run(Options const& options)
             ? clang_time_trace_snapshot(ninja_log.parent_path())
             : ClangTimeTraceSnapshot{};
         print(
-            "cold", workload, options.compile_stage, options.optimization,
+            "cold", workload,
             options.source_shape,
             options.source_introspection, options.precompiled_header,
             summarize(
@@ -626,7 +569,7 @@ void run(Options const& options)
                 traces_before_hot);
         }
         print(
-            "hot", workload, options.compile_stage, options.optimization,
+            "hot", workload,
             options.source_shape,
             options.source_introspection, options.precompiled_header,
             summarize(

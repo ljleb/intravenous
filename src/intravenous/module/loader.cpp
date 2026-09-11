@@ -1,6 +1,5 @@
 #include <intravenous/module/loader.h>
 #include <intravenous/module/abi.h>
-#include <intravenous/module/configured_graph_wire.h>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_manifest.h>
 #include <intravenous/module/package_registration.h>
@@ -10,6 +9,17 @@
 #include <intravenous/graph/node.h>
 
 #include <nlohmann/json.hpp>
+
+#include <llvm/Bitcode/BitcodeReader.h>
+#include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
+#include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
+#include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/Support/Error.h>
+#include <llvm/Support/MemoryBuffer.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/Support/raw_ostream.h>
 
 #include <algorithm>
 #include <chrono>
@@ -23,6 +33,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
+#include <atomic>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -33,7 +44,6 @@
 #endif
 #include <Windows.h>
 #else
-#include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -67,55 +77,26 @@ struct ResolvedPackage {
 
 std::string read_text(std::filesystem::path const& path);
 
-struct DynamicLibrary {
-#if defined(_WIN32)
-    HMODULE handle = nullptr;
-#else
-    void *handle = nullptr;
-#endif
-
-    explicit DynamicLibrary(std::filesystem::path const &path)
-    {
-#if defined(_WIN32)
-        handle = LoadLibraryW(path.c_str());
-        if (!handle) {
-            throw std::runtime_error("LoadLibraryW failed for '" + path.string() + "'");
-        }
-#else
-        handle = dlopen(path.c_str(), RTLD_NOW);
-        if (!handle) {
-            throw std::runtime_error("dlopen failed for '" + path.string() + "': " + dlerror());
-        }
-#endif
-    }
-
-    ~DynamicLibrary()
-    {
-#if defined(_WIN32)
-        if (handle) FreeLibrary(handle);
-#else
-        if (handle) dlclose(handle);
-#endif
-    }
-
-    void *symbol(char const *name) const
-    {
-#if defined(_WIN32)
-        return reinterpret_cast<void *>(GetProcAddress(handle, name));
-#else
-        return dlsym(handle, name);
-#endif
-    }
+struct SharedPackageJit {
+    std::mutex mutex{};
+    std::unique_ptr<llvm::orc::LLJIT> jit{};
+    std::atomic<std::uint64_t> next_package{0};
 };
 
-struct LoadedBinary {
+struct LoadedPackageCode {
     std::string id;
     std::string package_root;
-    std::filesystem::path binary_path;
-    std::shared_ptr<DynamicLibrary> library;
+    std::filesystem::path bitcode_path;
+    std::shared_ptr<SharedPackageJit> shared_jit;
+    llvm::orc::JITDylib* jit_dylib = nullptr;
+    llvm::orc::ResourceTrackerSP resources{};
     std::vector<details::PackageRegistration> registrations{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
+    std::vector<details::BuilderNodeStateStructure> node_state_structures{};
+    ModuleDependency dependency{};
+
+    ~LoadedPackageCode();
 };
 
 class ScopedModuleBuildLock {
@@ -338,15 +319,9 @@ std::string stable_text_hash(std::string_view value)
     return out.str();
 }
 
-std::string library_name(std::string_view base)
+std::string package_code_name(std::string_view base)
 {
-#if defined(_WIN32)
-    return std::string(base) + ".dll";
-#elif defined(__APPLE__)
-    return "lib" + std::string(base) + ".dylib";
-#else
-    return "lib" + std::string(base) + ".so";
-#endif
+    return std::string(base) + ".ivpkg.bc";
 }
 
 char const *config_name()
@@ -356,41 +331,6 @@ char const *config_name()
 #else
     return "Debug";
 #endif
-}
-
-std::string_view compile_stage_name(ModuleCompileStage stage)
-{
-    switch (stage) {
-    case ModuleCompileStage::full: return "full";
-    case ModuleCompileStage::configuration: return "configuration";
-    case ModuleCompileStage::lowering_topology: return "lowering-topology";
-    case ModuleCompileStage::lowering_materialization:
-        return "lowering-materialization";
-    case ModuleCompileStage::lowering_normalization:
-        return "lowering-normalization";
-    case ModuleCompileStage::lowering: return "lowering";
-    case ModuleCompileStage::compilation: return "compilation";
-    case ModuleCompileStage::static_metadata: return "static-metadata";
-    }
-    throw std::logic_error("invalid module compile stage");
-}
-
-std::string_view module_optimization_name(ModuleOptimization optimization)
-{
-    switch (optimization) {
-    case ModuleOptimization::O0: return "O0";
-    case ModuleOptimization::O3: return "O3";
-    }
-    throw std::logic_error("invalid module optimization");
-}
-
-std::string_view module_optimization_flags(ModuleOptimization optimization)
-{
-    switch (optimization) {
-    case ModuleOptimization::O0: return "-O0 -DNDEBUG";
-    case ModuleOptimization::O3: return "-O3 -DNDEBUG";
-    }
-    throw std::logic_error("invalid module optimization");
 }
 
 std::string quote_string(std::string_view value)
@@ -476,6 +416,127 @@ std::filesystem::path global_cache_root()
     return normalize(std::filesystem::temp_directory_path() / "intravenous-global-cache");
 }
 
+std::string llvm_error_string(llvm::Error error)
+{
+    std::string result;
+    llvm::raw_string_ostream stream(result);
+    llvm::logAllUnhandledErrors(std::move(error), stream);
+    stream.flush();
+    return result;
+}
+
+template<class T>
+T take_llvm_expected(llvm::Expected<T> value, std::string_view context)
+{
+    if (!value) {
+        throw std::runtime_error(
+            std::string(context) + ": " + llvm_error_string(value.takeError()));
+    }
+    return std::move(*value);
+}
+
+void check_llvm_error(llvm::Error error, std::string_view context)
+{
+    if (error) {
+        throw std::runtime_error(
+            std::string(context) + ": " + llvm_error_string(std::move(error)));
+    }
+}
+
+void initialize_package_jit_target()
+{
+    static std::once_flag once;
+    std::call_once(once, [] {
+        if (llvm::InitializeNativeTarget()) {
+            throw std::runtime_error("failed to initialize LLVM native target");
+        }
+        if (llvm::InitializeNativeTargetAsmPrinter()) {
+            throw std::runtime_error("failed to initialize LLVM native asm printer");
+        }
+        if (llvm::InitializeNativeTargetAsmParser()) {
+            throw std::runtime_error("failed to initialize LLVM native asm parser");
+        }
+    });
+}
+
+std::shared_ptr<SharedPackageJit> create_shared_package_jit()
+{
+    initialize_package_jit_target();
+    auto target = take_llvm_expected(
+        llvm::orc::JITTargetMachineBuilder::detectHost(),
+        "detect package ORC target");
+    target.setCodeGenOptLevel(llvm::CodeGenOptLevel::None);
+    auto jit = take_llvm_expected(
+        llvm::orc::LLJITBuilder()
+            .setJITTargetMachineBuilder(std::move(target))
+            .create(),
+        "create package ORC JIT");
+    auto result = std::make_shared<SharedPackageJit>();
+    result->jit = std::move(jit);
+    return result;
+}
+
+void configure_node_type_ports(GraphBuilder& builder, NodeRef node)
+{
+    for (std::size_t input = 0; input < node.sample_input_count(); ++input) {
+        auto const config = builder.sample_input_config(node.node_bundle_handle(), input);
+        auto const name = config.name.empty()
+            ? std::string("input") + std::to_string(input)
+            : config.name;
+        node.connect_input(input, builder.input_named(
+            name,
+            config.channel_layout,
+            config.default_value,
+            config.min,
+            config.max));
+    }
+    for (std::size_t input = 0; input < node.event_input_count(); ++input) {
+        auto const config = builder.event_input_config(node.node_bundle_handle(), input);
+        auto const name = config.name.empty()
+            ? std::string("eventInput") + std::to_string(input)
+            : config.name;
+        node.connect_event_input(input, builder.event_input_named(name, config.type));
+    }
+
+    std::vector<SampleOutputRequest> sample_outputs;
+    std::vector<std::string> sample_output_names;
+    sample_outputs.reserve(node.sample_output_count());
+    sample_output_names.reserve(node.sample_output_count());
+    for (std::size_t output = 0; output < node.sample_output_count(); ++output) {
+        auto port = node[output];
+        sample_output_names.push_back("output" + std::to_string(output));
+        auto const& name = sample_output_names.back();
+        sample_outputs.push_back({
+            .ref = port,
+            .name = name,
+            .channel_layout = {
+                .channel_type = port.channel_type,
+                .sample_layout = SampleStreamLayout::planar,
+            },
+            .family_name = name,
+            .family_channel_type = port.channel_type,
+        });
+    }
+    if (!sample_outputs.empty()) {
+        builder.outputs(std::span<SampleOutputRequest const>(sample_outputs));
+    }
+
+    std::vector<EventOutputRequest> event_outputs;
+    std::vector<std::string> event_output_names;
+    event_outputs.reserve(node.event_output_count());
+    event_output_names.reserve(node.event_output_count());
+    for (std::size_t output = 0; output < node.event_output_count(); ++output) {
+        event_output_names.push_back("eventOutput" + std::to_string(output));
+        event_outputs.push_back({
+            .ref = node.event_port(output),
+            .name = event_output_names.back(),
+        });
+    }
+    if (!event_outputs.empty()) {
+        builder.event_outputs(std::span<EventOutputRequest const>(event_outputs));
+    }
+}
+
 void run(
     std::string const &command,
     ModuleLoader::LogSink const &sink,
@@ -500,6 +561,20 @@ void run(
                 std::chrono::steady_clock::now() - started_at).count()));
     }
 }
+LoadedPackageCode::~LoadedPackageCode()
+{
+    if (!shared_jit || !shared_jit->jit || !jit_dylib) return;
+    std::lock_guard lock(shared_jit->mutex);
+    if (auto error = shared_jit->jit->deinitialize(*jit_dylib)) {
+        llvm::consumeError(std::move(error));
+    }
+    if (resources) {
+        if (auto error = resources->remove()) {
+            llvm::consumeError(std::move(error));
+        }
+    }
+}
+
 } // namespace
 
 class ModuleLoader::Impl {
@@ -518,8 +593,9 @@ class ModuleLoader::Impl {
         std::filesystem::path artifact;
     };
 
-    mutable std::unordered_map<std::string, std::weak_ptr<LoadedBinary>>
-        loaded_binaries_by_artifact;
+    std::shared_ptr<SharedPackageJit> package_jit_;
+    mutable std::unordered_map<std::string, std::weak_ptr<LoadedPackageCode>>
+        loaded_packages_by_bitcode_;
 
     static std::string key(ResolvedPackage const &module)
     {
@@ -658,7 +734,6 @@ class ModuleLoader::Impl {
         auto const build_dir = workspace / "cmake-build";
         auto const output_dir = workspace / "out";
         auto const generated_dir = workspace / "generated";
-        auto const export_file = generated_dir / "root_export.cpp";
         auto const default_source_dir = generated_dir / "default-project";
         auto const custom_cmake = root.module_dir / "CMakeLists.txt";
         auto const source_dir = std::filesystem::exists(custom_cmake)
@@ -670,13 +745,6 @@ class ModuleLoader::Impl {
         std::filesystem::create_directories(output_dir);
         std::filesystem::create_directories(generated_dir);
 
-        std::ostringstream export_tu;
-        export_tu << "#include <intravenous/module/abi.h>\n"
-                  << "extern \"C\" IV_MODULE_EXPORT std::uint32_t "
-                     "iv_module_abi_version() {\n"
-                  << "  return iv::IV_MODULE_ABI_VERSION;\n"
-                  << "}\n";
-        write_text_if_different(export_file, export_tu.str());
 
         if (!std::filesystem::exists(custom_cmake)) {
             std::filesystem::create_directories(default_source_dir);
@@ -686,14 +754,14 @@ class ModuleLoader::Impl {
                 "project(iv_runtime_module LANGUAGES CXX)\n"
                 "set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n"
                 "include(${IV_SOURCE_DIR}/module/template/ModuleSupport.cmake)\n"
-                "iv_add_runtime_module(iv_runtime_module)\n");
+                "iv_add_package(iv_package)\n");
         }
 
         auto const [cc, cxx] = compilers();
         auto const source_introspection_plugin =
             std::filesystem::path(IV_CONFIGURED_CLANG_SOURCE_INTROSPECTION_PLUGIN);
         auto const module_finalizer =
-            std::filesystem::path(IV_CONFIGURED_IV_MODULE_FINALIZER);
+            std::filesystem::path(IV_CONFIGURED_IV_PACKAGE_FINALIZER);
         if (source_introspection_plugin.empty()
             || !std::filesystem::exists(source_introspection_plugin)) {
             throw std::runtime_error(
@@ -709,23 +777,18 @@ class ModuleLoader::Impl {
             std::string(IV_CONFIGURED_CMAKE_GENERATOR));
 
         std::ostringstream signature;
-        signature << "iv-module-abi=" << IV_MODULE_ABI_VERSION << '\n'
+        signature << "iv-package-abi=" << IV_PACKAGE_ABI_VERSION << '\n'
                   << "config=" << config_name() << '\n'
                   << "cmake=" << cmake_program().generic_string() << '\n'
                   << "cc=" << cc.generic_string() << '\n'
                   << "cxx=" << cxx.generic_string() << '\n'
                   << "generator=" << generator << '\n'
-                  << "compile-stage="
-                  << compile_stage_name(toolchain_.compile_stage) << '\n'
-                  << "optimization="
-                  << module_optimization_name(toolchain_.optimization) << '\n'
                   << "source-introspection="
                   << toolchain_.source_introspection << '\n'
                   << "precompiled-header="
                   << toolchain_.precompiled_header << '\n'
                   << "clang-time-trace="
                   << toolchain_.clang_time_trace << '\n'
-                  << "generated-export=" << export_tu.str() << '\n'
                   << "core-source-stamp="
                   << directory_stamp(repo_root_ / "src/intravenous")
                          .time_since_epoch().count() << '\n'
@@ -733,8 +796,8 @@ class ModuleLoader::Impl {
                   << read_text(repo_root_ / "src/intravenous/module/builder_session.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n';
         signature
-            << "module-finalizer=" << module_finalizer.generic_string() << '\n'
-            << "module-finalizer-stamp="
+            << "package-finalizer=" << module_finalizer.generic_string() << '\n'
+            << "package-finalizer-stamp="
             << std::filesystem::last_write_time(module_finalizer)
                    .time_since_epoch().count() << '\n';
         signature
@@ -743,7 +806,7 @@ class ModuleLoader::Impl {
             << "source-introspection-plugin-stamp="
             << std::filesystem::last_write_time(source_introspection_plugin)
                    .time_since_epoch().count() << '\n';
-        // A source artifact owns only its own implementation files. Registered
+        // An IV package compile owns only its own implementation files. Registered
         // IDs resolve through graph configuration, so provider edits do
         // not enter a consumer's C++ compilation signature.
         signature << key(root) << '\n'
@@ -753,9 +816,9 @@ class ModuleLoader::Impl {
             signature << read_text(custom_cmake) << '\n';
         }
         auto const signature_file = workspace / "build.signature";
-        auto const artifact_stem = "iv_source_" + sanitize(root.package_key)
+        auto const artifact_stem = "iv_package_" + sanitize(root.package_key)
             + "_" + stable_text_hash(signature.str());
-        auto const artifact_name = library_name(artifact_stem);
+        auto const artifact_name = package_code_name(artifact_stem);
         auto artifact = output_dir / artifact_name;
         bool const needs_build =
             !std::filesystem::exists(artifact) ||
@@ -775,38 +838,33 @@ class ModuleLoader::Impl {
         configure << quote(cmake_program())
                   << " -S " << quote(source_dir)
                   << " -B " << quote(build_dir)
-                  << " -DCMAKE_BUILD_TYPE=" << config_name()
-                  << " -DCMAKE_CXX_FLAGS_RELEASE="
-                  << quote_string(module_optimization_flags(toolchain_.optimization));
+                  << " -DCMAKE_BUILD_TYPE=" << config_name();
         if (!generator.empty()) configure << " -G " << quote(generator);
         if (!cc.empty()) configure << " -DCMAKE_C_COMPILER=" << quote(cc);
         if (!cxx.empty()) configure << " -DCMAKE_CXX_COMPILER=" << quote(cxx);
         configure << " -DIV_INCLUDE_DIR=" << quote(repo_root_ / "src")
                   << " -DIV_SOURCE_DIR=" << quote(repo_root_ / "src/intravenous")
                   << " -DIV_THIRD_PARTY_INCLUDE_DIR=" << quote(repo_root_ / "src/intravenous/third_party")
-                  << " -DIV_MODULE_SOURCE_DIR=" << quote(root.module_dir)
-                  << " -DIV_MODULE_ENTRY_FILE=" << quote(root.entry_file)
-                  << " -DIV_MODULE_EXPORT_FILE=" << quote(export_file)
-                  << " -DIV_MODULE_INCLUDE_DIRS=\"" << include_list.str() << "\""
-                  << " -DIV_MODULE_SOURCE_FILES=\"" << source_list.str() << "\""
-                  << " -DIV_MODULE_OUTPUT_DIR=" << quote(output_dir)
-                  << " -DIV_MODULE_OUTPUT_NAME=" << artifact_stem
+                  << " -DIV_PACKAGE_DIR=" << quote(root.module_dir)
+                  << " -DIV_PACKAGE_ENTRY_FILE=" << quote(root.entry_file)
+                  << " -DIV_PACKAGE_INCLUDE_DIRS=\"" << include_list.str() << "\""
+                  << " -DIV_PACKAGE_SOURCE_FILES=\"" << source_list.str() << "\""
+                  << " -DIV_PACKAGE_OUTPUT_DIR=" << quote(output_dir)
+                  << " -DIV_PACKAGE_OUTPUT_NAME=" << artifact_stem
                   << " -DIV_CLANG_SOURCE_INTROSPECTION_PLUGIN="
                   << quote(source_introspection_plugin)
-                  << " -DIV_MODULE_FINALIZER=" << quote(module_finalizer)
-                  << " -DIV_MODULE_FINALIZER_OPTIMIZATION="
-                  << module_optimization_name(toolchain_.optimization);
+                  << " -DIV_PACKAGE_FINALIZER=" << quote(module_finalizer);
         if (!toolchain_.source_introspection) {
-            configure << " -DIV_MODULE_SOURCE_INTROSPECTION=OFF";
+            configure << " -DIV_PACKAGE_SOURCE_INTROSPECTION=OFF";
         }
         if (!toolchain_.precompiled_header) {
-            configure << " -DIV_MODULE_PCH_HEADER=";
+            configure << " -DIV_PACKAGE_PCH_HEADER=";
         }
         if (toolchain_.clang_time_trace) {
-            configure << " -DIV_MODULE_CLANG_TIME_TRACE=ON";
+            configure << " -DIV_PACKAGE_CLANG_TIME_TRACE=ON";
         }
-        if (std::string_view(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY).size()) {
-            configure << " -DIV_MODULE_SHARED_LIBRARY=" << quote(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY);
+        if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
+            configure << " -DIV_BUILDER_LIBRARY=" << quote(IV_CONFIGURED_IV_BUILDER_LIBRARY);
         }
         if (needs_build || !std::filesystem::exists(build_dir / "CMakeCache.txt")) {
             run(configure.str(), log_sink_, "configure");
@@ -844,12 +902,12 @@ class ModuleLoader::Impl {
         }
         if (!std::filesystem::exists(artifact)) {
             throw std::runtime_error(
-                "module build did not produce expected artifact '" + artifact.string() + "'");
+                "IV package build did not produce expected LLVM '" + artifact.string() + "'");
         }
 
-        // The signature is part of the filename. A changed source produces a
-        // new DSO path while graphs using the previous source generation keep
-        // their old artifact alive through ModuleRef ownership.
+        // The signature is part of the filename. A changed IV package produces new
+        // LLVM while configured graphs keep the previous ORC resources alive
+        // through ModuleRef ownership.
         return artifact;
     }
 
@@ -864,7 +922,8 @@ public:
         : repo_root_(discover_repo(std::move(discovery_start))),
           global_cache_root_(global_cache_root()),
           toolchain_(std::move(toolchain)),
-          log_sink_(std::move(sink))
+          log_sink_(std::move(sink)),
+          package_jit_(create_shared_package_jit())
     {
         std::filesystem::create_directories(global_cache_root_);
         for (auto const &root : roots) {
@@ -913,262 +972,285 @@ public:
         CompiledPackage const& compiled) const
     {
         auto const& root = compiled.root;
-        auto const& artifact = compiled.artifact;
+        auto const& bitcode_path = compiled.artifact;
+        auto const bitcode_key = normalize(bitcode_path).generic_string();
 
-        auto const artifact_key = normalize(artifact).generic_string();
-        std::shared_ptr<LoadedBinary> binary;
-        if (auto existing = loaded_binaries_by_artifact.find(artifact_key);
-            existing != loaded_binaries_by_artifact.end()) {
-            binary = existing->second.lock();
+        std::shared_ptr<LoadedPackageCode> package;
+        if (auto existing = loaded_packages_by_bitcode_.find(bitcode_key);
+            existing != loaded_packages_by_bitcode_.end()) {
+            package = existing->second.lock();
         }
-        if (!binary) {
-            // A changed IV package uses a signature-addressed DSO path. Older
-            // binaries remain alive only through graphs that still reference
-            // them; no process-global registration state is replaced here.
-            auto const dynamic_library_started_at = std::chrono::steady_clock::now();
-            auto library = std::make_shared<DynamicLibrary>(artifact);
+
+        if (!package) {
+            auto const load_started_at = std::chrono::steady_clock::now();
+            package = std::make_shared<LoadedPackageCode>();
+            package->id = root.package_key;
+            package->package_root = root.module_dir.generic_string();
+            package->bitcode_path = bitcode_path;
+            package->shared_jit = package_jit_;
+            package->dependency = {
+                root.package_key,
+                root.module_dir,
+                root.entry_file,
+                root.package_stamp,
+            };
+
+            std::lock_guard jit_lock(package_jit_->mutex);
+            auto& jit = *package_jit_->jit;
+            auto buffer = llvm::MemoryBuffer::getFile(bitcode_path.string());
+            if (!buffer) {
+                throw std::runtime_error(
+                    "cannot read finalized IV package LLVM '" + bitcode_path.string()
+                    + "': " + buffer.getError().message());
+            }
+            auto context = std::make_unique<llvm::LLVMContext>();
+            llvm::orc::ThreadSafeContext thread_safe_context(std::move(context));
+            auto module = take_llvm_expected(
+                llvm::parseBitcodeFile(
+                    (*buffer)->getMemBufferRef(), *thread_safe_context.getContext()),
+                "parse finalized IV package LLVM");
+
+            auto const suffix = package_jit_->next_package.fetch_add(
+                1, std::memory_order_relaxed);
+            auto& jit_dylib = take_llvm_expected(
+                jit.getExecutionSession().createJITDylib(
+                    "iv.package." + sanitize(root.package_key) + "."
+                    + std::to_string(suffix)),
+                "create IV package JITDylib");
+            package->jit_dylib = &jit_dylib;
+            package->resources = jit_dylib.createResourceTracker();
+            jit_dylib.addGenerator(take_llvm_expected(
+                llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+                    jit.getDataLayout().getGlobalPrefix()),
+                "create current-process package symbol resolver"));
+            check_llvm_error(
+                jit.addIRModule(
+                    package->resources,
+                    llvm::orc::ThreadSafeModule(
+                        std::move(module), std::move(thread_safe_context))),
+                "add IV package LLVM to shared ORC JIT");
+            check_llvm_error(jit.initialize(jit_dylib), "initialize IV package LLVM");
+
+            auto symbol = [&]<class Function>(char const* name) -> Function {
+                auto address = take_llvm_expected(
+                    jit.lookup(jit_dylib, name),
+                    std::string("lookup IV package symbol '") + name + "'");
+                return address.template toPtr<Function>();
+            };
+            auto const abi_version = symbol.template operator()<iv_package_abi_version_fn>(
+                "iv_package_abi_version");
+            if (abi_version() != IV_PACKAGE_ABI_VERSION) {
+                throw std::runtime_error(
+                    "IV package LLVM '" + bitcode_path.string()
+                    + "' has incompatible ABI version "
+                    + std::to_string(abi_version()) + " (expected "
+                    + std::to_string(IV_PACKAGE_ABI_VERSION) + ")");
+            }
+
+            auto const registrations_fn =
+                symbol.template operator()<iv_package_registrations_fn>(
+                    "iv_package_registrations");
+            auto const pointer_fields_fn =
+                symbol.template operator()<iv_package_node_config_pointer_fields_fn>(
+                    "iv_package_node_config_pointer_fields");
+            auto const retained_globals_fn =
+                symbol.template operator()<iv_package_retained_globals_fn>(
+                    "iv_package_retained_globals");
+            auto const node_state_structures_fn =
+                symbol.template operator()<iv_package_node_state_structures_fn>(
+                    "iv_package_node_state_structures");
+
+            auto copy_table = [&](auto view, auto* type_tag, std::string_view name) {
+                using T = std::remove_pointer_t<decltype(type_tag)>;
+                if (!view.data && view.size != 0) {
+                    throw std::runtime_error(
+                        "IV package " + std::string(name) + " table has null data");
+                }
+                if (view.size % sizeof(T) != 0) {
+                    throw std::runtime_error(
+                        "IV package " + std::string(name) + " table has invalid size");
+                }
+                auto values = std::span(
+                    static_cast<T const*>(view.data), view.size / sizeof(T));
+                return std::vector<T>(values.begin(), values.end());
+            };
+            package->registrations = copy_table(
+                registrations_fn(),
+                static_cast<details::PackageRegistration*>(nullptr),
+                "registration");
+            package->config_pointer_fields = copy_table(
+                pointer_fields_fn(),
+                static_cast<NodeConfigPointerFieldData*>(nullptr),
+                "node-config pointer-field");
+            package->retained_globals = copy_table(
+                retained_globals_fn(),
+                static_cast<RetainedGlobalData*>(nullptr),
+                "retained LLVM global");
+            auto const state_structures = copy_table(
+                node_state_structures_fn(),
+                static_cast<NodeStateStructureData*>(nullptr),
+                "node-state structure");
+
+            auto copy_text = [](ModuleDataView view, std::string_view what) {
+                if (!view.data && view.size != 0) {
+                    throw std::runtime_error(
+                        "IV package " + std::string(what) + " has null data");
+                }
+                return std::string(
+                    static_cast<char const*>(view.data), view.size);
+            };
+            package->node_state_structures.reserve(state_structures.size());
+            for (auto const& state : state_structures) {
+                if (!state.fields.data && state.fields.size != 0) {
+                    throw std::runtime_error(
+                        "IV package node-state field table has null data");
+                }
+                if (state.fields.size % sizeof(NodeStateFieldData) != 0) {
+                    throw std::runtime_error(
+                        "IV package node-state field table has invalid size");
+                }
+                auto const fields = std::span(
+                    static_cast<NodeStateFieldData const*>(state.fields.data),
+                    state.fields.size / sizeof(NodeStateFieldData));
+                NodeStateStructure structure{
+                    .size_bits = state.size_bits,
+                    .alignment_bits = state.alignment_bits,
+                };
+                structure.fields.reserve(fields.size());
+                for (auto const& field : fields) {
+                    structure.fields.push_back({
+                        .name = copy_text(field.name, "node-state field name"),
+                        .type_name = copy_text(
+                            field.type_name, "node-state field type name"),
+                        .bit_offset = field.bit_offset,
+                        .size_bits = field.size_bits,
+                        .alignment_bits = field.alignment_bits,
+                        .bit_width = field.has_bit_width
+                            ? std::optional<std::size_t>{field.bit_width}
+                            : std::nullopt,
+                    });
+                }
+                package->node_state_structures.push_back({
+                    .code_key = state.code_key,
+                    .structure = std::move(structure),
+                });
+            }
+
+            for (auto const& registration : package->registrations) {
+                if (!registration.package_root || registration.package_root_size == 0) {
+                    throw std::runtime_error("IV package registration has no package root");
+                }
+                auto const registration_root = normalize(
+                    std::filesystem::path(std::string(
+                        registration.package_root, registration.package_root_size)));
+                if (registration_root != normalize(root.module_dir)) {
+                    throw std::runtime_error(
+                        "IV package registration belongs to a different package root");
+                }
+            }
+
+            loaded_packages_by_bitcode_.insert_or_assign(bitcode_key, package);
             if (log_sink_) {
                 log_sink_(
-                    "[dynamic-library-load] elapsed_us=" +
-                    std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - dynamic_library_started_at).count()));
+                    "[package-orc-load] elapsed_us="
+                    + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - load_started_at).count()));
             }
-            binary = std::make_shared<LoadedBinary>(LoadedBinary{
-                .id = root.package_key,
-                .package_root = root.module_dir.generic_string(),
-                .binary_path = artifact,
-                .library = std::move(library),
-            });
-            loaded_binaries_by_artifact.insert_or_assign(artifact_key, binary);
-        }
-        auto const& library = binary->library;
-
-        auto const source_deserialization_started_at = std::chrono::steady_clock::now();
-        auto abi_version = reinterpret_cast<iv_module_abi_version_fn>(
-            library->symbol("iv_module_abi_version"));
-        if (!abi_version) {
-            throw std::runtime_error(
-                "module '" + artifact.string() +
-                "' does not export iv_module_abi_version");
-        }
-        auto const loaded_abi_version = abi_version();
-        if (loaded_abi_version != IV_MODULE_ABI_VERSION) {
-            throw std::runtime_error(
-                "module '" + artifact.string() +
-                "' has incompatible ABI version " +
-                std::to_string(loaded_abi_version) + " (expected " +
-                std::to_string(IV_MODULE_ABI_VERSION) + ")");
-        }
-        auto const registrations_fn = reinterpret_cast<iv_package_registrations_fn>(
-            library->symbol("iv_package_registrations"));
-        auto const pointer_fields_fn =
-            reinterpret_cast<iv_package_node_config_pointer_fields_fn>(
-                library->symbol("iv_package_node_config_pointer_fields"));
-        auto const retained_globals_fn = reinterpret_cast<iv_package_retained_globals_fn>(
-            library->symbol("iv_package_retained_globals"));
-        if (!registrations_fn || !pointer_fields_fn || !retained_globals_fn) {
-            throw std::runtime_error(
-                "IV package binary '" + artifact.string()
-                + "' does not export its graph-configuration tables");
         }
 
-        auto copy_table = [&](auto view, auto* type_tag, std::string_view name) {
-            using T = std::remove_pointer_t<decltype(type_tag)>;
-            if (!view.data && view.size != 0) {
-                throw std::runtime_error(
-                    "IV package " + std::string(name) + " table has null data");
-            }
-            if (view.size % sizeof(T) != 0) {
-                throw std::runtime_error(
-                    "IV package " + std::string(name) + " table has invalid size");
-            }
-            auto values = std::span(
-                static_cast<T const*>(view.data), view.size / sizeof(T));
-            return std::vector<T>(values.begin(), values.end());
+        details::BuilderPackageView const package_view{
+            .package_root = package->package_root,
+            .registrations = package->registrations,
+            .config_pointer_fields = package->config_pointer_fields,
+            .retained_globals = package->retained_globals,
+            .node_state_structures = package->node_state_structures,
         };
-        binary->registrations = copy_table(
-            registrations_fn(),
-            static_cast<details::PackageRegistration*>(nullptr),
-            "registration");
-        binary->config_pointer_fields = copy_table(
-            pointer_fields_fn(),
-            static_cast<NodeConfigPointerFieldData*>(nullptr),
-            "node-config pointer-field");
-        binary->retained_globals = copy_table(
-            retained_globals_fn(),
-            static_cast<RetainedGlobalData*>(nullptr),
-            "retained LLVM global");
-
-        for (auto const& registration : binary->registrations) {
-            if (!registration.package_root || registration.package_root_size == 0) {
-                throw std::runtime_error("IV package registration has no source root");
-            }
-            auto const registration_root = normalize(std::filesystem::path(std::string(
-                registration.package_root, registration.package_root_size)));
-            if (registration_root != normalize(root.module_dir)) {
-                throw std::runtime_error(
-                    "IV package registration belongs to a different source root");
-            }
-        }
-        auto node_types = reinterpret_cast<iv_module_node_types_fn>(
-            library->symbol("iv_module_node_types"));
-        auto source_node_types = reinterpret_cast<iv_package_node_types_fn>(
-            library->symbol("iv_package_node_types"));
-        if (!node_types || !source_node_types) {
-            throw std::runtime_error(
-                "IV package binary '" + artifact.string()
-                + "' does not export its node type definition tables");
-        }
-        auto const type_view = node_types();
-        if (!type_view.data && type_view.size != 0) {
-            throw std::runtime_error("IV package node type view has null data");
-        }
-        if (type_view.size % sizeof(details::NodeCompilerRecord) != 0) {
-            throw std::runtime_error("IV package node type table has invalid size");
-        }
-        auto const types = std::span(
-            static_cast<details::NodeCompilerRecord const*>(type_view.data),
-            type_view.size / sizeof(details::NodeCompilerRecord));
-        auto const source_node_type_view = source_node_types();
-        if (!source_node_type_view.data && source_node_type_view.size != 0) {
-            throw std::runtime_error("IV package node type definition view has null data");
-        }
-        if (source_node_type_view.size % sizeof(SourceNodeTypeData) != 0) {
-            throw std::runtime_error("IV package node type definition table has invalid size");
-        }
-        auto const source_node_type_data = std::span(
-            static_cast<SourceNodeTypeData const*>(source_node_type_view.data),
-            source_node_type_view.size / sizeof(SourceNodeTypeData));
-
         std::vector<LoadedNodeType> loaded_node_types;
-        loaded_node_types.reserve(source_node_type_data.size());
         std::unordered_set<std::string> node_type_ids;
-        for (auto const& node_type : source_node_type_data) {
-            if (!node_type.id.data || node_type.id.size == 0) {
-                throw std::runtime_error("IV package node type ID view is empty");
+        for (auto const& registration : package->registrations) {
+            if (registration.kind != details::PackageRegistrationKind::node) continue;
+            if (!registration.id || registration.id_size == 0
+                || !registration.node_build || !registration.node_compiler_record) {
+                throw std::runtime_error("IV package node type registration is incomplete");
             }
-            auto node_type_id = std::string(
-                static_cast<char const*>(node_type.id.data), node_type.id.size);
+            auto node_type_id = std::string(registration.id, registration.id_size);
             if (!node_type_ids.insert(node_type_id).second) {
                 throw std::runtime_error(
-                    "IV package artifact contains duplicate node type ID '"
-                    + node_type_id + "'");
+                    "IV package contains duplicate node type ID '" + node_type_id + "'");
             }
-            auto const compiler_record = std::ranges::find(
-                types, node_type.code_key, &details::NodeCompilerRecord::code_key);
-            if (compiler_record == types.end()) {
+            auto const* compiler_record = static_cast<details::NodeCompilerRecord const*>(
+                registration.node_compiler_record);
+            if (!compiler_record->operations.valid()) {
                 throw std::runtime_error(
                     "IV package node type '" + node_type_id
-                    + "' references an unknown NodeCodeKey");
+                    + "' has invalid compiler operations");
             }
-            if (!node_type.configured_graph.data && node_type.configured_graph.size != 0) {
-                throw std::runtime_error(
-                    "IV package node type '" + node_type_id
-                    + "' has a null configured graph view");
-            }
-            if (!node_type.node_configs.data && node_type.node_configs.size != 0) {
-                throw std::runtime_error(
-                    "IV package node type '" + node_type_id
-                    + "' has a null node config view");
-            }
-            if (node_type.node_configs.size % sizeof(ModuleNodeConfigRecord) != 0) {
-                throw std::runtime_error(
-                    "IV package node type '" + node_type_id
-                    + "' has an invalid node config table");
-            }
-            auto const node_graph_archive = std::span(
-                static_cast<std::byte const*>(node_type.configured_graph.data),
-                node_type.configured_graph.size);
-            auto const node_configs = std::span(
-                static_cast<ModuleNodeConfigRecord const*>(node_type.node_configs.data),
-                node_type.node_configs.size / sizeof(ModuleNodeConfigRecord));
+
+            auto session = std::unique_ptr<details::BuilderSession,
+                decltype(&details::iv_builder_session_destroy)>(
+                    details::iv_builder_session_create(),
+                    details::iv_builder_session_destroy);
+            details::set_builder_packages(session.get(), std::span(&package_view, 1));
+            details::select_builder_package(session.get(), 0);
+            GraphBuilder builder(session.get());
+            auto node = registration.node_build(builder);
+            configure_node_type_ports(builder, node);
+            auto configured = std::make_shared<ConfiguredGraph const>(
+                details::take_built_graph(session.get()));
             loaded_node_types.push_back({
                 .node_type_id = std::move(node_type_id),
                 .compiler_record = *compiler_record,
                 .package_path = root.module_dir,
-                .module_refs = {binary},
-                .configured_graph = std::make_shared<ConfiguredGraph const>(
-                    deserialize_configured_graph(node_graph_archive, types, node_configs)),
+                .module_refs = {package},
+                .configured_graph = std::move(configured),
             });
         }
 
-        std::vector<ModuleDependency> dependencies;
-        // A loaded source watches only its implementation package. Imported
-        // source implementation edits are resolved through the registry and
-        // do not invalidate this source's cached ConfiguredGraph.
-        dependencies.push_back({
+        std::vector<ModuleDependency> dependencies{{
             root.package_key,
             root.module_dir,
             root.entry_file,
             root.package_stamp,
-        });
-        std::sort(
-            dependencies.begin(),
-            dependencies.end(),
-            [](auto const &a, auto const &b) {
-                if (a.id != b.id) return a.id < b.id;
-                return a.module_dir < b.module_dir;
-            });
-
-        std::vector<LoadedDefinition> definitions;
-        if (log_sink_) {
-            log_sink_(
-                "[source-graph-deserialization] elapsed_us=" +
-                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - source_deserialization_started_at).count()));
-        }
+        }};
         return {
-            .definitions = std::move(definitions),
+            .definitions = {},
             .node_types = std::move(loaded_node_types),
             .dependencies = std::move(dependencies),
-            .package_code = binary,
+            .package_code = package,
         };
     }
 
     ModuleLoader::LoadedPackage configure_iv_modules(
         CompiledPackage const& compiled,
-        ModuleLoader::LoadedPackage source,
-        std::vector<std::shared_ptr<LoadedBinary>> const& loaded_binaries,
-        std::vector<ModuleDependency> configuration_dependencies) const
+        ModuleLoader::LoadedPackage package_result,
+        std::vector<std::shared_ptr<LoadedPackageCode>> const& loaded_packages) const
     {
-        auto const root_binary = std::static_pointer_cast<LoadedBinary>(
-            source.package_code);
-        if (!root_binary || !root_binary->library) {
-            throw std::logic_error("loaded IV package has no binary");
+        auto const root_package = std::static_pointer_cast<LoadedPackageCode>(
+            package_result.package_code);
+        if (!root_package || !root_package->jit_dylib) {
+            throw std::logic_error("loaded IV package has no executable LLVM");
         }
 
-        std::vector<details::BuilderPackageView> source_views;
-        source_views.reserve(loaded_binaries.size());
-        for (auto const& binary : loaded_binaries) {
-            if (!binary || !binary->library || binary->registrations.empty()) continue;
-            source_views.push_back({
-                .package_root = binary->package_root,
-                .registrations = binary->registrations,
-                .config_pointer_fields = binary->config_pointer_fields,
-                .retained_globals = binary->retained_globals,
+        std::vector<details::BuilderPackageView> package_views;
+        package_views.reserve(loaded_packages.size());
+        for (auto const& package : loaded_packages) {
+            if (!package || !package->jit_dylib) continue;
+            package_views.push_back({
+                .package_root = package->package_root,
+                .registrations = package->registrations,
+                .config_pointer_fields = package->config_pointer_fields,
+                .retained_globals = package->retained_globals,
+                .node_state_structures = package->node_state_structures,
             });
         }
-
-        std::sort(
-            configuration_dependencies.begin(),
-            configuration_dependencies.end(),
-            [](auto const& lhs, auto const& rhs) {
-                if (lhs.id != rhs.id) return lhs.id < rhs.id;
-                return lhs.module_dir < rhs.module_dir;
-            });
-        configuration_dependencies.erase(
-            std::unique(
-                configuration_dependencies.begin(),
-                configuration_dependencies.end(),
-                [](auto const& lhs, auto const& rhs) {
-                    return lhs.id == rhs.id && lhs.module_dir == rhs.module_dir;
-                }),
-            configuration_dependencies.end());
+        if (package_views.size() != loaded_packages.size()) {
+            throw std::logic_error("loaded IV package table is incomplete");
+        }
 
         auto const started_at = std::chrono::steady_clock::now();
         std::vector<LoadedDefinition> definitions;
         std::unordered_set<std::string> module_ids;
-        for (auto const& registration : root_binary->registrations) {
+        for (auto const& registration : root_package->registrations) {
             if (registration.kind != details::PackageRegistrationKind::module) continue;
             if (!registration.id || registration.id_size == 0 || !registration.module_build) {
                 throw std::runtime_error("IV module registration is incomplete");
@@ -1186,10 +1268,10 @@ public:
             if (!session) {
                 throw std::runtime_error("could not create graph configuration session");
             }
-            details::set_builder_packages(session.get(), source_views);
-            auto const root_source_index = details::builder_package_index(
-                session.get(), root_binary->package_root);
-            details::select_builder_package(session.get(), root_source_index);
+            details::set_builder_packages(session.get(), package_views);
+            auto const root_package_index = details::builder_package_index(
+                session.get(), root_package->package_root);
+            details::select_builder_package(session.get(), root_package_index);
             details::begin_builder_module(session.get(), module_id);
             struct ModuleCallScope {
                 details::BuilderSession* session = nullptr;
@@ -1197,24 +1279,44 @@ public:
             } const module_call{session.get()};
 
             GraphBuilder builder(session.get());
-            registration.module_build(builder);
+            registration.module_build(builder, {});
             auto configured = std::make_shared<ConfiguredGraph const>(
                 details::take_built_graph(session.get()));
             auto plan = GraphCompiler::compile(
                 GraphLowerer::lower(*configured, {.execution_root = true}));
             auto runtime_root = std::make_shared<RuntimeGraphRoot>(std::move(plan.graph));
 
+            auto const used_package_indexes = details::builder_used_packages(session.get());
             std::vector<ModuleRef> refs;
-            refs.reserve(loaded_binaries.size() + 1);
-            for (auto const& binary : loaded_binaries) refs.push_back(binary);
+            std::vector<ModuleDependency> dependencies;
+            refs.reserve(used_package_indexes.size() + 1);
+            dependencies.reserve(used_package_indexes.size());
+            for (auto const package_index : used_package_indexes) {
+                if (package_index >= loaded_packages.size()) {
+                    throw std::logic_error("configured graph references an invalid IV package");
+                }
+                refs.push_back(loaded_packages[package_index]);
+                dependencies.push_back(loaded_packages[package_index]->dependency);
+            }
             refs.push_back(runtime_root);
+            std::ranges::sort(dependencies, {}, [](ModuleDependency const& dependency) {
+                return std::pair(dependency.id, dependency.module_dir);
+            });
+            dependencies.erase(
+                std::unique(
+                    dependencies.begin(), dependencies.end(),
+                    [](auto const& lhs, auto const& rhs) {
+                        return lhs.id == rhs.id && lhs.module_dir == rhs.module_dir;
+                    }),
+                dependencies.end());
+
             definitions.emplace_back(
                 std::move(refs),
                 WeakTypeErasedNode(*runtime_root),
                 std::move(plan.introspection),
                 compiled.root.module_dir,
                 std::move(module_id),
-                configuration_dependencies,
+                std::move(dependencies),
                 std::move(configured));
         }
         if (log_sink_) {
@@ -1223,30 +1325,24 @@ public:
                 + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::steady_clock::now() - started_at).count()));
         }
-        source.definitions = std::move(definitions);
-        source.dependencies = std::move(configuration_dependencies);
-        return source;
+        package_result.definitions = std::move(definitions);
+        return package_result;
     }
 
     ModuleLoader::LoadedPackage load_package(
         std::filesystem::path const& path) const
     {
         std::lock_guard lock(mutex_);
-        if (toolchain_.compile_stage != ModuleCompileStage::full) {
-            throw std::logic_error(
-                "only the full module compile stage can be loaded");
-        }
-
         auto root_compiled = compile_package_unlocked(path);
-        std::vector<CompiledPackage> compiled_sources;
-        compiled_sources.reserve(root_compiled.configuration_packages.size());
+        std::vector<CompiledPackage> compiled_packages;
+        compiled_packages.reserve(root_compiled.configuration_packages.size());
         for (auto const& candidate : root_compiled.configuration_packages) {
             if (normalize(candidate.module_dir) == normalize(root_compiled.root.module_dir)) {
-                compiled_sources.push_back(root_compiled);
+                compiled_packages.push_back(root_compiled);
                 continue;
             }
             try {
-                compiled_sources.push_back(compile_package_unlocked(candidate.module_dir));
+                compiled_packages.push_back(compile_package_unlocked(candidate.module_dir));
             } catch (std::exception const& exception) {
                 // Broken unrelated IV packages are omitted. If graph
                 // configuration actually requests one of their registered IDs,
@@ -1260,23 +1356,19 @@ public:
             }
         }
 
-        std::optional<ModuleLoader::LoadedPackage> root_source;
-        std::vector<std::shared_ptr<LoadedBinary>> loaded_binaries;
-        std::vector<ModuleDependency> configuration_dependencies;
-        loaded_binaries.reserve(compiled_sources.size());
-        for (auto const& compiled : compiled_sources) {
+        std::optional<ModuleLoader::LoadedPackage> root_package_result;
+        std::vector<std::shared_ptr<LoadedPackageCode>> loaded_packages;
+                loaded_packages.reserve(compiled_packages.size());
+        for (auto const& compiled : compiled_packages) {
             auto const is_root = normalize(compiled.root.module_dir)
                 == normalize(root_compiled.root.module_dir);
             try {
                 auto loaded = load_compiled_package(compiled);
                 if (loaded.package_code) {
-                    loaded_binaries.push_back(
-                        std::static_pointer_cast<LoadedBinary>(loaded.package_code));
+                    loaded_packages.push_back(
+                        std::static_pointer_cast<LoadedPackageCode>(loaded.package_code));
                 }
-                configuration_dependencies.insert(
-                    configuration_dependencies.end(),
-                    loaded.dependencies.begin(), loaded.dependencies.end());
-                if (is_root) root_source = std::move(loaded);
+                if (is_root) root_package_result = std::move(loaded);
             } catch (std::exception const& exception) {
                 if (is_root) throw;
                 if (log_sink_) {
@@ -1287,15 +1379,14 @@ public:
                 }
             }
         }
-        if (!root_source) {
-            throw std::logic_error("loaded IV packages omitted the requested source");
+        if (!root_package_result) {
+            throw std::logic_error("loaded IV packages omitted the requested package");
         }
 
         return configure_iv_modules(
             root_compiled,
-            std::move(*root_source),
-            loaded_binaries,
-            std::move(configuration_dependencies));
+            std::move(*root_package_result),
+            loaded_packages);
     }
 
 };

@@ -52,10 +52,10 @@ add_subdirectory(tools)
 add_dependencies(
     intravenous_module_loader
     iv_clang_source_introspection_plugin
-    iv_module_finalize)
+    iv_package_finalize)
 target_compile_definitions(intravenous_module_loader PRIVATE
     IV_CONFIGURED_CLANG_SOURCE_INTROSPECTION_PLUGIN="$<TARGET_FILE:iv_clang_source_introspection_plugin>"
-    IV_CONFIGURED_IV_MODULE_FINALIZER="$<TARGET_FILE:iv_module_finalize>")
+    IV_CONFIGURED_IV_PACKAGE_FINALIZER="$<TARGET_FILE:iv_package_finalize>")
 
 add_subdirectory(tests)
 add_subdirectory(benchmark)

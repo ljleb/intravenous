@@ -18,24 +18,6 @@ namespace iv {
     using ModuleRef = std::shared_ptr<void>;
     struct ConfiguredGraph;
 
-    enum class ModuleCompileStage {
-        full,
-        configuration,
-        lowering_topology,
-        lowering_materialization,
-        lowering_normalization,
-        lowering,
-        compilation,
-        static_metadata,
-    };
-
-    // The module benchmark can override this while keeping the module build
-    // configuration otherwise equivalent to Release.
-    enum class ModuleOptimization {
-        O0,
-        O3,
-    };
-
     struct ModuleLoaderToolchainConfig {
         std::optional<std::filesystem::path> c_compiler {};
         std::optional<std::filesystem::path> cxx_compiler {};
@@ -43,8 +25,6 @@ namespace iv {
         std::optional<std::string> cmake_generator {};
         std::optional<std::filesystem::path> make_program {};
         std::optional<std::filesystem::path> juce_dir {};
-        ModuleCompileStage compile_stage = ModuleCompileStage::full;
-        ModuleOptimization optimization = ModuleOptimization::O3;
         bool source_introspection = true;
         bool precompiled_header = true;
         bool clang_time_trace = false;
@@ -64,9 +44,8 @@ namespace iv {
             std::filesystem::path package_path;
             std::string module_id;
             std::vector<ModuleDependency> dependencies;
-            // The immutable source-configured graph is retained above the
-            // compatibility GraphLowerer path so a whole-project finalizer can
-            // consume it without reconfiguration this source.
+            // The configured graph is retained above the compatibility GraphLowerer
+            // path so whole-project compilation can consume it directly.
             std::shared_ptr<ConfiguredGraph const> configured_graph;
 
             LoadedDefinition(
@@ -82,7 +61,7 @@ namespace iv {
 
         struct LoadedNodeType {
             // The ID is stable registry identity.  NodeCodeKey and callbacks
-            // are artifact-local compiler data held alive by module_refs.
+            // belong to the loaded IV package code held alive by module_refs.
             std::string node_type_id;
             details::NodeCompilerRecord compiler_record{};
             std::filesystem::path package_path;
@@ -94,9 +73,9 @@ namespace iv {
             std::vector<LoadedDefinition> definitions;
             std::vector<LoadedNodeType> node_types;
             std::vector<ModuleDependency> dependencies;
-            // Opaque ownership of the loaded IV package binary. Definitions and
-            // configured graphs retain this while any callback or immutable
-            // source-global address from that binary can still be referenced.
+            // Opaque ownership of this IV package's ORC resources. Definitions and
+            // configured graphs retain it while callbacks or retained LLVM globals
+            // from this package can still be referenced.
             ModuleRef package_code{};
         };
 
@@ -113,10 +92,9 @@ namespace iv {
         ModuleLoader(ModuleLoader const&) = delete;
         ModuleLoader& operator=(ModuleLoader const&) = delete;
 
-        // Loads one IV package package independently of runtime render
-        // configuration. A valid source may publish no IV modules, so source
-        // dependencies are reported independently of the definition vector
-        // for watching and transactional reload.
+        // Compiles and loads one IV package, then configures its iv module definitions
+        // against all currently valid packages in the project/search roots. A valid
+        // package may publish no iv modules.
         LoadedPackage load_package(
             std::filesystem::path const& package_path
         ) const;
@@ -125,8 +103,7 @@ namespace iv {
             std::filesystem::path const& package_path
         ) const;
 
-        // Builds the generated module artifact without loading it. This is
-        // primarily useful for compile-time profiling stages.
+        // Builds finalized O0 LLVM for the IV package without adding it to the shared ORC JIT.
         std::filesystem::path compile_package(
             std::filesystem::path const& package_path
         ) const;

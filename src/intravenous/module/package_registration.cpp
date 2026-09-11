@@ -40,7 +40,10 @@ public:
 };
 }
 
-NodeRef configure_registered_definition(GraphBuilder& builder, std::string_view id)
+NodeRef configure_registered_definition(
+    GraphBuilder& builder,
+    std::string_view id,
+    std::span<ConfigurationArgument> arguments)
 {
     if (!builder._session) {
         throw std::logic_error("registered IV definition requires a BuilderSession");
@@ -48,6 +51,10 @@ NodeRef configure_registered_definition(GraphBuilder& builder, std::string_view 
     auto const found = find_builder_registration(builder._session, id);
     auto const& registration = found.registration;
     if (registration.kind == PackageRegistrationKind::node) {
+        if (!arguments.empty()) {
+            throw std::invalid_argument(
+                "registered node types do not take graph configuration arguments");
+        }
         PackageSelection const package(builder._session, found.package_index);
         return registration.node_build(builder);
     }
@@ -58,7 +65,7 @@ NodeRef configure_registered_definition(GraphBuilder& builder, std::string_view 
             iv_builder_child_session_create(builder._session, found.package_index),
             iv_builder_session_destroy);
     GraphBuilder child(child_session.get());
-    registration.module_build(child);
+    registration.module_build(child, arguments);
     return builder.embed_child(child, "Registered IV module");
 }
 } // namespace iv::details

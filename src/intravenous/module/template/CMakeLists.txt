@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(iv_runtime_module LANGUAGES CXX)
+project(iv_package LANGUAGES CXX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(NOT DEFINED JUCE_WEB_BROWSER)
@@ -14,6 +14,6 @@ add_compile_definitions(
 
 include("${CMAKE_CURRENT_LIST_DIR}/ModuleSupport.cmake")
 
-# IV_MODULE_SOURCE_FILES contains only files owned by this source package.
-# Cross-source registered IDs resolve during graph configuration, not C++ compilation.
-iv_add_runtime_module(iv_runtime_module ENABLE_JUCE)
+# Cross-package registered IDs resolve during graph configuration, never by
+# merging another package's implementation files into this compile target.
+iv_add_package(iv_package ENABLE_JUCE)

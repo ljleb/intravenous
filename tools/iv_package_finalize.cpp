@@ -105,7 +105,7 @@ public:
 
 [[noreturn]] void fail(std::string const& message)
 {
-    throw std::runtime_error("iv-module-finalize: " + message);
+    throw std::runtime_error("iv-package-finalize: " + message);
 }
 
 std::string error_string(Error error)

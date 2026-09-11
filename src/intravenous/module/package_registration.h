@@ -3,14 +3,19 @@
 // Stable registrations emitted by IV_NODE / IV_MODULE. Registration is data,
 // not a process-global side effect: the finalizer collects these records into
 // each IV package, and BuilderSession receives the records from the loaded IV
-// sources used for one graph configuration.
+// packages used for one graph configuration.
 
 #include <intravenous/graph/builder/syntax.h>
+#include <intravenous/module/configuration_argument.h>
 #include <intravenous/node/code_key.h>
 
 #include <cstddef>
 #include <string_view>
+#include <span>
+#include <stdexcept>
 #include <type_traits>
+#include <utility>
+#include <string>
 
 namespace iv {
 class GraphBuilder;
@@ -22,7 +27,8 @@ enum class PackageRegistrationKind {
     module,
 };
 
-using IvModuleConfigureFunction = void (*)(GraphBuilder&);
+using IvModuleConfigureFunction = void (*)(
+    GraphBuilder&, std::span<ConfigurationArgument>);
 using NodeTypeConfigureFunction = NodeRef (*)(GraphBuilder&);
 
 struct PackageRegistration {
@@ -47,7 +53,58 @@ inline constexpr std::string_view package_registration_section =
 // g.node<"id"> resolves synchronously through the registrations attached to
 // this GraphBuilder's BuilderSession. An iv module is fully configured before
 // this function returns; no unresolved registered-node bundle is preserved.
-NodeRef configure_registered_definition(GraphBuilder&, std::string_view id);
+NodeRef configure_registered_definition(
+    GraphBuilder&, std::string_view id, std::span<ConfigurationArgument> arguments);
+
+template<auto Function>
+struct IvModuleConfigureAdapter;
+
+template<class Return, class... Args, Return (*Function)(GraphBuilder&, Args...)>
+struct IvModuleConfigureAdapter<Function> {
+    static_assert(std::is_void_v<Return>,
+        "an IV module configuration function must return void");
+
+    template<class Arg>
+    static decltype(auto) argument(ConfigurationArgument& value)
+    {
+        using T = std::remove_cvref_t<Arg>;
+        constexpr auto expected = clang_type_name<T>();
+        if (!value.data || configuration_argument_type(value) != expected) {
+            throw std::invalid_argument(
+                "IV module configuration argument type mismatch: expected '"
+                + std::string(expected) + "', got '"
+                + std::string(configuration_argument_type(value)) + "'");
+        }
+        auto& object = *static_cast<T*>(value.data);
+        if constexpr (std::is_lvalue_reference_v<Arg>) {
+            return static_cast<Arg>(object);
+        } else if constexpr (std::is_rvalue_reference_v<Arg>) {
+            return static_cast<Arg>(std::move(object));
+        } else {
+            return T(std::move(object));
+        }
+    }
+
+    template<std::size_t... Index>
+    static void invoke(
+        GraphBuilder& builder,
+        std::span<ConfigurationArgument> arguments,
+        std::index_sequence<Index...>)
+    {
+        Function(builder, argument<Args>(arguments[Index])...);
+    }
+
+    static void configure(
+        GraphBuilder& builder,
+        std::span<ConfigurationArgument> arguments)
+    {
+        if (arguments.size() != sizeof...(Args)) {
+            throw std::invalid_argument(
+                "IV module configuration argument count mismatch");
+        }
+        invoke(builder, arguments, std::index_sequence_for<Args...>{});
+    }
+};
 } // namespace details
 } // namespace iv
 
@@ -76,7 +133,8 @@ NodeRef configure_registered_definition(GraphBuilder&, std::string_view id);
             Id, sizeof(Id) - 1, \
             __FILE__, sizeof(__FILE__) - 1, \
             IV_PACKAGE_ROOT, sizeof(IV_PACKAGE_ROOT) - 1, \
-            Function, nullptr, nullptr}; \
+            &::iv::details::IvModuleConfigureAdapter<Function>::configure, \
+            nullptr, nullptr}; \
     }
 
 #define IV_NODE(Id, Node) \

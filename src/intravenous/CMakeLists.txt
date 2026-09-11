@@ -124,7 +124,7 @@ function(iv_add_host_runtime_objects target)
     target_compile_definitions(${target} PRIVATE
         JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
         JUCE_USE_CURL=${JUCE_USE_CURL}
-        IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY="$<TARGET_FILE:iv_module_shared>"
+        IV_CONFIGURED_IV_BUILDER_LIBRARY="$<TARGET_FILE:iv_builder>"
         IV_CONFIGURED_JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
         IV_CONFIGURED_JUCE_USE_CURL=${JUCE_USE_CURL}
         IV_CONFIGURED_CMAKE_COMMAND="${CMAKE_COMMAND}"
@@ -150,7 +150,7 @@ function(iv_add_host_runtime_objects target)
     endif()
 
     target_link_libraries(${target} PRIVATE
-        iv_module_shared
+        iv_builder
         intravenous_module_loader
         intravenous_module_watcher
         intravenous_runtime_iv_module_instances_events
@@ -206,16 +206,12 @@ add_library(intravenous_graph_builder OBJECT
 )
 iv_configure_intravenous_target(intravenous_graph_builder PUBLIC)
 
-add_library(iv_module_shared SHARED
+add_library(iv_builder SHARED
     $<TARGET_OBJECTS:intravenous_graph_builder>
 )
-# The temporary module-building JIT resolves this library directly. Keep the
-# established target name for project-template compatibility, but make the
-# produced DSO describe its actual responsibility.
-add_library(iv_builder ALIAS iv_module_shared)
-set_target_properties(iv_module_shared PROPERTIES OUTPUT_NAME iv_builder)
-iv_configure_intravenous_target(iv_module_shared PUBLIC)
-iv_link_stacktrace_support(iv_module_shared)
+set_target_properties(iv_builder PROPERTIES OUTPUT_NAME iv_builder)
+iv_configure_intravenous_target(iv_builder PUBLIC)
+iv_link_stacktrace_support(iv_builder)
 
 # This source represents the default project-local module. Its compilation
 # database entry is copied to new module sources, where clangd infers the
@@ -224,7 +220,7 @@ add_library(intravenous_module_source_template_tooling OBJECT EXCLUDE_FROM_ALL
     runtime/module_source_template/module.cpp
 )
 iv_configure_intravenous_target(intravenous_module_source_template_tooling PUBLIC)
-target_link_libraries(intravenous_module_source_template_tooling PRIVATE iv_module_shared)
+target_link_libraries(intravenous_module_source_template_tooling PRIVATE iv_builder)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(intravenous_module_source_template_tooling PRIVATE
         -Wno-unused-function)
@@ -240,7 +236,19 @@ add_library(intravenous_module_loader OBJECT
     module/loader.cpp
 )
 iv_configure_intravenous_target(intravenous_module_loader PUBLIC)
+target_include_directories(intravenous_module_loader PRIVATE ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(intravenous_module_loader PRIVATE ${LLVM_DEFINITIONS})
+llvm_map_components_to_libnames(IV_PACKAGE_LOADER_LLVM_LIBS
+    bitreader
+    core
+    executionengine
+    native
+    nativecodegen
+    orcjit
+    support
+    target)
 target_link_libraries(intravenous_module_loader PRIVATE
+    ${IV_PACKAGE_LOADER_LLVM_LIBS}
     nlohmann_json::nlohmann_json
 )
 
@@ -454,11 +462,11 @@ if(JUCE_FOUND)
 
     # This library remains the runtime-symbol provider for JUCE/VST node
     # modules. The builder boundary must not remove that opt-in capability.
-    target_compile_definitions(iv_module_shared PUBLIC
+    target_compile_definitions(iv_builder PUBLIC
         IV_ENABLE_JUCE_VST=1
         JUCE_PLUGINHOST_VST3=1
     )
-    target_link_libraries(iv_module_shared PRIVATE intravenous_juce_runtime)
+    target_link_libraries(iv_builder PRIVATE intravenous_juce_runtime)
 
     target_compile_definitions(intravenous_module_loader PRIVATE
         IV_CONFIGURED_ENABLE_JUCE_VST=1
@@ -466,7 +474,7 @@ if(JUCE_FOUND)
         IV_CONFIGURED_JUCE_MODULES_DIR="${IV_JUCE_MODULES_DIR}"
     )
 else()
-    target_compile_definitions(iv_module_shared PUBLIC
+    target_compile_definitions(iv_builder PUBLIC
         IV_ENABLE_JUCE_VST=0
     )
 
@@ -478,7 +486,7 @@ else()
 endif()
 
 target_compile_definitions(intravenous_module_loader PRIVATE
-    IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY="$<TARGET_FILE:iv_module_shared>"
+    IV_CONFIGURED_IV_BUILDER_LIBRARY="$<TARGET_FILE:iv_builder>"
     IV_CONFIGURED_JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
     IV_CONFIGURED_JUCE_USE_CURL=${JUCE_USE_CURL}
     IV_CONFIGURED_CMAKE_COMMAND="${CMAKE_COMMAND}"

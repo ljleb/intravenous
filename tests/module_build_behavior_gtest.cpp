@@ -188,7 +188,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
                 end == std::string::npos ? std::string::npos : end - value_begin);
         };
         auto const plugin_path = cache_path("IV_CLANG_SOURCE_INTROSPECTION_PLUGIN");
-        auto const finalizer_path = cache_path("IV_MODULE_FINALIZER");
+        auto const finalizer_path = cache_path("IV_PACKAGE_FINALIZER");
         ASSERT_FALSE(plugin_path.empty());
         ASSERT_FALSE(finalizer_path.empty());
 
