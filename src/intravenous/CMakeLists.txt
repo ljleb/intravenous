@@ -150,7 +150,7 @@ function(iv_add_host_runtime_objects target)
     endif()
 
     target_link_libraries(${target} PRIVATE
-        intravenous_graph_builder
+        iv_module_shared
         intravenous_module_loader
         intravenous_module_watcher
         intravenous_runtime_iv_module_instances_events

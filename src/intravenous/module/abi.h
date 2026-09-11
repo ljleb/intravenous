@@ -10,7 +10,7 @@ namespace iv {
 namespace details {
 struct BuilderSession;
 }
-inline constexpr std::uint32_t IV_MODULE_ABI_VERSION = 12;
+inline constexpr std::uint32_t IV_MODULE_ABI_VERSION = 13;
 
 struct ModuleDataView {
     void const* data = nullptr;
@@ -22,6 +22,22 @@ struct ModuleNodeConfigRecord {
     std::size_t size = 0;
     std::size_t alignment = 1;
 };
+
+struct NodeConfigPointerFieldData {
+    NodeCodeKey code_key{};
+    std::size_t byte_offset = 0;
+};
+
+struct RetainedGlobalData {
+    void const* address = nullptr;
+    std::size_t size = 0;
+    std::size_t ordinal = 0;
+};
+
+static_assert(std::is_standard_layout_v<NodeConfigPointerFieldData>);
+static_assert(std::is_trivially_copyable_v<NodeConfigPointerFieldData>);
+static_assert(std::is_standard_layout_v<RetainedGlobalData>);
+static_assert(std::is_trivially_copyable_v<RetainedGlobalData>);
 
 // A stable source-level association between a registered primitive node ID and
 // the build-local compiler key used by the artifact's LLVM table.  The key is
@@ -40,16 +56,11 @@ static_assert(std::is_trivially_copyable_v<SourceNodeTypeData>);
 
 extern "C" {
 using iv_module_abi_version_fn = std::uint32_t (*)();
-using iv_source_module_count_fn = std::size_t (*)();
-using iv_source_module_id_fn = iv::ModuleDataView (*)(std::size_t);
-using iv_source_module_authored_graph_fn = iv::ModuleDataView (*)(std::size_t);
-using iv_source_module_node_configs_fn = iv::ModuleDataView (*)(std::size_t);
 using iv_module_node_types_fn = iv::ModuleDataView (*)();
 using iv_source_node_types_fn = iv::ModuleDataView (*)();
-using iv_source_registered_module_count_fn = std::size_t (*)();
-using iv_source_registered_module_id_fn = iv::ModuleDataView (*)(std::size_t);
-using iv_source_build_registered_module_fn = void (*)(
-    std::size_t, iv::details::BuilderSession*);
+using iv_source_registrations_fn = iv::ModuleDataView (*)();
+using iv_source_node_config_pointer_fields_fn = iv::ModuleDataView (*)();
+using iv_source_retained_globals_fn = iv::ModuleDataView (*)();
 }
 
 #if defined(_WIN32)

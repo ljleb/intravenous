@@ -1,11 +1,13 @@
 #pragma once
 
-#include <intravenous/node/code_key.h>
+#include <intravenous/module/abi.h>
+#include <intravenous/module/source_registration.h>
 #include <intravenous/node/config_relocations.h>
 
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <string_view>
 
 namespace iv {
 class GraphBuilder;
@@ -13,42 +15,46 @@ class GraphBuilderState;
 struct AuthoredGraph;
 
 namespace details {
-// Compiler-derived layout facts for one node configuration type. This is an
-// implementation boundary between the finalizer and the precompiled builder;
-// node definitions neither provide nor see it.
-struct NodeConfigLayout {
-    NodeCodeKey node_code_key{};
-    std::span<std::size_t const> pointer_offsets{};
+// All source-specific data needed while configuring a graph. The loader builds
+// these views from the IV sources that are loaded for the configuration; the
+// BuilderSession copies the records so nested iv-module calls use one stable
+// lookup set even if other sources are reloaded concurrently.
+struct BuilderSourceView {
+    std::string_view source_root{};
+    std::span<SourceRegistrationView const> registrations{};
+    std::span<NodeConfigPointerFieldData const> config_pointer_fields{};
+    std::span<RetainedGlobalData const> retained_globals{};
 };
 
-// Addresses materialized by the temporary authoring JIT. `symbol` is an
-// opaque finalizer handle for the corresponding master-module global.
-struct AuthoringGlobalAddress {
-    void const* address = nullptr;
-    std::size_t size = 0;
-    void const* symbol = nullptr;
+struct BuilderRegistration {
+    SourceRegistrationView registration{};
+    std::size_t source_index = 0;
 };
 
-// The host creates this opaque session before running a module's temporary ORC
-// build generation. The generation may borrow its GraphBuilder only while
-// `iv_source_build_registered_module` is executing; the completed
-// AuthoredGraph remains host owned and is taken before that generation is
-// released.
 struct BuilderSession;
 
 extern "C" BuilderSession* iv_builder_session_create();
 extern "C" void iv_builder_session_destroy(BuilderSession*) noexcept;
 
+// A child session owns an independent GraphBuilderState and node-configuration
+// allocations but shares the loaded-source tables and iv-module call stack.
+BuilderSession* iv_builder_child_session_create(
+    BuilderSession* parent, std::size_t source_index);
+
 AuthoredGraph take_built_graph(BuilderSession*);
 
-// The compiler supplies pointer field offsets for every node type emitted by
-// this build. The finalizer also supplies the JIT addresses of retained
-// immutable globals. Capturing a config converts each pointer slot into a
-// symbolic relocation while the authoring generation is still live.
-void set_builder_node_config_layouts(
-    BuilderSession*, std::span<NodeConfigLayout const>);
-void set_builder_authoring_globals(
-    BuilderSession*, std::span<AuthoringGlobalAddress const>);
+void set_builder_sources(
+    BuilderSession*, std::span<BuilderSourceView const> sources);
+std::size_t builder_source_index(
+    BuilderSession const*, std::string_view source_root);
+std::size_t builder_selected_source(BuilderSession const*) noexcept;
+void restore_builder_source(BuilderSession*, std::size_t source_index) noexcept;
+void select_builder_source(BuilderSession*, std::size_t source_index);
+BuilderRegistration find_builder_registration(
+    BuilderSession const*, std::string_view id);
+void begin_builder_module(BuilderSession*, std::string_view id);
+void end_builder_module(BuilderSession*) noexcept;
+
 NodeConfigRelocations capture_node_config(
     BuilderSession*, NodeCodeKey, void const*, std::size_t);
 
@@ -63,7 +69,6 @@ std::shared_ptr<void const> take_builder_node_config(
     BuilderSession*, void const* storage, std::size_t size, std::size_t alignment);
 
 // Private bridge used by GraphBuilder's out-of-line facade implementation.
-// It is intentionally not a module builder API.
 GraphBuilderState& builder_graph_state(GraphBuilder&);
 
 }

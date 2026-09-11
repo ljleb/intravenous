@@ -20,7 +20,7 @@ namespace iv {
 
     enum class ModuleCompileStage {
         full,
-        authoring,
+        configuration,
         lowering_topology,
         lowering_materialization,
         lowering_normalization,
@@ -94,11 +94,10 @@ namespace iv {
             std::vector<LoadedDefinition> definitions;
             std::vector<LoadedNodeType> node_types;
             std::vector<ModuleDependency> dependencies;
-            // Opaque ownership of the source's retained authoring entrypoints.
-            // It is private loader plumbing, but keeping it here lets one
-            // load operation assemble a shared authoring generation without
-            // exposing DynamicLibrary in the public header.
-            ModuleRef authoring_artifact{};
+            // Opaque ownership of the loaded IV source binary. Definitions and
+            // configured graphs retain this while any callback or immutable
+            // source-global address from that binary can still be referenced.
+            ModuleRef source_binary{};
         };
 
         explicit ModuleLoader(

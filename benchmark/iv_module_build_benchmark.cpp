@@ -89,7 +89,7 @@ std::string_view compile_stage_name(iv::ModuleCompileStage stage)
 {
     switch (stage) {
     case iv::ModuleCompileStage::full: return "full";
-    case iv::ModuleCompileStage::authoring: return "authoring";
+    case iv::ModuleCompileStage::configuration: return "configuration";
     case iv::ModuleCompileStage::lowering_topology:
         return "lowering-topology";
     case iv::ModuleCompileStage::lowering_materialization:
@@ -106,7 +106,7 @@ std::string_view compile_stage_name(iv::ModuleCompileStage stage)
 iv::ModuleCompileStage parse_compile_stage(std::string_view value)
 {
     if (value == "full") return iv::ModuleCompileStage::full;
-    if (value == "authoring") return iv::ModuleCompileStage::authoring;
+    if (value == "configuration") return iv::ModuleCompileStage::configuration;
     if (value == "lowering-topology")
         return iv::ModuleCompileStage::lowering_topology;
     if (value == "lowering-materialization")

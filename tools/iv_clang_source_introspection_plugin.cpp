@@ -1064,53 +1064,53 @@ public:
     {
         if (!declaration || !declaration->hasInit()) return true;
         auto const* record = declaration->getType()->getAsCXXRecordDecl();
-        if (!record) return true;
-        auto const name = record->getQualifiedNameAsString();
-        if (name != "iv::details::SourceModuleRegistration"
-            && name != "iv::details::SourceNodeRegistration") {
+        if (!record
+            || record->getQualifiedNameAsString()
+                != "iv::details::SourceRegistrationView") {
             return true;
         }
-        auto const* construction = dyn_cast<CXXConstructExpr>(
+
+        auto const variable_name = declaration->getName();
+        bool const is_module = variable_name.starts_with("iv_source_module_registration_");
+        bool const is_node = variable_name.starts_with("iv_source_node_registration_");
+        if (!is_module && !is_node) return true;
+
+        auto const* initializer = dyn_cast<InitListExpr>(
             declaration->getInit()->IgnoreParenImpCasts());
-        if (!construction || construction->getNumArgs() < 1) return true;
-        auto const* literal = dyn_cast<StringLiteral>(
-            construction->getArg(0)->IgnoreParenImpCasts());
+        if (!initializer || initializer->getNumInits() < 10) return true;
+
+        auto expression = [&](unsigned index) -> Expr* {
+            return initializer->getInit(index)->IgnoreParenImpCasts();
+        };
+        auto const* literal = dyn_cast<StringLiteral>(expression(1));
         if (!literal || literal->getString().empty()) return true;
 
         auto id = literal->getString().str();
         if (!seen_.insert(id).second) return true;
         llvm::json::Object metadata{
             {"id", std::move(id)},
-            {"kind", name == "iv::details::SourceModuleRegistration"
-                ? "module" : "node"},
+            {"kind", is_module ? "module" : "node"},
             {"declaration_usr", declaration_usr(context_, declaration)},
         };
-        auto const source_file_argument = name == "iv::details::SourceModuleRegistration"
-            ? std::size_t{3} : std::size_t{4};
-        if (construction->getNumArgs() > source_file_argument) {
-            if (auto const* source_file = dyn_cast<StringLiteral>(
-                    construction->getArg(source_file_argument)->IgnoreParenImpCasts())) {
-                metadata["source_file"] = source_file->getString();
-            }
+        if (auto const* source_file = dyn_cast<StringLiteral>(expression(3))) {
+            metadata["source_file"] = source_file->getString();
         }
-        if (name == "iv::details::SourceModuleRegistration"
-            && construction->getNumArgs() >= 3) {
-            auto* expression = construction->getArg(2)->IgnoreParenImpCasts();
-            if (auto const* address = dyn_cast<UnaryOperator>(expression)) {
-                expression = address->getSubExpr()->IgnoreParenImpCasts();
+
+        if (is_module) {
+            Expr* implementation = expression(7);
+            if (auto const* address = dyn_cast<UnaryOperator>(implementation)) {
+                implementation = address->getSubExpr()->IgnoreParenImpCasts();
             }
-            if (auto const* reference = dyn_cast<DeclRefExpr>(expression)) {
+            if (auto const* reference = dyn_cast<DeclRefExpr>(implementation)) {
                 metadata["implementation_usr"] = declaration_usr(
                     context_, reference->getDecl());
             }
-        }
-        if (name == "iv::details::SourceNodeRegistration"
-            && construction->getNumArgs() >= 4) {
-            auto* expression = construction->getArg(3)->IgnoreParenImpCasts();
-            if (auto const* address = dyn_cast<UnaryOperator>(expression)) {
-                expression = address->getSubExpr()->IgnoreParenImpCasts();
+        } else {
+            Expr* compiler_record = expression(9);
+            if (auto const* address = dyn_cast<UnaryOperator>(compiler_record)) {
+                compiler_record = address->getSubExpr()->IgnoreParenImpCasts();
             }
-            if (auto const* reference = dyn_cast<DeclRefExpr>(expression)) {
+            if (auto const* reference = dyn_cast<DeclRefExpr>(compiler_record)) {
                 auto const* specialization = dyn_cast<VarTemplateSpecializationDecl>(
                     reference->getDecl());
                 if (auto const* node = node_type_from_compiler_record_specialization(

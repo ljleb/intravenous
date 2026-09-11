@@ -115,7 +115,7 @@ function(iv_add_runtime_module target)
     endif()
 
     # This target contains only files owned by its IV source package.
-    # Registered IDs resolve in the host authoring generation; provider
+    # Registered IDs resolve in the host graph configuration; provider
     # implementation files are never merged into a consumer target. Custom
     # projects may add additional same-source translation units through
     # SOURCES; duplicates are harmlessly removed here.

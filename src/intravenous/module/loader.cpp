@@ -22,6 +22,7 @@
 #include <ranges>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -109,8 +110,12 @@ struct DynamicLibrary {
 
 struct LoadedBinary {
     std::string id;
-    std::filesystem::path artifact_path;
+    std::string source_root;
+    std::filesystem::path binary_path;
     std::shared_ptr<DynamicLibrary> library;
+    std::vector<details::SourceRegistrationView> registrations{};
+    std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
+    std::vector<RetainedGlobalData> retained_globals{};
 };
 
 class ScopedModuleBuildLock {
@@ -357,7 +362,7 @@ std::string_view compile_stage_name(ModuleCompileStage stage)
 {
     switch (stage) {
     case ModuleCompileStage::full: return "full";
-    case ModuleCompileStage::authoring: return "authoring";
+    case ModuleCompileStage::configuration: return "configuration";
     case ModuleCompileStage::lowering_topology: return "lowering-topology";
     case ModuleCompileStage::lowering_materialization:
         return "lowering-materialization";
@@ -507,9 +512,9 @@ class ModuleLoader::Impl {
     struct CompiledRoot {
         ResolvedModule root;
         // All independently discovered source packages participate in the
-        // current authoring generation. Stable IDs are discovered from their
+        // current graph configuration. Stable IDs are discovered from their
         // compiler registrations after loading, never by parsing C++ text.
-        std::vector<ResolvedModule> authoring_sources;
+        std::vector<ResolvedModule> configuration_sources;
         std::filesystem::path artifact;
     };
 
@@ -593,7 +598,7 @@ class ModuleLoader::Impl {
         }
     }
 
-    std::vector<ResolvedModule> authoring_sources_for(
+    std::vector<ResolvedModule> sources_for_graph_configuration(
         ResolvedModule const &root,
         std::filesystem::path const &project_root) const
     {
@@ -666,115 +671,11 @@ class ModuleLoader::Impl {
         std::filesystem::create_directories(generated_dir);
 
         std::ostringstream export_tu;
-        // The generated root owns the module ABI symbols, so it must include
-        // their declaration directly rather than rely on the DSL's transitive
-        // includes.
         export_tu << "#include <intravenous/module/abi.h>\n"
-                  << "#include <intravenous/dsl.h>\n"
-                  << "#include <cstddef>\n"
-                  << "#include <span>\n"
-                  << "#include <string>\n"
-                  << "#include <vector>\n";
-        export_tu
-            << "extern \"C\" IV_MODULE_EXPORT std::uint32_t "
-               "iv_module_abi_version() {\n"
-            << "  return iv::IV_MODULE_ABI_VERSION;\n"
-            << "}\n"
-            << "extern \"C\" IV_MODULE_EXPORT std::size_t "
-               "iv_source_registered_module_count() {\n"
-            << "  return iv::details::source_module_count("
-            << cxx_string_literal(root.module_dir.generic_string()) << ");\n"
-            << "}\n"
-            << "extern \"C\" IV_MODULE_EXPORT iv::ModuleDataView "
-               "iv_source_registered_module_id(std::size_t index) {\n"
-            << "  auto const registration = iv::details::source_module_at("
-            << cxx_string_literal(root.module_dir.generic_string()) << ", index);\n"
-            << "  return {registration.id, registration.id_size};\n"
-            << "}\n"
-            << "extern \"C\" IV_MODULE_EXPORT void "
-               "iv_source_build_registered_module(std::size_t index, "
-               "iv::details::BuilderSession* session) {\n"
-            << "  iv::GraphBuilder builder{session};\n"
-            << "  iv::details::source_module_at("
-            << cxx_string_literal(root.module_dir.generic_string())
-            << ", index).module_build(builder);\n"
-            << "}\n"
-            << "extern \"C\" IV_MODULE_EXPORT std::size_t "
-               "iv_source_registered_node_type_count() {\n"
-            << "  return iv::details::source_node_count("
-            << cxx_string_literal(root.module_dir.generic_string()) << ");\n"
-            << "}\n"
-            << "extern \"C\" IV_MODULE_EXPORT iv::ModuleDataView "
-               "iv_source_registered_node_type_id(std::size_t index) {\n"
-            << "  auto const registration = iv::details::source_node_at("
-            << cxx_string_literal(root.module_dir.generic_string()) << ", index);\n"
-            << "  return {registration.id, registration.id_size};\n"
-            << "}\n"
-            << "extern \"C\" IV_MODULE_EXPORT iv::NodeCodeKey "
-               "iv_source_registered_node_type_code_key(std::size_t index) {\n"
-            << "  return iv::details::source_node_code_key("
-            << cxx_string_literal(root.module_dir.generic_string()) << ", index);\n"
-            << "}\n"
-            << "extern \"C\" IV_MODULE_EXPORT void "
-               "iv_source_build_registered_node_type(std::size_t index, "
-               "iv::details::BuilderSession* session) {\n"
-            << "  iv::GraphBuilder builder{session};\n"
-            << "  auto node = iv::details::source_node_at("
-            << cxx_string_literal(root.module_dir.generic_string())
-            << ", index).node_build(builder);\n"
-            << "  for (std::size_t input = 0; input < node.sample_input_count(); ++input) {\n"
-            << "    auto const config = builder.sample_input_config(\n"
-               "        node.node_bundle_handle(), input);\n"
-            << "    auto const name = config.name.empty()\n"
-               "        ? std::string(\"input\") + std::to_string(input)\n"
-               "        : config.name;\n"
-            << "    node.connect_input(input, builder.input_named(\n"
-               "        name, config.channel_layout, config.default_value, config.min, config.max));\n"
-            << "  }\n"
-            << "  for (std::size_t input = 0; input < node.event_input_count(); ++input) {\n"
-            << "    auto const config = builder.event_input_config(\n"
-               "        node.node_bundle_handle(), input);\n"
-            << "    auto const name = config.name.empty()\n"
-               "        ? std::string(\"eventInput\") + std::to_string(input)\n"
-               "        : config.name;\n"
-            << "    node.connect_event_input(\n"
-               "        input, builder.event_input_named(name, config.type));\n"
-            << "  }\n"
-            << "  std::vector<iv::SampleOutputRequest> sample_outputs;\n"
-            << "  std::vector<std::string> sample_output_names;\n"
-            << "  sample_outputs.reserve(node.sample_output_count());\n"
-            << "  sample_output_names.reserve(node.sample_output_count());\n"
-            << "  for (std::size_t output = 0; output < node.sample_output_count(); ++output) {\n"
-            << "    auto port = node[output];\n"
-            << "    sample_output_names.push_back(\n"
-               "        std::string(\"output\") + std::to_string(output));\n"
-            << "    auto const& name = sample_output_names.back();\n"
-            << "    sample_outputs.push_back({\n"
-            << "      .ref = port,\n"
-            << "      .name = name,\n"
-            << "      .channel_layout = {.channel_type = port.channel_type, "
-               ".sample_layout = iv::SampleStreamLayout::planar},\n"
-            << "      .family_name = name,\n"
-            << "      .family_channel_type = port.channel_type,\n"
-            << "    });\n"
-            << "  }\n"
-            << "  if (!sample_outputs.empty()) builder.outputs(\n"
-               "      std::span<iv::SampleOutputRequest const>(sample_outputs));\n"
-            << "  std::vector<iv::EventOutputRequest> event_outputs;\n"
-            << "  std::vector<std::string> event_output_names;\n"
-            << "  event_outputs.reserve(node.event_output_count());\n"
-            << "  event_output_names.reserve(node.event_output_count());\n"
-            << "  for (std::size_t output = 0; output < node.event_output_count(); ++output) {\n"
-            << "    event_output_names.push_back(\n"
-               "        std::string(\"eventOutput\") + std::to_string(output));\n"
-            << "    event_outputs.push_back({\n"
-            << "      .ref = node.event_port(output),\n"
-            << "      .name = event_output_names.back(),\n"
-            << "    });\n"
-            << "  }\n"
-            << "  if (!event_outputs.empty()) builder.event_outputs(\n"
-               "      std::span<iv::EventOutputRequest const>(event_outputs));\n"
-            << "}\n";
+                  << "extern \"C\" IV_MODULE_EXPORT std::uint32_t "
+                     "iv_module_abi_version() {\n"
+                  << "  return iv::IV_MODULE_ABI_VERSION;\n"
+                  << "}\n";
         write_text_if_different(export_file, export_tu.str());
 
         if (!std::filesystem::exists(custom_cmake)) {
@@ -843,7 +744,7 @@ class ModuleLoader::Impl {
             << std::filesystem::last_write_time(source_introspection_plugin)
                    .time_since_epoch().count() << '\n';
         // A source artifact owns only its own implementation files. Registered
-        // IDs resolve through the authoring generation, so provider edits do
+        // IDs resolve through graph configuration, so provider edits do
         // not enter a consumer's C++ compilation signature.
         signature << key(root) << '\n'
                   << read_text(root.manifest_file) << '\n'
@@ -992,11 +893,11 @@ public:
         auto const project_root = root.global
             ? global_cache_root_
             : discover_project_root(root.module_dir);
-        auto authoring_sources = authoring_sources_for(root, project_root);
+        auto configuration_sources = sources_for_graph_configuration(root, project_root);
         auto artifact = build(root, project_root);
         return {
             .root = std::move(root),
-            .authoring_sources = std::move(authoring_sources),
+            .configuration_sources = std::move(configuration_sources),
             .artifact = std::move(artifact),
         };
     }
@@ -1021,11 +922,9 @@ public:
             binary = existing->second.lock();
         }
         if (!binary) {
-            // A changed source uses a signature-addressed DSO path. Retire
-            // only its old registration views before the new constructors
-            // publish their complete replacement set; existing graphs retain
-            // the old DSO but never dispatch through it again.
-            details::clear_source_definitions_for_root(root.module_dir.generic_string());
+            // A changed IV source uses a signature-addressed DSO path. Older
+            // binaries remain alive only through graphs that still reference
+            // them; no process-global registration state is replaced here.
             auto const dynamic_library_started_at = std::chrono::steady_clock::now();
             auto library = std::make_shared<DynamicLibrary>(artifact);
             if (log_sink_) {
@@ -1035,9 +934,10 @@ public:
                         std::chrono::steady_clock::now() - dynamic_library_started_at).count()));
             }
             binary = std::make_shared<LoadedBinary>(LoadedBinary{
-                root.source_key,
-                artifact,
-                std::move(library),
+                .id = root.source_key,
+                .source_root = root.module_dir.generic_string(),
+                .binary_path = artifact,
+                .library = std::move(library),
             });
             loaded_binaries_by_artifact.insert_or_assign(artifact_key, binary);
         }
@@ -1059,23 +959,65 @@ public:
                 std::to_string(loaded_abi_version) + " (expected " +
                 std::to_string(IV_MODULE_ABI_VERSION) + ")");
         }
-        auto source_module_count = reinterpret_cast<iv_source_module_count_fn>(
-            library->symbol("iv_source_module_count"));
-        auto source_module_id = reinterpret_cast<iv_source_module_id_fn>(
-            library->symbol("iv_source_module_id"));
-        auto authored_graph = reinterpret_cast<iv_source_module_authored_graph_fn>(
-            library->symbol("iv_source_module_authored_graph"));
-        auto node_configs = reinterpret_cast<iv_source_module_node_configs_fn>(
-            library->symbol("iv_source_module_node_configs"));
+        auto const registrations_fn = reinterpret_cast<iv_source_registrations_fn>(
+            library->symbol("iv_source_registrations"));
+        auto const pointer_fields_fn =
+            reinterpret_cast<iv_source_node_config_pointer_fields_fn>(
+                library->symbol("iv_source_node_config_pointer_fields"));
+        auto const retained_globals_fn = reinterpret_cast<iv_source_retained_globals_fn>(
+            library->symbol("iv_source_retained_globals"));
+        if (!registrations_fn || !pointer_fields_fn || !retained_globals_fn) {
+            throw std::runtime_error(
+                "IV source binary '" + artifact.string()
+                + "' does not export its graph-configuration tables");
+        }
+
+        auto copy_table = [&](auto view, auto* type_tag, std::string_view name) {
+            using T = std::remove_pointer_t<decltype(type_tag)>;
+            if (!view.data && view.size != 0) {
+                throw std::runtime_error(
+                    "IV source " + std::string(name) + " table has null data");
+            }
+            if (view.size % sizeof(T) != 0) {
+                throw std::runtime_error(
+                    "IV source " + std::string(name) + " table has invalid size");
+            }
+            auto values = std::span(
+                static_cast<T const*>(view.data), view.size / sizeof(T));
+            return std::vector<T>(values.begin(), values.end());
+        };
+        binary->registrations = copy_table(
+            registrations_fn(),
+            static_cast<details::SourceRegistrationView*>(nullptr),
+            "registration");
+        binary->config_pointer_fields = copy_table(
+            pointer_fields_fn(),
+            static_cast<NodeConfigPointerFieldData*>(nullptr),
+            "node-config pointer-field");
+        binary->retained_globals = copy_table(
+            retained_globals_fn(),
+            static_cast<RetainedGlobalData*>(nullptr),
+            "retained LLVM global");
+
+        for (auto const& registration : binary->registrations) {
+            if (!registration.source_root || registration.source_root_size == 0) {
+                throw std::runtime_error("IV source registration has no source root");
+            }
+            auto const registration_root = normalize(std::filesystem::path(std::string(
+                registration.source_root, registration.source_root_size)));
+            if (registration_root != normalize(root.module_dir)) {
+                throw std::runtime_error(
+                    "IV source registration belongs to a different source root");
+            }
+        }
         auto node_types = reinterpret_cast<iv_module_node_types_fn>(
             library->symbol("iv_module_node_types"));
         auto source_node_types = reinterpret_cast<iv_source_node_types_fn>(
             library->symbol("iv_source_node_types"));
-        if (!source_module_count || !source_module_id || !authored_graph
-            || !node_configs || !node_types || !source_node_types) {
+        if (!node_types || !source_node_types) {
             throw std::runtime_error(
-                "IV source artifact '" + artifact.string()
-                + "' does not export the finalized source definition tables");
+                "IV source binary '" + artifact.string()
+                + "' does not export its node type definition tables");
         }
         auto const type_view = node_types();
         if (!type_view.data && type_view.size != 0) {
@@ -1168,55 +1110,7 @@ public:
                 return a.module_dir < b.module_dir;
             });
 
-        auto const module_count = source_module_count();
         std::vector<LoadedDefinition> definitions;
-        definitions.reserve(module_count);
-        std::unordered_set<std::string> module_ids;
-        for (std::size_t index = 0; index < module_count; ++index) {
-            auto const id_view = source_module_id(index);
-            auto const graph_view = authored_graph(index);
-            auto const config_view = node_configs(index);
-            if (!id_view.data || id_view.size == 0) {
-                throw std::runtime_error("IV source module ID view is empty");
-            }
-            if (!graph_view.data && graph_view.size != 0) {
-                throw std::runtime_error("IV source authored graph view has null data");
-            }
-            if (!config_view.data && config_view.size != 0) {
-                throw std::runtime_error("IV source node config view has null data");
-            }
-            if (config_view.size % sizeof(ModuleNodeConfigRecord) != 0) {
-                throw std::runtime_error("IV source node config table has invalid size");
-            }
-            auto module_id = std::string(
-                static_cast<char const*>(id_view.data), id_view.size);
-            if (!module_ids.insert(module_id).second) {
-                throw std::runtime_error(
-                    "IV source artifact contains duplicate module ID '" + module_id + "'");
-            }
-            if (node_type_ids.contains(module_id)) {
-                throw std::runtime_error(
-                    "IV source artifact uses registered ID '" + module_id
-                    + "' for both a node type and an IV module");
-            }
-            auto const graph_archive = std::span(
-                static_cast<std::byte const*>(graph_view.data), graph_view.size);
-            auto const configs = std::span(
-                static_cast<ModuleNodeConfigRecord const*>(config_view.data),
-                config_view.size / sizeof(ModuleNodeConfigRecord));
-            auto authored = std::make_shared<AuthoredGraph const>(
-                deserialize_authored_graph(graph_archive, types, configs));
-            std::vector<ModuleRef> refs;
-            refs.push_back(binary);
-            definitions.emplace_back(
-                std::move(refs),
-                WeakTypeErasedNode{},
-                GraphIntrospectionMetadata{},
-                root.module_dir,
-                std::move(module_id),
-                dependencies,
-                std::move(authored));
-        }
         if (log_sink_) {
             log_sink_(
                 "[source-graph-deserialization] elapsed_us=" +
@@ -1227,51 +1121,62 @@ public:
             .definitions = std::move(definitions),
             .node_types = std::move(loaded_node_types),
             .dependencies = std::move(dependencies),
-            .authoring_artifact = binary,
+            .source_binary = binary,
         };
     }
 
-    ModuleLoader::LoadedSource author_registered_modules(
+    ModuleLoader::LoadedSource configure_iv_modules(
         CompiledRoot const& compiled,
         ModuleLoader::LoadedSource source,
-        std::vector<ModuleRef> const& authoring_generation_refs) const
+        std::vector<std::shared_ptr<LoadedBinary>> const& loaded_binaries,
+        std::vector<ModuleDependency> configuration_dependencies) const
     {
-        auto const binary = std::static_pointer_cast<LoadedBinary>(
-            source.authoring_artifact);
-        if (!binary || !binary->library) {
-            throw std::logic_error("loaded IV source has no authoring artifact");
-        }
-        auto const registered_module_count =
-            reinterpret_cast<iv_source_registered_module_count_fn>(
-                binary->library->symbol("iv_source_registered_module_count"));
-        auto const registered_module_id =
-            reinterpret_cast<iv_source_registered_module_id_fn>(
-                binary->library->symbol("iv_source_registered_module_id"));
-        auto const build_registered_module =
-            reinterpret_cast<iv_source_build_registered_module_fn>(
-                binary->library->symbol("iv_source_build_registered_module"));
-        if (!registered_module_count || !registered_module_id || !build_registered_module) {
-            throw std::runtime_error(
-                "IV source artifact '" + binary->artifact_path.string()
-                + "' does not retain its registered-module authoring entrypoints");
+        auto const root_binary = std::static_pointer_cast<LoadedBinary>(
+            source.source_binary);
+        if (!root_binary || !root_binary->library) {
+            throw std::logic_error("loaded IV source has no binary");
         }
 
+        std::vector<details::BuilderSourceView> source_views;
+        source_views.reserve(loaded_binaries.size());
+        for (auto const& binary : loaded_binaries) {
+            if (!binary || !binary->library || binary->registrations.empty()) continue;
+            source_views.push_back({
+                .source_root = binary->source_root,
+                .registrations = binary->registrations,
+                .config_pointer_fields = binary->config_pointer_fields,
+                .retained_globals = binary->retained_globals,
+            });
+        }
+
+        std::sort(
+            configuration_dependencies.begin(),
+            configuration_dependencies.end(),
+            [](auto const& lhs, auto const& rhs) {
+                if (lhs.id != rhs.id) return lhs.id < rhs.id;
+                return lhs.module_dir < rhs.module_dir;
+            });
+        configuration_dependencies.erase(
+            std::unique(
+                configuration_dependencies.begin(),
+                configuration_dependencies.end(),
+                [](auto const& lhs, auto const& rhs) {
+                    return lhs.id == rhs.id && lhs.module_dir == rhs.module_dir;
+                }),
+            configuration_dependencies.end());
+
         auto const started_at = std::chrono::steady_clock::now();
-        auto const module_count = registered_module_count();
         std::vector<LoadedDefinition> definitions;
-        definitions.reserve(module_count);
-        std::unordered_set<std::string> registered_ids;
-        for (std::size_t index = 0; index < module_count; ++index) {
-            auto const id_view = registered_module_id(index);
-            if (!id_view.data || id_view.size == 0) {
-                throw std::runtime_error("registered IV module authoring entry has an empty ID");
+        std::unordered_set<std::string> module_ids;
+        for (auto const& registration : root_binary->registrations) {
+            if (registration.kind != details::SourceRegistrationKind::module) continue;
+            if (!registration.id || registration.id_size == 0 || !registration.module_build) {
+                throw std::runtime_error("IV module registration is incomplete");
             }
-            auto module_id = std::string(
-                static_cast<char const*>(id_view.data), id_view.size);
-            if (!registered_ids.insert(module_id).second) {
+            auto module_id = std::string(registration.id, registration.id_size);
+            if (!module_ids.insert(module_id).second) {
                 throw std::runtime_error(
-                    "IV source authoring generation contains duplicate module ID '"
-                    + module_id + "' in source '" + compiled.root.source_key + "'");
+                    "IV source contains duplicate iv module ID '" + module_id + "'");
             }
 
             auto session = std::unique_ptr<details::BuilderSession,
@@ -1279,16 +1184,29 @@ public:
                     details::iv_builder_session_create(),
                     details::iv_builder_session_destroy);
             if (!session) {
-                throw std::runtime_error("could not create IV module authoring session");
+                throw std::runtime_error("could not create graph configuration session");
             }
-            build_registered_module(index, session.get());
+            details::set_builder_sources(session.get(), source_views);
+            auto const root_source_index = details::builder_source_index(
+                session.get(), root_binary->source_root);
+            details::select_builder_source(session.get(), root_source_index);
+            details::begin_builder_module(session.get(), module_id);
+            struct ModuleCallScope {
+                details::BuilderSession* session = nullptr;
+                ~ModuleCallScope() { details::end_builder_module(session); }
+            } const module_call{session.get()};
+
+            GraphBuilder builder(session.get());
+            registration.module_build(builder);
             auto authored = std::make_shared<AuthoredGraph const>(
                 details::take_built_graph(session.get()));
             auto plan = GraphCompiler::compile(
                 GraphLowerer::lower(*authored, {.execution_root = true}));
             auto runtime_root = std::make_shared<RuntimeGraphRoot>(std::move(plan.graph));
 
-            auto refs = authoring_generation_refs;
+            std::vector<ModuleRef> refs;
+            refs.reserve(loaded_binaries.size() + 1);
+            for (auto const& binary : loaded_binaries) refs.push_back(binary);
             refs.push_back(runtime_root);
             definitions.emplace_back(
                 std::move(refs),
@@ -1296,16 +1214,17 @@ public:
                 std::move(plan.introspection),
                 compiled.root.module_dir,
                 std::move(module_id),
-                source.dependencies,
+                configuration_dependencies,
                 std::move(authored));
         }
         if (log_sink_) {
             log_sink_(
-                "[authoring-generation-module-realization] elapsed_us=" +
-                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                "[graph-configuration] elapsed_us="
+                + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::steady_clock::now() - started_at).count()));
         }
         source.definitions = std::move(definitions);
+        source.dependencies = std::move(configuration_dependencies);
         return source;
     }
 
@@ -1320,65 +1239,65 @@ public:
 
         auto root_compiled = compile_source_unlocked(path);
         std::vector<CompiledRoot> compiled_sources;
-        compiled_sources.reserve(root_compiled.authoring_sources.size());
-        for (auto const& source : root_compiled.authoring_sources) {
-            if (normalize(source.module_dir) == normalize(root_compiled.root.module_dir)) {
+        compiled_sources.reserve(root_compiled.configuration_sources.size());
+        for (auto const& candidate : root_compiled.configuration_sources) {
+            if (normalize(candidate.module_dir) == normalize(root_compiled.root.module_dir)) {
                 compiled_sources.push_back(root_compiled);
                 continue;
             }
             try {
-                compiled_sources.push_back(compile_source_unlocked(source.module_dir));
+                compiled_sources.push_back(compile_source_unlocked(candidate.module_dir));
             } catch (std::exception const& exception) {
-                // The authoring generation is assembled from the valid source
-                // artifacts that are currently available. An unrelated broken
-                // source must not prevent another source from loading; if the
-                // requested source actually instantiates a definition from the
-                // failed provider, registered-ID lookup below reports that
-                // provider as unavailable instead.
+                // Broken unrelated IV sources are omitted. If graph
+                // configuration actually requests one of their registered IDs,
+                // BuilderSession reports that provider as unavailable.
                 if (log_sink_) {
                     log_sink_(
-                        "[authoring-generation-source-skipped] root="
-                        + source.module_dir.generic_string()
+                        "[graph-configuration-source-skipped] root="
+                        + candidate.module_dir.generic_string()
                         + " error=" + exception.what());
                 }
             }
         }
 
         std::optional<ModuleLoader::LoadedSource> root_source;
-        std::vector<ModuleRef> authoring_generation_refs;
-        authoring_generation_refs.reserve(compiled_sources.size());
+        std::vector<std::shared_ptr<LoadedBinary>> loaded_binaries;
+        std::vector<ModuleDependency> configuration_dependencies;
+        loaded_binaries.reserve(compiled_sources.size());
         for (auto const& compiled : compiled_sources) {
             auto const is_root = normalize(compiled.root.module_dir)
                 == normalize(root_compiled.root.module_dir);
             try {
                 auto loaded = load_compiled_source(compiled);
-                if (loaded.authoring_artifact) {
-                    authoring_generation_refs.push_back(loaded.authoring_artifact);
+                if (loaded.source_binary) {
+                    loaded_binaries.push_back(
+                        std::static_pointer_cast<LoadedBinary>(loaded.source_binary));
                 }
-                if (is_root) {
-                    root_source = std::move(loaded);
-                }
+                configuration_dependencies.insert(
+                    configuration_dependencies.end(),
+                    loaded.dependencies.begin(), loaded.dependencies.end());
+                if (is_root) root_source = std::move(loaded);
             } catch (std::exception const& exception) {
                 if (is_root) throw;
-                details::clear_source_definitions_for_root(
-                    compiled.root.module_dir.generic_string());
                 if (log_sink_) {
                     log_sink_(
-                        "[authoring-generation-source-load-skipped] root="
+                        "[graph-configuration-source-load-skipped] root="
                         + compiled.root.module_dir.generic_string()
                         + " error=" + exception.what());
                 }
             }
         }
         if (!root_source) {
-            throw std::logic_error("authoring generation omitted its requested IV source");
+            throw std::logic_error("loaded IV sources omitted the requested source");
         }
 
-        return author_registered_modules(
+        return configure_iv_modules(
             root_compiled,
             std::move(*root_source),
-            authoring_generation_refs);
+            loaded_binaries,
+            std::move(configuration_dependencies));
     }
+
 };
 
 ModuleLoader::LoadedDefinition::LoadedDefinition(
