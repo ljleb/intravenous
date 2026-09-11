@@ -121,6 +121,11 @@ public:
   void bind(GraphBuilder& builder) noexcept { _facade = &builder; }
   constexpr GraphBuilderState();
   NodeBundleHandle append_node_description(ReflectedNodeDescription);
+  NodeRef append_registered_node(std::string_view id);
+  std::optional<size_t> ensure_registered_sample_input(
+      NodeBundleHandle, std::string_view, ChannelLayout);
+  std::optional<size_t> ensure_registered_event_input(
+      NodeBundleHandle, std::string_view, EventTypeId);
   NodeBundleHandle append_tiled_node_description(
       ReflectedNodeDescription const&, ChannelLayout);
   PublicSampleInputRef input();
@@ -210,6 +215,8 @@ public:
   size_t sample_output_count(NodeBundleHandle) const;
   size_t event_input_count(NodeBundleHandle) const;
   size_t event_output_count(NodeBundleHandle) const;
+  InputConfig sample_input_config(NodeBundleHandle, size_t) const;
+  EventInputConfig event_input_config(NodeBundleHandle, size_t) const;
   NodeBundleHandle tiled_member(NodeBundleHandle, size_t) const;
   NodePorts const& typed_ports(NodeBundleHandle) const;
   SamplePortRef sample_port_from_output(NodeBundlePortId);

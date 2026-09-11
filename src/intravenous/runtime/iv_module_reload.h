@@ -17,17 +17,6 @@
 
 namespace iv {
 struct TasksRunnerBeforePass;
-struct IvModuleReloadedDefinition {
-    std::string source_id{};
-    std::string definition_id{};
-    std::filesystem::path module_root{};
-    std::string module_id{};
-    GraphIntrospectionMetadata introspection{};
-    std::vector<ModuleDependency> dependencies{};
-    std::vector<ModuleRef> module_refs{};
-    WeakTypeErasedNode root{};
-};
-
 struct IvModuleReloadFailure {
     std::string definition_id{};
     std::filesystem::path module_root{};
@@ -46,6 +35,7 @@ struct IvModuleReloadResults {
     // definitions.
     std::vector<IvModuleReloadedSource> sources{};
     std::vector<IvModuleReloadedDefinition> loaded{};
+    std::vector<IvModuleReloadedNodeType> node_types{};
     std::vector<IvModuleReloadFailure> failed{};
 };
 

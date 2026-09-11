@@ -120,10 +120,12 @@ function(iv_add_runtime_module target)
         target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=0)
     endif()
 
-    # The loader owns the IV-source import closure.  Compile each source as
-    # its own translation unit so generated <iv/nodes/...> interfaces never
-    # pull implementation source into a consumer TU.  Custom projects may add
-    # more sources through SOURCES; duplicates are harmlessly removed here.
+    # The loader passes this target only the root IV source's entry point.
+    # Imported IV sources contribute generated <iv/nodes/...> interfaces and
+    # are built as independent artifacts by the loader; they must never be
+    # added here as consumer implementation files. Custom projects may add
+    # additional translation units belonging to this same source through
+    # SOURCES; duplicates are harmlessly removed here.
     set(_iv_module_sources
         ${IV_MODULE_EXPORT_FILE}
         ${IV_MODULE_SOURCE_FILES}

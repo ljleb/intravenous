@@ -4,6 +4,7 @@
 #include <intravenous/graph/build_types.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/dependency.h>
+#include <intravenous/node/compiler_record.h>
 
 #include <filesystem>
 #include <functional>
@@ -15,6 +16,7 @@
 
 namespace iv {
     using ModuleRef = std::shared_ptr<void>;
+    struct AuthoredGraph;
 
     enum class ModuleCompileStage {
         full,
@@ -62,6 +64,10 @@ namespace iv {
             std::filesystem::path source_path;
             std::string module_id;
             std::vector<ModuleDependency> dependencies;
+            // The immutable source-authored graph is retained above the
+            // compatibility GraphLowerer path so a whole-project finalizer can
+            // consume it without reauthoring this source.
+            std::shared_ptr<AuthoredGraph const> authored_graph;
 
             LoadedDefinition(
                 std::vector<ModuleRef> module_refs_,
@@ -69,12 +75,24 @@ namespace iv {
                 GraphIntrospectionMetadata introspection_,
                 std::filesystem::path source_path_,
                 std::string module_id_,
-                std::vector<ModuleDependency> dependencies_
+                std::vector<ModuleDependency> dependencies_,
+                std::shared_ptr<AuthoredGraph const> authored_graph_
             );
+        };
+
+        struct LoadedNodeType {
+            // The ID is stable registry identity.  NodeCodeKey and callbacks
+            // are artifact-local compiler data held alive by module_refs.
+            std::string node_type_id;
+            details::NodeCompilerRecord compiler_record{};
+            std::filesystem::path source_path;
+            std::vector<ModuleRef> module_refs;
+            std::shared_ptr<AuthoredGraph const> authored_graph;
         };
 
         struct LoadedSource {
             std::vector<LoadedDefinition> definitions;
+            std::vector<LoadedNodeType> node_types;
             std::vector<ModuleDependency> dependencies;
         };
 

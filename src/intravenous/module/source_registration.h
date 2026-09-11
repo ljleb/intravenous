@@ -1,13 +1,14 @@
 #pragma once
 
 // The source registration boundary is intentionally small and lives in the
-// prebuilt builder library.  An IV source registers graph definitions while
-// its temporary authoring generation is initialized; the finalizer then asks
-// for that complete, source-local definition set.  Nothing in this header is
-// a persistent registry -- stable-ID validation and publication remain host
-// responsibilities.
+// prebuilt builder library. An IV source registers graph definitions while
+// its temporary authoring generation is initialized. The finalizer publishes
+// only registrations owned by the independently built source root. Nothing
+// here is a persistent registry -- stable-ID validation and publication remain
+// host responsibilities.
 
 #include <intravenous/graph/builder/syntax.h>
+#include <intravenous/node/code_key.h>
 
 #include <cstddef>
 #include <string_view>
@@ -32,10 +33,15 @@ struct SourceRegistrationView {
     SourceRegistrationKind kind{};
     char const* id = nullptr;
     std::size_t id_size = 0;
+    // __FILE__ from the registration site lets the source artifact publish
+    // only definitions that belong to its own root directory.
+    char const* source_file = nullptr;
+    std::size_t source_file_size = 0;
     SourceModuleBuildFunction module_build = nullptr;
-    // A primitive registration owns a source-TU thunk. The thunk is invoked
-    // through the existing builder library during authoring, so a generated
-    // interface header never needs to include the provider's source.
+    // A primitive registration owns a source-TU thunk. The finalizer invokes
+    // it only while authoring this source's independently published node-type
+    // template; generated interfaces never invoke it or include provider
+    // source.
     SourceNodeBuildFunction node_build = nullptr;
     void const* node_compiler_record = nullptr;
 };
@@ -43,9 +49,15 @@ struct SourceRegistrationView {
 void register_source_definition(SourceRegistrationView);
 std::size_t source_definition_count() noexcept;
 SourceRegistrationView source_definition_at(std::size_t);
-std::size_t source_module_count() noexcept;
-SourceRegistrationView source_module_at(std::size_t);
-NodeRef author_registered_source_node(GraphBuilder&, std::string_view id);
+std::size_t source_module_count(std::string_view source_root) noexcept;
+SourceRegistrationView source_module_at(std::string_view source_root, std::size_t);
+std::size_t source_node_count(std::string_view source_root) noexcept;
+SourceRegistrationView source_node_at(std::string_view source_root, std::size_t);
+NodeCodeKey source_node_code_key(std::string_view source_root, std::size_t);
+// The interface protocol intentionally dispatches both implementation kinds
+// through this one operation.  A caller records only an ID; it never embeds a
+// provider function name in a generated header.
+NodeRef author_registered_source_definition(GraphBuilder&, std::string_view id);
 void clear_source_definitions() noexcept;
 
 class SourceModuleRegistration final {
@@ -53,7 +65,9 @@ public:
     SourceModuleRegistration(
         char const* id,
         std::size_t id_size,
-        SourceModuleBuildFunction build);
+        SourceModuleBuildFunction build,
+        char const* source_file,
+        std::size_t source_file_size);
 };
 
 class SourceNodeRegistration final {
@@ -62,7 +76,9 @@ public:
         char const* id,
         std::size_t id_size,
         SourceNodeBuildFunction build,
-        void const* node_compiler_record);
+        void const* node_compiler_record,
+        char const* source_file,
+        std::size_t source_file_size);
 };
 } // namespace details
 } // namespace iv
@@ -78,30 +94,17 @@ public:
 #define IV_SOURCE_CONCAT_INNER(a, b) a##b
 #define IV_SOURCE_CONCAT(a, b) IV_SOURCE_CONCAT_INNER(a, b)
 
-// The generated per-source interface header emits this same declaration for
-// imported iv modules.  Keeping it as one macro gives same-source and
-// imported callers exactly the same dynamic (NodeRef) contract without ever
-// including implementation source.
-#define IV_MODULE_INTERFACE(Id, Function) \
+// The generated <iv/nodes/...> header emits this exact definition for every
+// registered ID.  Node type versus iv-module is implementation-private: both
+// have the same dynamic NodeRef contract at this stage of the source
+// migration, and neither exposes a provider C++ symbol.
+#define IV_REGISTERED_INTERFACE(Id) \
     template<> struct iv::node_interface<Id> { \
         template<class... Args> \
         static ::iv::NodeRef author(::iv::GraphBuilder& builder, Args&&...) { \
             static_assert(sizeof...(Args) == 0, \
-                "the current IV_MODULE interface accepts no authored arguments"); \
-            return builder.template module<&Function>(Id); \
-        } \
-    }
-
-// IV_NODE interfaces are intentionally zero-argument. Their concrete type
-// and compiler record remain in the provider translation unit while the
-// shared builder registry dispatches the source-TU authoring thunk.
-#define IV_NODE_INTERFACE(Id) \
-    template<> struct iv::node_interface<Id> { \
-        template<class... Args> \
-        static ::iv::NodeRef author(::iv::GraphBuilder& builder, Args&&...) { \
-            static_assert(sizeof...(Args) == 0, \
-                "the current IV_NODE interface accepts no authored arguments"); \
-            return ::iv::details::author_registered_source_node(builder, Id); \
+                "registered IV definitions do not yet declare public authored arguments"); \
+            return ::iv::details::author_registered_source_definition(builder, Id); \
         } \
     }
 
@@ -112,14 +115,15 @@ public:
 #define IV_MODULE(Id, Function) \
     IV_MODULE_IMPL(Id, Function, __COUNTER__)
 #define IV_MODULE_IMPL(Id, Function, Unique) \
-    IV_MODULE_INTERFACE(Id, Function); \
+    IV_REGISTERED_INTERFACE(Id); \
     namespace { \
     IV_SOURCE_REGISTRATION_USED IV_SOURCE_REGISTRATION_CONSTRUCTOR \
     void IV_SOURCE_CONCAT(iv_source_module_registration_ctor_, Unique)(); \
     void IV_SOURCE_CONCAT(iv_source_module_registration_ctor_, Unique)() { \
         static const ::iv::details::SourceModuleRegistration \
             IV_SOURCE_CONCAT(iv_source_module_registration_, Unique){ \
-                Id, sizeof(Id) - 1, Function}; \
+                Id, sizeof(Id) - 1, Function, \
+                __FILE__, sizeof(__FILE__) - 1}; \
     } \
     }
 
@@ -131,7 +135,7 @@ public:
 #define IV_NODE(Id, Node) \
     IV_NODE_IMPL(Id, Node, __COUNTER__)
 #define IV_NODE_IMPL(Id, Node, Unique) \
-    IV_NODE_INTERFACE(Id); \
+    IV_REGISTERED_INTERFACE(Id); \
     namespace { \
     IV_SOURCE_REGISTRATION_USED IV_SOURCE_REGISTRATION_CONSTRUCTOR \
     void IV_SOURCE_CONCAT(iv_source_node_registration_ctor_, Unique)(); \
@@ -142,6 +146,7 @@ public:
                 [](::iv::GraphBuilder& builder) -> ::iv::NodeRef { \
                     return builder.template node<Node>(); \
                 }, \
-                &::iv::details::node_compiler_record<Node>}; \
+                &::iv::details::node_compiler_record<Node>, \
+                __FILE__, sizeof(__FILE__) - 1}; \
     } \
     }

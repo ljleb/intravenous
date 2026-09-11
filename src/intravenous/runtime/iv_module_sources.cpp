@@ -75,20 +75,59 @@ std::string source_template(std::string_view module_id)
         "IV_MODULE(\"" + std::string(module_id) + "\", module_main);\n";
 }
 
-std::vector<std::string> registered_module_ids(std::filesystem::path const& source)
+std::vector<std::pair<std::string, IvModuleSourceInfo::DefinitionKind>>
+registered_definition_ids(std::filesystem::path const& source_root)
 {
-    std::ifstream input(source, std::ios::binary);
-    if (!input) return {};
-    auto const text = std::string(
-        std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
-    static std::regex const registration(
-        R"iv(IV_MODULE\s*\(\s*"([^"]+)"\s*,\s*[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*\s*\))iv");
-    std::vector<std::string> ids;
-    for (std::sregex_iterator it(text.begin(), text.end(), registration), end;
-         it != end; ++it) {
-        auto id = (*it)[1].str();
-        if (id.empty() || std::find(ids.begin(), ids.end(), id) != ids.end()) continue;
-        ids.push_back(std::move(id));
+    static std::regex const module_registration(
+        R"iv(IV_MODULE\s*\(\s*"([^"]+)"\s*,)iv");
+    static std::regex const node_registration(
+        R"iv(IV_NODE\s*\(\s*"([^"]+)"\s*,)iv");
+    std::vector<std::pair<std::string, IvModuleSourceInfo::DefinitionKind>> ids;
+    auto append = [&](std::string id, IvModuleSourceInfo::DefinitionKind kind) {
+        auto const found = std::ranges::find(ids, id, [](auto const& definition) {
+            return definition.first;
+        });
+        if (found == ids.end()) ids.emplace_back(std::move(id), kind);
+    };
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator it(
+             source_root,
+             std::filesystem::directory_options::skip_permission_denied,
+             error),
+         end;
+         it != end;
+         it.increment(error)) {
+        if (error) break;
+        if (it->is_directory()) {
+            auto const name = it->path().filename();
+            if (name == ".git" || name == "build" || name == ".cache") {
+                it.disable_recursion_pending();
+            } else if (it->path() != source_root
+                       && std::filesystem::exists(
+                           it->path() / std::string(IV_SOURCE_MANIFEST_FILE))) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        if (!it->is_regular_file()) continue;
+        auto const extension = it->path().extension().string();
+        if (extension != ".c" && extension != ".cc" && extension != ".cpp"
+            && extension != ".cxx" && extension != ".h" && extension != ".hh"
+            && extension != ".hpp" && extension != ".hxx") {
+            continue;
+        }
+        std::ifstream input(it->path(), std::ios::binary);
+        if (!input) continue;
+        auto const text = std::string(
+            std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+        for (std::sregex_iterator match(text.begin(), text.end(), module_registration), end;
+             match != end; ++match) {
+            append((*match)[1].str(), IvModuleSourceInfo::DefinitionKind::module);
+        }
+        for (std::sregex_iterator match(text.begin(), text.end(), node_registration), end;
+             match != end; ++match) {
+            append((*match)[1].str(), IvModuleSourceInfo::DefinitionKind::node_type);
+        }
     }
     return ids;
 }
@@ -125,10 +164,12 @@ std::vector<IvModuleSourceInfo> IvModuleSources::list_sources() const
             auto manifest = read_manifest(*manifest_path);
             if (!manifest) continue;
             if (!std::filesystem::is_regular_file(directory / manifest->entry)) continue;
-            for (auto const& module_id : registered_module_ids(directory / manifest->entry)) {
+            for (auto const& [definition_id, definition_kind] :
+                 registered_definition_ids(directory)) {
                 result.push_back({
-                    .module_id = module_id,
-                    .module_root = directory,
+                    .definition_id = definition_id,
+                    .definition_kind = definition_kind,
+                    .source_root = directory,
                     .project_local = local,
                 });
             }
@@ -137,14 +178,18 @@ std::vector<IvModuleSourceInfo> IvModuleSources::list_sources() const
     };
     scan(project_root_ / "modules", true);
     for (auto const& root : shared_roots_) scan(root, false);
-    std::ranges::sort(result, {}, &IvModuleSourceInfo::module_id);
+    std::ranges::sort(result, {}, &IvModuleSourceInfo::definition_id);
     return result;
 }
 
-std::optional<IvModuleSourceInfo> IvModuleSources::find_source(std::string const& module_id) const
+std::optional<IvModuleSourceInfo> IvModuleSources::find_source(
+    std::string const& definition_id) const
 {
     auto const sources = list_sources();
-    auto const found = std::ranges::find(sources, module_id, &IvModuleSourceInfo::module_id);
+    auto const found = std::ranges::find_if(sources, [&](IvModuleSourceInfo const& source) {
+        return source.definition_id == definition_id
+            && source.definition_kind == IvModuleSourceInfo::DefinitionKind::module;
+    });
     if (found == sources.end()) return std::nullopt;
     return *found;
 }
@@ -209,6 +254,10 @@ IvModuleSourceInfo IvModuleSources::create_project_source(std::string const& nam
         throw;
     }
 
-    return IvModuleSourceInfo{.module_id = id, .module_root = root, .project_local = true};
+    return IvModuleSourceInfo{
+        .definition_id = id,
+        .definition_kind = IvModuleSourceInfo::DefinitionKind::module,
+        .source_root = root,
+        .project_local = true};
 }
 } // namespace iv

@@ -241,14 +241,35 @@ void NodeRef::apply_node_call(
     size_t positional_sample = 0;
     for (size_t i = 0; i < sample_inputs.size; ++i) {
         auto const& input = sample_inputs.data[i];
+        if (input.source.graph_builder != _graph_builder) {
+            details::error("sample source belongs to another builder");
+        }
         size_t input_port = 0;
         switch (input.target) {
         case details::NodeCallInputTarget::positional:
             input_port = positional_sample++;
+            if (input_port >= sample_input_count()) {
+                auto const registered_input =
+                    _graph_builder->ensure_registered_sample_input(
+                        _index, {}, {
+                            .channel_type = input.source.channel_type,
+                            .sample_layout = SampleStreamLayout::planar,
+                        });
+                if (registered_input) input_port = *registered_input;
+            }
             break;
         case details::NodeCallInputTarget::named:
-            input_port = _graph_builder->sample_port_index(
-                _index, true, input.name);
+            if (auto const registered_input =
+                    _graph_builder->ensure_registered_sample_input(
+                        _index, input.name, {
+                            .channel_type = input.source.channel_type,
+                            .sample_layout = SampleStreamLayout::planar,
+                        })) {
+                input_port = *registered_input;
+            } else {
+                input_port = _graph_builder->sample_port_index(
+                    _index, true, input.name);
+            }
             break;
         case details::NodeCallInputTarget::explicit_ordinal:
             input_port = input.input_ordinal;
@@ -257,9 +278,6 @@ void NodeRef::apply_node_call(
         if (input_port >= sample_input_count()) {
             details::error("too many sample inputs");
         }
-        if (input.source.graph_builder != _graph_builder) {
-            details::error("sample source belongs to another builder");
-        }
         _graph_builder->connect_sample_input(
             {_index, PortKind::sample, input_port}, input.source);
     }
@@ -267,14 +285,29 @@ void NodeRef::apply_node_call(
     size_t positional_event = 0;
     for (size_t i = 0; i < event_inputs.size; ++i) {
         auto const& input = event_inputs.data[i];
+        if (input.source.graph_builder != _graph_builder) {
+            details::error("event source belongs to another builder");
+        }
         size_t input_port = 0;
         switch (input.target) {
         case details::NodeCallInputTarget::positional:
             input_port = positional_event++;
+            if (input_port >= event_input_count()) {
+                auto const registered_input =
+                    _graph_builder->ensure_registered_event_input(
+                        _index, {}, input.source.type);
+                if (registered_input) input_port = *registered_input;
+            }
             break;
         case details::NodeCallInputTarget::named:
-            input_port = _graph_builder->event_port_index(
-                _index, true, input.name);
+            if (auto const registered_input =
+                    _graph_builder->ensure_registered_event_input(
+                        _index, input.name, input.source.type)) {
+                input_port = *registered_input;
+            } else {
+                input_port = _graph_builder->event_port_index(
+                    _index, true, input.name);
+            }
             break;
         case details::NodeCallInputTarget::explicit_ordinal:
             input_port = input.input_ordinal;
@@ -282,9 +315,6 @@ void NodeRef::apply_node_call(
         }
         if (input_port >= event_input_count()) {
             details::error("too many event inputs");
-        }
-        if (input.source.graph_builder != _graph_builder) {
-            details::error("event source belongs to another builder");
         }
         _graph_builder->connect_event_input(
             {_index, PortKind::event, input_port}, input.source);

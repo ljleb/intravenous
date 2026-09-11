@@ -164,7 +164,7 @@ TEST_F(IvModuleReloadTest, SuccessfulBuildStatusIncludesElapsedTime)
     ASSERT_NE(completed, status_witness.statuses.end());
     EXPECT_TRUE(std::regex_match(
         completed->message,
-        std::regex("Module build ready to apply in [0-9]+ ms")));
+        std::regex("IV source build ready to apply in [0-9]+ ms")));
 }
 
 TEST_F(IvModuleReloadTest, CompiledDefinitionPublishesUsableExecutionRoot)

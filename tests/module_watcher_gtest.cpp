@@ -28,10 +28,13 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
     EXPECT_FALSE(watcher.has_changes());
 
-    auto module_cpp = voice_dst / "module.cpp";
+    // A source watches its own implementation package. The voice provider is
+    // rebuilt independently and its implementation edits must not invalidate
+    // reload_project's cached AuthoredGraph.
+    auto module_cpp = project_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
-    auto needle = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);");
-    auto replacement = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);/* watcher marker*/");
+    auto needle = std::string("using namespace iv;");
+    auto replacement = std::string("using namespace iv; /* watcher marker */");
     ASSERT_NE(source.find(needle), std::string::npos);
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text_advancing_timestamp(module_cpp, source);
@@ -70,7 +73,7 @@ TEST(ModuleWatcher, MissingDependencyDirectoryIsReportedAsChangeWithoutThrowing)
     watcher.update(graph.dependencies);
     EXPECT_FALSE(watcher.has_changes());
 
-    std::filesystem::rename(voice_dst, runtime_root / "watch_voice_renamed");
+    std::filesystem::rename(project_dst, runtime_root / "watch_target_renamed");
 
     EXPECT_TRUE(watcher.has_changes());
 }

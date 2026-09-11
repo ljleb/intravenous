@@ -8,6 +8,8 @@ using IvModuleDefinitionDeclarationsChangedEvent =
     void (*)(IvModuleDefinitionDeclarationsChanged const &);
 using IvModuleDefinitionsChangedEvent =
     void (*)(IvModuleDefinitionsChanged const &);
+using IvNodeTypeDefinitionsChangedEvent =
+    void (*)(IvNodeTypeDefinitionsChanged const &);
 using IvModuleDefinitionsNotificationEvent =
     void (*)(IvModuleDefinitionsNotification const &);
 
@@ -17,6 +19,9 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     IvModuleDefinitionsChangedEvent,
     iv_runtime_iv_module_definitions_changed_event);
+IV_DECLARE_LINKER_EVENT(
+    IvNodeTypeDefinitionsChangedEvent,
+    iv_runtime_iv_node_type_definitions_changed_event);
 IV_DECLARE_LINKER_EVENT(
     IvModuleDefinitionsNotificationEvent,
     iv_runtime_iv_module_definitions_notification_event);

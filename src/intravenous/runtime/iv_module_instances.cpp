@@ -282,8 +282,8 @@ void IvModuleInstances::refresh_source_roots(IvModuleSources const &sources)
     roots_by_definition_id.reserve(listed_sources.size());
     for (auto const &source : listed_sources) {
         roots_by_definition_id.emplace(
-            source.module_id,
-            normalize_path(source.module_root));
+            source.definition_id,
+            normalize_path(source.source_root));
     }
 
     IvModuleRequiredDefinitionsChanged required_diff{};
@@ -343,8 +343,8 @@ void IvModuleInstances::handle_project_create_iv_module_instance(
         throw std::runtime_error("unknown iv module source: " + request.module_id);
     }
     builder.succeed(create_instance(
-        source->module_id,
-        source->module_root,
+        source->definition_id,
+        source->source_root,
         request.instance_id,
         request.display_name));
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);

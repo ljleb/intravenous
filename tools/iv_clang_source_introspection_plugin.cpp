@@ -1085,6 +1085,14 @@ public:
                 ? "module" : "node"},
             {"declaration_usr", declaration_usr(context_, declaration)},
         };
+        auto const source_file_argument = name == "iv::details::SourceModuleRegistration"
+            ? std::size_t{3} : std::size_t{4};
+        if (construction->getNumArgs() > source_file_argument) {
+            if (auto const* source_file = dyn_cast<StringLiteral>(
+                    construction->getArg(source_file_argument)->IgnoreParenImpCasts())) {
+                metadata["source_file"] = source_file->getString();
+            }
+        }
         if (name == "iv::details::SourceModuleRegistration"
             && construction->getNumArgs() >= 3) {
             auto* expression = construction->getArg(2)->IgnoreParenImpCasts();
@@ -1094,6 +1102,23 @@ public:
             if (auto const* reference = dyn_cast<DeclRefExpr>(expression)) {
                 metadata["implementation_usr"] = declaration_usr(
                     context_, reference->getDecl());
+            }
+        }
+        if (name == "iv::details::SourceNodeRegistration"
+            && construction->getNumArgs() >= 4) {
+            auto* expression = construction->getArg(3)->IgnoreParenImpCasts();
+            if (auto const* address = dyn_cast<UnaryOperator>(expression)) {
+                expression = address->getSubExpr()->IgnoreParenImpCasts();
+            }
+            if (auto const* reference = dyn_cast<DeclRefExpr>(expression)) {
+                auto const* specialization = dyn_cast<VarTemplateSpecializationDecl>(
+                    reference->getDecl());
+                if (auto const* node = node_type_from_compiler_record_specialization(
+                        specialization)) {
+                    auto const type = context_.getCanonicalTagType(node);
+                    metadata["node_type_usr"] = declaration_usr(context_, node);
+                    metadata["node_code_key"] = node_code_key(context_, type);
+                }
             }
         }
         definitions_.push_back(std::move(metadata));

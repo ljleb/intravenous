@@ -223,16 +223,16 @@ TEST_F(IvModuleInstancesTest, SourceDiscoveryListsEveryModuleRegisteredByOneSour
 
     ASSERT_EQ(discovered.size(), 2u);
     auto const primary = std::ranges::find(
-        discovered, module_id, &iv::IvModuleSourceInfo::module_id);
+        discovered, module_id, &iv::IvModuleSourceInfo::definition_id);
     auto const secondary = std::ranges::find(
         discovered,
         "iv.test.module.secondary",
-        &iv::IvModuleSourceInfo::module_id);
+        &iv::IvModuleSourceInfo::definition_id);
     ASSERT_NE(primary, discovered.end());
     ASSERT_NE(secondary, discovered.end());
     auto const expected_root = std::filesystem::weakly_canonical(source_root);
-    EXPECT_EQ(primary->module_root, expected_root);
-    EXPECT_EQ(secondary->module_root, expected_root);
+    EXPECT_EQ(primary->source_root, expected_root);
+    EXPECT_EQ(secondary->source_root, expected_root);
 }
 
 TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPublishesDiff)

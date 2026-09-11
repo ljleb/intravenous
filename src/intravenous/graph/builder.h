@@ -128,6 +128,20 @@ public:
     return node_interface<Id>::author(*this, std::forward<Args>(args)...);
   }
 
+  // Author a stable-ID instance without resolving its implementation.  The
+  // resulting semantic subgraph is expanded from the server's source registry
+  // after source loading; this is deliberately distinct from module(), which
+  // remains the local, direct-function subgraph API.
+  NodeRef registered_node(std::string_view id);
+
+  // Dynamic registered interfaces learn only the ports a caller actually
+  // addresses. These are implementation hooks for NodeRef's normal call
+  // syntax, not an alternate source-facing construction API.
+  std::optional<size_t> ensure_registered_sample_input(
+      NodeBundleHandle handle, std::string_view name, ChannelLayout layout);
+  std::optional<size_t> ensure_registered_event_input(
+      NodeBundleHandle handle, std::string_view name, EventTypeId type);
+
   template<class Node, class ChannelType, class... Args>
   auto node(Args&&... args) {
     using StoredNode = std::remove_cvref_t<Node>;
@@ -280,6 +294,8 @@ public:
   size_t sample_output_count(NodeBundleHandle) const;
   size_t event_input_count(NodeBundleHandle) const;
   size_t event_output_count(NodeBundleHandle) const;
+  InputConfig sample_input_config(NodeBundleHandle, size_t) const;
+  EventInputConfig event_input_config(NodeBundleHandle, size_t) const;
   NodeBundleHandle tiled_member(NodeBundleHandle, size_t) const;
   NodePorts const& typed_ports(NodeBundleHandle) const;
   SamplePortRef sample_port_from_output(NodeBundlePortId);

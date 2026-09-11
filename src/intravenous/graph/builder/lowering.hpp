@@ -1316,6 +1316,11 @@ class GraphLowerer {
     for (NodeBundleHandle handle=0; handle<bundles.size(); ++handle) {
       auto const& bundle = bundles.bundle(handle);
       auto& p = out.bundle_projections[handle];
+      // A registered-ID placeholder is resolved by appending its provider
+      // bundles after the caller's original handle. Project all concrete and
+      // boundary bundles first; subgraphs are projected in reverse order
+      // below so every child subgraph has already acquired topology nodes.
+      if (bundle.is_subgraph()) continue;
       if (bundle.is_concrete()) {
         auto node = append_topology_node(
             AuthoredConcreteNodeRef{.node_bundle_handle = handle});
@@ -1372,7 +1377,21 @@ class GraphLowerer {
           }
         }
       } else if (bundle.is_subgraph()) {
+        // Covered by the reverse subgraph pass below. Keeping this arm makes
+        // the mutually exclusive bundle-kind chain explicit.
+        continue;
+      }
+    }
+    std::vector<bool> projected_subgraphs(bundles.size());
+    auto project_subgraph = [&](auto&& self, NodeBundleHandle handle) -> void {
+      auto const& bundle = bundles.bundle(handle);
+      if (!bundle.is_subgraph() || projected_subgraphs[handle]) return;
+      auto& p = out.bundle_projections[handle];
         auto info=bundles.subgraph_info(handle);
+        for (size_t child = info.child_begin;
+             child < info.child_begin + info.child_count; ++child) {
+          if (bundles.bundle(child).is_subgraph()) self(self, child);
+        }
         auto const& boundary=bundles.bundle(info.boundary);
         size_t begin=topology_node_count(), end=begin;
         bool found=false;
@@ -1409,7 +1428,10 @@ class GraphLowerer {
           if(!bp.sample_outputs[i].empty())out.subgraph_input_of_boundary_source.try_emplace(bp.sample_outputs[i].front(),TopologyPortId{node,i});
         for(size_t i=0;i<bp.event_outputs.size();++i)
           if(!bp.event_outputs[i].empty())out.subgraph_event_input_of_boundary_source.try_emplace(bp.event_outputs[i].front(),TopologyPortId{node,i});
-      }
+        projected_subgraphs[handle] = true;
+    };
+    for (NodeBundleHandle handle = 0; handle < bundles.size(); ++handle) {
+      if (bundles.bundle(handle).is_subgraph()) project_subgraph(project_subgraph, handle);
     }
   }
 

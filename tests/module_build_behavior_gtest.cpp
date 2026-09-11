@@ -36,7 +36,14 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
             "iv.test.behavior_project",
             &iv::ModuleLoader::LoadedDefinition::module_id);
         ASSERT_NE(definition, definitions.end());
-        ASSERT_EQ(definition->dependencies.size(), 2u);
+        // A source artifact owns and watches only its implementation package.
+        // behavior_voice is an independently built provider selected through
+        // the registered-ID registry, not a recursive C++ build dependency of
+        // behavior_project.
+        ASSERT_EQ(definition->dependencies.size(), 1u);
+        EXPECT_EQ(
+            definition->dependencies.front().module_dir,
+            std::filesystem::weakly_canonical(project_dst));
 
         auto executor = iv::BlockNodeExecutor::create(
             iv::TypeErasedNode(definition->root), 8);

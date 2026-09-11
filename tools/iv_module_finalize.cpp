@@ -332,9 +332,18 @@ struct ConfigPointerMetadata {
     std::vector<std::size_t> byte_offsets{};
 };
 
+struct RegisteredDefinitionMetadata {
+    std::string id;
+    std::string kind;
+    std::string declaration_usr;
+    std::string source_file;
+    std::optional<iv::NodeCodeKey> node_code_key;
+};
+
 struct CompilerMetadata {
     std::vector<StateMetadata> states;
     std::vector<ConfigPointerMetadata> config_pointers;
+    std::vector<RegisteredDefinitionMetadata> registered_definitions;
 };
 
 std::string read_file(std::filesystem::path const& path)
@@ -384,6 +393,43 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
                 || (kind->str() != "node" && kind->str() != "module")) {
                 fail("incomplete registered-definition metadata entry in '"
                      + entry.path().string() + "'");
+            }
+            RegisteredDefinitionMetadata registered{
+                .id = id->str(),
+                .kind = kind->str(),
+                .declaration_usr = declaration_usr->str(),
+                .source_file = {},
+                .node_code_key = {},
+            };
+            if (auto source_file = definition->getString("source_file")) {
+                registered.source_file = source_file->str();
+            }
+            if (registered.kind == "node") {
+                auto* key = definition->getObject("node_code_key");
+                if (!key) {
+                    fail("node registered-definition metadata has no NodeCodeKey in '"
+                         + entry.path().string() + "'");
+                }
+                auto low = key->getString("low");
+                auto high = key->getString("high");
+                if (!low || !high) {
+                    fail("node registered-definition metadata has invalid NodeCodeKey in '"
+                         + entry.path().string() + "'");
+                }
+                registered.node_code_key = {
+                    .low = parse_hex_u64(*low, entry.path(), "registered node_code_key.low"),
+                    .high = parse_hex_u64(*high, entry.path(), "registered node_code_key.high"),
+                };
+            }
+            auto const duplicate = std::find_if(
+                result.registered_definitions.begin(),
+                result.registered_definitions.end(),
+                [&](RegisteredDefinitionMetadata const& existing) {
+                    return existing.id == registered.id
+                        && existing.declaration_usr == registered.declaration_usr;
+                });
+            if (duplicate == result.registered_definitions.end()) {
+                result.registered_definitions.push_back(std::move(registered));
             }
         }
         for (auto const& state_value : *states) {
@@ -577,10 +623,14 @@ void add_authoring_global_address_table(
 BuilderModuleClone clone_builder_module(Module const& master)
 {
     SmallPtrSet<GlobalValue const*, 32> reachable;
-    static constexpr std::array<StringRef, 3> authoring_entry_points{
+    static constexpr std::array<StringRef, 7> authoring_entry_points{
         "iv_source_registered_module_count",
         "iv_source_registered_module_id",
         "iv_source_build_registered_module",
+        "iv_source_registered_node_type_count",
+        "iv_source_registered_node_type_id",
+        "iv_source_registered_node_type_code_key",
+        "iv_source_build_registered_node_type",
     };
     for (auto const name : authoring_entry_points) {
         auto const* entry_point = master.getFunction(name);
@@ -627,13 +677,14 @@ void mark_runtime_module_roots(
     Module const& module,
     SmallPtrSetImpl<GlobalValue const*>& reachable)
 {
-    static constexpr std::array<StringRef, 6> runtime_entry_points{
+    static constexpr std::array<StringRef, 7> runtime_entry_points{
         "iv_module_abi_version",
         "iv_source_module_count",
         "iv_source_module_id",
         "iv_source_module_authored_graph",
         "iv_source_module_node_configs",
         "iv_module_node_types",
+        "iv_source_node_types",
     };
 
     for (auto const name : runtime_entry_points) {
@@ -728,10 +779,14 @@ void remove_source_registration_initializers(Module& module)
 void prune_authoring_ir(Module& module)
 {
     SmallPtrSet<GlobalValue const*, 32> authoring_reachable;
-    static constexpr std::array<StringRef, 3> authoring_entry_points{
+    static constexpr std::array<StringRef, 7> authoring_entry_points{
         "iv_source_registered_module_count",
         "iv_source_registered_module_id",
         "iv_source_build_registered_module",
+        "iv_source_registered_node_type_count",
+        "iv_source_registered_node_type_id",
+        "iv_source_registered_node_type_code_key",
+        "iv_source_build_registered_node_type",
     };
     for (auto const name : authoring_entry_points) {
         auto* entry_point = module.getFunction(name);
@@ -899,8 +954,15 @@ struct BuilderJitModule {
     iv::AuthoredGraph graph;
 };
 
+struct BuilderJitNodeType {
+    std::string id;
+    iv::NodeCodeKey code_key{};
+    iv::AuthoredGraph graph{};
+};
+
 struct BuilderJitResult {
     std::vector<BuilderJitModule> modules;
+    std::vector<BuilderJitNodeType> node_types;
     std::vector<BuilderModuleClone::RetainedGlobal> retained_globals;
 };
 
@@ -948,6 +1010,18 @@ BuilderJitResult run_builder_jit(
     auto build_address = take_expected(
         jit->lookup("iv_source_build_registered_module"),
         "lookup iv_source_build_registered_module");
+    auto node_type_count_address = take_expected(
+        jit->lookup("iv_source_registered_node_type_count"),
+        "lookup iv_source_registered_node_type_count");
+    auto node_type_id_address = take_expected(
+        jit->lookup("iv_source_registered_node_type_id"),
+        "lookup iv_source_registered_node_type_id");
+    auto node_type_key_address = take_expected(
+        jit->lookup("iv_source_registered_node_type_code_key"),
+        "lookup iv_source_registered_node_type_code_key");
+    auto node_type_build_address = take_expected(
+        jit->lookup("iv_source_build_registered_node_type"),
+        "lookup iv_source_build_registered_node_type");
     auto global_addresses = take_expected(
         jit->lookup("iv_get_authoring_global_addresses"),
         "lookup authoring global address table");
@@ -956,9 +1030,17 @@ BuilderJitResult run_builder_jit(
     using BuildCountFn = std::size_t (*)();
     using BuildIdFn = iv::ModuleDataView (*)(std::size_t);
     using BuildFn = void (*)(std::size_t, iv::details::BuilderSession*);
+    using NodeTypeCountFn = std::size_t (*)();
+    using NodeTypeIdFn = iv::ModuleDataView (*)(std::size_t);
+    using NodeTypeKeyFn = iv::NodeCodeKey (*)(std::size_t);
+    using NodeTypeBuildFn = void (*)(std::size_t, iv::details::BuilderSession*);
     auto const module_count = build_count.toPtr<BuildCountFn>()();
     auto const module_id = build_id.toPtr<BuildIdFn>();
     auto const build = build_address.toPtr<BuildFn>();
+    auto const node_type_count = node_type_count_address.toPtr<NodeTypeCountFn>()();
+    auto const node_type_id = node_type_id_address.toPtr<NodeTypeIdFn>();
+    auto const node_type_key = node_type_key_address.toPtr<NodeTypeKeyFn>();
+    auto const node_type_build = node_type_build_address.toPtr<NodeTypeBuildFn>();
     stage_started_at = timings.start_stage();
     std::vector<iv::details::NodeConfigLayout> config_layouts;
     config_layouts.reserve(metadata.config_pointers.size());
@@ -983,17 +1065,58 @@ BuilderJitResult run_builder_jit(
     timings.finish_stage("builder_session_setup", stage_started_at);
 
     stage_started_at = timings.start_stage();
+    std::vector<BuilderJitNodeType> node_types;
+    node_types.reserve(node_type_count);
+    std::set<std::string> registered_ids;
+    for (std::size_t index = 0; index < node_type_count; ++index) {
+        auto const id = node_type_id(index);
+        if (!id.data || id.size == 0) {
+            fail("IV source node registration has an empty ID");
+        }
+        auto name = std::string(static_cast<char const*>(id.data), id.size);
+        if (!registered_ids.insert(name).second) {
+            fail("duplicate registered IV definition ID within one IV source: '"
+                 + name + "'");
+        }
+        auto const key = node_type_key(index);
+        auto const metadata_node = std::find_if(
+            metadata.registered_definitions.begin(),
+            metadata.registered_definitions.end(),
+            [&](RegisteredDefinitionMetadata const& definition) {
+                return definition.kind == "node" && definition.id == name
+                    && definition.node_code_key == key;
+            });
+        if (metadata_node == metadata.registered_definitions.end()) {
+            fail("registered IV node '" + name
+                 + "' has no matching compiler metadata/NodeCodeKey");
+        }
+        auto node_session = std::unique_ptr<
+            iv::details::BuilderSession,
+            decltype(&iv::details::iv_builder_session_destroy)>(
+                iv::details::iv_builder_session_create(),
+                iv::details::iv_builder_session_destroy);
+        if (!node_session) fail("create IV source node-type builder session");
+        iv::details::set_builder_node_config_layouts(node_session.get(), config_layouts);
+        iv::details::set_builder_authoring_globals(node_session.get(), authoring_globals);
+        node_type_build(index, node_session.get());
+        node_types.push_back({
+            .id = std::move(name),
+            .code_key = key,
+            .graph = iv::details::take_built_graph(node_session.get()),
+        });
+    }
+
     std::vector<BuilderJitModule> modules;
     modules.reserve(module_count);
-    std::set<std::string> module_ids;
     for (std::size_t index = 0; index < module_count; ++index) {
         auto const id = module_id(index);
         if (!id.data || id.size == 0) {
             fail("IV source module registration has an empty ID");
         }
         auto name = std::string(static_cast<char const*>(id.data), id.size);
-        if (!module_ids.insert(name).second) {
-            fail("duplicate IV_MODULE ID within one IV source: '" + name + "'");
+        if (!registered_ids.insert(name).second) {
+            fail("duplicate registered IV definition ID within one IV source: '"
+                 + name + "'");
         }
         auto module_session = std::unique_ptr<
             iv::details::BuilderSession,
@@ -1017,6 +1140,7 @@ BuilderJitResult run_builder_jit(
     timings.finish_stage("jit_release", stage_started_at);
     return {
         .modules = std::move(modules),
+        .node_types = std::move(node_types),
         .retained_globals = std::move(builder_clone.retained_globals),
     };
 }
@@ -1243,9 +1367,16 @@ struct SerializedSourceModule {
     iv::SerializedAuthoredGraph authored;
 };
 
+struct SerializedSourceNodeType {
+    std::string id;
+    iv::NodeCodeKey code_key{};
+    iv::SerializedAuthoredGraph authored;
+};
+
 void inject_source_data(
     Module& module,
     std::span<SerializedSourceModule const> authored_modules,
+    std::span<SerializedSourceNodeType const> source_node_types,
     std::span<IrNodeRecord const> node_records,
     std::span<BuilderModuleClone::RetainedGlobal const> retained_globals)
 {
@@ -1346,6 +1477,103 @@ void inject_source_data(
         module, "iv_source_module_authored_graph", graph_table, authored_modules.size());
     emit_indexed_view_accessor(
         module, "iv_source_module_node_configs", config_table, authored_modules.size());
+
+    auto* i64 = Type::getInt64Ty(context);
+    auto* code_key_type = StructType::get(i64, i64);
+    auto* source_node_type_type = StructType::get(
+        view_type, code_key_type, view_type, view_type);
+    if (source_node_types.empty()) {
+        emit_view_accessor(
+            module,
+            "iv_source_node_types",
+            ConstantPointerNull::get(pointer_type),
+            0);
+    } else {
+        std::vector<Constant*> source_node_type_records;
+        source_node_type_records.reserve(source_node_types.size());
+        for (std::size_t index = 0; index < source_node_types.size(); ++index) {
+            auto const& source_node_type = source_node_types[index];
+            auto const id_bytes = std::as_bytes(std::span(
+                source_node_type.id.data(), source_node_type.id.size()));
+            auto* id = constant_bytes(
+                module, "iv.source_node_type_id." + std::to_string(index), id_bytes, 1);
+            auto* id_view = ConstantStruct::get(
+                view_type,
+                ConstantExpr::getPointerCast(id, pointer_type),
+                ConstantInt::get(size_type, source_node_type.id.size()));
+            auto* code_key = ConstantStruct::get(
+                code_key_type,
+                ConstantInt::get(i64, source_node_type.code_key.low),
+                ConstantInt::get(i64, source_node_type.code_key.high));
+            auto const graph_bytes = std::span<std::byte const>(
+                source_node_type.authored.bytes.data(),
+                source_node_type.authored.bytes.size());
+            auto* graph = constant_bytes(
+                module,
+                "iv.source_node_type_authored_graph." + std::to_string(index),
+                graph_bytes,
+                1);
+            auto* graph_view = ConstantStruct::get(
+                view_type,
+                ConstantExpr::getPointerCast(graph, pointer_type),
+                ConstantInt::get(
+                    size_type, source_node_type.authored.bytes.size()));
+            std::vector<Constant*> config_records;
+            config_records.reserve(source_node_type.authored.node_configs.size());
+            for (std::size_t config_index = 0;
+                 config_index < source_node_type.authored.node_configs.size();
+                 ++config_index) {
+                auto const& config = source_node_type.authored.node_configs[config_index];
+                auto* bytes = constant_node_config(
+                    module,
+                    "iv.source_node_type_config." + std::to_string(index)
+                        + "." + std::to_string(config_index),
+                    config,
+                    retained_globals);
+                config_records.push_back(ConstantStruct::get(
+                    config_record_type,
+                    ConstantExpr::getPointerCast(bytes, pointer_type),
+                    ConstantInt::get(size_type, config.bytes.size()),
+                    ConstantInt::get(size_type, config.alignment)));
+            }
+            auto* config_array_type = ArrayType::get(
+                config_record_type, config_records.size());
+            auto* config_array = new GlobalVariable(
+                module,
+                config_array_type,
+                true,
+                GlobalValue::PrivateLinkage,
+                ConstantArray::get(config_array_type, config_records),
+                "iv.source_node_type_configs." + std::to_string(index));
+            auto* config_view = ConstantStruct::get(
+                view_type,
+                ConstantExpr::getPointerCast(config_array, pointer_type),
+                ConstantInt::get(
+                    size_type,
+                    config_records.size()
+                        * module.getDataLayout()
+                              .getTypeAllocSize(config_record_type)
+                              .getFixedValue()));
+            source_node_type_records.push_back(ConstantStruct::get(
+                source_node_type_type, id_view, code_key, graph_view, config_view));
+        }
+        auto* source_node_type_array_type = ArrayType::get(
+            source_node_type_type, source_node_type_records.size());
+        auto* source_node_type_array = new GlobalVariable(
+            module,
+            source_node_type_array_type,
+            true,
+            GlobalValue::PrivateLinkage,
+            ConstantArray::get(source_node_type_array_type, source_node_type_records),
+            "iv.source_node_types");
+        emit_view_accessor(
+            module,
+            "iv_source_node_types",
+            ConstantExpr::getPointerCast(source_node_type_array, pointer_type),
+            source_node_type_records.size()
+                * module.getDataLayout().getTypeAllocSize(source_node_type_type)
+                      .getFixedValue());
+    }
 
     if (node_records.empty()) {
         emit_view_accessor(
@@ -1517,11 +1745,22 @@ int finalize(Options options)
                 source_module.graph, state_metadata),
         });
     }
+    std::vector<SerializedSourceNodeType> serialized_node_types;
+    serialized_node_types.reserve(authored.node_types.size());
+    for (auto const& node_type : authored.node_types) {
+        serialized_node_types.push_back({
+            .id = node_type.id,
+            .code_key = node_type.code_key,
+            .authored = iv::serialize_authored_graph(
+                node_type.graph, state_metadata),
+        });
+    }
     timings.finish_stage("source_graphs_serialize", stage_started_at);
 
     stage_started_at = timings.start_stage();
     inject_source_data(
-        master, serialized, node_records, authored.retained_globals);
+        master, serialized, serialized_node_types, node_records,
+        authored.retained_globals);
     timings.finish_stage("source_data_inject", stage_started_at);
 
     stage_started_at = timings.start_stage();

@@ -56,6 +56,72 @@ NodeBundleHandle GraphBuilderState::append_node_description(
       GraphBuilderNodeBundles::make_concrete_node(std::move(description)));
 }
 
+NodeRef GraphBuilderState::append_registered_node(std::string_view id)
+{
+  if (id.empty()) details::error("registered IV definition has an empty ID");
+  auto const boundary = _node_bundles.append_scope_boundary();
+  _node_bundles.bundle(boundary).append_boundary_sample_output({
+      .channel_layout = {
+          .channel_type = ChannelTypeId::mono,
+          .sample_layout = SampleStreamLayout::planar,
+      },
+  });
+  auto const child_begin = _node_bundles.size();
+  auto const handle = _node_bundles.append_subgraph(
+      boundary, child_begin, 0, "registered:" + std::string(id));
+  return NodeRef(facade(), handle);
+}
+
+std::optional<size_t> GraphBuilderState::ensure_registered_sample_input(
+    NodeBundleHandle handle, std::string_view name, ChannelLayout layout)
+{
+  auto& registered = _node_bundles.bundle(handle);
+  if (!registered.is_subgraph()
+      || !registered.subgraph_kind().starts_with("registered:")) {
+    return std::nullopt;
+  }
+  auto const boundary = _node_bundles.subgraph_info(handle).boundary;
+  auto& boundary_bundle = _node_bundles.bundle(boundary);
+  auto const inputs = boundary_bundle.boundary_sample_inputs();
+  if (!name.empty()) {
+    for (size_t index = 0; index < inputs.size(); ++index) {
+      if (inputs[index].name == name) return index;
+    }
+  }
+  auto const index = boundary_bundle.append_boundary_sample_input({
+      .name = std::string(name),
+      .channel_layout = layout,
+  });
+  auto& payload = std::get<NodeBundle::SubgraphNodeBundle>(*registered._payload);
+  ++payload.sample_input_count;
+  return index;
+}
+
+std::optional<size_t> GraphBuilderState::ensure_registered_event_input(
+    NodeBundleHandle handle, std::string_view name, EventTypeId type)
+{
+  auto& registered = _node_bundles.bundle(handle);
+  if (!registered.is_subgraph()
+      || !registered.subgraph_kind().starts_with("registered:")) {
+    return std::nullopt;
+  }
+  auto const boundary = _node_bundles.subgraph_info(handle).boundary;
+  auto& boundary_bundle = _node_bundles.bundle(boundary);
+  auto const inputs = boundary_bundle.boundary_event_inputs();
+  if (!name.empty()) {
+    for (size_t index = 0; index < inputs.size(); ++index) {
+      if (inputs[index].name == name) return index;
+    }
+  }
+  auto const index = boundary_bundle.append_boundary_event_input({
+      .name = std::string(name),
+      .type = type,
+  });
+  auto& payload = std::get<NodeBundle::SubgraphNodeBundle>(*registered._payload);
+  ++payload.event_input_count;
+  return index;
+}
+
 NodeBundleHandle GraphBuilderState::append_tiled_node_description(
     ReflectedNodeDescription const& description, ChannelLayout layout)
 {
@@ -548,6 +614,16 @@ size_t GraphBuilderState::event_input_count(NodeBundleHandle handle) const {
 
 size_t GraphBuilderState::event_output_count(NodeBundleHandle handle) const {
   return _node_bundles.bundle(handle).event_output_count();
+}
+
+InputConfig GraphBuilderState::sample_input_config(
+    NodeBundleHandle handle, size_t port) const {
+  return _node_bundles.bundle(handle).sample_input_config(port);
+}
+
+EventInputConfig GraphBuilderState::event_input_config(
+    NodeBundleHandle handle, size_t port) const {
+  return _node_bundles.bundle(handle).event_input_config(port);
 }
 
 NodeBundleHandle GraphBuilderState::tiled_member(

@@ -13,8 +13,17 @@ struct CreateIvModuleSourceRequest;
 struct GetIvModuleSourcesRequest;
 
 struct IvModuleSourceInfo {
-    std::string module_id;
-    std::filesystem::path module_root;
+    enum class DefinitionKind {
+        node_type,
+        module,
+    };
+
+    // One source-info item exists for each discovered registered unit.  This
+    // makes node-only IV sources first-class rather than invisible because
+    // they happen not to provide an iv module.
+    std::string definition_id;
+    DefinitionKind definition_kind = DefinitionKind::module;
+    std::filesystem::path source_root;
     bool project_local = false;
 };
 
@@ -25,7 +34,7 @@ public:
     IvModuleSources(std::filesystem::path project_root, std::vector<std::filesystem::path> shared_roots);
     [[nodiscard]] std::vector<IvModuleSourceInfo> list_sources() const;
     [[nodiscard]] std::optional<IvModuleSourceInfo> find_source(
-        std::string const& module_id) const;
+        std::string const& definition_id) const;
     [[nodiscard]] IvModuleSourceInfo create_project_source(std::string const& name) const;
 
     void handle_iv_module_source_lookup(

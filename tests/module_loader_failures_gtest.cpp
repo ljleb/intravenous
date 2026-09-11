@@ -67,6 +67,18 @@ TEST(ModuleLoaderSources, CanonicalSourceManifestLoads)
     EXPECT_TRUE(static_cast<bool>(secondary->root));
 }
 
+TEST(ModuleLoaderSources, RootSourceDoesNotPublishImportedModuleDefinitions)
+{
+    auto const fixtures = iv::test::test_modules_root();
+    auto loader = iv::test::make_loader();
+
+    auto loaded = loader.load_source_definitions(fixtures / "nested_loader_project");
+
+    ASSERT_EQ(loaded.size(), 1u);
+    EXPECT_EQ(loaded.front().module_id, "iv.test.nested_loader_project");
+    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+}
+
 TEST(ModuleLoaderSources, RegisteredSourceNodeIsImportedThroughDefinitionHeader)
 {
     auto const project_root = iv::test::runtime_modules_root()
@@ -122,7 +134,7 @@ TEST(ModuleLoaderSources, RegisteredSourceNodeIsImportedThroughDefinitionHeader)
     ASSERT_TRUE(std::filesystem::exists(generated_header));
     EXPECT_NE(
         iv::test::read_text(generated_header).find(
-            "IV_NODE_INTERFACE(\"iv.test.registered_source_node\")"),
+            "IV_REGISTERED_INTERFACE(\"iv.test.registered_source_node\")"),
         std::string::npos);
 }
 
@@ -153,11 +165,12 @@ TEST(ModuleLoaderFailures, MissingDependencyFails)
         "imports missing");
 }
 
-TEST(ModuleLoaderFailures, DuplicateSourceIdFails)
+TEST(ModuleLoaderFailures, UnrelatedDuplicateSourceIdsDoNotBlockLoading)
 {
     auto const fixtures = iv::test::test_modules_root();
     auto loader = iv::test::make_loader({fixtures, iv::test::duplicate_modules_root()});
-    expect_failure_contains(
-        [&] { (void)loader.load_source_definitions(fixtures / "nested_loader_project"); },
-        "duplicate stable IV definition ID");
+    auto const definitions = loader.load_source_definitions(
+        fixtures / "nested_loader_project");
+    EXPECT_EQ(definitions.size(), 1u);
+    EXPECT_EQ(definitions.front().module_id, "iv.test.nested_loader_project");
 }

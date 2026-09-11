@@ -42,6 +42,8 @@ IvModuleReloadResults coalesce_results_by_source(IvModuleReloadResults results)
     std::unordered_map<std::string, IvModuleReloadedSource> sources_by_id;
     std::unordered_map<std::string, std::vector<IvModuleReloadedDefinition>>
         loaded_by_source_id;
+    std::unordered_map<std::string, std::vector<IvModuleReloadedNodeType>>
+        node_types_by_source_id;
     std::unordered_map<std::string, IvModuleReloadFailure> failed_by_source_id;
     std::vector<std::string> order;
     order.reserve(results.sources.size() + results.failed.size());
@@ -57,23 +59,30 @@ IvModuleReloadResults coalesce_results_by_source(IvModuleReloadResults results)
         remember_order(source_id);
         failed_by_source_id.erase(source_id);
         loaded_by_source_id[source_id].clear();
+        node_types_by_source_id[source_id].clear();
         sources_by_id[source_id] = std::move(source);
     }
     for (auto& loaded : results.loaded) {
         if (!sources_by_id.contains(loaded.source_id)) continue;
         loaded_by_source_id[loaded.source_id].push_back(std::move(loaded));
     }
+    for (auto& node_type : results.node_types) {
+        if (!sources_by_id.contains(node_type.source_id)) continue;
+        node_types_by_source_id[node_type.source_id].push_back(std::move(node_type));
+    }
     for (auto& failed : results.failed) {
         auto const source_id = failed.definition_id;
         remember_order(source_id);
         sources_by_id.erase(source_id);
         loaded_by_source_id.erase(source_id);
+        node_types_by_source_id.erase(source_id);
         failed_by_source_id[source_id] = std::move(failed);
     }
 
     IvModuleReloadResults coalesced;
     coalesced.sources.reserve(sources_by_id.size());
     coalesced.loaded.reserve(results.loaded.size());
+    coalesced.node_types.reserve(results.node_types.size());
     coalesced.failed.reserve(failed_by_source_id.size());
     for (auto const& source_id : order) {
         if (auto failed = failed_by_source_id.find(source_id);
@@ -90,6 +99,13 @@ IvModuleReloadResults coalesce_results_by_source(IvModuleReloadResults results)
                 coalesced.loaded.end(),
                 std::make_move_iterator(loaded->second.begin()),
                 std::make_move_iterator(loaded->second.end()));
+        }
+        if (auto node_types = node_types_by_source_id.find(source_id);
+            node_types != node_types_by_source_id.end()) {
+            coalesced.node_types.insert(
+                coalesced.node_types.end(),
+                std::make_move_iterator(node_types->second.begin()),
+                std::make_move_iterator(node_types->second.end()));
         }
     }
     return coalesced;
@@ -222,6 +238,17 @@ IvModuleReloadResults IvModuleReload::reload_declarations(
                     .dependencies = std::move(loaded_definition.dependencies),
                     .module_refs = std::move(loaded_definition.module_refs),
                     .root = std::move(loaded_definition.root),
+                    .authored_graph = std::move(loaded_definition.authored_graph),
+                });
+            }
+            for (auto& node_type : loaded_source.node_types) {
+                results.node_types.push_back(IvModuleReloadedNodeType{
+                    .source_id = declaration.definition_id,
+                    .node_type_id = std::move(node_type.node_type_id),
+                    .source_root = declaration.module_root,
+                    .compiler_record = node_type.compiler_record,
+                    .module_refs = std::move(node_type.module_refs),
+                    .authored_graph = std::move(node_type.authored_graph),
                 });
             }
         } catch (...) {
@@ -298,7 +325,8 @@ void IvModuleReload::compile_dirty_definitions()
     auto results = reload_declarations(declarations);
     auto const rebuild_duration = format_rebuild_duration(
         std::chrono::steady_clock::now() - rebuild_started_at);
-    if (results.sources.empty() && results.loaded.empty() && results.failed.empty()) {
+    if (results.sources.empty() && results.loaded.empty()
+        && results.node_types.empty() && results.failed.empty()) {
         return;
     }
 
@@ -310,13 +338,14 @@ void IvModuleReload::compile_dirty_definitions()
             "Module build failed after " + rebuild_duration + ": " + failure.message,
             failure.module_root);
     } else {
+        auto const& source_root = results.sources.size() == 1
+            ? results.sources.front().module_root
+            : std::filesystem::path{};
         emit_status(
             "info",
             "rebuildFinished",
-            "Module build ready to apply in " + rebuild_duration,
-            results.loaded.size() == 1
-                ? results.loaded.front().module_root
-                : std::filesystem::path{});
+            "IV source build ready to apply in " + rebuild_duration,
+            source_root);
     }
 
     {
@@ -339,6 +368,9 @@ void IvModuleReload::compile_dirty_definitions()
             std::erase_if(pending_results.loaded, [&](auto const& loaded) {
                 return replaced_source_ids.contains(loaded.source_id);
             });
+            std::erase_if(pending_results.node_types, [&](auto const& node_type) {
+                return replaced_source_ids.contains(node_type.source_id);
+            });
             std::erase_if(pending_results.failed, [&](auto const& failure) {
                 return replaced_source_ids.contains(failure.definition_id);
             });
@@ -351,6 +383,10 @@ void IvModuleReload::compile_dirty_definitions()
             pending_results.loaded.end(),
             std::make_move_iterator(results.loaded.begin()),
             std::make_move_iterator(results.loaded.end()));
+        pending_results.node_types.insert(
+            pending_results.node_types.end(),
+            std::make_move_iterator(results.node_types.begin()),
+            std::make_move_iterator(results.node_types.end()));
         pending_results.failed.insert(
             pending_results.failed.end(),
             std::make_move_iterator(results.failed.begin()),
@@ -382,7 +418,7 @@ bool IvModuleReload::has_pending_results() const
 {
     std::scoped_lock lock(mutex);
     return !pending_results.sources.empty() || !pending_results.loaded.empty()
-        || !pending_results.failed.empty();
+        || !pending_results.node_types.empty() || !pending_results.failed.empty();
 }
 
 void IvModuleReload::apply_pending_results()
@@ -391,14 +427,15 @@ void IvModuleReload::apply_pending_results()
     {
         std::scoped_lock lock(mutex);
         if (pending_results.sources.empty() && pending_results.loaded.empty()
-            && pending_results.failed.empty()) {
+            && pending_results.node_types.empty() && pending_results.failed.empty()) {
             return;
         }
         results = std::move(pending_results);
         pending_results = {};
     }
     results = coalesce_results_by_source(std::move(results));
-    if (results.sources.empty() && results.loaded.empty() && results.failed.empty()) {
+    if (results.sources.empty() && results.loaded.empty()
+        && results.node_types.empty() && results.failed.empty()) {
         return;
     }
 

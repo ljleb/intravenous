@@ -23,6 +23,7 @@
 #include <vector>
 
 namespace iv {
+class GraphBuilderState;
 template<class Config>
 struct SamplePortDescriptor {
   Config config{};
@@ -167,6 +168,7 @@ private:
   NodeSourceAnnotations _source_annotations{};
 
   friend class GraphBuilderNodeBundles;
+  friend class GraphBuilderState;
 };
 
 struct SemanticSubgraphInfo {
@@ -296,6 +298,12 @@ public:
   constexpr NodeBundleHandle append_subgraph(
       NodeBundleHandle boundary, size_t child_begin, size_t child_count,
       std::string_view kind);
+  // Resolves an ID-authored placeholder in place after the provider graph has
+  // been imported.  Existing caller connections keep their original bundle
+  // handle and consequently flow through the newly supplied child boundary.
+  constexpr void replace_registered_subgraph(
+      NodeBundleHandle handle, NodeBundleHandle boundary,
+      size_t child_begin, size_t child_count, std::string_view kind);
   constexpr NodeBundle const &bundle(NodeBundleHandle) const;
   constexpr NodeBundle &bundle(NodeBundleHandle);
 
@@ -1082,6 +1090,40 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_subgraph(
   auto const handle = _bundles.size();
   _bundles.push_back(NodeBundle(std::move(payload)));
   return handle;
+}
+
+constexpr void GraphBuilderNodeBundles::replace_registered_subgraph(
+    NodeBundleHandle handle, NodeBundleHandle boundary, size_t child_begin,
+    size_t child_count, std::string_view kind) {
+  auto& existing = bundle(handle);
+  if (!existing.is_subgraph() || !existing.subgraph_kind().starts_with("registered:")) {
+    details::error("attempted to resolve a non-registered graph node");
+  }
+  auto const placeholder_boundary = subgraph_info(handle).boundary;
+  auto const& boundary_bundle = bundle(boundary);
+  if (!boundary_bundle.is_boundary()) {
+    details::error("registered graph node provider has no boundary");
+  }
+  if (child_begin + child_count > _bundles.size()) {
+    details::error("registered graph node provider range is out of bounds");
+  }
+  existing = NodeBundle(NodeBundle::SubgraphNodeBundle{
+      .boundary = boundary,
+      .child_begin = child_begin,
+      .child_count = child_count,
+      .kind = std::string(kind),
+      .type_identity = NodeTypeIdentity{
+          .value = "lowered-subgraph:" + std::string(kind)},
+      .sample_input_count = boundary_bundle.boundary_sample_inputs().size(),
+      .sample_output_count = boundary_bundle.boundary_sample_outputs().size(),
+      .event_input_count = boundary_bundle.boundary_event_inputs().size(),
+      .event_output_count = boundary_bundle.boundary_event_outputs().size(),
+  });
+  // The placeholder boundary was only a temporary dynamic NodeRef shape. It
+  // must not survive as an unrelated scope boundary once the provider's real
+  // public boundary owns this subgraph; otherwise lowering would manufacture
+  // phantom scope ports for it.
+  bundle(placeholder_boundary) = NodeBundle{};
 }
 
 constexpr EventInputPortDescriptor
