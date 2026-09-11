@@ -1346,27 +1346,19 @@ public:
 
             auto const used_package_indexes = details::builder_used_packages(session.get());
             std::vector<ModuleRef> refs;
-            std::vector<ModuleDependency> dependencies;
             refs.reserve(used_package_indexes.size() + 1);
-            dependencies.reserve(used_package_indexes.size());
             for (auto const package_index : used_package_indexes) {
                 if (package_index >= loaded_packages.size()) {
                     throw std::logic_error("configured graph references an invalid IV package");
                 }
+                // Runtime code/data ownership follows every package actually used
+                // while configuring this graph. Build/watch dependencies do not:
+                // each IV package is independently compiled and watched.
                 refs.push_back(loaded_packages[package_index]);
-                dependencies.push_back(loaded_packages[package_index]->dependency);
             }
             refs.push_back(runtime_root);
-            std::ranges::sort(dependencies, {}, [](ModuleDependency const& dependency) {
-                return std::pair(dependency.id, dependency.module_dir);
-            });
-            dependencies.erase(
-                std::unique(
-                    dependencies.begin(), dependencies.end(),
-                    [](auto const& lhs, auto const& rhs) {
-                        return lhs.id == rhs.id && lhs.module_dir == rhs.module_dir;
-                    }),
-                dependencies.end());
+
+            auto dependencies = package_result.dependencies;
 
             definitions.emplace_back(
                 std::move(refs),
