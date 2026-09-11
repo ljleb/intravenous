@@ -17,7 +17,7 @@
 
 namespace iv {
 using ModuleRef = std::shared_ptr<void>;
-struct AuthoredGraph;
+struct ConfiguredGraph;
 
 struct IvModuleDefinitionDeclaration {
     // A declaration schedules one IV source build. Its definition_id is the
@@ -44,7 +44,7 @@ struct IvModuleDefinition {
     std::vector<ModuleDependency> dependencies{};
     std::vector<ModuleRef> module_refs{};
     WeakTypeErasedNode root{};
-    std::shared_ptr<AuthoredGraph const> authored_graph{};
+    std::shared_ptr<ConfiguredGraph const> configured_graph{};
 };
 
 struct IvModuleDefinitionsChanged {
@@ -62,7 +62,7 @@ struct IvNodeTypeDefinition {
     std::filesystem::path source_root{};
     details::NodeCompilerRecord compiler_record{};
     std::vector<ModuleRef> module_refs{};
-    std::shared_ptr<AuthoredGraph const> authored_graph{};
+    std::shared_ptr<ConfiguredGraph const> configured_graph{};
 };
 
 struct IvNodeTypeDefinitionsChanged {
@@ -91,7 +91,7 @@ struct IvModuleReloadedDefinition {
     std::vector<ModuleDependency> dependencies{};
     std::vector<ModuleRef> module_refs{};
     WeakTypeErasedNode root{};
-    std::shared_ptr<AuthoredGraph const> authored_graph{};
+    std::shared_ptr<ConfiguredGraph const> configured_graph{};
 };
 
 struct IvModuleReloadedNodeType {
@@ -100,7 +100,7 @@ struct IvModuleReloadedNodeType {
     std::filesystem::path source_root{};
     details::NodeCompilerRecord compiler_record{};
     std::vector<ModuleRef> module_refs{};
-    std::shared_ptr<AuthoredGraph const> authored_graph{};
+    std::shared_ptr<ConfiguredGraph const> configured_graph{};
 };
 
 struct IvModuleRequiredDefinitionsChanged;

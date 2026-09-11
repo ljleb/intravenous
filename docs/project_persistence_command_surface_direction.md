@@ -1,7 +1,7 @@
 # Project Persistence And Command Surface Direction
 
 This note consolidates the current direction for project persistence, shared
-modification commands, config-file ownership, and authored-state boundaries.
+modification commands, config-file ownership, and configured-state boundaries.
 
 It is intentionally design-only.
 
@@ -18,7 +18,7 @@ This implies:
   modification surface
 
 The key architectural move is to introduce a stable bottleneck app module that
-receives authored project modification commands regardless of their source.
+receives configured project modification commands regardless of their source.
 
 Possible names:
 
@@ -40,7 +40,7 @@ The shared command surface exists so that:
 
 This module is allowed to be a bottleneck on purpose.
 
-It should expose only authored mutation commands, not queries.
+It should expose only configured mutation commands, not queries.
 
 The preferred implementation shape is intentionally minimal:
 
@@ -70,7 +70,7 @@ Two new app modules are implied by this direction.
 
 A stable transport-independent modification module:
 
-- receives typed authored mutation commands
+- receives typed configured mutation commands
 - invokes owning/managing modules
 - acts primarily as a thin event forwarder
 - may optionally coordinate more than one module when needed, but should not
@@ -88,7 +88,7 @@ A dedicated persistence module:
 
 This module must not become a second mutation API.
 
-Save is server-owned and coalesced after ordinary authored project mutations.
+Save is server-owned and coalesced after ordinary configured project mutations.
 The project-loaded event enables the autosave module only after replay has
 completed, so loading never writes the project back out. JSON-RPC exposes three
 idempotent controls: save now, enable autosave, and disable autosave. Each save
@@ -101,11 +101,11 @@ The persistence module likely needs at least two important event flows.
 
 ### Save-side contribution event
 
-Subscribers contribute authored commands into a command-list builder.
+Subscribers contribute configured commands into a command-list builder.
 
 Important property:
 
-- subscribers describe current authored state
+- subscribers describe current configured state
 - they do not emit transient edit history
 
 ### Load-side replay path
@@ -244,7 +244,7 @@ Related commands should ideally remain close to one another in save output for:
 For example:
 
 - create an iv-module instance
-- immediately follow with authored settings for that instance
+- immediately follow with configured settings for that instance
 
 Each serialized command object should have exactly two top-level fields:
 
@@ -261,10 +261,10 @@ the command list rather than by a separate non-command header section.
 
 Commands should be object-oriented:
 
-- one command per authored object
-- a lane connection is one authored object
-- a lane view is one authored object
-- an iv-module instance is one authored object
+- one command per configured object
+- a lane connection is one configured object
+- a lane view is one configured object
+- an iv-module instance is one configured object
 
 This means the default shape of a command should be a full object definition
 rather than a tiny UI-gesture-like patch.
@@ -287,7 +287,7 @@ args.
 `Timeline` should not blindly serialize every lane visible in its structural
 substrate.
 
-For any lane family not truly authored and managed by timeline itself, the
+For any lane family not truly configured and managed by timeline itself, the
 managing app module fully chooses serialization policy.
 
 This applies to:
@@ -299,28 +299,28 @@ This applies to:
 
 The principle is:
 
-- serialize authored policy owned by the managing module
+- serialize configured policy owned by the managing module
 - do not serialize purely derived lane records just because they exist inside
   the timeline substrate
 
-One important consequence is that lane connectivity becomes first-class authored
+One important consequence is that lane connectivity becomes first-class configured
 state over partly derived lane state.
 
 In current code and in the intended direction:
 
-- which lanes exist is often owned by lane-authoring/managing modules
+- which lanes exist is often owned by lane-configuration/managing modules
 - which lanes connect is owned by the timeline substrate
 
 Therefore:
 
-- any lane that may participate in saved authored connectivity must have a
+- any lane that may participate in saved configured connectivity must have a
   stable identity
 - that stable identity must be chosen and preserved by the module that owns the
   lane's existence/policy
 - timeline connectivity should be serialized against those stable lane ids
 
 So even when a lane body is derived, its stable lane identity may still be part
-of authored persisted state if authored connectivity or authored views need to
+of configured persisted state if configured connectivity or configured views need to
 refer to it reliably.
 
 For graph-input-derived lanes specifically:
@@ -330,9 +330,9 @@ For graph-input-derived lanes specifically:
 
 This same rule should apply generally to any non-timeline-managed lane family.
 
-## Authored state inventory
+## Configured state inventory
 
-Current intended authored state includes:
+Current intended configured state includes:
 
 - iv-module instances
 - lanes from managing modules
@@ -357,7 +357,7 @@ Persist:
 
 - stable instance id
 - module root / definition reference
-- all per-instance authored settings
+- all per-instance configured settings
 - any future per-instance setting that affects materialization
 
 Do not persist:
@@ -371,28 +371,28 @@ Do not persist:
 
 Persist:
 
-- authored input policy state per relevant port
-- authored output policy state per relevant port
-- authored sample override values
-- any authored setting that controls disconnected / logical-follow /
+- configured input policy state per relevant port
+- configured output policy state per relevant port
+- configured sample override values
+- any configured setting that controls disconnected / logical-follow /
   overridden / timeline-lane style behavior
 - stable lane ids for any graph-input-managed lanes that must be referencable
   by saved connectivity or saved views
 
 Do not persist:
 
-- fully derived lane records that can be regenerated from authored policy
-- runtime-only live values that are not authored overrides
+- fully derived lane records that can be regenerated from configured policy
+- runtime-only live values that are not configured overrides
 
 ### `AudioDeviceLanes`
 
 Persist:
 
-- authored project value for selected input/output device as `explicit |
+- configured project value for selected input/output device as `explicit |
   default`
 - stable ids for audio-device-managed lanes if those lanes may participate in
   saved connectivity or saved views
-- any authored settings for those lanes
+- any configured settings for those lanes
 
 Do not persist:
 
@@ -404,7 +404,7 @@ Do not persist:
 
 Persist:
 
-- authored lane connectivity
+- configured lane connectivity
 - any truly timeline-owned settings that are not owned by another managing
   module
 
@@ -427,7 +427,7 @@ Persist:
 - query string
 - viewport/window/order/layout state needed to restore the project UI
   meaningfully
-- any additional authored view settings later considered part of reopening the
+- any additional configured view settings later considered part of reopening the
   project "as it was"
 
 Current practical storage may remain VS Code webview/layout state while the
@@ -604,7 +604,7 @@ without requiring a separate UI-only config file immediately.
 
 `IvModuleInstances` should be audited before project serialization work begins.
 
-The important question is whether its desired/authored side is already the right
+The important question is whether its desired/configured side is already the right
 home for all per-instance saved state, or whether that structure must first be
 expanded.
 
@@ -614,16 +614,16 @@ Current code already has a promising desired/realized split:
 - realized loaded instance data
 - realized builders and module refs
 
-But persistence should only depend on the authored side.
+But persistence should only depend on the configured side.
 
 So the design requirement is:
 
 - confirm or refine `IvModuleInstances` as the canonical owner of persisted
-  per-instance authored state before implementing persistence
+  per-instance configured state before implementing persistence
 
 ## IDs
 
-Persisted authored objects should use stable IDs that do not change once picked.
+Persisted configured objects should use stable IDs that do not change once picked.
 
 UUIDs are a good fit for this.
 
@@ -640,7 +640,7 @@ Important property:
 
 Recommended direction:
 
-- use UUIDs for persisted authored object creation
+- use UUIDs for persisted configured object creation
 - preserve them forever
 - reuse them on subsequent saves
 
@@ -684,7 +684,7 @@ execution in file order.
 
 A setting belongs in the shared modification/persistence model if:
 
-- it mutates authored state
+- it mutates configured state
 - it meaningfully reproduces project behavior or layout
 - it is not fully derived
 
@@ -703,9 +703,9 @@ explicitly deferred for now.
 
 1. Define config-file responsibilities clearly:
    installation defaults, project file, iv-module-local file.
-2. Inventory all manipulable authored data sources in the repo.
+2. Inventory all manipulable configured data sources in the repo.
 3. Define the stable shared modification command surface.
-4. Audit authored-state owners, especially `IvModuleInstances`.
+4. Audit configured-state owners, especially `IvModuleInstances`.
 5. Define serialization ownership policy per managing module.
 6. Define persisted ID policy.
 7. Define replay diagnostics and best-effort failure semantics.

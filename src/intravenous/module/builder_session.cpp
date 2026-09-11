@@ -155,7 +155,7 @@ GraphBuilderState& builder_graph_state(GraphBuilder& builder)
     return state;
 }
 
-AuthoredGraph take_built_graph(BuilderSession* session)
+ConfiguredGraph take_built_graph(BuilderSession* session)
 {
     if (!session || !session->state || session->graph_taken) {
         throw std::logic_error("builder session has no unfinished graph");

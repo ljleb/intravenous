@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/runtime/authored_lane_api.h>
+#include <intravenous/runtime/configured_lane_api.h>
 
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/iv_module_instances.h>

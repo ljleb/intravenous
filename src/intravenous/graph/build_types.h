@@ -90,7 +90,7 @@ namespace iv {
         ChannelTypeId channel_type = ChannelTypeId::mono;
         std::vector<GraphBuilderPublicSamplePortChannel> channels {};
         std::vector<SourceInfo> source_infos {};
-        bool authored_connected = false;
+        bool configured_connected = false;
     };
 
     struct GraphBuilderPublicSamplePortFamilies {

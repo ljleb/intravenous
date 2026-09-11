@@ -1,6 +1,6 @@
 #include <intravenous/module/loader.h>
 #include <intravenous/module/abi.h>
-#include <intravenous/module/authored_graph_wire.h>
+#include <intravenous/module/configured_graph_wire.h>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/source_manifest.h>
 #include <intravenous/module/source_registration.h>
@@ -1061,10 +1061,10 @@ public:
                     "IV source node type '" + node_type_id
                     + "' references an unknown NodeCodeKey");
             }
-            if (!node_type.authored_graph.data && node_type.authored_graph.size != 0) {
+            if (!node_type.configured_graph.data && node_type.configured_graph.size != 0) {
                 throw std::runtime_error(
                     "IV source node type '" + node_type_id
-                    + "' has a null authored graph view");
+                    + "' has a null configured graph view");
             }
             if (!node_type.node_configs.data && node_type.node_configs.size != 0) {
                 throw std::runtime_error(
@@ -1077,8 +1077,8 @@ public:
                     + "' has an invalid node config table");
             }
             auto const node_graph_archive = std::span(
-                static_cast<std::byte const*>(node_type.authored_graph.data),
-                node_type.authored_graph.size);
+                static_cast<std::byte const*>(node_type.configured_graph.data),
+                node_type.configured_graph.size);
             auto const node_configs = std::span(
                 static_cast<ModuleNodeConfigRecord const*>(node_type.node_configs.data),
                 node_type.node_configs.size / sizeof(ModuleNodeConfigRecord));
@@ -1087,15 +1087,15 @@ public:
                 .compiler_record = *compiler_record,
                 .source_path = root.module_dir,
                 .module_refs = {binary},
-                .authored_graph = std::make_shared<AuthoredGraph const>(
-                    deserialize_authored_graph(node_graph_archive, types, node_configs)),
+                .configured_graph = std::make_shared<ConfiguredGraph const>(
+                    deserialize_configured_graph(node_graph_archive, types, node_configs)),
             });
         }
 
         std::vector<ModuleDependency> dependencies;
         // A loaded source watches only its implementation package. Imported
         // source implementation edits are resolved through the registry and
-        // do not invalidate this source's cached AuthoredGraph.
+        // do not invalidate this source's cached ConfiguredGraph.
         dependencies.push_back({
             root.source_key,
             root.module_dir,
@@ -1198,10 +1198,10 @@ public:
 
             GraphBuilder builder(session.get());
             registration.module_build(builder);
-            auto authored = std::make_shared<AuthoredGraph const>(
+            auto configured = std::make_shared<ConfiguredGraph const>(
                 details::take_built_graph(session.get()));
             auto plan = GraphCompiler::compile(
-                GraphLowerer::lower(*authored, {.execution_root = true}));
+                GraphLowerer::lower(*configured, {.execution_root = true}));
             auto runtime_root = std::make_shared<RuntimeGraphRoot>(std::move(plan.graph));
 
             std::vector<ModuleRef> refs;
@@ -1215,7 +1215,7 @@ public:
                 compiled.root.module_dir,
                 std::move(module_id),
                 configuration_dependencies,
-                std::move(authored));
+                std::move(configured));
         }
         if (log_sink_) {
             log_sink_(
@@ -1307,14 +1307,14 @@ ModuleLoader::LoadedDefinition::LoadedDefinition(
     std::filesystem::path path,
     std::string id,
     std::vector<ModuleDependency> deps,
-    std::shared_ptr<AuthoredGraph const> authored_graph_)
+    std::shared_ptr<ConfiguredGraph const> configured_graph_)
     : module_refs(std::move(refs)),
       root(root_),
       introspection(std::move(introspection_)),
       source_path(std::move(path)),
       module_id(std::move(id)),
       dependencies(std::move(deps)),
-      authored_graph(std::move(authored_graph_))
+      configured_graph(std::move(configured_graph_))
 {}
 
 ModuleLoader::ModuleLoader(

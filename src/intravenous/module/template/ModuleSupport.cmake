@@ -4,7 +4,7 @@ include(${IV_SOURCE_DIR}/module/template/JuceSupport.cmake)
 include(${IV_SOURCE_DIR}/module/template/ModuleProjectInit.cmake)
 
 option(IV_MODULE_SOURCE_INTROSPECTION
-    "Collect authored IV module source identity metadata" ON)
+    "Collect configured IV module source identity metadata" ON)
 
 set(IV_MODULE_FINALIZER_OPTIMIZATION "O3" CACHE STRING
     "Optimization level used by iv-module-finalize for the final native module")
@@ -72,7 +72,7 @@ function(iv_add_runtime_module target)
     # Every source that contributes code to the runtime-module target remains
     # LLVM bitcode until the target link step. iv_module_finalize consumes
     # these objects, executes the graph-building slice through ORC, injects the
-    # authored graph/configuration tables, emits one native replacement object,
+    # configured graph/configuration tables, emits one native replacement object,
     # and then resumes CMake's original link command.
     target_compile_options(${target}__compile_settings INTERFACE -O0 -flto=full)
     target_link_options(${target}__compile_settings INTERFACE -flto=full -fuse-ld=lld)

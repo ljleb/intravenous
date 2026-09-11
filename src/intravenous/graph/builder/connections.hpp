@@ -116,52 +116,52 @@ struct GraphBuilderVirtualSampleOutputFamilies {
   std::vector<GraphBuilderVirtualSampleOutputFamily> families{};
 };
 
-struct AuthoredSampleConnection {
+struct ConfiguredSampleConnection {
   ChannelTypeId source_type = ChannelTypeId::mono;
   std::vector<SampleOutputChannelId> source_channels{};
   ChannelTypeId target_type = ChannelTypeId::mono;
   std::vector<SampleInputChannelId> target_channels{};
-  bool operator==(AuthoredSampleConnection const&) const = default;
+  bool operator==(ConfiguredSampleConnection const&) const = default;
 };
 
 struct SampleLoweringGroup {
   NodeBundlePortId target{};
-  std::vector<AuthoredSampleConnection const*> connections{};
+  std::vector<ConfiguredSampleConnection const*> connections{};
 };
 
 struct SampleLoweringPlan {
   std::vector<SampleLoweringGroup> groups{};
 };
 
-struct AuthoredEventConnection {
+struct ConfiguredEventConnection {
   EventTypeId source_type = EventTypeId::empty;
   std::vector<EventOutputPortId> sources{};
   EventTypeId target_type = EventTypeId::empty;
   std::vector<EventInputPortId> targets{};
-  bool operator==(AuthoredEventConnection const&) const = default;
+  bool operator==(ConfiguredEventConnection const&) const = default;
 };
 
 class GraphBuilderConnections {
 public:
-  constexpr void record_authored_sample_connection(
-      AuthoredSampleConnection connection)
+  constexpr void record_configured_sample_connection(
+      ConfiguredSampleConnection connection)
   {
     if (connection.source_channels.size()
         != channel_count(connection.source_type))
       details::error(
-          "authored sample connection source does not match its channel type");
+          "configured sample connection source does not match its channel type");
     if (connection.target_channels.size()
         != channel_count(connection.target_type))
       details::error(
-          "authored sample connection target does not match its channel type");
-    _authored_sample_connections.push_back(std::move(connection));
+          "configured sample connection target does not match its channel type");
+    _configured_sample_connections.push_back(std::move(connection));
   }
-  constexpr std::span<AuthoredSampleConnection const>
-      authored_sample_connections() const;
+  constexpr std::span<ConfiguredSampleConnection const>
+      configured_sample_connections() const;
   constexpr SampleLoweringPlan sample_lowering_plan() const;
-  constexpr void record_authored_event_connection(AuthoredEventConnection);
-  constexpr std::span<AuthoredEventConnection const>
-      authored_event_connections() const;
+  constexpr void record_configured_event_connection(ConfiguredEventConnection);
+  constexpr std::span<ConfiguredEventConnection const>
+      configured_event_connections() const;
 
   constexpr bool sample_input_is_connected(SampleInputChannelId) const;
   constexpr bool sample_output_is_connected(SampleOutputChannelId) const;
@@ -183,46 +183,46 @@ public:
 
   constexpr void import_child(
       GraphBuilderConnections const&, size_t node_bundle_offset);
-  static constexpr GraphBuilderConnections from_authored_connections(
-      std::span<AuthoredSampleConnection const>,
-      std::span<AuthoredEventConnection const>);
+  static constexpr GraphBuilderConnections from_configured_connections(
+      std::span<ConfiguredSampleConnection const>,
+      std::span<ConfiguredEventConnection const>);
 
 private:
-  std::vector<AuthoredSampleConnection> _authored_sample_connections{};
-  std::vector<AuthoredEventConnection> _authored_event_connections{};
+  std::vector<ConfiguredSampleConnection> _configured_sample_connections{};
+  std::vector<ConfiguredEventConnection> _configured_event_connections{};
 };
 } // namespace iv
 namespace iv {
 constexpr bool GraphBuilderConnections::sample_input_is_connected(
     SampleInputChannelId target) const {
-  return std::ranges::any_of(_authored_sample_connections,
+  return std::ranges::any_of(_configured_sample_connections,
       [&](auto const& c) { return std::ranges::contains(c.target_channels, target); });
 }
 constexpr bool GraphBuilderConnections::sample_output_is_connected(
     SampleOutputChannelId source) const {
-  return std::ranges::any_of(_authored_sample_connections,
+  return std::ranges::any_of(_configured_sample_connections,
       [&](auto const& c) { return std::ranges::contains(c.source_channels, source); });
 }
 constexpr bool GraphBuilderConnections::event_input_is_connected(
     EventInputPortId target) const {
-  return std::ranges::any_of(_authored_event_connections,
+  return std::ranges::any_of(_configured_event_connections,
       [&](auto const& c) { return std::ranges::contains(c.targets, target); });
 }
 constexpr bool GraphBuilderConnections::event_output_is_connected(
     EventOutputPortId source) const {
-  return std::ranges::any_of(_authored_event_connections,
+  return std::ranges::any_of(_configured_event_connections,
       [&](auto const& c) { return std::ranges::contains(c.sources, source); });
 }
 
-constexpr std::span<AuthoredSampleConnection const>
-GraphBuilderConnections::authored_sample_connections() const {
-  return _authored_sample_connections;
+constexpr std::span<ConfiguredSampleConnection const>
+GraphBuilderConnections::configured_sample_connections() const {
+  return _configured_sample_connections;
 }
 constexpr SampleLoweringPlan GraphBuilderConnections::sample_lowering_plan() const {
   SampleLoweringPlan plan;
   details::ConstexprHashMap<NodeBundlePortId, size_t, details::NodeBundlePortIdHash>
       group_index_by_target;
-  for (auto const& connection : _authored_sample_connections) {
+  for (auto const& connection : _configured_sample_connections) {
     if (connection.target_channels.empty())
       details::error("sample connection has no target");
     auto const first = connection.target_channels.front();
@@ -239,23 +239,23 @@ constexpr SampleLoweringPlan GraphBuilderConnections::sample_lowering_plan() con
   }
   return plan;
 }
-constexpr void GraphBuilderConnections::record_authored_event_connection(
-    AuthoredEventConnection connection) {
-  if (connection.sources.empty()) details::error("authored event connection has no source");
-  if (connection.targets.empty()) details::error("authored event connection has no target");
-  _authored_event_connections.push_back(std::move(connection));
+constexpr void GraphBuilderConnections::record_configured_event_connection(
+    ConfiguredEventConnection connection) {
+  if (connection.sources.empty()) details::error("configured event connection has no source");
+  if (connection.targets.empty()) details::error("configured event connection has no target");
+  _configured_event_connections.push_back(std::move(connection));
 }
-constexpr std::span<AuthoredEventConnection const>
-GraphBuilderConnections::authored_event_connections() const {
-  return _authored_event_connections;
+constexpr std::span<ConfiguredEventConnection const>
+GraphBuilderConnections::configured_event_connections() const {
+  return _configured_event_connections;
 }
 constexpr GraphBuilderConnections
-GraphBuilderConnections::from_authored_connections(
-    std::span<AuthoredSampleConnection const> samples,
-    std::span<AuthoredEventConnection const> events) {
+GraphBuilderConnections::from_configured_connections(
+    std::span<ConfiguredSampleConnection const> samples,
+    std::span<ConfiguredEventConnection const> events) {
   GraphBuilderConnections result;
-  result._authored_sample_connections.assign(samples.begin(), samples.end());
-  result._authored_event_connections.assign(events.begin(), events.end());
+  result._configured_sample_connections.assign(samples.begin(), samples.end());
+  result._configured_event_connections.assign(events.begin(), events.end());
   return result;
 }
 
@@ -421,15 +421,15 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
 
 constexpr void GraphBuilderConnections::import_child(
     GraphBuilderConnections const& child, size_t bundle_offset) {
-  for (auto connection : child._authored_sample_connections) {
+  for (auto connection : child._configured_sample_connections) {
     for (auto& channel : connection.source_channels) channel.bundle += bundle_offset;
     for (auto& channel : connection.target_channels) channel.bundle += bundle_offset;
-    _authored_sample_connections.push_back(std::move(connection));
+    _configured_sample_connections.push_back(std::move(connection));
   }
-  for (auto connection : child._authored_event_connections) {
+  for (auto connection : child._configured_event_connections) {
     for (auto& source : connection.sources) source.bundle += bundle_offset;
     for (auto& target : connection.targets) target.bundle += bundle_offset;
-    _authored_event_connections.push_back(std::move(connection));
+    _configured_event_connections.push_back(std::move(connection));
   }
 }
 } // namespace iv

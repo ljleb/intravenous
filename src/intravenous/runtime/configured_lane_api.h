@@ -18,15 +18,15 @@ struct CreatableLaneDescriptor {
     std::string description;
 };
 
-struct AuthoredLaneRecord {
+struct ConfiguredLaneRecord {
     InternedString lane_id;
     std::string type_id;
     std::string serialized_state;
 };
 
 // Explicit user wiring.  Generated graph wiring is intentionally not an
-// authored record and is never written to a project file.
-struct AuthoredLaneConnection {
+// configured record and is never written to a project file.
+struct ConfiguredLaneConnection {
     InternedString source_lane_id;
     InternedString target_lane_id;
     LanePortId input;

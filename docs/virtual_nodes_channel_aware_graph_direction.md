@@ -17,7 +17,7 @@ migrated.
 ## Terminology
 
 "Logical node" is historical terminology for a different mechanism. This
-model instead distinguishes source-authored **virtual nodes** from their
+model instead distinguishes source-configured **virtual nodes** from their
 builder-visible **node bundles** and executable **concrete nodes**.
 
 | Term | Meaning |
@@ -25,7 +25,7 @@ builder-visible **node bundles** and executable **concrete nodes**.
 | **Concrete node** | One executable node instance run by the DSP graph. |
 | **Concrete port** | An input or output on a concrete node, with a declared channel type/layout. |
 | **Node bundle** | One builder-visible node implementation: either one concrete node, a tiled set of concrete nodes, or a subgraph node. It is the lowest graph-builder layer exposed to tooling. The UI calls this a **concrete member** to contrast it with a virtual node. |
-| **Virtual node** | The source-authored object associated with one named lvalue that receives a node-bundle reference. It owns explicit membership and virtual-port mappings to node bundles. |
+| **Virtual node** | The source-configured object associated with one named lvalue that receives a node-bundle reference. It owns explicit membership and virtual-port mappings to node bundles. |
 | **Virtual port** | One graph-facing and UI-facing port on a virtual node. It composes the corresponding port of each member node bundle. |
 | **Tiled node** | A node bundle whose fully-mono concrete node type is instantiated once for each member of a requested channel type. A tiled node is not itself a concrete node or a virtual node; source annotation may associate its bundle with one or more virtual nodes. |
 | **Tile** | One concrete-node member of a tiled node. For a mono node tiled to stereo, the left and right concrete instances are the two tiles. |
@@ -38,10 +38,10 @@ Source spans and source identities attach to virtual nodes. Introspection and
 the sidepanel project their member node bundles as UI “concrete” members, while
 keeping the concrete nodes and tiles inside a bundle as implementation detail.
 
-## Authored identity, references, and membership
+## Configured identity, references, and membership
 
 A bare `g.node<T>()` expression creates concrete-node implementation data and
-returns a node reference. It does not, by itself, create an authored virtual
+returns a node reference. It does not, by itself, create an configured virtual
 node. The source rewriter establishes virtual-node identity when a named
 lvalue receives that reference. It gives an uninitialized node-reference
 lvalue its stable declaration identity and wraps its initializer or assignment
@@ -52,7 +52,7 @@ Conceptually:
 ```text
 auto filter = g.node<Filter>();
 
-source-authored lvalue `filter`
+source-configured lvalue `filter`
   -> stable virtual-node identity
   -> explicit membership/mapping to the Filter node bundle
 ```
@@ -61,18 +61,18 @@ This source annotation is an explicit declaration of membership; it is not a
 later grouping heuristic. Source spans and type identities may be stored as
 metadata on the virtual node, but they must never be used to discover, split,
 or merge virtual nodes. Internal builder-generated nodes, unannotated
-temporaries, constants, sums, packs, and unpacks have no authored virtual-node
+temporaries, constants, sums, packs, and unpacks have no configured virtual-node
 identity unless an explicit source annotation associates them with one.
 
 Node-reference values remain move-only. That is a runtime-reference rule which
-keeps authored C++ assignment and aliasing behavior tractable; it is not an
+keeps configured C++ assignment and aliasing behavior tractable; it is not an
 exclusive-ownership rule for graph metadata. Moving a reference clears the
 moved-from runtime handle, but does not remove virtual-node/node-bundle memberships
 already recorded by source annotation.
 
 Virtual-node/node-bundle membership is explicitly many-to-many. One virtual
 node can have several node-bundle members, and one node bundle may be a member
-of more than one virtual node when separately annotated authored lvalues
+of more than one virtual node when separately annotated configured lvalues
 intentionally project it. A tiled bundle contains several concrete tile nodes.
 The builder stores both directions:
 
@@ -112,14 +112,14 @@ builder can plan the appropriate conversion.
 ## Node creation and tiling
 
 `g.node<Node>()` retains `Node`'s native concrete-port interface.
-`g.node<Node, RequestedChannelType>()` requests a channel-aware authored-node
+`g.node<Node, RequestedChannelType>()` requests a channel-aware configured-node
 interface backed by one or more concrete instances. The channel type is
 explicit in the initial model; it is not an implicit graph-wide default.
 
 A virtual node is builder and graph metadata, not a distinct value returned to
 module authors. The expression still returns the familiar node-reference
 interface: it is called to connect named inputs and is used to obtain named
-output references. A source-authored binding such as
+output references. A source-configured binding such as
 `auto const filter = g.node<OnePoleFilter, stereo>();` has one corresponding
 virtual node, even when its implementation has several concrete members.
 
@@ -229,7 +229,7 @@ same adapter semantics.
 
 These are builder-generated internal nodes. They participate in ordinary root
 graph compilation, scheduling, buffer lifetime, latency, and SCC handling,
-but do not appear as authored nodes, sidepanel entries, or lane endpoints.
+but do not appear as configured nodes, sidepanel entries, or lane endpoints.
 
 The producer retains its declared representation. A consumer receives the
 representation declared by its concrete port. This follows the existing lane
@@ -287,7 +287,7 @@ other DSP node.
 ## Sidepanel and lane semantics
 
 The sidepanel displays virtual nodes, their virtual ports, and their member
-node bundles as UI “concrete” members. An authored
+node bundles as UI “concrete” members. An configured
 `g.node<MonoFilter, stereo>()` binding therefore contributes one concrete
 member with stereo ports, even though its implementation contains two mono
 filter tiles. Tile count, tile order, and concrete node IDs are implementation
@@ -372,7 +372,7 @@ during this work.
   execution contract on which all other channel work relies.
 - **Channel boundary adapters.** Add generic internal `ChannelPack<C>` and
   `ChannelUnpack<C>` concrete nodes, including their ordinary root-graph
-  execution and tests. They are independent of virtual nodes and the authored
+  execution and tests. They are independent of virtual nodes and the configured
   node-reference DSL.
 - **Native channel-aware node interface.** Make the existing node-reference,
   node-call, output-access, arithmetic, and public-port DSL carry a reference
@@ -380,7 +380,7 @@ during this work.
   wiring end-to-end.
 - **Virtual graph metadata.** Replace inferred logical grouping with explicit
   virtual-node identities, virtual ports, and initial virtual-to-execution-
-  node/port mappings. Source annotation on an authored lvalue records an
+  node/port mappings. Source annotation on an configured lvalue records an
   identity and explicit membership; insertion alone does not. Membership may
   be many-to-many, but it is never reconstructed from names, source spans,
   scopes, adjacency, or type matching.

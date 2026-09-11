@@ -25,7 +25,7 @@ struct IvModuleSourceIntrospectionLiveInputSnapshot {
     bool has_concrete_override = false;
 };
 
-struct IvModuleSourceIntrospectionAuthoredStateSnapshot {
+struct IvModuleSourceIntrospectionConfiguredStateSnapshot {
     std::vector<ProjectSetSampleInputValueRequest> sample_input_values {};
     std::vector<ProjectSetSampleInputStateRequest> sample_input_states {};
     std::vector<ProjectSetEventInputStateRequest> event_input_states {};
@@ -48,12 +48,12 @@ public:
     [[nodiscard]] std::vector<IvModuleSourceIntrospectionLiveInputSnapshot> build() const;
 };
 
-class IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder {
-    std::optional<IvModuleSourceIntrospectionAuthoredStateSnapshot> result;
+class IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder {
+    std::optional<IvModuleSourceIntrospectionConfiguredStateSnapshot> result;
 
 public:
-    void succeed(IvModuleSourceIntrospectionAuthoredStateSnapshot value);
-    [[nodiscard]] IvModuleSourceIntrospectionAuthoredStateSnapshot build() const;
+    void succeed(IvModuleSourceIntrospectionConfiguredStateSnapshot value);
+    [[nodiscard]] IvModuleSourceIntrospectionConfiguredStateSnapshot build() const;
 };
 
 class IvModuleSourceIntrospectionPublicPortsSnapshotBuilder {
@@ -76,8 +76,8 @@ public:
 using IvModuleSourceIntrospectionLiveInputSnapshotsRequestedEvent =
     void (*)(std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> const &,
              IvModuleSourceIntrospectionLiveInputSnapshotsBuilder &);
-using IvModuleSourceIntrospectionAuthoredStateSnapshotRequestedEvent =
-    void (*)(IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder &);
+using IvModuleSourceIntrospectionConfiguredStateSnapshotRequestedEvent =
+    void (*)(IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder &);
 using IvModuleSourceIntrospectionPublicPortsSnapshotRequestedEvent =
     void (*)(IvModuleSourceIntrospectionPublicPortsSnapshotBuilder &);
 using IvModuleSourceIntrospectionNodesUpdatedEvent =
@@ -91,8 +91,8 @@ IV_DECLARE_LINKER_EVENT(
     IvModuleSourceIntrospectionLiveInputSnapshotsRequestedEvent,
     iv_runtime_iv_module_source_introspection_live_input_snapshots_requested_event);
 IV_DECLARE_LINKER_EVENT(
-    IvModuleSourceIntrospectionAuthoredStateSnapshotRequestedEvent,
-    iv_runtime_iv_module_source_introspection_authored_state_snapshot_requested_event);
+    IvModuleSourceIntrospectionConfiguredStateSnapshotRequestedEvent,
+    iv_runtime_iv_module_source_introspection_configured_state_snapshot_requested_event);
 IV_DECLARE_LINKER_EVENT(
     IvModuleSourceIntrospectionPublicPortsSnapshotRequestedEvent,
     iv_runtime_iv_module_source_introspection_public_ports_snapshot_requested_event);

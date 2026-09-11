@@ -2,7 +2,7 @@
 #include <intravenous/runtime/iv_module_instances_iv_module_instances_execution_bridge.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
-#include <authored_graph_test_view.h>
+#include <configured_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/graph/runtime_binding_nodes.hpp>
@@ -148,7 +148,7 @@ namespace {
         iv::GraphBuilder graph;
         auto input = graph.input<"input">(iv::Sample{0.0f});
         graph.outputs(iv::PortName<"output">{} = input);
-        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
+        return iv::freeze_configured_graph_for_test(std::move(graph).finish());
     }
 
     auto make_runtime_event_binding_graph()
@@ -157,15 +157,15 @@ namespace {
         auto input = graph.event_input<"input">(iv::EventTypeId::trigger);
         graph.event_outputs(iv::PortName<"output">{} = input);
         graph.outputs();
-        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
+        return iv::freeze_configured_graph_for_test(std::move(graph).finish());
     }
 
-    iv::RuntimeGraphRoot build_runtime_binding_root(iv::AuthoredGraphTestView view)
+    iv::RuntimeGraphRoot build_runtime_binding_root(iv::ConfiguredGraphTestView view)
     {
-        auto authored = iv::thaw_authored_graph_for_test(view);
+        auto configured = iv::thaw_configured_graph_for_test(view);
         auto plan = iv::GraphCompiler::compile(
             iv::GraphLowerer::lower(
-                std::move(authored), {.execution_root = true}));
+                std::move(configured), {.execution_root = true}));
         return iv::RuntimeGraphRoot(std::move(plan.graph));
     }
 

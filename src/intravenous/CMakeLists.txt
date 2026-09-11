@@ -168,7 +168,7 @@ function(iv_add_host_runtime_objects target)
         intravenous_runtime_socket_rpc_events
         intravenous_runtime_task_runner_events
         intravenous_runtime_timeline_events
-        intravenous_runtime_authored_lanes_events
+        intravenous_runtime_configured_lanes_events
         intravenous_runtime_timeline_execution_events
         intravenous_runtime_iv_module_instances_execution_events
         intravenous_tooling_runtime_objects
@@ -313,8 +313,8 @@ iv_add_linker_event_object(
     runtime/timeline_events.cpp
 )
 iv_add_linker_event_object(
-    intravenous_runtime_authored_lanes_events
-    runtime/authored_lanes_events.cpp
+    intravenous_runtime_configured_lanes_events
+    runtime/configured_lanes_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_timeline_execution_events
@@ -329,8 +329,8 @@ target_link_libraries(intravenous_runtime_runtime_project_events PRIVATE
 )
 
 add_library(intravenous_tooling_runtime_objects OBJECT
-    runtime/authored_lanes.cpp
-    runtime/authored_lanes_timeline_bridge.cpp
+    runtime/configured_lanes.cpp
+    runtime/configured_lanes_timeline_bridge.cpp
     runtime/audio_device_lanes.cpp
     runtime/audio_device_lanes_iv_module_instances_execution_bridge.cpp
     runtime/audio_device_lanes_timeline_bridge.cpp
@@ -339,7 +339,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/config.cpp
     runtime/graph_input_lanes.cpp
     runtime/graph_input_lanes/block_store.cpp
-    runtime/graph_input_lanes/authored_state.cpp
+    runtime/graph_input_lanes/configured_state.cpp
     runtime/graph_input_lanes/builder_completion.cpp
     runtime/graph_input_lanes/lane_reconciler.cpp
     runtime/graph_input_lanes/port_catalog.cpp
@@ -382,7 +382,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/iv_module_instances_iv_module_sources_bridge.cpp
     runtime/project_persistence_iv_module_instances_bridge.cpp
     runtime/project_persistence_iv_module_reload_bridge.cpp
-    runtime/project_persistence_authored_lanes_bridge.cpp
+    runtime/project_persistence_configured_lanes_bridge.cpp
     runtime/project_persistence_timeline_bridge.cpp
     runtime/project_persistence_timeline_execution_bridge.cpp
     runtime/socket_rpc_lane_views_bridge.cpp

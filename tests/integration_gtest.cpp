@@ -3,7 +3,7 @@
 #include <intravenous/bridge.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
-#include <authored_graph_test_view.h>
+#include <configured_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/module/builder_session.h>
@@ -297,21 +297,21 @@ void focused_stereo_saw_module(iv::GraphBuilder& graph)
         "main"_P[stereo::right] = voice[stereo::right] * 0.1f);
 }
 
-iv::AuthoredGraphTestView focused_stereo_saw_authored_graph_value()
+iv::ConfiguredGraphTestView focused_stereo_saw_configured_graph_value()
 {
     iv::GraphBuilder builder;
     focused_stereo_saw_module(builder);
-    return iv::freeze_authored_graph_for_test(std::move(builder).finish());
+    return iv::freeze_configured_graph_for_test(std::move(builder).finish());
 }
 
 iv::WeakTypeErasedNode focused_stereo_saw_root()
 {
-    static const auto view = focused_stereo_saw_authored_graph_value();
+    static const auto view = focused_stereo_saw_configured_graph_value();
     static auto graph = [] {
-        auto authored = iv::thaw_authored_graph_for_test(view);
+        auto configured = iv::thaw_configured_graph_for_test(view);
         auto plan = iv::GraphCompiler::compile(
             iv::GraphLowerer::lower(
-                std::move(authored), {.execution_root = true}));
+                std::move(configured), {.execution_root = true}));
         return iv::RuntimeGraphRoot(std::move(plan.graph));
     }();
     return iv::WeakTypeErasedNode(graph);
@@ -319,10 +319,10 @@ iv::WeakTypeErasedNode focused_stereo_saw_root()
 
 iv::GraphIntrospectionMetadata focused_stereo_saw_metadata()
 {
-    static const auto view = focused_stereo_saw_authored_graph_value();
-    auto authored = iv::thaw_authored_graph_for_test(view);
+    static const auto view = focused_stereo_saw_configured_graph_value();
+    auto configured = iv::thaw_configured_graph_for_test(view);
     return iv::GraphCompiler::compile(
-        iv::GraphLowerer::lower(std::move(authored))).introspection;
+        iv::GraphLowerer::lower(std::move(configured))).introspection;
 }
 }
 

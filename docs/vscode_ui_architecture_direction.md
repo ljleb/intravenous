@@ -46,7 +46,7 @@ It should expose:
 
 - logical nodes and members
 - all supported port states
-- current authored and effective port state
+- current configured and effective port state
 - current/default values where relevant
 - lane-backed state summaries
 - reset-to-default actions
@@ -59,7 +59,7 @@ The live graph is not the only source of lane-related navigation, and it should
 not own a special reveal-panel policy by itself.
 
 Reset means sending the port back to `default` state.
-This eventually removes the corresponding authored state entry in the owning
+This eventually removes the corresponding configured state entry in the owning
 execution-side module.
 
 Visually, the current live graph sidebar style already meshes well with VS
@@ -89,7 +89,7 @@ it is not a separate advanced mode or a later replacement for the default.
 Per-view settings should be additive refinements of the same coherent anatomy,
 not an unrelated set of alternate layouts.
 
-Lane views are manually maintained project-authored views.
+Lane views are manually maintained project-configured views.
 
 Visually, lane views should aim for:
 
@@ -158,7 +158,7 @@ Different lane views may want different presentation rules.
 
 ## Lane color
 
-Each lane should own an authored color as project state.
+Each lane should own an configured color as project state.
 
 Lane color is not merely a per-view decoration.
 

@@ -6,7 +6,7 @@ Channel types have one canonical declaration.  That declaration defines their
 named members and is also the closed registry from which static and runtime
 channel information is derived.
 
-The system must support both static authored DSP syntax and runtime lane,
+The system must support both static configured DSP syntax and runtime lane,
 conversion, persistence, and RPC state.  Static code therefore uses a channel
 descriptor type while runtime state uses its stable `ChannelTypeId`.
 
@@ -32,7 +32,7 @@ The registry generates:
 The stable wire name is explicit so persisted data does not change meaning if a
 C++ namespace is renamed.
 
-## Authored syntax
+## Configured syntax
 
 `ChannelMember<Type, Tag>` encodes both its owning channel type and member at
 compile time.  This supports the named-family form:

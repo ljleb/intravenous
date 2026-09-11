@@ -16,7 +16,7 @@
 
 namespace iv {
     using ModuleRef = std::shared_ptr<void>;
-    struct AuthoredGraph;
+    struct ConfiguredGraph;
 
     enum class ModuleCompileStage {
         full,
@@ -64,10 +64,10 @@ namespace iv {
             std::filesystem::path source_path;
             std::string module_id;
             std::vector<ModuleDependency> dependencies;
-            // The immutable source-authored graph is retained above the
+            // The immutable source-configured graph is retained above the
             // compatibility GraphLowerer path so a whole-project finalizer can
-            // consume it without reauthoring this source.
-            std::shared_ptr<AuthoredGraph const> authored_graph;
+            // consume it without reconfiguration this source.
+            std::shared_ptr<ConfiguredGraph const> configured_graph;
 
             LoadedDefinition(
                 std::vector<ModuleRef> module_refs_,
@@ -76,7 +76,7 @@ namespace iv {
                 std::filesystem::path source_path_,
                 std::string module_id_,
                 std::vector<ModuleDependency> dependencies_,
-                std::shared_ptr<AuthoredGraph const> authored_graph_
+                std::shared_ptr<ConfiguredGraph const> configured_graph_
             );
         };
 
@@ -87,7 +87,7 @@ namespace iv {
             details::NodeCompilerRecord compiler_record{};
             std::filesystem::path source_path;
             std::vector<ModuleRef> module_refs;
-            std::shared_ptr<AuthoredGraph const> authored_graph;
+            std::shared_ptr<ConfiguredGraph const> configured_graph;
         };
 
         struct LoadedSource {

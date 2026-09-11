@@ -814,10 +814,10 @@ GraphInputLaneBindings GraphInputLanes::graph_input_lane_bindings(
     return query_graph_input_lane_bindings(request);
 }
 
-GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
+GraphInputLanes::ConfiguredStateSnapshot GraphInputLanes::configured_state() const
 {
     std::scoped_lock lock(mutex);
-    AuthoredStateSnapshot snapshot;
+    ConfiguredStateSnapshot snapshot;
     std::unordered_map<std::string, InternedString> virtual_sample_knob_external_ids_by_key;
     std::unordered_map<std::string, InternedString> sample_input_external_ids_by_key;
     std::unordered_map<std::string, InternedString> virtual_event_input_external_ids_by_key;

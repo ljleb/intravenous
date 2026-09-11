@@ -90,7 +90,7 @@ void GraphInputLanes::sync_runtime_bindings_locked(
                 auto binding = runtime.sample_input(runtime_virtual_port_key(
                     true, PortKind::sample, local_id, member,
                     port.port.port_ordinal));
-                auto state = port.authored_connected
+                auto state = port.configured_connected
                     ? NodeBundleSampleInputState::disconnected
                     : NodeBundleSampleInputState::virtual_follow;
                 if (auto const it = node_bundle_sample_input_states_by_key.find(
@@ -146,7 +146,7 @@ void GraphInputLanes::sync_runtime_bindings_locked(
             auto binding = runtime.event_input(runtime_virtual_port_key(
                 true, PortKind::event, local_id, member,
                 port.port.port_ordinal));
-            auto state = port.authored_connected
+            auto state = port.configured_connected
                 ? NodeBundleEventInputState::disconnected
                 : NodeBundleEventInputState::virtual_follow;
             if (auto const it = node_bundle_event_input_states_by_key.find(
@@ -155,7 +155,7 @@ void GraphInputLanes::sync_runtime_bindings_locked(
                 state = it->second;
             }
             if (state == NodeBundleEventInputState::default_) {
-                state = port.authored_connected
+                state = port.configured_connected
                     ? NodeBundleEventInputState::disconnected
                     : NodeBundleEventInputState::virtual_follow;
             }
@@ -346,7 +346,7 @@ std::vector<LaneId> GraphInputLanes::prerequisite_lanes_for_instance_locked(
                 auto const state_it = node_bundle_sample_input_states_by_key.find(
                     graph_input_port_key(port.port));
                 auto const state = state_it == node_bundle_sample_input_states_by_key.end()
-                    ? (port.authored_connected
+                    ? (port.configured_connected
                         ? NodeBundleSampleInputState::disconnected
                         : NodeBundleSampleInputState::virtual_follow)
                     : state_it->second;
@@ -366,7 +366,7 @@ std::vector<LaneId> GraphInputLanes::prerequisite_lanes_for_instance_locked(
                 auto const state_it = node_bundle_event_input_states_by_key.find(
                     graph_input_port_key(port.port));
                 auto const state = state_it == node_bundle_event_input_states_by_key.end()
-                    ? (port.authored_connected
+                    ? (port.configured_connected
                         ? NodeBundleEventInputState::disconnected
                         : NodeBundleEventInputState::virtual_follow)
                     : state_it->second;

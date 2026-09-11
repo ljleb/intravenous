@@ -450,7 +450,7 @@ GraphBuilderState::VirtualPorts GraphBuilderState::virtual_ports() const {
   return _virtual_nodes.ports(_node_bundles);
 }
 
-void GraphBuilderState::record_authored_sample_connection(
+void GraphBuilderState::record_configured_sample_connection(
     NodeBundlePortId target, std::span<SamplePortRef const> sources) {
   auto targets = _node_bundles.sample_input_channels(target);
   auto type = _node_bundles.resolve_sample_input(target)
@@ -471,32 +471,32 @@ void GraphBuilderState::record_authored_sample_connection(
           "channel-wise sample connection requires scalar sources");
     channels.push_back(source_channels.front());
   }
-  _connections.record_authored_sample_connection(
+  _connections.record_configured_sample_connection(
       {type, std::move(channels), type, std::move(targets)});
 }
 
-void GraphBuilderState::record_authored_event_connection(
+void GraphBuilderState::record_configured_event_connection(
     NodeBundlePortId target, EventPortRef const& source) {
   if (target.port_kind != PortKind::event ||
       source.graph_builder != &facade() || source.handle >= _event_port_expressions.size())
-    details::error("invalid authored event connection");
+    details::error("invalid configured event connection");
   auto const sources = source.sources();
   if (sources.empty())
-    details::error("invalid authored event connection");
+    details::error("invalid configured event connection");
   auto target_type = _node_bundles.resolve_event_input(target).config.type;
-  _connections.record_authored_event_connection({
+  _connections.record_configured_event_connection({
       source.type, {sources.begin(), sources.end()}, target_type,
       _node_bundles.event_input_ports(target)});
 }
 
 void GraphBuilderState::connect_sample_input(
     NodeBundlePortId target, std::span<SamplePortRef const> sources) {
-  record_authored_sample_connection(target, sources);
+  record_configured_sample_connection(target, sources);
 }
 
 void GraphBuilderState::connect_event_input(
     NodeBundlePortId target, EventPortRef source) {
-  record_authored_event_connection(target, source);
+  record_configured_event_connection(target, source);
 }
 
 bool GraphBuilderState::sample_input_is_connected(
@@ -529,7 +529,7 @@ void GraphBuilderState::connect_sample_output(
     details::error(
         "NodeBundle output does not match graph-service sink channel count");
   for (size_t i = 0; i < sink.sample_input_count(); ++i)
-    record_authored_sample_connection(
+    record_configured_sample_connection(
         {target.node_bundle_handle(), PortKind::sample, i},
         semantic.select_channel(i));
 }

@@ -391,7 +391,7 @@ namespace iv {
             LaneId lane,
             bool changed_only,
             LanesVisualizationLaneUiStateBuilder &builder);
-        void handle_authored_lanes_timeline_batch(
+        void handle_configured_lanes_timeline_batch(
             TimelineLaneBatchUpdate const &batch);
         void handle_project_set_timeline_lane_sample_channel_type(
             ProjectSetTimelineLaneSampleChannelTypeRequest const &request,

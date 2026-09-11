@@ -39,8 +39,8 @@ After project load but before realization:
 
 - required iv-module definitions may be declared but not yet built
 - iv-module instances may exist but remain unrealized
-- graph-input and graph-output authored state may already be stored
-- timeline connectivity may be authored but still pending lane materialization
+- graph-input and graph-output configured state may already be stored
+- timeline connectivity may be configured but still pending lane materialization
 
 This is a valid initialized server state.
 

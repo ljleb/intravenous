@@ -33,7 +33,7 @@ constexpr Ref iv_plugin_probe_annotate(
     return ref;
 }
 
-constexpr ProbeNodeRef authored_header_entry(ProbeGraphBuilder& builder)
+constexpr ProbeNodeRef configured_header_entry(ProbeGraphBuilder& builder)
 {
     return builder.iv_plugin_probe_node(42); // IV_EXPECT_WRAPPED_LINE
 }

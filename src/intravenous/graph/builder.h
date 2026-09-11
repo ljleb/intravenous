@@ -26,7 +26,7 @@
 #include <utility>
 
 namespace iv {
-struct AuthoredGraph;
+struct ConfiguredGraph;
 class GraphBuilder;
 class GraphBuilderState;
 
@@ -41,7 +41,7 @@ NodeBundleHandle iv_builder_append_tiled_node(
 void* iv_builder_allocate_node_config(
     BuilderSession*, std::size_t size, std::size_t alignment);
 void iv_builder_discard_node_config(BuilderSession*, void* storage) noexcept;
-// Unary DSL connection validation is shared authoring behavior. These helpers
+// Unary DSL connection validation is shared configuration behavior. These helpers
 // return only the runtime result the DSL needs to preserve its static return
 // type.
 bool iv_builder_connect_unary_sample(
@@ -126,7 +126,7 @@ public:
   template<fixed_string Id, class... Args>
   auto node(Args&&...) {
     static_assert(sizeof...(Args) == 0,
-        "registered IV definitions do not yet declare public authored arguments");
+        "registered IV definitions do not yet declare public configured arguments");
     return details::author_registered_source_definition(*this, Id.view());
   }
 
@@ -172,7 +172,7 @@ public:
   void event_outputs(std::span<EventOutputRequest const>);
 
   // Runtime channel negotiation, graph mutation, and connection validation
-  // belong to the shared authoring library. The templated overload below is
+  // belong to the shared configuration library. The templated overload below is
   // the only node-type-specific part of this path.
   NodeRef author_runtime_binary_op(
       SamplePortRef lhs,
@@ -308,8 +308,8 @@ public:
   void annotate_public_event_output_source_info(std::span<SourceInfo const>);
   void annotate_public_sample_output_source_info(size_t, SourceInfo);
   void annotate_public_event_output_source_info(size_t, SourceInfo);
-  AuthoredGraph finish() const &;
-  AuthoredGraph finish() &&;
+  ConfiguredGraph finish() const &;
+  ConfiguredGraph finish() &&;
 
 private:
   NodeRef embed_child(GraphBuilder&, std::string_view);

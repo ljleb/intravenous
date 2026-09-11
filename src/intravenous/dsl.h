@@ -4,7 +4,7 @@
 #include "intravenous/basic_nodes/constant.h"
 #include "intravenous/basic_nodes/arithmetic.h"
 #ifdef IV_INTERNAL_TRANSLATION_UNIT
-#error "dsl.h is reserved for user-authored DSL code; include graph/builder.h or module/abi.h from internal code."
+#error "dsl.h is reserved for user-configured DSL code; include graph/builder.h or module/abi.h from internal code."
 #endif
 
 #include <intravenous/channel_ports.h>

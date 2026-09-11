@@ -4,7 +4,7 @@
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
-#include <intravenous/module/authored_graph_wire.h>
+#include <intravenous/module/configured_graph_wire.h>
 
 #include <gtest/gtest.h>
 
@@ -16,7 +16,7 @@
 namespace {
 
 struct ArchiveFixture {
-    iv::SerializedAuthoredGraph archive;
+    iv::SerializedConfiguredGraph archive;
     using Pass = iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>;
     std::array<iv::details::NodeCompilerRecord, 2> node_types{
         iv::details::node_compiler_record<iv::Constant>,
@@ -33,7 +33,7 @@ struct ArchiveFixture {
         pass(gain);
         graph.outputs("gain_out"_P = pass, "main"_P = source);
 
-        archive = iv::serialize_authored_graph(std::move(graph).finish());
+        archive = iv::serialize_configured_graph(std::move(graph).finish());
         configs.reserve(archive.node_configs.size());
         for (auto const& config : archive.node_configs) {
             configs.push_back({
@@ -44,13 +44,13 @@ struct ArchiveFixture {
         }
     }
 
-    iv::AuthoredGraph decode(std::span<std::byte const> bytes) const
+    iv::ConfiguredGraph decode(std::span<std::byte const> bytes) const
     {
-        return iv::deserialize_authored_graph(bytes, node_types, configs);
+        return iv::deserialize_configured_graph(bytes, node_types, configs);
     }
 };
 
-TEST(AuthoredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
+TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
 {
     ArchiveFixture fixture;
 

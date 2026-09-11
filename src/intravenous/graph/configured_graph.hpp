@@ -10,9 +10,9 @@
 
 namespace iv {
 
-// The lossless authoring representation. Lowering never reaches back into
+// The lossless configuration representation. Lowering never reaches back into
 // GraphBuilder after this value is finished.
-struct AuthoredGraph {
+struct ConfiguredGraph {
   GraphBuilderIdentity identity{};
   GraphBuilderNodeBundles node_bundles{};
   GraphBuilderConnections connections{};

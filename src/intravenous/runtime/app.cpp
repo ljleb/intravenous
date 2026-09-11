@@ -5,8 +5,8 @@
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/audio_device_lanes.h>
 #include <intravenous/runtime/audio_device_lanes_iv_module_instances_execution_bridge.h>
-#include <intravenous/runtime/authored_lanes.h>
-#include <intravenous/runtime/authored_lanes_timeline_bridge.h>
+#include <intravenous/runtime/configured_lanes.h>
+#include <intravenous/runtime/configured_lanes_timeline_bridge.h>
 #include <intravenous/runtime/audio_device_lanes_timeline_bridge.h>
 #include <intravenous/runtime/audio_device_lanes_timeline_execution_bridge.h>
 #include <intravenous/runtime/graph_input_lanes.h>
@@ -45,7 +45,7 @@
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_reload_bridge.h>
-#include <intravenous/runtime/project_persistence_authored_lanes_bridge.h>
+#include <intravenous/runtime/project_persistence_configured_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_execution_bridge.h>
 #include <intravenous/runtime/server_options.h>
@@ -254,7 +254,7 @@ namespace iv {
             IvModuleDefinitions iv_module_definitions;
             IvModuleReload iv_module_reload(startup);
             GraphInputLanes graph_input_lanes;
-            AuthoredLanes authored_lanes(LaneCreationContext{.sample_rate = startup.execution.sample_rate});
+            ConfiguredLanes configured_lanes(LaneCreationContext{.sample_rate = startup.execution.sample_rate});
             TasksRunner task_runner;
             startup_log("constructing runtime modules");
             TimelineExecution timeline_execution(
@@ -350,8 +350,8 @@ namespace iv {
                 timeline_execution_task_runner_bridge::bind(timeline_execution, task_runner);
             auto timeline_timeline_execution_scope =
                 timeline_timeline_execution_bridge::bind(timeline, timeline_execution);
-            auto authored_lanes_timeline_scope =
-                authored_lanes_timeline_bridge::bind(authored_lanes, timeline);
+            auto configured_lanes_timeline_scope =
+                configured_lanes_timeline_bridge::bind(configured_lanes, timeline);
             auto iv_module_definitions_iv_module_instances_scope =
                 iv_module_definitions_iv_module_instances_bridge::bind(
                     iv_module_definitions,
@@ -430,10 +430,10 @@ namespace iv {
                 project_persistence_timeline_bridge::bind(
                     project_persistence,
                     timeline);
-            auto project_persistence_authored_lanes_scope =
-                project_persistence_authored_lanes_bridge::bind(
+            auto project_persistence_configured_lanes_scope =
+                project_persistence_configured_lanes_bridge::bind(
                     project_persistence,
-                    authored_lanes);
+                    configured_lanes);
             auto project_persistence_iv_module_instances_scope =
                 project_persistence_iv_module_instances_bridge::bind(
                     project_persistence,

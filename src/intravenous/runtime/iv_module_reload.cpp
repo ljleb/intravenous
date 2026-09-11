@@ -238,7 +238,7 @@ IvModuleReloadResults IvModuleReload::reload_declarations(
                     .dependencies = std::move(loaded_definition.dependencies),
                     .module_refs = std::move(loaded_definition.module_refs),
                     .root = std::move(loaded_definition.root),
-                    .authored_graph = std::move(loaded_definition.authored_graph),
+                    .configured_graph = std::move(loaded_definition.configured_graph),
                 });
             }
             for (auto& node_type : loaded_source.node_types) {
@@ -248,7 +248,7 @@ IvModuleReloadResults IvModuleReload::reload_declarations(
                     .source_root = declaration.module_root,
                     .compiler_record = node_type.compiler_record,
                     .module_refs = std::move(node_type.module_refs),
-                    .authored_graph = std::move(node_type.authored_graph),
+                    .configured_graph = std::move(node_type.configured_graph),
                 });
             }
         } catch (...) {

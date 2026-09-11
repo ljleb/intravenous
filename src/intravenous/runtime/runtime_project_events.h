@@ -6,7 +6,7 @@
 #include <intravenous/runtime/graph_input_lane_controller.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
-#include <intravenous/runtime/authored_lane_api.h>
+#include <intravenous/runtime/configured_lane_api.h>
 #include <intravenous/runtime/uuid.h>
 
 #include <filesystem>
@@ -246,7 +246,7 @@ namespace iv {
         LanePortDomain port_domain = LanePortDomain::realtime;
         PortKind port_kind = PortKind::sample;
         size_t port_ordinal = 0;
-        bool authored = false;
+        bool configured = false;
     };
 
     struct ProjectDisconnectTimelineLanesRequest {

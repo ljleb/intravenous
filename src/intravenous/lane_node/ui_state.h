@@ -7,7 +7,7 @@
 
 namespace iv {
 
-// These types describe authored lane-model state. They deliberately make no
+// These types describe configured lane-model state. They deliberately make no
 // reference to a presentation: clients may independently decide how (or
 // whether) to render a lane model identified by its optional type id.
 struct LaneUiStateSnapshot {

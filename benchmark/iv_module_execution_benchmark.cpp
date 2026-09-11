@@ -1,5 +1,5 @@
 #include <intravenous/module/abi.h>
-#include <intravenous/module/authored_graph_wire.h>
+#include <intravenous/module/configured_graph_wire.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/node/block_executor.h>
@@ -162,13 +162,13 @@ void benchmark_module(std::filesystem::path const& path, Options const& options)
         library.symbol("iv_module_abi_version"));
     auto const source_module_count = reinterpret_cast<iv_source_module_count_fn>(
         library.symbol("iv_source_module_count"));
-    auto const authored_graph = reinterpret_cast<iv_source_module_authored_graph_fn>(
-        library.symbol("iv_source_module_authored_graph"));
+    auto const configured_graph = reinterpret_cast<iv_source_module_configured_graph_fn>(
+        library.symbol("iv_source_module_configured_graph"));
     auto const node_configs = reinterpret_cast<iv_source_module_node_configs_fn>(
         library.symbol("iv_source_module_node_configs"));
     auto const node_types = reinterpret_cast<iv_module_node_types_fn>(
         library.symbol("iv_module_node_types"));
-    if (!abi_version || !source_module_count || !authored_graph || !node_configs || !node_types) {
+    if (!abi_version || !source_module_count || !configured_graph || !node_configs || !node_types) {
         throw std::runtime_error("module '" + path.string() + "' is missing IV exports");
     }
     if (abi_version() != iv::IV_MODULE_ABI_VERSION) {
@@ -178,14 +178,14 @@ void benchmark_module(std::filesystem::path const& path, Options const& options)
     if (source_module_count() == 0) {
         throw std::runtime_error("IV source '" + path.string() + "' has no IV modules");
     }
-    auto const graph_view = authored_graph(0);
+    auto const graph_view = configured_graph(0);
     auto const config_view = node_configs(0);
     auto const type_view = node_types();
     if (config_view.size % sizeof(iv::ModuleNodeConfigRecord) != 0
         || type_view.size % sizeof(iv::details::NodeCompilerRecord) != 0) {
         throw std::runtime_error("module '" + path.string() + "' has invalid IV tables");
     }
-    auto authored = iv::deserialize_authored_graph(
+    auto configured = iv::deserialize_configured_graph(
         std::span(
             static_cast<std::byte const*>(graph_view.data), graph_view.size),
         std::span(
@@ -196,7 +196,7 @@ void benchmark_module(std::filesystem::path const& path, Options const& options)
             config_view.size / sizeof(iv::ModuleNodeConfigRecord)));
     auto plan = iv::GraphCompiler::compile(
         iv::GraphLowerer::lower(
-            std::move(authored), {.execution_root = true}));
+            std::move(configured), {.execution_root = true}));
     auto root = std::make_shared<iv::RuntimeGraphRoot>(
         std::move(plan.graph));
     auto executor = iv::BlockNodeExecutor::create(

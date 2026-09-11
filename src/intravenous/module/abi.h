@@ -45,7 +45,7 @@ static_assert(std::is_trivially_copyable_v<RetainedGlobalData>);
 struct SourceNodeTypeData {
     ModuleDataView id{};
     NodeCodeKey code_key{};
-    ModuleDataView authored_graph{};
+    ModuleDataView configured_graph{};
     ModuleDataView node_configs{};
 };
 

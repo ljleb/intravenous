@@ -9,7 +9,7 @@
 #include <vector>
 
 namespace iv {
-struct AuthoredDetachedSamplePortInfo {
+struct ConfiguredDetachedSamplePortInfo {
   size_t detach_id = 0;
   ChannelTypeId source_type = ChannelTypeId::mono;
   std::vector<SampleOutputChannelId> source_channels{};
@@ -27,26 +27,26 @@ public:
       size_t detach_id_offset);
   constexpr bool reader_output_exists(ChannelTypeId,
       std::span<SampleOutputChannelId const>) const;
-  constexpr AuthoredDetachedSamplePortInfo const* info_for_source(
+  constexpr ConfiguredDetachedSamplePortInfo const* info_for_source(
       ChannelTypeId, std::span<SampleOutputChannelId const>) const;
   constexpr size_t allocate_detach_id();
-  constexpr void record_detached_source(AuthoredDetachedSamplePortInfo);
-  constexpr std::span<AuthoredDetachedSamplePortInfo const>
-      authored_infos() const;
+  constexpr void record_detached_source(ConfiguredDetachedSamplePortInfo);
+  constexpr std::span<ConfiguredDetachedSamplePortInfo const>
+      configured_infos() const;
   constexpr size_t next_detach_id() const { return _next_detach_id; }
-  static constexpr GraphBuilderDetach from_authored_infos(
+  static constexpr GraphBuilderDetach from_configured_infos(
       size_t next_detach_id,
-      std::span<AuthoredDetachedSamplePortInfo const>);
+      std::span<ConfiguredDetachedSamplePortInfo const>);
 
 private:
   size_t _next_detach_id = 0;
-  std::vector<AuthoredDetachedSamplePortInfo> _authored_infos{};
+  std::vector<ConfiguredDetachedSamplePortInfo> _configured_infos{};
 };
 } // namespace iv
 namespace iv {
 namespace {
 constexpr bool same_source(
-    AuthoredDetachedSamplePortInfo const& info, ChannelTypeId type,
+    ConfiguredDetachedSamplePortInfo const& info, ChannelTypeId type,
     std::span<SampleOutputChannelId const> channels) {
   return info.source_type == type && std::ranges::equal(info.source_channels, channels);
 }
@@ -60,45 +60,45 @@ constexpr size_t GraphBuilderDetach::reserve_child_offset(
 constexpr bool GraphBuilderDetach::reader_output_exists(
     ChannelTypeId type, std::span<SampleOutputChannelId const> channels) const {
   if (type != ChannelTypeId::mono || channels.size() != 1) return false;
-  return std::ranges::any_of(_authored_infos,
+  return std::ranges::any_of(_configured_infos,
       [&](auto const& info) { return info.reader_channel == channels.front(); });
 }
-constexpr AuthoredDetachedSamplePortInfo const*
+constexpr ConfiguredDetachedSamplePortInfo const*
 GraphBuilderDetach::info_for_source(
     ChannelTypeId type, std::span<SampleOutputChannelId const> channels) const {
-  auto const it = std::ranges::find_if(_authored_infos,
+  auto const it = std::ranges::find_if(_configured_infos,
       [&](auto const& info) { return same_source(info, type, channels); });
-  return it == _authored_infos.end() ? nullptr : &*it;
+  return it == _configured_infos.end() ? nullptr : &*it;
 }
 constexpr size_t GraphBuilderDetach::allocate_detach_id() {
   return _next_detach_id++;
 }
 constexpr void GraphBuilderDetach::record_detached_source(
-    AuthoredDetachedSamplePortInfo info) {
-  _authored_infos.push_back(std::move(info));
+    ConfiguredDetachedSamplePortInfo info) {
+  _configured_infos.push_back(std::move(info));
 }
-constexpr std::span<AuthoredDetachedSamplePortInfo const>
-GraphBuilderDetach::authored_infos() const {
-  return _authored_infos;
+constexpr std::span<ConfiguredDetachedSamplePortInfo const>
+GraphBuilderDetach::configured_infos() const {
+  return _configured_infos;
 }
-constexpr GraphBuilderDetach GraphBuilderDetach::from_authored_infos(
+constexpr GraphBuilderDetach GraphBuilderDetach::from_configured_infos(
     size_t next_detach_id,
-    std::span<AuthoredDetachedSamplePortInfo const> infos) {
+    std::span<ConfiguredDetachedSamplePortInfo const> infos) {
   GraphBuilderDetach result;
   result._next_detach_id = next_detach_id;
-  result._authored_infos.assign(infos.begin(), infos.end());
+  result._configured_infos.assign(infos.begin(), infos.end());
   return result;
 }
 constexpr void GraphBuilderDetach::import_child(
     GraphBuilderDetach const& child, size_t bundle_offset,
     size_t detach_offset) {
-  for (auto info : child._authored_infos) {
+  for (auto info : child._configured_infos) {
     info.detach_id += detach_offset;
     for (auto& channel : info.source_channels) channel.bundle += bundle_offset;
     info.writer_bundle += bundle_offset;
     info.reader_bundle += bundle_offset;
     info.reader_channel.bundle += bundle_offset;
-    _authored_infos.push_back(std::move(info));
+    _configured_infos.push_back(std::move(info));
   }
 }
 } // namespace iv

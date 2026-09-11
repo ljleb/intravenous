@@ -1,4 +1,4 @@
-# Authored Lane Creation Direction
+# Configured Lane Creation Direction
 
 This note records the remaining work for user-created timeline lanes. It
 builds on `lane_ui_model_direction.md`.
@@ -8,21 +8,21 @@ builds on `lane_ui_model_direction.md`.
 `Timeline` remains a generic structural graph owner. It must not contain
 lane-type-specific creation, persistence, execution, or presentation logic.
 
-A separate authored-lanes app module owns user-created lane instances. It:
+A separate configured-lanes app module owns user-created lane instances. It:
 
-- owns stable authored lane ids and their canonical serialized state;
+- owns stable configured lane ids and their canonical serialized state;
 - knows which lane types are supported for creation;
 - turns generic creation/reload requests into `TimelineLaneBatchUpdate`s;
-- persists generic authored-lane records;
+- persists generic configured-lane records;
 - forwards normal changed-lane invalidation after state edits.
 
 `RuntimeProject` remains the transport-independent mutation ingress. JSON-RPC
 and project-file replay both use that ingress; it forwards requests to the
-authored-lanes owner.
+configured-lanes owner.
 
 ## Compile-time creatable lane contract
 
-The authored-lanes module has a compile-time list of supported lane C++ types.
+The configured-lanes module has a compile-time list of supported lane C++ types.
 It contains only the types, not duplicated descriptors. A type in this list
 must satisfy a creatable-lane concept or compilation fails.
 
@@ -58,24 +58,24 @@ timeline.createLane { typeId }
 from the registered C++ type traits. The client must not maintain a duplicate
 catalog.
 
-`timeline.createLane` accepts only a type id. The authored-lanes module uses
+`timeline.createLane` accepts only a type id. The configured-lanes module uses
 the type's default serialized state, allocates a stable lane/public id, stores
-the authored record, and produces a generic timeline upsert.
+the configured record, and produces a generic timeline upsert.
 
 Later generic operations may include delete, duplicate, and move/reorder;
 they must remain type-independent at the transport boundary.
 
 ## Persistence
 
-Project persistence stores generic authored-lane records:
+Project persistence stores generic configured-lane records:
 
-- stable authored/public lane id;
+- stable configured/public lane id;
 - lane model type id;
 - canonical serialized state;
 - eventual layout/order data belongs to lane-view layout persistence, not the
   lane model itself.
 
-On load, the authored-lanes module resolves the type id through its registry
+On load, the configured-lanes module resolves the type id through its registry
 and reconstructs the node with `from_lane_ui_state`. Unknown types should be
 reported clearly and left unapplied rather than silently reinterpreted.
 
@@ -115,7 +115,7 @@ Light tests should cover:
 - generic creation creates an addressable timeline/public lane;
 - default state, type id, and compiled output are correct;
 - state edits invalidate compiled output and publish revised state;
-- persistence/reload reconstructs the same authored lane and state;
+- persistence/reload reconstructs the same configured lane and state;
 - unknown type handling is explicit;
 - RPC list/create/state-write routing;
 - compiled event windows drive beat marker positions exactly.

@@ -4,8 +4,8 @@
 
 The DSL has two different node contexts.
 
-- A **virtual node** is static/authored graph metadata. It is created when a
-  source-authored declaration is annotated. It owns source identity, source
+- A **virtual node** is static/configured graph metadata. It is created when a
+  source-configured declaration is annotated. It owns source identity, source
   spans, virtual ports, and explicit membership of node bundles. It is not an
   executable node and it is not a value returned by `GraphBuilder::node`.
 - A **node reference** is a move-only builder-time value. It refers to exactly
@@ -113,6 +113,6 @@ match.
 - A tiled bundle is one bundle, not a collection of unrelated refs.
 - Common DSL code has no concrete-node assumption.
 - Event ports are not channelized.
-- Internal conversion, pack, and unpack nodes are not authored virtual nodes.
+- Internal conversion, pack, and unpack nodes are not configured virtual nodes.
 - Runtime execution consumes lowered concrete graphs; it does not consume C++
   node-ref types or virtual-node metadata.

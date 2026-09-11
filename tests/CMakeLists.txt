@@ -79,8 +79,8 @@ add_iv_gtest(
     module_build_behavior_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
-    intravenous_authored_graph_binary_archive_tests
-    authored_graph_binary_archive_gtest.cpp)
+    intravenous_configured_graph_binary_archive_tests
+    configured_graph_binary_archive_gtest.cpp)
 add_iv_gtest(
     intravenous_node_build_request_tests
     node_build_request_gtest.cpp)

@@ -7,7 +7,7 @@ more user-interface presentations of that model.
 
 The backend does **not** know about lane presentations.
 
-It owns a lane's executable semantics, authored state, validation,
+It owns a lane's executable semantics, configured state, validation,
 serialization, persistence, and optional stable model type identifier. A
 frontend decides whether it recognizes that type identifier and how to present
 it. A new frontend or a replacement presentation must be able to support an
@@ -18,7 +18,7 @@ generic presentation.
 
 ## Optional UI model state
 
-A lane may opt into UI-editable authored state. Its generic backend-facing
+A lane may opt into UI-editable configured state. Its generic backend-facing
 snapshot is conceptually:
 
 ```cpp

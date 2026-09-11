@@ -30,7 +30,7 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
 
     // A source watches its own implementation package. The voice provider is
     // rebuilt independently and its implementation edits must not invalidate
-    // reload_project's cached AuthoredGraph.
+    // reload_project's cached ConfiguredGraph.
     auto module_cpp = project_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
     auto needle = std::string("using namespace iv;");

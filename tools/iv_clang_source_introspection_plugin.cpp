@@ -323,7 +323,7 @@ public:
             // A class-type declaration without source syntax for an
             // initializer (for example `NodeRef x;`) has an implicit
             // CXXConstructExpr in Clang's AST. It is still uninitialized in
-            // the authored-graph sense and must wait for its first assignment.
+            // the configured-graph sense and must wait for its first assignment.
             if (!has_explicit_initializer(variable)) continue;
             append_ref({variable, identity, *span});
         }
@@ -451,7 +451,7 @@ private:
         // instantiation, but that USR embeds concrete template arguments
         // (for example the polyphonic voice index). Source annotations need
         // the lexical declaration identity instead so equivalent callback
-        // instances aggregate by their exact authored source span. This is
+        // instances aggregate by their exact configured source span. This is
         // only a source annotation key; NodeCodeKey remains the build-local
         // compiler-record join key.
         return "source-local:" + span->file + ':' + std::to_string(span->begin)
@@ -565,7 +565,7 @@ public:
         if (!source_annotation_template_ || !public_output_annotation_function_) {
             auto id = compiler_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
-                "IV source annotation helpers were not found; include <intravenous/dsl.h> before authored module code");
+                "IV source annotation helpers were not found; include <intravenous/dsl.h> before configured module code");
             compiler_.getDiagnostics().Report(function->getLocation(), id);
             return;
         }
@@ -740,7 +740,7 @@ private:
             auto* fresh = make_decl_ref(ref->getDecl(), location);
             return make_address(fresh, location);
         }
-        // GraphBuilder's public API is unchanged; ordinary authored code uses
+        // GraphBuilder's public API is unchanged; ordinary configured code uses
         // a builder lvalue. Do not re-evaluate arbitrary object expressions
         // after the statement merely to obtain an annotation target.
         auto id = compiler_.getDiagnostics().getCustomDiagID(
@@ -1315,7 +1315,7 @@ public:
         if (source_introspection_) {
             // Template instantiations can be materialized after their owning
             // top-level declaration was first seen. Catch any remaining
-            // authored function bodies before the frontend finishes.
+            // configured function bodies before the frontend finishes.
             FunctionDiscovery discovery(instrumenter_);
             discovery.TraverseDecl(context.getTranslationUnitDecl());
         }

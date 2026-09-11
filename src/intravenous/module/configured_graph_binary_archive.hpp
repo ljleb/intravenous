@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/graph/authored_graph.hpp>
+#include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/module/abi.h>
@@ -86,14 +86,14 @@ public:
     {
         auto const value = pod<std::uint64_t>();
         if (value > std::numeric_limits<std::size_t>::max())
-            throw std::runtime_error("authored graph archive size does not fit this process");
+            throw std::runtime_error("configured graph archive size does not fit this process");
         return static_cast<std::size_t>(value);
     }
 
     bool flag()
     {
         auto const value = pod<std::uint8_t>();
-        if (value > 1) throw std::runtime_error("authored graph archive has invalid boolean");
+        if (value > 1) throw std::runtime_error("configured graph archive has invalid boolean");
         return value != 0;
     }
 
@@ -110,14 +110,14 @@ public:
     {
         auto const value = size();
         if (value > remaining())
-            throw std::runtime_error("authored graph archive count exceeds remaining bytes");
+            throw std::runtime_error("configured graph archive count exceeds remaining bytes");
         return value;
     }
 
     void finish() const
     {
         if (cursor_ != bytes_.size())
-            throw std::runtime_error("authored graph archive has trailing bytes");
+            throw std::runtime_error("configured graph archive has trailing bytes");
     }
 
 private:
@@ -126,7 +126,7 @@ private:
     void require(std::size_t length, char const* context)
     {
         if (length > remaining())
-            throw std::runtime_error(std::string("authored graph archive: ") + context);
+            throw std::runtime_error(std::string("configured graph archive: ") + context);
     }
 
     std::span<std::byte const> bytes_{};
@@ -380,7 +380,7 @@ inline VirtualNodeRecord read_virtual_node(Reader& r)
 inline details::NodeCompilerRecord const& find_type(std::span<details::NodeCompilerRecord const> types, NodeCodeKey key)
 {
     auto const found = std::find_if(types.begin(), types.end(), [&](auto const& value) { return value.code_key == key; });
-    if (found == types.end()) throw std::runtime_error("authored graph references an unknown node code key");
+    if (found == types.end()) throw std::runtime_error("configured graph references an unknown node code key");
     return *found;
 }
 
@@ -388,23 +388,23 @@ inline details::NodeCompilerRecord const& find_type(std::span<details::NodeCompi
 
 namespace iv {
 
-inline SerializedAuthoredGraph serialize_binary_authored_graph(
-    AuthoredGraph const& authored,
+inline SerializedConfiguredGraph serialize_binary_configured_graph(
+    ConfiguredGraph const& configured,
     std::span<std::pair<NodeCodeKey, NodeStateStructure> const> state_structures)
 {
     using namespace binary_wire_details;
-    SerializedAuthoredGraph result;
+    SerializedConfiguredGraph result;
     Writer bundles;
     std::size_t bundle_count = 0;
     std::size_t config_ordinal = 0;
-    authored.node_bundles.for_each_authored_bundle([&](AuthoredNodeBundleView view) {
+    configured.node_bundles.for_each_configured_bundle([&](ConfiguredNodeBundleView view) {
         ++bundle_count;
         write_enum(bundles, view.kind);
         bundles.list(view.virtual_node_handles, [&](std::size_t value) { bundles.size(value); });
         write_source_infos(bundles, view.source_infos);
-        if (view.kind == AuthoredNodeBundleKind::concrete) {
+        if (view.kind == ConfiguredNodeBundleKind::concrete) {
             if (!view.node_storage || !*view.node_storage || !view.code_key || !view.ports)
-                throw std::runtime_error("concrete authored node has incomplete compiler storage");
+                throw std::runtime_error("concrete configured node has incomplete compiler storage");
             write_ports(bundles, *view.ports);
             write_code_key(bundles, *view.code_key);
             bundles.size(config_ordinal++);
@@ -438,7 +438,7 @@ inline SerializedAuthoredGraph serialize_binary_authored_graph(
             bundles.flag(state != state_structures.end());
             if (state != state_structures.end()) write_state(bundles, state->second);
 
-            AuthoredNodeConfigBytes config;
+            ConfiguredNodeConfigBytes config;
             config.alignment = view.node_alignment;
             config.bytes.resize(view.node_size);
             std::memcpy(config.bytes.data(), (*view.node_storage).get(), view.node_size);
@@ -452,19 +452,19 @@ inline SerializedAuthoredGraph serialize_binary_authored_graph(
                 }
             }
             result.node_configs.push_back(std::move(config));
-        } else if (view.kind == AuthoredNodeBundleKind::tiled) {
+        } else if (view.kind == ConfiguredNodeBundleKind::tiled) {
             bundles.list(view.tiled_members, [&](std::size_t value) { bundles.size(value); });
             bundles.string(view.type_identity ? *view.type_identity : std::string{});
             write_configs<InputConfig>(bundles, view.sample_input_configs, write_input);
             write_configs<OutputConfig>(bundles, view.sample_output_configs, write_output);
             write_configs<EventInputConfig>(bundles, view.event_input_configs, write_event_input);
             write_configs<EventOutputConfig>(bundles, view.event_output_configs, write_event_output);
-        } else if (view.kind == AuthoredNodeBundleKind::boundary) {
+        } else if (view.kind == ConfiguredNodeBundleKind::boundary) {
             write_configs<InputConfig>(bundles, view.sample_input_configs, write_input);
             write_configs<OutputConfig>(bundles, view.sample_output_configs, write_output);
             write_configs<EventInputConfig>(bundles, view.event_input_configs, write_event_input);
             write_configs<EventOutputConfig>(bundles, view.event_output_configs, write_event_output);
-        } else if (view.kind == AuthoredNodeBundleKind::subgraph) {
+        } else if (view.kind == ConfiguredNodeBundleKind::subgraph) {
             bundles.size(view.subgraph_boundary);
             bundles.size(view.subgraph_child_begin);
             bundles.size(view.subgraph_child_count);
@@ -478,34 +478,34 @@ inline SerializedAuthoredGraph serialize_binary_authored_graph(
             bundles.size(view.subgraph_event_input_count);
             bundles.size(view.subgraph_event_output_count);
         } else {
-            throw std::runtime_error("authored graph has invalid bundle kind");
+            throw std::runtime_error("configured graph has invalid bundle kind");
         }
     });
 
     Writer writer;
     writer.pod(archive_magic);
     writer.pod(archive_version);
-    writer.string(authored.identity.value);
+    writer.string(configured.identity.value);
     writer.size(bundle_count);
     auto bundle_bytes = std::move(bundles).take();
     writer.append(bundle_bytes);
 
-    auto const samples = authored.connections.authored_sample_connections();
-    writer.list(samples, [&](AuthoredSampleConnection const& value) {
+    auto const samples = configured.connections.configured_sample_connections();
+    writer.list(samples, [&](ConfiguredSampleConnection const& value) {
         write_enum(writer, value.source_type);
         write_values<SampleOutputChannelId>(writer, value.source_channels, write_output_channel);
         write_enum(writer, value.target_type);
         write_values<SampleInputChannelId>(writer, value.target_channels, write_input_channel);
     });
-    auto const events = authored.connections.authored_event_connections();
-    writer.list(events, [&](AuthoredEventConnection const& value) {
+    auto const events = configured.connections.configured_event_connections();
+    writer.list(events, [&](ConfiguredEventConnection const& value) {
         write_enum(writer, value.source_type);
         write_values<EventOutputPortId>(writer, value.sources, write_event_output_port);
         write_enum(writer, value.target_type);
         write_values<EventInputPortId>(writer, value.targets, write_event_input_port);
     });
 
-    auto const public_ports = authored.public_ports.authored_record();
+    auto const public_ports = configured.public_ports.configured_record();
     writer.size(public_ports.boundary);
     write_source_info_groups(writer, public_ports.sample_input_source_infos);
     write_source_info_groups(writer, public_ports.event_input_source_infos);
@@ -520,9 +520,9 @@ inline SerializedAuthoredGraph serialize_binary_authored_graph(
         writer.flag(value.whole_stream);
     });
 
-    writer.size(authored.detach.next_detach_id());
-    auto const detached = authored.detach.authored_infos();
-    writer.list(detached, [&](AuthoredDetachedSamplePortInfo const& value) {
+    writer.size(configured.detach.next_detach_id());
+    auto const detached = configured.detach.configured_infos();
+    writer.list(detached, [&](ConfiguredDetachedSamplePortInfo const& value) {
         writer.size(value.detach_id);
         write_enum(writer, value.source_type);
         write_values<SampleOutputChannelId>(writer, value.source_channels, write_output_channel);
@@ -531,13 +531,13 @@ inline SerializedAuthoredGraph serialize_binary_authored_graph(
         write_output_channel(writer, value.reader_channel);
         writer.size(value.loop_extra_latency);
     });
-    auto const virtual_nodes = authored.virtual_nodes.records();
+    auto const virtual_nodes = configured.virtual_nodes.records();
     writer.list(virtual_nodes, [&](VirtualNodeRecord const& value) { write_virtual_node(writer, value); });
     result.bytes = std::move(writer).take();
     return result;
 }
 
-inline AuthoredGraph deserialize_binary_authored_graph(
+inline ConfiguredGraph deserialize_binary_configured_graph(
     std::span<std::byte const> bytes,
     std::span<details::NodeCompilerRecord const> node_types,
     std::span<ModuleNodeConfigRecord const> node_configs,
@@ -548,28 +548,28 @@ inline AuthoredGraph deserialize_binary_authored_graph(
         throw std::runtime_error("module node config storage count does not match config table");
     Reader reader(bytes);
     if (reader.pod<std::uint32_t>() != archive_magic)
-        throw std::runtime_error("unsupported authored graph archive magic");
+        throw std::runtime_error("unsupported configured graph archive magic");
     if (reader.pod<std::uint32_t>() != archive_version)
-        throw std::runtime_error("unsupported authored graph archive version");
+        throw std::runtime_error("unsupported configured graph archive version");
     auto identity = reader.string();
     auto const bundle_count = reader.count();
-    std::vector<AuthoredNodeBundleRecord> bundles;
+    std::vector<ConfiguredNodeBundleRecord> bundles;
     bundles.reserve(bundle_count);
     for (std::size_t i = 0; i < bundle_count; ++i) {
-        AuthoredNodeBundleRecord record;
-        record.kind = read_enum<AuthoredNodeBundleKind>(reader);
+        ConfiguredNodeBundleRecord record;
+        record.kind = read_enum<ConfiguredNodeBundleKind>(reader);
         record.virtual_node_handles = read_list<std::size_t>(reader, [&] { return reader.size(); });
         record.source_infos = read_source_infos(reader);
-        if (record.kind == AuthoredNodeBundleKind::concrete) {
+        if (record.kind == ConfiguredNodeBundleKind::concrete) {
             record.ports = read_ports(reader);
             record.code_key = read_code_key(reader);
             auto const ordinal = reader.size();
-            if (ordinal >= node_configs.size()) throw std::runtime_error("authored graph config ordinal is out of range");
+            if (ordinal >= node_configs.size()) throw std::runtime_error("configured graph config ordinal is out of range");
             auto const& config = node_configs[ordinal];
             record.node_size = reader.size();
             record.node_alignment = reader.size();
             if (config.size != record.node_size || config.alignment < record.node_alignment)
-                throw std::runtime_error("module node config layout does not match authored graph");
+                throw std::runtime_error("module node config layout does not match configured graph");
             record.node_storage = node_config_storage.empty()
                 ? std::shared_ptr<void const>(config.data, [](void const*) {})
                 : node_config_storage[ordinal];
@@ -589,19 +589,19 @@ inline AuthoredGraph deserialize_binary_authored_graph(
                 record.state_structure_storage = std::make_shared<NodeStateStructure>(read_state(reader));
                 record.operations.runtime.state_structure = record.state_structure_storage.get();
             }
-        } else if (record.kind == AuthoredNodeBundleKind::tiled) {
+        } else if (record.kind == ConfiguredNodeBundleKind::tiled) {
             record.tiled_members = read_list<NodeBundleHandle>(reader, [&] { return reader.size(); });
             record.type_identity = reader.string();
             record.sample_input_configs = read_configs<InputConfig>(reader, read_input);
             record.sample_output_configs = read_configs<OutputConfig>(reader, read_output);
             record.event_input_configs = read_configs<EventInputConfig>(reader, read_event_input);
             record.event_output_configs = read_configs<EventOutputConfig>(reader, read_event_output);
-        } else if (record.kind == AuthoredNodeBundleKind::boundary) {
+        } else if (record.kind == ConfiguredNodeBundleKind::boundary) {
             record.sample_input_configs = read_configs<InputConfig>(reader, read_input);
             record.sample_output_configs = read_configs<OutputConfig>(reader, read_output);
             record.event_input_configs = read_configs<EventInputConfig>(reader, read_event_input);
             record.event_output_configs = read_configs<EventOutputConfig>(reader, read_event_output);
-        } else if (record.kind == AuthoredNodeBundleKind::subgraph) {
+        } else if (record.kind == ConfiguredNodeBundleKind::subgraph) {
             record.subgraph_boundary = reader.size();
             record.subgraph_child_begin = reader.size();
             record.subgraph_child_count = reader.size();
@@ -612,23 +612,23 @@ inline AuthoredGraph deserialize_binary_authored_graph(
             record.subgraph_sample_output_count = reader.size();
             record.subgraph_event_input_count = reader.size();
             record.subgraph_event_output_count = reader.size();
-        } else throw std::runtime_error("authored graph archive has invalid bundle kind");
+        } else throw std::runtime_error("configured graph archive has invalid bundle kind");
         bundles.push_back(std::move(record));
     }
 
-    auto sample_connections = read_list<AuthoredSampleConnection>(reader, [&] {
-        return AuthoredSampleConnection{.source_type = read_enum<ChannelTypeId>(reader),
+    auto sample_connections = read_list<ConfiguredSampleConnection>(reader, [&] {
+        return ConfiguredSampleConnection{.source_type = read_enum<ChannelTypeId>(reader),
             .source_channels = read_values<SampleOutputChannelId>(reader, read_output_channel),
             .target_type = read_enum<ChannelTypeId>(reader),
             .target_channels = read_values<SampleInputChannelId>(reader, read_input_channel)};
     });
-    auto event_connections = read_list<AuthoredEventConnection>(reader, [&] {
-        return AuthoredEventConnection{.source_type = read_enum<EventTypeId>(reader),
+    auto event_connections = read_list<ConfiguredEventConnection>(reader, [&] {
+        return ConfiguredEventConnection{.source_type = read_enum<EventTypeId>(reader),
             .sources = read_values<EventOutputPortId>(reader, read_event_output_port),
             .target_type = read_enum<EventTypeId>(reader),
             .targets = read_values<EventInputPortId>(reader, read_event_input_port)};
     });
-    AuthoredPublicPortsRecord public_ports{.boundary = reader.size(),
+    ConfiguredPublicPortsRecord public_ports{.boundary = reader.size(),
         .sample_input_source_infos = read_source_info_groups(reader),
         .event_input_source_infos = read_source_info_groups(reader),
         .last_sample_output_port_ordinals = read_list<std::size_t>(reader, [&] { return reader.size(); }),
@@ -640,19 +640,19 @@ inline AuthoredGraph deserialize_binary_authored_graph(
             .channel_index = reader.size(), .whole_stream = reader.flag()};
     });
     auto const next_detach_id = reader.size();
-    auto detached = read_list<AuthoredDetachedSamplePortInfo>(reader, [&] {
-        return AuthoredDetachedSamplePortInfo{.detach_id = reader.size(), .source_type = read_enum<ChannelTypeId>(reader),
+    auto detached = read_list<ConfiguredDetachedSamplePortInfo>(reader, [&] {
+        return ConfiguredDetachedSamplePortInfo{.detach_id = reader.size(), .source_type = read_enum<ChannelTypeId>(reader),
             .source_channels = read_values<SampleOutputChannelId>(reader, read_output_channel), .writer_bundle = reader.size(),
             .reader_bundle = reader.size(), .reader_channel = read_output_channel(reader), .loop_extra_latency = reader.size()};
     });
     auto virtual_nodes = read_list<VirtualNodeRecord>(reader, [&] { return read_virtual_node(reader); });
     reader.finish();
     return {.identity = GraphBuilderIdentity{std::move(identity)},
-        .node_bundles = GraphBuilderNodeBundles::from_authored_records(bundles),
-        .connections = GraphBuilderConnections::from_authored_connections(sample_connections, event_connections),
-        .public_ports = GraphBuilderPublicPorts::from_authored_record(public_ports),
-        .detach = GraphBuilderDetach::from_authored_infos(next_detach_id, detached), .annotations = {},
-        .virtual_nodes = GraphBuilderVirtualNodes::from_authored_records(virtual_nodes)};
+        .node_bundles = GraphBuilderNodeBundles::from_configured_records(bundles),
+        .connections = GraphBuilderConnections::from_configured_connections(sample_connections, event_connections),
+        .public_ports = GraphBuilderPublicPorts::from_configured_record(public_ports),
+        .detach = GraphBuilderDetach::from_configured_infos(next_detach_id, detached), .annotations = {},
+        .virtual_nodes = GraphBuilderVirtualNodes::from_configured_records(virtual_nodes)};
 }
 
 } // namespace iv

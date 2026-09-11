@@ -76,7 +76,7 @@ namespace iv {
     struct RuntimeChannelTypeTraits;
 
 // The registry intentionally has a small bounded channel arity.  Extending
-// these helpers is mechanical, while each channel name remains authored once.
+// these helpers is mechanical, while each channel name remains configured once.
 #define IV_PP_CAT_I(a, b) a##b
 #define IV_PP_CAT(a, b) IV_PP_CAT_I(a, b)
 #define IV_PP_NARG_I(_1, _2, _3, _4, _5, _6, _7, _8, count, ...) count

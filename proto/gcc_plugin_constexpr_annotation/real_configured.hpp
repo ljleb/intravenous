@@ -37,7 +37,7 @@ constexpr void iv_plugin_graph_annotate_initialized(
         source_end_line);
 }
 
-constexpr void real_authored_entry(iv::GraphBuilder& builder)
+constexpr void real_configured_entry(iv::GraphBuilder& builder)
 {
     auto constant = builder.node<iv::Constant>(iv::Sample{0.25f});
     builder.outputs(constant);

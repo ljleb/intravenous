@@ -58,7 +58,7 @@ public:
         std::string instance_id {};
         int module_instance_id = 0;
         GraphInputPortDescriptor port {};
-        bool authored_connected = false;
+        bool configured_connected = false;
         Sample default_value = 0.0f;
         std::optional<Sample> min {};
         std::optional<Sample> max {};
@@ -96,7 +96,7 @@ public:
         LaneMetadata metadata {};
     };
 
-    struct AuthoredStateSnapshot {
+    struct ConfiguredStateSnapshot {
         std::vector<ProjectSetSampleInputValueRequest> sample_input_values {};
         std::vector<ProjectSetSampleInputStateRequest> sample_input_states {};
         std::vector<ProjectSetEventInputStateRequest> event_input_states {};
@@ -288,8 +288,8 @@ public:
     void handle_iv_module_source_introspection_live_input_snapshots_requested(
         std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> const &requests,
         IvModuleSourceIntrospectionLiveInputSnapshotsBuilder &builder);
-    void handle_iv_module_source_introspection_authored_state_snapshot_requested(
-        IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder &builder);
+    void handle_iv_module_source_introspection_configured_state_snapshot_requested(
+        IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder &builder);
     void handle_iv_module_source_introspection_public_ports_snapshot_requested(
         IvModuleSourceIntrospectionPublicPortsSnapshotBuilder &builder) const;
     void set_sample_input_value(
@@ -345,7 +345,7 @@ public:
         ProjectPersistenceBuilder &builder) const;
     [[nodiscard]] GraphInputLaneBindings graph_input_lane_bindings(
         ProjectGraphInputLaneBindingsRequest const &request);
-    [[nodiscard]] AuthoredStateSnapshot authored_state() const;
+    [[nodiscard]] ConfiguredStateSnapshot configured_state() const;
     void handle_task_runner_after_pass(TasksRunnerAfterPass const &finished);
     void handle_sample_block_published(LaneId lane, BorrowedSampleBlock const &block);
     void handle_event_block_published(LaneId lane, std::span<TimedEvent const> events);

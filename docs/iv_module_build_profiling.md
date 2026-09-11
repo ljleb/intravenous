@@ -43,8 +43,8 @@ The first line for each `cold` and `hot` phase reports:
 The following lines, prefixed `finalizer_`, come from
 `cmake-build/iv-module-finalizer-timings.txt` in that workspace. They split
 the LLVM finalizer into bitcode parse/link, node-record scanning, metadata
-load/bind, authoring-module clone, JIT creation/materialization,
-builder-session setup, registered-source-module authoring, JIT release, graph serialization,
+load/bind, configuration-module clone, JIT creation/materialization,
+builder-session setup, registered-source-module configuration, JIT release, graph serialization,
 module-data injection, runtime optimization, native object emission, native
 link, and total time. Values are integer microseconds.
 
@@ -69,7 +69,7 @@ largest measured stage:
 - high `finalizer_runtime_optimize_us` or
   `finalizer_native_object_emit_us`: evaluate O2 versus O3 before designing
   caching;
-- high JIT/authoring timings: reduce builder-side IR and work;
+- high JIT/configuration timings: reduce builder-side IR and work;
 - high load timings: profile DSO and runtime graph materialization separately.
 
 The broader `scripts/verify_release_performance.sh` is for release validation,

@@ -121,7 +121,7 @@ void GraphInputLanes::handle_project_set_event_output_state(
 void GraphInputLanes::handle_project_persistence_collect_state(
     ProjectPersistenceBuilder &builder) const
 {
-    builder.add_graph_input_authored_state(authored_state());
+    builder.add_graph_input_configured_state(configured_state());
 }
 
 std::vector<GraphInputLanes::DesiredGraphPort>
@@ -654,11 +654,11 @@ void GraphInputLanes::handle_iv_module_source_introspection_live_input_snapshots
     builder.succeed(collect_live_input_snapshots(requests));
 }
 
-void GraphInputLanes::handle_iv_module_source_introspection_authored_state_snapshot_requested(
-    IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder &builder)
+void GraphInputLanes::handle_iv_module_source_introspection_configured_state_snapshot_requested(
+    IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder &builder)
 {
-    auto const snapshot = authored_state();
-    builder.succeed(IvModuleSourceIntrospectionAuthoredStateSnapshot{
+    auto const snapshot = configured_state();
+    builder.succeed(IvModuleSourceIntrospectionConfiguredStateSnapshot{
         .sample_input_values = snapshot.sample_input_values,
         .sample_input_states = snapshot.sample_input_states,
         .event_input_states = snapshot.event_input_states,

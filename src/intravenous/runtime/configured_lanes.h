@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/runtime/authored_lane_api.h>
+#include <intravenous/runtime/configured_lane_api.h>
 #include <intravenous/basic_lane_nodes/beat_trigger.h>
 #include <intravenous/basic_lane_nodes/audio_file_capture.h>
 #include <intravenous/basic_lane_nodes/type_erased.h>
@@ -22,7 +22,7 @@ namespace iv {
 class ProjectAckBuilder;
 class ProjectLaneTypesBuilder;
 class ProjectPersistenceBuilder;
-class TimelineAuthoredLaneConnectionsBuilder;
+class TimelineConfiguredLaneConnectionsBuilder;
 struct ProjectCreateTimelineLaneRequest;
 struct ProjectDeleteTimelineLaneRequest;
 struct ProjectDuplicateTimelineLaneRequest;
@@ -38,23 +38,23 @@ concept CreatableLane = requires(std::string_view state, LaneCreationContext con
 };
 
 // The list contains types only; descriptors are derived from those types.
-using AuthoredCreatableLaneTypes = std::tuple<BeatTriggerLaneNode, AudioFileCaptureLaneNode>;
+using ConfiguredCreatableLaneTypes = std::tuple<BeatTriggerLaneNode, AudioFileCaptureLaneNode>;
 static_assert(CreatableLane<BeatTriggerLaneNode>);
 static_assert(CreatableLane<AudioFileCaptureLaneNode>);
 
-class AuthoredLanes {
+class ConfiguredLanes {
     struct StoredLane {
         LaneId runtime_lane;
-        AuthoredLaneRecord record;
+        ConfiguredLaneRecord record;
     };
 
     // Timeline receives explicit ids from independent graph and visualization
-    // producers.  Authored model lanes use a separate high range so their
+    // producers.  Configured model lanes use a separate high range so their
     // persistent records cannot collide with transient low-id lanes.
     std::uint64_t next_runtime_lane_id_ = std::uint64_t{1} << 62;
     LaneCreationContext context_;
     std::unordered_map<InternedString, StoredLane> lanes_;
-    std::vector<AuthoredLaneConnection> connections_;
+    std::vector<ConfiguredLaneConnection> connections_;
 
     static TypeErasedLaneNode make_node(
         std::string_view type_id,
@@ -62,19 +62,19 @@ class AuthoredLanes {
         LaneCreationContext const& context);
 
 public:
-    explicit AuthoredLanes(LaneCreationContext context) : context_(context) {}
+    explicit ConfiguredLanes(LaneCreationContext context) : context_(context) {}
 
     [[nodiscard]] static std::vector<CreatableLaneDescriptor> creatable_lane_types();
     [[nodiscard]] TimelineLaneBatchUpdate create(std::string_view type_id, InternedString public_id = {});
-    [[nodiscard]] TimelineLaneBatchUpdate reload(AuthoredLaneRecord record);
+    [[nodiscard]] TimelineLaneBatchUpdate reload(ConfiguredLaneRecord record);
     void update_canonical_state(InternedString lane_id, std::string serialized_state);
     [[nodiscard]] std::optional<LaneId> erase(InternedString lane_id);
-    [[nodiscard]] std::vector<AuthoredLaneRecord> records() const;
+    [[nodiscard]] std::vector<ConfiguredLaneRecord> records() const;
     [[nodiscard]] bool contains(InternedString lane_id) const;
-    void record_connection(AuthoredLaneConnection connection);
-    void remove_connection(AuthoredLaneConnection const& connection);
-    [[nodiscard]] bool contains_connection(AuthoredLaneConnection const& connection) const;
-    [[nodiscard]] std::vector<AuthoredLaneConnection> connections() const;
+    void record_connection(ConfiguredLaneConnection connection);
+    void remove_connection(ConfiguredLaneConnection const& connection);
+    [[nodiscard]] bool contains_connection(ConfiguredLaneConnection const& connection) const;
+    [[nodiscard]] std::vector<ConfiguredLaneConnection> connections() const;
     void handle_project_get_timeline_lane_types(ProjectLaneTypesBuilder &builder) const;
     void handle_project_create_timeline_lane(
         ProjectCreateTimelineLaneRequest const &request,
@@ -86,14 +86,14 @@ public:
         ProjectDuplicateTimelineLaneRequest const &request,
         ProjectAckBuilder &builder);
     void handle_project_persistence_collect_state(ProjectPersistenceBuilder &builder) const;
-    void handle_timeline_authored_lane_canonical_state_updated(
+    void handle_timeline_configured_lane_canonical_state_updated(
         InternedString lane_id,
         std::string const &serialized_state);
-    void handle_timeline_authored_lane_connection_recorded(
-        AuthoredLaneConnection const &connection);
-    void handle_timeline_authored_lane_connection_removed(
-        AuthoredLaneConnection const &connection);
-    void handle_timeline_authored_lane_connections_requested(
-        TimelineAuthoredLaneConnectionsBuilder &builder) const;
+    void handle_timeline_configured_lane_connection_recorded(
+        ConfiguredLaneConnection const &connection);
+    void handle_timeline_configured_lane_connection_removed(
+        ConfiguredLaneConnection const &connection);
+    void handle_timeline_configured_lane_connections_requested(
+        TimelineConfiguredLaneConnectionsBuilder &builder) const;
 };
 } // namespace iv

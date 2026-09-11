@@ -1,6 +1,6 @@
 #include <intravenous/graph/builder.h>
 #include <intravenous/module/builder_session.h>
-#include <intravenous/module/authored_graph_wire.h>
+#include <intravenous/module/configured_graph_wire.h>
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -734,7 +734,7 @@ void preserve_source_configuration_ir(Module& module)
 struct BuilderJitNodeType {
     std::string id;
     iv::NodeCodeKey code_key{};
-    iv::AuthoredGraph graph{};
+    iv::ConfiguredGraph graph{};
 };
 
 struct BuilderJitResult {
@@ -1254,7 +1254,7 @@ Constant* byte_array_constant(
 GlobalVariable* constant_node_config(
     Module& module,
     StringRef name,
-    iv::AuthoredNodeConfigBytes const& config,
+    iv::ConfiguredNodeConfigBytes const& config,
     std::span<BuilderModuleClone::RetainedGlobal const> retained_globals)
 {
     auto& context = module.getContext();
@@ -1363,7 +1363,7 @@ Function* emit_indexed_view_accessor(
 struct SerializedSourceNodeType {
     std::string id;
     iv::NodeCodeKey code_key{};
-    iv::SerializedAuthoredGraph authored;
+    iv::SerializedConfiguredGraph configured;
 };
 
 void inject_source_data(
@@ -1407,24 +1407,24 @@ void inject_source_data(
                 ConstantInt::get(i64, source_node_type.code_key.low),
                 ConstantInt::get(i64, source_node_type.code_key.high));
             auto const graph_bytes = std::span<std::byte const>(
-                source_node_type.authored.bytes.data(),
-                source_node_type.authored.bytes.size());
+                source_node_type.configured.bytes.data(),
+                source_node_type.configured.bytes.size());
             auto* graph = constant_bytes(
                 module,
-                "iv.source_node_type_authored_graph." + std::to_string(index),
+                "iv.source_node_type_configured_graph." + std::to_string(index),
                 graph_bytes,
                 1);
             auto* graph_view = ConstantStruct::get(
                 view_type,
                 ConstantExpr::getPointerCast(graph, pointer_type),
                 ConstantInt::get(
-                    size_type, source_node_type.authored.bytes.size()));
+                    size_type, source_node_type.configured.bytes.size()));
             std::vector<Constant*> config_records;
-            config_records.reserve(source_node_type.authored.node_configs.size());
+            config_records.reserve(source_node_type.configured.node_configs.size());
             for (std::size_t config_index = 0;
-                 config_index < source_node_type.authored.node_configs.size();
+                 config_index < source_node_type.configured.node_configs.size();
                  ++config_index) {
-                auto const& config = source_node_type.authored.node_configs[config_index];
+                auto const& config = source_node_type.configured.node_configs[config_index];
                 auto* bytes = constant_node_config(
                     module,
                     "iv.source_node_type_config." + std::to_string(index)
@@ -1637,17 +1637,17 @@ int finalize(Options options)
     inject_source_registration_table(master);
     timings.finish_stage("source_registration_table", stage_started_at);
 
-    auto authored = run_builder_jit(
+    auto configured = run_builder_jit(
         master, context, options.link_command, metadata, timings);
 
     stage_started_at = timings.start_stage();
     std::vector<SerializedSourceNodeType> serialized_node_types;
-    serialized_node_types.reserve(authored.node_types.size());
-    for (auto const& node_type : authored.node_types) {
+    serialized_node_types.reserve(configured.node_types.size());
+    for (auto const& node_type : configured.node_types) {
         serialized_node_types.push_back({
             .id = node_type.id,
             .code_key = node_type.code_key,
-            .authored = iv::serialize_authored_graph(
+            .configured = iv::serialize_configured_graph(
                 node_type.graph, state_metadata),
         });
     }
@@ -1656,9 +1656,9 @@ int finalize(Options options)
     stage_started_at = timings.start_stage();
     inject_source_data(
         master, serialized_node_types, node_records,
-        authored.retained_globals);
+        configured.retained_globals);
     inject_source_configuration_metadata(
-        master, metadata, authored.retained_globals);
+        master, metadata, configured.retained_globals);
     timings.finish_stage("source_data_inject", stage_started_at);
 
     stage_started_at = timings.start_stage();

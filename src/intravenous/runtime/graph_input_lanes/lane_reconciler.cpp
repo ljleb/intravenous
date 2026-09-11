@@ -942,7 +942,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
         }
 
         NodeBundleEventInputState state =
-            port.authored_connected
+            port.configured_connected
                 ? NodeBundleEventInputState::disconnected
                 : NodeBundleEventInputState::virtual_follow;
         if (auto const it =

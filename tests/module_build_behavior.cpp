@@ -44,10 +44,10 @@ int main()
     iv::test::require(std::filesystem::exists(voice_import), "dependency import should exist");
     iv::test::require(
         !iv::test::read_text(project_import).contains(project_dst.generic_string()),
-        "root import should not expose its authored entry");
+        "root import should not expose its configured entry");
     iv::test::require(
         !iv::test::read_text(voice_import).contains(voice_dst.generic_string()),
-        "dependency import should not expose its authored entry");
+        "dependency import should not expose its configured entry");
 
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
     auto const project_needle = std::string("    using namespace iv;");

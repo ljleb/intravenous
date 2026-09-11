@@ -11,8 +11,8 @@ IV_SUBSCRIBE_LINKER_EVENT(
     &GraphInputLanes::handle_iv_module_source_introspection_live_input_snapshots_requested);
 IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_source_introspection_graph_input_lanes_bridge,
-    iv_runtime_iv_module_source_introspection_authored_state_snapshot_requested_event,
-    &GraphInputLanes::handle_iv_module_source_introspection_authored_state_snapshot_requested);
+    iv_runtime_iv_module_source_introspection_configured_state_snapshot_requested_event,
+    &GraphInputLanes::handle_iv_module_source_introspection_configured_state_snapshot_requested);
 IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_source_introspection_graph_input_lanes_bridge,
     iv_runtime_iv_module_source_introspection_public_ports_snapshot_requested_event,

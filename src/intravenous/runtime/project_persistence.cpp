@@ -532,7 +532,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
         return;
     }
 
-    if (command.command == "timeline.createAuthoredLane") {
+    if (command.command == "timeline.createConfiguredLane") {
         ProjectAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_create_timeline_lane_requested_event,
@@ -561,7 +561,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
         return;
     }
 
-    if (command.command == "timeline.connectAuthoredLanes") {
+    if (command.command == "timeline.connectConfiguredLanes") {
         ProjectAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_connect_timeline_lanes_requested_event,
@@ -571,7 +571,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .port_domain = require_port_domain(args, "port_domain"),
                 .port_kind = require_port_kind(args, "port_kind"),
                 .port_ordinal = require_size(args, "port_ordinal"),
-                .authored = true,
+                .configured = true,
             },
             builder);
         builder.build();
@@ -790,7 +790,7 @@ void ProjectPersistence::handle_socket_rpc_connect_timeline_lanes(
                 .port_domain = request.port_domain,
                 .port_kind = request.port_kind,
                 .port_ordinal = request.port_ordinal,
-                .authored = true,
+                .configured = true,
             },
             project_builder);
         project_builder.build();

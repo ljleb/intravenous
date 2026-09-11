@@ -45,7 +45,7 @@ Default channel type for newly created sample lanes:
 
 - `stereo`
 
-This default is only the current authoring/runtime default. A project-level
+This default is only the current configuration/runtime default. A project-level
 config default can be introduced later so the preferred default channel type is
 user-configurable.
 
@@ -102,7 +102,7 @@ Sample port configs should carry layout preference for both:
 
 This is about memory layout only, not semantic channel type.
 
-Channel type remains an authored property of the sample lane instance rather
+Channel type remains an configured property of the sample lane instance rather
 than a property that every lane-node type definition must spell out.
 
 ## Lane Graph / Timeline Model
@@ -149,7 +149,7 @@ instance.
 This implies a future JSON-RPC path that:
 
 - targets a lane node instance
-- changes its authored sample channel type
+- changes its configured sample channel type
 - causes the surrounding lane graph / timeline execution structures to
   synchronize to the new lane shape
 
@@ -157,7 +157,7 @@ This is separate from the current layout preference on node port configs.
 
 ### Important distinction
 
-- channel type is lane-instance authored state
+- channel type is lane-instance configured state
 - sample layout preference is node-port configuration
 
 ## Non-scope Reminder

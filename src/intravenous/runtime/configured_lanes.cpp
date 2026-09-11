@@ -1,6 +1,6 @@
-#include <intravenous/runtime/authored_lanes.h>
+#include <intravenous/runtime/configured_lanes.h>
 
-#include <intravenous/runtime/authored_lanes_events.h>
+#include <intravenous/runtime/configured_lanes_events.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
@@ -30,7 +30,7 @@ TypeErasedLaneNode BeatTriggerLaneNode::from_lane_ui_state(
         .serialized_state = serialized_state,
     });
     if (!result.accepted) {
-        throw std::runtime_error("invalid beat-trigger authored state: " + result.error_message);
+        throw std::runtime_error("invalid beat-trigger configured state: " + result.error_message);
     }
     return TypeErasedLaneNode(std::move(node));
 }
@@ -48,7 +48,7 @@ TypeErasedLaneNode AudioFileCaptureLaneNode::from_lane_ui_state(
         if (!result.accepted) throw std::runtime_error(result.error_message);
         return TypeErasedLaneNode(std::move(node));
     } catch (std::exception const& error) {
-        throw std::runtime_error("invalid audio-file-capture authored state: " + std::string(error.what()));
+        throw std::runtime_error("invalid audio-file-capture configured state: " + std::string(error.what()));
     }
 }
 
@@ -76,12 +76,12 @@ LaneMetadata metadata_for_type(std::string_view type_id)
 }
 } // namespace
 
-std::vector<CreatableLaneDescriptor> AuthoredLanes::creatable_lane_types()
+std::vector<CreatableLaneDescriptor> ConfiguredLanes::creatable_lane_types()
 {
     return {descriptor_for<BeatTriggerLaneNode>(), descriptor_for<AudioFileCaptureLaneNode>()};
 }
 
-TypeErasedLaneNode AuthoredLanes::make_node(
+TypeErasedLaneNode ConfiguredLanes::make_node(
     std::string_view type_id,
     std::string_view serialized_state,
     LaneCreationContext const& context)
@@ -92,10 +92,10 @@ TypeErasedLaneNode AuthoredLanes::make_node(
     if (type_id == AudioFileCaptureLaneNode::lane_model_type_id()) {
         return AudioFileCaptureLaneNode::from_lane_ui_state(serialized_state, context);
     }
-    throw std::runtime_error("unknown authored lane type: " + std::string(type_id));
+    throw std::runtime_error("unknown configured lane type: " + std::string(type_id));
 }
 
-TimelineLaneBatchUpdate AuthoredLanes::create(std::string_view type_id, InternedString public_id)
+TimelineLaneBatchUpdate ConfiguredLanes::create(std::string_view type_id, InternedString public_id)
 {
     std::string state;
     if (type_id == BeatTriggerLaneNode::lane_model_type_id()) {
@@ -106,10 +106,10 @@ TimelineLaneBatchUpdate AuthoredLanes::create(std::string_view type_id, Interned
         throw std::runtime_error("unknown creatable lane type: " + std::string(type_id));
     }
     if (public_id.empty()) public_id = generate_uuid_v4();
-    if (lanes_.contains(public_id)) throw std::runtime_error("duplicate authored lane id: " + public_id.str());
+    if (lanes_.contains(public_id)) throw std::runtime_error("duplicate configured lane id: " + public_id.str());
 
     auto const lane = LaneId{next_runtime_lane_id_++};
-    auto record = AuthoredLaneRecord{public_id, std::string(type_id), std::move(state)};
+    auto record = ConfiguredLaneRecord{public_id, std::string(type_id), std::move(state)};
     lanes_.emplace(public_id, StoredLane{lane, record});
     return TimelineLaneBatchUpdate{.upserts = {TimelineLaneUpsert{
         .lane = lane,
@@ -121,10 +121,10 @@ TimelineLaneBatchUpdate AuthoredLanes::create(std::string_view type_id, Interned
     }}};
 }
 
-TimelineLaneBatchUpdate AuthoredLanes::reload(AuthoredLaneRecord record)
+TimelineLaneBatchUpdate ConfiguredLanes::reload(ConfiguredLaneRecord record)
 {
-    if (record.lane_id.empty()) throw std::runtime_error("authored lane record is missing lane id");
-    if (lanes_.contains(record.lane_id)) throw std::runtime_error("duplicate authored lane id: " + record.lane_id.str());
+    if (record.lane_id.empty()) throw std::runtime_error("configured lane record is missing lane id");
+    if (lanes_.contains(record.lane_id)) throw std::runtime_error("duplicate configured lane id: " + record.lane_id.str());
     // Validate now, so an unknown type is reported and never silently mapped.
     (void)make_node(record.type_id, record.serialized_state, context_);
     auto const lane = LaneId{next_runtime_lane_id_++};
@@ -140,98 +140,98 @@ TimelineLaneBatchUpdate AuthoredLanes::reload(AuthoredLaneRecord record)
     }}};
 }
 
-void AuthoredLanes::update_canonical_state(InternedString lane_id, std::string serialized_state)
+void ConfiguredLanes::update_canonical_state(InternedString lane_id, std::string serialized_state)
 {
     auto const it = lanes_.find(lane_id);
-    if (it == lanes_.end()) throw std::runtime_error("authored timeline lane not found");
+    if (it == lanes_.end()) throw std::runtime_error("configured timeline lane not found");
     it->second.record.serialized_state = std::move(serialized_state);
 }
 
-std::optional<LaneId> AuthoredLanes::erase(InternedString lane_id)
+std::optional<LaneId> ConfiguredLanes::erase(InternedString lane_id)
 {
     auto const it = lanes_.find(lane_id);
     if (it == lanes_.end()) return std::nullopt;
     auto const runtime_lane = it->second.runtime_lane;
     lanes_.erase(it);
-    std::erase_if(connections_, [&](AuthoredLaneConnection const& connection) {
+    std::erase_if(connections_, [&](ConfiguredLaneConnection const& connection) {
         return connection.source_lane_id == lane_id || connection.target_lane_id == lane_id;
     });
     return runtime_lane;
 }
 
-std::vector<AuthoredLaneRecord> AuthoredLanes::records() const
+std::vector<ConfiguredLaneRecord> ConfiguredLanes::records() const
 {
-    std::vector<AuthoredLaneRecord> result;
+    std::vector<ConfiguredLaneRecord> result;
     result.reserve(lanes_.size());
     for (auto const& [_, lane] : lanes_) result.push_back(lane.record);
     return result;
 }
 
-bool AuthoredLanes::contains(InternedString lane_id) const { return lanes_.contains(lane_id); }
+bool ConfiguredLanes::contains(InternedString lane_id) const { return lanes_.contains(lane_id); }
 
-void AuthoredLanes::record_connection(AuthoredLaneConnection connection)
+void ConfiguredLanes::record_connection(ConfiguredLaneConnection connection)
 {
     if (!contains_connection(connection)) connections_.push_back(std::move(connection));
 }
 
-void AuthoredLanes::remove_connection(AuthoredLaneConnection const& connection)
+void ConfiguredLanes::remove_connection(ConfiguredLaneConnection const& connection)
 {
-    std::erase_if(connections_, [&](AuthoredLaneConnection const& existing) {
+    std::erase_if(connections_, [&](ConfiguredLaneConnection const& existing) {
         return existing.source_lane_id == connection.source_lane_id
             && existing.target_lane_id == connection.target_lane_id
             && existing.input == connection.input;
     });
 }
 
-bool AuthoredLanes::contains_connection(AuthoredLaneConnection const& connection) const
+bool ConfiguredLanes::contains_connection(ConfiguredLaneConnection const& connection) const
 {
-    return std::ranges::any_of(connections_, [&](AuthoredLaneConnection const& existing) {
+    return std::ranges::any_of(connections_, [&](ConfiguredLaneConnection const& existing) {
         return existing.source_lane_id == connection.source_lane_id
             && existing.target_lane_id == connection.target_lane_id
             && existing.input == connection.input;
     });
 }
 
-std::vector<AuthoredLaneConnection> AuthoredLanes::connections() const { return connections_; }
+std::vector<ConfiguredLaneConnection> ConfiguredLanes::connections() const { return connections_; }
 
-void AuthoredLanes::handle_project_get_timeline_lane_types(
+void ConfiguredLanes::handle_project_get_timeline_lane_types(
     ProjectLaneTypesBuilder &builder) const
 {
     builder.succeed(creatable_lane_types());
 }
 
-void AuthoredLanes::handle_project_create_timeline_lane(
+void ConfiguredLanes::handle_project_create_timeline_lane(
     ProjectCreateTimelineLaneRequest const &request,
     ProjectAckBuilder &builder)
 {
     auto batch = request.lane_id.has_value()
-        ? reload(AuthoredLaneRecord{
+        ? reload(ConfiguredLaneRecord{
             .lane_id = *request.lane_id,
             .type_id = request.type_id,
             .serialized_state = request.serialized_state.value_or("")})
         : create(request.type_id);
     if (batch.upserts.size() != 1) {
-        throw std::runtime_error("authored lane creation did not produce one lane");
+        throw std::runtime_error("configured lane creation did not produce one lane");
     }
-    IV_INVOKE_LINKER_EVENT(iv_runtime_authored_lanes_timeline_batch_requested_event, batch);
+    IV_INVOKE_LINKER_EVENT(iv_runtime_configured_lanes_timeline_batch_requested_event, batch);
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
-void AuthoredLanes::handle_project_delete_timeline_lane(
+void ConfiguredLanes::handle_project_delete_timeline_lane(
     ProjectDeleteTimelineLaneRequest const &request,
     ProjectAckBuilder &builder)
 {
     emit_lane_topology_diagnostic("delete request lane=" + request.lane_id.str());
     auto const lane = erase(request.lane_id);
     if (!lane.has_value()) {
-        throw std::runtime_error("authored timeline lane not found");
+        throw std::runtime_error("configured timeline lane not found");
     }
     emit_lane_topology_diagnostic(
-        "delete authored state removed lane=" + request.lane_id.str()
+        "delete configured state removed lane=" + request.lane_id.str()
         + " runtimeLane=" + std::to_string(lane->value));
     IV_INVOKE_LINKER_EVENT(
-        iv_runtime_authored_lanes_timeline_batch_requested_event,
+        iv_runtime_configured_lanes_timeline_batch_requested_event,
         TimelineLaneBatchUpdate{.removals = {*lane}});
     emit_lane_topology_diagnostic(
         "delete timeline batch dispatched runtimeLane=" + std::to_string(lane->value));
@@ -239,33 +239,33 @@ void AuthoredLanes::handle_project_delete_timeline_lane(
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
-void AuthoredLanes::handle_project_duplicate_timeline_lane(
+void ConfiguredLanes::handle_project_duplicate_timeline_lane(
     ProjectDuplicateTimelineLaneRequest const &request,
     ProjectAckBuilder &builder)
 {
     auto const records = this->records();
-    auto const source = std::ranges::find(records, request.lane_id, &AuthoredLaneRecord::lane_id);
+    auto const source = std::ranges::find(records, request.lane_id, &ConfiguredLaneRecord::lane_id);
     if (source == records.end()) {
-        throw std::runtime_error("authored timeline lane not found");
+        throw std::runtime_error("configured timeline lane not found");
     }
-    auto batch = reload(AuthoredLaneRecord{
+    auto batch = reload(ConfiguredLaneRecord{
         .lane_id = generate_uuid_v4(),
         .type_id = source->type_id,
         .serialized_state = source->serialized_state,
     });
-    IV_INVOKE_LINKER_EVENT(iv_runtime_authored_lanes_timeline_batch_requested_event, batch);
+    IV_INVOKE_LINKER_EVENT(iv_runtime_configured_lanes_timeline_batch_requested_event, batch);
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
-void AuthoredLanes::handle_project_persistence_collect_state(
+void ConfiguredLanes::handle_project_persistence_collect_state(
     ProjectPersistenceBuilder &builder) const
 {
-    builder.add_authored_lane_connections(connections());
-    builder.add_authored_lanes(records());
+    builder.add_configured_lane_connections(connections());
+    builder.add_configured_lanes(records());
 }
 
-void AuthoredLanes::handle_timeline_authored_lane_canonical_state_updated(
+void ConfiguredLanes::handle_timeline_configured_lane_canonical_state_updated(
     InternedString lane_id,
     std::string const &serialized_state)
 {
@@ -274,20 +274,20 @@ void AuthoredLanes::handle_timeline_authored_lane_canonical_state_updated(
     }
 }
 
-void AuthoredLanes::handle_timeline_authored_lane_connection_recorded(
-    AuthoredLaneConnection const &connection)
+void ConfiguredLanes::handle_timeline_configured_lane_connection_recorded(
+    ConfiguredLaneConnection const &connection)
 {
     record_connection(connection);
 }
 
-void AuthoredLanes::handle_timeline_authored_lane_connection_removed(
-    AuthoredLaneConnection const &connection)
+void ConfiguredLanes::handle_timeline_configured_lane_connection_removed(
+    ConfiguredLaneConnection const &connection)
 {
     remove_connection(connection);
 }
 
-void AuthoredLanes::handle_timeline_authored_lane_connections_requested(
-    TimelineAuthoredLaneConnectionsBuilder &builder) const
+void ConfiguredLanes::handle_timeline_configured_lane_connections_requested(
+    TimelineConfiguredLaneConnectionsBuilder &builder) const
 {
     builder.succeed(connections());
 }

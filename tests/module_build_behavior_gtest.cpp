@@ -57,7 +57,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
                         return field.name == "phase" && !field.type_name.empty();
                     });
             });
-        // SawOscillator::State is authored in behavior_voice. Its field type
+        // SawOscillator::State is configured in behavior_voice. Its field type
         // reaches this host layout only through the Clang plugin, exact
         // NodeCodeKey binding in the finalizer, and the binary archive.
         EXPECT_TRUE(has_structural_saw_state);
@@ -81,12 +81,12 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         generated_export.find("iv::GraphBuilder builder{session}"),
         std::string::npos);
     EXPECT_EQ(
-        generated_export.find("iv_source_module_authored_graph"),
+        generated_export.find("iv_source_module_configured_graph"),
         std::string::npos);
 
-    // Generic g.node<Id>() authoring has no generated provider-header
+    // Generic g.node<Id>() configuration has no generated provider-header
     // bootstrap. Source packages stay separate C++ targets and join only in
-    // the host authoring generation.
+    // the host configuration generation.
     EXPECT_FALSE(std::filesystem::exists(
         runtime_root / "build" / "iv" / "imports" / "iv" / "nodes"));
 
@@ -151,7 +151,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         finalizer_timings_text.find("source_registration_validation_us="),
         std::string::npos);
     EXPECT_NE(
-        finalizer_timings_text.find("source_authoring_ir_preserve_us="),
+        finalizer_timings_text.find("source_configuration_ir_preserve_us="),
         std::string::npos);
     EXPECT_NE(finalizer_timings_text.find("runtime_optimize_us="), std::string::npos);
     EXPECT_NE(finalizer_timings_text.find("native_link_us="), std::string::npos);

@@ -1126,13 +1126,13 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
             .module_root = workspace,
         },
     });
-    builder.add_authored_lane_connections({
-        iv::AuthoredLaneConnection{
+    builder.add_configured_lane_connections({
+        iv::ConfiguredLaneConnection{
             .source_lane_id = intern("lane-z"),
             .target_lane_id = intern("lane-a"),
             .input = iv::LanePortId{.domain = iv::LanePortDomain::compiled, .kind = iv::PortKind::event, .ordinal = 2},
         },
-        iv::AuthoredLaneConnection{
+        iv::ConfiguredLaneConnection{
             .source_lane_id = intern("lane-a"),
             .target_lane_id = intern("lane-z"),
             .input = iv::LanePortId{.domain = iv::LanePortDomain::realtime, .kind = iv::PortKind::sample, .ordinal = 0},
@@ -1155,7 +1155,7 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
     for (auto const &command : commands) {
         if (command.command == "ivModuleInstances.create") {
             created_instance_ids.push_back(command.args["instance_id"].get<std::string>());
-        } else if (command.command == "timeline.connectAuthoredLanes") {
+        } else if (command.command == "timeline.connectConfiguredLanes") {
             connection_order.emplace_back(
                 command.args["source_lane_id"].get<std::string>(),
                 command.args["port_domain"].get<std::string>());
@@ -1174,9 +1174,9 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
         }));
 }
 
-TEST_F(ProjectPersistenceTest, GraphInputAuthoredStateCoversAllMutationKinds)
+TEST_F(ProjectPersistenceTest, GraphInputConfiguredStateCoversAllMutationKinds)
 {
-    iv::GraphInputLanes::AuthoredStateSnapshot snapshot;
+    iv::GraphInputLanes::ConfiguredStateSnapshot snapshot;
     snapshot.sample_input_values.push_back(iv::ProjectSetSampleInputValueRequest{
         .node_id = "node-1",
         .member_ordinal = std::nullopt,
@@ -1213,7 +1213,7 @@ TEST_F(ProjectPersistenceTest, GraphInputAuthoredStateCoversAllMutationKinds)
     });
 
     iv::ProjectPersistenceBuilder builder(std::filesystem::current_path(), make_startup(std::filesystem::current_path()));
-    builder.add_graph_input_authored_state(snapshot);
+    builder.add_graph_input_configured_state(snapshot);
     auto const commands = builder.build();
     std::multiset<std::string> names;
     for (auto const &command : commands) {
@@ -1226,7 +1226,7 @@ TEST_F(ProjectPersistenceTest, GraphInputAuthoredStateCoversAllMutationKinds)
     EXPECT_TRUE(names.contains("graph.setEventOutputState"));
 }
 
-TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsForMemberAndVirtualPorts)
+TEST(ProjectPersistenceBuilder, GraphInputConfiguredStateSerializesStateVariantsForMemberAndVirtualPorts)
 {
     auto const virtual_sample_input_node_id = runtime_node_id("instance:a", "node-virtual");
     auto const member_sample_input_node_id = runtime_node_id("instance:a", "node-member");
@@ -1234,7 +1234,7 @@ TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsFo
     auto const member_event_input_node_id = runtime_node_id("instance:b", "event-member");
     auto const virtual_sample_output_node_id = runtime_node_id("instance:c", "sample-out");
     auto const member_event_output_node_id = runtime_node_id("instance:c", "event-out");
-    iv::GraphInputLanes::AuthoredStateSnapshot snapshot;
+    iv::GraphInputLanes::ConfiguredStateSnapshot snapshot;
     snapshot.sample_input_states.push_back(iv::ProjectSetSampleInputStateRequest{
         .node_id = virtual_sample_input_node_id,
         .member_ordinal = std::nullopt,
@@ -1281,7 +1281,7 @@ TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsFo
     iv::ProjectPersistenceBuilder builder(
         std::filesystem::current_path(),
         make_startup(std::filesystem::current_path()));
-    builder.add_graph_input_authored_state(snapshot);
+    builder.add_graph_input_configured_state(snapshot);
     auto const commands = builder.build();
 
     auto const find_command = [&](std::string_view name, std::string_view node_id) -> Json {

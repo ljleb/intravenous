@@ -284,7 +284,7 @@ std::string event_output_state_value(ProjectEventOutputState state)
 }
 
 LivePortStateMaps build_live_port_state_maps(
-    IvModuleSourceIntrospectionAuthoredStateSnapshot const &snapshot)
+    IvModuleSourceIntrospectionConfiguredStateSnapshot const &snapshot)
 {
     LivePortStateMaps maps;
 
@@ -514,11 +514,11 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
     std::string const &instance_id) const
 {
     auto const runtime_id = runtime_node_id(instance_id, node.id);
-    IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder authored_state_builder;
+    IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder configured_state_builder;
     IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_source_introspection_authored_state_snapshot_requested_event,
-        authored_state_builder);
-    auto const live_port_states = build_live_port_state_maps(authored_state_builder.build());
+        iv_runtime_iv_module_source_introspection_configured_state_snapshot_requested_event,
+        configured_state_builder);
+    auto const live_port_states = build_live_port_state_maps(configured_state_builder.build());
     std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> snapshot_requests;
     snapshot_requests.reserve(
         node.sample_inputs.size() +

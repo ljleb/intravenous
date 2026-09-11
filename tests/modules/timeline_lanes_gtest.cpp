@@ -1,15 +1,15 @@
 #include <intravenous/basic_lane_nodes/controls.h>
 #include <intravenous/basic_lane_nodes/beat_trigger.h>
 #include <intravenous/runtime/graph_input_lane_controller.h>
-#include <intravenous/runtime/authored_lanes.h>
-#include <intravenous/runtime/authored_lanes_timeline_bridge.h>
+#include <intravenous/runtime/configured_lanes.h>
+#include <intravenous/runtime/configured_lanes_timeline_bridge.h>
 #include <intravenous/basic_lane_nodes/type_erased.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/lane_node/graph.h>
 #include <intravenous/runtime/lane_graph.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/project_persistence.h>
-#include <intravenous/runtime/project_persistence_authored_lanes_bridge.h>
+#include <intravenous/runtime/project_persistence_configured_lanes_bridge.h>
 #include <intravenous/runtime/timeline_timeline_execution_bridge.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_execution.h>
@@ -1003,14 +1003,14 @@ TEST(Lanes, LaneGraphRemoveLaneDisconnectsDanglingConnections)
     EXPECT_TRUE(graph.inputs_for(target).empty());
 }
 
-TEST(Lanes, AuthoredLanesEraseRemovesTheRecordAndItsConnections)
+TEST(Lanes, ConfiguredLanesEraseRemovesTheRecordAndItsConnections)
 {
-    iv::AuthoredLanes lanes(iv::LaneCreationContext{.sample_rate = 48000});
-    auto const lane_id = iv::InternedString::from_string("authored-lane");
+    iv::ConfiguredLanes lanes(iv::LaneCreationContext{.sample_rate = 48000});
+    auto const lane_id = iv::InternedString::from_string("configured-lane");
     auto const batch = lanes.create("iv.timeline.beat-trigger", lane_id);
     ASSERT_EQ(batch.upserts.size(), 1u);
     auto const runtime_lane = batch.upserts.front().lane;
-    lanes.record_connection(iv::AuthoredLaneConnection{
+    lanes.record_connection(iv::ConfiguredLaneConnection{
         .source_lane_id = lane_id,
         .target_lane_id = iv::InternedString::from_string("other-lane"),
         .input = {},
@@ -1026,9 +1026,9 @@ TEST(Lanes, AuthoredLanesEraseRemovesTheRecordAndItsConnections)
 TEST(Timeline, ApplyingLaneBatchMutatesAndPublishesFreshLaneSet)
 {
     iv::Timeline timeline;
-    iv::AuthoredLanes authored(iv::LaneCreationContext{.sample_rate = 48000});
-    auto const public_id = iv::InternedString::from_string("authored-lane");
-    auto const create_batch = authored.create("iv.timeline.beat-trigger", public_id);
+    iv::ConfiguredLanes configured(iv::LaneCreationContext{.sample_rate = 48000});
+    auto const public_id = iv::InternedString::from_string("configured-lane");
+    auto const create_batch = configured.create("iv.timeline.beat-trigger", public_id);
     ASSERT_EQ(create_batch.upserts.size(), 1u);
     auto const runtime_lane = create_batch.upserts.front().lane;
 
@@ -1062,9 +1062,9 @@ TEST(Timeline, ApplyingLaneBatchMutatesAndPublishesFreshLaneSet)
 TEST(Timeline, CanonicalSchemaRevisionIsOwnedAndIdempotent)
 {
     iv::Timeline timeline;
-    iv::AuthoredLanes authored(iv::LaneCreationContext{.sample_rate = 48000});
-    auto const public_id = iv::InternedString::from_string("authored-lane");
-    auto const create_batch = authored.create("iv.timeline.beat-trigger", public_id);
+    iv::ConfiguredLanes configured(iv::LaneCreationContext{.sample_rate = 48000});
+    auto const public_id = iv::InternedString::from_string("configured-lane");
+    auto const create_batch = configured.create("iv.timeline.beat-trigger", public_id);
     ASSERT_EQ(create_batch.upserts.size(), 1u);
 
     TimelineBatchWitness witness;
@@ -1094,16 +1094,16 @@ TEST(Timeline, CanonicalSchemaRevisionIsOwnedAndIdempotent)
 
 }
 
-TEST(ProjectTimelineLaneDeletion, RemovesAuthoredStateAndPublishesTimelineRemoval)
+TEST(ProjectTimelineLaneDeletion, RemovesConfiguredStateAndPublishesTimelineRemoval)
 {
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
-    iv::AuthoredLanes authored(iv::LaneCreationContext{.sample_rate = 48000});
-    auto const public_id = iv::InternedString::from_string("authored-lane");
-    auto const create_batch = authored.create("iv.timeline.beat-trigger", public_id);
+    iv::ConfiguredLanes configured(iv::LaneCreationContext{.sample_rate = 48000});
+    auto const public_id = iv::InternedString::from_string("configured-lane");
+    auto const create_batch = configured.create("iv.timeline.beat-trigger", public_id);
     ASSERT_EQ(create_batch.upserts.size(), 1u);
     auto const runtime_lane = create_batch.upserts.front().lane;
-    authored.record_connection(iv::AuthoredLaneConnection{
+    configured.record_connection(iv::ConfiguredLaneConnection{
         .source_lane_id = public_id,
         .target_lane_id = iv::InternedString::from_string("other-lane"),
         .input = {},
@@ -1115,10 +1115,10 @@ TEST(ProjectTimelineLaneDeletion, RemovesAuthoredStateAndPublishesTimelineRemova
     iv::ProjectPersistence persistence(std::filesystem::current_path(), {});
     auto timeline_execution_scope =
         iv::timeline_timeline_execution_bridge::bind(timeline, execution);
-    auto authored_timeline_scope =
-        iv::authored_lanes_timeline_bridge::bind(authored, timeline);
-    auto project_authored_scope =
-        iv::project_persistence_authored_lanes_bridge::bind(persistence, authored);
+    auto configured_timeline_scope =
+        iv::configured_lanes_timeline_bridge::bind(configured, timeline);
+    auto project_configured_scope =
+        iv::project_persistence_configured_lanes_bridge::bind(persistence, configured);
     iv::ProjectAckBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_project_delete_timeline_lane_requested_event,
@@ -1126,8 +1126,8 @@ TEST(ProjectTimelineLaneDeletion, RemovesAuthoredStateAndPublishesTimelineRemova
         builder);
     EXPECT_NO_THROW(builder.build());
 
-    EXPECT_FALSE(authored.contains(public_id));
-    EXPECT_TRUE(authored.connections().empty());
+    EXPECT_FALSE(configured.contains(public_id));
+    EXPECT_TRUE(configured.connections().empty());
     ASSERT_EQ(witness.changes.size(), 1u);
     EXPECT_EQ(
         witness.changes.front().removed_lanes,
@@ -1136,15 +1136,15 @@ TEST(ProjectTimelineLaneDeletion, RemovesAuthoredStateAndPublishesTimelineRemova
 
 }
 
-TEST(ProjectTimelineLaneDuplication, ClonesCanonicalAuthoredStateIntoOneNewTimelineLane)
+TEST(ProjectTimelineLaneDuplication, ClonesCanonicalConfiguredStateIntoOneNewTimelineLane)
 {
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
-    iv::AuthoredLanes authored(iv::LaneCreationContext{.sample_rate = 48000});
-    auto const source_id = iv::InternedString::from_string("authored-lane");
-    auto const create_batch = authored.create("iv.timeline.beat-trigger", source_id);
+    iv::ConfiguredLanes configured(iv::LaneCreationContext{.sample_rate = 48000});
+    auto const source_id = iv::InternedString::from_string("configured-lane");
+    auto const create_batch = configured.create("iv.timeline.beat-trigger", source_id);
     ASSERT_EQ(create_batch.upserts.size(), 1u);
-    auto const source_state = authored.records().front().serialized_state;
+    auto const source_state = configured.records().front().serialized_state;
 
     TimelineBatchWitness witness;
     auto timeline_batch_witness_scope =
@@ -1152,10 +1152,10 @@ TEST(ProjectTimelineLaneDuplication, ClonesCanonicalAuthoredStateIntoOneNewTimel
     iv::ProjectPersistence persistence(std::filesystem::current_path(), {});
     auto timeline_execution_scope =
         iv::timeline_timeline_execution_bridge::bind(timeline, execution);
-    auto authored_timeline_scope =
-        iv::authored_lanes_timeline_bridge::bind(authored, timeline);
-    auto project_authored_scope =
-        iv::project_persistence_authored_lanes_bridge::bind(persistence, authored);
+    auto configured_timeline_scope =
+        iv::configured_lanes_timeline_bridge::bind(configured, timeline);
+    auto project_configured_scope =
+        iv::project_persistence_configured_lanes_bridge::bind(persistence, configured);
     iv::ProjectAckBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_project_duplicate_timeline_lane_requested_event,
@@ -1163,9 +1163,9 @@ TEST(ProjectTimelineLaneDuplication, ClonesCanonicalAuthoredStateIntoOneNewTimel
         builder);
     EXPECT_NO_THROW(builder.build());
 
-    auto const records = authored.records();
+    auto const records = configured.records();
     ASSERT_EQ(records.size(), 2u);
-    auto const duplicate = std::ranges::find_if(records, [&](iv::AuthoredLaneRecord const& record) {
+    auto const duplicate = std::ranges::find_if(records, [&](iv::ConfiguredLaneRecord const& record) {
         return record.lane_id != source_id;
     });
     ASSERT_NE(duplicate, records.end());

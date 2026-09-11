@@ -16,7 +16,7 @@ sense:
 - rebuild affected instances when definitions or graph-input repatching require it
 - remember one realized builder per instance
 
-The remaining work is around persistence, richer per-instance authored state,
+The remaining work is around persistence, richer per-instance configured state,
 and broader UI affordances.
 
 ## UI Direction
@@ -94,15 +94,15 @@ mental model more deeply than necessary.
 
 The most useful remaining work in this area is:
 
-- persisting iv-module instances and their authored per-instance settings
+- persisting iv-module instances and their configured per-instance settings
 - exposing richer instance-management UI controls
 - connecting instance lifecycle to the future persistent-state app module
 
-## Project Authoring UI Notes
+## Project Configuration UI Notes
 
 Instance management should live in a separate command-opened panel rather than
 cluttering the live graph inspector. The panel should list project instances,
-their module roots, realization/build status, and authored per-instance
+their module roots, realization/build status, and configured per-instance
 settings. It should support create, select, duplicate, delete, source reveal,
 and retry/rebuild for failed instances.
 
@@ -129,14 +129,14 @@ manifest templates, then offers to instantiate it.
 Duplication has two intended policies:
 
 - ordinary duplicate creates another instance of the same module definition;
-- duplicate with setup also copies the selected instance's authored port state.
+- duplicate with setup also copies the selected instance's configured port state.
 
 Neither policy copies lanes or lane connections. Any lanes newly created for
 the duplicate are disconnected. This keeps routing explicit and avoids
 accidental doubled audio or hidden cross-instance patching.
 
 The first implementation should ship ordinary duplicate only. Duplicate with
-setup can later be implemented by copying the source instance's authored port
+setup can later be implemented by copying the source instance's configured port
 state into a new instance before `GraphInputLanes` observes that instance; it
 should not require special lane or timeline cloning behavior.
 

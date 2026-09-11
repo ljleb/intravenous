@@ -241,7 +241,7 @@ Options parse_options(int argc, char** argv)
         } else if (arg == "--help") {
             std::cout
                 << "Usage: iv_module_build_benchmark [--voices N] [--workspace PATH]"
-                << " [--stage full|authoring|lowering-topology|lowering-materialization|lowering-normalization|lowering|compilation|static-metadata]"
+                << " [--stage full|configuration|lowering-topology|lowering-materialization|lowering-normalization|lowering|compilation|static-metadata]"
                 << " [--optimization O0|O3]"
                 << " [--source-shape empty|input|nodes|connected|full]"
                 << " [--module PATH]"

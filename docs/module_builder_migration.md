@@ -183,7 +183,7 @@ Before another large architecture change, measure a source-only warm reload.
 configure, Ninja, PCH/export/link edges, generation copying, and finalizer
 sub-stages. The finalizer writes a replacement sidecar at
 `cmake-build/iv-module-finalizer-timings.txt`; it contains microsecond timings
-for bitcode parse/link, metadata, authoring-module clone, JIT creation and
+for bitcode parse/link, metadata, configuration-module clone, JIT creation and
 materialization, `module_main`, graph serialization/injection, runtime O3,
 native object emission, and the native link. `ModuleLoader` also reports
 generation copying, dynamic-library loading, and runtime graph materialization
@@ -231,12 +231,12 @@ stage:
    edits should invoke Ninja without an unnecessary CMake configure, while
    changes to CMake, manifests, include paths, toolchain, or source lists must
    still reconfigure.
-5. Retain source registration constructors and authoring entrypoints in the
-   source artifact. Cross-source iv-module authoring happens only after the
+5. Retain source registration constructors and configuration entrypoints in the
+   source artifact. Cross-source iv-module configuration happens only after the
    host has loaded the shared source-artifact generation.
 
 Only compare O2/O3 or introduce IR/content caching after these measurements.
-The future destination—specializing an authored graph into a real-time graph
+The future destination—specializing an configured graph into a real-time graph
 kernel—is separate work and must not be mixed into this reload-cost reduction.
 
 ### Node-layout extraction
@@ -268,27 +268,27 @@ Do not reintroduce the old implementation through a header-only operation
 table. The point is both to remove `layout.h` from the module PCH closure and
 to keep layout/storage independently compiled and debuggable.
 
-## Source authoring entry preservation
+## Source configuration entry preservation
 
 The finalizer no longer serializes a source's iv modules after executing them
 in an isolated JIT.  Instead it validates source-local registrations, emits
 the primitive-node artifact data, and retains the registration constructors
-plus exported `iv_source_registered_*` authoring entrypoints through
+plus exported `iv_source_registered_*` configuration entrypoints through
 `GlobalDCE`.  The host later joins independently built source artifacts into
-one authoring generation and invokes an iv-module entry only there.
+one configuration generation and invokes an iv-module entry only there.
 
 The timing sidecar now reports `source_registration_validation_us` and
-`source_authoring_ir_preserve_us`.  Runtime O3 remains the compatibility
-execution path; the retained authoring entrypoints are source-package inputs,
+`source_configuration_ir_preserve_us`.  Runtime O3 remains the compatibility
+execution path; the retained configuration entrypoints are source-package inputs,
 not DSP roots of their own.
 
-## Authoring JIT code generation
+## Configuration JIT code generation
 
 The finalizer still uses a temporary O0 ORC clone to validate and serialize
-primitive-node authoring data. It does not execute registered iv-module
+primitive-node configuration data. It does not execute registered iv-module
 builders there, because their providers may live in other IV source artifacts.
-The host's shared authoring generation performs that invocation after all
-relevant source artifacts are loaded. Its code is authoring-only, never DSP
+The host's shared configuration generation performs that invocation after all
+relevant source artifacts are loaded. Its code is configuration-only, never DSP
 execution code.
 
 The profiling script accepts repeated `--module` paths and
@@ -298,7 +298,7 @@ complete CMake/Ninja/compiler transcripts are retained in the sibling
 `<workspace>.logs` directory and printed on failure (or with `--verbose`).
 Use that corpus for the next profile-driven choice.
 
-The current O0-authoring-JIT corpus baseline has hot pipeline times from
+The current O0-configuration-JIT corpus baseline has hot pipeline times from
 1.216 s (`saw`) to 1.656 s (`q24_icosphere_pan`). Source export is 0.679–0.881
 s, while the finalizer is 0.498–0.825 s. The final native link is consistently
 about 0.21 s; the `q24_icosphere_pan` outlier instead spends 0.180 s in runtime
@@ -350,7 +350,7 @@ the recurring format work.
 retains its same `char const* label` and runtime tick behavior while delegating
 printing to `iv::details::write_debug_probe_sample` in
 `basic_nodes/debug_probe.cpp`. That source belongs to
-`intravenous_graph_builder`, so both the authoring JIT and finalized module DSO
+`intravenous_graph_builder`, so both the configuration JIT and finalized module DSO
 resolve it from `libiv_builder`; module-facing code only parses the small
 function declaration. The behavior-project module constructs a `DebugProbe`,
 exercising the linked-node path. This boundary is correct, but the subsequent

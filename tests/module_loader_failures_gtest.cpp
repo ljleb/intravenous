@@ -79,7 +79,7 @@ TEST(ModuleLoaderSources, RootSourceDoesNotPublishImportedModuleDefinitions)
     EXPECT_TRUE(static_cast<bool>(loaded.front().root));
 }
 
-TEST(ModuleLoaderSources, RegisteredSourceNodeIsResolvedInAuthoringGeneration)
+TEST(ModuleLoaderSources, RegisteredSourceNodeIsResolvedInConfigurationGeneration)
 {
     auto const project_root = iv::test::runtime_modules_root()
         / "registered_source_node";
@@ -154,7 +154,7 @@ TEST(ModuleLoaderFailures, MissingDependencyFails)
     auto loader = iv::test::make_loader();
     expect_failure_contains(
         [&] { (void)loader.load_source_definitions(fixtures / "missing_dependency"); },
-        "is unavailable in the current authoring generation");
+        "is unavailable in the current configuration generation");
 }
 
 TEST(ModuleLoaderFailures, UnrelatedDuplicateSourceIdsDoNotBlockLoading)

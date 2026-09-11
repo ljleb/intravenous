@@ -34,7 +34,7 @@ std::unique_ptr<IvModuleDefinitions::DefinitionState> make_definition_state(
         .dependencies = loaded.dependencies,
         .module_refs = state->module_refs,
         .root = loaded.root,
-        .authored_graph = loaded.authored_graph,
+        .configured_graph = loaded.configured_graph,
     };
     return state;
 }
@@ -50,7 +50,7 @@ std::unique_ptr<IvModuleDefinitions::NodeTypeState> make_node_type_state(
         .source_root = normalize_path(loaded.source_root),
         .compiler_record = loaded.compiler_record,
         .module_refs = state->module_refs,
-        .authored_graph = loaded.authored_graph,
+        .configured_graph = loaded.configured_graph,
     };
     return state;
 }
@@ -427,9 +427,9 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
                         error = "IV source published a node type with an empty ID";
                         break;
                     }
-                    if (!node_type->authored_graph) {
+                    if (!node_type->configured_graph) {
                         error = "IV source node type '" + node_type->node_type_id
-                            + "' has no authored graph";
+                            + "' has no configured graph";
                         break;
                     }
                     if (!registered_ids.insert(node_type->node_type_id).second) {

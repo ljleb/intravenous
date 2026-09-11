@@ -12,7 +12,7 @@
 namespace iv {
 class GraphBuilder;
 class GraphBuilderState;
-struct AuthoredGraph;
+struct ConfiguredGraph;
 
 namespace details {
 // All source-specific data needed while configuring a graph. The loader builds
@@ -41,7 +41,7 @@ extern "C" void iv_builder_session_destroy(BuilderSession*) noexcept;
 BuilderSession* iv_builder_child_session_create(
     BuilderSession* parent, std::size_t source_index);
 
-AuthoredGraph take_built_graph(BuilderSession*);
+ConfiguredGraph take_built_graph(BuilderSession*);
 
 void set_builder_sources(
     BuilderSession*, std::span<BuilderSourceView const> sources);

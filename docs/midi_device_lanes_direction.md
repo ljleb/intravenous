@@ -19,7 +19,7 @@ as possible.
 
 ## Explicit decisions
 
-- MIDI input belongs to authored timeline lanes, not graph nodes.
+- MIDI input belongs to configured timeline lanes, not graph nodes.
 - `iv::juce::midi_input()` and all of its graph-node/resource-runtime support
   have been removed.
 - There may be multiple MIDI device lanes in the project, but **only one lane
@@ -38,7 +38,7 @@ as possible.
 
 The repository already supplies most of the lane-level machinery:
 
-- `AuthoredLanes` creates, reloads, persists, and reconstructs user-authored
+- `ConfiguredLanes` creates, reloads, persists, and reconstructs user-configured
   lanes.
 - `CreatableLane` supplies creation descriptors to the VS Code client.
 - Realtime event lane ports and `EventTypeId::midi` are already implemented.
@@ -51,7 +51,7 @@ The repository already supplies most of the lane-level machinery:
 
 The relevant existing implementation locations are:
 
-- `src/intravenous/runtime/authored_lanes.{h,cpp}`
+- `src/intravenous/runtime/configured_lanes.{h,cpp}`
 - `src/intravenous/runtime/audio_device_lanes.{h,cpp}`
 - `src/intravenous/runtime/audio_device_lane_nodes.h`
 - `src/intravenous/runtime/timeline_execution_events.h`
@@ -61,7 +61,7 @@ The relevant existing implementation locations are:
 
 ### Creation
 
-Add an authored creatable lane type, tentatively named
+Add an configured creatable lane type, tentatively named
 `iv.devices.midi-input`.
 
 The initial canonical lane UI state is:
@@ -150,12 +150,12 @@ previous state of the failing lane's view.
 ### Removal
 
 There is existing lower-level removal support in `Timeline::remove_lane` and
-the lane graph. There is not currently a public authored-lane deletion request,
-authored-record deletion method, or VS Code deletion control. Add those as a
-generic authored-lane capability; MIDI should use it rather than inventing a
+the lane graph. There is not currently a public configured-lane deletion request,
+configured-record deletion method, or VS Code deletion control. Add those as a
+generic configured-lane capability; MIDI should use it rather than inventing a
 MIDI-only deletion path.
 
-Generic authored-lane deletion now removes authored connections and the
+Generic configured-lane deletion now removes configured connections and the
 persistent record, then forwards `TimelineLaneBatchUpdate{.removals = ...}`
 through `TimelineLaneBatchRequested`. Timeline applies the batch and emits the
 authoritative refreshed lane set. MIDI uses this path unchanged.
@@ -177,11 +177,11 @@ without pacing responsibilities. It owns:
 - MIDI device inventory and selection validation;
 - a bounded timestamped MIDI queue;
 - the prepared event block for the claimed lane; and
-- bridges to authored-lane changes, realtime pass timing, project persistence,
+- bridges to configured-lane changes, realtime pass timing, project persistence,
   lane-view RPC, and shutdown.
 
 It does not own a special global timeline lane. The timeline lane is the
-authored lane selected by the claim.
+configured lane selected by the claim.
 
 ### MIDI lane node
 
@@ -313,8 +313,8 @@ ordering must guarantee preparation before the realtime lane node ticks.
 
 ## Persistence and RPC
 
-Persist the MIDI lane's selected device as its authored lane UI state, so it
-replays with the existing `timeline.createAuthoredLane` persistence model.
+Persist the MIDI lane's selected device as its configured lane UI state, so it
+replays with the existing `timeline.createConfiguredLane` persistence model.
 The device ID is authoritative; its saved name is only diagnostic/fallback
 display data.
 
@@ -322,7 +322,7 @@ Add RPC support for:
 
 - fetching the current MIDI device inventory and global-claim status;
 - atomically selecting/unselecting a device for a MIDI lane; and
-- generic authored-lane deletion.
+- generic configured-lane deletion.
 
 Selection failures must be structured, not converted into a generic stale UI
 state. Useful reasons include `lane-not-found`, `revision-conflict`,
@@ -350,9 +350,9 @@ resources.
 
 ## Implementation sequence
 
-1. **Complete:** add generic authored-lane deletion end to end: store,
+1. **Complete:** add generic configured-lane deletion end to end: store,
    timeline batch, persistence, RPC, and lane-view control.
-2. Add the MIDI authored lane type, its canonical UI state, and a lane
+2. Add the MIDI configured lane type, its canonical UI state, and a lane
    presentation dropdown with a non-optimistic pending state.
 3. Add `MidiDeviceLanes`, a fake device backend, atomic global claim handling,
    and persistence/RPC integration.

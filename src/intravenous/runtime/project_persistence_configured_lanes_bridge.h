@@ -3,11 +3,11 @@
 #include <intravenous/bridge.h>
 
 namespace iv {
-class AuthoredLanes;
+class ConfiguredLanes;
 class ProjectPersistence;
 
 IV_DECLARE_BRIDGE(
-    project_persistence_authored_lanes_bridge,
+    project_persistence_configured_lanes_bridge,
     ProjectPersistence,
-    AuthoredLanes);
+    ConfiguredLanes);
 } // namespace iv

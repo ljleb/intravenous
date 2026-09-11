@@ -485,11 +485,11 @@ void GraphBuilder::subgraph_event_outputs(
     state(*this).subgraph_event_outputs(*scope, refs);
 }
 
-AuthoredGraph GraphBuilder::finish() const &
+ConfiguredGraph GraphBuilder::finish() const &
 {
     return state(*this).finish();
 }
-AuthoredGraph GraphBuilder::finish() &&
+ConfiguredGraph GraphBuilder::finish() &&
 {
     if (!_session) throw std::logic_error("cannot finish an empty GraphBuilder");
     return details::take_built_graph(_session);
