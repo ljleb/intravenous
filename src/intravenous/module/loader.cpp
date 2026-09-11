@@ -613,7 +613,7 @@ class ModuleLoader::Impl {
 
     struct CompiledPackage {
         ResolvedPackage root;
-        // All independently discovered source packages participate in the
+        // All independently discovered IV packages participate in the
         // current graph configuration. Stable IDs are discovered from their
         // compiler definitions after loading, never by parsing C++ text.
         std::vector<ResolvedPackage> configuration_packages;
@@ -972,7 +972,7 @@ public:
                 module_path = module_path.parent_path();
             } else {
                 throw std::runtime_error(
-                    "root source path must be an IV package directory, " +
+                    "root package path must be an IV package directory, " +
                     std::string(IV_PACKAGE_MANIFEST_FILE));
             }
         }
