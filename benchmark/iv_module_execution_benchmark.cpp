@@ -1,7 +1,4 @@
-#include <intravenous/module/abi.h>
-#include <intravenous/module/configured_graph_wire.h>
-#include <intravenous/graph/builder/lowering.hpp>
-#include <intravenous/graph/compiler.h>
+#include <intravenous/module/loader.h>
 #include <intravenous/node/block_executor.h>
 
 #include <algorithm>
@@ -18,14 +15,6 @@
 #include <string_view>
 #include <vector>
 
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
-#else
-#include <dlfcn.h>
-#endif
 
 namespace {
 
@@ -40,51 +29,6 @@ struct Options {
     size_t sample_rate = 48000;
 };
 
-class DynamicLibrary {
-#if defined(_WIN32)
-    HMODULE handle_ = nullptr;
-#else
-    void* handle_ = nullptr;
-#endif
-
-public:
-    explicit DynamicLibrary(std::filesystem::path const& path)
-    {
-#if defined(_WIN32)
-        handle_ = LoadLibraryW(path.c_str());
-        if (!handle_) {
-            throw std::runtime_error("LoadLibraryW failed for '" + path.string() + "'");
-        }
-#else
-        handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-        if (!handle_) {
-            throw std::runtime_error(
-                "dlopen failed for '" + path.string() + "': " + dlerror());
-        }
-#endif
-    }
-
-    ~DynamicLibrary()
-    {
-#if defined(_WIN32)
-        if (handle_) FreeLibrary(handle_);
-#else
-        if (handle_) dlclose(handle_);
-#endif
-    }
-
-    DynamicLibrary(DynamicLibrary const&) = delete;
-    DynamicLibrary& operator=(DynamicLibrary const&) = delete;
-
-    void* symbol(char const* name) const
-    {
-#if defined(_WIN32)
-        return reinterpret_cast<void*>(GetProcAddress(handle_, name));
-#else
-        return dlsym(handle_, name);
-#endif
-    }
-};
 
 size_t parse_size(std::string_view value, char const* option)
 {
@@ -157,50 +101,19 @@ double percentile(std::vector<double> values, double percentile)
 
 void benchmark_module(std::filesystem::path const& path, Options const& options)
 {
-    DynamicLibrary library(path);
-    auto const abi_version = reinterpret_cast<iv_module_abi_version_fn>(
-        library.symbol("iv_module_abi_version"));
-    auto const source_module_count = reinterpret_cast<iv_source_module_count_fn>(
-        library.symbol("iv_source_module_count"));
-    auto const configured_graph = reinterpret_cast<iv_source_module_configured_graph_fn>(
-        library.symbol("iv_source_module_configured_graph"));
-    auto const node_configs = reinterpret_cast<iv_source_module_node_configs_fn>(
-        library.symbol("iv_source_module_node_configs"));
-    auto const node_types = reinterpret_cast<iv_module_node_types_fn>(
-        library.symbol("iv_module_node_types"));
-    if (!abi_version || !source_module_count || !configured_graph || !node_configs || !node_types) {
-        throw std::runtime_error("module '" + path.string() + "' is missing IV exports");
+    iv::ModuleLoader loader(std::filesystem::current_path(), {});
+    auto definitions = loader.load_package_definitions(path);
+    if (definitions.empty()) {
+        throw std::runtime_error("IV package '" + path.string() + "' has no iv modules");
     }
-    if (abi_version() != iv::IV_MODULE_ABI_VERSION) {
-        throw std::runtime_error("module '" + path.string() + "' has an incompatible ABI");
+    if (definitions.size() != 1) {
+        throw std::runtime_error(
+            "IV package '" + path.string()
+            + "' provides multiple iv modules; execution benchmark requires one");
     }
-
-    if (source_module_count() == 0) {
-        throw std::runtime_error("IV package '" + path.string() + "' has no IV modules");
-    }
-    auto const graph_view = configured_graph(0);
-    auto const config_view = node_configs(0);
-    auto const type_view = node_types();
-    if (config_view.size % sizeof(iv::ModuleNodeConfigRecord) != 0
-        || type_view.size % sizeof(iv::details::NodeCompilerRecord) != 0) {
-        throw std::runtime_error("module '" + path.string() + "' has invalid IV tables");
-    }
-    auto configured = iv::deserialize_configured_graph(
-        std::span(
-            static_cast<std::byte const*>(graph_view.data), graph_view.size),
-        std::span(
-            static_cast<iv::details::NodeCompilerRecord const*>(type_view.data),
-            type_view.size / sizeof(iv::details::NodeCompilerRecord)),
-        std::span(
-            static_cast<iv::ModuleNodeConfigRecord const*>(config_view.data),
-            config_view.size / sizeof(iv::ModuleNodeConfigRecord)));
-    auto plan = iv::GraphCompiler::compile(
-        iv::GraphLowerer::lower(
-            std::move(configured), {.execution_root = true}));
-    auto root = std::make_shared<iv::RuntimeGraphRoot>(
-        std::move(plan.graph));
+    auto& definition = definitions.front();
     auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(*root),
+        iv::TypeErasedNode(definition.root),
         options.block_size,
         {},
         std::nullopt,

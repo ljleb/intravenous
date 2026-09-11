@@ -168,10 +168,6 @@ Options parse_options(int argc, char** argv)
             options.voices = std::stoull(std::string(require_value(arg)));
         } else if (arg == "--keep") {
             options.keep_workspace = true;
-        } else if (arg == "--stage") {
-            options.compile_stage = parse_compile_stage(require_value(arg));
-        } else if (arg == "--optimization") {
-            options.optimization = parse_optimization(require_value(arg));
         } else if (arg == "--no-source-introspection") {
             options.source_introspection = false;
         } else if (arg == "--no-pch") {
@@ -189,8 +185,6 @@ Options parse_options(int argc, char** argv)
         } else if (arg == "--help") {
             std::cout
                 << "Usage: iv_module_build_benchmark [--voices N] [--workspace PATH]"
-                << " [--stage full|configuration|lowering-topology|lowering-materialization|lowering-normalization|lowering|compilation|static-metadata]"
-                << " [--optimization O0|O3]"
                 << " [--source-shape empty|input|nodes|connected|full]"
                 << " [--module PATH]"
                 << " [--c-compiler PATH] [--cxx-compiler PATH]"
@@ -292,7 +286,7 @@ std::filesystem::path find_finalizer_timings(std::filesystem::path const& worksp
     std::vector<std::filesystem::path> candidates;
     for (std::filesystem::recursive_directory_iterator it(workspace), end; it != end; ++it) {
         if (it->is_regular_file()
-            && it->path().filename() == "iv-module-finalizer-timings.txt") {
+            && it->path().filename() == "iv-package-finalizer-timings.txt") {
             candidates.push_back(it->path());
         }
     }
@@ -441,9 +435,7 @@ PhaseResult summarize(
     if (edges) {
         for (auto const& edge : *edges) {
             if (edge.output.ends_with("cmake_pch.hxx.gch")) result.pch_ms += edge.duration_ms;
-            if (edge.output.ends_with("root_export.cpp.o")) result.export_ms += edge.duration_ms;
-            if (edge.output.ends_with(".so") || edge.output.ends_with(".dylib")
-                || edge.output.ends_with(".dll")) result.link_ms += edge.duration_ms;
+            if (edge.output.ends_with(".ivpkg.bc")) result.link_ms += edge.duration_ms;
         }
     }
     return result;
@@ -466,8 +458,7 @@ void print(
               << " pch=" << precompiled_header
               << " pipeline_ms=" << result.pipeline_ms
               << " pch_ms=" << result.pch_ms
-              << " export_ms=" << result.export_ms
-              << " link_ms=" << result.link_ms
+              << " package_finalize_ms=" << result.link_ms
               << " configure_us=" << result.configure_us
               << " ninja_build_us=" << result.ninja_build_us
               << " generation_copy_us=" << result.generation_copy_us

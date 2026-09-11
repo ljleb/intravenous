@@ -573,6 +573,31 @@ void mark_reachable(Value const* value, SmallPtrSetImpl<GlobalValue const*>& rea
     }
 }
 
+
+void reject_node_runtime_mutable_globals(std::span<IrNodeRecord const> records)
+{
+    for (auto const& record : records) {
+        auto const* initializer = dyn_cast_or_null<ConstantStruct>(record.initializer);
+        if (!initializer || initializer->getNumOperands() != 6) {
+            fail("malformed compiler record while validating node runtime globals");
+        }
+        SmallPtrSet<GlobalValue const*, 64> reachable;
+        mark_reachable(initializer->getOperand(1), reachable);
+        for (auto const* value : reachable) {
+            auto const* global = dyn_cast<GlobalVariable>(value);
+            if (!global || global->isDeclaration() || global->isConstant()
+                || global->getName().starts_with("llvm.")) {
+                continue;
+            }
+            fail(
+                "node type '" + record.type_name
+                + "' runtime/compiler operations reference mutable package global '"
+                + global->getName().str()
+                + "'; persistent mutable runtime data must be Node::State");
+        }
+    }
+}
+
 struct RetainedGlobal {
     GlobalVariable* global = nullptr;
     std::size_t size = 0;
@@ -1137,6 +1162,7 @@ int finalize(Options options)
     stage_started_at = timings.start_stage();
     auto node_records = scan_node_records(package);
     auto metadata = load_metadata(options.metadata_dir);
+    reject_node_runtime_mutable_globals(node_records);
     auto state_structures = bind_state_metadata(node_records, metadata);
     require_node_config_metadata(node_records, metadata);
     auto definitions = package_definition_globals(package);
