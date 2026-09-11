@@ -1324,35 +1324,59 @@ public:
         for (auto const& source : root_compiled.authoring_sources) {
             if (normalize(source.module_dir) == normalize(root_compiled.root.module_dir)) {
                 compiled_sources.push_back(root_compiled);
-            } else {
+                continue;
+            }
+            try {
                 compiled_sources.push_back(compile_source_unlocked(source.module_dir));
+            } catch (std::exception const& exception) {
+                // The authoring generation is assembled from the valid source
+                // artifacts that are currently available. An unrelated broken
+                // source must not prevent another source from loading; if the
+                // requested source actually instantiates a definition from the
+                // failed provider, registered-ID lookup below reports that
+                // provider as unavailable instead.
+                if (log_sink_) {
+                    log_sink_(
+                        "[authoring-generation-source-skipped] root="
+                        + source.module_dir.generic_string()
+                        + " error=" + exception.what());
+                }
             }
         }
 
-        std::vector<ModuleLoader::LoadedSource> loaded_sources;
-        loaded_sources.reserve(compiled_sources.size());
-        std::optional<std::size_t> root_index;
-        for (std::size_t index = 0; index < compiled_sources.size(); ++index) {
-            if (normalize(compiled_sources[index].root.module_dir)
-                == normalize(root_compiled.root.module_dir)) {
-                root_index = index;
+        std::optional<ModuleLoader::LoadedSource> root_source;
+        std::vector<ModuleRef> authoring_generation_refs;
+        authoring_generation_refs.reserve(compiled_sources.size());
+        for (auto const& compiled : compiled_sources) {
+            auto const is_root = normalize(compiled.root.module_dir)
+                == normalize(root_compiled.root.module_dir);
+            try {
+                auto loaded = load_compiled_source(compiled);
+                if (loaded.authoring_artifact) {
+                    authoring_generation_refs.push_back(loaded.authoring_artifact);
+                }
+                if (is_root) {
+                    root_source = std::move(loaded);
+                }
+            } catch (std::exception const& exception) {
+                if (is_root) throw;
+                details::clear_source_definitions_for_root(
+                    compiled.root.module_dir.generic_string());
+                if (log_sink_) {
+                    log_sink_(
+                        "[authoring-generation-source-load-skipped] root="
+                        + compiled.root.module_dir.generic_string()
+                        + " error=" + exception.what());
+                }
             }
-            loaded_sources.push_back(load_compiled_source(compiled_sources[index]));
         }
-        if (!root_index) {
+        if (!root_source) {
             throw std::logic_error("authoring generation omitted its requested IV source");
         }
 
-        std::vector<ModuleRef> authoring_generation_refs;
-        authoring_generation_refs.reserve(loaded_sources.size());
-        for (auto const& source : loaded_sources) {
-            if (source.authoring_artifact) {
-                authoring_generation_refs.push_back(source.authoring_artifact);
-            }
-        }
         return author_registered_modules(
-            compiled_sources[*root_index],
-            std::move(loaded_sources[*root_index]),
+            root_compiled,
+            std::move(*root_source),
             authoring_generation_refs);
     }
 };

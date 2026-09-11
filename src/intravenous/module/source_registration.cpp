@@ -91,12 +91,12 @@ SourceRegistrationView find_registered_definition(std::string_view id)
     if (matches.empty()) {
         throw std::runtime_error(
             "registered IV definition '" + std::string(id)
-            + " is unavailable in the current authoring generation");
+            + "' is unavailable in the current authoring generation");
     }
     if (matches.size() != 1) {
         throw std::runtime_error(
             "registered IV definition '" + std::string(id)
-            + " has multiple providers in the current authoring generation");
+            + "' has multiple providers in the current authoring generation");
     }
     return matches.front();
 }
