@@ -172,9 +172,9 @@ where `table` can refer to a retained constant array/string/table defined in the
 
 This capability is part of the new design. Registered-node public configuration must not be constrained to pointer-free POD data merely for convenience.
 
-### 3.6 Current correctness/performance checkpoint
+### 3.6 Pre-registry correctness/performance checkpoint
 
-At the current design starting point:
+Before the IV-source/registry refactor, the design starting point recorded:
 
 ```text
 100% tests passed, 0 tests failed out of 443
@@ -201,7 +201,10 @@ The existing profiler demonstrated that measurement and compiler-stage visibilit
 
 ## 4. Current LLVM hot-reload pipeline
 
-This section records the hot-reload pipeline that should be preserved as the foundation for the next work.
+This section records the hot-reload pipeline that is being preserved as the
+foundation for the next work.  The historical per-source authoring step is
+shown first because it explains the original finalizer split; the current
+source/registry implementation changes where cross-source authoring happens.
 
 ### 4.1 High-level pipeline
 
@@ -212,10 +215,7 @@ source edit
 DependencyWatcher / IvModuleReload
     |
     v
-manifest + import closure
-    |
-    v
-generated include/import environment
+discover IV source packages
     |
     v
 existing custom CMake OR default CMake
@@ -235,34 +235,29 @@ iv_module_finalize
 clone authoring-reachable IR      retain master LLVM
     |                                  |
     v                                  |
-ORC JIT                              node code
+source authoring entrypoints           node code
     |                                  |
     v                                  |
-dispatch registered IV_MODULE builders |
-    |                                  |
-    v                                  |
-AuthoredGraph                         |
-    |                                  |
-    +--------------+-------------------+
-                   |
-                   v
-serialize graph/config/compiler data
-prune authoring-only IR
+serialize node/config/compiler data
+preserve source authoring IR
 optimize retained runtime/native IR
 emit native object
 invoke original CMake link command
                    |
                    v
-module shared library
+signature-addressed source artifact
                    |
                    v
-generation copy + dlopen
+load every discovered source artifact into the shared authoring generation
                    |
                    v
-deserialize AuthoredGraph
+invoke the requested registered IV_MODULE builders
                    |
                    v
-current GraphLowerer / GraphCompiler
+fully realized AuthoredGraph
+                   |
+                   v
+current GraphLowerer / GraphCompiler compatibility path
                    |
                    v
 current runtime graph
@@ -278,7 +273,7 @@ The authoring JIT is therefore a consumer of the same frontend result that later
 
 ### 4.3 Finalizer authoring clone
 
-The finalizer:
+Historically, the finalizer:
 
 1. reads LLVM input from the intercepted link;
 2. scans emitted node compiler records;
@@ -287,11 +282,20 @@ The finalizer:
 5. adds a JIT-global-address table so executed pointer values can later be related back to retained LLVM globals;
 6. loads native dependencies needed by authoring;
 7. runs global initializers;
-8. executes each registered `IV_MODULE` builder against its own `BuilderSession`/`GraphBuilder`;
-9. captures the resulting `AuthoredGraph`;
-10. resolves relocatable configuration pointers;
-11. removes the authoring JIT generation;
-12. prunes authoring-only IR from the retained module.
+8. executed each registered `IV_MODULE` builder against its own
+   `BuilderSession`/`GraphBuilder`;
+9. captured and serialized the resulting `AuthoredGraph`;
+10. resolved relocatable configuration pointers;
+11. removed the authoring JIT generation; and
+12. pruned authoring-only IR from the retained module.
+
+The source/registry implementation deliberately stops at the independently
+compiled source artifact.  It retains exported source registration and
+authoring entrypoints.  The host loads the artifacts for the participating IV
+sources, then invokes registered iv-module builders only after that complete
+authoring generation is available.  This is what permits `g.node<"id">()` to
+resolve another source without merging that source's C++ files into the
+consumer target.
 
 This separation should remain conceptually intact even as registered node types and multiple iv modules per IV source are introduced.
 
@@ -315,7 +319,11 @@ The future registry/source design must not regress this property.
 
 ### 4.5 Generation loading remains useful
 
-The current loader builds a unique generation artifact, copies the shared library into a generation directory, loads it, validates exported ABI/data, and holds module references alive for the generation.
+The current loader builds a signature-addressed source artifact, loads it,
+validates exported ABI/data, and holds the artifact references alive for every
+realization that uses them.  A changed source therefore receives a new DSO
+path while graphs that still use an earlier source generation retain the old
+artifact.
 
 Even if the eventual realtime executor becomes a generated project kernel, the general generation model remains useful for:
 
@@ -344,23 +352,28 @@ module identity or entry function. `IV_MODULE`/`IV_NODE` registrations are the
 source of stable definition identities, and one source reload publishes its
 complete definition set (including zero or many iv modules).
 
-Generated imports are definition-addressed, not source-addressed:
+The generic dynamic API needs no generated provider header at all:
 
-```text
-iv/nodes/<node-or-module-id>
-iv/nodes-global/<global-node-or-module-id>
+```cpp
+auto node = g.node<"some.registered.id">();
 ```
 
-The application/project generates one interface header for every discovered
-registered definition. Those headers are distillations of a definition and
-must not include provider implementation source. A source remains the unit
-watched, compiled, and transactionally replaced; `GraphInputLanes` and module
-instances consume published iv-module definitions, never an IV source.
+The stable string is sufficient for C++ compilation.  A source remains the
+unit watched, compiled, and transactionally replaced; `GraphInputLanes` and
+module instances consume published iv-module definitions, never an IV source.
+Compiler-produced registration data, not a scan of source text or generated
+includes, is authoritative for associating an ID with a source artifact.
 
-The initial source refinement publishes dynamic, zero-argument C++
-interfaces: `g.node<"id">()`. General cross-source construction arguments and
-typed interface recovery remain follow-on registry work; they are not part of
-the deferred whole-graph execution rewrite.
+The source-list protocol therefore reports one source package with its
+`sourceId`/root plus the currently published `moduleIds` and `nodeTypeIds`.
+It does not manufacture one source-list item per macro spelling. A node-only
+source is visible with an empty `moduleIds` list and its registered node-type
+IDs; a source with several `IV_MODULE`s exposes every instantiable module ID.
+
+The initial implementation supports the dynamic, zero-argument form above.
+Public cross-source construction arguments and typed interface recovery remain
+follow-on registry work; the design below specifies them, but they are not
+claimed as implemented by this compatibility-runtime branch.
 
 Follow-on work in this branch adds registration identities, source-local
 authoring outputs, and their cache/invalidation boundaries. The current
@@ -462,6 +475,12 @@ This is intentionally not called an iv module. An iv module is a graph definitio
 
 `iv_source.json` is the IV-source manifest. Its role is build/package discovery, not a redundant registry of identities already registered in C++.
 
+Every compilation belonging to a source package carries that package's
+canonical source-root identity. Registration ownership must use this explicit
+package identity, not a compiler-dependent spelling of `__FILE__`; custom
+CMake sibling translation units are therefore providers of the same source
+package while their declaration locations remain available as metadata.
+
 The manifest should describe how to build the source, not redundantly enumerate identities already registered in C++ unless a real use case requires that duplication.
 
 ---
@@ -522,9 +541,11 @@ SourceDefinitions {
 }
 ```
 
-The server atomically replaces that source's previous candidate set.
-
-It then validates the complete candidate registry before publishing a new valid generation.
+The server atomically replaces that source's previous **candidate** set. It
+then validates the complete candidate registry before publishing a new valid
+generation. Validation failure publishes no partial per-ID result: every live
+map, ownership record, and consumer notification continues to describe the
+previous complete generation.
 
 Validation includes at least:
 
@@ -567,7 +588,13 @@ No special “move detection” is required, and stable IDs never depend on sour
 
 ### 7.1 `node_interface<Id>`
 
-Every registered ID exposes enough static C++ information for consumers to compile `g.node<Id>(...)` without including the provider's implementation type or source.
+`g.node<Id>(...)` is intrinsically available for every stable ID. Its
+bootstrap form does not need a generated C++ declaration, a provider header,
+or a source-to-ID scan merely to name `Id`.
+
+Optional static interface data can later expose enough C++ information for a
+consumer to receive a typed node ref without including the provider's
+implementation type or source.
 
 Conceptually:
 
@@ -585,13 +612,15 @@ The interface may describe:
 - any compile-time data required to return a typed node ref;
 - stable interface revision/hash metadata if useful.
 
-The generated specialization is a distillation of the provider, not a source include.
+Such a specialization is a distillation of the provider, not a source include.
+It is an optimization for static typing and validation, not a prerequisite for
+dynamic authoring.
 
 ### 7.2 Imported interfaces do not include implementation code
 
-An IV source using another registered ID should not parse that node's/iv module's implementation headers merely to call it.
-
-The build system can generate interface specializations for the IDs imported by that IV source. These may be supplied through a generated include or force-included header.
+An IV source using another registered ID must not parse that node's/iv module's
+implementation headers merely to call it. The generic ID API removes the need
+for generated headers during bootstrap entirely.
 
 The essential dependency split is:
 
@@ -603,29 +632,19 @@ public interface changes
     -> consumers using that ID recompile
 ```
 
-### 7.3 Per-IV-source generated interface header
+### 7.3 Optional generated static-interface data
 
-A practical direction is one generated interface header per IV source, containing only the registered IDs that source imports.
+A later static-interface system may materialize compact metadata for one
+registered definition at a time, for example as
+`<iv/nodes/iv.gain>`. Such a unit contains only the distilled static contract
+for that stable ID; it never includes provider implementation source and is
+not needed to make `g.node<"iv.gain">()` compile.
 
-For example:
+This remains driven by compiler-produced interface metadata and interface
+hashes. Textual scanning of an include or of a registration macro is neither a
+registration authority nor a dependency authority.
 
-```text
-build/generated/current-source/iv_interfaces.h
-```
-
-might contain distilled specializations for:
-
-```text
-iv.gain
-iv.filter
-my.voice
-```
-
-This header should not contain the entire global registry; otherwise an unrelated interface change would invalidate every IV source.
-
-The existing import-scanning/generated-header machinery can be repurposed to establish these dependencies without importing implementation source.
-
-### 7.4 Same-IV-source definitions must be immediately fresh
+### 7.4 Same-IV-source definitions are immediately usable
 
 A critical compiler invariant is:
 
@@ -646,13 +665,16 @@ void voice(GraphBuilder& g)
 }
 ```
 
-`voice` must compile against the just-edited `Gain` interface, not against the previous successful server-generated interface and not through a second-save/recompile delay.
+`voice` must be able to call the generic `g.node<"iv.gain">()` immediately.
+It does not require a generated specialization, so there is no stale-import
+or duplicate-explicit-specialization failure mode in the dynamic path.
 
-This matters because changing `Gain` may simultaneously change what calls are valid. A stale generated interface can produce a false error or false success on the first save and only become correct on the next save.
+### 7.5 Static-interface synthesis at registration sites
 
-### 7.5 Clang plugin synthesis at registration sites
-
-**Provisional implementation direction:** let the Clang plugin recognize `IV_NODE`/`IV_MODULE` registration declarations and make a fresh local `node_interface<Id>` available immediately after the registration point.
+**Provisional implementation direction:** when static typing becomes useful,
+let the Clang plugin recognize `IV_NODE`/`IV_MODULE` registration declarations
+and make fresh local static-interface data available immediately after the
+registration point.
 
 For node types, this is plausible because the complete C++ type AST exists when the registration declaration is processed.
 
@@ -668,9 +690,9 @@ imported interface
     generated by the server for a registration provided elsewhere
 ```
 
-The public DSL still sees only `node_interface<Id>`.
-
-A local registration must supersede stale imported information for compilation of that translation unit without creating an illegal C++ explicit-specialization redefinition.
+The public DSL always supports the generic dynamic call. A local static
+interface must supersede stale imported static metadata without creating an
+illegal C++ explicit-specialization redefinition.
 
 The exact trait layering/macros used to achieve that should be chosen after a Clang 23 prototype.
 
@@ -835,9 +857,9 @@ The node implementation object itself does **not** need to be POD or trivially s
 
 ---
 
-## 10. Registered ID dependencies
+## 10. Registered ID authoring dependencies
 
-### 10.1 `g.node<Id>` records a dependency
+### 10.1 `g.node<Id>` greedily realizes a dependency
 
 When an iv module contains:
 
@@ -845,23 +867,27 @@ When an iv module contains:
 auto x = g.node<"iv.gain">(...);
 ```
 
-its authored result depends on the stable ID `iv.gain`.
+its authoring execution resolves the stable ID `iv.gain` through the current
+authoring generation. The provider implementation source is not included in
+the caller, but its already-compiled authoring entry is executed immediately.
 
-The dependency does not mean that `iv.gain`'s implementation source is included or executed during the caller's authoring.
+For a primitive node this produces an ordinary concrete/tiled node bundle.
+For an iv module it executes the child builder and embeds an ordinary
+`SubgraphNodeBundle`. A registered ID is therefore an authoring operation,
+not a persistent authored-graph node kind.
 
-The caller should author a reference/instance under that ID and defer implementation expansion/resolution.
+### 10.2 No unresolved registered-node boundary
 
-### 10.2 Late iv-module expansion
+`g.node<"some.module">()` must not fabricate a placeholder boundary or an
+invented port interface. The returned `NodeRef` is the actual realized child,
+so named/indexed sample ports, event ports, layouts, zero outputs, and dynamic
+output counts all retain their existing DSL meaning.
 
-A major cache improvement is that `g.node<"some.module">()` should not execute and embed the referenced iv module immediately.
+A finished `AuthoredGraph` is consequently self-contained and fully realized:
+there are no deferred graph-production operations for downstream lowering to
+interpret.
 
-Instead, the parent authored graph stores an instance of that registered ID.
-
-This means changing a child iv module's internal graph does not invalidate every parent `AuthoredGraph` that references it, as long as its public interface remains compatible.
-
-The child is expanded during whole-project finalization.
-
-### 10.3 Node types are leaves; iv modules recurse
+### 10.3 Node types are leaves; iv modules recurse during authoring
 
 For dependency validation and finalization:
 
@@ -870,8 +896,8 @@ registered node type
     -> primitive leaf
 
 registered iv module
-    -> cached AuthoredGraph
-       -> may contain more registered IDs
+    -> compiled authoring entry
+       -> executes and embeds child graph
 ```
 
 This gives a simple module-dependency graph.
@@ -890,7 +916,9 @@ C -> A
 
 The server reports the cycle and keeps the last valid registry/project generation active.
 
-This check happens at the registered-ID graph level, not as recursive C++ includes or recursive authoring JIT calls.
+The authoring generation also keeps an execution stack. That stack is the
+authoritative check for argument/control-flow-dependent realizations and
+reports the concrete `A -> B -> C -> A` request chain before recursion occurs.
 
 ### 10.5 Interface hash versus definition hash
 
@@ -904,10 +932,14 @@ definition hash
     primitive LLVM implementation OR iv-module AuthoredGraph/definition
 ```
 
-If only the definition changes:
+If only a primitive definition changes:
 
 - consumer IV sources do not need to recompile;
 - projects using the ID need a new finalized kernel.
+
+If an iv-module definition changes, its transitive authoring dependents are
+re-authored from reusable compiled source artifacts. They do not require a
+Clang frontend pass unless a C++ compilation interface changed.
 
 If the interface changes:
 
@@ -920,20 +952,31 @@ This distinction is central to fast graph reload.
 
 ## 11. What is cached
 
-### 11.1 Decided starting point: cache `AuthoredGraph`
+### 11.1 Cache compiled authoring code first; cache realizations opportunistically
 
 Do not cache `BuilderSession`.
 
 `BuilderSession` is mutable authoring machinery. It contains the data structures used to construct a graph efficiently, not the durable semantic result.
 
-The cache boundary is:
+The durable source artifact boundary is:
 
 ```text
-GraphBuilder
-    -> BuilderSession
-    -> AuthoredGraph
-    -> cache
+Clang once per changed IV source
+    -> reusable source authoring artifact
+    -> current authoring generation
+
+An `AuthoredGraph` is the completed result of an **iv-module invocation**, not
+an unconditional one-per-definition value when arguments can alter topology or
+public ports. Realizations may later be memoized by definition revision,
+encoded arguments, and relevant retained-global revisions.
 ```
+
+The current compatibility implementation retains authoring entrypoints in the
+signature-addressed source DSO and invokes them directly once all participating
+DSOs are loaded.  It does **not** yet retain a separately executable O0 ORC
+module across reloads.  Splitting that reusable O0 artifact from the native
+compatibility artifact remains the intended cache refinement, not a property
+to assume from the current DSO implementation.
 
 If downstream work later discovers it needs information currently present only in `BuilderSession`, that information should be added to the durable authored result rather than making the mutable session persistent.
 
@@ -961,7 +1004,9 @@ The representation may be rephrased/canonicalized later if profiling or implemen
 
 ### 11.3 Node implementation code is not owned by an `AuthoredGraph`
 
-An `AuthoredGraph` should reference stable registered node IDs rather than carrying duplicate primitive implementation LLVM for every source that uses them.
+An `AuthoredGraph` contains ordinary realized primitive node descriptions, but
+does not own or duplicate their implementation LLVM. Primitive code belongs
+to the node-type registry/cache.
 
 Primitive code belongs to the node-type registry/cache.
 
@@ -993,7 +1038,9 @@ SCCs, schedules, storage plans, generated LLVM, and other whole-project derived 
 
 ### 12.1 Definition versus instance
 
-A registered iv module definition is cached once.
+A zero-argument registered iv-module realization may be cached once; in the
+general case the cache key includes the invocation's encoded authoring
+arguments and retained-global revisions.
 
 A project may contain many instances of that definition.
 
@@ -1003,7 +1050,7 @@ Conceptually:
 
 ```text
 registered iv module "voice"
-    -> one cached AuthoredGraph
+    -> cached AuthoredGraph realization(s)
 
 project:
     voice instance A
@@ -1121,11 +1168,14 @@ The finalizer can keep each cached graph locally numbered and introduce temporar
 
 If existing `GraphBuilder::subgraph()`/embedder logic contains useful semantic rules, extract/reuse those rules. Do not make mutable builder state the project-composition model.
 
-### 13.3 Resolve iv-module instances recursively
+### 13.3 Registered iv modules are already resolved
 
-A registered node ID may be implemented by an iv module. During finalization, the finalizer resolves that iv module's cached `AuthoredGraph` and inserts its managed graph into the current project graph.
+When a registered node ID denotes an iv module, its child graph was executed
+and embedded during authoring.  Whole-project finalization therefore receives
+the completed invocation graph rather than a recursive registered-ID request.
 
-Because dependency cycles have already been rejected, recursive expansion terminates at primitive registered node types.
+It composes the top-level project module instances and their project-owned
+connections, then lowers ordinary virtual/tiled/subgraph structure as needed.
 
 Module identity may remain attached for state/provenance/debugging, but it must not become an execution optimization boundary.
 
@@ -1713,7 +1763,7 @@ invalidate:
 
 preserve:
     consuming IV source compilations
-    cached iv-module AuthoredGraphs
+    cached iv-module realizations that do not instantiate it
 ```
 
 If the public interface changes:
@@ -1734,7 +1784,9 @@ replace that module's cached AuthoredGraph
 invalidate finalized projects containing instances of it
 ```
 
-A parent iv module that merely contains `g.node<"child">()` need not be reauthored if the child's public interface did not change.
+A parent iv module that instantiates `g.node<"child">()` is re-authored, as
+are its transitive authoring dependents. This reuses their compiled authoring
+artifacts and is deliberately distinct from recompiling their C++ sources.
 
 ### 23.3 Project connection edit
 
@@ -1781,8 +1833,8 @@ Source annotations, presentation hierarchy, tags, query metadata, and similar no
 |---|---:|---:|---:|---:|
 | primitive tick implementation only | yes | no | no | yes |
 | primitive public interface | yes | yes, users | yes, affected users | yes |
-| iv-module internal graph, public interface stable | no | source itself | that module | yes |
-| iv-module public interface | no/depends | yes, users | affected users | yes |
+| iv-module internal graph, public interface stable | no | source itself | module and authoring dependents | yes |
+| iv-module public interface | no/depends | yes, users | affected users and dependents | yes |
 | project connection | no | no | no | yes |
 | add/remove module instance | no | no | no | yes |
 | immutable specialization config | no | no | no | yes |
@@ -1804,7 +1856,7 @@ Input:
 ```text
 C++ source(s)
 custom/default CMake
-imported node interfaces
+no provider implementation headers
 ```
 
 Work:
@@ -1820,20 +1872,23 @@ Output candidates:
 ```text
 registered primitive node definitions
 registered iv-module authoring functions
-fresh local public interfaces
+optional fresh static-interface metadata
 retained source compiler data
 ```
 
 ### Stage 2 — IV-module authoring
 
-For each registered iv module in the IV source:
+The server assembles every valid compiled source artifact into one authoring
+generation. For each registered iv module invocation:
 
 ```text
-run builder function through authoring JIT
+run builder function through the shared authoring generation
     -> AuthoredGraph
 ```
 
-The authored graph may contain `g.node<Id>` references to registered node types or other iv modules. It does not recursively execute referenced iv modules.
+`g.node<Id>` resolves the current registration and greedily realizes primitive
+nodes or recursively executes iv-module authoring entries. The completed graph
+contains no unresolved registered-ID boundary.
 
 ### Stage 3 — source registry validation/publication
 
@@ -1863,9 +1918,7 @@ registered node type definitions
 
 No module has yet been flattened merely because another module uses it.
 
-### Stage 5 — iv-module expansion and port resolution
-
-Recursively resolve iv-module instances to their cached `AuthoredGraph`s.
+### Stage 5 — project connection and port resolution
 
 Resolve project connections through:
 
@@ -1883,7 +1936,6 @@ Preserve dangling project connections if the stable identity is absent.
 Now flatten execution-only structure as appropriate:
 
 - virtual/tiled/subgraph implementation structure;
-- registered iv-module boundaries;
 - current generated routing concepts;
 
 while preserving stable identities separately for lifecycle/debugging/reconciliation.
@@ -2141,14 +2193,12 @@ The design is intentionally staged so the existing 443-test runtime can remain t
 
 ### Phase B — ID-based GraphBuilder API
 
-1. Add `node_interface<Id>`.
-2. Add `g.node<Id>(...)`.
-3. Establish the static-interface -> typed ref / dynamic-interface -> `NodeRef` rule.
-4. Add generated imported interfaces per IV source.
-5. Prototype immediate same-TU fresh interface synthesis at `IV_NODE` registration sites.
-6. Preserve existing global-pointer configuration relocation.
-7. Transition reusable cross-source nodes away from `g.node<T>()`.
-8. Transition old `g.module<fn>()` semantics to registered ID references rather than immediate child execution.
+1. Add generic `g.node<Id>(...)` without generated provider headers.
+2. Resolve registered IDs in a shared authoring generation and greedily embed iv modules.
+3. Preserve existing global-pointer configuration relocation.
+4. Transition reusable cross-source nodes away from `g.node<T>()`.
+5. Add optional static interface metadata only when typed refs justify it.
+6. Establish the static-interface -> typed ref / dynamic-interface -> `NodeRef` rule.
 
 ### Phase C — cache authored iv modules
 
@@ -2282,10 +2332,10 @@ The following are treated as strong architectural decisions unless implementatio
 7. **The normal cross-source authoring API is `g.node<"id">(...)`.** Callers do not name implementation C++ types.
 8. **Typed-vs-untyped depends on public-port staticness, not implementation kind.** Static interface -> typed ref; dynamic/config-dependent interface -> `NodeRef`.
 9. **IV sources may register many nodes and iv modules.** A node-only IV source is valid; experimental inline definitions remain convenient.
-10. **Same-TU registration data must be fresh in the same compile.** Do not rely on a second save/build to update `node_interface`.
+10. **Same-TU registered IDs are immediately usable.** The generic dynamic API does not rely on a second save/build or a generated `node_interface` specialization.
 11. **Project cross-module connections use stable virtual-node/direct-member port identity, not concrete authored node IDs.**
 12. **Project connections do not mutate cached `AuthoredGraph`s.**
-13. **Iv-module references are expanded late.** A parent authored graph should not recursively execute/embed a referenced registered iv module during authoring.
+13. **Iv-module references are greedily expanded during authoring.** A completed `AuthoredGraph` contains realized ordinary graph structure and no fake registered-node boundary.
 14. **Iv-module dependency cycles are rejected transactionally.** Keep the previous valid live generation.
 15. **Module/UI boundaries are not optimizer boundaries.** Final execution decisions use the whole active project graph.
 16. **Block size `B` is a project-kernel specialization parameter.** It is not part of registered node identity or C++ source compilation.
@@ -2307,9 +2357,9 @@ The following should remain open until prototypes or profiling provide evidence.
 ### Registration/compiler implementation
 
 - exact macro expansion for `IV_NODE` / `IV_MODULE`;
-- exact Clang 23 Sema mechanism for introducing fresh local `node_interface<Id>` data;
-- whether local/imported interfaces use separate internal traits or another compiler-supported mechanism;
-- exact declaration of imported IDs if generated interfaces are force-included per source.
+- exact Clang 23 mechanism for optional static `node_interface<Id>` metadata;
+- typed/static interface encoding and its interface-hash format;
+- exact representation of encoded generic authoring arguments.
 
 ### Public arguments/configuration
 
@@ -2323,7 +2373,7 @@ The following should remain open until prototypes or profiling provide evidence.
 
 - whether `AuthoredGraph` itself remains the long-term persisted representation;
 - whether a later lossless canonical form becomes worth caching closer to project lowering;
-- exact representation of late registered-ID instances inside `AuthoredGraph`;
+- cache-key and eviction policy for authored iv-module invocation realizations;
 - how much current bundle/virtual-node data can be simplified without losing semantics.
 
 ### Whole-project lowering
@@ -2362,14 +2412,13 @@ A practical first sequence is:
 1. independently registered node types
 2. independently registered iv modules
 3. IV source publishes multiple registrations transactionally
-4. generated node_interface<Id> data
-5. g.node<Id>() with typed/static and untyped/dynamic return rules
-6. cached AuthoredGraph per iv module
-7. late registered-ID references rather than recursive module embedding
-8. iv-module dependency validation/cycle detection
-9. project connections through stable virtual-node/member ports
-10. finalizer accepts the complete active project graph
-11. only then begin replacing the generic runtime with whole-graph LLVM execution
+4. reusable source authoring artifacts and a shared authoring generation
+5. generic `g.node<Id>()` with immediate registered-definition resolution
+6. fully realized `AuthoredGraph` invocation results and authoring-cycle checks
+7. optional typed/static `node_interface<Id>` data and interface hashes
+8. project connections through stable virtual-node/member ports
+9. finalizer accepts the complete active project graph
+10. only then begin replacing the generic runtime with whole-graph LLVM execution
 ```
 
 This ordering is important because the whole-graph execution compiler should be built on the representation that will actually drive future project reloads. Otherwise execution work risks being optimized around per-module boundaries that the cache/registry design immediately removes.
@@ -2387,11 +2436,21 @@ This ordering is important because the whole-graph execution compiler should be 
                 v                                v
         IV_NODE("id", T)                 IV_MODULE("id", fn)
                 |                                |
-                |                         authoring ORC JIT
+                +---------------+----------------+
+                                |
+                                v
+                  reusable source authoring artifacts
+                                |
+                                v
+                    shared authoring generation
+                                |
+                  g.node<"id">() resolves and authors
+                                |
+                +---------------+----------------+
                 |                                |
                 v                                v
-       NodeTypeDefinition                  AuthoredGraph
-     interface + state + LLVM           interface + ID refs
+       NodeTypeDefinition                  AuthoredGraph invocation
+     interface + state + LLVM             realized subgraphs only
                 |                                |
                 +---------------+----------------+
                                 |
@@ -2399,16 +2458,8 @@ This ordering is important because the whole-graph execution compiler should be 
                          SERVER REGISTRY
                          stable ID -> definition
                                 |
-              generated imported node_interface<Id>
-                                |
-                                v
-                         OTHER IV SOURCES
-
-                  g.node<"some.id">(...)
-                                |
-                                v
-                   cached parent AuthoredGraph
-                   contains late ID instance
+                    generic g.node<"some.id">(...)
+                    optional static interface metadata
 
 
                             PROJECT STATE
@@ -2425,7 +2476,6 @@ This ordering is important because the whole-graph execution compiler should be 
                                 v
                       WHOLE-PROJECT FINALIZER
                                 |
-                    expand registered iv modules
                     resolve stable project ports
                     combine all connections
                                 |

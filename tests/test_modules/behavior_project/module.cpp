@@ -1,7 +1,6 @@
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/debug_probe.h>
 #include <intravenous/basic_nodes/shaping.h>
-#include <iv/nodes/iv.test.behavior_voice>
 
 void behavior_project(iv::GraphBuilder& g)
 {

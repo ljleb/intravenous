@@ -170,11 +170,11 @@ SocketRpcJson iv_module_instances_json(std::vector<IvModuleInstanceInfo> const &
 SocketRpcJson iv_module_source_json(IvModuleSourceInfo const &source)
 {
     return SocketRpcJson{
-        {"definitionId", source.definition_id},
-        {"definitionKind", source.definition_kind
-            == IvModuleSourceInfo::DefinitionKind::module ? "module" : "nodeType"},
+        {"sourceId", source.source_id},
         {"sourceRoot", source.source_root.generic_string()},
         {"projectLocal", source.project_local},
+        {"moduleIds", source.module_ids},
+        {"nodeTypeIds", source.node_type_ids},
     };
 }
 

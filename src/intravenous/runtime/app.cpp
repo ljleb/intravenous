@@ -109,6 +109,7 @@ namespace iv {
 
         class IvModuleReloadWatcherService {
             IvModuleReload* reload_ = nullptr;
+            IvModuleDefinitions* definitions_ = nullptr;
             IvModuleInstances* instances_ = nullptr;
             IvModuleSources* sources_ = nullptr;
             std::optional<std::jthread> thread_ {};
@@ -116,9 +117,11 @@ namespace iv {
         public:
             explicit IvModuleReloadWatcherService(
                 IvModuleReload& reload,
+                IvModuleDefinitions& definitions,
                 IvModuleInstances& instances,
                 IvModuleSources& sources)
                 : reload_(&reload)
+                , definitions_(&definitions)
                 , instances_(&instances)
                 , sources_(&sources)
             {
@@ -132,6 +135,8 @@ namespace iv {
 
                 thread_.emplace([this](std::stop_token stop_token) {
                     while (!stop_token.stop_requested()) {
+                        definitions_->sync_source_declarations(
+                            sources_->source_declarations());
                         instances_->refresh_source_roots(*sources_);
                         if (reload_->has_dirty_definitions()) {
                             reload_->compile_dirty_definitions();
@@ -292,7 +297,8 @@ namespace iv {
             IvModuleSourceIntrospection introspection;
             IvModuleSources iv_module_sources(
                 startup.workspace_root,
-                parse_search_path_env());
+                parse_search_path_env(),
+                &iv_module_definitions);
 
             // Construct the complete runtime first.  Binding is a separate
             // phase: constructors must not observe a partially connected
@@ -308,6 +314,7 @@ namespace iv {
             SocketRpcServer server(options.workspace_root, options.rpc_fd);
             IvModuleReloadWatcherService iv_module_reload_watcher(
                 iv_module_reload,
+                iv_module_definitions,
                 iv_module_instances,
                 iv_module_sources);
             std::function<void()> shutdown = [&]() {
@@ -482,6 +489,15 @@ namespace iv {
                 socket_rpc_project_persistence_bridge::bind(server, project_persistence);
             auto socket_rpc_project_autosave_scope =
                 socket_rpc_project_autosave_bridge::bind(server, project_autosave);
+
+            // Manifest discovery is deliberately package-level. Build the
+            // discovered candidates before serving module-instance creation,
+            // then let the compiler-produced registrations establish the
+            // module-ID registry used by that request.
+            iv_module_definitions.sync_source_declarations(
+                iv_module_sources.source_declarations());
+            iv_module_reload.compile_dirty_definitions();
+            iv_module_reload.apply_pending_results();
 
             startup_log("initializing execution state");
             timeline_execution.publish_task_graph_update(

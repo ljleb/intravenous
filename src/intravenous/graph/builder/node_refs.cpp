@@ -248,28 +248,10 @@ void NodeRef::apply_node_call(
         switch (input.target) {
         case details::NodeCallInputTarget::positional:
             input_port = positional_sample++;
-            if (input_port >= sample_input_count()) {
-                auto const registered_input =
-                    _graph_builder->ensure_registered_sample_input(
-                        _index, {}, {
-                            .channel_type = input.source.channel_type,
-                            .sample_layout = SampleStreamLayout::planar,
-                        });
-                if (registered_input) input_port = *registered_input;
-            }
             break;
         case details::NodeCallInputTarget::named:
-            if (auto const registered_input =
-                    _graph_builder->ensure_registered_sample_input(
-                        _index, input.name, {
-                            .channel_type = input.source.channel_type,
-                            .sample_layout = SampleStreamLayout::planar,
-                        })) {
-                input_port = *registered_input;
-            } else {
-                input_port = _graph_builder->sample_port_index(
-                    _index, true, input.name);
-            }
+            input_port = _graph_builder->sample_port_index(
+                _index, true, input.name);
             break;
         case details::NodeCallInputTarget::explicit_ordinal:
             input_port = input.input_ordinal;
@@ -292,22 +274,10 @@ void NodeRef::apply_node_call(
         switch (input.target) {
         case details::NodeCallInputTarget::positional:
             input_port = positional_event++;
-            if (input_port >= event_input_count()) {
-                auto const registered_input =
-                    _graph_builder->ensure_registered_event_input(
-                        _index, {}, input.source.type);
-                if (registered_input) input_port = *registered_input;
-            }
             break;
         case details::NodeCallInputTarget::named:
-            if (auto const registered_input =
-                    _graph_builder->ensure_registered_event_input(
-                        _index, input.name, input.source.type)) {
-                input_port = *registered_input;
-            } else {
-                input_port = _graph_builder->event_port_index(
-                    _index, true, input.name);
-            }
+            input_port = _graph_builder->event_port_index(
+                _index, true, input.name);
             break;
         case details::NodeCallInputTarget::explicit_ordinal:
             input_port = input.input_ordinal;

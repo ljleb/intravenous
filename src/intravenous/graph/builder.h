@@ -29,11 +29,10 @@ namespace iv {
 struct AuthoredGraph;
 class GraphBuilder;
 class GraphBuilderState;
-template<fixed_string Id>
-struct node_interface;
 
 namespace details {
 struct BuilderSession;
+NodeRef author_registered_source_definition(GraphBuilder&, std::string_view);
 GraphBuilderState& builder_graph_state(GraphBuilder&);
 NodeBundleHandle iv_builder_append_node(
     GraphBuilder&, NodeBuildRequest const&);
@@ -59,6 +58,8 @@ class GraphBuilder {
       GraphBuilder&, details::NodeBuildRequest const&);
   friend NodeBundleHandle details::iv_builder_append_tiled_node(
       GraphBuilder&, details::NodeBuildRequest const&, ChannelLayout);
+  friend NodeRef details::author_registered_source_definition(
+      GraphBuilder&, std::string_view);
   friend class SubgraphBuilder;
 
   details::BuilderSession* _session = nullptr;
@@ -118,29 +119,16 @@ public:
     }
   }
 
-  // Registered IDs are the source-facing node creation API.  A local
-  // IV_NODE declaration specializes node_interface immediately, so a source
-  // never waits for a server-generated header to see its own edited
-  // interface.  Imported specializations are supplied by the generated
-  // interface protocol.
+  // Registered IDs are the source-facing node creation API. The bootstrap
+  // dynamic path is available for every ID without a generated interface
+  // header. The authoring generation resolves the provider immediately, so
+  // this returns the provider's genuine realized NodeRef.
   template<fixed_string Id, class... Args>
-  auto node(Args&&... args) {
-    return node_interface<Id>::author(*this, std::forward<Args>(args)...);
+  auto node(Args&&...) {
+    static_assert(sizeof...(Args) == 0,
+        "registered IV definitions do not yet declare public authored arguments");
+    return details::author_registered_source_definition(*this, Id.view());
   }
-
-  // Author a stable-ID instance without resolving its implementation.  The
-  // resulting semantic subgraph is expanded from the server's source registry
-  // after source loading; this is deliberately distinct from module(), which
-  // remains the local, direct-function subgraph API.
-  NodeRef registered_node(std::string_view id);
-
-  // Dynamic registered interfaces learn only the ports a caller actually
-  // addresses. These are implementation hooks for NodeRef's normal call
-  // syntax, not an alternate source-facing construction API.
-  std::optional<size_t> ensure_registered_sample_input(
-      NodeBundleHandle handle, std::string_view name, ChannelLayout layout);
-  std::optional<size_t> ensure_registered_event_input(
-      NodeBundleHandle handle, std::string_view name, EventTypeId type);
 
   template<class Node, class ChannelType, class... Args>
   auto node(Args&&... args) {

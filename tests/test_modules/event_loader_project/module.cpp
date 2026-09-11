@@ -1,5 +1,4 @@
 #include <intravenous/dsl.h>
-#include <iv/nodes/iv.test.event_loader_voice>
 
 void event_loader_project(iv::GraphBuilder& g)
 {

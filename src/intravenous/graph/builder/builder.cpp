@@ -117,23 +117,6 @@ GraphBuilder::GraphBuilder(
     , _owns_session(owns_session)
 {}
 
-NodeRef GraphBuilder::registered_node(std::string_view id)
-{
-    return state(*this).append_registered_node(id);
-}
-
-std::optional<size_t> GraphBuilder::ensure_registered_sample_input(
-    NodeBundleHandle handle, std::string_view name, ChannelLayout layout)
-{
-    return state(*this).ensure_registered_sample_input(handle, name, layout);
-}
-
-std::optional<size_t> GraphBuilder::ensure_registered_event_input(
-    NodeBundleHandle handle, std::string_view name, EventTypeId type)
-{
-    return state(*this).ensure_registered_event_input(handle, name, type);
-}
-
 GraphBuilder::~GraphBuilder()
 {
     if (_owns_session && _session)

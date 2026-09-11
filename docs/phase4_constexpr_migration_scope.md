@@ -128,8 +128,10 @@ operation may occur in `tick_block()` or another audio-thread execution path.
   statements in both the saved function body and GCC's constexpr body.
 - The plugin owns only information unavailable through C++ reflection. It must
   not register node types or `Node::State` structure.
-- Module imports are generated forwarding headers to the original authored
-  files. There is no rewritten source tree and no separate Clang parse.
+- Registered IV definitions use the generic `g.node<"stable.id">()` authoring
+  API. They do not use generated forwarding headers or include provider
+  implementation source; optional generated static-interface metadata remains
+  a later optimization rather than a bootstrap requirement.
 - Do not use `-fimplicit-constexpr`; annotate every required function.
 - Do not add compiler-selection macros or transitional conditional paths.
 - Validate uncertain C++ or reflection behavior with one focused prototype

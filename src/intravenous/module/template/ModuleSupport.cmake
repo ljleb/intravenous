@@ -94,13 +94,7 @@ function(iv_add_runtime_module target)
 
     target_include_directories(${target}__compile_settings INTERFACE
         ${IV_INCLUDE_DIR}
-        ${IV_MODULE_SOURCE_DIR}
-        ${IV_MODULE_GENERATED_INCLUDE_DIR})
-    if(DEFINED IV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR
-       AND NOT IV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR STREQUAL "")
-        target_include_directories(${target}__compile_settings INTERFACE
-            ${IV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR})
-    endif()
+        ${IV_MODULE_SOURCE_DIR})
     if(DEFINED IV_MODULE_INCLUDE_DIRS AND NOT IV_MODULE_INCLUDE_DIRS STREQUAL "")
         target_include_directories(${target}__compile_settings INTERFACE ${IV_MODULE_INCLUDE_DIRS})
     endif()
@@ -120,11 +114,10 @@ function(iv_add_runtime_module target)
         target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=0)
     endif()
 
-    # The loader passes this target only the root IV source's entry point.
-    # Imported IV sources contribute generated <iv/nodes/...> interfaces and
-    # are built as independent artifacts by the loader; they must never be
-    # added here as consumer implementation files. Custom projects may add
-    # additional translation units belonging to this same source through
+    # This target contains only files owned by its IV source package.
+    # Registered IDs resolve in the host authoring generation; provider
+    # implementation files are never merged into a consumer target. Custom
+    # projects may add additional same-source translation units through
     # SOURCES; duplicates are harmlessly removed here.
     set(_iv_module_sources
         ${IV_MODULE_EXPORT_FILE}
@@ -132,6 +125,10 @@ function(iv_add_runtime_module target)
         ${IVM_SOURCES})
     list(REMOVE_DUPLICATES _iv_module_sources)
     add_library(${target} SHARED ${_iv_module_sources})
+    # Registration ownership is source-package identity, never the compiler's
+    # spelling of __FILE__. This includes sibling sources from custom CMake.
+    target_compile_definitions(${target} PRIVATE
+        "IV_SOURCE_REGISTRATION_ROOT=\"${IV_MODULE_SOURCE_DIR}\"")
     # The metadata plugin runs during each module-source compilation but is
     # loaded only through a compiler flag. CMake otherwise cannot know that a
     # rebuilt plugin invalidates existing LLVM bitcode and its metadata JSON.

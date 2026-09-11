@@ -84,13 +84,11 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         generated_export.find("iv_source_module_authored_graph"),
         std::string::npos);
 
-    auto const import_root = runtime_root / "build" / "iv" / "imports" / "iv" / "nodes";
-    auto const project_import = import_root / "iv.test.behavior_project";
-    auto const voice_import = import_root / "iv.test.behavior_voice";
-    EXPECT_TRUE(std::filesystem::exists(project_import));
-    EXPECT_TRUE(std::filesystem::exists(voice_import));
-    EXPECT_EQ(iv::test::read_text(project_import).find(project_dst.generic_string()), std::string::npos);
-    EXPECT_EQ(iv::test::read_text(voice_import).find(voice_dst.generic_string()), std::string::npos);
+    // Generic g.node<Id>() authoring has no generated provider-header
+    // bootstrap. Source packages stay separate C++ targets and join only in
+    // the host authoring generation.
+    EXPECT_FALSE(std::filesystem::exists(
+        runtime_root / "build" / "iv" / "imports" / "iv" / "nodes"));
 
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
     auto const project_needle = std::string("    using namespace iv;");
@@ -149,9 +147,11 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     ASSERT_TRUE(std::filesystem::exists(finalizer_timings));
     auto const finalizer_timings_text = iv::test::read_text(finalizer_timings);
     EXPECT_TRUE(finalizer_timings_text.starts_with("version=1\n"));
-    EXPECT_NE(finalizer_timings_text.find("source_modules_authoring_us="), std::string::npos);
     EXPECT_NE(
-        finalizer_timings_text.find("authoring_ir_prune_us="),
+        finalizer_timings_text.find("source_registration_validation_us="),
+        std::string::npos);
+    EXPECT_NE(
+        finalizer_timings_text.find("source_authoring_ir_preserve_us="),
         std::string::npos);
     EXPECT_NE(finalizer_timings_text.find("runtime_optimize_us="), std::string::npos);
     EXPECT_NE(finalizer_timings_text.find("native_link_us="), std::string::npos);
@@ -209,7 +209,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         auto const object_rule = rule_line(
             "root_export.cpp.o: CXX_COMPILER__iv_runtime_module");
         auto const link_rule = rule_line(
-            "libiv_source_behavior_local.so: CXX_SHARED_LIBRARY_LINKER__iv_runtime_module");
+            "libiv_source_behavior_local_");
         ASSERT_FALSE(object_rule.empty());
         ASSERT_FALSE(link_rule.empty());
         // Compiler plugins and linker launchers are command-line tools, not
@@ -218,6 +218,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         // host tool changes.
         EXPECT_NE(object_rule.find(plugin_path), std::string::npos);
         EXPECT_NE(link_rule.find(finalizer_path), std::string::npos);
+        EXPECT_NE(
+            link_rule.find("CXX_SHARED_LIBRARY_LINKER__iv_runtime_module"),
+            std::string::npos);
         EXPECT_NE(local_ninja.find("-fuse-ld=lld"), std::string::npos);
         // Ninja puts the per-target launcher arguments in the generated link
         // rule, while the target edge contains its dependency inputs.

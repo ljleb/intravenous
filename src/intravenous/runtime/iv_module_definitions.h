@@ -8,9 +8,11 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace iv {
@@ -149,6 +151,11 @@ public:
     std::string declare_definition(
         std::string definition_id,
         std::filesystem::path module_root);
+    // Replace the manifest-discovered IV source package set as one snapshot.
+    // Registration IDs are not inputs here: they are supplied only by a
+    // successful compiler/finalizer source result.
+    void sync_source_declarations(
+        std::vector<std::pair<std::string, std::filesystem::path>> declarations);
     void remove_definition(std::string const &definition_id);
 
     void handle_required_definitions_changed(
@@ -159,5 +166,11 @@ public:
 
     [[nodiscard]] std::vector<IvModuleDefinition> loaded_definitions() const;
     [[nodiscard]] std::vector<IvNodeTypeDefinition> loaded_node_types() const;
+    [[nodiscard]] std::optional<std::filesystem::path> source_root_for_module(
+        std::string const& module_id) const;
+    [[nodiscard]] std::vector<std::string> module_ids_for_source(
+        std::string const& source_id) const;
+    [[nodiscard]] std::vector<std::string> node_type_ids_for_source(
+        std::string const& source_id) const;
 };
 } // namespace iv

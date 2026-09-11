@@ -7,7 +7,10 @@
 #include <type_traits>
 
 namespace iv {
-inline constexpr std::uint32_t IV_MODULE_ABI_VERSION = 11;
+namespace details {
+struct BuilderSession;
+}
+inline constexpr std::uint32_t IV_MODULE_ABI_VERSION = 12;
 
 struct ModuleDataView {
     void const* data = nullptr;
@@ -43,6 +46,10 @@ using iv_source_module_authored_graph_fn = iv::ModuleDataView (*)(std::size_t);
 using iv_source_module_node_configs_fn = iv::ModuleDataView (*)(std::size_t);
 using iv_module_node_types_fn = iv::ModuleDataView (*)();
 using iv_source_node_types_fn = iv::ModuleDataView (*)();
+using iv_source_registered_module_count_fn = std::size_t (*)();
+using iv_source_registered_module_id_fn = iv::ModuleDataView (*)(std::size_t);
+using iv_source_build_registered_module_fn = void (*)(
+    std::size_t, iv::details::BuilderSession*);
 }
 
 #if defined(_WIN32)

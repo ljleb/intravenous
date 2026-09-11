@@ -1,6 +1,5 @@
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
-#include <iv/nodes/iv.test.nested_loader_voice>
 
 void nested_loader_project(iv::GraphBuilder& g)
 {

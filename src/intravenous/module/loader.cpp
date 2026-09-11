@@ -1,10 +1,11 @@
 #include <intravenous/module/loader.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/authored_graph_wire.h>
+#include <intravenous/module/builder_session.h>
 #include <intravenous/module/source_manifest.h>
+#include <intravenous/module/source_registration.h>
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder/lowering.hpp>
-#include <intravenous/graph/builder/embedder.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/graph/node.h>
 
@@ -18,7 +19,6 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
-#include <regex>
 #include <ranges>
 #include <sstream>
 #include <stdexcept>
@@ -64,191 +64,7 @@ struct ResolvedModule {
     std::filesystem::file_time_type source_stamp {};
 };
 
-struct ModuleImport {
-    std::string id;
-    bool global_only = false;
-};
-
 std::string read_text(std::filesystem::path const& path);
-
-std::vector<std::filesystem::path> source_discovery_files(
-    std::filesystem::path const& entry)
-{
-    // This remains only the bootstrap discovery pass needed to make generated
-    // ID headers available before Clang has built a fresh provider.  It scans
-    // the complete source package (rather than just the manifest entry) so
-    // registrations in headers and custom-CMake translation units participate
-    // in discovery.  The compiler plugin's registration metadata remains the
-    // planned authoritative replacement for this textual bridge.
-    auto const root = entry.parent_path();
-    std::vector<std::filesystem::path> files;
-    std::error_code error;
-    for (std::filesystem::recursive_directory_iterator it(
-             root,
-             std::filesystem::directory_options::skip_permission_denied,
-             error),
-         end;
-         it != end;
-         it.increment(error)) {
-        if (error) break;
-        if (it->is_directory()) {
-            auto const name = it->path().filename();
-            if (name == ".git" || name == "build" || name == ".cache") {
-                it.disable_recursion_pending();
-            } else if (it->path() != root
-                       && std::filesystem::exists(
-                           it->path() / std::string(IV_SOURCE_MANIFEST_FILE))) {
-                // A nested source package owns its own registrations and
-                // generated headers. It is not a translation-unit subtree of
-                // this source merely because the directories are nested.
-                it.disable_recursion_pending();
-            }
-            continue;
-        }
-        if (!it->is_regular_file()) continue;
-        auto const extension = it->path().extension().string();
-        if (extension == ".c" || extension == ".cc" || extension == ".cpp"
-            || extension == ".cxx" || extension == ".h" || extension == ".hh"
-            || extension == ".hpp" || extension == ".hxx") {
-            files.push_back(it->path());
-        }
-    }
-    if (std::ranges::find(files, entry) == files.end()) files.push_back(entry);
-    std::ranges::sort(files, {}, [](auto const& path) { return path.generic_string(); });
-    files.erase(std::unique(files.begin(), files.end()), files.end());
-    return files;
-}
-
-std::string strip_cpp_comments(std::string_view source)
-{
-    // Bootstrap discovery is deliberately small, but it must not advertise a
-    // registration or import merely mentioned in a comment. Preserve line
-    // breaks so diagnostic locations and line-oriented include recognition
-    // remain meaningful; leave literals untouched because registration IDs
-    // themselves are string literals.
-    std::string result(source);
-    enum class State { code, string_literal, character_literal, line_comment, block_comment };
-    State state = State::code;
-    bool escaped = false;
-    for (std::size_t index = 0; index < result.size(); ++index) {
-        auto& character = result[index];
-        auto const next = index + 1 < result.size() ? result[index + 1] : '\0';
-        switch (state) {
-        case State::code:
-            if (character == '/' && next == '/') {
-                character = ' ';
-                result[++index] = ' ';
-                state = State::line_comment;
-            } else if (character == '/' && next == '*') {
-                character = ' ';
-                result[++index] = ' ';
-                state = State::block_comment;
-            } else if (character == '"') {
-                state = State::string_literal;
-                escaped = false;
-            } else if (character == '\'') {
-                state = State::character_literal;
-                escaped = false;
-            }
-            break;
-        case State::string_literal:
-            if (character == '"' && !escaped) state = State::code;
-            escaped = character == '\\' && !escaped;
-            if (character != '\\') escaped = false;
-            break;
-        case State::character_literal:
-            if (character == '\'' && !escaped) state = State::code;
-            escaped = character == '\\' && !escaped;
-            if (character != '\\') escaped = false;
-            break;
-        case State::line_comment:
-            if (character == '\n') state = State::code;
-            else character = ' ';
-            break;
-        case State::block_comment:
-            if (character == '*' && next == '/') {
-                character = ' ';
-                result[++index] = ' ';
-                state = State::code;
-            } else if (character != '\n') {
-                character = ' ';
-            }
-            break;
-        }
-    }
-    return result;
-}
-
-enum class SourceDefinitionKind {
-    node,
-    module,
-};
-
-struct SourceDefinitionInterface {
-    std::string id;
-    SourceDefinitionKind kind{};
-};
-
-std::vector<SourceDefinitionInterface> scan_source_definitions(
-    std::filesystem::path const& entry)
-{
-    // The source introspection plugin remains authoritative for registration
-    // metadata. This deliberately shallow scan recognizes only the macro and
-    // stable string ID, which is enough to create a generated C++ interface
-    // before a fresh provider has been built; it does not attempt to parse a
-    // function or C++ node-type expression.
-    static std::regex const module_registration(
-        R"iv(IV_MODULE\s*\(\s*"([^"]+)"\s*,)iv");
-    static std::regex const node_registration(
-        R"iv(IV_NODE\s*\(\s*"([^"]+)"\s*,)iv");
-    std::vector<SourceDefinitionInterface> result;
-    auto append = [&](SourceDefinitionInterface interface,
-                      std::filesystem::path const& source_file) {
-        if (interface.id.empty()) {
-            throw std::runtime_error(
-                "IV source registration has an empty stable ID in '"
-                + source_file.string() + "'");
-        }
-        if (interface.id.contains('/') || interface.id.contains('\\')) {
-            throw std::runtime_error(
-                "IV source registration ID must not contain a path separator in '"
-                + source_file.string() + "'");
-        }
-        auto const duplicate = std::find_if(
-            result.begin(), result.end(), [&](SourceDefinitionInterface const& existing) {
-                return existing.id == interface.id;
-            });
-        if (duplicate != result.end()) {
-            // This scanner reads both headers and translation units. A normal
-            // registration macro in a header can therefore be seen once at
-            // its spelling and again through its including source file. The
-            // compiler-backed registration table is authoritative for
-            // duplicate diagnostics; bootstrap discovery needs only one
-            // generated interface for this ID.
-            return;
-        }
-        result.push_back(std::move(interface));
-    };
-    for (auto const& source_file : source_discovery_files(entry)) {
-        auto const source = strip_cpp_comments(read_text(source_file));
-        for (std::sregex_iterator it(
-                 source.begin(), source.end(), module_registration), end;
-             it != end; ++it) {
-            append({
-                .id = (*it)[1].str(),
-                .kind = SourceDefinitionKind::module,
-            }, source_file);
-        }
-        for (std::sregex_iterator it(source.begin(), source.end(), node_registration), end;
-             it != end; ++it) {
-            append({
-                .id = (*it)[1].str(),
-                .kind = SourceDefinitionKind::node,
-            }, source_file);
-        }
-    }
-    return result;
-}
 
 struct DynamicLibrary {
 #if defined(_WIN32)
@@ -460,6 +276,13 @@ std::filesystem::file_time_type directory_stamp(std::filesystem::path const &dir
             auto const name = it->path().filename();
             if (name == ".git" || name == "build") {
                 it.disable_recursion_pending();
+            } else if (it->path() != dir
+                       && std::filesystem::exists(
+                           it->path() / std::string(IV_SOURCE_MANIFEST_FILE))) {
+                // A nested IV source package owns a distinct artifact and
+                // source stamp. Its edits must not cause this package's C++
+                // compilation signature to change.
+                it.disable_recursion_pending();
             }
             continue;
         }
@@ -473,41 +296,6 @@ std::filesystem::file_time_type directory_stamp(std::filesystem::path const &dir
         }
     }
     return any ? latest : std::filesystem::file_time_type {};
-}
-
-std::vector<ModuleImport> scan_imports(std::filesystem::path const &entry)
-{
-    static std::regex const pattern(
-        R"(^\s*#\s*include\s*<iv/(nodes-global|nodes)/([^>]+)>\s*$)");
-
-    std::vector<ModuleImport> imports;
-    for (auto const& source_file : source_discovery_files(entry)) {
-        std::istringstream stream(strip_cpp_comments(read_text(source_file)));
-        for (std::string line; std::getline(stream, line);) {
-            std::smatch match;
-            if (!std::regex_match(line, match, pattern)) {
-                continue;
-            }
-            ModuleImport import{
-                .id = match[2].str(),
-                .global_only = match[1].str() == "nodes-global",
-            };
-            if (import.id.empty() || import.id.contains('/') || import.id.contains('\\')) {
-                throw std::runtime_error(
-                    "invalid IV node interface import <iv/" + match[1].str() + "/" + import.id +
-                    "> in '" + source_file.string() + "'");
-            }
-            imports.push_back(std::move(import));
-        }
-    }
-    std::ranges::sort(imports, {}, [](ModuleImport const& imported) {
-        return std::pair{imported.id, imported.global_only};
-    });
-    imports.erase(std::unique(imports.begin(), imports.end(),
-        [](ModuleImport const& left, ModuleImport const& right) {
-            return left.id == right.id && left.global_only == right.global_only;
-        }), imports.end());
-    return imports;
 }
 
 std::string sanitize(std::string_view value)
@@ -525,6 +313,18 @@ std::string stable_hash(std::filesystem::path const &path)
 {
     uint64_t hash = 1469598103934665603ull;
     for (unsigned char c : normalize(path).generic_string()) {
+        hash ^= c;
+        hash *= 1099511628211ull;
+    }
+    std::ostringstream out;
+    out << std::hex << hash;
+    return out.str();
+}
+
+std::string stable_text_hash(std::string_view value)
+{
+    uint64_t hash = 1469598103934665603ull;
+    for (unsigned char c : value) {
         hash ^= c;
         hash *= 1099511628211ull;
     }
@@ -619,115 +419,6 @@ std::string cxx_string_literal(std::string_view value)
     return result + "\"";
 }
 
-inline constexpr std::string_view registered_subgraph_prefix = "registered:";
-
-std::vector<std::string> registered_definition_references(AuthoredGraph const& graph)
-{
-    std::vector<std::string> references;
-    for (std::size_t handle = 0; handle < graph.node_bundles.size(); ++handle) {
-        auto const& bundle = graph.node_bundles.bundle(handle);
-        if (!bundle.is_subgraph()) continue;
-        auto const kind = bundle.subgraph_kind();
-        if (!kind.starts_with(registered_subgraph_prefix)) continue;
-        references.emplace_back(kind.substr(registered_subgraph_prefix.size()));
-    }
-    std::ranges::sort(references);
-    references.erase(std::unique(references.begin(), references.end()), references.end());
-    return references;
-}
-
-void validate_registered_module_cycles(
-    std::unordered_map<std::string, std::shared_ptr<AuthoredGraph const>> const& providers,
-    std::unordered_set<std::string> const& module_ids)
-{
-    // Includes make C++ interfaces available. Only an authored registered-ID
-    // edge between two iv modules can recurse. Primitive node types terminate
-    // expansion, so they are deliberately absent from this graph.
-    std::unordered_set<std::string> visited;
-    std::unordered_set<std::string> visiting;
-    std::vector<std::string> path;
-    auto visit = [&](auto&& self, std::string const& module_id) -> void {
-        if (visited.contains(module_id)) return;
-        if (!visiting.insert(module_id).second) {
-            auto const begin = std::ranges::find(path, module_id);
-            std::string message = "cyclic registered IV module dependency: ";
-            for (auto it = begin; it != path.end(); ++it) {
-                if (it != begin) message += " -> ";
-                message += *it;
-            }
-            throw std::runtime_error(message + " -> " + module_id);
-        }
-        path.push_back(module_id);
-        auto const provider = providers.find(module_id);
-        if (provider == providers.end() || !provider->second) {
-            throw std::runtime_error(
-                "registered IV module '" + module_id + "' has no loaded provider");
-        }
-        for (auto const& reference : registered_definition_references(*provider->second)) {
-            if (module_ids.contains(reference)) self(self, reference);
-        }
-        path.pop_back();
-        visiting.erase(module_id);
-        visited.insert(module_id);
-    };
-    for (auto const& module_id : module_ids) visit(visit, module_id);
-}
-
-void resolve_registered_graph_references(
-    AuthoredGraph& graph,
-    std::unordered_map<std::string, std::shared_ptr<AuthoredGraph const>> const& providers,
-    std::vector<std::string>& expansion_stack)
-{
-    // Imported children are appended while walking, so inspect only the
-    // bundles that were originally owned by this graph.  Each provider is
-    // recursively resolved before it is copied, which makes the final graph
-    // self-contained for the existing GraphLowerer/GraphCompiler path.
-    auto const original_bundle_count = graph.node_bundles.size();
-    for (std::size_t handle = 0; handle < original_bundle_count; ++handle) {
-        auto const& bundle = graph.node_bundles.bundle(handle);
-        if (!bundle.is_subgraph()) continue;
-        auto const kind = std::string(bundle.subgraph_kind());
-        if (!kind.starts_with(registered_subgraph_prefix)) continue;
-        auto const id = kind.substr(registered_subgraph_prefix.size());
-        auto provider = providers.find(id);
-        if (provider == providers.end()) {
-            throw std::runtime_error(
-                "registered IV definition '" + id + "' has no loaded provider");
-        }
-        if (std::ranges::find(expansion_stack, id) != expansion_stack.end()) {
-            std::string cycle = "cyclic registered IV module dependency: ";
-            for (auto const& item : expansion_stack) cycle += item + " -> ";
-            throw std::runtime_error(cycle + id);
-        }
-
-        expansion_stack.push_back(id);
-        auto child = *provider->second;
-        resolve_registered_graph_references(child, providers, expansion_stack);
-        expansion_stack.pop_back();
-
-        auto const child_begin = graph.node_bundles.size();
-        auto const offset = GraphBuilderChildEmbedder::embed(
-            graph.node_bundles,
-            graph.connections,
-            graph.detach,
-            graph.virtual_nodes,
-            child.public_ports,
-            child.node_bundles,
-            child.connections,
-            child.detach,
-            child.virtual_nodes);
-        if (offset != child_begin) {
-            throw std::logic_error("registered graph provider bundle offset changed unexpectedly");
-        }
-        graph.node_bundles.replace_registered_subgraph(
-            handle,
-            offset + child.public_ports.boundary_handle(),
-            offset,
-            child.node_bundles.size(),
-            id);
-    }
-}
-
 std::filesystem::path discover_repo(std::filesystem::path start)
 {
     start = normalize(start);
@@ -813,48 +504,22 @@ class ModuleLoader::Impl {
     LogSink log_sink_;
     mutable std::mutex mutex_;
 
-    struct Registry {
-        // Discovery is deliberately non-authoritative.  Multiple sources may
-        // temporarily advertise an ID while a definition is moved; retaining
-        // all providers lets the runtime registry resolve that transaction
-        // without requiring the destination source to be saved twice.
-        using Providers = std::vector<ResolvedModule>;
-        std::unordered_map<std::string, Providers> project;
-        std::unordered_map<std::string, Providers> global;
-        std::unordered_map<std::string, Providers> effective;
-    };
-
-    struct Closure {
-        std::vector<ResolvedModule> modules;
-        std::unordered_map<std::string, std::vector<std::string>> dependency_keys;
-    };
-
     struct CompiledRoot {
         ResolvedModule root;
-        Closure closure;
+        // All independently discovered source packages participate in the
+        // current authoring generation. Stable IDs are discovered from their
+        // compiler registrations after loading, never by parsing C++ text.
+        std::vector<ResolvedModule> authoring_sources;
         std::filesystem::path artifact;
     };
+
+    mutable std::unordered_map<std::string, std::weak_ptr<LoadedBinary>>
+        loaded_binaries_by_artifact;
 
     static std::string key(ResolvedModule const &module)
     {
         return std::string(module.global ? "global:" : "project:")
             + normalize(module.module_dir).generic_string();
-    }
-
-    static void register_source_definitions(
-        ResolvedModule const& source,
-        std::unordered_map<std::string, Registry::Providers>& registry)
-    {
-        for (auto const& definition : scan_source_definitions(source.entry_file)) {
-            auto& providers = registry[definition.id];
-            auto const already_present = std::ranges::any_of(
-                providers, [&](ResolvedModule const& existing) {
-                    return existing.manifest_file == source.manifest_file;
-                });
-            if (!already_present) {
-                providers.push_back(source);
-            }
-        }
     }
 
     ResolvedModule resolve_dir(std::filesystem::path dir, bool global) const
@@ -893,7 +558,7 @@ class ModuleLoader::Impl {
     void scan_root(
         std::filesystem::path const &root,
         bool global,
-        std::unordered_map<std::string, Registry::Providers> &out) const
+        std::vector<ResolvedModule>& out) const
     {
         if (!std::filesystem::exists(root)) return;
 
@@ -923,104 +588,41 @@ class ModuleLoader::Impl {
             if (!manifest || normalize(it->path()) != normalize(*manifest)) {
                 continue;
             }
-            auto resolved = resolve_dir(source_dir, global);
-            register_source_definitions(resolved, out);
+            out.push_back(resolve_dir(source_dir, global));
             it.disable_recursion_pending();
         }
     }
 
-    Registry registry_for(
+    std::vector<ResolvedModule> authoring_sources_for(
         ResolvedModule const &root,
         std::filesystem::path const &project_root) const
     {
-        Registry registry;
+        std::vector<ResolvedModule> discovered;
         for (auto const &path : extra_search_roots) {
-            scan_root(path, true, registry.global);
+            scan_root(path, true, discovered);
         }
-
         if (!root.global) {
-            scan_root(project_root, false, registry.project);
-            registry.effective = registry.global;
-            for (auto const &[id, providers] : registry.project) {
-                auto& effective = registry.effective[id];
-                for (auto const& provider : providers) {
-                    auto const already_present = std::ranges::any_of(
-                        effective, [&](ResolvedModule const& existing) {
-                            return existing.manifest_file == provider.manifest_file;
-                        });
-                    if (!already_present) effective.push_back(provider);
-                }
+            scan_root(project_root, false, discovered);
+        }
+        // A project package shadows a global package at the same physical
+        // path, but stable-ID collisions between distinct sources are left to
+        // complete candidate-registry validation.
+        std::unordered_map<std::string, ResolvedModule> by_manifest;
+        for (auto& source : discovered) {
+            auto const manifest = source.manifest_file.generic_string();
+            auto existing = by_manifest.find(manifest);
+            if (existing == by_manifest.end() || !source.global) {
+                by_manifest.insert_or_assign(manifest, std::move(source));
             }
-            register_source_definitions(root, registry.effective);
-        } else {
-            register_source_definitions(root, registry.global);
-            registry.effective = registry.global;
         }
-        return registry;
-    }
-
-    ResolvedModule const &resolve_import(
-        ResolvedModule const &from,
-        ModuleImport const &import,
-        Registry const &registry) const
-    {
-        auto const &scope = (from.global || import.global_only)
-            ? registry.global
-            : registry.effective;
-        auto found = scope.find(import.id);
-        if (found == scope.end()) {
-            throw std::runtime_error(
-                    "IV source '" + from.source_key + "' imports missing " +
-                std::string((from.global || import.global_only) ? "global" : "project/global") +
-                " IV source '" + import.id + "'");
-        }
-        auto const& providers = found->second;
-        if (providers.empty()) {
-            throw std::logic_error("IV definition registry contains an empty provider set");
-        }
-        if (providers.size() != 1) {
-            // Generated headers are identical across candidates, but the
-            // current compatibility RuntimeGraphRoot still needs one concrete
-            // provider artifact to materialize. Choosing one by source scope
-            // or path would silently violate the stable-ID namespace; leave
-            // the last valid candidate generation live until the conflict is
-            // resolved instead.
-            throw std::runtime_error(
-                "registered IV definition '" + import.id
-                + "' has multiple source candidates");
-        }
-        return providers.front();
-    }
-
-    Closure reachable_modules(
-        ResolvedModule const &root,
-        Registry const &registry) const
-    {
-        Closure closure;
-        std::unordered_set<std::string> visited;
-
-        auto visit = [&](auto &&self, ResolvedModule const &module) -> void {
-            auto const module_key = key(module);
-            if (visited.contains(module_key)) return;
-            // C++ interface availability is not a graph-recursion relation.
-            // Cycles between sources are valid when their referenced IDs end
-            // in primitive nodes; module-reference cycles are checked below.
-            visited.insert(module_key);
-
-            auto &deps = closure.dependency_keys[module_key];
-            for (auto const &import : scan_imports(module.entry_file)) {
-                auto const &dependency = resolve_import(module, import, registry);
-                self(self, dependency);
-                deps.push_back(key(dependency));
-            }
-            std::sort(deps.begin(), deps.end());
-            deps.erase(std::unique(deps.begin(), deps.end()), deps.end());
-
-            closure.modules.push_back(module);
-        };
-
-        visit(visit, root);
-        return closure;
+        by_manifest.insert_or_assign(root.manifest_file.generic_string(), root);
+        std::vector<ResolvedModule> result;
+        result.reserve(by_manifest.size());
+        for (auto& [_, source] : by_manifest) result.push_back(std::move(source));
+        std::ranges::sort(result, {}, [](ResolvedModule const& source) {
+            return source.manifest_file.generic_string();
+        });
+        return result;
     }
 
     std::filesystem::path cmake_program() const
@@ -1042,14 +644,9 @@ class ModuleLoader::Impl {
 
     std::filesystem::path build(
         ResolvedModule const &root,
-        Registry const& registry,
         std::filesystem::path const &project_root) const
     {
-        auto const global_import_root = global_cache_root_ / "imports";
         auto const project_iv_root = project_root / "build/iv";
-        auto const project_import_root = root.global
-            ? global_import_root
-            : project_iv_root / "imports";
         auto const owner_root = root.global ? global_cache_root_ : project_iv_root;
         auto const build_key = sanitize(root.source_key) + "_" + stable_hash(root.module_dir);
         auto const workspace = owner_root / "build" / build_key / config_name();
@@ -1067,52 +664,6 @@ class ModuleLoader::Impl {
         ScopedModuleBuildLock const build_lock(workspace / "build.lock");
         std::filesystem::create_directories(output_dir);
         std::filesystem::create_directories(generated_dir);
-        std::filesystem::create_directories(project_import_root / "iv/nodes");
-        std::filesystem::create_directories(global_import_root / "iv/nodes");
-        std::filesystem::create_directories(global_import_root / "iv/nodes-global");
-
-        // Interface headers are generated for every discovered definition,
-        // not merely this source's import closure.  They are ID-only
-        // declarations, so no header encodes whether its provider is a node
-        // type or an iv module and duplicate discovery candidates can share
-        // one identical generated header.
-        std::vector<ResolvedModule> header_sources;
-        std::unordered_set<std::string> seen_header_sources;
-        auto collect_header_sources = [&](auto const& providers) {
-            for (auto const& [_, candidates] : providers) {
-                for (auto const& provider : candidates) {
-                    if (seen_header_sources.insert(key(provider)).second) {
-                        header_sources.push_back(provider);
-                    }
-                }
-            }
-        };
-        collect_header_sources(registry.effective);
-        // A project provider may shadow a global ID in <iv/nodes/...>, but
-        // <iv/nodes-global/...> is an explicit escape hatch and still needs
-        // its global definition header generated.
-        collect_header_sources(registry.global);
-        std::ranges::sort(header_sources, {}, [](ResolvedModule const& source) {
-            return source.manifest_file.generic_string();
-        });
-        for (auto const &module : header_sources) {
-            for (auto const& registration : scan_source_definitions(module.entry_file)) {
-                auto const definition_import = (module.global
-                    ? global_import_root / "iv/nodes-global"
-                    : project_import_root / "iv/nodes") / registration.id;
-                std::ostringstream interface;
-                interface << "#pragma once\n"
-                          << "#include <intravenous/dsl.h>\n"
-                          << "IV_REGISTERED_INTERFACE(\"" << registration.id << "\");\n";
-                write_text_if_different(definition_import, interface.str());
-                if (module.global) {
-                    auto const forwarder = global_import_root / "iv/nodes" / registration.id;
-                    write_text_if_different(
-                        forwarder,
-                        "#pragma once\n#include <iv/nodes-global/" + registration.id + ">\n");
-                }
-            }
-        }
 
         std::ostringstream export_tu;
         // The generated root owns the module ABI symbols, so it must include
@@ -1129,18 +680,18 @@ class ModuleLoader::Impl {
                "iv_module_abi_version() {\n"
             << "  return iv::IV_MODULE_ABI_VERSION;\n"
             << "}\n"
-            << "extern \"C\" std::size_t "
+            << "extern \"C\" IV_MODULE_EXPORT std::size_t "
                "iv_source_registered_module_count() {\n"
             << "  return iv::details::source_module_count("
             << cxx_string_literal(root.module_dir.generic_string()) << ");\n"
             << "}\n"
-            << "extern \"C\" iv::ModuleDataView "
+            << "extern \"C\" IV_MODULE_EXPORT iv::ModuleDataView "
                "iv_source_registered_module_id(std::size_t index) {\n"
             << "  auto const registration = iv::details::source_module_at("
             << cxx_string_literal(root.module_dir.generic_string()) << ", index);\n"
             << "  return {registration.id, registration.id_size};\n"
             << "}\n"
-            << "extern \"C\" void "
+            << "extern \"C\" IV_MODULE_EXPORT void "
                "iv_source_build_registered_module(std::size_t index, "
                "iv::details::BuilderSession* session) {\n"
             << "  iv::GraphBuilder builder{session};\n"
@@ -1148,23 +699,23 @@ class ModuleLoader::Impl {
             << cxx_string_literal(root.module_dir.generic_string())
             << ", index).module_build(builder);\n"
             << "}\n"
-            << "extern \"C\" std::size_t "
+            << "extern \"C\" IV_MODULE_EXPORT std::size_t "
                "iv_source_registered_node_type_count() {\n"
             << "  return iv::details::source_node_count("
             << cxx_string_literal(root.module_dir.generic_string()) << ");\n"
             << "}\n"
-            << "extern \"C\" iv::ModuleDataView "
+            << "extern \"C\" IV_MODULE_EXPORT iv::ModuleDataView "
                "iv_source_registered_node_type_id(std::size_t index) {\n"
             << "  auto const registration = iv::details::source_node_at("
             << cxx_string_literal(root.module_dir.generic_string()) << ", index);\n"
             << "  return {registration.id, registration.id_size};\n"
             << "}\n"
-            << "extern \"C\" iv::NodeCodeKey "
+            << "extern \"C\" IV_MODULE_EXPORT iv::NodeCodeKey "
                "iv_source_registered_node_type_code_key(std::size_t index) {\n"
             << "  return iv::details::source_node_code_key("
             << cxx_string_literal(root.module_dir.generic_string()) << ", index);\n"
             << "}\n"
-            << "extern \"C\" void "
+            << "extern \"C\" IV_MODULE_EXPORT void "
                "iv_source_build_registered_node_type(std::size_t index, "
                "iv::details::BuilderSession* session) {\n"
             << "  iv::GraphBuilder builder{session};\n"
@@ -1291,21 +842,19 @@ class ModuleLoader::Impl {
             << "source-introspection-plugin-stamp="
             << std::filesystem::last_write_time(source_introspection_plugin)
                    .time_since_epoch().count() << '\n';
-        // A source artifact owns only its own implementation files.  Imported
-        // IDs are compile-time interfaces, not implementation timestamps, so
-        // a provider's internal edit cannot rebuild every consumer.
+        // A source artifact owns only its own implementation files. Registered
+        // IDs resolve through the authoring generation, so provider edits do
+        // not enter a consumer's C++ compilation signature.
         signature << key(root) << '\n'
                   << read_text(root.manifest_file) << '\n'
                   << root.source_stamp.time_since_epoch().count() << '\n';
-        for (auto const& imported : scan_imports(root.entry_file)) {
-            signature << "import-interface=" << imported.id << ':'
-                      << imported.global_only << '\n';
-        }
         if (std::filesystem::exists(custom_cmake)) {
             signature << read_text(custom_cmake) << '\n';
         }
         auto const signature_file = workspace / "build.signature";
-        auto const artifact_name = library_name("iv_source_" + sanitize(root.source_key));
+        auto const artifact_stem = "iv_source_" + sanitize(root.source_key)
+            + "_" + stable_text_hash(signature.str());
+        auto const artifact_name = library_name(artifact_stem);
         auto artifact = output_dir / artifact_name;
         bool const needs_build =
             !std::filesystem::exists(artifact) ||
@@ -1337,12 +886,10 @@ class ModuleLoader::Impl {
                   << " -DIV_MODULE_SOURCE_DIR=" << quote(root.module_dir)
                   << " -DIV_MODULE_ENTRY_FILE=" << quote(root.entry_file)
                   << " -DIV_MODULE_EXPORT_FILE=" << quote(export_file)
-                  << " -DIV_MODULE_GENERATED_INCLUDE_DIR=" << quote(project_import_root)
-                  << " -DIV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR=" << quote(global_import_root)
                   << " -DIV_MODULE_INCLUDE_DIRS=\"" << include_list.str() << "\""
                   << " -DIV_MODULE_SOURCE_FILES=\"" << source_list.str() << "\""
                   << " -DIV_MODULE_OUTPUT_DIR=" << quote(output_dir)
-                  << " -DIV_MODULE_OUTPUT_NAME=iv_source_" << sanitize(root.source_key)
+                  << " -DIV_MODULE_OUTPUT_NAME=" << artifact_stem
                   << " -DIV_CLANG_SOURCE_INTROSPECTION_PLUGIN="
                   << quote(source_introspection_plugin)
                   << " -DIV_MODULE_FINALIZER=" << quote(module_finalizer)
@@ -1399,24 +946,10 @@ class ModuleLoader::Impl {
                 "module build did not produce expected artifact '" + artifact.string() + "'");
         }
 
-        auto const generation = std::to_string(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
-        auto const generation_dir = owner_root / "generations" / build_key / generation;
-        std::filesystem::create_directories(generation_dir);
-        auto const generation_artifact = generation_dir / artifact.filename();
-        auto const copy_started_at = std::chrono::steady_clock::now();
-        std::filesystem::copy_file(
-            artifact,
-            generation_artifact,
-            std::filesystem::copy_options::overwrite_existing);
-        if (log_sink_) {
-            log_sink_(
-                "[generation-copy] elapsed_us=" +
-                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - copy_started_at).count()));
-        }
-        return generation_artifact;
+        // The signature is part of the filename. A changed source produces a
+        // new DSO path while graphs using the previous source generation keep
+        // their old artifact alive through ModuleRef ownership.
+        return artifact;
     }
 
 public:
@@ -1459,12 +992,11 @@ public:
         auto const project_root = root.global
             ? global_cache_root_
             : discover_project_root(root.module_dir);
-        auto registry = registry_for(root, project_root);
-        auto closure = reachable_modules(root, registry);
-        auto artifact = build(root, registry, project_root);
+        auto authoring_sources = authoring_sources_for(root, project_root);
+        auto artifact = build(root, project_root);
         return {
             .root = std::move(root),
-            .closure = std::move(closure),
+            .authoring_sources = std::move(authoring_sources),
             .artifact = std::move(artifact),
         };
     }
@@ -1482,14 +1014,34 @@ public:
         auto const& root = compiled.root;
         auto const& artifact = compiled.artifact;
 
-        auto const dynamic_library_started_at = std::chrono::steady_clock::now();
-        auto library = std::make_shared<DynamicLibrary>(artifact);
-        if (log_sink_) {
-            log_sink_(
-                "[dynamic-library-load] elapsed_us=" +
-                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - dynamic_library_started_at).count()));
+        auto const artifact_key = normalize(artifact).generic_string();
+        std::shared_ptr<LoadedBinary> binary;
+        if (auto existing = loaded_binaries_by_artifact.find(artifact_key);
+            existing != loaded_binaries_by_artifact.end()) {
+            binary = existing->second.lock();
         }
+        if (!binary) {
+            // A changed source uses a signature-addressed DSO path. Retire
+            // only its old registration views before the new constructors
+            // publish their complete replacement set; existing graphs retain
+            // the old DSO but never dispatch through it again.
+            details::clear_source_definitions_for_root(root.module_dir.generic_string());
+            auto const dynamic_library_started_at = std::chrono::steady_clock::now();
+            auto library = std::make_shared<DynamicLibrary>(artifact);
+            if (log_sink_) {
+                log_sink_(
+                    "[dynamic-library-load] elapsed_us=" +
+                    std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - dynamic_library_started_at).count()));
+            }
+            binary = std::make_shared<LoadedBinary>(LoadedBinary{
+                root.source_key,
+                artifact,
+                std::move(library),
+            });
+            loaded_binaries_by_artifact.insert_or_assign(artifact_key, binary);
+        }
+        auto const& library = binary->library;
 
         auto const source_deserialization_started_at = std::chrono::steady_clock::now();
         auto abi_version = reinterpret_cast<iv_module_abi_version_fn>(
@@ -1545,12 +1097,6 @@ public:
         auto const source_node_type_data = std::span(
             static_cast<SourceNodeTypeData const*>(source_node_type_view.data),
             source_node_type_view.size / sizeof(SourceNodeTypeData));
-
-        auto binary = std::make_shared<LoadedBinary>(LoadedBinary{
-            root.source_key,
-            artifact,
-            library,
-        });
 
         std::vector<LoadedNodeType> loaded_node_types;
         loaded_node_types.reserve(source_node_type_data.size());
@@ -1681,7 +1227,86 @@ public:
             .definitions = std::move(definitions),
             .node_types = std::move(loaded_node_types),
             .dependencies = std::move(dependencies),
+            .authoring_artifact = binary,
         };
+    }
+
+    ModuleLoader::LoadedSource author_registered_modules(
+        CompiledRoot const& compiled,
+        ModuleLoader::LoadedSource source,
+        std::vector<ModuleRef> const& authoring_generation_refs) const
+    {
+        auto const binary = std::static_pointer_cast<LoadedBinary>(
+            source.authoring_artifact);
+        if (!binary || !binary->library) {
+            throw std::logic_error("loaded IV source has no authoring artifact");
+        }
+        auto const registered_module_count =
+            reinterpret_cast<iv_source_registered_module_count_fn>(
+                binary->library->symbol("iv_source_registered_module_count"));
+        auto const registered_module_id =
+            reinterpret_cast<iv_source_registered_module_id_fn>(
+                binary->library->symbol("iv_source_registered_module_id"));
+        auto const build_registered_module =
+            reinterpret_cast<iv_source_build_registered_module_fn>(
+                binary->library->symbol("iv_source_build_registered_module"));
+        if (!registered_module_count || !registered_module_id || !build_registered_module) {
+            throw std::runtime_error(
+                "IV source artifact '" + binary->artifact_path.string()
+                + "' does not retain its registered-module authoring entrypoints");
+        }
+
+        auto const started_at = std::chrono::steady_clock::now();
+        auto const module_count = registered_module_count();
+        std::vector<LoadedDefinition> definitions;
+        definitions.reserve(module_count);
+        std::unordered_set<std::string> registered_ids;
+        for (std::size_t index = 0; index < module_count; ++index) {
+            auto const id_view = registered_module_id(index);
+            if (!id_view.data || id_view.size == 0) {
+                throw std::runtime_error("registered IV module authoring entry has an empty ID");
+            }
+            auto module_id = std::string(
+                static_cast<char const*>(id_view.data), id_view.size);
+            if (!registered_ids.insert(module_id).second) {
+                throw std::runtime_error(
+                    "IV source authoring generation contains duplicate module ID '"
+                    + module_id + "' in source '" + compiled.root.source_key + "'");
+            }
+
+            auto session = std::unique_ptr<details::BuilderSession,
+                decltype(&details::iv_builder_session_destroy)>(
+                    details::iv_builder_session_create(),
+                    details::iv_builder_session_destroy);
+            if (!session) {
+                throw std::runtime_error("could not create IV module authoring session");
+            }
+            build_registered_module(index, session.get());
+            auto authored = std::make_shared<AuthoredGraph const>(
+                details::take_built_graph(session.get()));
+            auto plan = GraphCompiler::compile(
+                GraphLowerer::lower(*authored, {.execution_root = true}));
+            auto runtime_root = std::make_shared<RuntimeGraphRoot>(std::move(plan.graph));
+
+            auto refs = authoring_generation_refs;
+            refs.push_back(runtime_root);
+            definitions.emplace_back(
+                std::move(refs),
+                WeakTypeErasedNode(*runtime_root),
+                std::move(plan.introspection),
+                compiled.root.module_dir,
+                std::move(module_id),
+                source.dependencies,
+                std::move(authored));
+        }
+        if (log_sink_) {
+            log_sink_(
+                "[authoring-generation-module-realization] elapsed_us=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - started_at).count()));
+        }
+        source.definitions = std::move(definitions);
+        return source;
     }
 
     ModuleLoader::LoadedSource load_source(
@@ -1694,78 +1319,41 @@ public:
         }
 
         auto root_compiled = compile_source_unlocked(path);
-        auto root_source = load_compiled_source(root_compiled);
-        std::vector<ModuleLoader::LoadedSource> provider_sources;
-        provider_sources.reserve(root_compiled.closure.modules.size());
-
-        // Each source in the import closure is built and loaded as its own
-        // artifact.  The closure remains discovery/watch information only; it
-        // is no longer a list of C++ files merged into the caller's target.
-        for (auto const& source : root_compiled.closure.modules) {
-            if (key(source) == key(root_compiled.root)) continue;
-            provider_sources.push_back(load_compiled_source(
-                compile_source_unlocked(source.module_dir)));
+        std::vector<CompiledRoot> compiled_sources;
+        compiled_sources.reserve(root_compiled.authoring_sources.size());
+        for (auto const& source : root_compiled.authoring_sources) {
+            if (normalize(source.module_dir) == normalize(root_compiled.root.module_dir)) {
+                compiled_sources.push_back(root_compiled);
+            } else {
+                compiled_sources.push_back(compile_source_unlocked(source.module_dir));
+            }
         }
 
-        std::unordered_map<std::string, std::shared_ptr<AuthoredGraph const>> providers;
-        std::unordered_set<std::string> module_ids;
-        std::vector<ModuleRef> provider_refs;
-        auto register_provider = [&](std::string const& id,
-                                     std::shared_ptr<AuthoredGraph const> graph,
-                                     std::vector<ModuleRef> const& refs) {
-            if (!graph) {
-                throw std::logic_error(
-                    "loaded registered IV definition has no AuthoredGraph");
+        std::vector<ModuleLoader::LoadedSource> loaded_sources;
+        loaded_sources.reserve(compiled_sources.size());
+        std::optional<std::size_t> root_index;
+        for (std::size_t index = 0; index < compiled_sources.size(); ++index) {
+            if (normalize(compiled_sources[index].root.module_dir)
+                == normalize(root_compiled.root.module_dir)) {
+                root_index = index;
             }
-            auto [_, inserted] = providers.emplace(id, std::move(graph));
-            if (!inserted) {
-                throw std::runtime_error(
-                    "multiple loaded providers publish registered IV definition '"
-                    + id + "'");
-            }
-            provider_refs.insert(provider_refs.end(), refs.begin(), refs.end());
-        };
-        auto register_source_providers = [&](ModuleLoader::LoadedSource const& source) {
-            for (auto const& definition : source.definitions) {
-                module_ids.insert(definition.module_id);
-                register_provider(
-                    definition.module_id, definition.authored_graph, definition.module_refs);
-            }
-            for (auto const& node_type : source.node_types) {
-                register_provider(
-                    node_type.node_type_id, node_type.authored_graph, node_type.module_refs);
-            }
-        };
-        register_source_providers(root_source);
-        for (auto const& source : provider_sources) register_source_providers(source);
-        validate_registered_module_cycles(providers, module_ids);
+            loaded_sources.push_back(load_compiled_source(compiled_sources[index]));
+        }
+        if (!root_index) {
+            throw std::logic_error("authoring generation omitted its requested IV source");
+        }
 
-        auto const graph_materialization_started_at = std::chrono::steady_clock::now();
-        for (auto& definition : root_source.definitions) {
-            auto resolved = std::make_shared<AuthoredGraph>(*definition.authored_graph);
-            std::vector<std::string> expansion_stack{definition.module_id};
-            resolve_registered_graph_references(*resolved, providers, expansion_stack);
-            auto plan = GraphCompiler::compile(
-                GraphLowerer::lower(*resolved, {.execution_root = true}));
-            auto runtime_root = std::make_shared<RuntimeGraphRoot>(std::move(plan.graph));
-            definition.module_refs.insert(
-                definition.module_refs.end(), provider_refs.begin(), provider_refs.end());
-            definition.module_refs.push_back(runtime_root);
-            definition.root = WeakTypeErasedNode(*runtime_root);
-            definition.introspection = std::move(plan.introspection);
-            // Preserve the source-authored graph with its stable registered
-            // IDs for the registry/whole-project cache. The flattened copy is
-            // only the current RuntimeGraphRoot compatibility materialization
-            // and must never replace that cache object.
+        std::vector<ModuleRef> authoring_generation_refs;
+        authoring_generation_refs.reserve(loaded_sources.size());
+        for (auto const& source : loaded_sources) {
+            if (source.authoring_artifact) {
+                authoring_generation_refs.push_back(source.authoring_artifact);
+            }
         }
-        if (log_sink_) {
-            log_sink_(
-                "[runtime-graph-materialization] elapsed_us=" +
-                std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now()
-                    - graph_materialization_started_at).count()));
-        }
-        return root_source;
+        return author_registered_modules(
+            compiled_sources[*root_index],
+            std::move(loaded_sources[*root_index]),
+            authoring_generation_refs);
     }
 };
 

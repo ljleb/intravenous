@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <ranges>
+#include <stdexcept>
 #include <system_error>
 #include <unordered_set>
 
@@ -111,6 +112,76 @@ std::string IvModuleDefinitions::declare_definition(
     return declaration.definition_id;
 }
 
+void IvModuleDefinitions::sync_source_declarations(
+    std::vector<std::pair<std::string, std::filesystem::path>> declarations)
+{
+    std::unordered_map<std::string, IvModuleDefinitionDeclaration> next;
+    next.reserve(declarations.size());
+    for (auto& [source_id, source_root] : declarations) {
+        if (source_id.empty()) {
+            throw std::runtime_error("discovered IV source has an empty source ID");
+        }
+        auto declaration = IvModuleDefinitionDeclaration{
+            .definition_id = std::move(source_id),
+            .module_root = normalize_path(source_root),
+        };
+        if (!next.emplace(declaration.definition_id, declaration).second) {
+            throw std::runtime_error(
+                "discovered IV source snapshot contains duplicate source ID '"
+                + declaration.definition_id + "'");
+        }
+    }
+
+    IvModuleDefinitionDeclarationsChanged declaration_diff;
+    IvModuleDefinitionsChanged definition_diff;
+    IvNodeTypeDefinitionsChanged node_type_diff;
+    std::vector<IvModuleDefinitionsMessage> failures;
+    {
+        std::scoped_lock lock(mutex);
+        std::unordered_set<std::string> removed_source_ids;
+        for (auto const& declaration : declarations_by_source_id) {
+            if (next.contains(declaration.first)) continue;
+            declaration_diff.deleted_definition_ids.push_back(declaration.first);
+            removed_source_ids.insert(declaration.first);
+        }
+        for (auto const& [source_id, declaration] : next) {
+            auto const current = declarations_by_source_id.find(source_id);
+            if (current == declarations_by_source_id.end()) {
+                declaration_diff.created.push_back(declaration);
+            } else if (current->second.module_root != declaration.module_root) {
+                declaration_diff.updated.push_back(declaration);
+            }
+        }
+
+        for (auto const& source_id : removed_source_ids) {
+            candidates_by_source_id.erase(source_id);
+        }
+        declarations_by_source_id = std::move(next);
+        if (!removed_source_ids.empty()) {
+            rebuild_published_registry_locked(
+                definition_diff, node_type_diff, failures, removed_source_ids);
+        }
+    }
+
+    if (!declaration_diff.created.empty() || !declaration_diff.updated.empty()
+        || !declaration_diff.deleted_definition_ids.empty()) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_definitions_declarations_changed_event,
+            declaration_diff);
+    }
+    for (auto& failure : failures) emit_notification(std::move(failure));
+    if (!definition_diff.created.empty() || !definition_diff.updated.empty()
+        || !definition_diff.deleted_definition_ids.empty()) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_definitions_changed_event, definition_diff);
+    }
+    if (!node_type_diff.created.empty() || !node_type_diff.updated.empty()
+        || !node_type_diff.deleted_node_type_ids.empty()) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_node_type_definitions_changed_event, node_type_diff);
+    }
+}
+
 void IvModuleDefinitions::remove_definition(std::string const& source_id)
 {
     IvModuleDefinitionsChanged definition_diff;
@@ -203,23 +274,13 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
         }
     }
 
-    std::unordered_set<std::string> preserve_previous;
+    // Candidate validation is generation-wide. Never select or update an ID
+    // independently: a collision in any source candidate leaves every live
+    // map and ownership record on the previous complete generation.
+    bool valid = true;
     for (auto const& [id, providers] : providers_by_id) {
         if (providers.size() == 1) continue;
-        auto const previous = source_id_by_registered_id.find(id);
-        auto const previous_is_still_a_candidate = previous
-                != source_id_by_registered_id.end()
-            && std::ranges::any_of(providers, [&](RegisteredProvider const& provider) {
-                return provider.source_id == previous->second;
-            });
-        if (previous_is_still_a_candidate) {
-            // Keep the last valid published kind and provider live. The
-            // complete candidates remain staged, so either save order for a
-            // source-to-source move resolves without rebuilding the other
-            // source a second time.
-            preserve_previous.insert(id);
-            continue;
-        }
+        valid = false;
         if (std::ranges::any_of(providers, [&](RegisteredProvider const& provider) {
                 return changed_source_ids.contains(provider.source_id);
             })) {
@@ -234,6 +295,7 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
             });
         }
     }
+    if (!valid) return;
 
     std::unordered_map<std::string, ModuleProvider> selected_modules;
     for (auto const& [id, providers] : module_providers) {
@@ -248,81 +310,71 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
         }
     }
 
-    std::unordered_set<std::string> desired_modules;
-    for (auto const& [id, _] : selected_modules) desired_modules.insert(id);
-    for (auto const& id : preserve_previous) {
-        if (loaded_definitions_by_module_id.contains(id)) desired_modules.insert(id);
-    }
-    for (auto it = loaded_definitions_by_module_id.begin();
-         it != loaded_definitions_by_module_id.end();) {
-        if (desired_modules.contains(it->first)) {
-            ++it;
-            continue;
-        }
-        diff.deleted_definition_ids.push_back(it->first);
-        it = loaded_definitions_by_module_id.erase(it);
-    }
-
+    std::unordered_map<std::string, std::unique_ptr<DefinitionState>> next_modules;
+    next_modules.reserve(selected_modules.size());
     for (auto const& [module_id, provider] : selected_modules) {
         auto existing = loaded_definitions_by_module_id.find(module_id);
         auto const requires_publication = existing == loaded_definitions_by_module_id.end()
             || existing->second->snapshot.source_id != provider.source_id
             || changed_source_ids.contains(provider.source_id);
-        if (!requires_publication) continue;
         auto state = make_definition_state(*provider.definition);
         auto snapshot = state->snapshot;
         if (existing == loaded_definitions_by_module_id.end()) {
-            loaded_definitions_by_module_id.emplace(module_id, std::move(state));
             diff.created.push_back(std::move(snapshot));
-        } else {
-            existing->second = std::move(state);
+        } else if (requires_publication) {
             diff.updated.push_back(std::move(snapshot));
+        }
+        next_modules.emplace(module_id, std::move(state));
+    }
+
+    for (auto const& [module_id, _] : loaded_definitions_by_module_id) {
+        if (!next_modules.contains(module_id)) {
+            diff.deleted_definition_ids.push_back(module_id);
         }
     }
 
-    std::unordered_set<std::string> desired_node_types;
-    for (auto const& [id, _] : selected_node_types) desired_node_types.insert(id);
-    for (auto const& id : preserve_previous) {
-        if (loaded_node_types_by_id.contains(id)) desired_node_types.insert(id);
-    }
-    for (auto it = loaded_node_types_by_id.begin();
-         it != loaded_node_types_by_id.end();) {
-        if (desired_node_types.contains(it->first)) {
-            ++it;
-            continue;
-        }
-        node_type_diff.deleted_node_type_ids.push_back(it->first);
-        it = loaded_node_types_by_id.erase(it);
-    }
+    std::unordered_map<std::string, std::unique_ptr<NodeTypeState>> next_node_types;
+    next_node_types.reserve(selected_node_types.size());
     for (auto const& [node_type_id, provider] : selected_node_types) {
         auto existing = loaded_node_types_by_id.find(node_type_id);
         auto const requires_publication = existing == loaded_node_types_by_id.end()
             || existing->second->snapshot.source_id != provider.source_id
             || changed_source_ids.contains(provider.source_id);
-        if (!requires_publication) continue;
         auto state = make_node_type_state(*provider.definition);
         auto snapshot = state->snapshot;
         if (existing == loaded_node_types_by_id.end()) {
-            loaded_node_types_by_id.emplace(node_type_id, std::move(state));
             node_type_diff.created.push_back(std::move(snapshot));
-        } else {
-            existing->second = std::move(state);
+        } else if (requires_publication) {
             node_type_diff.updated.push_back(std::move(snapshot));
+        }
+        next_node_types.emplace(node_type_id, std::move(state));
+    }
+
+    for (auto const& [node_type_id, _] : loaded_node_types_by_id) {
+        if (!next_node_types.contains(node_type_id)) {
+            node_type_diff.deleted_node_type_ids.push_back(node_type_id);
         }
     }
 
-    source_id_by_registered_id.clear();
-    module_ids_by_source_id.clear();
-    for (auto const& [module_id, state] : loaded_definitions_by_module_id) {
-        source_id_by_registered_id[module_id] = state->snapshot.source_id;
-        module_ids_by_source_id[state->snapshot.source_id].push_back(module_id);
+    std::unordered_map<std::string, std::string> next_owners;
+    std::unordered_map<std::string, std::vector<std::string>> next_modules_by_source;
+    for (auto const& [module_id, state] : next_modules) {
+        next_owners[module_id] = state->snapshot.source_id;
+        next_modules_by_source[state->snapshot.source_id].push_back(module_id);
     }
-    for (auto const& [node_type_id, state] : loaded_node_types_by_id) {
-        source_id_by_registered_id[node_type_id] = state->snapshot.source_id;
+    for (auto const& [node_type_id, state] : next_node_types) {
+        next_owners[node_type_id] = state->snapshot.source_id;
     }
-    for (auto& [_, module_ids] : module_ids_by_source_id) {
+    for (auto& [_, module_ids] : next_modules_by_source) {
         std::ranges::sort(module_ids);
     }
+
+    // One atomic state transition: notifications above describe exactly this
+    // complete snapshot, never a mixture of old and candidate providers.
+    loaded_definitions_by_module_id = std::move(next_modules);
+    loaded_node_types_by_id = std::move(next_node_types);
+    source_id_by_registered_id = std::move(next_owners);
+    module_ids_by_source_id = std::move(next_modules_by_source);
 }
 
 void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& results)
@@ -457,5 +509,38 @@ std::vector<IvNodeTypeDefinition> IvModuleDefinitions::loaded_node_types() const
     }
     std::ranges::sort(node_types, {}, &IvNodeTypeDefinition::node_type_id);
     return node_types;
+}
+
+std::optional<std::filesystem::path> IvModuleDefinitions::source_root_for_module(
+    std::string const& module_id) const
+{
+    std::scoped_lock lock(mutex);
+    auto const definition = loaded_definitions_by_module_id.find(module_id);
+    if (definition == loaded_definitions_by_module_id.end()) return std::nullopt;
+    return definition->second->snapshot.module_root;
+}
+
+std::vector<std::string> IvModuleDefinitions::module_ids_for_source(
+    std::string const& source_id) const
+{
+    std::scoped_lock lock(mutex);
+    auto const modules = module_ids_by_source_id.find(source_id);
+    return modules == module_ids_by_source_id.end()
+        ? std::vector<std::string>{}
+        : modules->second;
+}
+
+std::vector<std::string> IvModuleDefinitions::node_type_ids_for_source(
+    std::string const& source_id) const
+{
+    std::vector<std::string> node_type_ids;
+    std::scoped_lock lock(mutex);
+    for (auto const& [id, state] : loaded_node_types_by_id) {
+        if (state->snapshot.source_id == source_id) {
+            node_type_ids.push_back(id);
+        }
+    }
+    std::ranges::sort(node_type_ids);
+    return node_type_ids;
 }
 } // namespace iv

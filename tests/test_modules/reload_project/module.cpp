@@ -1,6 +1,5 @@
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
-#include <iv/nodes/iv.test.reload_voice>
 
 void reload_project(iv::GraphBuilder& g)
 {

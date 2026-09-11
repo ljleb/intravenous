@@ -67,8 +67,8 @@ TEST(IvModuleSources, NewProjectSourcesReceiveTheSameTemplateCompileDatabase)
 
     auto const listed = sources.list_sources();
     ASSERT_EQ(listed.size(), 2u);
-    EXPECT_EQ(listed[0].definition_id, first.definition_id);
-    EXPECT_EQ(listed[1].definition_id, second.definition_id);
+    EXPECT_EQ(listed[0].source_id, first.source_id);
+    EXPECT_EQ(listed[1].source_id, second.source_id);
 
     std::filesystem::remove_all(project_root);
 }
@@ -77,7 +77,13 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
 {
     iv::IvModuleInstances instances;
     iv::IvModuleSourceIntrospection introspection;
-    iv::IvModuleSources sources("/tmp", {iv::test::test_modules_root() / "local_cmake"});
+    auto const module_root = iv::test::test_modules_root() / "local_cmake";
+    iv::IvModuleDefinitions definitions;
+    auto definition = iv::test_support::make_loaded_definition(
+        module_root, "iv.test.local_cmake");
+    definition.source_id = std::filesystem::weakly_canonical(module_root).generic_string();
+    definitions.seed_loaded_definition(std::move(definition));
+    iv::IvModuleSources sources("/tmp", {module_root}, &definitions);
     iv::ProjectPersistence persistence("/tmp", {});
     iv::SocketRpcServer server("/tmp", -1);
     auto iv_module_instances_iv_module_sources_scope =
@@ -125,7 +131,13 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
 {
     iv::IvModuleInstances instances;
     iv::IvModuleSourceIntrospection introspection;
-    iv::IvModuleSources sources("/tmp", {iv::test::test_modules_root() / "local_cmake"});
+    auto const module_root = iv::test::test_modules_root() / "local_cmake";
+    iv::IvModuleDefinitions definitions;
+    auto definition = iv::test_support::make_loaded_definition(
+        module_root, "iv.test.local_cmake");
+    definition.source_id = std::filesystem::weakly_canonical(module_root).generic_string();
+    definitions.seed_loaded_definition(std::move(definition));
+    iv::IvModuleSources sources("/tmp", {module_root}, &definitions);
     iv::ProjectPersistence persistence("/tmp", {});
     iv::SocketRpcServer server("/tmp", -1);
     auto iv_module_instances_iv_module_sources_scope =

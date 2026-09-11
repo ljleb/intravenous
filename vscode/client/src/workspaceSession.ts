@@ -373,8 +373,17 @@ export class WorkspaceSession {
     private parseIvModuleSource(payload: unknown): ModuleSourceInfo | null {
         if (!payload || typeof payload !== "object") return null;
         const source = payload as Record<string, unknown>;
-        if (typeof source.moduleId !== "string" || typeof source.moduleRoot !== "string") return null;
-        return { moduleId: source.moduleId, moduleRoot: source.moduleRoot, projectLocal: source.projectLocal === true };
+        if (typeof source.sourceId !== "string" || typeof source.moduleRoot !== "string") return null;
+        const stringArray = (value: unknown): string[] => Array.isArray(value)
+            ? value.filter((item): item is string => typeof item === "string")
+            : [];
+        return {
+            sourceId: source.sourceId,
+            moduleIds: stringArray(source.moduleIds),
+            nodeTypeIds: stringArray(source.nodeTypeIds),
+            moduleRoot: source.moduleRoot,
+            projectLocal: source.projectLocal === true,
+        };
     }
 
     private parseIvModuleSources(payload: unknown): ModuleSourceInfo[] {
@@ -940,7 +949,7 @@ export class WorkspaceSession {
         case "instantiate":
         case "duplicate": {
             const created = await this.rpc.createIvModuleInstance(
-                await this.moduleIdForRoot(message.moduleRoot),
+                message.moduleId,
             );
             this.selectedInstanceId = created.instanceId;
             await this.refreshModulesPanel();
@@ -1003,7 +1012,14 @@ export class WorkspaceSession {
         if (!source) {
             throw new Error(`module source is no longer available: ${moduleRoot}`);
         }
-        return source.moduleId;
+        if (source.moduleIds.length !== 1) {
+            throw new Error(
+                source.moduleIds.length === 0
+                    ? `source has no published iv modules yet: ${moduleRoot}`
+                    : `source provides multiple iv modules; choose one explicitly: ${moduleRoot}`,
+            );
+        }
+        return source.moduleIds[0];
     }
 
     private async refreshActiveEditorSelection(): Promise<void> {

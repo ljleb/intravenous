@@ -229,11 +229,11 @@ stage:
    reduction before selecting another frontend cut.
 4. Split module configuration identity from source/build identity: source-only
    edits should invoke Ninja without an unnecessary CMake configure, while
-   changes to CMake, manifests, imports, include paths, toolchain, or generated
-   source lists must still reconfigure.
-5. After `module_main` has run, prune authoring-only IR before the runtime O3
-   pass, preserving all symbols reachable from retained node compiler records.
-   This requires a reachability test; it must not discard runtime callbacks.
+   changes to CMake, manifests, include paths, toolchain, or source lists must
+   still reconfigure.
+5. Retain source registration constructors and authoring entrypoints in the
+   source artifact. Cross-source iv-module authoring happens only after the
+   host has loaded the shared source-artifact generation.
 
 Only compare O2/O3 or introduce IR/content caching after these measurements.
 The future destination—specializing an authored graph into a real-time graph
@@ -268,68 +268,31 @@ Do not reintroduce the old implementation through a header-only operation
 table. The point is both to remove `layout.h` from the module PCH closure and
 to keep layout/storage independently compiled and debuggable.
 
-## Runtime IR pruning
+## Source authoring entry preservation
 
-Finalizer-side IR pruning runs after the temporary builder JIT has run and
-serialized the graph. The finalizer marks the exact
-`iv_source_build_registered_module` authoring closure, separately marks the runtime ABI entry
-points and their retained node-record callback closure, drops authoring-only
-entries from LLVM used lists, internalizes the remaining authoring-only
-definitions, and runs `GlobalDCEPass` before O3. It fails finalization if
-`iv_source_build_registered_module` survives. The existing module-load tests exercise retained
-runtime callbacks, while the finalizer timing sidecar reports
-`authoring_ir_prune_us` so module build behavior verifies that this stage ran.
-The standalone DCE step deliberately uses LLVM's legacy pass manager, which
-is already used for object emission: the new pass manager requires explicit
-analysis registration and is inappropriate for this one isolated legacy pass.
+The finalizer no longer serializes a source's iv modules after executing them
+in an isolated JIT.  Instead it validates source-local registrations, emits
+the primitive-node artifact data, and retains the registration constructors
+plus exported `iv_source_registered_*` authoring entrypoints through
+`GlobalDCE`.  The host later joins independently built source artifacts into
+one authoring generation and invokes an iv-module entry only there.
 
-Verification: the release build and all 439 tests passed. A warm O3 profile
-of the default `simple_sine/saw` module measured 1.371 s: 677 ms export
-compilation, 666 ms link/finalization, 17.5 ms configure, and 657.2 ms
-finalizer total. Its finalizer stages were 249.5 ms JIT materialization,
-1.9 ms authoring-IR pruning, 72.2 ms runtime O3, 92.9 ms native object
-emission, and 215.7 ms native link.
-
-This is a 166 ms (10.8%) warm-reload reduction and a 171.9 ms (20.7%)
-finalizer reduction relative to the prior post-layout-split warm sample
-(1.537 s / 829.1 ms). The pruning work itself is negligible; the benefit
-comes from giving O3 and code emission a smaller runtime-only module. This is
-still one profile per configuration, not a controlled benchmark. Repeat the
-same profiling script after the next cut before attributing a durable
-improvement to any one change.
+The timing sidecar now reports `source_registration_validation_us` and
+`source_authoring_ir_preserve_us`.  Runtime O3 remains the compatibility
+execution path; the retained authoring entrypoints are source-package inputs,
+not DSP roots of their own.
 
 ## Authoring JIT code generation
 
-The temporary ORC JIT compiles only the cloned `iv_source_build_registered_module` closure. It
-executes once to create `AuthoredGraph`, then its resource tracker releases
-the generated code before runtime IR optimization begins. Its machine code is
-therefore not DSP code. Configure its host `JITTargetMachineBuilder` with
-`CodeGenOptLevel::None`, instead of accepting LLVM's default JIT codegen
-level. This is intentionally separate from the retained runtime module,
-which remains O3-only.
+The finalizer still uses a temporary O0 ORC clone to validate and serialize
+primitive-node authoring data. It does not execute registered iv-module
+builders there, because their providers may live in other IV source artifacts.
+The host's shared authoring generation performs that invocation after all
+relevant source artifacts are loaded. Its code is authoring-only, never DSP
+execution code.
 
-The measured motivation is strong: after IR pruning, warm `jit_materialize`
-was 249.5 ms while registered-source-module graph construction was 0.36 ms.
-Verification: all 439 tests passed. The subsequent warm O3 profile measured
-1.234 s, with `jit_materialize` at 106.5 ms and finalizer total at 509.7 ms.
-Relative to the preceding 1.371 s / 657.2 ms sample, that is another 137 ms
-(10.0%) end-to-end and 147.5 ms (22.4%) finalizer reduction. The saved time
-tracks the 143 ms JIT-materialization reduction; runtime O3 remained 73.3 ms
-and the final native link remained 208.6 ms. This again is one profile per
-configuration, not a controlled benchmark.
-
-The module sources themselves have always produced O0 bitcode; the separate
-ORC target-machine level had previously been LLVM's default (O2-equivalent).
-On the saw-module warm sample, `jit_materialize` was 249.5 ms at that
-original level (1.371 s total), 250.9 ms at O1
-(`CodeGenOptLevel::Less`, 1.387 s total), and 106.5 ms at O0
-(`CodeGenOptLevel::None`, 1.234 s total). O0 is therefore the retained
-authoring-JIT policy. None of those experiments changes the retained runtime
-O3 pipeline.
-
-Do not make further decisions from the saw module alone. The profiling script
-accepts repeated `--module` paths and `--simple-sine-modules`, which profiles
-all five `projects/simple_sine/modules` targets in isolated retained
+The profiling script accepts repeated `--module` paths and
+`--simple-sine-modules`, which profiles the module corpus in isolated retained
 sub-workspaces. Its normal output is two compact timing lines per module;
 complete CMake/Ninja/compiler transcripts are retained in the sibling
 `<workspace>.logs` directory and printed on failure (or with `--verbose`).

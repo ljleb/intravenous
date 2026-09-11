@@ -1,7 +1,6 @@
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
-#include <iv/nodes/iv.test.benchmark_constant_project.voice>
 
 void benchmark_constant_project(iv::GraphBuilder& g)
 {

@@ -183,7 +183,12 @@ TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourc
         "IV_MODULE(\"iv.test.module\", module_main);\n");
 
     iv::IvModuleInstances instances;
-    iv::IvModuleSources sources(workspace, {});
+    iv::IvModuleDefinitions definitions;
+    auto loaded = iv::test_support::make_loaded_definition(
+        moved_root, std::string(module_id));
+    loaded.source_id = std::filesystem::weakly_canonical(moved_root).generic_string();
+    definitions.seed_loaded_definition(std::move(loaded));
+    iv::IvModuleSources sources(workspace, {}, &definitions);
 
     (void)instances.create_instance(module_id, stale_root);
     witness.reset();
@@ -201,7 +206,7 @@ TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourc
     EXPECT_EQ(witness.listed_instances->front().module_root, expected_root);
 }
 
-TEST_F(IvModuleInstancesTest, SourceDiscoveryListsEveryModuleRegisteredByOneSource)
+TEST_F(IvModuleInstancesTest, SourceDiscoveryListsPackagesWithoutScanningRegistrations)
 {
     auto const workspace =
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_many_source_modules");
@@ -221,18 +226,10 @@ TEST_F(IvModuleInstancesTest, SourceDiscoveryListsEveryModuleRegisteredByOneSour
     iv::IvModuleSources sources(workspace, {});
     auto const discovered = sources.list_sources();
 
-    ASSERT_EQ(discovered.size(), 2u);
-    auto const primary = std::ranges::find(
-        discovered, module_id, &iv::IvModuleSourceInfo::definition_id);
-    auto const secondary = std::ranges::find(
-        discovered,
-        "iv.test.module.secondary",
-        &iv::IvModuleSourceInfo::definition_id);
-    ASSERT_NE(primary, discovered.end());
-    ASSERT_NE(secondary, discovered.end());
+    ASSERT_EQ(discovered.size(), 1u);
     auto const expected_root = std::filesystem::weakly_canonical(source_root);
-    EXPECT_EQ(primary->source_root, expected_root);
-    EXPECT_EQ(secondary->source_root, expected_root);
+    EXPECT_EQ(discovered.front().source_root, expected_root);
+    EXPECT_EQ(discovered.front().source_id, expected_root.generic_string());
 }
 
 TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPublishesDiff)

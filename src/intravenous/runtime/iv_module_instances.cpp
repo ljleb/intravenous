@@ -277,36 +277,28 @@ void IvModuleInstances::update_instances(std::vector<Update> updates)
 
 void IvModuleInstances::refresh_source_roots(IvModuleSources const &sources)
 {
-    auto const listed_sources = sources.list_sources();
-    std::unordered_map<std::string, std::filesystem::path> roots_by_definition_id;
-    roots_by_definition_id.reserve(listed_sources.size());
-    for (auto const &source : listed_sources) {
-        roots_by_definition_id.emplace(
-            source.definition_id,
-            normalize_path(source.source_root));
-    }
-
     IvModuleRequiredDefinitionsChanged required_diff{};
     bool list_changed = false;
 
     {
         std::scoped_lock lock(mutex);
         for (auto &entry : desired_instances_by_id) {
-            auto const source = roots_by_definition_id.find(entry.second.definition_id);
-            if (source == roots_by_definition_id.end()) {
+            auto const source = sources.find_source(entry.second.definition_id);
+            if (!source) {
                 continue;
             }
-            if (entry.second.module_root == source->second) {
+            auto const source_root = normalize_path(source->source_root);
+            if (entry.second.module_root == source_root) {
                 continue;
             }
 
-            entry.second.module_root = source->second;
+            entry.second.module_root = source_root;
             list_changed = true;
 
             auto required = required_definitions_by_id.find(entry.second.definition_id);
             if (required != required_definitions_by_id.end() &&
-                required->second.module_root != source->second) {
-                required->second.module_root = source->second;
+                required->second.module_root != source_root) {
+                required->second.module_root = source_root;
                 required_diff.updated.push_back(required->second);
             }
         }
@@ -343,7 +335,7 @@ void IvModuleInstances::handle_project_create_iv_module_instance(
         throw std::runtime_error("unknown iv module source: " + request.module_id);
     }
     builder.succeed(create_instance(
-        source->definition_id,
+        request.module_id,
         source->source_root,
         request.instance_id,
         request.display_name));

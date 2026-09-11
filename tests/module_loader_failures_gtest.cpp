@@ -79,7 +79,7 @@ TEST(ModuleLoaderSources, RootSourceDoesNotPublishImportedModuleDefinitions)
     EXPECT_TRUE(static_cast<bool>(loaded.front().root));
 }
 
-TEST(ModuleLoaderSources, RegisteredSourceNodeIsImportedThroughDefinitionHeader)
+TEST(ModuleLoaderSources, RegisteredSourceNodeIsResolvedInAuthoringGeneration)
 {
     auto const project_root = iv::test::runtime_modules_root()
         / "registered_source_node";
@@ -114,8 +114,7 @@ TEST(ModuleLoaderSources, RegisteredSourceNodeIsImportedThroughDefinitionHeader)
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
     iv::test::write_text(
         consumer_source / "module.cpp",
-        "#include <intravenous/dsl.h>\n"
-        "#include <iv/nodes/iv.test.registered_source_node>\n\n"
+        "#include <intravenous/dsl.h>\n\n"
         "void registered_node_consumer(iv::GraphBuilder& g)\n"
         "{\n"
         "    g.outputs(g.node<\"iv.test.registered_source_node\">());\n"
@@ -129,13 +128,6 @@ TEST(ModuleLoaderSources, RegisteredSourceNodeIsImportedThroughDefinitionHeader)
     EXPECT_EQ(loaded.front().module_id, "iv.test.registered_node_consumer");
     EXPECT_TRUE(static_cast<bool>(loaded.front().root));
 
-    auto const generated_header = project_root / "build" / "iv" / "imports"
-        / "iv" / "nodes" / "iv.test.registered_source_node";
-    ASSERT_TRUE(std::filesystem::exists(generated_header));
-    EXPECT_NE(
-        iv::test::read_text(generated_header).find(
-            "IV_REGISTERED_INTERFACE(\"iv.test.registered_source_node\")"),
-        std::string::npos);
 }
 
 TEST(ModuleLoaderFailures, SourceWithoutManifestFails)
@@ -162,7 +154,7 @@ TEST(ModuleLoaderFailures, MissingDependencyFails)
     auto loader = iv::test::make_loader();
     expect_failure_contains(
         [&] { (void)loader.load_source_definitions(fixtures / "missing_dependency"); },
-        "imports missing");
+        "is unavailable in the current authoring generation");
 }
 
 TEST(ModuleLoaderFailures, UnrelatedDuplicateSourceIdsDoNotBlockLoading)

@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <mutex>
+#include <sstream>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -35,6 +37,9 @@ void validate(SourceRegistrationView const& registration)
     if (!registration.source_file || registration.source_file_size == 0) {
         throw std::invalid_argument("IV source registration has no source file");
     }
+    if (!registration.source_root || registration.source_root_size == 0) {
+        throw std::invalid_argument("IV source registration has no source package root");
+    }
     if (registration.kind == SourceRegistrationKind::module
         && !registration.module_build) {
         throw std::invalid_argument("IV module registration has no build function");
@@ -60,18 +65,69 @@ bool belongs_to_source_root(
 {
     try {
         auto const root = normalize_path(std::filesystem::path(std::string(source_root)));
-        auto const source_file = normalize_path(std::filesystem::path(std::string(
-            registration.source_file, registration.source_file_size)));
-        auto root_part = root.begin();
-        auto source_part = source_file.begin();
-        for (; root_part != root.end(); ++root_part, ++source_part) {
-            if (source_part == source_file.end() || *source_part != *root_part) return false;
-        }
-        return true;
+        auto const registration_root = normalize_path(std::filesystem::path(std::string(
+            registration.source_root, registration.source_root_size)));
+        return root == registration_root;
     } catch (...) {
         return false;
     }
 }
+
+std::string source_registration_id(SourceRegistrationView const& registration)
+{
+    return std::string(registration.id, registration.id_size);
+}
+
+SourceRegistrationView find_registered_definition(std::string_view id)
+{
+    auto& definitions = source_definitions();
+    std::scoped_lock lock(definitions.mutex);
+    std::vector<SourceRegistrationView> matches;
+    for (auto const& registration : definitions.registrations) {
+        if (std::string_view(registration.id, registration.id_size) == id) {
+            matches.push_back(registration);
+        }
+    }
+    if (matches.empty()) {
+        throw std::runtime_error(
+            "registered IV definition '" + std::string(id)
+            + " is unavailable in the current authoring generation");
+    }
+    if (matches.size() != 1) {
+        throw std::runtime_error(
+            "registered IV definition '" + std::string(id)
+            + " has multiple providers in the current authoring generation");
+    }
+    return matches.front();
+}
+
+std::string authoring_cycle_message(
+    std::span<std::string const> stack, std::string_view requested)
+{
+    std::ostringstream message;
+    message << "registered IV module authoring cycle: ";
+    auto const begin = std::ranges::find(stack, requested);
+    bool first = true;
+    for (auto it = begin; it != stack.end(); ++it) {
+        if (!first) message << " -> ";
+        message << *it;
+        first = false;
+    }
+    if (!first) message << " -> ";
+    message << requested;
+    return std::move(message).str();
+}
+
+class AuthoringStackEntry {
+    std::vector<std::string>& _stack;
+public:
+    AuthoringStackEntry(std::vector<std::string>& stack, std::string id)
+        : _stack(stack)
+    {
+        _stack.push_back(std::move(id));
+    }
+    ~AuthoringStackEntry() { _stack.pop_back(); }
+};
 } // namespace
 
 void register_source_definition(SourceRegistrationView registration)
@@ -175,11 +231,19 @@ NodeCodeKey source_node_code_key(std::string_view source_root, std::size_t index
 
 NodeRef author_registered_source_definition(GraphBuilder& builder, std::string_view id)
 {
-    // Do not execute a provider builder here.  An ID reference is preserved in
-    // the authored graph and resolved against source candidates only after the
-    // providers have independently loaded.  This keeps source implementation
-    // code out of consumers and makes a primitive/module replacement private.
-    return builder.registered_node(id);
+    auto const registration = find_registered_definition(id);
+    if (registration.kind == SourceRegistrationKind::node) {
+        return registration.node_build(builder);
+    }
+
+    static thread_local std::vector<std::string> authoring_stack;
+    if (std::ranges::find(authoring_stack, id) != authoring_stack.end()) {
+        throw std::runtime_error(authoring_cycle_message(authoring_stack, id));
+    }
+    AuthoringStackEntry const entry(authoring_stack, source_registration_id(registration));
+    GraphBuilder child;
+    registration.module_build(child);
+    return builder.embed_child(child, "Registered IV module");
 }
 
 void clear_source_definitions() noexcept
@@ -189,12 +253,23 @@ void clear_source_definitions() noexcept
     definitions.registrations.clear();
 }
 
+void clear_source_definitions_for_root(std::string_view source_root) noexcept
+{
+    auto& definitions = source_definitions();
+    std::scoped_lock lock(definitions.mutex);
+    std::erase_if(definitions.registrations, [&](SourceRegistrationView const& registration) {
+        return belongs_to_source_root(registration, source_root);
+    });
+}
+
 SourceModuleRegistration::SourceModuleRegistration(
     char const* id,
     std::size_t id_size,
     SourceModuleBuildFunction build,
     char const* source_file,
-    std::size_t source_file_size)
+    std::size_t source_file_size,
+    char const* source_root,
+    std::size_t source_root_size)
 {
     register_source_definition({
         .kind = SourceRegistrationKind::module,
@@ -202,6 +277,8 @@ SourceModuleRegistration::SourceModuleRegistration(
         .id_size = id_size,
         .source_file = source_file,
         .source_file_size = source_file_size,
+        .source_root = source_root,
+        .source_root_size = source_root_size,
         .module_build = build,
     });
 }
@@ -212,7 +289,9 @@ SourceNodeRegistration::SourceNodeRegistration(
     SourceNodeBuildFunction build,
     void const* node_compiler_record,
     char const* source_file,
-    std::size_t source_file_size)
+    std::size_t source_file_size,
+    char const* source_root,
+    std::size_t source_root_size)
 {
     register_source_definition({
         .kind = SourceRegistrationKind::node,
@@ -220,6 +299,8 @@ SourceNodeRegistration::SourceNodeRegistration(
         .id_size = id_size,
         .source_file = source_file,
         .source_file_size = source_file_size,
+        .source_root = source_root,
+        .source_root_size = source_root_size,
         .node_build = build,
         .node_compiler_record = node_compiler_record,
     });

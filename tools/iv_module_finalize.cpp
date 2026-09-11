@@ -3,6 +3,7 @@
 #include <intravenous/module/authored_graph_wire.h>
 
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -677,7 +678,11 @@ void mark_runtime_module_roots(
     Module const& module,
     SmallPtrSetImpl<GlobalValue const*>& reachable)
 {
-    static constexpr std::array<StringRef, 7> runtime_entry_points{
+    // A finalized source artifact is also a reusable authoring artifact. Keep
+    // its registration constructors and dispatch entry points alive so the
+    // host can assemble several independently compiled sources into one
+    // authoring generation without recompiling a consumer.
+    static constexpr std::array<StringRef, 14> runtime_entry_points{
         "iv_module_abi_version",
         "iv_source_module_count",
         "iv_source_module_id",
@@ -685,6 +690,13 @@ void mark_runtime_module_roots(
         "iv_source_module_node_configs",
         "iv_module_node_types",
         "iv_source_node_types",
+        "iv_source_registered_module_count",
+        "iv_source_registered_module_id",
+        "iv_source_build_registered_module",
+        "iv_source_registered_node_type_count",
+        "iv_source_registered_node_type_id",
+        "iv_source_registered_node_type_code_key",
+        "iv_source_build_registered_node_type",
     };
 
     for (auto const name : runtime_entry_points) {
@@ -703,82 +715,8 @@ void mark_runtime_module_roots(
     }
 }
 
-bool is_source_registration_initializer(Function const& function)
+void preserve_source_authoring_ir(Module& module)
 {
-    auto const name = function.getName();
-    return name.contains("iv_source_module_registration_ctor_")
-        || name.contains("iv_source_node_registration_ctor_");
-}
-
-// Source registrations exist only to populate the builder-library registry
-// while the temporary ORC generation is alive. Leaving their constructors in
-// llvm.global_ctors would make the registration thunks runtime roots, which
-// in turn prevents authoring IR from being pruned from the final artifact.
-// Keep every other initializer: user globals may still be referenced by
-// retained node configuration or runtime code.
-void remove_source_registration_initializers(Module& module)
-{
-    auto* ctors = module.getGlobalVariable("llvm.global_ctors");
-    if (!ctors || !ctors->hasInitializer()) return;
-    auto const* entries = dyn_cast<ConstantArray>(ctors->getInitializer());
-    if (!entries) return;
-
-    std::vector<Constant*> retained;
-    retained.reserve(entries->getNumOperands());
-    bool removed = false;
-    for (auto const& operand : entries->operands()) {
-        auto* value = operand.get();
-        auto* entry = dyn_cast<ConstantStruct>(value);
-        if (!entry || entry->getNumOperands() < 2) {
-            retained.push_back(cast<Constant>(value));
-            continue;
-        }
-        auto const* callback = dyn_cast<Function>(
-            entry->getOperand(1)->stripPointerCasts());
-        if (!callback || !is_source_registration_initializer(*callback)) {
-            retained.push_back(cast<Constant>(value));
-            continue;
-        }
-        removed = true;
-    }
-    if (!removed) return;
-
-    auto const name = ctors->getName().str();
-    if (retained.empty()) {
-        // Keep the old global allocated until the already-computed authoring
-        // reachability set has been consumed below. Its new name means object
-        // lowering will not treat it as a runtime constructor list.
-        ctors->setName(name + ".source-registration-old");
-        return;
-    }
-
-    auto const* existing_type = cast<ArrayType>(entries->getType());
-    auto* array_type = ArrayType::get(
-        existing_type->getElementType(), retained.size());
-    auto* replacement = new GlobalVariable(
-        module,
-        array_type,
-        ctors->isConstant(),
-        ctors->getLinkage(),
-        ConstantArray::get(array_type, retained),
-        name + ".source-registration-removed");
-    replacement->setSection(ctors->getSection());
-    replacement->setVisibility(ctors->getVisibility());
-    replacement->setDLLStorageClass(ctors->getDLLStorageClass());
-    replacement->setUnnamedAddr(ctors->getUnnamedAddr());
-    if (ctors->getAlign()) replacement->setAlignment(*ctors->getAlign());
-
-    // llvm.global_ctors is identified by name during object lowering. Keep
-    // the original global alive under a private name until authoring-root
-    // processing finishes; GlobalDCE then drops it with its source-only
-    // initializer closure.
-    ctors->setName(name + ".source-registration-old");
-    replacement->setName(name);
-}
-
-void prune_authoring_ir(Module& module)
-{
-    SmallPtrSet<GlobalValue const*, 32> authoring_reachable;
     static constexpr std::array<StringRef, 7> authoring_entry_points{
         "iv_source_registered_module_count",
         "iv_source_registered_module_id",
@@ -794,42 +732,26 @@ void prune_authoring_ir(Module& module)
             fail("finalized LLVM module does not define authoring entry point '"
                  + name.str() + "'");
         }
-        mark_reachable(entry_point, authoring_reachable);
     }
-    // Registered module/node thunks are reached through the temporary
-    // builder-library registry rather than a direct LLVM call from the root
-    // dispatcher. Their only static edge is the source registration ctor.
-    if (auto const* ctors = module.getGlobalVariable("llvm.global_ctors")) {
-        mark_reachable(ctors, authoring_reachable);
-    }
-    if (auto const* dtors = module.getGlobalVariable("llvm.global_dtors")) {
-        mark_reachable(dtors, authoring_reachable);
-    }
-
-    remove_source_registration_initializers(module);
+    // Validate the complete native/artifact root set before GlobalDCE. Put
+    // the exported authoring ABI in llvm.used as well: external linkage is
+    // not a sufficient retention contract once later optimization passes are
+    // free to internalize source-local symbols.
     SmallPtrSet<GlobalValue const*, 32> runtime_reachable;
     mark_runtime_module_roots(module, runtime_reachable);
-
-    for (auto const* value : authoring_reachable) {
-        if (runtime_reachable.contains(value) || value->isDeclaration()) {
-            continue;
-        }
-        const_cast<GlobalValue*>(value)->setLinkage(GlobalValue::InternalLinkage);
+    SmallVector<GlobalValue*, 7> retained_entries;
+    retained_entries.reserve(authoring_entry_points.size());
+    for (auto const name : authoring_entry_points) {
+        retained_entries.push_back(module.getFunction(name));
     }
-
-    removeFromUsedLists(module, [&](Constant* used) {
-        auto const* value = dyn_cast<GlobalValue>(used->stripPointerCasts());
-        return value && authoring_reachable.contains(value)
-            && !runtime_reachable.contains(value);
-    });
-
+    appendToUsed(module, retained_entries);
     legacy::PassManager pipeline;
     pipeline.add(createGlobalDCEPass());
     pipeline.run(module);
 
     for (auto const name : authoring_entry_points) {
-        if (module.getFunction(name)) {
-            fail("authoring entry point survived runtime IR pruning: '"
+        if (!module.getFunction(name) || module.getFunction(name)->isDeclaration()) {
+            fail("authoring entry point was removed from source artifact: '"
                  + name.str() + "'");
         }
     }
@@ -1007,9 +929,6 @@ BuilderJitResult run_builder_jit(
     auto build_id = take_expected(
         jit->lookup("iv_source_registered_module_id"),
         "lookup iv_source_registered_module_id");
-    auto build_address = take_expected(
-        jit->lookup("iv_source_build_registered_module"),
-        "lookup iv_source_build_registered_module");
     auto node_type_count_address = take_expected(
         jit->lookup("iv_source_registered_node_type_count"),
         "lookup iv_source_registered_node_type_count");
@@ -1029,14 +948,12 @@ BuilderJitResult run_builder_jit(
 
     using BuildCountFn = std::size_t (*)();
     using BuildIdFn = iv::ModuleDataView (*)(std::size_t);
-    using BuildFn = void (*)(std::size_t, iv::details::BuilderSession*);
     using NodeTypeCountFn = std::size_t (*)();
     using NodeTypeIdFn = iv::ModuleDataView (*)(std::size_t);
     using NodeTypeKeyFn = iv::NodeCodeKey (*)(std::size_t);
     using NodeTypeBuildFn = void (*)(std::size_t, iv::details::BuilderSession*);
     auto const module_count = build_count.toPtr<BuildCountFn>()();
     auto const module_id = build_id.toPtr<BuildIdFn>();
-    auto const build = build_address.toPtr<BuildFn>();
     auto const node_type_count = node_type_count_address.toPtr<NodeTypeCountFn>()();
     auto const node_type_id = node_type_id_address.toPtr<NodeTypeIdFn>();
     auto const node_type_key = node_type_key_address.toPtr<NodeTypeKeyFn>();
@@ -1068,6 +985,10 @@ BuilderJitResult run_builder_jit(
     std::vector<BuilderJitNodeType> node_types;
     node_types.reserve(node_type_count);
     std::set<std::string> registered_ids;
+    std::set<std::string> runtime_node_ids;
+    std::set<std::string> runtime_module_ids;
+    auto const has_registration_metadata =
+        !metadata.registered_definitions.empty();
     for (std::size_t index = 0; index < node_type_count; ++index) {
         auto const id = node_type_id(index);
         if (!id.data || id.size == 0) {
@@ -1078,17 +999,20 @@ BuilderJitResult run_builder_jit(
             fail("duplicate registered IV definition ID within one IV source: '"
                  + name + "'");
         }
+        runtime_node_ids.insert(name);
         auto const key = node_type_key(index);
-        auto const metadata_node = std::find_if(
-            metadata.registered_definitions.begin(),
-            metadata.registered_definitions.end(),
-            [&](RegisteredDefinitionMetadata const& definition) {
-                return definition.kind == "node" && definition.id == name
-                    && definition.node_code_key == key;
-            });
-        if (metadata_node == metadata.registered_definitions.end()) {
-            fail("registered IV node '" + name
-                 + "' has no matching compiler metadata/NodeCodeKey");
+        if (has_registration_metadata) {
+            auto const metadata_node = std::find_if(
+                metadata.registered_definitions.begin(),
+                metadata.registered_definitions.end(),
+                [&](RegisteredDefinitionMetadata const& definition) {
+                    return definition.kind == "node" && definition.id == name
+                        && definition.node_code_key == key;
+                });
+            if (metadata_node == metadata.registered_definitions.end()) {
+                fail("registered IV node '" + name
+                     + "' has no matching compiler metadata/NodeCodeKey");
+            }
         }
         auto node_session = std::unique_ptr<
             iv::details::BuilderSession,
@@ -1106,8 +1030,11 @@ BuilderJitResult run_builder_jit(
         });
     }
 
+    // Registered iv modules are not authored in this isolated per-source JIT:
+    // they may invoke definitions from other IV sources. The host executes
+    // these retained entries only after it has assembled the complete source
+    // authoring generation. We still validate every registration ID here.
     std::vector<BuilderJitModule> modules;
-    modules.reserve(module_count);
     for (std::size_t index = 0; index < module_count; ++index) {
         auto const id = module_id(index);
         if (!id.data || id.size == 0) {
@@ -1118,21 +1045,33 @@ BuilderJitResult run_builder_jit(
             fail("duplicate registered IV definition ID within one IV source: '"
                  + name + "'");
         }
-        auto module_session = std::unique_ptr<
-            iv::details::BuilderSession,
-            decltype(&iv::details::iv_builder_session_destroy)>(
-                iv::details::iv_builder_session_create(),
-                iv::details::iv_builder_session_destroy);
-        if (!module_session) fail("create IV source module builder session");
-        iv::details::set_builder_node_config_layouts(module_session.get(), config_layouts);
-        iv::details::set_builder_authoring_globals(module_session.get(), authoring_globals);
-        build(index, module_session.get());
-        modules.push_back({
-            .id = std::move(name),
-            .graph = iv::details::take_built_graph(module_session.get()),
-        });
+        runtime_module_ids.insert(name);
+        if (has_registration_metadata) {
+            auto const metadata_module = std::find_if(
+                metadata.registered_definitions.begin(),
+                metadata.registered_definitions.end(),
+                [&](RegisteredDefinitionMetadata const& definition) {
+                    return definition.kind == "module" && definition.id == name;
+                });
+            if (metadata_module == metadata.registered_definitions.end()) {
+                fail("registered IV module '" + name
+                     + "' has no matching compiler registration metadata");
+            }
+        }
     }
-    timings.finish_stage("source_modules_authoring", stage_started_at);
+    if (has_registration_metadata) {
+        for (auto const& definition : metadata.registered_definitions) {
+            auto const& runtime_ids = definition.kind == "node"
+                ? runtime_node_ids
+                : runtime_module_ids;
+            if (!runtime_ids.contains(definition.id)) {
+                fail("compiler metadata registered " + definition.kind + " '"
+                     + definition.id
+                     + "' but the source authoring artifact did not publish it");
+            }
+        }
+    }
+    timings.finish_stage("source_registration_validation", stage_started_at);
 
     stage_started_at = timings.start_stage();
     check_error(jit->deinitialize(jit->getMainJITDylib()), "run builder global destructors");
@@ -1764,8 +1703,8 @@ int finalize(Options options)
     timings.finish_stage("source_data_inject", stage_started_at);
 
     stage_started_at = timings.start_stage();
-    prune_authoring_ir(master);
-    timings.finish_stage("authoring_ir_prune", stage_started_at);
+    preserve_source_authoring_ir(master);
+    timings.finish_stage("source_authoring_ir_preserve", stage_started_at);
 
     stage_started_at = timings.start_stage();
     optimize_runtime_module(master, options.optimize);
