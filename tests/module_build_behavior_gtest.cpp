@@ -36,7 +36,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
             "iv.test.behavior_project",
             &iv::ModuleLoader::LoadedDefinition::module_id);
         ASSERT_NE(definition, definitions.end());
-        // A source artifact owns and watches only its implementation package.
+        // Each IV package owns and watches only its implementation files.
         // behavior_voice is an independently built provider selected through
         // the package definition table, not a recursive C++ build dependency of
         // behavior_project.
@@ -83,8 +83,8 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     ASSERT_EQ(project_package_llvm.size(), 1u);
 
     // Generic g.node<Id>() configuration has no generated provider-header
-    // bootstrap. Source packages stay separate C++ targets and join only in
-    // the host configuration generation.
+    // bootstrap. IV packages stay separate C++ targets and join only while
+    // the host configures graphs from the loaded package definitions.
     EXPECT_FALSE(std::filesystem::exists(
         runtime_root / "build" / "iv" / "imports" / "iv" / "nodes"));
 

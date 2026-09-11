@@ -36,7 +36,7 @@ TEST(ModuleLoaderFailures, MissingManifestFails)
 TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
 {
     auto const runtime_root = iv::test::runtime_modules_root()
-        / "canonical_source_manifest";
+        / "canonical_package_manifest";
     std::filesystem::remove_all(runtime_root);
     std::filesystem::create_directories(runtime_root);
     iv::test::write_text(runtime_root / "iv_project.jsonl", "");
@@ -82,18 +82,18 @@ TEST(ModuleLoaderPackages, RootPackageDoesNotPublishOtherPackageDefinitions)
 TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefinitions)
 {
     auto const project_root = iv::test::runtime_modules_root()
-        / "registered_source_node";
-    auto const node_source = project_root / "modules" / "registered_node";
-    auto const consumer_source = project_root / "modules" / "consumer";
+        / "registered_package_node";
+    auto const node_package = project_root / "modules" / "registered_node";
+    auto const consumer_package = project_root / "modules" / "consumer";
     std::filesystem::remove_all(project_root);
-    std::filesystem::create_directories(node_source);
-    std::filesystem::create_directories(consumer_source);
+    std::filesystem::create_directories(node_package);
+    std::filesystem::create_directories(consumer_package);
     iv::test::write_text(project_root / "iv_project.jsonl", "");
     iv::test::write_text(
-        node_source / "iv_package.json",
+        node_package / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
     iv::test::write_text(
-        node_source / "module.cpp",
+        node_package / "module.cpp",
         "#include <intravenous/dsl.h>\n"
         "#include <array>\n\n"
         "namespace {\n"
@@ -108,21 +108,21 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
         "    }\n"
         "};\n"
         "}\n\n"
-        "IV_NODE(\"iv.test.registered_source_node\", RegisteredPackageNode);\n");
+        "IV_NODE(\"iv.test.registered_package_node\", RegisteredPackageNode);\n");
     iv::test::write_text(
-        consumer_source / "iv_package.json",
+        consumer_package / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
     iv::test::write_text(
-        consumer_source / "module.cpp",
+        consumer_package / "module.cpp",
         "#include <intravenous/dsl.h>\n\n"
         "void registered_node_consumer(iv::GraphBuilder& g)\n"
         "{\n"
-        "    g.outputs(g.node<\"iv.test.registered_source_node\">());\n"
+        "    g.outputs(g.node<\"iv.test.registered_package_node\">());\n"
         "}\n\n"
         "IV_MODULE(\"iv.test.registered_node_consumer\", registered_node_consumer);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(consumer_source);
+    auto loaded = loader.load_package_definitions(consumer_package);
 
     ASSERT_EQ(loaded.size(), 1);
     EXPECT_EQ(loaded.front().module_id, "iv.test.registered_node_consumer");
@@ -157,7 +157,7 @@ TEST(ModuleLoaderFailures, MissingDependencyFails)
         "is unavailable in the loaded package definitions");
 }
 
-TEST(ModuleLoaderFailures, UnrelatedDuplicateSourceIdsDoNotBlockLoading)
+TEST(ModuleLoaderFailures, UnrelatedDuplicateDefinitionIdsDoNotBlockLoading)
 {
     auto const fixtures = iv::test::test_modules_root();
     auto loader = iv::test::make_loader({fixtures, iv::test::duplicate_modules_root()});
