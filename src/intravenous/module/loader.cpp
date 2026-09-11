@@ -1057,6 +1057,9 @@ public:
 
             auto const suffix = package_jit_->next_package.fetch_add(
                 1, std::memory_order_relaxed);
+            // Use LLJIT's wrapper rather than ExecutionSession::createJITDylib.
+            // LLJIT adds its platform/process JITDylibs to the default link
+            // order; package static constructors depend on that platform support.
             auto& jit_dylib = take_llvm_expected(
                 jit.createJITDylib(
                     "iv.package." + sanitize(root.package_key) + "."
