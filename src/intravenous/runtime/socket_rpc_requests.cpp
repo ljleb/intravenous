@@ -335,7 +335,7 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
     if (method == "ivModuleSources.create") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,
-            .payload = CreateIvModuleSourceRequest{
+            .payload = CreateIvPackageRequest{
                 .name = parse_string_param(params, "name"),
             },
         };

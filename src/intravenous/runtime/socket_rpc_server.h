@@ -42,8 +42,8 @@ namespace iv {
         void (*)(CreateIvModuleInstanceRequest const &, SocketRpcCreateIvModuleInstanceResultBuilder &);
     using SocketRpcGetIvPackagesEvent =
         void (*)(GetIvPackagesRequest const &, SocketRpcIvPackagesResultBuilder &);
-    using SocketRpcCreateIvModuleSourceEvent =
-        void (*)(CreateIvModuleSourceRequest const &, SocketRpcIvModuleSourceResultBuilder &);
+    using SocketRpcCreateIvPackageEvent =
+        void (*)(CreateIvPackageRequest const &, SocketRpcIvPackageResultBuilder &);
     using SocketRpcGetIvModuleInstancesEvent =
         void (*)(GetIvModuleInstancesRequest const &, SocketRpcIvModuleInstancesResultBuilder &);
     using SocketRpcDeleteIvModuleInstanceEvent =
@@ -111,7 +111,7 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodesEvent, iv_socket_rpc_get_virtual_nodes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleInstanceEvent, iv_socket_rpc_create_iv_module_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetIvPackagesEvent, iv_socket_rpc_get_iv_packages_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleSourceEvent, iv_socket_rpc_create_iv_module_source_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvPackageEvent, iv_socket_rpc_create_iv_package_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetIvModuleInstancesEvent, iv_socket_rpc_get_iv_module_instances_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDeleteIvModuleInstanceEvent, iv_socket_rpc_delete_iv_module_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcUpdateIvModuleInstancesEvent, iv_socket_rpc_update_iv_module_instances_event);

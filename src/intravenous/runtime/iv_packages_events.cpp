@@ -1,23 +1,23 @@
 #include <intravenous/runtime/iv_packages_events.h>
 
 namespace iv {
-void IvModuleSourceLookupBuilder::succeed(std::optional<IvModuleSourceInfo> source)
+void IvPackageLookupBuilder::succeed(std::optional<IvPackageInfo> package)
 {
     has_response_ = true;
-    source_ = std::move(source);
+    package_ = std::move(package);
 }
 
-bool IvModuleSourceLookupBuilder::has_response() const
+bool IvPackageLookupBuilder::has_response() const
 {
     return has_response_;
 }
 
-std::optional<IvModuleSourceInfo> IvModuleSourceLookupBuilder::source() const
+std::optional<IvPackageInfo> IvPackageLookupBuilder::package() const
 {
-    return source_;
+    return package_;
 }
 
 IV_DEFINE_LINKER_EVENT(
-    IvModuleSourceLookupEvent,
-    iv_runtime_iv_module_source_lookup_event);
+    IvPackageLookupEvent,
+    iv_runtime_iv_package_lookup_event);
 } // namespace iv

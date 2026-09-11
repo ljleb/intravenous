@@ -111,7 +111,7 @@ namespace iv {
             IvModuleReload* reload_ = nullptr;
             IvModuleDefinitions* definitions_ = nullptr;
             IvModuleInstances* instances_ = nullptr;
-            IvPackages* sources_ = nullptr;
+            IvPackages* packages_ = nullptr;
             std::optional<std::jthread> thread_ {};
 
         public:
@@ -119,11 +119,11 @@ namespace iv {
                 IvModuleReload& reload,
                 IvModuleDefinitions& definitions,
                 IvModuleInstances& instances,
-                IvPackages& sources)
+                IvPackages& packages)
                 : reload_(&reload)
                 , definitions_(&definitions)
                 , instances_(&instances)
-                , sources_(&sources)
+                , packages_(&packages)
             {
             }
 
@@ -135,13 +135,13 @@ namespace iv {
 
                 thread_.emplace([this](std::stop_token stop_token) {
                     while (!stop_token.stop_requested()) {
-                        definitions_->sync_source_declarations(
-                            sources_->source_declarations());
-                        instances_->refresh_source_roots(*sources_);
-                        if (reload_->has_dirty_definitions()) {
-                            reload_->compile_dirty_definitions();
+                        definitions_->sync_package_declarations(
+                            packages_->package_declarations());
+                        instances_->refresh_package_roots(*packages_);
+                        if (reload_->has_dirty_packages()) {
+                            reload_->compile_dirty_packages();
                         } else {
-                            reload_->reload_changed_definitions();
+                            reload_->reload_changed_packages();
                         }
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     }
@@ -494,9 +494,9 @@ namespace iv {
             // discovered candidates before serving module-instance creation,
             // then let the compiler-produced registrations establish the
             // module-ID registry used by that request.
-            iv_module_definitions.sync_source_declarations(
-                iv_packages.source_declarations());
-            iv_module_reload.compile_dirty_definitions();
+            iv_module_definitions.sync_package_declarations(
+                iv_packages.package_declarations());
+            iv_module_reload.compile_dirty_packages();
             iv_module_reload.apply_pending_results();
 
             startup_log("initializing execution state");

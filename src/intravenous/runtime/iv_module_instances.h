@@ -29,7 +29,7 @@ struct GetIvModuleInstancesRequest;
 
 struct IvModuleRequiredDefinition {
     std::string definition_id{};
-    std::filesystem::path module_root{};
+    std::filesystem::path package_root{};
 };
 
 struct IvModuleRequiredDefinitionsChanged {
@@ -42,7 +42,7 @@ struct IvModuleInstance {
     std::string instance_id{};
     std::string definition_id{};
     std::string display_name{};
-    std::filesystem::path module_root{};
+    std::filesystem::path package_root{};
     std::string module_id{};
     GraphIntrospectionMetadata introspection{};
     std::shared_ptr<GraphRuntimeBindings> runtime_bindings =
@@ -59,8 +59,8 @@ struct IvModuleInstancesChanged {
 struct IvModuleInstanceBuilderRef {
     IvModuleInstance const *instance = nullptr;
     WeakTypeErasedNode root{};
-    // Keeps the binary generation owning the root graph and callbacks live
-    // until consumers have replaced and released their previous execution graph.
+    // Keeps the package revision owning the root graph and callbacks live until
+    // consumers have replaced and released their previous execution graph.
     std::vector<ModuleRef> module_refs {};
     std::vector<LaneId> prerequisite_lanes {};
     std::optional<size_t> default_silence_ttl_samples {};
@@ -86,7 +86,7 @@ private:
         std::string instance_id{};
         std::string definition_id{};
         std::string display_name{};
-        std::filesystem::path module_root{};
+        std::filesystem::path package_root{};
         std::optional<size_t> default_silence_ttl_samples{};
     };
 
@@ -102,7 +102,7 @@ public:
 
     std::string create_instance(
         std::string_view definition_id,
-        std::filesystem::path module_root,
+        std::filesystem::path package_root,
         std::optional<std::string> instance_id = std::nullopt,
         std::optional<std::string> display_name = std::nullopt);
     void remove_instance(std::string const &instance_id);
@@ -110,7 +110,7 @@ public:
         std::string const &instance_id,
         size_t default_silence_ttl_samples);
     void update_instances(std::vector<Update> updates);
-    void refresh_source_roots(IvPackages const &sources);
+    void refresh_package_roots(IvPackages const &packages);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
 
     void handle_iv_module_definitions_changed(

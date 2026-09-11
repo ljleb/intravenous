@@ -123,10 +123,10 @@ namespace iv {
     class SocketRpcIvPackagesResultBuilder {
         int error_code = -32000;
         std::string error_message;
-        std::optional<std::vector<IvModuleSourceInfo>> result;
+        std::optional<std::vector<IvPackageInfo>> result;
 
     public:
-        void succeed(std::vector<IvModuleSourceInfo> value);
+        void succeed(std::vector<IvPackageInfo> value);
         void fail(std::string message);
         void fail(int code, std::string message);
 
@@ -138,13 +138,13 @@ namespace iv {
         [[nodiscard]] std::string build(int request_id) const;
     };
 
-    class SocketRpcIvModuleSourceResultBuilder {
+    class SocketRpcIvPackageResultBuilder {
         int error_code = -32000;
         std::string error_message;
-        std::optional<IvModuleSourceInfo> result;
+        std::optional<IvPackageInfo> result;
 
     public:
-        void succeed(IvModuleSourceInfo value);
+        void succeed(IvPackageInfo value);
         void fail(std::string message);
         void fail(int code, std::string message);
 

@@ -8,22 +8,20 @@
 
 namespace iv {
 class IvModuleDefinitions;
-class IvModuleSourceLookupBuilder;
-class SocketRpcIvModuleSourceResultBuilder;
+class IvPackageLookupBuilder;
+class SocketRpcIvPackageResultBuilder;
 class SocketRpcIvPackagesResultBuilder;
-struct CreateIvModuleSourceRequest;
+struct CreateIvPackageRequest;
 struct GetIvPackagesRequest;
 
-struct IvModuleSourceInfo {
-    // This describes an independently discoverable IV *source package*, not
-    // an inferred C++ registration. Registered IDs are compiler-produced
-    // source-artifact data published by IvModuleDefinitions.
-    std::string source_id;
-    std::filesystem::path source_root;
+struct IvPackageInfo {
+    // One independently discoverable IV package. Package definition IDs are
+    // compiler-produced data published by IvModuleDefinitions.
+    std::string package_id;
+    std::filesystem::path package_root;
     bool project_local = false;
-    // Published registrations owned by this source package. Module IDs are
-    // instantiable project definitions; node-type IDs are exposed separately
-    // so node-only sources remain visible without pretending to be modules.
+    // Published definitions owned by this package. Module IDs are instantiable;
+    // node type IDs are exposed separately so node-only packages remain visible.
     std::vector<std::string> module_ids;
     std::vector<std::string> node_type_ids;
 };
@@ -37,26 +35,25 @@ public:
         std::filesystem::path project_root,
         std::vector<std::filesystem::path> shared_roots,
         IvModuleDefinitions const* definitions = nullptr);
-    [[nodiscard]] std::vector<IvModuleSourceInfo> list_sources() const;
-    // Finds the source package which currently owns a published IV module.
-    // This never parses registration macros; it requires the source registry
-    // to have completed a successful source generation first.
-    [[nodiscard]] std::optional<IvModuleSourceInfo> find_source(
+    [[nodiscard]] std::vector<IvPackageInfo> list_packages() const;
+    // Finds the package that currently owns a published IV module. Ownership is
+    // compiler-produced and only available after a successful package build.
+    [[nodiscard]] std::optional<IvPackageInfo> find_package(
         std::string const& module_id) const;
-    // Produces the complete source-package declaration snapshot for the
-    // reload registry. The caller owns applying the snapshot transactionally.
+    // Produces the complete package declaration snapshot. The caller applies it
+    // transactionally to the loaded package set.
     [[nodiscard]] std::vector<std::pair<std::string, std::filesystem::path>>
-    source_declarations() const;
-    [[nodiscard]] IvModuleSourceInfo create_project_source(std::string const& name) const;
+    package_declarations() const;
+    [[nodiscard]] IvPackageInfo create_project_package(std::string const& name) const;
 
-    void handle_iv_module_source_lookup(
+    void handle_iv_package_lookup(
         std::string const &module_id,
-        IvModuleSourceLookupBuilder &builder) const;
+        IvPackageLookupBuilder &builder) const;
     void handle_socket_rpc_get_iv_packages(
         GetIvPackagesRequest const &request,
         SocketRpcIvPackagesResultBuilder &builder) const;
-    void handle_socket_rpc_create_iv_module_source(
-        CreateIvModuleSourceRequest const &request,
-        SocketRpcIvModuleSourceResultBuilder &builder) const;
+    void handle_socket_rpc_create_iv_package(
+        CreateIvPackageRequest const &request,
+        SocketRpcIvPackageResultBuilder &builder) const;
 };
 } // namespace iv

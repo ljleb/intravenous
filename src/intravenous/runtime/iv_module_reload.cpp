@@ -37,71 +37,71 @@ std::string format_rebuild_duration(std::chrono::steady_clock::duration duration
         + " ms";
 }
 
-IvModuleReloadResults coalesce_results_by_source(IvModuleReloadResults results)
+IvModuleReloadResults coalesce_results_by_package(IvModuleReloadResults results)
 {
-    std::unordered_map<std::string, IvModuleReloadedSource> sources_by_id;
+    std::unordered_map<std::string, IvModuleReloadedPackage> packages_by_id;
     std::unordered_map<std::string, std::vector<IvModuleReloadedDefinition>>
-        loaded_by_source_id;
+        loaded_by_package_id;
     std::unordered_map<std::string, std::vector<IvModuleReloadedNodeType>>
-        node_types_by_source_id;
-    std::unordered_map<std::string, IvModuleReloadFailure> failed_by_source_id;
+        node_types_by_package_id;
+    std::unordered_map<std::string, IvModuleReloadFailure> failed_by_package_id;
     std::vector<std::string> order;
-    order.reserve(results.sources.size() + results.failed.size());
+    order.reserve(results.packages.size() + results.failed.size());
 
-    auto const remember_order = [&](std::string const& source_id) {
-        if (std::ranges::find(order, source_id) == order.end()) {
-            order.push_back(source_id);
+    auto const remember_order = [&](std::string const& package_id) {
+        if (std::ranges::find(order, package_id) == order.end()) {
+            order.push_back(package_id);
         }
     };
 
-    for (auto& source : results.sources) {
-        auto const source_id = source.definition_id;
-        remember_order(source_id);
-        failed_by_source_id.erase(source_id);
-        loaded_by_source_id[source_id].clear();
-        node_types_by_source_id[source_id].clear();
-        sources_by_id[source_id] = std::move(source);
+    for (auto& package : results.packages) {
+        auto const package_id = package.package_id;
+        remember_order(package_id);
+        failed_by_package_id.erase(package_id);
+        loaded_by_package_id[package_id].clear();
+        node_types_by_package_id[package_id].clear();
+        packages_by_id[package_id] = std::move(package);
     }
     for (auto& loaded : results.loaded) {
-        if (!sources_by_id.contains(loaded.source_id)) continue;
-        loaded_by_source_id[loaded.source_id].push_back(std::move(loaded));
+        if (!packages_by_id.contains(loaded.package_id)) continue;
+        loaded_by_package_id[loaded.package_id].push_back(std::move(loaded));
     }
     for (auto& node_type : results.node_types) {
-        if (!sources_by_id.contains(node_type.source_id)) continue;
-        node_types_by_source_id[node_type.source_id].push_back(std::move(node_type));
+        if (!packages_by_id.contains(node_type.package_id)) continue;
+        node_types_by_package_id[node_type.package_id].push_back(std::move(node_type));
     }
     for (auto& failed : results.failed) {
-        auto const source_id = failed.definition_id;
-        remember_order(source_id);
-        sources_by_id.erase(source_id);
-        loaded_by_source_id.erase(source_id);
-        node_types_by_source_id.erase(source_id);
-        failed_by_source_id[source_id] = std::move(failed);
+        auto const package_id = failed.package_id;
+        remember_order(package_id);
+        packages_by_id.erase(package_id);
+        loaded_by_package_id.erase(package_id);
+        node_types_by_package_id.erase(package_id);
+        failed_by_package_id[package_id] = std::move(failed);
     }
 
     IvModuleReloadResults coalesced;
-    coalesced.sources.reserve(sources_by_id.size());
+    coalesced.packages.reserve(packages_by_id.size());
     coalesced.loaded.reserve(results.loaded.size());
     coalesced.node_types.reserve(results.node_types.size());
-    coalesced.failed.reserve(failed_by_source_id.size());
-    for (auto const& source_id : order) {
-        if (auto failed = failed_by_source_id.find(source_id);
-            failed != failed_by_source_id.end()) {
+    coalesced.failed.reserve(failed_by_package_id.size());
+    for (auto const& package_id : order) {
+        if (auto failed = failed_by_package_id.find(package_id);
+            failed != failed_by_package_id.end()) {
             coalesced.failed.push_back(std::move(failed->second));
             continue;
         }
-        auto source = sources_by_id.find(source_id);
-        if (source == sources_by_id.end()) continue;
-        coalesced.sources.push_back(std::move(source->second));
-        if (auto loaded = loaded_by_source_id.find(source_id);
-            loaded != loaded_by_source_id.end()) {
+        auto package = packages_by_id.find(package_id);
+        if (package == packages_by_id.end()) continue;
+        coalesced.packages.push_back(std::move(package->second));
+        if (auto loaded = loaded_by_package_id.find(package_id);
+            loaded != loaded_by_package_id.end()) {
             coalesced.loaded.insert(
                 coalesced.loaded.end(),
                 std::make_move_iterator(loaded->second.begin()),
                 std::make_move_iterator(loaded->second.end()));
         }
-        if (auto node_types = node_types_by_source_id.find(source_id);
-            node_types != node_types_by_source_id.end()) {
+        if (auto node_types = node_types_by_package_id.find(package_id);
+            node_types != node_types_by_package_id.end()) {
             coalesced.node_types.insert(
                 coalesced.node_types.end(),
                 std::make_move_iterator(node_types->second.begin()),
@@ -182,7 +182,7 @@ void IvModuleReload::emit_status(
     std::string level,
     std::string code,
     std::string message,
-    std::filesystem::path module_root)
+    std::filesystem::path package_root)
 {
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_notification_event,
@@ -190,14 +190,14 @@ void IvModuleReload::emit_status(
             .level = std::move(level),
             .code = std::move(code),
             .message = std::move(message),
-            .module_root = std::move(module_root),
+            .package_root = std::move(package_root),
         }));
 }
 
 void IvModuleReload::refresh_watched_dependencies_locked()
 {
     std::vector<ModuleDependency> dependencies;
-    for (auto const &entry : dependencies_by_definition_id) {
+    for (auto const &entry : dependencies_by_package_id) {
         dependencies.insert(
             dependencies.end(),
             entry.second.begin(),
@@ -206,8 +206,8 @@ void IvModuleReload::refresh_watched_dependencies_locked()
     watcher.update(std::move(dependencies));
 }
 
-IvModuleReloadResults IvModuleReload::reload_declarations(
-    std::vector<IvModuleDefinitionDeclaration> const &declarations)
+IvModuleReloadResults IvModuleReload::reload_packages(
+    std::vector<IvPackageDeclaration> const &declarations)
 {
 #if IV_ENABLE_JUCE_VST
     warmup_juce_vst_scan_cache();
@@ -217,23 +217,23 @@ IvModuleReloadResults IvModuleReload::reload_declarations(
 
     for (auto const &declaration : declarations) {
         try {
-            auto loaded_source = loader_->load_package(declaration.module_root);
-            auto dependencies = std::move(loaded_source.dependencies);
+            auto loaded_package = loader_->load_package(declaration.package_root);
+            auto dependencies = std::move(loaded_package.dependencies);
             {
                 std::scoped_lock lock(mutex);
-                dependencies_by_definition_id[declaration.definition_id] = dependencies;
+                dependencies_by_package_id[declaration.package_id] = dependencies;
                 refresh_watched_dependencies_locked();
             }
-            results.sources.push_back({
-                .definition_id = declaration.definition_id,
-                .module_root = declaration.module_root,
+            results.packages.push_back({
+                .package_id = declaration.package_id,
+                .package_root = declaration.package_root,
                 .dependencies = dependencies,
             });
-            for (auto& loaded_definition : loaded_source.definitions) {
+            for (auto& loaded_definition : loaded_package.definitions) {
                 results.loaded.push_back(IvModuleReloadedDefinition{
-                    .source_id = declaration.definition_id,
+                    .package_id = declaration.package_id,
                     .definition_id = loaded_definition.module_id,
-                    .module_root = declaration.module_root,
+                    .package_root = declaration.package_root,
                     .module_id = std::move(loaded_definition.module_id),
                     .introspection = std::move(loaded_definition.introspection),
                     .dependencies = std::move(loaded_definition.dependencies),
@@ -242,11 +242,11 @@ IvModuleReloadResults IvModuleReload::reload_declarations(
                     .configured_graph = std::move(loaded_definition.configured_graph),
                 });
             }
-            for (auto& node_type : loaded_source.node_types) {
+            for (auto& node_type : loaded_package.node_types) {
                 results.node_types.push_back(IvModuleReloadedNodeType{
-                    .source_id = declaration.definition_id,
+                    .package_id = declaration.package_id,
                     .node_type_id = std::move(node_type.node_type_id),
-                    .source_root = declaration.module_root,
+                    .package_root = declaration.package_root,
                     .compiler_record = node_type.compiler_record,
                     .module_refs = std::move(node_type.module_refs),
                     .configured_graph = std::move(node_type.configured_graph),
@@ -254,8 +254,8 @@ IvModuleReloadResults IvModuleReload::reload_declarations(
             }
         } catch (...) {
             results.failed.push_back(IvModuleReloadFailure{
-                .definition_id = declaration.definition_id,
-                .module_root = declaration.module_root,
+                .package_id = declaration.package_id,
+                .package_root = declaration.package_root,
                 .message = describe_exception(std::current_exception()),
             });
         }
@@ -264,50 +264,50 @@ IvModuleReloadResults IvModuleReload::reload_declarations(
     return results;
 }
 
-void IvModuleReload::handle_definition_declarations_changed(
-    IvModuleDefinitionDeclarationsChanged const &diff)
+void IvModuleReload::handle_package_declarations_changed(
+    IvPackageDeclarationsChanged const &diff)
 {
     {
         std::scoped_lock lock(mutex);
         for (auto const &declaration : diff.created) {
-            declarations_by_id[declaration.definition_id] = declaration;
-            dirty_definition_ids.insert(declaration.definition_id);
+            package_declarations_by_id[declaration.package_id] = declaration;
+            dirty_package_ids.insert(declaration.package_id);
         }
         for (auto const &declaration : diff.updated) {
-            declarations_by_id[declaration.definition_id] = declaration;
-            dirty_definition_ids.insert(declaration.definition_id);
+            package_declarations_by_id[declaration.package_id] = declaration;
+            dirty_package_ids.insert(declaration.package_id);
         }
-        for (auto const &source_id : diff.deleted_definition_ids) {
-            declarations_by_id.erase(source_id);
-            dependencies_by_definition_id.erase(source_id);
-            dirty_definition_ids.erase(source_id);
+        for (auto const &package_id : diff.deleted_package_ids) {
+            package_declarations_by_id.erase(package_id);
+            dependencies_by_package_id.erase(package_id);
+            dirty_package_ids.erase(package_id);
         }
         refresh_watched_dependencies_locked();
     }
 }
 
-bool IvModuleReload::has_dirty_definitions() const
+bool IvModuleReload::has_dirty_packages() const
 {
     std::scoped_lock lock(mutex);
-    return !dirty_definition_ids.empty();
+    return !dirty_package_ids.empty();
 }
 
-void IvModuleReload::compile_dirty_definitions()
+void IvModuleReload::compile_dirty_packages()
 {
-    std::vector<IvModuleDefinitionDeclaration> declarations;
+    std::vector<IvPackageDeclaration> declarations;
     {
         std::scoped_lock lock(mutex);
-        if (dirty_definition_ids.empty()) {
+        if (dirty_package_ids.empty()) {
             return;
         }
-        declarations.reserve(dirty_definition_ids.size());
-        for (auto const &source_id : dirty_definition_ids) {
-            if (auto const it = declarations_by_id.find(source_id);
-                it != declarations_by_id.end()) {
+        declarations.reserve(dirty_package_ids.size());
+        for (auto const &package_id : dirty_package_ids) {
+            if (auto const it = package_declarations_by_id.find(package_id);
+                it != package_declarations_by_id.end()) {
                 declarations.push_back(it->second);
             }
         }
-        dirty_definition_ids.clear();
+        dirty_package_ids.clear();
     }
 
     if (declarations.empty()) {
@@ -320,13 +320,13 @@ void IvModuleReload::compile_dirty_definitions()
         declarations.size() == 1
             ? "Building IV package"
             : "Building " + std::to_string(declarations.size()) + " IV packages",
-        declarations.size() == 1 ? declarations.front().module_root : std::filesystem::path{});
+        declarations.size() == 1 ? declarations.front().package_root : std::filesystem::path{});
 
     auto const rebuild_started_at = std::chrono::steady_clock::now();
-    auto results = reload_declarations(declarations);
+    auto results = reload_packages(declarations);
     auto const rebuild_duration = format_rebuild_duration(
         std::chrono::steady_clock::now() - rebuild_started_at);
-    if (results.sources.empty() && results.loaded.empty()
+    if (results.packages.empty() && results.loaded.empty()
         && results.node_types.empty() && results.failed.empty()) {
         return;
     }
@@ -337,49 +337,49 @@ void IvModuleReload::compile_dirty_definitions()
             "error",
             "rebuildFailed",
             "Module build failed after " + rebuild_duration + ": " + failure.message,
-            failure.module_root);
+            failure.package_root);
     } else {
-        auto const& source_root = results.sources.size() == 1
-            ? results.sources.front().module_root
+        auto const& package_root = results.packages.size() == 1
+            ? results.packages.front().package_root
             : std::filesystem::path{};
         emit_status(
             "info",
             "rebuildFinished",
             "IV package build ready to apply in " + rebuild_duration,
-            source_root);
+            package_root);
     }
 
     {
         std::scoped_lock lock(mutex);
-        // A source result is an atomic candidate set: it can add, update, or
-        // remove any number of IV modules.  Do not leave an older successful
-        // result for the same source in the queue, otherwise its old module
+        // A package result is an atomic candidate set: it can add, update, or
+        // remove any number of IV modules. Do not leave an older successful
+        // result for the same package in the queue, otherwise its old module
         // IDs would be unioned with the new candidate set at apply time.
-        std::unordered_set<std::string> replaced_source_ids;
-        for (auto const& source : results.sources) {
-            replaced_source_ids.insert(source.definition_id);
+        std::unordered_set<std::string> replaced_package_ids;
+        for (auto const& package : results.packages) {
+            replaced_package_ids.insert(package.package_id);
         }
         for (auto const& failure : results.failed) {
-            replaced_source_ids.insert(failure.definition_id);
+            replaced_package_ids.insert(failure.package_id);
         }
-        if (!replaced_source_ids.empty()) {
-            std::erase_if(pending_results.sources, [&](auto const& source) {
-                return replaced_source_ids.contains(source.definition_id);
+        if (!replaced_package_ids.empty()) {
+            std::erase_if(pending_results.packages, [&](auto const& package) {
+                return replaced_package_ids.contains(package.package_id);
             });
             std::erase_if(pending_results.loaded, [&](auto const& loaded) {
-                return replaced_source_ids.contains(loaded.source_id);
+                return replaced_package_ids.contains(loaded.package_id);
             });
             std::erase_if(pending_results.node_types, [&](auto const& node_type) {
-                return replaced_source_ids.contains(node_type.source_id);
+                return replaced_package_ids.contains(node_type.package_id);
             });
             std::erase_if(pending_results.failed, [&](auto const& failure) {
-                return replaced_source_ids.contains(failure.definition_id);
+                return replaced_package_ids.contains(failure.package_id);
             });
         }
-        pending_results.sources.insert(
-            pending_results.sources.end(),
-            std::make_move_iterator(results.sources.begin()),
-            std::make_move_iterator(results.sources.end()));
+        pending_results.packages.insert(
+            pending_results.packages.end(),
+            std::make_move_iterator(results.packages.begin()),
+            std::make_move_iterator(results.packages.end()));
         pending_results.loaded.insert(
             pending_results.loaded.end(),
             std::make_move_iterator(results.loaded.begin()),
@@ -401,24 +401,24 @@ bool IvModuleReload::has_changes()
     return watcher.has_changes();
 }
 
-void IvModuleReload::reload_changed_definitions()
+void IvModuleReload::reload_changed_packages()
 {
     {
         std::scoped_lock lock(mutex);
         if (!watcher.has_changes()) {
             return;
         }
-        for (auto const &entry : declarations_by_id) {
-            dirty_definition_ids.insert(entry.first);
+        for (auto const &entry : package_declarations_by_id) {
+            dirty_package_ids.insert(entry.first);
         }
     }
-    compile_dirty_definitions();
+    compile_dirty_packages();
 }
 
 bool IvModuleReload::has_pending_results() const
 {
     std::scoped_lock lock(mutex);
-    return !pending_results.sources.empty() || !pending_results.loaded.empty()
+    return !pending_results.packages.empty() || !pending_results.loaded.empty()
         || !pending_results.node_types.empty() || !pending_results.failed.empty();
 }
 
@@ -427,15 +427,15 @@ void IvModuleReload::apply_pending_results()
     IvModuleReloadResults results;
     {
         std::scoped_lock lock(mutex);
-        if (pending_results.sources.empty() && pending_results.loaded.empty()
+        if (pending_results.packages.empty() && pending_results.loaded.empty()
             && pending_results.node_types.empty() && pending_results.failed.empty()) {
             return;
         }
         results = std::move(pending_results);
         pending_results = {};
     }
-    results = coalesce_results_by_source(std::move(results));
-    if (results.sources.empty() && results.loaded.empty()
+    results = coalesce_results_by_package(std::move(results));
+    if (results.packages.empty() && results.loaded.empty()
         && results.node_types.empty() && results.failed.empty()) {
         return;
     }

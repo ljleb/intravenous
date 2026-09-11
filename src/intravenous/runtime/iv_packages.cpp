@@ -21,11 +21,11 @@
 
 namespace iv {
 namespace {
-struct SourceManifest {
+struct PackageManifest {
     std::filesystem::path entry;
 };
 
-std::optional<SourceManifest> read_manifest(std::filesystem::path const& path)
+std::optional<PackageManifest> read_manifest(std::filesystem::path const& path)
 {
     std::ifstream in(path);
     if (!in) return std::nullopt;
@@ -34,22 +34,22 @@ std::optional<SourceManifest> read_manifest(std::filesystem::path const& path)
         if (json.value("schema", 0) != 2 || !json.contains("entry")) return std::nullopt;
         auto entry = std::filesystem::path(json.at("entry").get<std::string>());
         if (entry.empty() || entry.is_absolute()) return std::nullopt;
-        return SourceManifest{std::move(entry)};
+        return PackageManifest{std::move(entry)};
     } catch (nlohmann::json::exception const&) {
         return std::nullopt;
     }
 }
 
-std::optional<std::filesystem::path> find_source_manifest(
+std::optional<std::filesystem::path> find_package_manifest(
     std::filesystem::path const& directory)
 {
-    auto const source_manifest = directory / IV_PACKAGE_MANIFEST_FILE;
-    return std::filesystem::exists(source_manifest)
-        ? std::optional<std::filesystem::path>{source_manifest}
+    auto const package_manifest = directory / IV_PACKAGE_MANIFEST_FILE;
+    return std::filesystem::exists(package_manifest)
+        ? std::optional<std::filesystem::path>{package_manifest}
         : std::nullopt;
 }
 
-bool valid_source_name(std::string const& name)
+bool valid_package_name(std::string const& name)
 {
     if (name.empty() || name == "." || name == "..") return false;
     if (!(std::isalpha(static_cast<unsigned char>(name.front())) || name.front() == '_')) return false;
@@ -65,7 +65,7 @@ std::string module_identifier(std::string const& name)
     return identifier;
 }
 
-std::string source_template(std::string_view module_id)
+std::string package_template(std::string_view module_id)
 {
     return "#include <intravenous/dsl.h>\n\n"
         "void module_main(iv::GraphBuilder& g)\n"
@@ -98,9 +98,9 @@ IvPackages::IvPackages(
     , definitions_(definitions)
 {}
 
-std::vector<IvModuleSourceInfo> IvPackages::list_sources() const
+std::vector<IvPackageInfo> IvPackages::list_packages() const
 {
-    std::vector<IvModuleSourceInfo> result;
+    std::vector<IvPackageInfo> result;
     auto scan = [&](std::filesystem::path const& root, bool local) {
         std::error_code error;
         if (!std::filesystem::exists(root, error)) return;
@@ -116,15 +116,15 @@ std::vector<IvModuleSourceInfo> IvPackages::list_sources() const
             if (!entry.is_regular_file()
                 || !is_iv_package_manifest_file(entry.path().filename().string())) continue;
             auto const directory = entry.path().parent_path();
-            auto manifest_path = find_source_manifest(directory);
+            auto manifest_path = find_package_manifest(directory);
             if (!manifest_path || *manifest_path != entry.path()) continue;
             auto manifest = read_manifest(*manifest_path);
             if (!manifest) continue;
             if (!std::filesystem::is_regular_file(directory / manifest->entry)) continue;
             auto const normalized_root = std::filesystem::weakly_canonical(directory);
             result.push_back({
-                .source_id = normalized_root.generic_string(),
-                .source_root = normalized_root,
+                .package_id = normalized_root.generic_string(),
+                .package_root = normalized_root,
                 .project_local = local,
                 .module_ids = {},
                 .node_type_ids = {},
@@ -134,47 +134,47 @@ std::vector<IvModuleSourceInfo> IvPackages::list_sources() const
     };
     scan(project_root_, true);
     for (auto const& root : shared_roots_) scan(root, false);
-    std::unordered_map<std::string, std::size_t> source_index;
-    std::vector<IvModuleSourceInfo> unique;
+    std::unordered_map<std::string, std::size_t> package_index;
+    std::vector<IvPackageInfo> unique;
     unique.reserve(result.size());
-    for (auto& source : result) {
-        auto [found, inserted] = source_index.emplace(source.source_id, unique.size());
+    for (auto& package : result) {
+        auto [found, inserted] = package_index.emplace(package.package_id, unique.size());
         if (inserted) {
-            unique.push_back(std::move(source));
-        } else if (source.project_local) {
-            unique[found->second] = std::move(source);
+            unique.push_back(std::move(package));
+        } else if (package.project_local) {
+            unique[found->second] = std::move(package);
         }
     }
     result = std::move(unique);
-    std::ranges::sort(result, {}, &IvModuleSourceInfo::source_id);
+    std::ranges::sort(result, {}, &IvPackageInfo::package_id);
     if (definitions_) {
-        for (auto& source : result) {
-            source.module_ids = definitions_->module_ids_for_source(source.source_id);
-            source.node_type_ids =
-                definitions_->node_type_ids_for_source(source.source_id);
+        for (auto& package : result) {
+            package.module_ids = definitions_->module_ids_for_package(package.package_id);
+            package.node_type_ids =
+                definitions_->node_type_ids_for_package(package.package_id);
         }
     }
     return result;
 }
 
-std::optional<IvModuleSourceInfo> IvPackages::find_source(
+std::optional<IvPackageInfo> IvPackages::find_package(
     std::string const& module_id) const
 {
     if (!definitions_) return std::nullopt;
-    auto const source_root = definitions_->source_root_for_module(module_id);
-    if (!source_root) return std::nullopt;
-    auto const canonical_root = std::filesystem::weakly_canonical(*source_root);
-    auto const sources = list_sources();
-    auto const found = std::ranges::find_if(sources, [&](IvModuleSourceInfo const& source) {
-        return source.source_root == canonical_root;
+    auto const package_root = definitions_->package_root_for_module(module_id);
+    if (!package_root) return std::nullopt;
+    auto const canonical_root = std::filesystem::weakly_canonical(*package_root);
+    auto const packages = list_packages();
+    auto const found = std::ranges::find_if(packages, [&](IvPackageInfo const& package) {
+        return package.package_root == canonical_root;
     });
-    if (found != sources.end()) return *found;
-    // A persisted instance may point at an otherwise valid source root that
+    if (found != packages.end()) return *found;
+    // A persisted instance may point at an otherwise valid package root that
     // is outside the configured discovery roots. The registry remains the
-    // authority for the ID-to-source association, so preserve that result.
-    return IvModuleSourceInfo{
-        .source_id = canonical_root.generic_string(),
-        .source_root = canonical_root,
+    // authority for the ID-to-package association, so preserve that result.
+    return IvPackageInfo{
+        .package_id = canonical_root.generic_string(),
+        .package_root = canonical_root,
         .project_local = false,
         .module_ids = {},
         .node_type_ids = {},
@@ -182,52 +182,52 @@ std::optional<IvModuleSourceInfo> IvPackages::find_source(
 }
 
 std::vector<std::pair<std::string, std::filesystem::path>>
-IvPackages::source_declarations() const
+IvPackages::package_declarations() const
 {
     std::vector<std::pair<std::string, std::filesystem::path>> declarations;
-    for (auto const& source : list_sources()) {
-        declarations.emplace_back(source.source_id, source.source_root);
+    for (auto const& package : list_packages()) {
+        declarations.emplace_back(package.package_id, package.package_root);
     }
     return declarations;
 }
 
-void IvPackages::handle_iv_module_source_lookup(
+void IvPackages::handle_iv_package_lookup(
     std::string const &module_id,
-    IvModuleSourceLookupBuilder &builder) const
+    IvPackageLookupBuilder &builder) const
 {
-    builder.succeed(find_source(module_id));
+    builder.succeed(find_package(module_id));
 }
 
 void IvPackages::handle_socket_rpc_get_iv_packages(
     GetIvPackagesRequest const &,
     SocketRpcIvPackagesResultBuilder &builder) const
 {
-    builder.succeed(list_sources());
+    builder.succeed(list_packages());
 }
 
-void IvPackages::handle_socket_rpc_create_iv_module_source(
-    CreateIvModuleSourceRequest const &request,
-    SocketRpcIvModuleSourceResultBuilder &builder) const
+void IvPackages::handle_socket_rpc_create_iv_package(
+    CreateIvPackageRequest const &request,
+    SocketRpcIvPackageResultBuilder &builder) const
 {
     try {
-        builder.succeed(create_project_source(request.name));
+        builder.succeed(create_project_package(request.name));
     } catch (std::exception const &exception) {
         builder.fail(exception.what());
     }
 }
 
-IvModuleSourceInfo IvPackages::create_project_source(std::string const& name) const
+IvPackageInfo IvPackages::create_project_package(std::string const& name) const
 {
-    if (!valid_source_name(name)) {
-        throw std::runtime_error("module source name must start with a letter or '_' and contain only letters, digits, '_' or '-'");
+    if (!valid_package_name(name)) {
+        throw std::runtime_error("IV package name must start with a letter or '_' and contain only letters, digits, '_' or '-'");
     }
 
     auto const root = project_root_ / "modules" / name;
     std::error_code error;
-    if (std::filesystem::exists(root, error)) throw std::runtime_error("module source already exists: " + root.string());
-    if (error) throw std::runtime_error("cannot inspect module source destination: " + error.message());
+    if (std::filesystem::exists(root, error)) throw std::runtime_error("IV package already exists: " + root.string());
+    if (error) throw std::runtime_error("cannot inspect IV package destination: " + error.message());
     if (!std::filesystem::create_directories(root, error) || error) {
-        throw std::runtime_error("cannot create module source directory: " + root.string());
+        throw std::runtime_error("cannot create IV package directory: " + root.string());
     }
 
     auto const id = module_identifier(name);
@@ -242,9 +242,9 @@ IvModuleSourceInfo IvPackages::create_project_source(std::string const& name) co
                 "cannot write " + std::string(IV_PACKAGE_MANIFEST_FILE));
         }
 
-        std::ofstream source(root / "module.cpp", std::ios::binary | std::ios::noreplace);
-        source << source_template(id);
-        if (!source) throw std::runtime_error("cannot write module.cpp");
+        std::ofstream package(root / "module.cpp", std::ios::binary | std::ios::noreplace);
+        package << package_template(id);
+        if (!package) throw std::runtime_error("cannot write module.cpp");
         copy_initial_compile_commands(root / "compile_commands.json");
     } catch (...) {
         std::filesystem::remove_all(root, error);
@@ -252,9 +252,9 @@ IvModuleSourceInfo IvPackages::create_project_source(std::string const& name) co
     }
 
     auto const normalized_root = std::filesystem::weakly_canonical(root);
-    return IvModuleSourceInfo{
-        .source_id = normalized_root.generic_string(),
-        .source_root = normalized_root,
+    return IvPackageInfo{
+        .package_id = normalized_root.generic_string(),
+        .package_root = normalized_root,
         .project_local = true,
         .module_ids = {},
         .node_type_ids = {},

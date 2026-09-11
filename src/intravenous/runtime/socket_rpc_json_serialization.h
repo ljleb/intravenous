@@ -20,8 +20,8 @@ namespace iv {
 
     SocketRpcJson iv_module_instance_json(IvModuleInstanceInfo const &instance);
     SocketRpcJson iv_module_instances_json(std::vector<IvModuleInstanceInfo> const &instances);
-    SocketRpcJson iv_module_source_json(IvModuleSourceInfo const &source);
-    SocketRpcJson iv_packages_json(std::vector<IvModuleSourceInfo> const &sources);
+    SocketRpcJson iv_package_json(IvPackageInfo const &package);
+    SocketRpcJson iv_packages_json(std::vector<IvPackageInfo> const &packages);
 
     SocketRpcJson virtual_port_json(VirtualPortInfo const &port);
     SocketRpcJson virtual_ports_json(std::vector<VirtualPortInfo> const &ports);

@@ -155,8 +155,8 @@ Json server_message_json(SocketRpcServerMessage const &notification) {
         {"level", notification.level},
         {"message", notification.message},
     };
-    if (!notification.module_root.empty()) {
-        json["moduleRoot"] = notification.module_root.generic_string();
+    if (!notification.package_root.empty()) {
+        json["packageRoot"] = notification.package_root.generic_string();
     }
     return json;
 }
@@ -169,8 +169,8 @@ Json server_status_json(SocketRpcServerStatus const &notification) {
     if (!notification.code.empty()) {
         json["code"] = notification.code;
     }
-    if (!notification.module_root.empty()) {
-        json["moduleRoot"] = notification.module_root.generic_string();
+    if (!notification.package_root.empty()) {
+        json["packageRoot"] = notification.package_root.generic_string();
     }
     if (!notification.created_node_ids.empty()) {
         json["createdNodeIds"] = string_array_json(notification.created_node_ids);
@@ -312,14 +312,14 @@ void SocketRpcServer::handle_client(int fd) {
                         SocketRpcIvPackagesResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_packages_event, event_request, builder);
                         if (!builder.has_response()) {
-                            builder.fail("iv module source service is unavailable");
+                            builder.fail("IV package service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, CreateIvModuleSourceRequest>) {
-                        SocketRpcIvModuleSourceResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_iv_module_source_event, event_request, builder);
+                    } else if constexpr (std::same_as<Request, CreateIvPackageRequest>) {
+                        SocketRpcIvPackageResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_iv_package_event, event_request, builder);
                         if (!builder.has_response()) {
-                            builder.fail("iv module source service is unavailable");
+                            builder.fail("IV package service is unavailable");
                         }
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, GetIvModuleInstancesRequest>) {
@@ -868,7 +868,7 @@ void SocketRpcServer::handle_iv_module_definitions_notification(
     send_server_message(ProjectMessageNotification{
         .level = notification.level,
         .message = notification.message,
-        .module_root = notification.module_root,
+        .package_root = notification.package_root,
     });
 }
 

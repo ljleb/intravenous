@@ -209,7 +209,7 @@ void SocketRpcCreateIvModuleInstanceResultBuilder::fail(int code, std::string me
     error_message = std::move(message);
 }
 
-void SocketRpcIvPackagesResultBuilder::succeed(std::vector<IvModuleSourceInfo> value) {
+void SocketRpcIvPackagesResultBuilder::succeed(std::vector<IvPackageInfo> value) {
     result = std::move(value);
 }
 
@@ -226,27 +226,27 @@ void SocketRpcIvPackagesResultBuilder::fail(int code, std::string message) {
 std::string SocketRpcIvPackagesResultBuilder::build(int request_id) const {
     if (!error_message.empty()) return jsonrpc_error(request_id, error_code, error_message);
     if (!result.has_value()) throw_unbuilt_response("SocketRpcIvPackagesResultBuilder");
-    return jsonrpc_result(request_id, Json{{"sources", iv_packages_json(*result)}});
+    return jsonrpc_result(request_id, Json{{"packages", iv_packages_json(*result)}});
 }
 
-void SocketRpcIvModuleSourceResultBuilder::succeed(IvModuleSourceInfo value) {
+void SocketRpcIvPackageResultBuilder::succeed(IvPackageInfo value) {
     result = std::move(value);
 }
 
-void SocketRpcIvModuleSourceResultBuilder::fail(std::string message) {
+void SocketRpcIvPackageResultBuilder::fail(std::string message) {
     error_code = -32000;
     error_message = std::move(message);
 }
 
-void SocketRpcIvModuleSourceResultBuilder::fail(int code, std::string message) {
+void SocketRpcIvPackageResultBuilder::fail(int code, std::string message) {
     error_code = code;
     error_message = std::move(message);
 }
 
-std::string SocketRpcIvModuleSourceResultBuilder::build(int request_id) const {
+std::string SocketRpcIvPackageResultBuilder::build(int request_id) const {
     if (!error_message.empty()) return jsonrpc_error(request_id, error_code, error_message);
-    if (!result.has_value()) throw_unbuilt_response("SocketRpcIvModuleSourceResultBuilder");
-    return jsonrpc_result(request_id, Json{{"source", iv_module_source_json(*result)}});
+    if (!result.has_value()) throw_unbuilt_response("SocketRpcIvPackageResultBuilder");
+    return jsonrpc_result(request_id, Json{{"package", iv_package_json(*result)}});
 }
 
 std::string SocketRpcCreateIvModuleInstanceResultBuilder::build(int request_id) const {

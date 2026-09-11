@@ -27,8 +27,8 @@ std::unique_ptr<IvModuleDefinitions::DefinitionState> make_definition_state(
     state->module_refs = loaded.module_refs;
     state->snapshot = IvModuleDefinition{
         .definition_id = loaded.definition_id,
-        .source_id = loaded.source_id,
-        .module_root = normalize_path(loaded.module_root),
+        .package_id = loaded.package_id,
+        .package_root = normalize_path(loaded.package_root),
         .module_id = loaded.module_id,
         .introspection = loaded.introspection,
         .dependencies = loaded.dependencies,
@@ -46,8 +46,8 @@ std::unique_ptr<IvModuleDefinitions::NodeTypeState> make_node_type_state(
     state->module_refs = loaded.module_refs;
     state->snapshot = IvNodeTypeDefinition{
         .node_type_id = loaded.node_type_id,
-        .source_id = loaded.source_id,
-        .source_root = normalize_path(loaded.source_root),
+        .package_id = loaded.package_id,
+        .package_root = normalize_path(loaded.package_root),
         .compiler_record = loaded.compiler_record,
         .module_refs = state->module_refs,
         .configured_graph = loaded.configured_graph,
@@ -69,104 +69,104 @@ void IvModuleDefinitions::emit_notification(
 void IvModuleDefinitions::emit_message(
     std::string level,
     std::string message,
-    std::filesystem::path module_root) const
+    std::filesystem::path package_root) const
 {
     emit_notification(IvModuleDefinitionsMessage{
         .level = std::move(level),
         .message = std::move(message),
-        .module_root = std::move(module_root),
+        .package_root = std::move(package_root),
     });
 }
 
-std::string IvModuleDefinitions::declare_definition(
-    std::string source_id,
-    std::filesystem::path source_root)
+std::string IvModuleDefinitions::declare_package(
+    std::string package_id,
+    std::filesystem::path package_root)
 {
-    IvModuleDefinitionDeclaration declaration{
-        .definition_id = std::move(source_id),
-        .module_root = normalize_path(source_root),
+    IvPackageDeclaration declaration{
+        .package_id = std::move(package_id),
+        .package_root = normalize_path(package_root),
     };
     bool inserted = false;
     {
         std::scoped_lock lock(mutex);
-        auto [position, was_inserted] = declarations_by_source_id.emplace(
-            declaration.definition_id, declaration);
+        auto [position, was_inserted] = declarations_by_package_id.emplace(
+            declaration.package_id, declaration);
         if (!was_inserted) {
-            if (position->second.module_root == declaration.module_root) {
-                return declaration.definition_id;
+            if (position->second.package_root == declaration.package_root) {
+                return declaration.package_id;
             }
             position->second = declaration;
         }
         inserted = was_inserted;
     }
     IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_definitions_declarations_changed_event,
-        IvModuleDefinitionDeclarationsChanged{
+        iv_runtime_iv_package_declarations_changed_event,
+        IvPackageDeclarationsChanged{
             .created = inserted
-                ? std::vector<IvModuleDefinitionDeclaration>{declaration}
-                : std::vector<IvModuleDefinitionDeclaration>{},
+                ? std::vector<IvPackageDeclaration>{declaration}
+                : std::vector<IvPackageDeclaration>{},
             .updated = inserted
-                ? std::vector<IvModuleDefinitionDeclaration>{}
-                : std::vector<IvModuleDefinitionDeclaration>{declaration},
+                ? std::vector<IvPackageDeclaration>{}
+                : std::vector<IvPackageDeclaration>{declaration},
         });
-    return declaration.definition_id;
+    return declaration.package_id;
 }
 
-void IvModuleDefinitions::sync_source_declarations(
+void IvModuleDefinitions::sync_package_declarations(
     std::vector<std::pair<std::string, std::filesystem::path>> declarations)
 {
-    std::unordered_map<std::string, IvModuleDefinitionDeclaration> next;
+    std::unordered_map<std::string, IvPackageDeclaration> next;
     next.reserve(declarations.size());
-    for (auto& [source_id, source_root] : declarations) {
-        if (source_id.empty()) {
-            throw std::runtime_error("discovered IV package has an empty source ID");
+    for (auto& [package_id, package_root] : declarations) {
+        if (package_id.empty()) {
+            throw std::runtime_error("discovered IV package has an empty package ID");
         }
-        auto declaration = IvModuleDefinitionDeclaration{
-            .definition_id = std::move(source_id),
-            .module_root = normalize_path(source_root),
+        auto declaration = IvPackageDeclaration{
+            .package_id = std::move(package_id),
+            .package_root = normalize_path(package_root),
         };
-        if (!next.emplace(declaration.definition_id, declaration).second) {
+        if (!next.emplace(declaration.package_id, declaration).second) {
             throw std::runtime_error(
-                "discovered IV package snapshot contains duplicate source ID '"
-                + declaration.definition_id + "'");
+                "discovered IV package snapshot contains duplicate package ID '"
+                + declaration.package_id + "'");
         }
     }
 
-    IvModuleDefinitionDeclarationsChanged declaration_diff;
+    IvPackageDeclarationsChanged declaration_diff;
     IvModuleDefinitionsChanged definition_diff;
     IvNodeTypeDefinitionsChanged node_type_diff;
     std::vector<IvModuleDefinitionsMessage> failures;
     {
         std::scoped_lock lock(mutex);
-        std::unordered_set<std::string> removed_source_ids;
-        for (auto const& declaration : declarations_by_source_id) {
+        std::unordered_set<std::string> removed_package_ids;
+        for (auto const& declaration : declarations_by_package_id) {
             if (next.contains(declaration.first)) continue;
-            declaration_diff.deleted_definition_ids.push_back(declaration.first);
-            removed_source_ids.insert(declaration.first);
+            declaration_diff.deleted_package_ids.push_back(declaration.first);
+            removed_package_ids.insert(declaration.first);
         }
-        for (auto const& [source_id, declaration] : next) {
-            auto const current = declarations_by_source_id.find(source_id);
-            if (current == declarations_by_source_id.end()) {
+        for (auto const& [package_id, declaration] : next) {
+            auto const current = declarations_by_package_id.find(package_id);
+            if (current == declarations_by_package_id.end()) {
                 declaration_diff.created.push_back(declaration);
-            } else if (current->second.module_root != declaration.module_root) {
+            } else if (current->second.package_root != declaration.package_root) {
                 declaration_diff.updated.push_back(declaration);
             }
         }
 
-        for (auto const& source_id : removed_source_ids) {
-            candidates_by_package_id.erase(source_id);
+        for (auto const& package_id : removed_package_ids) {
+            candidates_by_package_id.erase(package_id);
         }
-        declarations_by_source_id = std::move(next);
-        if (!removed_source_ids.empty()) {
+        declarations_by_package_id = std::move(next);
+        if (!removed_package_ids.empty()) {
             rebuild_published_registry_locked(
-                definition_diff, node_type_diff, failures, removed_source_ids);
+                definition_diff, node_type_diff, failures, removed_package_ids);
         }
     }
 
     if (!declaration_diff.created.empty() || !declaration_diff.updated.empty()
-        || !declaration_diff.deleted_definition_ids.empty()) {
+        || !declaration_diff.deleted_package_ids.empty()) {
         IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_definitions_declarations_changed_event,
+            iv_runtime_iv_package_declarations_changed_event,
             declaration_diff);
     }
     for (auto& failure : failures) emit_notification(std::move(failure));
@@ -182,7 +182,7 @@ void IvModuleDefinitions::sync_source_declarations(
     }
 }
 
-void IvModuleDefinitions::remove_definition(std::string const& source_id)
+void IvModuleDefinitions::remove_package(std::string const& package_id)
 {
     IvModuleDefinitionsChanged definition_diff;
     IvNodeTypeDefinitionsChanged node_type_diff;
@@ -190,19 +190,19 @@ void IvModuleDefinitions::remove_definition(std::string const& source_id)
     bool removed = false;
     {
         std::scoped_lock lock(mutex);
-        removed = declarations_by_source_id.erase(source_id) > 0;
+        removed = declarations_by_package_id.erase(package_id) > 0;
         if (removed) {
-            candidates_by_package_id.erase(source_id);
+            candidates_by_package_id.erase(package_id);
             rebuild_published_registry_locked(
                 definition_diff, node_type_diff, failures,
-                std::unordered_set<std::string>{source_id});
+                std::unordered_set<std::string>{package_id});
         }
     }
     if (removed) {
         IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_definitions_declarations_changed_event,
-            IvModuleDefinitionDeclarationsChanged{
-                .deleted_definition_ids = {source_id},
+            iv_runtime_iv_package_declarations_changed_event,
+            IvPackageDeclarationsChanged{
+                .deleted_package_ids = {package_id},
             });
     }
     if (!definition_diff.deleted_definition_ids.empty()) {
@@ -219,79 +219,75 @@ void IvModuleDefinitions::remove_definition(std::string const& source_id)
 void IvModuleDefinitions::handle_required_definitions_changed(
     IvModuleRequiredDefinitionsChanged const& diff)
 {
-    // Project persistence still requests source packages until its protocol is
-    // migrated.  Localize that transitional input here: all published data
-    // below is keyed by the registered IV module ID, never by a source.
+    // Project persistence requests package roots for required module definitions.
+    // Published data remains keyed by stable IV module ID and explicit package ID.
     for (auto const& required : diff.created) {
-        auto const source_root = normalize_path(required.module_root);
-        declare_definition(source_root.generic_string(), source_root);
+        auto const package_root = normalize_path(required.package_root);
+        declare_package(package_root.generic_string(), package_root);
     }
     for (auto const& required : diff.updated) {
-        auto const source_root = normalize_path(required.module_root);
-        declare_definition(source_root.generic_string(), source_root);
+        auto const package_root = normalize_path(required.package_root);
+        declare_package(package_root.generic_string(), package_root);
     }
-    // Source declarations stay resident after the last instance goes away so
-    // the source's complete candidate set remains available for discovery and
-    // can be atomically replaced on the next edit.  Publication is still
-    // entirely module-ID based.
+    // Package declarations stay resident after the last instance goes away so the
+    // package's complete candidate set can be atomically replaced on the next edit.
 }
 
 void IvModuleDefinitions::rebuild_published_registry_locked(
     IvModuleDefinitionsChanged& diff,
     IvNodeTypeDefinitionsChanged& node_type_diff,
     std::vector<IvModuleDefinitionsMessage>& failures,
-    std::unordered_set<std::string> const& changed_source_ids)
+    std::unordered_set<std::string> const& changed_package_ids)
 {
     struct ModuleProvider {
-        std::string source_id;
+        std::string package_id;
         IvModuleReloadedDefinition const* definition = nullptr;
     };
     struct NodeTypeProvider {
-        std::string source_id;
+        std::string package_id;
         IvModuleReloadedNodeType const* definition = nullptr;
     };
     struct RegisteredProvider {
-        std::string source_id;
+        std::string package_id;
     };
     std::unordered_map<std::string, std::vector<ModuleProvider>> module_providers;
     std::unordered_map<std::string, std::vector<NodeTypeProvider>> node_type_providers;
     std::unordered_map<std::string, std::vector<RegisteredProvider>> providers_by_id;
-    for (auto const& [source_id, candidate] : candidates_by_package_id) {
-        if (!declarations_by_source_id.contains(source_id)) continue;
+    for (auto const& [package_id, candidate] : candidates_by_package_id) {
+        if (!declarations_by_package_id.contains(package_id)) continue;
         for (auto const& definition : candidate.modules) {
             module_providers[definition.module_id].push_back({
-                .source_id = source_id,
+                .package_id = package_id,
                 .definition = &definition,
             });
-            providers_by_id[definition.module_id].push_back({.source_id = source_id});
+            providers_by_id[definition.module_id].push_back({.package_id = package_id});
         }
         for (auto const& definition : candidate.node_types) {
             node_type_providers[definition.node_type_id].push_back({
-                .source_id = source_id,
+                .package_id = package_id,
                 .definition = &definition,
             });
-            providers_by_id[definition.node_type_id].push_back({.source_id = source_id});
+            providers_by_id[definition.node_type_id].push_back({.package_id = package_id});
         }
     }
 
-    // Candidate validation is generation-wide. Never select or update an ID
-    // independently: a collision in any source candidate leaves every live
-    // map and ownership record on the previous complete generation.
+    // Validate the complete package candidate set before publishing any ID. A
+    // collision leaves all published maps and ownership records unchanged.
     bool valid = true;
     for (auto const& [id, providers] : providers_by_id) {
         if (providers.size() == 1) continue;
         valid = false;
         if (std::ranges::any_of(providers, [&](RegisteredProvider const& provider) {
-                return changed_source_ids.contains(provider.source_id);
+                return changed_package_ids.contains(provider.package_id);
             })) {
-            auto source = declarations_by_source_id.find(providers.front().source_id);
+            auto package = declarations_by_package_id.find(providers.front().package_id);
             failures.push_back({
                 .level = "error",
                 .message = "registered IV definition ID '" + id
                     + "' is provided by multiple IV packages",
-                .module_root = source == declarations_by_source_id.end()
+                .package_root = package == declarations_by_package_id.end()
                     ? std::filesystem::path{}
-                    : source->second.module_root,
+                    : package->second.package_root,
             });
         }
     }
@@ -315,8 +311,8 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
     for (auto const& [module_id, provider] : selected_modules) {
         auto existing = loaded_definitions_by_module_id.find(module_id);
         auto const requires_publication = existing == loaded_definitions_by_module_id.end()
-            || existing->second->snapshot.source_id != provider.source_id
-            || changed_source_ids.contains(provider.source_id);
+            || existing->second->snapshot.package_id != provider.package_id
+            || changed_package_ids.contains(provider.package_id);
         auto state = make_definition_state(*provider.definition);
         auto snapshot = state->snapshot;
         if (existing == loaded_definitions_by_module_id.end()) {
@@ -338,8 +334,8 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
     for (auto const& [node_type_id, provider] : selected_node_types) {
         auto existing = loaded_node_types_by_id.find(node_type_id);
         auto const requires_publication = existing == loaded_node_types_by_id.end()
-            || existing->second->snapshot.source_id != provider.source_id
-            || changed_source_ids.contains(provider.source_id);
+            || existing->second->snapshot.package_id != provider.package_id
+            || changed_package_ids.contains(provider.package_id);
         auto state = make_node_type_state(*provider.definition);
         auto snapshot = state->snapshot;
         if (existing == loaded_node_types_by_id.end()) {
@@ -357,15 +353,15 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
     }
 
     std::unordered_map<std::string, std::string> next_owners;
-    std::unordered_map<std::string, std::vector<std::string>> next_modules_by_source;
+    std::unordered_map<std::string, std::vector<std::string>> next_modules_by_package;
     for (auto const& [module_id, state] : next_modules) {
-        next_owners[module_id] = state->snapshot.source_id;
-        next_modules_by_source[state->snapshot.source_id].push_back(module_id);
+        next_owners[module_id] = state->snapshot.package_id;
+        next_modules_by_package[state->snapshot.package_id].push_back(module_id);
     }
     for (auto const& [node_type_id, state] : next_node_types) {
-        next_owners[node_type_id] = state->snapshot.source_id;
+        next_owners[node_type_id] = state->snapshot.package_id;
     }
-    for (auto& [_, module_ids] : next_modules_by_source) {
+    for (auto& [_, module_ids] : next_modules_by_package) {
         std::ranges::sort(module_ids);
     }
 
@@ -374,20 +370,20 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
     loaded_definitions_by_module_id = std::move(next_modules);
     loaded_node_types_by_id = std::move(next_node_types);
     package_id_by_registered_id = std::move(next_owners);
-    module_ids_by_source_id = std::move(next_modules_by_source);
+    module_ids_by_package_id = std::move(next_modules_by_package);
 }
 
 void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& results)
 {
     std::unordered_map<std::string, std::vector<IvModuleReloadedDefinition const*>>
-        modules_by_source_id;
+        modules_by_package_id;
     for (auto const& loaded : results.loaded) {
-        modules_by_source_id[loaded.source_id].push_back(&loaded);
+        modules_by_package_id[loaded.package_id].push_back(&loaded);
     }
     std::unordered_map<std::string, std::vector<IvModuleReloadedNodeType const*>>
-        node_types_by_source_id;
+        node_types_by_package_id;
     for (auto const& node_type : results.node_types) {
-        node_types_by_source_id[node_type.source_id].push_back(&node_type);
+        node_types_by_package_id[node_type.package_id].push_back(&node_type);
     }
 
     IvModuleDefinitionsChanged definition_diff;
@@ -395,32 +391,32 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
     std::vector<IvModuleDefinitionsMessage> failures;
     {
         std::scoped_lock lock(mutex);
-        std::unordered_set<std::string> changed_source_ids;
-        for (auto const& source : results.sources) {
-            auto declaration = declarations_by_source_id.find(source.definition_id);
-            if (declaration == declarations_by_source_id.end()) continue;
+        std::unordered_set<std::string> changed_package_ids;
+        for (auto const& package : results.packages) {
+            auto declaration = declarations_by_package_id.find(package.package_id);
+            if (declaration == declarations_by_package_id.end()) continue;
 
             PackageCandidate candidate;
-            std::unordered_set<std::string> registered_ids;
+            std::unordered_set<std::string> definition_ids;
             std::string error;
-            if (auto modules = modules_by_source_id.find(source.definition_id);
-                modules != modules_by_source_id.end()) {
+            if (auto modules = modules_by_package_id.find(package.package_id);
+                modules != modules_by_package_id.end()) {
                 candidate.modules.reserve(modules->second.size());
                 for (auto const* module : modules->second) {
                     if (module->module_id.empty()) {
                         error = "IV package published an IV module with an empty ID";
                         break;
                     }
-                    if (!registered_ids.insert(module->module_id).second) {
-                        error = "IV package published duplicate registered IV definition ID '"
+                    if (!definition_ids.insert(module->module_id).second) {
+                        error = "IV package published duplicate IV definition ID '"
                             + module->module_id + "'";
                         break;
                     }
                     candidate.modules.push_back(*module);
                 }
             }
-            if (auto node_types = node_types_by_source_id.find(source.definition_id);
-                node_types != node_types_by_source_id.end()) {
+            if (auto node_types = node_types_by_package_id.find(package.package_id);
+                node_types != node_types_by_package_id.end()) {
                 candidate.node_types.reserve(node_types->second.size());
                 for (auto const* node_type : node_types->second) {
                     if (node_type->node_type_id.empty()) {
@@ -432,8 +428,8 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
                             + "' has no configured graph";
                         break;
                     }
-                    if (!registered_ids.insert(node_type->node_type_id).second) {
-                        error = "IV package published duplicate registered IV definition ID '"
+                    if (!definition_ids.insert(node_type->node_type_id).second) {
+                        error = "IV package published duplicate IV definition ID '"
                             + node_type->node_type_id + "'";
                         break;
                     }
@@ -444,17 +440,17 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
                 failures.push_back({
                     .level = "error",
                     .message = std::move(error),
-                    .module_root = declaration->second.module_root,
+                    .package_root = declaration->second.package_root,
                 });
                 continue;
             }
 
-            candidates_by_package_id[source.definition_id] = std::move(candidate);
-            changed_source_ids.insert(source.definition_id);
+            candidates_by_package_id[package.package_id] = std::move(candidate);
+            changed_package_ids.insert(package.package_id);
         }
-        if (!changed_source_ids.empty()) {
+        if (!changed_package_ids.empty()) {
             rebuild_published_registry_locked(
-                definition_diff, node_type_diff, failures, changed_source_ids);
+                definition_diff, node_type_diff, failures, changed_package_ids);
         }
     }
     for (auto& failure : failures) emit_notification(std::move(failure));
@@ -473,15 +469,15 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
 void IvModuleDefinitions::seed_loaded_definition(
     IvModuleReloadedDefinition loaded_definition)
 {
-    auto const source_id = loaded_definition.source_id.empty()
+    auto const package_id = loaded_definition.package_id.empty()
         ? loaded_definition.definition_id
-        : loaded_definition.source_id;
-    declare_definition(source_id, loaded_definition.module_root);
-    loaded_definition.source_id = source_id;
+        : loaded_definition.package_id;
+    declare_package(package_id, loaded_definition.package_root);
+    loaded_definition.package_id = package_id;
     IvModuleReloadResults results;
-    results.sources.push_back({
-        .definition_id = source_id,
-        .module_root = loaded_definition.module_root,
+    results.packages.push_back({
+        .package_id = package_id,
+        .package_root = loaded_definition.package_root,
     });
     results.loaded.push_back(std::move(loaded_definition));
     handle_reload_results(results);
@@ -511,32 +507,32 @@ std::vector<IvNodeTypeDefinition> IvModuleDefinitions::loaded_node_types() const
     return node_types;
 }
 
-std::optional<std::filesystem::path> IvModuleDefinitions::source_root_for_module(
+std::optional<std::filesystem::path> IvModuleDefinitions::package_root_for_module(
     std::string const& module_id) const
 {
     std::scoped_lock lock(mutex);
     auto const definition = loaded_definitions_by_module_id.find(module_id);
     if (definition == loaded_definitions_by_module_id.end()) return std::nullopt;
-    return definition->second->snapshot.module_root;
+    return definition->second->snapshot.package_root;
 }
 
-std::vector<std::string> IvModuleDefinitions::module_ids_for_source(
-    std::string const& source_id) const
+std::vector<std::string> IvModuleDefinitions::module_ids_for_package(
+    std::string const& package_id) const
 {
     std::scoped_lock lock(mutex);
-    auto const modules = module_ids_by_source_id.find(source_id);
-    return modules == module_ids_by_source_id.end()
+    auto const modules = module_ids_by_package_id.find(package_id);
+    return modules == module_ids_by_package_id.end()
         ? std::vector<std::string>{}
         : modules->second;
 }
 
-std::vector<std::string> IvModuleDefinitions::node_type_ids_for_source(
-    std::string const& source_id) const
+std::vector<std::string> IvModuleDefinitions::node_type_ids_for_package(
+    std::string const& package_id) const
 {
     std::vector<std::string> node_type_ids;
     std::scoped_lock lock(mutex);
     for (auto const& [id, state] : loaded_node_types_by_id) {
-        if (state->snapshot.source_id == source_id) {
+        if (state->snapshot.package_id == package_id) {
             node_type_ids.push_back(id);
         }
     }

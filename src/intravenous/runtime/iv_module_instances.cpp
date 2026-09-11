@@ -39,7 +39,7 @@ IvModuleInstance make_instance_from_definition(
     instance.instance_id = instance_id;
     instance.definition_id = definition.definition_id;
     instance.display_name = display_name;
-    instance.module_root = definition.module_root;
+    instance.package_root = definition.package_root;
     instance.module_id = definition.module_id;
     instance.introspection = definition.introspection;
     instance.default_silence_ttl_samples = default_silence_ttl_samples;
@@ -60,13 +60,13 @@ void emit_debug_message(std::string message)
 
 std::string IvModuleInstances::create_instance(
     std::string_view definition_id,
-    std::filesystem::path module_root,
+    std::filesystem::path package_root,
     std::optional<std::string> requested_instance_id,
     std::optional<std::string> requested_display_name)
 {
     IvModuleRequiredDefinitionsChanged required_diff{};
     bool list_changed = false;
-    auto normalized_root = normalize_path(module_root);
+    auto normalized_root = normalize_path(package_root);
     auto const definition_key = std::string(definition_id);
     auto display_name = requested_display_name.value_or(definition_key);
     if (display_name.empty()) {
@@ -88,20 +88,20 @@ std::string IvModuleInstances::create_instance(
             .instance_id = instance_id,
             .definition_id = definition_key,
             .display_name = display_name,
-            .module_root = normalized_root,
+            .package_root = normalized_root,
         });
         list_changed = true;
 
         if (!required_definitions_by_id.contains(definition_key)) {
             IvModuleRequiredDefinition required{
                 .definition_id = definition_key,
-                .module_root = normalized_root,
+                .package_root = normalized_root,
             };
             required_definitions_by_id.emplace(definition_key, required);
             required_diff.created.push_back(std::move(required));
         } else {
             auto &required = required_definitions_by_id.at(definition_key);
-            required.module_root = normalized_root;
+            required.package_root = normalized_root;
             required_diff.updated.push_back(required);
         }
     }
@@ -275,7 +275,7 @@ void IvModuleInstances::update_instances(std::vector<Update> updates)
     }
 }
 
-void IvModuleInstances::refresh_source_roots(IvPackages const &sources)
+void IvModuleInstances::refresh_package_roots(IvPackages const &packages)
 {
     IvModuleRequiredDefinitionsChanged required_diff{};
     bool list_changed = false;
@@ -283,22 +283,22 @@ void IvModuleInstances::refresh_source_roots(IvPackages const &sources)
     {
         std::scoped_lock lock(mutex);
         for (auto &entry : desired_instances_by_id) {
-            auto const source = sources.find_source(entry.second.definition_id);
-            if (!source) {
+            auto const package = packages.find_package(entry.second.definition_id);
+            if (!package) {
                 continue;
             }
-            auto const source_root = normalize_path(source->source_root);
-            if (entry.second.module_root == source_root) {
+            auto const package_root = normalize_path(package->package_root);
+            if (entry.second.package_root == package_root) {
                 continue;
             }
 
-            entry.second.module_root = source_root;
+            entry.second.package_root = package_root;
             list_changed = true;
 
             auto required = required_definitions_by_id.find(entry.second.definition_id);
             if (required != required_definitions_by_id.end() &&
-                required->second.module_root != source_root) {
-                required->second.module_root = source_root;
+                required->second.package_root != package_root) {
+                required->second.package_root = package_root;
                 required_diff.updated.push_back(required->second);
             }
         }
@@ -322,21 +322,21 @@ void IvModuleInstances::handle_project_create_iv_module_instance(
     ProjectCreateIvModuleInstanceRequest const &request,
     ProjectStringBuilder &builder)
 {
-    IvModuleSourceLookupBuilder source_builder;
+    IvPackageLookupBuilder package_builder;
     IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_source_lookup_event,
+        iv_runtime_iv_package_lookup_event,
         request.module_id,
-        source_builder);
-    if (!source_builder.has_response()) {
-        throw std::runtime_error("iv module source service is unavailable");
+        package_builder);
+    if (!package_builder.has_response()) {
+        throw std::runtime_error("IV package service is unavailable");
     }
-    auto const source = source_builder.source();
-    if (!source.has_value()) {
-        throw std::runtime_error("unknown iv module source: " + request.module_id);
+    auto const package = package_builder.package();
+    if (!package.has_value()) {
+        throw std::runtime_error("unknown IV package for module: " + request.module_id);
     }
     builder.succeed(create_instance(
         request.module_id,
-        source->source_root,
+        package->package_root,
         request.instance_id,
         request.display_name));
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -405,7 +405,7 @@ std::vector<IvModuleInstanceInfo> IvModuleInstances::list_instances() const
             .instance_id = entry.second.instance_id,
             .definition_id = entry.second.definition_id,
             .display_name = entry.second.display_name,
-            .module_root = entry.second.module_root,
+            .package_root = entry.second.package_root,
             .default_silence_ttl_samples = entry.second.default_silence_ttl_samples,
             .module_id = entry.second.definition_id,
         };

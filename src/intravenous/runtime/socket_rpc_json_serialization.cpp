@@ -149,7 +149,7 @@ SocketRpcJson iv_module_instance_json(IvModuleInstanceInfo const &instance)
         {"instanceId", instance.instance_id},
         {"definitionId", instance.definition_id},
         {"displayName", display_name},
-        {"moduleRoot", instance.module_root.generic_string()},
+        {"packageRoot", instance.package_root.generic_string()},
         {"realized", instance.realized},
     };
     if (!instance.module_id.empty()) {
@@ -167,22 +167,22 @@ SocketRpcJson iv_module_instances_json(std::vector<IvModuleInstanceInfo> const &
     return json;
 }
 
-SocketRpcJson iv_module_source_json(IvModuleSourceInfo const &source)
+SocketRpcJson iv_package_json(IvPackageInfo const &package)
 {
     return SocketRpcJson{
-        {"sourceId", source.source_id},
-        {"sourceRoot", source.source_root.generic_string()},
-        {"projectLocal", source.project_local},
-        {"moduleIds", source.module_ids},
-        {"nodeTypeIds", source.node_type_ids},
+        {"packageId", package.package_id},
+        {"packageRoot", package.package_root.generic_string()},
+        {"projectLocal", package.project_local},
+        {"moduleIds", package.module_ids},
+        {"nodeTypeIds", package.node_type_ids},
     };
 }
 
-SocketRpcJson iv_packages_json(std::vector<IvModuleSourceInfo> const &sources)
+SocketRpcJson iv_packages_json(std::vector<IvPackageInfo> const &packages)
 {
     SocketRpcJson json = SocketRpcJson::array();
-    for (auto const &source : sources) {
-        json.push_back(iv_module_source_json(source));
+    for (auto const &package : packages) {
+        json.push_back(iv_package_json(package));
     }
     return json;
 }
@@ -248,7 +248,7 @@ SocketRpcJson virtual_node_json(VirtualNodeInfo const &node)
         {"id", node.id},
         {"instanceId", node.instance_id},
         {"kind", node.kind},
-        {"sourceIdentity", node.source_identity},
+        {"sourceIdentity", node.package_identity},
         {"typeIdentity", node.type_identity},
         {"sourceSpans", live_source_spans_json(node.source_spans)},
         {"sampleInputs", virtual_ports_json(node.sample_inputs)},
