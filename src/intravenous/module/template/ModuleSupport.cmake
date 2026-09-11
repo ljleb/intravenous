@@ -60,16 +60,26 @@ function(iv_add_package target)
     set(_iv_metadata_dir "${CMAKE_CURRENT_BINARY_DIR}/iv-package-metadata")
     file(MAKE_DIRECTORY "${_iv_metadata_dir}")
 
-    add_library(${target}__compile_settings INTERFACE)
-    target_compile_features(${target}__compile_settings INTERFACE cxx_std_26)
-    # IV package code is intentionally kept at O0. The host's shared ORC JIT
-    # materializes this LLVM directly for graph configuration; runtime node
-    # implementation LLVM is optimized later with the configured project graph.
-    target_compile_options(${target}__compile_settings INTERFACE -O0 -flto=full)
-    target_link_options(${target}__compile_settings INTERFACE -flto=full -fuse-ld=lld)
+    set(_iv_package_sources
+        ${IV_PACKAGE_SOURCE_FILES}
+        ${IVP_SOURCES})
+    list(REMOVE_DUPLICATES _iv_package_sources)
+
+    # IV packages are LLVM inputs, not native shared libraries.  Compile each
+    # translation unit to full-LTO LLVM bitcode at O0, then combine/prune those
+    # objects into one .ivpkg.bc consumed directly by the host's shared ORC JIT.
+    set(_iv_objects_target "${target}__objects")
+    add_library(${_iv_objects_target} OBJECT ${_iv_package_sources})
+    set_target_properties(${_iv_objects_target} PROPERTIES
+        CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+        CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+    target_compile_features(${_iv_objects_target} PRIVATE cxx_std_26)
+    target_compile_options(${_iv_objects_target} PRIVATE -O0 -flto=full)
+    target_compile_definitions(${_iv_objects_target} PRIVATE
+        "IV_PACKAGE_ROOT=\"${IV_PACKAGE_DIR}\"")
 
     if(IV_PACKAGE_CLANG_TIME_TRACE)
-        target_compile_options(${target}__compile_settings INTERFACE -ftime-trace)
+        target_compile_options(${_iv_objects_target} PRIVATE -ftime-trace)
     endif()
 
     if(IV_PACKAGE_SOURCE_INTROSPECTION)
@@ -77,81 +87,71 @@ function(iv_add_package target)
     else()
         set(_iv_source_introspection 0)
     endif()
-    target_compile_options(${target}__compile_settings INTERFACE
+    target_compile_options(${_iv_objects_target} PRIVATE
         "-fplugin=${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}"
         "-fplugin-arg-iv_module_metadata-core-source-dir=${IV_SOURCE_DIR}"
         "-fplugin-arg-iv_module_metadata-metadata-dir=${_iv_metadata_dir}"
-        "-fplugin-arg-iv_module_metadata-source-introspection=${_iv_source_introspection}")
+        "-fplugin-arg-iv_module_metadata-source-introspection=${_iv_source_introspection}"
+        -Wall -Wextra -Wpedantic)
 
-    target_include_directories(${target}__compile_settings INTERFACE
+    target_include_directories(${_iv_objects_target} PRIVATE
         ${IV_INCLUDE_DIR}
         ${IV_PACKAGE_DIR})
     if(DEFINED IV_PACKAGE_INCLUDE_DIRS AND NOT IV_PACKAGE_INCLUDE_DIRS STREQUAL "")
-        target_include_directories(${target}__compile_settings INTERFACE ${IV_PACKAGE_INCLUDE_DIRS})
+        target_include_directories(${_iv_objects_target} PRIVATE ${IV_PACKAGE_INCLUDE_DIRS})
     endif()
-    target_include_directories(${target}__compile_settings SYSTEM INTERFACE
+    target_include_directories(${_iv_objects_target} SYSTEM PRIVATE
         ${IV_THIRD_PARTY_INCLUDE_DIR})
-    target_compile_options(${target}__compile_settings INTERFACE
-        -Wall -Wextra -Wpedantic)
 
     if(IVP_ENABLE_JUCE AND DEFINED IV_CORE_ENABLE_JUCE_VST AND IV_CORE_ENABLE_JUCE_VST)
-        target_compile_definitions(${target}__compile_settings INTERFACE
+        target_compile_definitions(${_iv_objects_target} PRIVATE
             IV_ENABLE_JUCE_VST=1 JUCE_PLUGINHOST_VST3=1)
         if(DEFINED IV_JUCE_MODULES_DIR AND EXISTS "${IV_JUCE_MODULES_DIR}")
-            target_include_directories(${target}__compile_settings SYSTEM INTERFACE
+            target_include_directories(${_iv_objects_target} SYSTEM PRIVATE
                 ${IV_JUCE_MODULES_DIR})
         endif()
     else()
-        target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=0)
+        target_compile_definitions(${_iv_objects_target} PRIVATE IV_ENABLE_JUCE_VST=0)
     endif()
 
-    set(_iv_package_sources
-        ${IV_PACKAGE_SOURCE_FILES}
-        ${IVP_SOURCES})
-    list(REMOVE_DUPLICATES _iv_package_sources)
-    add_library(${target} SHARED ${_iv_package_sources})
-    target_compile_definitions(${target} PRIVATE
-        "IV_PACKAGE_ROOT=\"${IV_PACKAGE_DIR}\"")
-    set_property(SOURCE ${_iv_package_sources} APPEND PROPERTY OBJECT_DEPENDS
-        "${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}")
-    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
-        "${IV_PACKAGE_FINALIZER}")
-
-    set(_iv_package_finalizer_launcher
-        "${IV_PACKAGE_FINALIZER}"
-        "--metadata-dir=${_iv_metadata_dir}")
-    set(_iv_package_finalizer_timings_file "${IV_PACKAGE_FINALIZER_TIMINGS_FILE}")
-    if(NOT _iv_package_finalizer_timings_file)
-        set(_iv_package_finalizer_timings_file
-            "${CMAKE_CURRENT_BINARY_DIR}/iv-package-finalizer-timings.txt")
-    endif()
-    list(APPEND _iv_package_finalizer_launcher
-        "--timings-file=${_iv_package_finalizer_timings_file}"
-        "--")
-
-    set_target_properties(${target} PROPERTIES
-        CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
-        CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES
-        PREFIX ""
-        SUFFIX ".ivpkg.bc"
-        OUTPUT_NAME ${IV_PACKAGE_OUTPUT_NAME}
-        RUNTIME_OUTPUT_DIRECTORY ${IV_PACKAGE_OUTPUT_DIR}
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG ${IV_PACKAGE_OUTPUT_DIR}
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE ${IV_PACKAGE_OUTPUT_DIR}
-        LIBRARY_OUTPUT_DIRECTORY ${IV_PACKAGE_OUTPUT_DIR}
-        LIBRARY_OUTPUT_DIRECTORY_DEBUG ${IV_PACKAGE_OUTPUT_DIR}
-        LIBRARY_OUTPUT_DIRECTORY_RELEASE ${IV_PACKAGE_OUTPUT_DIR}
-        CXX_LINKER_LAUNCHER "${_iv_package_finalizer_launcher}")
-    target_link_libraries(${target} PRIVATE ${target}__compile_settings)
-
+    # Linking iv_builder as a usage requirement is useful for custom package
+    # CMake projects (include/link properties), but no native link is performed.
     if(TARGET iv_builder)
-        target_link_libraries(${target} PRIVATE iv_builder)
+        target_link_libraries(${_iv_objects_target} PRIVATE iv_builder)
     endif()
 
     if(NOT DEFINED IV_PACKAGE_PCH_HEADER)
         set(IV_PACKAGE_PCH_HEADER "${IV_SOURCE_DIR}/module/template/module_pch.h")
     endif()
     if(NOT IV_PACKAGE_PCH_HEADER STREQUAL "")
-        target_precompile_headers(${target} PRIVATE "${IV_PACKAGE_PCH_HEADER}")
+        target_precompile_headers(${_iv_objects_target} PRIVATE "${IV_PACKAGE_PCH_HEADER}")
     endif()
+
+    set_property(SOURCE ${_iv_package_sources} APPEND PROPERTY OBJECT_DEPENDS
+        "${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}")
+
+    set(_iv_package_finalizer_timings_file "${IV_PACKAGE_FINALIZER_TIMINGS_FILE}")
+    if(NOT _iv_package_finalizer_timings_file)
+        set(_iv_package_finalizer_timings_file
+            "${CMAKE_CURRENT_BINARY_DIR}/iv-package-finalizer-timings.txt")
+    endif()
+
+    set(_iv_package_output
+        "${IV_PACKAGE_OUTPUT_DIR}/${IV_PACKAGE_OUTPUT_NAME}.ivpkg.bc")
+    add_custom_command(
+        OUTPUT "${_iv_package_output}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${IV_PACKAGE_OUTPUT_DIR}"
+        COMMAND "${IV_PACKAGE_FINALIZER}"
+            "--metadata-dir=${_iv_metadata_dir}"
+            "--timings-file=${_iv_package_finalizer_timings_file}"
+            "--output=${_iv_package_output}"
+            -- $<TARGET_OBJECTS:${_iv_objects_target}>
+        DEPENDS
+            ${_iv_objects_target}
+            "${IV_PACKAGE_FINALIZER}"
+            "${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}"
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+        COMMENT "Finalizing IV package LLVM ${IV_PACKAGE_OUTPUT_NAME}.ivpkg.bc")
+    add_custom_target(${target} ALL DEPENDS "${_iv_package_output}")
 endfunction()

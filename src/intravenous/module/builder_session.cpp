@@ -19,7 +19,7 @@ namespace iv::details {
 namespace {
 struct BuilderPackage {
     std::string package_root{};
-    std::vector<PackageRegistration> registrations{};
+    std::vector<PackageDefinition> definitions{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
     std::vector<BuilderNodeStateStructure> node_state_structures{};
@@ -31,33 +31,33 @@ struct BuilderConfiguration {
     std::vector<bool> used_packages{};
 };
 
-void validate_registration(PackageRegistration const& registration)
+void validate_definition(PackageDefinition const& definition)
 {
-    if (!registration.id || registration.id_size == 0) {
-        throw std::invalid_argument("IV package registration has an empty stable ID");
+    if (!definition.id || definition.id_size == 0) {
+        throw std::invalid_argument("IV package definition has an empty stable ID");
     }
-    auto const id = std::string_view(registration.id, registration.id_size);
+    auto const id = std::string_view(definition.id, definition.id_size);
     if (id.find('\0') != std::string_view::npos) {
-        throw std::invalid_argument("IV package registration ID contains a null byte");
+        throw std::invalid_argument("IV package definition ID contains a null byte");
     }
-    if (!registration.source_file || registration.source_file_size == 0) {
-        throw std::invalid_argument("IV package registration has no source file");
+    if (!definition.source_file || definition.source_file_size == 0) {
+        throw std::invalid_argument("IV package definition has no source file");
     }
-    if (!registration.package_root || registration.package_root_size == 0) {
-        throw std::invalid_argument("IV package registration has no package root");
+    if (!definition.package_root || definition.package_root_size == 0) {
+        throw std::invalid_argument("IV package definition has no package root");
     }
-    if (registration.kind == PackageRegistrationKind::module) {
-        if (!registration.module_build || registration.node_build
-            || registration.node_compiler_record) {
-            throw std::invalid_argument("IV module registration is invalid");
+    if (definition.kind == PackageDefinitionKind::module) {
+        if (!definition.module_build || definition.node_build
+            || definition.node_compiler_record) {
+            throw std::invalid_argument("IV module definition is invalid");
         }
-    } else if (registration.kind == PackageRegistrationKind::node) {
-        if (registration.module_build || !registration.node_build
-            || !registration.node_compiler_record) {
-            throw std::invalid_argument("IV node registration is invalid");
+    } else if (definition.kind == PackageDefinitionKind::node) {
+        if (definition.module_build || !definition.node_build
+            || !definition.node_compiler_record) {
+            throw std::invalid_argument("IV node definition is invalid");
         }
     } else {
-        throw std::invalid_argument("IV package registration has invalid kind");
+        throw std::invalid_argument("IV package definition has invalid kind");
     }
 }
 
@@ -187,8 +187,8 @@ void set_builder_packages(
         }
         auto& destination = configured->packages.emplace_back();
         destination.package_root = package.package_root;
-        destination.registrations.assign(
-            package.registrations.begin(), package.registrations.end());
+        destination.definitions.assign(
+            package.definitions.begin(), package.definitions.end());
         destination.config_pointer_fields.assign(
             package.config_pointer_fields.begin(), package.config_pointer_fields.end());
         destination.retained_globals.assign(
@@ -196,13 +196,13 @@ void set_builder_packages(
         destination.node_state_structures.assign(
             package.node_state_structures.begin(), package.node_state_structures.end());
 
-        for (auto const& registration : destination.registrations) {
-            validate_registration(registration);
+        for (auto const& definition : destination.definitions) {
+            validate_definition(definition);
             auto const root = std::string_view(
-                registration.package_root, registration.package_root_size);
+                definition.package_root, definition.package_root_size);
             if (root != destination.package_root) {
                 throw std::invalid_argument(
-                    "IV package registration belongs to a different package root");
+                    "IV package definition belongs to a different package root");
             }
         }
         for (auto const& global : destination.retained_globals) {
@@ -253,25 +253,25 @@ void select_builder_package(BuilderSession* session, std::size_t package_index)
     session->configuration->used_packages[package_index] = true;
 }
 
-BuilderRegistration find_builder_registration(
+BuilderDefinition find_builder_definition(
     BuilderSession const* session, std::string_view id)
 {
     if (!session || !session->configuration) {
         throw std::invalid_argument("builder session is null");
     }
-    std::optional<BuilderRegistration> found;
+    std::optional<BuilderDefinition> found;
     for (std::size_t package_index = 0;
          package_index < session->configuration->packages.size(); ++package_index) {
-        for (auto const& registration
-             : session->configuration->packages[package_index].registrations) {
-            if (std::string_view(registration.id, registration.id_size) != id) continue;
+        for (auto const& definition
+             : session->configuration->packages[package_index].definitions) {
+            if (std::string_view(definition.id, definition.id_size) != id) continue;
             if (found) {
                 throw std::runtime_error(
                     "registered IV definition '" + std::string(id)
                     + "' has multiple providers in the loaded IV packages");
             }
-            found = BuilderRegistration{
-                .registration = registration,
+            found = BuilderDefinition{
+                .definition = definition,
                 .package_index = package_index,
             };
         }

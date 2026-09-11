@@ -56,7 +56,7 @@ static_assert(std::is_trivially_copyable_v<NodeStateStructureData>);
 
 extern "C" {
 using iv_package_abi_version_fn = std::uint32_t (*)();
-using iv_package_registrations_fn = iv::ModuleDataView (*)();
+using iv_package_definitions_fn = iv::ModuleDataView (*)();
 using iv_package_node_config_pointer_fields_fn = iv::ModuleDataView (*)();
 using iv_package_retained_globals_fn = iv::ModuleDataView (*)();
 using iv_package_node_state_structures_fn = iv::ModuleDataView (*)();

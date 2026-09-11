@@ -1,6 +1,6 @@
 #pragma once
 
-// Stable registrations emitted by IV_NODE / IV_MODULE. Registration is data,
+// Stable definitions emitted by IV_NODE / IV_MODULE. Registration is data,
 // not a process-global side effect: the finalizer collects these records into
 // each IV package, and BuilderSession receives the records from the loaded IV
 // packages used for one graph configuration.
@@ -22,7 +22,7 @@ class GraphBuilder;
 class NodeRef;
 
 namespace details {
-enum class PackageRegistrationKind {
+enum class PackageDefinitionKind {
     node,
     module,
 };
@@ -31,8 +31,8 @@ using IvModuleConfigureFunction = void (*)(
     GraphBuilder&, std::span<ConfigurationArgument>);
 using NodeTypeConfigureFunction = NodeRef (*)(GraphBuilder&);
 
-struct PackageRegistration {
-    PackageRegistrationKind kind{};
+struct PackageDefinition {
+    PackageDefinitionKind kind{};
     char const* id = nullptr;
     std::size_t id_size = 0;
     char const* source_file = nullptr;
@@ -44,16 +44,16 @@ struct PackageRegistration {
     void const* node_compiler_record = nullptr;
 };
 
-static_assert(std::is_standard_layout_v<PackageRegistration>);
-static_assert(std::is_trivially_copyable_v<PackageRegistration>);
+static_assert(std::is_standard_layout_v<PackageDefinition>);
+static_assert(std::is_trivially_copyable_v<PackageDefinition>);
 
-inline constexpr std::string_view package_registration_section =
-    "iv_package_registrations";
+inline constexpr std::string_view package_definition_section =
+    "iv_package_definitions";
 
-// g.node<"id"> resolves synchronously through the registrations attached to
+// g.node<"id"> resolves synchronously through the definitions attached to
 // this GraphBuilder's BuilderSession. An iv module is fully configured before
 // this function returns; no unresolved registered-node bundle is preserved.
-NodeRef configure_registered_definition(
+NodeRef configure_package_definition(
     GraphBuilder&, std::string_view id, std::span<ConfigurationArgument> arguments);
 
 template<auto Function>
@@ -109,10 +109,10 @@ struct IvModuleConfigureAdapter<Function> {
 } // namespace iv
 
 #if defined(__clang__)
-#define IV_PACKAGE_REGISTRATION_RECORD \
-    __attribute__((used, section("iv_package_registrations")))
+#define IV_PACKAGE_DEFINITION_RECORD \
+    __attribute__((used, section("iv_package_definitions")))
 #else
-#error "IV package registration requires Clang"
+#error "IV package definition requires Clang"
 #endif
 
 #define IV_PACKAGE_CONCAT_INNER(a, b) a##b
@@ -126,10 +126,10 @@ struct IvModuleConfigureAdapter<Function> {
     IV_MODULE_IMPL(Id, Function, __COUNTER__)
 #define IV_MODULE_IMPL(Id, Function, Unique) \
     namespace { \
-    IV_PACKAGE_REGISTRATION_RECORD constinit const \
-        ::iv::details::PackageRegistration \
-        IV_PACKAGE_CONCAT(iv_package_module_registration_, Unique){ \
-            ::iv::details::PackageRegistrationKind::module, \
+    IV_PACKAGE_DEFINITION_RECORD constinit const \
+        ::iv::details::PackageDefinition \
+        IV_PACKAGE_CONCAT(iv_package_module_definition_, Unique){ \
+            ::iv::details::PackageDefinitionKind::module, \
             Id, sizeof(Id) - 1, \
             __FILE__, sizeof(__FILE__) - 1, \
             IV_PACKAGE_ROOT, sizeof(IV_PACKAGE_ROOT) - 1, \
@@ -145,10 +145,10 @@ struct IvModuleConfigureAdapter<Function> {
         ::iv::GraphBuilder& builder) { \
         return builder.template node<Node>(); \
     } \
-    IV_PACKAGE_REGISTRATION_RECORD constinit const \
-        ::iv::details::PackageRegistration \
-        IV_PACKAGE_CONCAT(iv_package_node_registration_, Unique){ \
-            ::iv::details::PackageRegistrationKind::node, \
+    IV_PACKAGE_DEFINITION_RECORD constinit const \
+        ::iv::details::PackageDefinition \
+        IV_PACKAGE_CONCAT(iv_package_node_definition_, Unique){ \
+            ::iv::details::PackageDefinitionKind::node, \
             Id, sizeof(Id) - 1, \
             __FILE__, sizeof(__FILE__) - 1, \
             IV_PACKAGE_ROOT, sizeof(IV_PACKAGE_ROOT) - 1, \

@@ -1053,10 +1053,10 @@ private:
     std::vector<CXXRecordDecl const*> nodes_;
 };
 
-class RegisteredDefinitionCollector final
-    : public RecursiveASTVisitor<RegisteredDefinitionCollector> {
+class PackageDefinitionCollector final
+    : public RecursiveASTVisitor<PackageDefinitionCollector> {
 public:
-    explicit RegisteredDefinitionCollector(ASTContext& context)
+    explicit PackageDefinitionCollector(ASTContext& context)
         : context_(context)
     {}
 
@@ -1066,13 +1066,13 @@ public:
         auto const* record = declaration->getType()->getAsCXXRecordDecl();
         if (!record
             || record->getQualifiedNameAsString()
-                != "iv::details::PackageRegistration") {
+                != "iv::details::PackageDefinition") {
             return true;
         }
 
         auto const variable_name = declaration->getName();
-        bool const is_module = variable_name.starts_with("iv_package_module_registration_");
-        bool const is_node = variable_name.starts_with("iv_package_node_registration_");
+        bool const is_module = variable_name.starts_with("iv_package_module_definition_");
+        bool const is_node = variable_name.starts_with("iv_package_node_definition_");
         if (!is_module && !is_node) return true;
 
         auto const* initializer = dyn_cast<InitListExpr>(
@@ -1162,8 +1162,8 @@ void write_state_metadata(
     StateMetadataCollector state_collector(context);
     NodeConfigMetadataCollector node_config_collector(context);
     ReflectedNodeDiscovery reflected_node_discovery(context);
-    RegisteredDefinitionCollector registered_definition_collector(context);
-    registered_definition_collector.TraverseDecl(context.getTranslationUnitDecl());
+    PackageDefinitionCollector package_definition_collector(context);
+    package_definition_collector.TraverseDecl(context.getTranslationUnitDecl());
     // A compiler record is emitted only for a type passed to GraphBuilder.
     // Calls at HandleTranslationUnit see ordinary records; the exact
     // variable-template listener re-runs this small collection when CodeGen
@@ -1197,7 +1197,7 @@ void write_state_metadata(
             {"version", 7},
             {"states", std::move(state_collector).take_states()},
             {"config_pointers", std::move(node_config_collector).take_fields()},
-            {"registered_definitions", std::move(registered_definition_collector).take_definitions()},
+            {"package_definitions", std::move(package_definition_collector).take_definitions()},
         }));
     stream << '\n';
 }

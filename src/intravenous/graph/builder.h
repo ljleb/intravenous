@@ -34,7 +34,7 @@ class GraphBuilderState;
 
 namespace details {
 struct BuilderSession;
-NodeRef configure_registered_definition(
+NodeRef configure_package_definition(
     GraphBuilder&, std::string_view, std::span<ConfigurationArgument>);
 GraphBuilderState& builder_graph_state(GraphBuilder&);
 NodeBundleHandle iv_builder_append_node(
@@ -61,7 +61,7 @@ class GraphBuilder {
       GraphBuilder&, details::NodeBuildRequest const&);
   friend NodeBundleHandle details::iv_builder_append_tiled_node(
       GraphBuilder&, details::NodeBuildRequest const&, ChannelLayout);
-  friend NodeRef details::configure_registered_definition(
+  friend NodeRef details::configure_package_definition(
       GraphBuilder&, std::string_view,
       std::span<details::ConfigurationArgument>);
   friend class SubgraphBuilder;
@@ -132,7 +132,7 @@ public:
     auto values = std::tuple<std::remove_cvref_t<Args>...>(
         std::forward<Args>(args)...);
     auto arguments = details::configuration_arguments(values);
-    return details::configure_registered_definition(
+    return details::configure_package_definition(
         *this, Id.view(), arguments);
   }
 

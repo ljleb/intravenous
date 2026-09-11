@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/module/abi.h>
-#include <intravenous/module/package_registration.h>
+#include <intravenous/module/package_definitions.h>
 #include <intravenous/node/config_relocations.h>
 #include <intravenous/node/node_state_structure.h>
 
@@ -28,14 +28,14 @@ struct BuilderNodeStateStructure {
 
 struct BuilderPackageView {
     std::string_view package_root{};
-    std::span<PackageRegistration const> registrations{};
+    std::span<PackageDefinition const> definitions{};
     std::span<NodeConfigPointerFieldData const> config_pointer_fields{};
     std::span<RetainedGlobalData const> retained_globals{};
     std::span<BuilderNodeStateStructure const> node_state_structures{};
 };
 
-struct BuilderRegistration {
-    PackageRegistration registration{};
+struct BuilderDefinition {
+    PackageDefinition definition{};
     std::size_t package_index = 0;
 };
 
@@ -58,7 +58,7 @@ std::size_t builder_package_index(
 std::size_t builder_selected_package(BuilderSession const*) noexcept;
 void restore_builder_package(BuilderSession*, std::size_t package_index) noexcept;
 void select_builder_package(BuilderSession*, std::size_t package_index);
-BuilderRegistration find_builder_registration(
+BuilderDefinition find_builder_definition(
     BuilderSession const*, std::string_view id);
 std::vector<std::size_t> builder_used_packages(BuilderSession const*);
 void begin_builder_module(BuilderSession*, std::string_view id);

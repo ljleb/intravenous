@@ -198,7 +198,7 @@ add_library(intravenous_graph_builder OBJECT
     graph/builder/state.cpp
     graph/reflected_node_description.cpp
     module/builder_session.cpp
-    module/package_registration.cpp
+    module/package_definitions.cpp
     module/source_annotations.cpp
     node/config_storage.cpp
     node/layout.cpp

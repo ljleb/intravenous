@@ -2,7 +2,7 @@
 #include <intravenous/module/abi.h>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_manifest.h>
-#include <intravenous/module/package_registration.h>
+#include <intravenous/module/package_definitions.h>
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
@@ -90,7 +90,7 @@ struct LoadedPackageCode {
     std::shared_ptr<SharedPackageJit> shared_jit;
     llvm::orc::JITDylib* jit_dylib = nullptr;
     llvm::orc::ResourceTrackerSP resources{};
-    std::vector<details::PackageRegistration> registrations{};
+    std::vector<details::PackageDefinition> definitions{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
     std::vector<details::BuilderNodeStateStructure> node_state_structures{};
@@ -591,7 +591,7 @@ class ModuleLoader::Impl {
         ResolvedPackage root;
         // All independently discovered source packages participate in the
         // current graph configuration. Stable IDs are discovered from their
-        // compiler registrations after loading, never by parsing C++ text.
+        // compiler definitions after loading, never by parsing C++ text.
         std::vector<ResolvedPackage> configuration_packages;
         std::filesystem::path artifact;
     };
@@ -1068,9 +1068,9 @@ public:
                     + std::to_string(IV_PACKAGE_ABI_VERSION) + ")");
             }
 
-            auto const registrations_fn =
-                symbol.template operator()<iv_package_registrations_fn>(
-                    "iv_package_registrations");
+            auto const definitions_fn =
+                symbol.template operator()<iv_package_definitions_fn>(
+                    "iv_package_definitions");
             auto const pointer_fields_fn =
                 symbol.template operator()<iv_package_node_config_pointer_fields_fn>(
                     "iv_package_node_config_pointer_fields");
@@ -1095,10 +1095,10 @@ public:
                     static_cast<T const*>(view.data), view.size / sizeof(T));
                 return std::vector<T>(values.begin(), values.end());
             };
-            package->registrations = copy_table(
-                registrations_fn(),
-                static_cast<details::PackageRegistration*>(nullptr),
-                "registration");
+            package->definitions = copy_table(
+                definitions_fn(),
+                static_cast<details::PackageDefinition*>(nullptr),
+                "definition");
             package->config_pointer_fields = copy_table(
                 pointer_fields_fn(),
                 static_cast<NodeConfigPointerFieldData*>(nullptr),
@@ -1157,16 +1157,16 @@ public:
                 });
             }
 
-            for (auto const& registration : package->registrations) {
-                if (!registration.package_root || registration.package_root_size == 0) {
-                    throw std::runtime_error("IV package registration has no package root");
+            for (auto const& definition : package->definitions) {
+                if (!definition.package_root || definition.package_root_size == 0) {
+                    throw std::runtime_error("IV package definition has no package root");
                 }
-                auto const registration_root = normalize(
+                auto const definition_root = normalize(
                     std::filesystem::path(std::string(
-                        registration.package_root, registration.package_root_size)));
-                if (registration_root != normalize(root.module_dir)) {
+                        definition.package_root, definition.package_root_size)));
+                if (definition_root != normalize(root.module_dir)) {
                     throw std::runtime_error(
-                        "IV package registration belongs to a different package root");
+                        "IV package definition belongs to a different package root");
                 }
             }
 
@@ -1181,26 +1181,26 @@ public:
 
         details::BuilderPackageView const package_view{
             .package_root = package->package_root,
-            .registrations = package->registrations,
+            .definitions = package->definitions,
             .config_pointer_fields = package->config_pointer_fields,
             .retained_globals = package->retained_globals,
             .node_state_structures = package->node_state_structures,
         };
         std::vector<LoadedNodeType> loaded_node_types;
         std::unordered_set<std::string> node_type_ids;
-        for (auto const& registration : package->registrations) {
-            if (registration.kind != details::PackageRegistrationKind::node) continue;
-            if (!registration.id || registration.id_size == 0
-                || !registration.node_build || !registration.node_compiler_record) {
-                throw std::runtime_error("IV package node type registration is incomplete");
+        for (auto const& definition : package->definitions) {
+            if (definition.kind != details::PackageDefinitionKind::node) continue;
+            if (!definition.id || definition.id_size == 0
+                || !definition.node_build || !definition.node_compiler_record) {
+                throw std::runtime_error("IV package node type definition is incomplete");
             }
-            auto node_type_id = std::string(registration.id, registration.id_size);
+            auto node_type_id = std::string(definition.id, definition.id_size);
             if (!node_type_ids.insert(node_type_id).second) {
                 throw std::runtime_error(
                     "IV package contains duplicate node type ID '" + node_type_id + "'");
             }
             auto const* compiler_record = static_cast<details::NodeCompilerRecord const*>(
-                registration.node_compiler_record);
+                definition.node_compiler_record);
             if (!compiler_record->operations.valid()) {
                 throw std::runtime_error(
                     "IV package node type '" + node_type_id
@@ -1214,7 +1214,7 @@ public:
             details::set_builder_packages(session.get(), std::span(&package_view, 1));
             details::select_builder_package(session.get(), 0);
             GraphBuilder builder(session.get());
-            auto node = registration.node_build(builder);
+            auto node = definition.node_build(builder);
             configure_node_type_ports(builder, node);
             auto configured = std::make_shared<ConfiguredGraph const>(
                 details::take_built_graph(session.get()));
@@ -1258,7 +1258,7 @@ public:
             if (!package || !package->jit_dylib) continue;
             package_views.push_back({
                 .package_root = package->package_root,
-                .registrations = package->registrations,
+                .definitions = package->definitions,
                 .config_pointer_fields = package->config_pointer_fields,
                 .retained_globals = package->retained_globals,
                 .node_state_structures = package->node_state_structures,
@@ -1271,12 +1271,12 @@ public:
         auto const started_at = std::chrono::steady_clock::now();
         std::vector<LoadedDefinition> definitions;
         std::unordered_set<std::string> module_ids;
-        for (auto const& registration : root_package->registrations) {
-            if (registration.kind != details::PackageRegistrationKind::module) continue;
-            if (!registration.id || registration.id_size == 0 || !registration.module_build) {
-                throw std::runtime_error("IV module registration is incomplete");
+        for (auto const& definition : root_package->definitions) {
+            if (definition.kind != details::PackageDefinitionKind::module) continue;
+            if (!definition.id || definition.id_size == 0 || !definition.module_build) {
+                throw std::runtime_error("IV module definition is incomplete");
             }
-            auto module_id = std::string(registration.id, registration.id_size);
+            auto module_id = std::string(definition.id, definition.id_size);
             if (!module_ids.insert(module_id).second) {
                 throw std::runtime_error(
                     "IV package contains duplicate iv module ID '" + module_id + "'");
@@ -1300,7 +1300,7 @@ public:
             } const module_call{session.get()};
 
             GraphBuilder builder(session.get());
-            registration.module_build(builder, {});
+            definition.module_build(builder, {});
             auto configured = std::make_shared<ConfiguredGraph const>(
                 details::take_built_graph(session.get()));
             auto plan = GraphCompiler::compile(

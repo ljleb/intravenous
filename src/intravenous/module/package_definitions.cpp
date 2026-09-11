@@ -1,4 +1,4 @@
-#include <intravenous/module/package_registration.h>
+#include <intravenous/module/package_definitions.h>
 
 #include <intravenous/graph/builder.h>
 #include <intravenous/module/builder_session.h>
@@ -40,7 +40,7 @@ public:
 };
 }
 
-NodeRef configure_registered_definition(
+NodeRef configure_package_definition(
     GraphBuilder& builder,
     std::string_view id,
     std::span<ConfigurationArgument> arguments)
@@ -48,15 +48,15 @@ NodeRef configure_registered_definition(
     if (!builder._session) {
         throw std::logic_error("registered IV definition requires a BuilderSession");
     }
-    auto const found = find_builder_registration(builder._session, id);
-    auto const& registration = found.registration;
-    if (registration.kind == PackageRegistrationKind::node) {
+    auto const found = find_builder_definition(builder._session, id);
+    auto const& definition = found.definition;
+    if (definition.kind == PackageDefinitionKind::node) {
         if (!arguments.empty()) {
             throw std::invalid_argument(
                 "registered node types do not take graph configuration arguments");
         }
         PackageSelection const package(builder._session, found.package_index);
-        return registration.node_build(builder);
+        return definition.node_build(builder);
     }
 
     ModuleStackEntry const stack_entry(builder._session, id);
@@ -65,7 +65,7 @@ NodeRef configure_registered_definition(
             iv_builder_child_session_create(builder._session, found.package_index),
             iv_builder_session_destroy);
     GraphBuilder child(child_session.get());
-    registration.module_build(child, arguments);
+    definition.module_build(child, arguments);
     return builder.embed_child(child, "Registered IV module");
 }
 } // namespace iv::details

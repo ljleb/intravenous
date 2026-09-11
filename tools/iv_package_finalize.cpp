@@ -1,5 +1,5 @@
 #include <intravenous/module/abi.h>
-#include <intravenous/module/package_registration.h>
+#include <intravenous/module/package_definitions.h>
 #include <intravenous/node/node_state_structure.h>
 
 #include "llvm/ADT/SmallPtrSet.h"
@@ -57,7 +57,8 @@ using namespace llvm;
 struct Options {
     std::filesystem::path metadata_dir;
     std::optional<std::filesystem::path> timings_file;
-    std::vector<std::string> link_command;
+    std::filesystem::path output;
+    std::vector<std::string> bitcode_inputs;
 };
 
 [[noreturn]] void fail(std::string const& message);
@@ -132,28 +133,35 @@ void check_error(Error error, std::string_view context)
 Options parse_options(int argc, char** argv)
 {
     Options result;
-    bool command = false;
+    bool inputs = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view arg(argv[i]);
-        if (!command && arg == "--") {
-            command = true;
+        if (!inputs && arg == "--") {
+            inputs = true;
             continue;
         }
-        if (!command && arg.starts_with("--metadata-dir=")) {
+        if (!inputs && arg.starts_with("--metadata-dir=")) {
             result.metadata_dir = std::string(arg.substr(std::string_view("--metadata-dir=").size()));
             continue;
         }
-        if (!command && arg.starts_with("--timings-file=")) {
+        if (!inputs && arg.starts_with("--timings-file=")) {
             auto const path = arg.substr(std::string_view("--timings-file=").size());
             if (path.empty()) fail("empty --timings-file");
             result.timings_file = std::string(path);
             continue;
         }
-        if (!command) fail("unknown launcher option '" + std::string(arg) + "'");
-        result.link_command.emplace_back(arg);
+        if (!inputs && arg.starts_with("--output=")) {
+            auto const path = arg.substr(std::string_view("--output=").size());
+            if (path.empty()) fail("empty --output");
+            result.output = std::string(path);
+            continue;
+        }
+        if (!inputs) fail("unknown option '" + std::string(arg) + "'");
+        result.bitcode_inputs.emplace_back(arg);
     }
     if (result.metadata_dir.empty()) fail("missing --metadata-dir");
-    if (result.link_command.empty()) fail("missing compiler link command after --");
+    if (result.output.empty()) fail("missing --output");
+    if (result.bitcode_inputs.empty()) fail("missing LLVM bitcode inputs after --");
     return result;
 }
 
@@ -196,7 +204,7 @@ LinkedModule link_bitcode_inputs(
     LLVMContext& context)
 {
     LinkedModule result;
-    for (std::size_t i = 1; i < command.size(); ++i) {
+    for (std::size_t i = 0; i < command.size(); ++i) {
         std::filesystem::path path(command[i]);
         if (command[i].empty() || command[i][0] == '-' || !std::filesystem::is_regular_file(path)) continue;
         std::unique_ptr<Module> input;
@@ -313,7 +321,7 @@ struct ConfigPointerMetadata {
     std::vector<std::size_t> byte_offsets{};
 };
 
-struct RegisteredDefinitionMetadata {
+struct PackageDefinitionMetadata {
     std::string id;
     std::string kind;
     std::string declaration_usr;
@@ -324,7 +332,7 @@ struct RegisteredDefinitionMetadata {
 struct CompilerMetadata {
     std::vector<StateMetadata> states;
     std::vector<ConfigPointerMetadata> config_pointers;
-    std::vector<RegisteredDefinitionMetadata> registered_definitions;
+    std::vector<PackageDefinitionMetadata> package_definitions;
 };
 
 std::string read_file(std::filesystem::path const& path)
@@ -356,12 +364,12 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         if (!config_pointers) {
             fail("metadata has no config-pointer array in '" + entry.path().string() + "'");
         }
-        auto* registered_definitions = object->getArray("registered_definitions");
-        if (!registered_definitions) {
+        auto* package_definitions = object->getArray("package_definitions");
+        if (!package_definitions) {
             fail("metadata has no registered-definition array in '"
                  + entry.path().string() + "'");
         }
-        for (auto const& definition_value : *registered_definitions) {
+        for (auto const& definition_value : *package_definitions) {
             auto* definition = definition_value.getAsObject();
             if (!definition) {
                 fail("registered-definition metadata entry is not an object in '"
@@ -375,7 +383,7 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
                 fail("incomplete registered-definition metadata entry in '"
                      + entry.path().string() + "'");
             }
-            RegisteredDefinitionMetadata registered{
+            PackageDefinitionMetadata registered{
                 .id = id->str(),
                 .kind = kind->str(),
                 .declaration_usr = declaration_usr->str(),
@@ -403,14 +411,14 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
                 };
             }
             auto const duplicate = std::find_if(
-                result.registered_definitions.begin(),
-                result.registered_definitions.end(),
-                [&](RegisteredDefinitionMetadata const& existing) {
+                result.package_definitions.begin(),
+                result.package_definitions.end(),
+                [&](PackageDefinitionMetadata const& existing) {
                     return existing.id == registered.id
                         && existing.declaration_usr == registered.declaration_usr;
                 });
-            if (duplicate == result.registered_definitions.end()) {
-                result.registered_definitions.push_back(std::move(registered));
+            if (duplicate == result.package_definitions.end()) {
+                result.package_definitions.push_back(std::move(registered));
             }
         }
         for (auto const& state_value : *states) {
@@ -570,17 +578,17 @@ struct RetainedGlobal {
     std::size_t size = 0;
 };
 
-std::vector<GlobalVariable*> package_registration_globals(Module& module)
+std::vector<GlobalVariable*> package_definition_globals(Module& module)
 {
     std::vector<GlobalVariable*> result;
     for (auto& global : module.globals()) {
-        if (global.getSection() == iv::details::package_registration_section
+        if (global.getSection() == iv::details::package_definition_section
             && global.isConstant() && global.hasInitializer()) {
             result.push_back(&global);
         }
     }
-    std::ranges::sort(result, {}, [](GlobalVariable const* registration) {
-        return registration->getName();
+    std::ranges::sort(result, {}, [](GlobalVariable const* definition) {
+        return definition->getName();
     });
     return result;
 }
@@ -590,11 +598,11 @@ std::string constant_string_field(
 {
     StringRef text;
     if (!getConstantStringInfo(value, text, false)) {
-        fail("package registration does not contain a constant " + std::string(field));
+        fail("package definition does not contain a constant " + std::string(field));
     }
     auto const size = constant_size(size_value, field);
     if (size > text.size()) {
-        fail("package registration " + std::string(field) + " length is invalid");
+        fail("package definition " + std::string(field) + " length is invalid");
     }
     return text.substr(0, size).str();
 }
@@ -619,48 +627,48 @@ iv::NodeCodeKey compiler_record_key(Constant* pointer)
     };
 }
 
-void validate_package_registrations(
-    std::span<GlobalVariable* const> registrations,
+void validate_package_definitions(
+    std::span<GlobalVariable* const> definitions,
     CompilerMetadata const& metadata)
 {
     std::set<std::pair<std::string, std::string>> runtime;
     std::optional<std::string> package_root;
-    for (auto* global : registrations) {
+    for (auto* global : definitions) {
         auto* record = dyn_cast_or_null<ConstantStruct>(global->getInitializer());
         if (!record || record->getNumOperands() != 10) {
-            fail("malformed IV package registration record");
+            fail("malformed IV package definition record");
         }
         auto const kind_value = constant_u64(record->getOperand(0));
         std::string kind;
-        if (kind_value == static_cast<std::uint64_t>(iv::details::PackageRegistrationKind::node)) {
+        if (kind_value == static_cast<std::uint64_t>(iv::details::PackageDefinitionKind::node)) {
             kind = "node";
-        } else if (kind_value == static_cast<std::uint64_t>(iv::details::PackageRegistrationKind::module)) {
+        } else if (kind_value == static_cast<std::uint64_t>(iv::details::PackageDefinitionKind::module)) {
             kind = "module";
         } else {
-            fail("IV package registration has an invalid kind");
+            fail("IV package definition has an invalid kind");
         }
         auto const id = constant_string_field(
             record->getOperand(1), record->getOperand(2), "stable ID");
-        if (id.empty()) fail("IV package registration has an empty stable ID");
+        if (id.empty()) fail("IV package definition has an empty stable ID");
         auto const root = constant_string_field(
             record->getOperand(5), record->getOperand(6), "package root");
         if (!package_root) package_root = root;
         else if (*package_root != root) {
-            fail("one IV package emitted registrations for multiple package roots");
+            fail("one IV package emitted definitions for multiple package roots");
         }
         if (!runtime.emplace(kind, id).second) {
             fail("duplicate registered IV definition ID within one IV package: '" + id + "'");
         }
 
         auto const compiler = std::find_if(
-            metadata.registered_definitions.begin(),
-            metadata.registered_definitions.end(),
-            [&](RegisteredDefinitionMetadata const& definition) {
+            metadata.package_definitions.begin(),
+            metadata.package_definitions.end(),
+            [&](PackageDefinitionMetadata const& definition) {
                 return definition.kind == kind && definition.id == id;
             });
-        if (compiler == metadata.registered_definitions.end()) {
+        if (compiler == metadata.package_definitions.end()) {
             fail("registered IV " + kind + " '" + id
-                + "' has no matching compiler registration metadata");
+                + "' has no matching compiler definition metadata");
         }
         if (kind == "node" && compiler->node_code_key) {
             auto const key = compiler_record_key(record->getOperand(9));
@@ -671,20 +679,20 @@ void validate_package_registrations(
         }
     }
 
-    for (auto const& definition : metadata.registered_definitions) {
+    for (auto const& definition : metadata.package_definitions) {
         if (!runtime.contains({definition.kind, definition.id})) {
             fail("compiler metadata registered " + definition.kind + " '"
-                + definition.id + "' but the IV package registration table did not");
+                + definition.id + "' but the IV package definition table did not");
         }
     }
 }
 
 std::vector<RetainedGlobal> collect_retained_globals(
     Module& module,
-    std::span<GlobalVariable* const> registrations)
+    std::span<GlobalVariable* const> definitions)
 {
     SmallPtrSet<GlobalValue const*, 64> reachable;
-    for (auto* registration : registrations) mark_reachable(registration, reachable);
+    for (auto* definition : definitions) mark_reachable(definition, reachable);
     if (auto* ctors = module.getGlobalVariable("llvm.global_ctors")) {
         mark_reachable(ctors, reachable);
     }
@@ -697,7 +705,7 @@ std::vector<RetainedGlobal> collect_retained_globals(
         auto* global = dyn_cast<GlobalVariable>(const_cast<GlobalValue*>(value));
         if (!global || !global->isConstant() || global->isDeclaration()
             || !global->hasInitializer()
-            || global->getSection() == iv::details::package_registration_section
+            || global->getSection() == iv::details::package_definition_section
             || global->getSection() == "iv_node_types"
             || global->getName().starts_with("llvm.")) {
             continue;
@@ -823,41 +831,41 @@ void inject_package_abi_version(Module& module)
         Type::getInt32Ty(context), iv::IV_PACKAGE_ABI_VERSION));
 }
 
-void inject_package_registration_table(
+void inject_package_definition_table(
     Module& module,
-    std::span<GlobalVariable* const> registrations)
+    std::span<GlobalVariable* const> definitions)
 {
     auto* pointer_type = PointerType::getUnqual(module.getContext());
-    if (registrations.empty()) {
+    if (definitions.empty()) {
         emit_view_accessor(
-            module, "iv_package_registrations",
+            module, "iv_package_definitions",
             ConstantPointerNull::get(pointer_type), 0);
         return;
     }
 
-    auto* record_type = registrations.front()->getValueType();
-    for (auto const* registration : registrations) {
-        if (registration->getValueType() != record_type) {
-            fail("IV package registration records have inconsistent LLVM types");
+    auto* record_type = definitions.front()->getValueType();
+    for (auto const* definition : definitions) {
+        if (definition->getValueType() != record_type) {
+            fail("IV package definition records have inconsistent LLVM types");
         }
     }
     auto const record_size = module.getDataLayout().getTypeAllocSize(record_type);
     if (record_size.isScalable()
-        || record_size.getFixedValue() != sizeof(iv::details::PackageRegistration)) {
-        fail("IV package registration record ABI does not match PackageRegistration");
+        || record_size.getFixedValue() != sizeof(iv::details::PackageDefinition)) {
+        fail("IV package definition record ABI does not match PackageDefinition");
     }
 
     std::vector<Constant*> values;
-    values.reserve(registrations.size());
-    for (auto const* registration : registrations) {
-        values.push_back(registration->getInitializer());
+    values.reserve(definitions.size());
+    for (auto const* definition : definitions) {
+        values.push_back(definition->getInitializer());
     }
     auto* array_type = ArrayType::get(record_type, values.size());
     auto* table = new GlobalVariable(
         module, array_type, true, GlobalValue::PrivateLinkage,
-        ConstantArray::get(array_type, values), "iv.package_registrations");
+        ConstantArray::get(array_type, values), "iv.package_definitions");
     emit_view_accessor(
-        module, "iv_package_registrations",
+        module, "iv_package_definitions",
         ConstantExpr::getPointerCast(table, pointer_type),
         values.size() * record_size.getFixedValue());
 }
@@ -1049,7 +1057,7 @@ void preserve_package_code(Module& module)
 {
     static constexpr std::array<StringRef, 5> entry_points{
         "iv_package_abi_version",
-        "iv_package_registrations",
+        "iv_package_definitions",
         "iv_package_node_config_pointer_fields",
         "iv_package_retained_globals",
         "iv_package_node_state_structures",
@@ -1083,16 +1091,6 @@ void preserve_package_code(Module& module)
     passes.run(module);
 }
 
-std::filesystem::path output_path(std::span<std::string const> command)
-{
-    for (std::size_t i = 1; i + 1 < command.size(); ++i) {
-        if (command[i] == "-o") return command[i + 1];
-        if (std::string_view(command[i]).starts_with("-o") && command[i].size() > 2) {
-            return command[i].substr(2);
-        }
-    }
-    fail("cannot find -o in IV package link command");
-}
 
 void write_package_bitcode(Module& module, std::filesystem::path const& path)
 {
@@ -1126,9 +1124,9 @@ int finalize(Options options)
 {
     TimingReport timings;
     auto stage_started_at = timings.start_stage();
-    options.link_command = expand_response_files(std::move(options.link_command));
+    options.bitcode_inputs = expand_response_files(std::move(options.bitcode_inputs));
     LLVMContext context;
-    auto linked = link_bitcode_inputs(options.link_command, context);
+    auto linked = link_bitcode_inputs(options.bitcode_inputs, context);
     timings.finish_stage("bitcode_parse_link", stage_started_at);
 
     auto& package = *linked.module;
@@ -1141,22 +1139,21 @@ int finalize(Options options)
     auto metadata = load_metadata(options.metadata_dir);
     auto state_structures = bind_state_metadata(node_records, metadata);
     require_node_config_metadata(node_records, metadata);
-    auto registrations = package_registration_globals(package);
-    validate_package_registrations(registrations, metadata);
-    auto retained_globals = collect_retained_globals(package, registrations);
+    auto definitions = package_definition_globals(package);
+    validate_package_definitions(definitions, metadata);
+    auto retained_globals = collect_retained_globals(package, definitions);
     timings.finish_stage("package_metadata_validate", stage_started_at);
 
     stage_started_at = timings.start_stage();
     inject_package_abi_version(package);
-    inject_package_registration_table(package, registrations);
+    inject_package_definition_table(package, definitions);
     inject_package_configuration_metadata(
         package, metadata, state_structures, retained_globals);
     preserve_package_code(package);
     timings.finish_stage("package_metadata_inject", stage_started_at);
 
     stage_started_at = timings.start_stage();
-    auto output = output_path(options.link_command);
-    write_package_bitcode(package, output);
+    write_package_bitcode(package, options.output);
     timings.finish_stage("package_bitcode_write", stage_started_at);
 
     if (options.timings_file) timings.write(*options.timings_file);
