@@ -1081,10 +1081,6 @@ public:
                         library_path.c_str(), global_prefix),
                     "load IV package dynamic library '" + library_path + "'"));
             }
-            jit_dylib.addGenerator(take_llvm_expected(
-                llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-                    global_prefix),
-                "create current-process package symbol resolver"));
             check_llvm_error(
                 jit.addIRModule(
                     package->resources,
