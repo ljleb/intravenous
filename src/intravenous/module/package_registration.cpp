@@ -26,10 +26,10 @@ class PackageSelection {
     BuilderSession* session_ = nullptr;
     std::size_t previous_ = static_cast<std::size_t>(-1);
 public:
-    PackageSelection(BuilderSession* session, std::size_t source_index)
+    PackageSelection(BuilderSession* session, std::size_t package_index)
         : session_(session), previous_(builder_selected_package(session))
     {
-        select_builder_package(session_, source_index);
+        select_builder_package(session_, package_index);
     }
     PackageSelection(PackageSelection const&) = delete;
     PackageSelection& operator=(PackageSelection const&) = delete;
@@ -40,7 +40,7 @@ public:
 };
 }
 
-NodeRef author_registered_source_definition(GraphBuilder& builder, std::string_view id)
+NodeRef configure_registered_definition(GraphBuilder& builder, std::string_view id)
 {
     if (!builder._session) {
         throw std::logic_error("registered IV definition requires a BuilderSession");
@@ -48,14 +48,14 @@ NodeRef author_registered_source_definition(GraphBuilder& builder, std::string_v
     auto const found = find_builder_registration(builder._session, id);
     auto const& registration = found.registration;
     if (registration.kind == PackageRegistrationKind::node) {
-        PackageSelection const source(builder._session, found.source_index);
+        PackageSelection const package(builder._session, found.package_index);
         return registration.node_build(builder);
     }
 
     ModuleStackEntry const stack_entry(builder._session, id);
     auto child_session = std::unique_ptr<BuilderSession,
         decltype(&iv_builder_session_destroy)>(
-            iv_builder_child_session_create(builder._session, found.source_index),
+            iv_builder_child_session_create(builder._session, found.package_index),
             iv_builder_session_destroy);
     GraphBuilder child(child_session.get());
     registration.module_build(child);

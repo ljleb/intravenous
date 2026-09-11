@@ -110,10 +110,10 @@ struct DynamicLibrary {
 
 struct LoadedBinary {
     std::string id;
-    std::string source_root;
+    std::string package_root;
     std::filesystem::path binary_path;
     std::shared_ptr<DynamicLibrary> library;
-    std::vector<details::PackageRegistrationView> registrations{};
+    std::vector<details::PackageRegistration> registrations{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
 };
@@ -935,7 +935,7 @@ public:
             }
             binary = std::make_shared<LoadedBinary>(LoadedBinary{
                 .id = root.package_key,
-                .source_root = root.module_dir.generic_string(),
+                .package_root = root.module_dir.generic_string(),
                 .binary_path = artifact,
                 .library = std::move(library),
             });
@@ -988,7 +988,7 @@ public:
         };
         binary->registrations = copy_table(
             registrations_fn(),
-            static_cast<details::PackageRegistrationView*>(nullptr),
+            static_cast<details::PackageRegistration*>(nullptr),
             "registration");
         binary->config_pointer_fields = copy_table(
             pointer_fields_fn(),
@@ -1000,11 +1000,11 @@ public:
             "retained LLVM global");
 
         for (auto const& registration : binary->registrations) {
-            if (!registration.source_root || registration.source_root_size == 0) {
+            if (!registration.package_root || registration.package_root_size == 0) {
                 throw std::runtime_error("IV package registration has no source root");
             }
             auto const registration_root = normalize(std::filesystem::path(std::string(
-                registration.source_root, registration.source_root_size)));
+                registration.package_root, registration.package_root_size)));
             if (registration_root != normalize(root.module_dir)) {
                 throw std::runtime_error(
                     "IV package registration belongs to a different source root");
@@ -1142,7 +1142,7 @@ public:
         for (auto const& binary : loaded_binaries) {
             if (!binary || !binary->library || binary->registrations.empty()) continue;
             source_views.push_back({
-                .source_root = binary->source_root,
+                .package_root = binary->package_root,
                 .registrations = binary->registrations,
                 .config_pointer_fields = binary->config_pointer_fields,
                 .retained_globals = binary->retained_globals,
@@ -1188,7 +1188,7 @@ public:
             }
             details::set_builder_packages(session.get(), source_views);
             auto const root_source_index = details::builder_package_index(
-                session.get(), root_binary->source_root);
+                session.get(), root_binary->package_root);
             details::select_builder_package(session.get(), root_source_index);
             details::begin_builder_module(session.get(), module_id);
             struct ModuleCallScope {

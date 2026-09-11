@@ -1066,13 +1066,13 @@ public:
         auto const* record = declaration->getType()->getAsCXXRecordDecl();
         if (!record
             || record->getQualifiedNameAsString()
-                != "iv::details::PackageRegistrationView") {
+                != "iv::details::PackageRegistration") {
             return true;
         }
 
         auto const variable_name = declaration->getName();
-        bool const is_module = variable_name.starts_with("iv_source_module_registration_");
-        bool const is_node = variable_name.starts_with("iv_source_node_registration_");
+        bool const is_module = variable_name.starts_with("iv_package_module_registration_");
+        bool const is_node = variable_name.starts_with("iv_package_node_registration_");
         if (!is_module && !is_node) return true;
 
         auto const* initializer = dyn_cast<InitListExpr>(

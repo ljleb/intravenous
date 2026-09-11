@@ -36,8 +36,16 @@ ReflectedNodeDescription materialize_node_build_request(
         request.compiler_record->code_key,
         storage.get(),
         request.config_size);
-    return details::materialize_node_description(
+    auto description = details::materialize_node_description(
         request, std::move(storage), std::move(relocations));
+    description.state_structure_storage =
+        details::copy_builder_node_state_structure(
+            session, request.compiler_record->code_key);
+    description.operations.runtime.state_structure =
+        description.state_structure_storage
+            ? description.state_structure_storage.get()
+            : nullptr;
+    return description;
 }
 } // namespace
 

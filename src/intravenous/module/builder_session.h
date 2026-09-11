@@ -3,11 +3,13 @@
 #include <intravenous/module/abi.h>
 #include <intravenous/module/package_registration.h>
 #include <intravenous/node/config_relocations.h>
+#include <intravenous/node/node_state_structure.h>
 
 #include <cstddef>
 #include <memory>
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace iv {
 class GraphBuilder;
@@ -15,20 +17,26 @@ class GraphBuilderState;
 struct ConfiguredGraph;
 
 namespace details {
-// All source-specific data needed while configuring a graph. The loader builds
+// All package-specific data needed while configuring a graph. The loader builds
 // these views from the IV packages that are loaded for the configuration; the
 // BuilderSession copies the records so nested iv-module calls use one stable
-// lookup set even if other sources are reloaded concurrently.
+// lookup set even if other packages are reloaded concurrently.
+struct BuilderNodeStateStructure {
+    NodeCodeKey code_key{};
+    NodeStateStructure structure{};
+};
+
 struct BuilderPackageView {
-    std::string_view source_root{};
-    std::span<PackageRegistrationView const> registrations{};
+    std::string_view package_root{};
+    std::span<PackageRegistration const> registrations{};
     std::span<NodeConfigPointerFieldData const> config_pointer_fields{};
     std::span<RetainedGlobalData const> retained_globals{};
+    std::span<BuilderNodeStateStructure const> node_state_structures{};
 };
 
 struct BuilderRegistration {
-    PackageRegistrationView registration{};
-    std::size_t source_index = 0;
+    PackageRegistration registration{};
+    std::size_t package_index = 0;
 };
 
 struct BuilderSession;
@@ -37,26 +45,29 @@ extern "C" BuilderSession* iv_builder_session_create();
 extern "C" void iv_builder_session_destroy(BuilderSession*) noexcept;
 
 // A child session owns an independent GraphBuilderState and node-configuration
-// allocations but shares the loaded-source tables and iv-module call stack.
+// allocations but shares the loaded-package tables and iv-module call stack.
 BuilderSession* iv_builder_child_session_create(
-    BuilderSession* parent, std::size_t source_index);
+    BuilderSession* parent, std::size_t package_index);
 
 ConfiguredGraph take_built_graph(BuilderSession*);
 
 void set_builder_packages(
-    BuilderSession*, std::span<BuilderPackageView const> sources);
+    BuilderSession*, std::span<BuilderPackageView const> packages);
 std::size_t builder_package_index(
-    BuilderSession const*, std::string_view source_root);
+    BuilderSession const*, std::string_view package_root);
 std::size_t builder_selected_package(BuilderSession const*) noexcept;
-void restore_builder_package(BuilderSession*, std::size_t source_index) noexcept;
-void select_builder_package(BuilderSession*, std::size_t source_index);
+void restore_builder_package(BuilderSession*, std::size_t package_index) noexcept;
+void select_builder_package(BuilderSession*, std::size_t package_index);
 BuilderRegistration find_builder_registration(
     BuilderSession const*, std::string_view id);
+std::vector<std::size_t> builder_used_packages(BuilderSession const*);
 void begin_builder_module(BuilderSession*, std::string_view id);
 void end_builder_module(BuilderSession*) noexcept;
 
 NodeConfigRelocations capture_node_config(
     BuilderSession*, NodeCodeKey, void const*, std::size_t);
+std::shared_ptr<NodeStateStructure const> copy_builder_node_state_structure(
+    BuilderSession*, NodeCodeKey);
 
 // Module-side node constructors request storage from the shared builder and
 // placement-construct directly into it. Ownership transfers synchronously to

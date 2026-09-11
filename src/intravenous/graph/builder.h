@@ -32,7 +32,7 @@ class GraphBuilderState;
 
 namespace details {
 struct BuilderSession;
-NodeRef author_registered_source_definition(GraphBuilder&, std::string_view);
+NodeRef configure_registered_definition(GraphBuilder&, std::string_view);
 GraphBuilderState& builder_graph_state(GraphBuilder&);
 NodeBundleHandle iv_builder_append_node(
     GraphBuilder&, NodeBuildRequest const&);
@@ -58,7 +58,7 @@ class GraphBuilder {
       GraphBuilder&, details::NodeBuildRequest const&);
   friend NodeBundleHandle details::iv_builder_append_tiled_node(
       GraphBuilder&, details::NodeBuildRequest const&, ChannelLayout);
-  friend NodeRef details::author_registered_source_definition(
+  friend NodeRef details::configure_registered_definition(
       GraphBuilder&, std::string_view);
   friend class SubgraphBuilder;
 
@@ -127,7 +127,7 @@ public:
   auto node(Args&&...) {
     static_assert(sizeof...(Args) == 0,
         "registered IV definitions do not yet declare public configured arguments");
-    return details::author_registered_source_definition(*this, Id.view());
+    return details::configure_registered_definition(*this, Id.view());
   }
 
   template<class Node, class ChannelType, class... Args>

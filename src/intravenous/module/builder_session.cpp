@@ -18,18 +18,20 @@
 namespace iv::details {
 namespace {
 struct BuilderPackage {
-    std::string source_root{};
-    std::vector<PackageRegistrationView> registrations{};
+    std::string package_root{};
+    std::vector<PackageRegistration> registrations{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
+    std::vector<BuilderNodeStateStructure> node_state_structures{};
 };
 
 struct BuilderConfiguration {
-    std::vector<BuilderPackage> sources{};
+    std::vector<BuilderPackage> packages{};
     std::vector<std::string> module_stack{};
+    std::vector<bool> used_packages{};
 };
 
-void validate_registration(PackageRegistrationView const& registration)
+void validate_registration(PackageRegistration const& registration)
 {
     if (!registration.id || registration.id_size == 0) {
         throw std::invalid_argument("IV package registration has an empty stable ID");
@@ -41,8 +43,8 @@ void validate_registration(PackageRegistrationView const& registration)
     if (!registration.source_file || registration.source_file_size == 0) {
         throw std::invalid_argument("IV package registration has no source file");
     }
-    if (!registration.source_root || registration.source_root_size == 0) {
-        throw std::invalid_argument("IV package registration has no source package root");
+    if (!registration.package_root || registration.package_root_size == 0) {
+        throw std::invalid_argument("IV package registration has no package root");
     }
     if (registration.kind == PackageRegistrationKind::module) {
         if (!registration.module_build || registration.node_build
@@ -82,7 +84,7 @@ struct BuilderSession {
     bool graph_taken = false;
     std::shared_ptr<BuilderConfiguration> configuration =
         std::make_shared<BuilderConfiguration>();
-    std::size_t source_index = static_cast<std::size_t>(-1);
+    std::size_t package_index = static_cast<std::size_t>(-1);
 
     struct NodeConfigAllocation {
         void* storage = nullptr;
@@ -130,17 +132,17 @@ extern "C" void iv_builder_session_destroy(BuilderSession* session) noexcept
 }
 
 BuilderSession* iv_builder_child_session_create(
-    BuilderSession* parent, std::size_t source_index)
+    BuilderSession* parent, std::size_t package_index)
 {
     if (!parent || !parent->configuration) {
         throw std::invalid_argument("parent builder session is null");
     }
-    if (source_index >= parent->configuration->sources.size()) {
-        throw std::out_of_range("builder source index is out of range");
+    if (package_index >= parent->configuration->packages.size()) {
+        throw std::out_of_range("builder package index is out of range");
     }
     auto child = std::make_unique<BuilderSession>();
     child->configuration = parent->configuration;
-    child->source_index = source_index;
+    child->package_index = package_index;
     return child.release();
 }
 
@@ -166,7 +168,7 @@ ConfiguredGraph take_built_graph(BuilderSession* session)
 }
 
 void set_builder_packages(
-    BuilderSession* session, std::span<BuilderPackageView const> sources)
+    BuilderSession* session, std::span<BuilderPackageView const> packages)
 {
     if (!session) throw std::invalid_argument("builder session is null");
     if (session->graph_taken) {
@@ -174,27 +176,30 @@ void set_builder_packages(
     }
 
     auto configured = std::make_shared<BuilderConfiguration>();
-    configured->sources.reserve(sources.size());
-    for (auto const& source : sources) {
-        if (source.source_root.empty()) {
-            throw std::invalid_argument("builder source has empty source root");
+    configured->packages.reserve(packages.size());
+    configured->used_packages.assign(packages.size(), false);
+    for (auto const& package : packages) {
+        if (package.package_root.empty()) {
+            throw std::invalid_argument("builder package has empty package root");
         }
-        auto& destination = configured->sources.emplace_back();
-        destination.source_root = source.source_root;
+        auto& destination = configured->packages.emplace_back();
+        destination.package_root = package.package_root;
         destination.registrations.assign(
-            source.registrations.begin(), source.registrations.end());
+            package.registrations.begin(), package.registrations.end());
         destination.config_pointer_fields.assign(
-            source.config_pointer_fields.begin(), source.config_pointer_fields.end());
+            package.config_pointer_fields.begin(), package.config_pointer_fields.end());
         destination.retained_globals.assign(
-            source.retained_globals.begin(), source.retained_globals.end());
+            package.retained_globals.begin(), package.retained_globals.end());
+        destination.node_state_structures.assign(
+            package.node_state_structures.begin(), package.node_state_structures.end());
 
         for (auto const& registration : destination.registrations) {
             validate_registration(registration);
             auto const root = std::string_view(
-                registration.source_root, registration.source_root_size);
-            if (root != destination.source_root) {
+                registration.package_root, registration.package_root_size);
+            if (root != destination.package_root) {
                 throw std::invalid_argument(
-                    "IV package registration belongs to a different source root");
+                    "IV package registration belongs to a different package root");
             }
         }
         for (auto const& global : destination.retained_globals) {
@@ -204,44 +209,45 @@ void set_builder_packages(
         }
     }
     session->configuration = std::move(configured);
-    session->source_index = static_cast<std::size_t>(-1);
+    session->package_index = static_cast<std::size_t>(-1);
 }
 
 std::size_t builder_package_index(
-    BuilderSession const* session, std::string_view source_root)
+    BuilderSession const* session, std::string_view package_root)
 {
     if (!session || !session->configuration) {
         throw std::invalid_argument("builder session is null");
     }
     auto const source = std::ranges::find(
-        session->configuration->sources, source_root, &BuilderPackage::source_root);
-    if (source == session->configuration->sources.end()) {
+        session->configuration->packages, package_root, &BuilderPackage::package_root);
+    if (source == session->configuration->packages.end()) {
         throw std::runtime_error(
-            "IV package '" + std::string(source_root)
+            "IV package '" + std::string(package_root)
             + "' is unavailable while configuring the graph");
     }
-    return static_cast<std::size_t>(source - session->configuration->sources.begin());
+    return static_cast<std::size_t>(source - session->configuration->packages.begin());
 }
 
 std::size_t builder_selected_package(BuilderSession const* session) noexcept
 {
-    return session ? session->source_index : static_cast<std::size_t>(-1);
+    return session ? session->package_index : static_cast<std::size_t>(-1);
 }
 
-void restore_builder_package(BuilderSession* session, std::size_t source_index) noexcept
+void restore_builder_package(BuilderSession* session, std::size_t package_index) noexcept
 {
-    if (session) session->source_index = source_index;
+    if (session) session->package_index = package_index;
 }
 
-void select_builder_package(BuilderSession* session, std::size_t source_index)
+void select_builder_package(BuilderSession* session, std::size_t package_index)
 {
     if (!session || !session->configuration) {
         throw std::invalid_argument("builder session is null");
     }
-    if (source_index >= session->configuration->sources.size()) {
-        throw std::out_of_range("builder source index is out of range");
+    if (package_index >= session->configuration->packages.size()) {
+        throw std::out_of_range("builder package index is out of range");
     }
-    session->source_index = source_index;
+    session->package_index = package_index;
+    session->configuration->used_packages[package_index] = true;
 }
 
 BuilderRegistration find_builder_registration(
@@ -251,10 +257,10 @@ BuilderRegistration find_builder_registration(
         throw std::invalid_argument("builder session is null");
     }
     std::optional<BuilderRegistration> found;
-    for (std::size_t source_index = 0;
-         source_index < session->configuration->sources.size(); ++source_index) {
+    for (std::size_t package_index = 0;
+         package_index < session->configuration->packages.size(); ++package_index) {
         for (auto const& registration
-             : session->configuration->sources[source_index].registrations) {
+             : session->configuration->packages[package_index].registrations) {
             if (std::string_view(registration.id, registration.id_size) != id) continue;
             if (found) {
                 throw std::runtime_error(
@@ -263,7 +269,7 @@ BuilderRegistration find_builder_registration(
             }
             found = BuilderRegistration{
                 .registration = registration,
-                .source_index = source_index,
+                .package_index = package_index,
             };
         }
     }
@@ -271,6 +277,18 @@ BuilderRegistration find_builder_registration(
     throw std::runtime_error(
         "registered IV definition '" + std::string(id)
         + "' is unavailable in the loaded IV packages");
+}
+
+std::vector<std::size_t> builder_used_packages(BuilderSession const* session)
+{
+    if (!session || !session->configuration) {
+        throw std::invalid_argument("builder session is null");
+    }
+    std::vector<std::size_t> result;
+    for (std::size_t index = 0; index < session->configuration->used_packages.size(); ++index) {
+        if (session->configuration->used_packages[index]) result.push_back(index);
+    }
+    return result;
 }
 
 void begin_builder_module(BuilderSession* session, std::string_view id)
@@ -352,16 +370,16 @@ NodeConfigRelocations capture_node_config(
         throw std::logic_error("node configuration has no builder-owned storage");
     }
     if (!session->configuration
-        || session->source_index >= session->configuration->sources.size()) {
-        // Nodes created directly by host code do not have source compiler
+        || session->package_index >= session->configuration->packages.size()) {
+        // Nodes created directly by host code do not have package compiler
         // metadata, and therefore have no source-relative pointer relocations.
         return {};
     }
-    auto const& source = session->configuration->sources[session->source_index];
+    auto const& package = session->configuration->packages[session->package_index];
 
     NodeConfigRelocations relocations;
     auto const* bytes = static_cast<std::byte const*>(config);
-    for (auto const& field : source.config_pointer_fields) {
+    for (auto const& field : package.config_pointer_fields) {
         if (field.code_key != code_key) continue;
         auto const offset = field.byte_offset;
         if (offset > config_size || config_size - offset < sizeof(void const*)) {
@@ -376,18 +394,18 @@ NodeConfigRelocations capture_node_config(
         }
         auto const value_address = reinterpret_cast<std::uintptr_t>(value);
         auto const global = std::find_if(
-            source.retained_globals.begin(), source.retained_globals.end(),
+            package.retained_globals.begin(), package.retained_globals.end(),
             [&](RetainedGlobalData const& candidate) {
                 auto const begin = reinterpret_cast<std::uintptr_t>(candidate.address);
                 return value_address >= begin && value_address - begin < candidate.size;
             });
-        if (global == source.retained_globals.end()) {
+        if (global == package.retained_globals.end()) {
             throw std::logic_error(
                 "node configuration pointer does not refer to a retained LLVM global");
         }
         relocations.push_back({
             .byte_offset = offset,
-            .source_root = source.source_root,
+            .package_root = package.package_root,
             .retained_global_ordinal = global->ordinal,
             .addend = static_cast<std::size_t>(
                 value_address - reinterpret_cast<std::uintptr_t>(global->address)),
@@ -395,6 +413,20 @@ NodeConfigRelocations capture_node_config(
     }
     std::ranges::sort(relocations, {}, &NodeConfigRelocation::byte_offset);
     return relocations;
+}
+
+std::shared_ptr<NodeStateStructure const> copy_builder_node_state_structure(
+    BuilderSession* session, NodeCodeKey code_key)
+{
+    if (!session || !session->configuration
+        || session->package_index >= session->configuration->packages.size()) {
+        return {};
+    }
+    auto const& package = session->configuration->packages[session->package_index];
+    auto const found = std::ranges::find(
+        package.node_state_structures, code_key, &BuilderNodeStateStructure::code_key);
+    if (found == package.node_state_structures.end()) return {};
+    return std::make_shared<NodeStateStructure const>(found->structure);
 }
 
 } // namespace iv::details

@@ -1,15 +1,13 @@
-#include <intravenous/graph/builder.h>
-#include <intravenous/module/builder_session.h>
-#include <intravenous/module/configured_graph_wire.h>
+#include <intravenous/module/abi.h>
+#include <intravenous/module/package_registration.h>
+#include <intravenous/node/node_state_structure.h>
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Bitcode/BitcodeReader.h"
-#include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
-#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
-#include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
@@ -17,28 +15,18 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
-#include "llvm/IR/PassManager.h"
-#include "llvm/Passes/PassBuilder.h"
-#include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Linker/Linker.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/Program.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/TargetParser/Host.h"
-#include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/IPO/GlobalDCE.h"
-#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <algorithm>
@@ -69,7 +57,6 @@ using namespace llvm;
 struct Options {
     std::filesystem::path metadata_dir;
     std::optional<std::filesystem::path> timings_file;
-    bool optimize = true;
     std::vector<std::string> link_command;
 };
 
@@ -160,13 +147,6 @@ Options parse_options(int argc, char** argv)
             auto const path = arg.substr(std::string_view("--timings-file=").size());
             if (path.empty()) fail("empty --timings-file");
             result.timings_file = std::string(path);
-            continue;
-        }
-        if (!command && arg.starts_with("--optimization=")) {
-            auto const value = arg.substr(std::string_view("--optimization=").size());
-            if (value == "O0") result.optimize = false;
-            else if (value == "O3") result.optimize = true;
-            else fail("unknown optimization level '" + std::string(value) + "'");
             continue;
         }
         if (!command) fail("unknown launcher option '" + std::string(arg) + "'");
@@ -555,6 +535,7 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
     return result;
 }
 
+
 void mark_reachable(Value const* value, SmallPtrSetImpl<GlobalValue const*>& reachable)
 {
     if (!value) return;
@@ -562,10 +543,13 @@ void mark_reachable(Value const* value, SmallPtrSetImpl<GlobalValue const*>& rea
         if (!reachable.insert(global).second) return;
         if (auto const* function = dyn_cast<Function>(global)) {
             if (!function->isDeclaration()) {
-                for (auto const& block : *function)
-                    for (auto const& instruction : block)
-                        for (auto const& operand : instruction.operands())
+                for (auto const& block : *function) {
+                    for (auto const& instruction : block) {
+                        for (auto const& operand : instruction.operands()) {
                             mark_reachable(operand.get(), reachable);
+                        }
+                    }
+                }
             }
         } else if (auto const* variable = dyn_cast<GlobalVariable>(global)) {
             if (variable->hasInitializer()) mark_reachable(variable->getInitializer(), reachable);
@@ -575,437 +559,157 @@ void mark_reachable(Value const* value, SmallPtrSetImpl<GlobalValue const*>& rea
         return;
     }
     if (auto const* constant = dyn_cast<Constant>(value)) {
-        for (auto const& operand : constant->operands()) mark_reachable(operand.get(), reachable);
+        for (auto const& operand : constant->operands()) {
+            mark_reachable(operand.get(), reachable);
+        }
     }
 }
 
-struct BuilderModuleClone {
-    struct RetainedGlobal {
-        GlobalVariable const* master = nullptr;
-        std::size_t size = 0;
-    };
-
-    std::unique_ptr<Module> module;
-    std::vector<RetainedGlobal> retained_globals;
+struct RetainedGlobal {
+    GlobalVariable* global = nullptr;
+    std::size_t size = 0;
 };
 
-void add_retained_global_address_table(
-    Module& module,
-    std::span<GlobalVariable* const> globals)
+std::vector<GlobalVariable*> package_registration_globals(Module& module)
 {
-    auto& context = module.getContext();
-    auto* pointer_type = PointerType::getUnqual(context);
-    std::vector<Constant*> entries;
-    entries.reserve(globals.size());
-    for (auto* global : globals) {
-        entries.push_back(ConstantExpr::getPointerCast(global, pointer_type));
-    }
-    auto* table_type = ArrayType::get(pointer_type, entries.size());
-    auto* table = new GlobalVariable(
-        module,
-        table_type,
-        true,
-        GlobalValue::PrivateLinkage,
-        ConstantArray::get(table_type, entries),
-        "iv.retained_global_addresses");
-    table->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
-
-    auto* function_type = FunctionType::get(pointer_type, false);
-    auto* function = Function::Create(
-        function_type,
-        GlobalValue::ExternalLinkage,
-        "iv_get_retained_global_addresses",
-        module);
-    auto* block = BasicBlock::Create(context, "entry", function);
-    IRBuilder<> builder(block);
-    builder.CreateRet(ConstantExpr::getPointerCast(table, pointer_type));
-}
-
-BuilderModuleClone clone_builder_module(Module const& master)
-{
-    SmallPtrSet<GlobalValue const*, 32> reachable;
-    static constexpr std::array<StringRef, 1> configuration_entry_points{
-        "iv_package_registrations",
-    };
-    for (auto const name : configuration_entry_points) {
-        auto const* entry_point = master.getFunction(name);
-        if (!entry_point || entry_point->isDeclaration()) {
-            fail("master LLVM module does not define graph-configuration entry point '"
-                 + name.str() + "'");
+    std::vector<GlobalVariable*> result;
+    for (auto& global : module.globals()) {
+        if (global.getSection() == iv::details::package_registration_section
+            && global.isConstant() && global.hasInitializer()) {
+            result.push_back(&global);
         }
-        mark_reachable(entry_point, reachable);
     }
-    if (auto const* ctors = master.getGlobalVariable("llvm.global_ctors")) mark_reachable(ctors, reachable);
-    if (auto const* dtors = master.getGlobalVariable("llvm.global_dtors")) mark_reachable(dtors, reachable);
-
-    ValueToValueMapTy map;
-    auto cloned_module = CloneModule(master, map, [&](GlobalValue const* global) {
-        if (global->isDeclaration()) return false;
-        return reachable.contains(global);
+    std::ranges::sort(result, {}, [](GlobalVariable const* registration) {
+        return registration->getName();
     });
-
-    BuilderModuleClone result{.module = std::move(cloned_module), .retained_globals = {}};
-    std::vector<GlobalVariable*> cloned_globals;
-    for (auto const& global : master.globals()) {
-        if (!global.isConstant() || global.isDeclaration() || !global.hasInitializer()) {
-            continue;
-        }
-        auto* cloned = dyn_cast_or_null<GlobalVariable>(map.lookup(&global));
-        // CloneModule records mappings for filtered-out globals too, but those
-        // values are declarations in the configuration clone. Referencing one from
-        // the address table would turn an otherwise irrelevant module symbol
-        // into an ORC lookup dependency.
-        if (!cloned || !cloned->hasInitializer()) continue;
-        auto const size = master.getDataLayout().getTypeAllocSize(global.getValueType());
-        if (size.isScalable() || size.getFixedValue() == 0) continue;
-        result.retained_globals.push_back({
-            .master = &global,
-            .size = size.getFixedValue(),
-        });
-        cloned_globals.push_back(cloned);
-    }
-    add_retained_global_address_table(*result.module, cloned_globals);
     return result;
 }
 
-void mark_runtime_module_roots(
-    Module const& module,
-    SmallPtrSetImpl<GlobalValue const*>& reachable)
+std::string constant_string_field(
+    Constant* value, Constant* size_value, std::string_view field)
 {
-    // Keep the source's graph-configuration callbacks and immutable metadata
-    // alive in the finalized binary. Loaded graphs pin the binary while any of
-    // these addresses can still be referenced.
-    static constexpr std::array<StringRef, 6> runtime_entry_points{
-        "iv_module_abi_version",
-        "iv_module_node_types",
-        "iv_package_node_types",
-        "iv_package_registrations",
-        "iv_package_node_config_pointer_fields",
-        "iv_package_retained_globals",
-    };
-
-    for (auto const name : runtime_entry_points) {
-        auto const* entry_point = module.getFunction(name);
-        if (!entry_point || entry_point->isDeclaration()) {
-            fail("finalized LLVM module does not define runtime entry point '" +
-                 name.str() + "'");
-        }
-        mark_reachable(entry_point, reachable);
+    StringRef text;
+    if (!getConstantStringInfo(value, text, false)) {
+        fail("package registration does not contain a constant " + std::string(field));
     }
-    if (auto const* ctors = module.getGlobalVariable("llvm.global_ctors")) {
+    auto const size = constant_size(size_value, field);
+    if (size > text.size()) {
+        fail("package registration " + std::string(field) + " length is invalid");
+    }
+    return text.substr(0, size).str();
+}
+
+iv::NodeCodeKey compiler_record_key(Constant* pointer)
+{
+    auto const* global = dyn_cast<GlobalVariable>(getUnderlyingObject(pointer));
+    if (!global || !global->hasInitializer()) {
+        fail("registered node type does not reference a compiler record global");
+    }
+    auto const* record = dyn_cast<ConstantStruct>(global->getInitializer());
+    if (!record || record->getNumOperands() != 6) {
+        fail("registered node type references a malformed compiler record");
+    }
+    auto const* key = dyn_cast<ConstantStruct>(record->getOperand(0));
+    if (!key || key->getNumOperands() != 2) {
+        fail("registered node type references a malformed compiler record key");
+    }
+    return {
+        .low = constant_u64(key->getOperand(0)),
+        .high = constant_u64(key->getOperand(1)),
+    };
+}
+
+void validate_package_registrations(
+    std::span<GlobalVariable* const> registrations,
+    CompilerMetadata const& metadata)
+{
+    std::set<std::pair<std::string, std::string>> runtime;
+    std::optional<std::string> package_root;
+    for (auto* global : registrations) {
+        auto* record = dyn_cast_or_null<ConstantStruct>(global->getInitializer());
+        if (!record || record->getNumOperands() != 10) {
+            fail("malformed IV package registration record");
+        }
+        auto const kind_value = constant_u64(record->getOperand(0));
+        std::string kind;
+        if (kind_value == static_cast<std::uint64_t>(iv::details::PackageRegistrationKind::node)) {
+            kind = "node";
+        } else if (kind_value == static_cast<std::uint64_t>(iv::details::PackageRegistrationKind::module)) {
+            kind = "module";
+        } else {
+            fail("IV package registration has an invalid kind");
+        }
+        auto const id = constant_string_field(
+            record->getOperand(1), record->getOperand(2), "stable ID");
+        if (id.empty()) fail("IV package registration has an empty stable ID");
+        auto const root = constant_string_field(
+            record->getOperand(5), record->getOperand(6), "package root");
+        if (!package_root) package_root = root;
+        else if (*package_root != root) {
+            fail("one IV package emitted registrations for multiple package roots");
+        }
+        if (!runtime.emplace(kind, id).second) {
+            fail("duplicate registered IV definition ID within one IV package: '" + id + "'");
+        }
+
+        auto const compiler = std::find_if(
+            metadata.registered_definitions.begin(),
+            metadata.registered_definitions.end(),
+            [&](RegisteredDefinitionMetadata const& definition) {
+                return definition.kind == kind && definition.id == id;
+            });
+        if (compiler == metadata.registered_definitions.end()) {
+            fail("registered IV " + kind + " '" + id
+                + "' has no matching compiler registration metadata");
+        }
+        if (kind == "node" && compiler->node_code_key) {
+            auto const key = compiler_record_key(record->getOperand(9));
+            if (key != *compiler->node_code_key) {
+                fail("registered IV node '" + id
+                    + "' compiler record does not match compiler metadata");
+            }
+        }
+    }
+
+    for (auto const& definition : metadata.registered_definitions) {
+        if (!runtime.contains({definition.kind, definition.id})) {
+            fail("compiler metadata registered " + definition.kind + " '"
+                + definition.id + "' but the IV package registration table did not");
+        }
+    }
+}
+
+std::vector<RetainedGlobal> collect_retained_globals(
+    Module& module,
+    std::span<GlobalVariable* const> registrations)
+{
+    SmallPtrSet<GlobalValue const*, 64> reachable;
+    for (auto* registration : registrations) mark_reachable(registration, reachable);
+    if (auto* ctors = module.getGlobalVariable("llvm.global_ctors")) {
         mark_reachable(ctors, reachable);
     }
-    if (auto const* dtors = module.getGlobalVariable("llvm.global_dtors")) {
+    if (auto* dtors = module.getGlobalVariable("llvm.global_dtors")) {
         mark_reachable(dtors, reachable);
     }
-}
 
-void preserve_source_configuration_ir(Module& module)
-{
-    SmallPtrSet<GlobalValue const*, 32> runtime_reachable;
-    mark_runtime_module_roots(module, runtime_reachable);
-    SmallVector<GlobalValue*, 32> retained_entries;
-    retained_entries.reserve(runtime_reachable.size());
-    for (auto const* value : runtime_reachable) {
-        if (value->isDeclaration()
-            || value->getName() == "llvm.used"
-            || value->getName() == "llvm.compiler.used") {
+    std::vector<RetainedGlobal> result;
+    for (auto* value : reachable) {
+        auto* global = dyn_cast<GlobalVariable>(const_cast<GlobalValue*>(value));
+        if (!global || !global->isConstant() || global->isDeclaration()
+            || !global->hasInitializer()
+            || global->getSection() == iv::details::package_registration_section
+            || global->getSection() == "iv_node_types"
+            || global->getName().starts_with("llvm.")) {
             continue;
         }
-        retained_entries.push_back(const_cast<GlobalValue*>(value));
+        auto const size = module.getDataLayout().getTypeAllocSize(global->getValueType());
+        if (size.isScalable() || size.getFixedValue() == 0) continue;
+        result.push_back({.global = global, .size = size.getFixedValue()});
     }
-    appendToUsed(module, retained_entries);
-    legacy::PassManager pipeline;
-    pipeline.add(createGlobalDCEPass());
-    pipeline.run(module);
-
-    static constexpr std::array<StringRef, 3> configuration_entry_points{
-        "iv_package_registrations",
-        "iv_package_node_config_pointer_fields",
-        "iv_package_retained_globals",
-    };
-    for (auto const name : configuration_entry_points) {
-        if (!module.getFunction(name) || module.getFunction(name)->isDeclaration()) {
-            fail("source configuration entry point was removed: '" + name.str() + "'");
-        }
-    }
-}
-
-struct BuilderJitNodeType {
-    std::string id;
-    iv::NodeCodeKey code_key{};
-    iv::ConfiguredGraph graph{};
-};
-
-struct BuilderJitResult {
-    std::vector<BuilderJitNodeType> node_types;
-    std::vector<BuilderModuleClone::RetainedGlobal> retained_globals;
-};
-
-void configure_node_type_ports(iv::GraphBuilder& builder, iv::NodeRef node)
-{
-    for (std::size_t input = 0; input < node.sample_input_count(); ++input) {
-        auto const config = builder.sample_input_config(node.node_bundle_handle(), input);
-        auto const name = config.name.empty()
-            ? std::string("input") + std::to_string(input)
-            : config.name;
-        node.connect_input(input, builder.input_named(
-            name,
-            config.channel_layout,
-            config.default_value,
-            config.min,
-            config.max));
-    }
-    for (std::size_t input = 0; input < node.event_input_count(); ++input) {
-        auto const config = builder.event_input_config(node.node_bundle_handle(), input);
-        auto const name = config.name.empty()
-            ? std::string("eventInput") + std::to_string(input)
-            : config.name;
-        node.connect_event_input(
-            input, builder.event_input_named(name, config.type));
-    }
-
-    std::vector<iv::SampleOutputRequest> sample_outputs;
-    std::vector<std::string> sample_output_names;
-    sample_outputs.reserve(node.sample_output_count());
-    sample_output_names.reserve(node.sample_output_count());
-    for (std::size_t output = 0; output < node.sample_output_count(); ++output) {
-        auto port = node[output];
-        sample_output_names.push_back("output" + std::to_string(output));
-        auto const& name = sample_output_names.back();
-        sample_outputs.push_back({
-            .ref = port,
-            .name = name,
-            .channel_layout = {
-                .channel_type = port.channel_type,
-                .sample_layout = iv::SampleStreamLayout::planar,
-            },
-            .family_name = name,
-            .family_channel_type = port.channel_type,
-        });
-    }
-    if (!sample_outputs.empty()) {
-        builder.outputs(std::span<iv::SampleOutputRequest const>(sample_outputs));
-    }
-
-    std::vector<iv::EventOutputRequest> event_outputs;
-    std::vector<std::string> event_output_names;
-    event_outputs.reserve(node.event_output_count());
-    event_output_names.reserve(node.event_output_count());
-    for (std::size_t output = 0; output < node.event_output_count(); ++output) {
-        event_output_names.push_back("eventOutput" + std::to_string(output));
-        event_outputs.push_back({
-            .ref = node.event_port(output),
-            .name = event_output_names.back(),
-        });
-    }
-    if (!event_outputs.empty()) {
-        builder.event_outputs(std::span<iv::EventOutputRequest const>(event_outputs));
-    }
-}
-
-BuilderJitResult run_builder_jit(
-    Module const& master,
-    orc::ThreadSafeContext context,
-    std::span<std::string const> command,
-    CompilerMetadata const& metadata,
-    TimingReport& timings)
-{
-    auto stage_started_at = timings.start_stage();
-    auto builder_clone = clone_builder_module(master);
-    auto builder_module = std::move(builder_clone.module);
-    timings.finish_stage("configuration_module_clone", stage_started_at);
-
-    stage_started_at = timings.start_stage();
-    initialize_native_target();
-    auto jit_target = take_expected(
-        orc::JITTargetMachineBuilder::detectHost(),
-        "detect ORC JIT target");
-    jit_target.setCodeGenOptLevel(CodeGenOptLevel::None);
-    auto jit = take_expected(
-        orc::LLJITBuilder()
-            .setJITTargetMachineBuilder(std::move(jit_target))
-            .create(),
-        "create ORC LLJIT");
-    timings.finish_stage("jit_create", stage_started_at);
-
-    stage_started_at = timings.start_stage();
-    add_external_generators(*jit, command);
-    auto tracker = jit->getMainJITDylib().createResourceTracker();
-    check_error(jit->addIRModule(
-        tracker, orc::ThreadSafeModule(std::move(builder_module), context)),
-        "add configuration LLVM module to ORC");
-    check_error(
-        jit->initialize(jit->getMainJITDylib()),
-        "run IV package global initializers");
-    auto registrations_address = take_expected(
-        jit->lookup("iv_package_registrations"),
-        "lookup iv_package_registrations");
-    auto global_addresses = take_expected(
-        jit->lookup("iv_get_retained_global_addresses"),
-        "lookup retained LLVM global address table");
-    timings.finish_stage("jit_materialize", stage_started_at);
-
-    using RegistrationsFn = iv::ModuleDataView (*)();
-    auto const registration_view =
-        registrations_address.toPtr<RegistrationsFn>()();
-    if (!registration_view.data && registration_view.size != 0) {
-        fail("IV package registration table has null data");
-    }
-    if (registration_view.size % sizeof(iv::details::PackageRegistrationView) != 0) {
-        fail("IV package registration table has invalid size");
-    }
-    auto const registrations = std::span(
-        static_cast<iv::details::PackageRegistrationView const*>(registration_view.data),
-        registration_view.size / sizeof(iv::details::PackageRegistrationView));
-
-    std::string source_root;
-    if (!registrations.empty()) {
-        auto const& first = registrations.front();
-        if (!first.source_root || first.source_root_size == 0) {
-            fail("IV package registration has no source root");
-        }
-        source_root.assign(first.source_root, first.source_root_size);
-        for (auto const& registration : registrations) {
-            if (!registration.source_root
-                || std::string_view(registration.source_root, registration.source_root_size)
-                    != source_root) {
-                fail("one IV package emitted registrations for multiple source roots");
-            }
-        }
-    }
-
-    stage_started_at = timings.start_stage();
-    std::vector<iv::NodeConfigPointerFieldData> pointer_fields;
-    for (auto const& entry : metadata.config_pointers) {
-        for (auto const offset : entry.byte_offsets) {
-            pointer_fields.push_back({
-                .code_key = entry.key,
-                .byte_offset = offset,
-            });
-        }
-    }
-    using GlobalAddressTableFn = void const* (*)();
-    auto const table = global_addresses.toPtr<GlobalAddressTableFn>()();
-    auto const* addresses = static_cast<void const* const*>(table);
-    std::vector<iv::RetainedGlobalData> retained_globals;
-    retained_globals.reserve(builder_clone.retained_globals.size());
-    for (std::size_t ordinal = 0; ordinal < builder_clone.retained_globals.size(); ++ordinal) {
-        retained_globals.push_back({
-            .address = addresses[ordinal],
-            .size = builder_clone.retained_globals[ordinal].size,
-            .ordinal = ordinal,
-        });
-    }
-    timings.finish_stage("builder_session_setup", stage_started_at);
-
-    stage_started_at = timings.start_stage();
-    std::vector<BuilderJitNodeType> node_types;
-    std::set<std::string> registered_ids;
-    std::set<std::string> runtime_node_ids;
-    std::set<std::string> runtime_module_ids;
-    auto const has_registration_metadata = !metadata.registered_definitions.empty();
-
-    for (auto const& registration : registrations) {
-        if (!registration.id || registration.id_size == 0) {
-            fail("IV package registration has an empty ID");
-        }
-        auto name = std::string(registration.id, registration.id_size);
-        if (!registered_ids.insert(name).second) {
-            fail("duplicate registered IV definition ID within one IV package: '"
-                 + name + "'");
-        }
-
-        if (registration.kind == iv::details::PackageRegistrationKind::module) {
-            if (!registration.module_build) {
-                fail("registered IV module '" + name + "' has no build function");
-            }
-            runtime_module_ids.insert(name);
-            if (has_registration_metadata) {
-                auto const metadata_module = std::find_if(
-                    metadata.registered_definitions.begin(),
-                    metadata.registered_definitions.end(),
-                    [&](RegisteredDefinitionMetadata const& definition) {
-                        return definition.kind == "module" && definition.id == name;
-                    });
-                if (metadata_module == metadata.registered_definitions.end()) {
-                    fail("registered IV module '" + name
-                         + "' has no matching compiler registration metadata");
-                }
-            }
-            continue;
-        }
-
-        if (registration.kind != iv::details::PackageRegistrationKind::node
-            || !registration.node_build || !registration.node_compiler_record) {
-            fail("registered IV node '" + name + "' is incomplete");
-        }
-        runtime_node_ids.insert(name);
-        auto const* compiler_record = static_cast<iv::details::NodeCompilerRecord const*>(
-            registration.node_compiler_record);
-        auto const key = compiler_record->code_key;
-        if (has_registration_metadata) {
-            auto const metadata_node = std::find_if(
-                metadata.registered_definitions.begin(),
-                metadata.registered_definitions.end(),
-                [&](RegisteredDefinitionMetadata const& definition) {
-                    return definition.kind == "node" && definition.id == name
-                        && definition.node_code_key == key;
-                });
-            if (metadata_node == metadata.registered_definitions.end()) {
-                fail("registered IV node '" + name
-                     + "' has no matching compiler metadata/NodeCodeKey");
-            }
-        }
-
-        auto node_session = std::unique_ptr<
-            iv::details::BuilderSession,
-            decltype(&iv::details::iv_builder_session_destroy)>(
-                iv::details::iv_builder_session_create(),
-                iv::details::iv_builder_session_destroy);
-        if (!node_session) fail("create IV package node-type builder session");
-        iv::details::BuilderPackageView const source{
-            .source_root = source_root,
-            .registrations = registrations,
-            .config_pointer_fields = pointer_fields,
-            .retained_globals = retained_globals,
-        };
-        iv::details::set_builder_packages(node_session.get(), std::span(&source, 1));
-        iv::details::select_builder_package(node_session.get(), 0);
-        iv::GraphBuilder builder(node_session.get());
-        auto node = registration.node_build(builder);
-        configure_node_type_ports(builder, node);
-        node_types.push_back({
-            .id = std::move(name),
-            .code_key = key,
-            .graph = iv::details::take_built_graph(node_session.get()),
-        });
-    }
-
-    if (has_registration_metadata) {
-        for (auto const& definition : metadata.registered_definitions) {
-            auto const& runtime_ids = definition.kind == "node"
-                ? runtime_node_ids
-                : runtime_module_ids;
-            if (!runtime_ids.contains(definition.id)) {
-                fail("compiler metadata registered " + definition.kind + " '"
-                     + definition.id
-                     + "' but the source registration table did not publish it");
-            }
-        }
-    }
-    timings.finish_stage("package_registration_validation", stage_started_at);
-
-    stage_started_at = timings.start_stage();
-    check_error(
-        jit->deinitialize(jit->getMainJITDylib()),
-        "run IV package global destructors");
-    check_error(tracker->remove(), "release IV package JIT code");
-    timings.finish_stage("jit_release", stage_started_at);
-    return {
-        .node_types = std::move(node_types),
-        .retained_globals = std::move(builder_clone.retained_globals),
-    };
+    std::ranges::sort(result, {}, [](RetainedGlobal const& value) {
+        return value.global->getName();
+    });
+    return result;
 }
 
 std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> bind_state_metadata(
@@ -1059,6 +763,7 @@ void require_node_config_metadata(
     }
 }
 
+
 GlobalVariable* constant_bytes(
     Module& module,
     StringRef name,
@@ -1103,25 +808,30 @@ Function* emit_view_accessor(
 }
 
 
-void inject_package_registration_table(Module& module)
+void inject_package_abi_version(Module& module)
 {
-    std::vector<GlobalVariable*> registrations;
-    for (auto& global : module.globals()) {
-        if (global.getSection() == iv::details::package_registration_section
-            && global.isConstant() && global.hasInitializer()) {
-            registrations.push_back(&global);
-        }
-    }
-    std::ranges::sort(registrations, {}, [](GlobalVariable const* registration) {
-        return registration->getName();
-    });
+    auto& context = module.getContext();
+    auto* function = Function::Create(
+        FunctionType::get(Type::getInt32Ty(context), false),
+        GlobalValue::ExternalLinkage,
+        "iv_package_abi_version",
+        module);
+    function->setVisibility(GlobalValue::DefaultVisibility);
+    auto* block = BasicBlock::Create(context, "entry", function);
+    IRBuilder<> builder(block);
+    builder.CreateRet(ConstantInt::get(
+        Type::getInt32Ty(context), iv::IV_PACKAGE_ABI_VERSION));
+}
 
+void inject_package_registration_table(
+    Module& module,
+    std::span<GlobalVariable* const> registrations)
+{
+    auto* pointer_type = PointerType::getUnqual(module.getContext());
     if (registrations.empty()) {
         emit_view_accessor(
-            module,
-            "iv_package_registrations",
-            ConstantPointerNull::get(PointerType::getUnqual(module.getContext())),
-            0);
+            module, "iv_package_registrations",
+            ConstantPointerNull::get(pointer_type), 0);
         return;
     }
 
@@ -1133,8 +843,8 @@ void inject_package_registration_table(Module& module)
     }
     auto const record_size = module.getDataLayout().getTypeAllocSize(record_type);
     if (record_size.isScalable()
-        || record_size.getFixedValue() != sizeof(iv::details::PackageRegistrationView)) {
-        fail("IV package registration record ABI does not match PackageRegistrationView");
+        || record_size.getFixedValue() != sizeof(iv::details::PackageRegistration)) {
+        fail("IV package registration record ABI does not match PackageRegistration");
     }
 
     std::vector<Constant*> values;
@@ -1144,547 +854,313 @@ void inject_package_registration_table(Module& module)
     }
     auto* array_type = ArrayType::get(record_type, values.size());
     auto* table = new GlobalVariable(
-        module,
-        array_type,
-        true,
-        GlobalValue::PrivateLinkage,
-        ConstantArray::get(array_type, values),
-        "iv.package_registrations");
+        module, array_type, true, GlobalValue::PrivateLinkage,
+        ConstantArray::get(array_type, values), "iv.package_registrations");
     emit_view_accessor(
-        module,
-        "iv_package_registrations",
-        ConstantExpr::getPointerCast(table, PointerType::getUnqual(module.getContext())),
+        module, "iv_package_registrations",
+        ConstantExpr::getPointerCast(table, pointer_type),
         values.size() * record_size.getFixedValue());
 }
 
-void inject_source_configuration_metadata(
+Constant* string_view_constant(
+    Module& module,
+    StructType* view_type,
+    StringRef global_name,
+    std::string_view value)
+{
+    auto* pointer_type = PointerType::getUnqual(module.getContext());
+    auto* size_type = cast<IntegerType>(view_type->getElementType(1));
+    if (value.empty()) {
+        return ConstantStruct::get(
+            view_type,
+            ConstantPointerNull::get(pointer_type),
+            ConstantInt::get(size_type, 0));
+    }
+    auto bytes = std::as_bytes(std::span(value.data(), value.size()));
+    auto* global = constant_bytes(module, global_name, bytes, 1);
+    return ConstantStruct::get(
+        view_type,
+        ConstantExpr::getPointerCast(global, pointer_type),
+        ConstantInt::get(size_type, value.size()));
+}
+
+void inject_package_configuration_metadata(
     Module& module,
     CompilerMetadata const& metadata,
-    std::span<BuilderModuleClone::RetainedGlobal const> retained_globals)
+    std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> state_structures,
+    std::span<RetainedGlobal const> retained_globals)
 {
     auto& context = module.getContext();
     auto const pointer_bits = module.getDataLayout().getPointerSizeInBits();
     auto* size_type = IntegerType::get(context, pointer_bits);
     auto* pointer_type = PointerType::getUnqual(context);
     auto* i64 = Type::getInt64Ty(context);
+    auto* i8 = Type::getInt8Ty(context);
     auto* code_key_type = StructType::get(i64, i64);
-    auto* pointer_field_type = StructType::get(code_key_type, size_type);
+    auto* view_type = StructType::get(pointer_type, size_type);
 
+    auto code_key = [&](iv::NodeCodeKey key) -> Constant* {
+        return ConstantStruct::get(
+            code_key_type,
+            ConstantInt::get(i64, key.low),
+            ConstantInt::get(i64, key.high));
+    };
+
+    auto* pointer_field_type = StructType::get(code_key_type, size_type);
+    auto const pointer_field_size = module.getDataLayout().getTypeAllocSize(pointer_field_type);
+    if (pointer_field_size.isScalable()
+        || pointer_field_size.getFixedValue() != sizeof(iv::NodeConfigPointerFieldData)) {
+        fail("node-config pointer-field ABI does not match NodeConfigPointerFieldData");
+    }
     std::vector<Constant*> pointer_fields;
     for (auto const& entry : metadata.config_pointers) {
         for (auto const offset : entry.byte_offsets) {
             pointer_fields.push_back(ConstantStruct::get(
                 pointer_field_type,
-                ConstantStruct::get(
-                    code_key_type,
-                    ConstantInt::get(i64, entry.key.low),
-                    ConstantInt::get(i64, entry.key.high)),
+                code_key(entry.key),
                 ConstantInt::get(size_type, offset)));
         }
     }
     if (pointer_fields.empty()) {
         emit_view_accessor(
-            module,
-            "iv_package_node_config_pointer_fields",
-            ConstantPointerNull::get(pointer_type),
-            0);
+            module, "iv_package_node_config_pointer_fields",
+            ConstantPointerNull::get(pointer_type), 0);
     } else {
         auto* array_type = ArrayType::get(pointer_field_type, pointer_fields.size());
         auto* table = new GlobalVariable(
-            module,
-            array_type,
-            true,
-            GlobalValue::PrivateLinkage,
+            module, array_type, true, GlobalValue::PrivateLinkage,
             ConstantArray::get(array_type, pointer_fields),
-            "iv.source_node_config_pointer_fields");
+            "iv.package_node_config_pointer_fields");
         emit_view_accessor(
-            module,
-            "iv_package_node_config_pointer_fields",
+            module, "iv_package_node_config_pointer_fields",
             ConstantExpr::getPointerCast(table, pointer_type),
-            pointer_fields.size()
-                * module.getDataLayout().getTypeAllocSize(pointer_field_type).getFixedValue());
+            pointer_fields.size() * pointer_field_size.getFixedValue());
     }
 
     auto* retained_global_type = StructType::get(pointer_type, size_type, size_type);
+    auto const retained_global_size = module.getDataLayout().getTypeAllocSize(retained_global_type);
+    if (retained_global_size.isScalable()
+        || retained_global_size.getFixedValue() != sizeof(iv::RetainedGlobalData)) {
+        fail("retained-global ABI does not match RetainedGlobalData");
+    }
     std::vector<Constant*> globals;
     globals.reserve(retained_globals.size());
     for (std::size_t ordinal = 0; ordinal < retained_globals.size(); ++ordinal) {
-        auto const& global = retained_globals[ordinal];
         globals.push_back(ConstantStruct::get(
             retained_global_type,
-            ConstantExpr::getPointerCast(
-                const_cast<GlobalVariable*>(global.master), pointer_type),
-            ConstantInt::get(size_type, global.size),
+            ConstantExpr::getPointerCast(retained_globals[ordinal].global, pointer_type),
+            ConstantInt::get(size_type, retained_globals[ordinal].size),
             ConstantInt::get(size_type, ordinal)));
     }
     if (globals.empty()) {
         emit_view_accessor(
-            module,
-            "iv_package_retained_globals",
-            ConstantPointerNull::get(pointer_type),
-            0);
+            module, "iv_package_retained_globals",
+            ConstantPointerNull::get(pointer_type), 0);
     } else {
         auto* array_type = ArrayType::get(retained_global_type, globals.size());
         auto* table = new GlobalVariable(
-            module,
-            array_type,
-            true,
-            GlobalValue::PrivateLinkage,
+            module, array_type, true, GlobalValue::PrivateLinkage,
             ConstantArray::get(array_type, globals),
-            "iv.source_retained_globals");
+            "iv.package_retained_globals");
         emit_view_accessor(
-            module,
-            "iv_package_retained_globals",
+            module, "iv_package_retained_globals",
             ConstantExpr::getPointerCast(table, pointer_type),
-            globals.size()
-                * module.getDataLayout().getTypeAllocSize(retained_global_type).getFixedValue());
+            globals.size() * retained_global_size.getFixedValue());
     }
-}
 
-Constant* byte_array_constant(
-    LLVMContext& context,
-    std::span<std::byte const> bytes)
-{
-    std::vector<std::uint8_t> raw;
-    raw.reserve(bytes.size());
-    for (auto value : bytes) raw.push_back(std::to_integer<std::uint8_t>(value));
-    return ConstantDataArray::get(context, raw);
-}
+    auto* state_field_type = StructType::get(
+        view_type, view_type, size_type, size_type, size_type, size_type, i8);
+    auto const state_field_size = module.getDataLayout().getTypeAllocSize(state_field_type);
+    if (state_field_size.isScalable()
+        || state_field_size.getFixedValue() != sizeof(iv::NodeStateFieldData)) {
+        fail("node-state field ABI does not match NodeStateFieldData");
+    }
+    auto* state_structure_type = StructType::get(
+        code_key_type, size_type, size_type, view_type);
+    auto const state_structure_size = module.getDataLayout().getTypeAllocSize(state_structure_type);
+    if (state_structure_size.isScalable()
+        || state_structure_size.getFixedValue() != sizeof(iv::NodeStateStructureData)) {
+        fail("node-state structure ABI does not match NodeStateStructureData");
+    }
 
-GlobalVariable* constant_node_config(
-    Module& module,
-    StringRef name,
-    iv::ConfiguredNodeConfigBytes const& config,
-    std::span<BuilderModuleClone::RetainedGlobal const> retained_globals)
-{
-    auto& context = module.getContext();
-    auto* pointer_type = PointerType::getUnqual(context);
-    auto const pointer_size = module.getDataLayout().getPointerSize();
-    std::vector<Type*> field_types;
-    std::vector<Constant*> field_values;
-    std::size_t cursor = 0;
-
-    auto append_bytes = [&](std::size_t begin, std::size_t end) {
-        if (begin == end) return;
-        auto const bytes = std::span<std::byte const>(
-            config.bytes.data() + begin, end - begin);
-        auto* value = byte_array_constant(context, bytes);
-        field_types.push_back(value->getType());
-        field_values.push_back(value);
-    };
-
-    for (auto const& relocation : config.relocations) {
-        if (relocation.byte_offset < cursor
-            || relocation.byte_offset > config.bytes.size()
-            || config.bytes.size() - relocation.byte_offset < pointer_size) {
-            fail("node configuration pointer relocations overlap or are out of bounds");
+    std::vector<Constant*> structures;
+    structures.reserve(state_structures.size());
+    for (std::size_t structure_index = 0;
+         structure_index < state_structures.size(); ++structure_index) {
+        auto const& [key, state] = state_structures[structure_index];
+        std::vector<Constant*> fields;
+        fields.reserve(state.fields.size());
+        for (std::size_t field_index = 0; field_index < state.fields.size(); ++field_index) {
+            auto const& field = state.fields[field_index];
+            auto const prefix = "iv.package_state." + std::to_string(structure_index)
+                + ".field." + std::to_string(field_index);
+            fields.push_back(ConstantStruct::get(
+                state_field_type,
+                string_view_constant(module, view_type, prefix + ".name", field.name),
+                string_view_constant(module, view_type, prefix + ".type", field.type_name),
+                ConstantInt::get(size_type, field.bit_offset),
+                ConstantInt::get(size_type, field.size_bits),
+                ConstantInt::get(size_type, field.alignment_bits),
+                ConstantInt::get(size_type, field.bit_width.value_or(0)),
+                ConstantInt::get(i8, field.bit_width.has_value() ? 1 : 0)));
         }
-        append_bytes(cursor, relocation.byte_offset);
 
-        Constant* target = ConstantPointerNull::get(pointer_type);
-        if (relocation.retained_global_ordinal) {
-            auto const ordinal = *relocation.retained_global_ordinal;
-            if (ordinal >= retained_globals.size()
-                || relocation.addend >= retained_globals[ordinal].size) {
-                fail("node configuration references an unknown retained LLVM global");
-            }
-            auto* global = const_cast<GlobalVariable*>(retained_globals[ordinal].master);
-            target = ConstantExpr::getPointerCast(global, pointer_type);
-            if (relocation.addend != 0) {
-                std::array<Constant*, 1> index{
-                    ConstantInt::get(
-                        IntegerType::get(context, module.getDataLayout().getPointerSizeInBits()),
-                        relocation.addend),
-                };
-                target = ConstantExpr::getInBoundsGetElementPtr(
-                    Type::getInt8Ty(context), target, index);
-            }
-        }
-        field_types.push_back(pointer_type);
-        field_values.push_back(target);
-        cursor = relocation.byte_offset + pointer_size;
-    }
-    append_bytes(cursor, config.bytes.size());
-
-    auto* storage_type = StructType::get(context, field_types, true);
-    auto* global = new GlobalVariable(
-        module,
-        storage_type,
-        true,
-        GlobalValue::PrivateLinkage,
-        ConstantStruct::get(storage_type, field_values),
-        name);
-    global->setAlignment(Align(std::max<std::size_t>(1, config.alignment)));
-    return global;
-}
-
-Function* emit_indexed_view_accessor(
-    Module& module,
-    StringRef name,
-    GlobalVariable* views,
-    std::size_t count)
-{
-    auto& context = module.getContext();
-    auto const pointer_bits = module.getDataLayout().getPointerSizeInBits();
-    auto* size_type = IntegerType::get(context, pointer_bits);
-    auto* pointer_type = PointerType::getUnqual(context);
-    auto* view_type = StructType::get(pointer_type, size_type);
-    auto* function_type = FunctionType::get(view_type, {size_type}, false);
-    auto* function = Function::Create(
-        function_type, GlobalValue::ExternalLinkage, name, module);
-    function->setVisibility(GlobalValue::DefaultVisibility);
-#if defined(_WIN32)
-    function->setDLLStorageClass(GlobalValue::DLLExportStorageClass);
-#endif
-    auto* block = BasicBlock::Create(context, "entry", function);
-    IRBuilder<> builder(block);
-    if (count == 0) {
-        builder.CreateRet(ConstantAggregateZero::get(view_type));
-        return function;
-    }
-    auto* index = function->getArg(0);
-    auto* valid = builder.CreateICmpULT(
-        index, ConstantInt::get(size_type, count));
-    auto* valid_block = BasicBlock::Create(context, "valid", function);
-    auto* invalid_block = BasicBlock::Create(context, "invalid", function);
-    builder.CreateCondBr(valid, valid_block, invalid_block);
-
-    builder.SetInsertPoint(valid_block);
-    auto* element = builder.CreateInBoundsGEP(
-        views->getValueType(), views, {ConstantInt::get(size_type, 0), index});
-    auto* value = builder.CreateLoad(view_type, element);
-    builder.CreateRet(value);
-
-    builder.SetInsertPoint(invalid_block);
-    builder.CreateRet(ConstantAggregateZero::get(view_type));
-    return function;
-}
-
-struct SerializedSourceNodeType {
-    std::string id;
-    iv::NodeCodeKey code_key{};
-    iv::SerializedConfiguredGraph configured;
-};
-
-void inject_source_data(
-    Module& module,
-    std::span<SerializedSourceNodeType const> source_node_types,
-    std::span<IrNodeRecord const> node_records,
-    std::span<BuilderModuleClone::RetainedGlobal const> retained_globals)
-{
-    auto& context = module.getContext();
-    auto const pointer_bits = module.getDataLayout().getPointerSizeInBits();
-    auto* size_type = IntegerType::get(context, pointer_bits);
-    auto* pointer_type = PointerType::getUnqual(context);
-    auto* view_type = StructType::get(pointer_type, size_type);
-    auto* config_record_type = StructType::get(pointer_type, size_type, size_type);
-
-    auto* i64 = Type::getInt64Ty(context);
-    auto* code_key_type = StructType::get(i64, i64);
-    auto* source_node_type_type = StructType::get(
-        view_type, code_key_type, view_type, view_type);
-    if (source_node_types.empty()) {
-        emit_view_accessor(
-            module,
-            "iv_package_node_types",
+        Constant* fields_view = ConstantStruct::get(
+            view_type,
             ConstantPointerNull::get(pointer_type),
-            0);
+            ConstantInt::get(size_type, 0));
+        if (!fields.empty()) {
+            auto* fields_type = ArrayType::get(state_field_type, fields.size());
+            auto* fields_global = new GlobalVariable(
+                module, fields_type, true, GlobalValue::PrivateLinkage,
+                ConstantArray::get(fields_type, fields),
+                "iv.package_state_fields." + std::to_string(structure_index));
+            fields_view = ConstantStruct::get(
+                view_type,
+                ConstantExpr::getPointerCast(fields_global, pointer_type),
+                ConstantInt::get(
+                    size_type, fields.size() * state_field_size.getFixedValue()));
+        }
+        structures.push_back(ConstantStruct::get(
+            state_structure_type,
+            code_key(key),
+            ConstantInt::get(size_type, state.size_bits),
+            ConstantInt::get(size_type, state.alignment_bits),
+            fields_view));
+    }
+    if (structures.empty()) {
+        emit_view_accessor(
+            module, "iv_package_node_state_structures",
+            ConstantPointerNull::get(pointer_type), 0);
     } else {
-        std::vector<Constant*> source_node_type_records;
-        source_node_type_records.reserve(source_node_types.size());
-        for (std::size_t index = 0; index < source_node_types.size(); ++index) {
-            auto const& source_node_type = source_node_types[index];
-            auto const id_bytes = std::as_bytes(std::span(
-                source_node_type.id.data(), source_node_type.id.size()));
-            auto* id = constant_bytes(
-                module, "iv.source_node_type_id." + std::to_string(index), id_bytes, 1);
-            auto* id_view = ConstantStruct::get(
-                view_type,
-                ConstantExpr::getPointerCast(id, pointer_type),
-                ConstantInt::get(size_type, source_node_type.id.size()));
-            auto* code_key = ConstantStruct::get(
-                code_key_type,
-                ConstantInt::get(i64, source_node_type.code_key.low),
-                ConstantInt::get(i64, source_node_type.code_key.high));
-            auto const graph_bytes = std::span<std::byte const>(
-                source_node_type.configured.bytes.data(),
-                source_node_type.configured.bytes.size());
-            auto* graph = constant_bytes(
-                module,
-                "iv.source_node_type_configured_graph." + std::to_string(index),
-                graph_bytes,
-                1);
-            auto* graph_view = ConstantStruct::get(
-                view_type,
-                ConstantExpr::getPointerCast(graph, pointer_type),
-                ConstantInt::get(
-                    size_type, source_node_type.configured.bytes.size()));
-            std::vector<Constant*> config_records;
-            config_records.reserve(source_node_type.configured.node_configs.size());
-            for (std::size_t config_index = 0;
-                 config_index < source_node_type.configured.node_configs.size();
-                 ++config_index) {
-                auto const& config = source_node_type.configured.node_configs[config_index];
-                auto* bytes = constant_node_config(
-                    module,
-                    "iv.source_node_type_config." + std::to_string(index)
-                        + "." + std::to_string(config_index),
-                    config,
-                    retained_globals);
-                config_records.push_back(ConstantStruct::get(
-                    config_record_type,
-                    ConstantExpr::getPointerCast(bytes, pointer_type),
-                    ConstantInt::get(size_type, config.bytes.size()),
-                    ConstantInt::get(size_type, config.alignment)));
-            }
-            auto* config_array_type = ArrayType::get(
-                config_record_type, config_records.size());
-            auto* config_array = new GlobalVariable(
-                module,
-                config_array_type,
-                true,
-                GlobalValue::PrivateLinkage,
-                ConstantArray::get(config_array_type, config_records),
-                "iv.source_node_type_configs." + std::to_string(index));
-            auto* config_view = ConstantStruct::get(
-                view_type,
-                ConstantExpr::getPointerCast(config_array, pointer_type),
-                ConstantInt::get(
-                    size_type,
-                    config_records.size()
-                        * module.getDataLayout()
-                              .getTypeAllocSize(config_record_type)
-                              .getFixedValue()));
-            source_node_type_records.push_back(ConstantStruct::get(
-                source_node_type_type, id_view, code_key, graph_view, config_view));
-        }
-        auto* source_node_type_array_type = ArrayType::get(
-            source_node_type_type, source_node_type_records.size());
-        auto* source_node_type_array = new GlobalVariable(
-            module,
-            source_node_type_array_type,
-            true,
-            GlobalValue::PrivateLinkage,
-            ConstantArray::get(source_node_type_array_type, source_node_type_records),
-            "iv.source_node_types");
+        auto* array_type = ArrayType::get(state_structure_type, structures.size());
+        auto* table = new GlobalVariable(
+            module, array_type, true, GlobalValue::PrivateLinkage,
+            ConstantArray::get(array_type, structures),
+            "iv.package_node_state_structures");
         emit_view_accessor(
-            module,
-            "iv_package_node_types",
-            ConstantExpr::getPointerCast(source_node_type_array, pointer_type),
-            source_node_type_records.size()
-                * module.getDataLayout().getTypeAllocSize(source_node_type_type)
-                      .getFixedValue());
+            module, "iv_package_node_state_structures",
+            ConstantExpr::getPointerCast(table, pointer_type),
+            structures.size() * state_structure_size.getFixedValue());
+    }
+}
+
+void preserve_package_code(Module& module)
+{
+    static constexpr std::array<StringRef, 5> entry_points{
+        "iv_package_abi_version",
+        "iv_package_registrations",
+        "iv_package_node_config_pointer_fields",
+        "iv_package_retained_globals",
+        "iv_package_node_state_structures",
+    };
+    SmallPtrSet<GlobalValue const*, 64> reachable;
+    for (auto const name : entry_points) {
+        auto* function = module.getFunction(name);
+        if (!function || function->isDeclaration()) {
+            fail("finalized IV package does not define '" + name.str() + "'");
+        }
+        mark_reachable(function, reachable);
+    }
+    if (auto* ctors = module.getGlobalVariable("llvm.global_ctors")) {
+        mark_reachable(ctors, reachable);
+    }
+    if (auto* dtors = module.getGlobalVariable("llvm.global_dtors")) {
+        mark_reachable(dtors, reachable);
     }
 
-    if (node_records.empty()) {
-        emit_view_accessor(
-            module,
-            "iv_module_node_types",
-            ConstantPointerNull::get(pointer_type),
-            0);
-        return;
+    SmallVector<GlobalValue*, 64> used;
+    for (auto const* value : reachable) {
+        if (!value->isDeclaration()
+            && value->getName() != "llvm.used"
+            && value->getName() != "llvm.compiler.used") {
+            used.push_back(const_cast<GlobalValue*>(value));
+        }
     }
-    auto* record_type = node_records.front().initializer->getType();
-    std::vector<Constant*> type_records;
-    type_records.reserve(node_records.size());
-    for (auto const& record : node_records) {
-        if (record.initializer->getType() != record_type)
-            fail("node compiler records do not share one LLVM type");
-        type_records.push_back(record.initializer);
-    }
-    auto* type_array_type = ArrayType::get(record_type, type_records.size());
-    auto* type_array = new GlobalVariable(
-        module, type_array_type, true, GlobalValue::PrivateLinkage,
-        ConstantArray::get(type_array_type, type_records), "iv.node_types");
-    emit_view_accessor(
-        module, "iv_module_node_types",
-        ConstantExpr::getPointerCast(type_array, pointer_type),
-        type_records.size() * module.getDataLayout().getTypeAllocSize(record_type).getFixedValue());
+    appendToUsed(module, used);
+    legacy::PassManager passes;
+    passes.add(createGlobalDCEPass());
+    passes.run(module);
 }
 
 std::filesystem::path output_path(std::span<std::string const> command)
 {
     for (std::size_t i = 1; i + 1 < command.size(); ++i) {
         if (command[i] == "-o") return command[i + 1];
-        if (std::string_view(command[i]).starts_with("-o") && command[i].size() > 2)
+        if (std::string_view(command[i]).starts_with("-o") && command[i].size() > 2) {
             return command[i].substr(2);
+        }
     }
-    fail("cannot find -o in module link command");
+    fail("cannot find -o in IV package link command");
 }
 
-void optimize_runtime_module(Module& module, bool optimize)
+void write_package_bitcode(Module& module, std::filesystem::path const& path)
 {
-    // The source TUs deliberately stop at O0 LLVM IR. Only after graph building has
-    // executed do we spend optimization time on the retained runtime module.
-    PassBuilder pass_builder;
-    LoopAnalysisManager loops;
-    FunctionAnalysisManager functions;
-    CGSCCAnalysisManager cgscc;
-    ModuleAnalysisManager modules;
-    pass_builder.registerModuleAnalyses(modules);
-    pass_builder.registerCGSCCAnalyses(cgscc);
-    pass_builder.registerFunctionAnalyses(functions);
-    pass_builder.registerLoopAnalyses(loops);
-    pass_builder.crossRegisterProxies(loops, functions, cgscc, modules);
-    auto pipeline = optimize
-        ? pass_builder.buildPerModuleDefaultPipeline(OptimizationLevel::O3)
-        : pass_builder.buildO0DefaultPipeline(OptimizationLevel::O0);
-    pipeline.run(module, modules);
-}
-
-void emit_native_object(Module& module, std::filesystem::path const& path, bool optimize)
-{
-    initialize_native_target();
-
-    Triple triple = module.getTargetTriple();
-    if (triple.str().empty()) triple = Triple(sys::getDefaultTargetTriple());
-    std::string error;
-    auto const* target = TargetRegistry::lookupTarget(triple, error);
-    if (!target) fail("cannot find target '" + triple.str() + "': " + error);
-
-    TargetOptions options;
-    std::unique_ptr<TargetMachine> machine(target->createTargetMachine(
-        triple, "generic", "", options, Reloc::PIC_, std::nullopt,
-        optimize ? CodeGenOptLevel::Aggressive : CodeGenOptLevel::None));
-    if (!machine) fail("cannot create LLVM target machine");
-    module.setDataLayout(machine->createDataLayout());
-    module.setTargetTriple(triple);
-
+    auto temporary = path;
+    temporary += ".tmp";
     std::error_code ec;
-    raw_fd_ostream output(path.string(), ec, sys::fs::OF_None);
-    if (ec) fail("cannot create finalized object '" + path.string() + "': " + ec.message());
-    legacy::PassManager passes;
-    if (machine->addPassesToEmitFile(passes, output, nullptr, CodeGenFileType::ObjectFile))
-        fail("target does not support object emission");
-    passes.run(module);
-    output.flush();
-}
-
-int run_link_command(
-    std::span<std::string const> original,
-    std::span<std::filesystem::path const> bitcode_inputs,
-    std::filesystem::path const& replacement)
-{
-    std::set<std::filesystem::path> replaced;
-    for (auto const& path : bitcode_inputs) replaced.insert(std::filesystem::weakly_canonical(path));
-
-    std::vector<std::string> args;
-    args.reserve(original.size() + 1);
-    args.push_back(original.front());
-    bool inserted = false;
-    for (std::size_t i = 1; i < original.size(); ++i) {
-        std::filesystem::path path(original[i]);
-        bool replace = false;
-        if (!original[i].empty() && original[i][0] != '-' && std::filesystem::exists(path)) {
-            std::error_code ec;
-            auto canonical = std::filesystem::weakly_canonical(path, ec);
-            replace = !ec && replaced.contains(canonical);
-        }
-        if (replace) {
-            if (!inserted) {
-                args.push_back(replacement.string());
-                inserted = true;
-            }
-            continue;
-        }
-        if (original[i] == "-flto" || std::string_view(original[i]).starts_with("-flto=")) {
-            continue;
-        }
-        args.push_back(original[i]);
+    raw_fd_ostream output(temporary.string(), ec, sys::fs::OF_None);
+    if (ec) {
+        fail("cannot create finalized IV package bitcode '" + temporary.string()
+            + "': " + ec.message());
     }
-    if (!inserted) fail("could not replace LLVM bitcode inputs in linker command");
-
-    SmallVector<StringRef, 64> refs;
-    for (auto const& arg : args) refs.push_back(arg);
-    auto result = sys::ExecuteAndWait(original.front(), refs);
-    if (result < 0) fail("failed to execute final native link");
-    return result;
+    WriteBitcodeToFile(module, output);
+    output.flush();
+    if (output.has_error()) {
+        fail("cannot finish finalized IV package bitcode '" + temporary.string() + "'");
+    }
+    output.close();
+    std::filesystem::rename(temporary, path, ec);
+    if (ec) {
+        std::filesystem::remove(path, ec);
+        ec.clear();
+        std::filesystem::rename(temporary, path, ec);
+        if (ec) {
+            fail("cannot publish finalized IV package bitcode '" + path.string()
+                + "': " + ec.message());
+        }
+    }
 }
 
 int finalize(Options options)
 {
     TimingReport timings;
-
     auto stage_started_at = timings.start_stage();
     options.link_command = expand_response_files(std::move(options.link_command));
-    auto context = orc::ThreadSafeContext(std::make_unique<LLVMContext>());
-    auto linked = context.withContextDo([&](LLVMContext* llvm_context) {
-        return link_bitcode_inputs(options.link_command, *llvm_context);
-    });
+    LLVMContext context;
+    auto linked = link_bitcode_inputs(options.link_command, context);
     timings.finish_stage("bitcode_parse_link", stage_started_at);
 
-    auto& master = *linked.module;
-    if (master.getDataLayout().isDefault()) {
-        // Clang normally writes a data layout into every LTO object. Refuse to
-        // invent one because node config size/alignment is ABI-sensitive.
-        fail("master LLVM module has no target data layout");
+    auto& package = *linked.module;
+    if (package.getDataLayout().isDefault()) {
+        fail("linked IV package LLVM has no target data layout");
     }
 
     stage_started_at = timings.start_stage();
-    auto node_records = scan_node_records(master);
-    timings.finish_stage("node_record_scan", stage_started_at);
-
-    stage_started_at = timings.start_stage();
+    auto node_records = scan_node_records(package);
     auto metadata = load_metadata(options.metadata_dir);
-    timings.finish_stage("metadata_load", stage_started_at);
-
-    stage_started_at = timings.start_stage();
-    auto state_metadata = bind_state_metadata(node_records, metadata);
+    auto state_structures = bind_state_metadata(node_records, metadata);
     require_node_config_metadata(node_records, metadata);
-    timings.finish_stage("metadata_bind", stage_started_at);
+    auto registrations = package_registration_globals(package);
+    validate_package_registrations(registrations, metadata);
+    auto retained_globals = collect_retained_globals(package, registrations);
+    timings.finish_stage("package_metadata_validate", stage_started_at);
 
     stage_started_at = timings.start_stage();
-    inject_package_registration_table(master);
-    timings.finish_stage("package_registration_table", stage_started_at);
-
-    auto configured = run_builder_jit(
-        master, context, options.link_command, metadata, timings);
-
-    stage_started_at = timings.start_stage();
-    std::vector<SerializedSourceNodeType> serialized_node_types;
-    serialized_node_types.reserve(configured.node_types.size());
-    for (auto const& node_type : configured.node_types) {
-        serialized_node_types.push_back({
-            .id = node_type.id,
-            .code_key = node_type.code_key,
-            .configured = iv::serialize_configured_graph(
-                node_type.graph, state_metadata),
-        });
-    }
-    timings.finish_stage("source_graphs_serialize", stage_started_at);
+    inject_package_abi_version(package);
+    inject_package_registration_table(package, registrations);
+    inject_package_configuration_metadata(
+        package, metadata, state_structures, retained_globals);
+    preserve_package_code(package);
+    timings.finish_stage("package_metadata_inject", stage_started_at);
 
     stage_started_at = timings.start_stage();
-    inject_source_data(
-        master, serialized_node_types, node_records,
-        configured.retained_globals);
-    inject_source_configuration_metadata(
-        master, metadata, configured.retained_globals);
-    timings.finish_stage("source_data_inject", stage_started_at);
-
-    stage_started_at = timings.start_stage();
-    preserve_source_configuration_ir(master);
-    timings.finish_stage("source_configuration_ir_preserve", stage_started_at);
-
-    stage_started_at = timings.start_stage();
-    optimize_runtime_module(master, options.optimize);
-    timings.finish_stage("runtime_optimize", stage_started_at);
-
     auto output = output_path(options.link_command);
-    auto replacement = output;
-    replacement += ".iv-finalized.o";
+    write_package_bitcode(package, output);
+    timings.finish_stage("package_bitcode_write", stage_started_at);
 
-    stage_started_at = timings.start_stage();
-    emit_native_object(master, replacement, options.optimize);
-    timings.finish_stage("native_object_emit", stage_started_at);
-
-    stage_started_at = timings.start_stage();
-    auto const result = run_link_command(options.link_command, linked.bitcode_inputs, replacement);
-    timings.finish_stage("native_link", stage_started_at);
-
-    std::error_code ec;
-    std::filesystem::remove(replacement, ec);
     if (options.timings_file) timings.write(*options.timings_file);
-    return result;
+    return 0;
 }
 
 } // namespace

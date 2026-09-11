@@ -13,7 +13,7 @@ namespace iv {
 // byte addend. An empty ordinal represents an explicit null pointer slot.
 struct NodeConfigRelocation {
     std::size_t byte_offset = 0;
-    std::string source_root{};
+    std::string package_root{};
     std::optional<std::size_t> retained_global_ordinal{};
     std::size_t addend = 0;
 };
