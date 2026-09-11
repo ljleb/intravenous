@@ -708,7 +708,7 @@ TEST(Integration, StereoSawModulePublishesIntoItsAutomaticTimelineLane)
         "iv.test.focused_stereo_saw");
 }
 
-TEST(Integration, LoadedModuleDsoPublishesIntoItsAutomaticTimelineLane)
+TEST(Integration, LoadedIvPackagePublishesIntoItsAutomaticTimelineLane)
 {
     auto const workspace = read_only_module_fixture_workspace("local_cmake");
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
