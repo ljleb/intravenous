@@ -1058,7 +1058,7 @@ public:
             auto const suffix = package_jit_->next_package.fetch_add(
                 1, std::memory_order_relaxed);
             auto& jit_dylib = take_llvm_expected(
-                jit.getExecutionSession().createJITDylib(
+                jit.createJITDylib(
                     "iv.package." + sanitize(root.package_key) + "."
                     + std::to_string(suffix)),
                 "create IV package JITDylib");
