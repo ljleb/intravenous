@@ -573,6 +573,9 @@ LoadedPackageCode::~LoadedPackageCode()
             llvm::consumeError(std::move(error));
         }
     }
+    if (auto error = shared_jit->jit->getExecutionSession().removeJITDylib(*jit_dylib)) {
+        llvm::consumeError(std::move(error));
+    }
 }
 
 } // namespace
@@ -596,6 +599,11 @@ class ModuleLoader::Impl {
     std::shared_ptr<SharedPackageJit> package_jit_;
     mutable std::unordered_map<std::string, std::weak_ptr<LoadedPackageCode>>
         loaded_packages_by_bitcode_;
+    // Last package revision that completed graph configuration successfully.
+    // Broken unrelated rebuilds continue to use this code until a replacement
+    // has itself participated in a successful configuration transaction.
+    mutable std::unordered_map<std::string, std::shared_ptr<LoadedPackageCode>>
+        current_packages_by_root_;
 
     static std::string key(ResolvedPackage const &module)
     {
@@ -968,6 +976,12 @@ public:
         return compile_package_unlocked(path).artifact;
     }
 
+    void set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
+    {
+        std::lock_guard lock(mutex_);
+        toolchain_ = std::move(toolchain);
+    }
+
     ModuleLoader::LoadedPackage load_compiled_package(
         CompiledPackage const& compiled) const
     {
@@ -1019,9 +1033,16 @@ public:
                 "create IV package JITDylib");
             package->jit_dylib = &jit_dylib;
             package->resources = jit_dylib.createResourceTracker();
+            auto const global_prefix = jit.getDataLayout().getGlobalPrefix();
+            if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
+                jit_dylib.addGenerator(take_llvm_expected(
+                    llvm::orc::DynamicLibrarySearchGenerator::Load(
+                        IV_CONFIGURED_IV_BUILDER_LIBRARY, global_prefix),
+                    "load iv_builder package symbol resolver"));
+            }
             jit_dylib.addGenerator(take_llvm_expected(
                 llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-                    jit.getDataLayout().getGlobalPrefix()),
+                    global_prefix),
                 "create current-process package symbol resolver"));
             check_llvm_error(
                 jit.addIRModule(
@@ -1334,48 +1355,42 @@ public:
     {
         std::lock_guard lock(mutex_);
         auto root_compiled = compile_package_unlocked(path);
-        std::vector<CompiledPackage> compiled_packages;
-        compiled_packages.reserve(root_compiled.configuration_packages.size());
-        for (auto const& candidate : root_compiled.configuration_packages) {
-            if (normalize(candidate.module_dir) == normalize(root_compiled.root.module_dir)) {
-                compiled_packages.push_back(root_compiled);
-                continue;
-            }
-            try {
-                compiled_packages.push_back(compile_package_unlocked(candidate.module_dir));
-            } catch (std::exception const& exception) {
-                // Broken unrelated IV packages are omitted. If graph
-                // configuration actually requests one of their registered IDs,
-                // BuilderSession reports that provider as unavailable.
-                if (log_sink_) {
-                    log_sink_(
-                        "[graph-configuration-source-skipped] root="
-                        + candidate.module_dir.generic_string()
-                        + " error=" + exception.what());
-                }
-            }
-        }
 
         std::optional<ModuleLoader::LoadedPackage> root_package_result;
         std::vector<std::shared_ptr<LoadedPackageCode>> loaded_packages;
-                loaded_packages.reserve(compiled_packages.size());
-        for (auto const& compiled : compiled_packages) {
-            auto const is_root = normalize(compiled.root.module_dir)
+        loaded_packages.reserve(root_compiled.configuration_packages.size());
+        std::unordered_map<std::string, std::shared_ptr<LoadedPackageCode>> staged_packages;
+
+        for (auto const& candidate : root_compiled.configuration_packages) {
+            auto const normalized_root = normalize(candidate.module_dir).generic_string();
+            auto const is_root = normalize(candidate.module_dir)
                 == normalize(root_compiled.root.module_dir);
             try {
+                auto compiled = is_root
+                    ? root_compiled
+                    : compile_package_unlocked(candidate.module_dir);
                 auto loaded = load_compiled_package(compiled);
-                if (loaded.package_code) {
-                    loaded_packages.push_back(
-                        std::static_pointer_cast<LoadedPackageCode>(loaded.package_code));
+                auto code = std::static_pointer_cast<LoadedPackageCode>(loaded.package_code);
+                if (!code) {
+                    throw std::logic_error("loaded IV package omitted its code ownership");
                 }
+                staged_packages.insert_or_assign(normalized_root, code);
+                loaded_packages.push_back(std::move(code));
                 if (is_root) root_package_result = std::move(loaded);
             } catch (std::exception const& exception) {
                 if (is_root) throw;
-                if (log_sink_) {
+                if (auto current = current_packages_by_root_.find(normalized_root);
+                    current != current_packages_by_root_.end()) {
+                    loaded_packages.push_back(current->second);
+                    if (log_sink_) {
+                        log_sink_(
+                            "[graph-configuration-package-kept] root="
+                            + normalized_root + " error=" + exception.what());
+                    }
+                } else if (log_sink_) {
                     log_sink_(
-                        "[graph-configuration-source-load-skipped] root="
-                        + compiled.root.module_dir.generic_string()
-                        + " error=" + exception.what());
+                        "[graph-configuration-package-skipped] root="
+                        + normalized_root + " error=" + exception.what());
                 }
             }
         }
@@ -1383,12 +1398,16 @@ public:
             throw std::logic_error("loaded IV packages omitted the requested package");
         }
 
-        return configure_iv_modules(
-            root_compiled,
-            std::move(*root_package_result),
-            loaded_packages);
+        // Do not publish any replacement package code until the requested
+        // package has successfully configured all of its iv modules.
+        auto configured = configure_iv_modules(
+            root_compiled, std::move(*root_package_result), loaded_packages);
+        for (auto& [package_root, package] : staged_packages) {
+            current_packages_by_root_.insert_or_assign(
+                std::move(package_root), std::move(package));
+        }
+        return configured;
     }
-
 };
 
 ModuleLoader::LoadedDefinition::LoadedDefinition(
@@ -1441,6 +1460,11 @@ std::filesystem::path ModuleLoader::compile_package(
     std::filesystem::path const& path) const
 {
     return _impl->compile_package(path);
+}
+
+void ModuleLoader::set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
+{
+    _impl->set_toolchain_config(std::move(toolchain));
 }
 
 std::vector<std::filesystem::path> const &ModuleLoader::extra_search_roots() const

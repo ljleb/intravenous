@@ -143,6 +143,9 @@ BuilderSession* iv_builder_child_session_create(
     auto child = std::make_unique<BuilderSession>();
     child->configuration = parent->configuration;
     child->package_index = package_index;
+    // The configured graph now contains code/data produced by this package even
+    // when the nested iv module contributes no primitive node directly. Pin it.
+    child->configuration->used_packages[package_index] = true;
     return child.release();
 }
 

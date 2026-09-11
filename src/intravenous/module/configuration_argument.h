@@ -17,6 +17,8 @@ struct ConfigurationArgument {
     char const* type_name = nullptr;
     std::size_t type_name_size = 0;
 };
+static_assert(std::is_standard_layout_v<ConfigurationArgument>);
+static_assert(std::is_trivially_copyable_v<ConfigurationArgument>);
 
 template<class T>
 constexpr ConfigurationArgument configuration_argument(T& value) noexcept

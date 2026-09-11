@@ -8,6 +8,7 @@
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/startup_config.h>
 
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -44,6 +45,7 @@ class ProjectPersistenceBuilder;
 
 class IvModuleReload {
     StartupConfigState startup_config;
+    std::unique_ptr<ModuleLoader> loader_;
     mutable std::mutex mutex;
     std::unordered_map<std::string, IvModuleDefinitionDeclaration> declarations_by_id;
     std::unordered_map<std::string, std::vector<ModuleDependency>> dependencies_by_definition_id;

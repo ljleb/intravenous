@@ -108,6 +108,10 @@ namespace iv {
             std::filesystem::path const& package_path
         ) const;
 
+        // Updates compiler/build settings for subsequent package compiles without
+        // replacing the shared ORC instance or invalidating loaded package code.
+        void set_toolchain_config(ModuleLoaderToolchainConfig toolchain);
+
         std::vector<std::filesystem::path> const& extra_search_roots() const;
     };
 }
