@@ -11,9 +11,9 @@ include(${IV_SOURCE_DIR}/module/template/ModuleSupport.cmake)
 iv_add_package(iv_package)
 
 if(MSVC)
-    target_compile_options(iv_package__compile_settings INTERFACE /W4 /permissive-)
+    target_compile_options(iv_package PRIVATE /W4 /permissive-)
 else()
-    target_compile_options(iv_package__compile_settings INTERFACE -Wall -Wextra -Wpedantic)
+    target_compile_options(iv_package PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

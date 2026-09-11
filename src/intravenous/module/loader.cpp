@@ -56,12 +56,12 @@ struct Manifest {
     std::filesystem::path entry;
 };
 
-std::optional<std::filesystem::path> find_source_manifest(
+std::optional<std::filesystem::path> find_package_manifest(
     std::filesystem::path const& directory)
 {
-    auto const source_manifest = directory / IV_PACKAGE_MANIFEST_FILE;
-    return std::filesystem::exists(source_manifest)
-        ? std::optional<std::filesystem::path>{source_manifest}
+    auto const package_manifest = directory / IV_PACKAGE_MANIFEST_FILE;
+    return std::filesystem::exists(package_manifest)
+        ? std::optional<std::filesystem::path>{package_manifest}
         : std::nullopt;
 }
 
@@ -614,7 +614,7 @@ class ModuleLoader::Impl {
     ResolvedPackage resolve_dir(std::filesystem::path dir, bool global) const
     {
         dir = normalize(dir);
-        auto manifest_file = find_source_manifest(dir);
+        auto manifest_file = find_package_manifest(dir);
         if (!manifest_file) {
             throw std::runtime_error(
                 "IV package directory '" + dir.string() + "' does not contain " +
@@ -672,12 +672,12 @@ class ModuleLoader::Impl {
                 continue;
             }
 
-            auto const source_dir = it->path().parent_path();
-            auto manifest = find_source_manifest(source_dir);
+            auto const package_dir = it->path().parent_path();
+            auto manifest = find_package_manifest(package_dir);
             if (!manifest || normalize(it->path()) != normalize(*manifest)) {
                 continue;
             }
-            out.push_back(resolve_dir(source_dir, global));
+            out.push_back(resolve_dir(package_dir, global));
             it.disable_recursion_pending();
         }
     }
@@ -742,11 +742,11 @@ class ModuleLoader::Impl {
         auto const build_dir = workspace / "cmake-build";
         auto const output_dir = workspace / "out";
         auto const generated_dir = workspace / "generated";
-        auto const default_source_dir = generated_dir / "default-project";
+        auto const default_package_dir = generated_dir / "default-project";
         auto const custom_cmake = root.module_dir / "CMakeLists.txt";
-        auto const source_dir = std::filesystem::exists(custom_cmake)
+        auto const package_dir = std::filesystem::exists(custom_cmake)
             ? root.module_dir
-            : default_source_dir;
+            : default_package_dir;
 
         std::filesystem::create_directories(workspace);
         ScopedModuleBuildLock const build_lock(workspace / "build.lock");
@@ -755,9 +755,9 @@ class ModuleLoader::Impl {
 
 
         if (!std::filesystem::exists(custom_cmake)) {
-            std::filesystem::create_directories(default_source_dir);
+            std::filesystem::create_directories(default_package_dir);
             write_text_if_different(
-                default_source_dir / "CMakeLists.txt",
+                default_package_dir / "CMakeLists.txt",
                 "cmake_minimum_required(VERSION 3.21)\n"
                 "project(iv_runtime_module LANGUAGES CXX)\n"
                 "set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n"
@@ -814,8 +814,8 @@ class ModuleLoader::Impl {
             << "source-introspection-plugin-stamp="
             << std::filesystem::last_write_time(source_introspection_plugin)
                    .time_since_epoch().count() << '\n';
-        // An IV package compile owns only its own implementation files. Registered
-        // IDs resolve through graph configuration, so provider edits do
+        // An IV package compile owns only its own implementation files. Package
+        // definition IDs resolve through graph configuration, so provider edits do
         // not enter a consumer's C++ compilation signature.
         signature << key(root) << '\n'
                   << read_text(root.manifest_file) << '\n'
@@ -844,7 +844,7 @@ class ModuleLoader::Impl {
 
         std::ostringstream configure;
         configure << quote(cmake_program())
-                  << " -S " << quote(source_dir)
+                  << " -S " << quote(package_dir)
                   << " -B " << quote(build_dir)
                   << " -DCMAKE_BUILD_TYPE=" << config_name();
         if (!generator.empty()) configure << " -G " << quote(generator);

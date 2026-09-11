@@ -14,6 +14,6 @@ add_compile_definitions(
 
 include("${CMAKE_CURRENT_LIST_DIR}/ModuleSupport.cmake")
 
-# Cross-package registered IDs resolve during graph configuration, never by
+# Cross-package definition IDs resolve during graph configuration, never by
 # merging another package's implementation files into this compile target.
 iv_add_package(iv_package ENABLE_JUCE)

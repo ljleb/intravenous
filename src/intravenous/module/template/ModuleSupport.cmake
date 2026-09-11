@@ -68,7 +68,10 @@ function(iv_add_package target)
     # IV packages are LLVM inputs, not native shared libraries.  Compile each
     # translation unit to full-LTO LLVM bitcode at O0, then combine/prune those
     # objects into one .ivpkg.bc consumed directly by the host's shared ORC JIT.
-    set(_iv_objects_target "${target}__objects")
+    # The public package target is the LLVM object target itself. Custom package
+    # CMake can use ordinary target_compile_*/target_link_* commands on it; no
+    # native package library is linked.
+    set(_iv_objects_target "${target}")
     add_library(${_iv_objects_target} OBJECT ${_iv_package_sources})
     set_target_properties(${_iv_objects_target} PROPERTIES
         CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
@@ -153,5 +156,5 @@ function(iv_add_package target)
         COMMAND_EXPAND_LISTS
         VERBATIM
         COMMENT "Finalizing IV package LLVM ${IV_PACKAGE_OUTPUT_NAME}.ivpkg.bc")
-    add_custom_target(${target} ALL DEPENDS "${_iv_package_output}")
+    add_custom_target(${target}__finalized ALL DEPENDS "${_iv_package_output}")
 endfunction()
