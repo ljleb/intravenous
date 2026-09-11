@@ -424,7 +424,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
     }
 
     if (command.command == "graph.setSampleInputValue") {
-        ProjectAckBuilder builder;
+        ProjectGraphInputAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_sample_input_value_requested_event,
             ProjectSetSampleInputValueRequest{
@@ -441,7 +441,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
     }
 
     if (command.command == "graph.setSampleInputState") {
-        ProjectAckBuilder builder;
+        ProjectGraphInputAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_sample_input_state_requested_event,
             ProjectSetSampleInputStateRequest{
@@ -459,7 +459,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
     }
 
     if (command.command == "graph.setEventInputState") {
-        ProjectAckBuilder builder;
+        ProjectGraphInputAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_event_input_state_requested_event,
             ProjectSetEventInputStateRequest{
@@ -477,7 +477,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
     }
 
     if (command.command == "graph.setSampleOutputState") {
-        ProjectAckBuilder builder;
+        ProjectGraphInputAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_sample_output_state_requested_event,
             ProjectSetSampleOutputStateRequest{
@@ -495,7 +495,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
     }
 
     if (command.command == "graph.setEventOutputState") {
-        ProjectAckBuilder builder;
+        ProjectGraphInputAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_event_output_state_requested_event,
             ProjectSetEventOutputStateRequest{

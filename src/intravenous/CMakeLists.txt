@@ -353,7 +353,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/iv_module_definitions_iv_module_instances_bridge.cpp
     runtime/iv_module_definitions_iv_packages_bridge.cpp
     runtime/iv_module_definitions_iv_module_reload_bridge.cpp
-    runtime/iv_module_definitions_iv_module_source_introspection_bridge.cpp
     runtime/iv_module_instances.cpp
     runtime/iv_module_instances_execution.cpp
     runtime/iv_module_instances_execution_task_runner_bridge.cpp

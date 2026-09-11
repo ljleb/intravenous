@@ -78,6 +78,27 @@ void IvModuleDefinitions::emit_message(
     });
 }
 
+void IvModuleDefinitions::publish_package_definitions_changed(
+    IvModuleDefinitionsChanged modules,
+    IvNodeTypeDefinitionsChanged node_types) const
+{
+    auto const has_module_changes = !modules.created.empty()
+        || !modules.updated.empty()
+        || !modules.deleted_definition_ids.empty();
+    auto const has_node_type_changes = !node_types.created.empty()
+        || !node_types.updated.empty()
+        || !node_types.deleted_node_type_ids.empty();
+    if (!has_module_changes && !has_node_type_changes) {
+        return;
+    }
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_package_definitions_changed_event,
+        IvPackageDefinitionsChanged{
+            .modules = std::move(modules),
+            .node_types = std::move(node_types),
+        });
+}
+
 void IvModuleDefinitions::declare_packages(
     std::vector<IvPackageDeclaration> declarations)
 {
@@ -191,16 +212,9 @@ void IvModuleDefinitions::sync_package_declarations(
             declaration_diff);
     }
     for (auto& failure : failures) emit_notification(std::move(failure));
-    if (!definition_diff.created.empty() || !definition_diff.updated.empty()
-        || !definition_diff.deleted_definition_ids.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_definitions_changed_event, definition_diff);
-    }
-    if (!node_type_diff.created.empty() || !node_type_diff.updated.empty()
-        || !node_type_diff.deleted_node_type_ids.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_node_type_definitions_changed_event, node_type_diff);
-    }
+    publish_package_definitions_changed(
+        std::move(definition_diff),
+        std::move(node_type_diff));
 }
 
 void IvModuleDefinitions::remove_package(std::string const& package_id)
@@ -226,14 +240,9 @@ void IvModuleDefinitions::remove_package(std::string const& package_id)
                 .deleted_package_ids = {package_id},
             });
     }
-    if (!definition_diff.deleted_definition_ids.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_definitions_changed_event, definition_diff);
-    }
-    if (!node_type_diff.deleted_node_type_ids.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_node_type_definitions_changed_event, node_type_diff);
-    }
+    publish_package_definitions_changed(
+        std::move(definition_diff),
+        std::move(node_type_diff));
     for (auto& failure : failures) emit_notification(std::move(failure));
 }
 
@@ -481,16 +490,9 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
         }
     }
     for (auto& failure : failures) emit_notification(std::move(failure));
-    if (!definition_diff.created.empty() || !definition_diff.updated.empty()
-        || !definition_diff.deleted_definition_ids.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_definitions_changed_event, definition_diff);
-    }
-    if (!node_type_diff.created.empty() || !node_type_diff.updated.empty()
-        || !node_type_diff.deleted_node_type_ids.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_node_type_definitions_changed_event, node_type_diff);
-    }
+    publish_package_definitions_changed(
+        std::move(definition_diff),
+        std::move(node_type_diff));
 }
 
 void IvModuleDefinitions::seed_loaded_definition(

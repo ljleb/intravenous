@@ -92,8 +92,8 @@ public:
         IvModuleInstanceBuildersChanged const &diff);
     VersionedTaskGraphUpdate handle_runtime_dependencies_changed(
         GraphInputLanesRuntimeDependenciesChanged const &changed);
-    void handle_iv_module_instance_builders_completed(
-        IvModuleInstanceBuildersChanged const &changed);
+    void handle_iv_module_instances_configured(
+        IvModuleInstancesConfigured const &configured);
     void handle_graph_input_lanes_runtime_dependencies_changed(
         GraphInputLanesRuntimeDependenciesChanged const &changed);
     void handle_pause(PauseRequest const &request);

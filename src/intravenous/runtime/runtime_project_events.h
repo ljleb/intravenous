@@ -27,6 +27,17 @@ namespace iv {
         void build() const;
     };
 
+    class ProjectGraphInputAckBuilder {
+        std::optional<std::string> error_message;
+        std::optional<GraphInputPublicPortsSnapshot> public_ports;
+        bool handled = false;
+
+    public:
+        void succeed(GraphInputPublicPortsSnapshot value);
+        void fail(std::string message);
+        [[nodiscard]] GraphInputPublicPortsSnapshot build() const;
+    };
+
     class ProjectStringBuilder {
         std::optional<std::string> result;
 
@@ -302,19 +313,19 @@ namespace iv {
     using ProjectDisconnectTimelineLanesRequestedEvent =
         void (*)(ProjectDisconnectTimelineLanesRequest const &, ProjectAckBuilder &);
     using ProjectSetSampleInputValueRequestedEvent =
-        void (*)(ProjectSetSampleInputValueRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetSampleInputValueRequest const &, ProjectGraphInputAckBuilder &);
     using ProjectSetSampleInputStateRequestedEvent =
-        void (*)(ProjectSetSampleInputStateRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetSampleInputStateRequest const &, ProjectGraphInputAckBuilder &);
     using ProjectSetPublicSampleInputStateRequestedEvent =
-        void (*)(ProjectSetPublicSampleInputStateRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetPublicSampleInputStateRequest const &, ProjectGraphInputAckBuilder &);
     using ProjectSetPublicSampleInputValueRequestedEvent =
-        void (*)(std::string const &, std::string const &, Sample, ProjectAckBuilder &);
+        void (*)(std::string const &, std::string const &, Sample, ProjectGraphInputAckBuilder &);
     using ProjectSetEventInputStateRequestedEvent =
-        void (*)(ProjectSetEventInputStateRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetEventInputStateRequest const &, ProjectGraphInputAckBuilder &);
     using ProjectSetSampleOutputStateRequestedEvent =
-        void (*)(ProjectSetSampleOutputStateRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetSampleOutputStateRequest const &, ProjectGraphInputAckBuilder &);
     using ProjectSetEventOutputStateRequestedEvent =
-        void (*)(ProjectSetEventOutputStateRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetEventOutputStateRequest const &, ProjectGraphInputAckBuilder &);
     IV_DECLARE_LINKER_EVENT(
         ProjectNotificationEvent,
         iv_runtime_project_notification_event);

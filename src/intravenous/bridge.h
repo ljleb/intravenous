@@ -124,7 +124,9 @@ struct iv_bridge_subscriber<Bridge, Member> {
                 || std::same_as<C, typename Bridge::right_type>,
             "bridge subscriber owner must be one of the bridge's participants");
         if (auto* instance = Bridge::template get<C>()) {
-            std::invoke(Member, *instance, std::forward<Parameters>(parameters)...);
+            ::iv::details::invoke_linker_event_module<C>([&] {
+                std::invoke(Member, *instance, std::forward<Parameters>(parameters)...);
+            });
         }
     }
 };
@@ -139,7 +141,9 @@ struct iv_bridge_subscriber<Bridge, Member> {
                 || std::same_as<C, typename Bridge::right_type>,
             "bridge subscriber owner must be one of the bridge's participants");
         if (auto* instance = Bridge::template get<C>()) {
-            std::invoke(Member, *instance, std::forward<Parameters>(parameters)...);
+            ::iv::details::invoke_linker_event_module<C>([&] {
+                std::invoke(Member, *instance, std::forward<Parameters>(parameters)...);
+            });
         }
     }
 };

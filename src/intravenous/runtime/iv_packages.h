@@ -8,8 +8,7 @@
 #include <vector>
 
 namespace iv {
-struct IvModuleDefinitionsChanged;
-struct IvNodeTypeDefinitionsChanged;
+struct IvPackageDefinitionsChanged;
 class SocketRpcIvPackageResultBuilder;
 class SocketRpcIvPackagesResultBuilder;
 struct CreateIvPackageRequest;
@@ -48,10 +47,8 @@ public:
     [[nodiscard]] std::vector<IvPackageInfo> list_packages() const;
     [[nodiscard]] IvPackageInfo create_project_package(std::string const& name) const;
 
-    void handle_iv_module_definitions_changed(
-        IvModuleDefinitionsChanged const& diff);
-    void handle_iv_node_type_definitions_changed(
-        IvNodeTypeDefinitionsChanged const& diff);
+    void handle_iv_package_definitions_changed(
+        IvPackageDefinitionsChanged const& diff);
     void handle_socket_rpc_get_iv_packages(
         GetIvPackagesRequest const &request,
         SocketRpcIvPackagesResultBuilder &builder) const;

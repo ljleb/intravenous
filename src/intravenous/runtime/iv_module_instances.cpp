@@ -101,45 +101,67 @@ bool IvModuleInstances::realize_instance_locked(
 void IvModuleInstances::publish_instance_changes(
     IvModuleInstancesChanged instance_diff,
     IvModuleInstanceBuildersChanged builders_diff,
-    bool list_changed)
+    bool list_changed,
+    IvModuleDefinitionsChanged const* definitions)
 {
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_instances_changed_event,
-        instance_diff);
-    IvModuleInstanceBuildersAckBuilder builders_ack;
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_instance_builders_changed_event,
-        builders_diff,
-        builders_ack);
-    builders_diff.version_index =
-        builders_ack.version_index().value_or(builders_diff.version_index);
-    for (auto &created : builders_diff.created) {
-        if (!created.instance) {
-            continue;
-        }
-        created.prerequisite_lanes =
-            builders_ack.prerequisite_lanes_for(created.instance->instance_id)
-                .value_or(std::vector<LaneId>{});
+    auto const has_instance_changes = !instance_diff.created.empty()
+        || !instance_diff.updated.empty()
+        || !instance_diff.deleted_instance_ids.empty();
+    auto const has_builder_changes = !builders_diff.created.empty()
+        || !builders_diff.updated.empty()
+        || !builders_diff.deleted_instance_ids.empty();
+
+    if (has_instance_changes) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_instances_changed_event,
+            instance_diff);
     }
-    for (auto &updated : builders_diff.updated) {
-        if (!updated.instance) {
-            continue;
+
+    std::optional<GraphInputPublicPortsSnapshot> public_ports;
+    if (has_builder_changes) {
+        IvModuleInstanceBuildersAckBuilder builders_ack;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_instance_builders_changed_event,
+            builders_diff,
+            builders_ack);
+        builders_diff.version_index =
+            builders_ack.version_index().value_or(builders_diff.version_index);
+        for (auto &created : builders_diff.created) {
+            if (!created.instance) {
+                continue;
+            }
+            created.prerequisite_lanes =
+                builders_ack.prerequisite_lanes_for(created.instance->instance_id)
+                    .value_or(std::vector<LaneId>{});
         }
-        updated.prerequisite_lanes =
-            builders_ack.prerequisite_lanes_for(updated.instance->instance_id)
-                .value_or(std::vector<LaneId>{});
+        for (auto &updated : builders_diff.updated) {
+            if (!updated.instance) {
+                continue;
+            }
+            updated.prerequisite_lanes =
+                builders_ack.prerequisite_lanes_for(updated.instance->instance_id)
+                    .value_or(std::vector<LaneId>{});
+        }
+        public_ports = builders_ack.take_public_ports();
     }
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_instance_builders_completed_event,
-        builders_diff);
+
+    if (definitions != nullptr || has_builder_changes) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_instances_configured_event,
+            IvModuleInstancesConfigured{
+                .definitions = definitions,
+                .builders = has_builder_changes ? &builders_diff : nullptr,
+                .public_ports = std::move(public_ports),
+            });
+    }
+
     if (list_changed) {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_instances_list_changed_event,
             list_instances());
     }
-    if (!instance_diff.created.empty() ||
-        !instance_diff.updated.empty() ||
-        !instance_diff.deleted_instance_ids.empty()) {
+
+    if (has_instance_changes) {
         auto const instances = list_instances();
         size_t realized_count = 0;
         for (auto const &instance : instances) {
@@ -278,33 +300,16 @@ void IvModuleInstances::remove_instance(std::string const &instance_id)
         }
     }
 
-    if (!instance_diff.deleted_instance_ids.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_instances_changed_event,
-            instance_diff);
-    }
-    if (!builders_diff.deleted_instance_ids.empty()) {
-        IvModuleInstanceBuildersAckBuilder builders_ack;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_instance_builders_changed_event,
-            builders_diff,
-            builders_ack);
-        builders_diff.version_index = builders_ack.version_index().value_or(builders_diff.version_index);
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_instance_builders_completed_event,
-            builders_diff);
-    }
-    if (!required_diff.created.empty() ||
-        !required_diff.updated.empty() ||
-        !required_diff.deleted_definition_ids.empty()) {
+    publish_instance_changes(
+        std::move(instance_diff),
+        std::move(builders_diff),
+        list_changed);
+    if (!required_diff.created.empty()
+        || !required_diff.updated.empty()
+        || !required_diff.deleted_definition_ids.empty()) {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_required_definitions_changed_event,
             required_diff);
-    }
-    if (list_changed) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_instances_list_changed_event,
-            list_instances());
     }
 }
 
@@ -376,23 +381,10 @@ void IvModuleInstances::update_instances(std::vector<Update> updates)
         }
     }
 
-    if (!instance_diff.created.empty() ||
-        !instance_diff.updated.empty() ||
-        !instance_diff.deleted_instance_ids.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_instances_changed_event,
-            instance_diff);
-    }
-    if (!builders_diff.updated.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_instance_builders_completed_event,
-            builders_diff);
-    }
-    if (list_changed) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_instances_list_changed_event,
-            list_instances());
-    }
+    publish_instance_changes(
+        std::move(instance_diff),
+        std::move(builders_diff),
+        list_changed);
 }
 
 
@@ -500,9 +492,10 @@ std::vector<IvModuleInstanceInfo> IvModuleInstances::list_instances() const
     return instances;
 }
 
-void IvModuleInstances::handle_iv_module_definitions_changed(
-    IvModuleDefinitionsChanged const &diff)
+void IvModuleInstances::handle_iv_package_definitions_changed(
+    IvPackageDefinitionsChanged const &package_diff)
 {
+    auto const& diff = package_diff.modules;
     IvModuleInstancesChanged instance_diff{};
     IvModuleInstanceBuildersChanged builders_diff{};
     bool list_changed = false;
@@ -561,7 +554,8 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
     publish_instance_changes(
         std::move(instance_diff),
         std::move(builders_diff),
-        list_changed);
+        list_changed,
+        &diff);
 }
 
 } // namespace iv

@@ -345,9 +345,8 @@ void GraphInputLanes::set_public_event_input_state(
     }
 }
 
-std::vector<PublicSampleInputInfo> GraphInputLanes::public_sample_inputs() const
+std::vector<PublicSampleInputInfo> GraphInputLanes::public_sample_inputs_locked() const
 {
-    std::scoped_lock lock(mutex);
     std::unordered_map<std::string, size_t> indices;
     std::vector<PublicSampleInputInfo> result;
     for (auto const &port : desired_public_input_ports) {
@@ -399,9 +398,8 @@ std::vector<PublicSampleInputInfo> GraphInputLanes::public_sample_inputs() const
     return result;
 }
 
-std::vector<PublicEventInputInfo> GraphInputLanes::public_event_inputs() const
+std::vector<PublicEventInputInfo> GraphInputLanes::public_event_inputs_locked() const
 {
-    std::scoped_lock lock(mutex);
     std::unordered_map<std::string, size_t> indices;
     std::vector<PublicEventInputInfo> result;
     for (auto const &port : desired_public_input_ports) {
@@ -437,9 +435,8 @@ std::vector<PublicEventInputInfo> GraphInputLanes::public_event_inputs() const
     return result;
 }
 
-std::vector<PublicSampleOutputInfo> GraphInputLanes::public_sample_outputs() const
+std::vector<PublicSampleOutputInfo> GraphInputLanes::public_sample_outputs_locked() const
 {
-    std::scoped_lock lock(mutex);
     std::vector<PublicSampleOutputInfo> result;
     std::unordered_map<std::string, size_t> index;
     for (auto const& port : desired_public_output_ports) {
@@ -471,9 +468,8 @@ std::vector<PublicSampleOutputInfo> GraphInputLanes::public_sample_outputs() con
     return result;
 }
 
-std::vector<PublicEventOutputInfo> GraphInputLanes::public_event_outputs() const
+std::vector<PublicEventOutputInfo> GraphInputLanes::public_event_outputs_locked() const
 {
-    std::scoped_lock lock(mutex);
     std::vector<PublicEventOutputInfo> result;
     std::unordered_map<std::string, size_t> index;
     for (auto const& port : desired_public_output_ports) {
@@ -502,6 +498,40 @@ std::vector<PublicEventOutputInfo> GraphInputLanes::public_event_outputs() const
             : member_state == ProjectEventOutputState::disconnected ? "disconnected" : "virtualFollow");
     }
     return result;
+}
+
+GraphInputPublicPortsSnapshot GraphInputLanes::public_ports_locked() const
+{
+    return GraphInputPublicPortsSnapshot{
+        .sample_inputs = public_sample_inputs_locked(),
+        .event_inputs = public_event_inputs_locked(),
+        .sample_outputs = public_sample_outputs_locked(),
+        .event_outputs = public_event_outputs_locked(),
+    };
+}
+
+std::vector<PublicSampleInputInfo> GraphInputLanes::public_sample_inputs() const
+{
+    std::scoped_lock lock(mutex);
+    return public_sample_inputs_locked();
+}
+
+std::vector<PublicEventInputInfo> GraphInputLanes::public_event_inputs() const
+{
+    std::scoped_lock lock(mutex);
+    return public_event_inputs_locked();
+}
+
+std::vector<PublicSampleOutputInfo> GraphInputLanes::public_sample_outputs() const
+{
+    std::scoped_lock lock(mutex);
+    return public_sample_outputs_locked();
+}
+
+std::vector<PublicEventOutputInfo> GraphInputLanes::public_event_outputs() const
+{
+    std::scoped_lock lock(mutex);
+    return public_event_outputs_locked();
 }
 
 void GraphInputLanes::set_event_input_state(

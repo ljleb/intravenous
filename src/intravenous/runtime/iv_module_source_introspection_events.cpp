@@ -35,22 +35,6 @@ IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder::build() const
     return *result;
 }
 
-void IvModuleSourceIntrospectionPublicPortsSnapshotBuilder::succeed(
-    IvModuleSourceIntrospectionPublicPortsSnapshot value)
-{
-    result = std::move(value);
-}
-
-IvModuleSourceIntrospectionPublicPortsSnapshot
-IvModuleSourceIntrospectionPublicPortsSnapshotBuilder::build() const
-{
-    if (!result.has_value()) {
-        throw std::runtime_error(
-            "runtime project introspection public ports snapshot request was not handled");
-    }
-    return *result;
-}
-
 void IvModuleInstancesSourceFileFilterBuilder::succeed(
     std::vector<IvModuleInstanceInfo> value)
 {

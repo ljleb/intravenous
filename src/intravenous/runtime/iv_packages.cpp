@@ -200,32 +200,26 @@ std::vector<IvPackageInfo> IvPackages::list_packages() const
     return result;
 }
 
-void IvPackages::handle_iv_module_definitions_changed(
-    IvModuleDefinitionsChanged const& diff)
+void IvPackages::handle_iv_package_definitions_changed(
+    IvPackageDefinitionsChanged const& diff)
 {
     std::scoped_lock lock(mutex_);
-    for (auto const& definition : diff.created) {
+    for (auto const& definition : diff.modules.created) {
         module_package_ids_[definition.definition_id] = definition.package_id;
     }
-    for (auto const& definition : diff.updated) {
+    for (auto const& definition : diff.modules.updated) {
         module_package_ids_[definition.definition_id] = definition.package_id;
     }
-    for (auto const& definition_id : diff.deleted_definition_ids) {
+    for (auto const& definition_id : diff.modules.deleted_definition_ids) {
         module_package_ids_.erase(definition_id);
     }
-}
-
-void IvPackages::handle_iv_node_type_definitions_changed(
-    IvNodeTypeDefinitionsChanged const& diff)
-{
-    std::scoped_lock lock(mutex_);
-    for (auto const& definition : diff.created) {
+    for (auto const& definition : diff.node_types.created) {
         node_type_package_ids_[definition.node_type_id] = definition.package_id;
     }
-    for (auto const& definition : diff.updated) {
+    for (auto const& definition : diff.node_types.updated) {
         node_type_package_ids_[definition.node_type_id] = definition.package_id;
     }
-    for (auto const& definition_id : diff.deleted_node_type_ids) {
+    for (auto const& definition_id : diff.node_types.deleted_node_type_ids) {
         node_type_package_ids_.erase(definition_id);
     }
 }

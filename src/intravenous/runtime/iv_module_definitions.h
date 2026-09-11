@@ -69,6 +69,11 @@ struct IvNodeTypeDefinitionsChanged {
     std::vector<std::string> deleted_node_type_ids{};
 };
 
+struct IvPackageDefinitionsChanged {
+    IvModuleDefinitionsChanged modules{};
+    IvNodeTypeDefinitionsChanged node_types{};
+};
+
 struct IvModuleDefinitionsMessage {
     std::string level = "info";
     std::string message{};
@@ -141,6 +146,9 @@ private:
         IvNodeTypeDefinitionsChanged& node_type_diff,
         std::vector<IvModuleDefinitionsMessage>& failures,
         std::unordered_set<std::string> const& changed_package_ids);
+    void publish_package_definitions_changed(
+        IvModuleDefinitionsChanged modules,
+        IvNodeTypeDefinitionsChanged node_types) const;
 public:
     IvModuleDefinitions() = default;
     ~IvModuleDefinitions();

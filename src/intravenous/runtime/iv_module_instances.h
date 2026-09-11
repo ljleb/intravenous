@@ -109,7 +109,8 @@ private:
     void publish_instance_changes(
         IvModuleInstancesChanged instance_diff,
         IvModuleInstanceBuildersChanged builders_diff,
-        bool list_changed);
+        bool list_changed,
+        IvModuleDefinitionsChanged const* definitions = nullptr);
 
 public:
     IvModuleInstances() = default;
@@ -126,8 +127,8 @@ public:
     void update_instances(std::vector<Update> updates);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
 
-    void handle_iv_module_definitions_changed(
-        IvModuleDefinitionsChanged const &diff);
+    void handle_iv_package_definitions_changed(
+        IvPackageDefinitionsChanged const &diff);
     void handle_project_create_iv_module_instance(
         ProjectCreateIvModuleInstanceRequest const &request,
         ProjectStringBuilder &builder);

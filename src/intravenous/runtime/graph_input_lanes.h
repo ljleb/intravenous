@@ -268,6 +268,11 @@ private:
     void apply_tracked_batch_locked(TimelineLaneBatchUpdate const &batch);
     void queue_timeline_batch_locked(TimelineLaneBatchUpdate const &batch);
     std::vector<TimelineLaneBatchUpdate> take_pending_timeline_batches_locked();
+    std::vector<PublicSampleInputInfo> public_sample_inputs_locked() const;
+    std::vector<PublicEventInputInfo> public_event_inputs_locked() const;
+    std::vector<PublicSampleOutputInfo> public_sample_outputs_locked() const;
+    std::vector<PublicEventOutputInfo> public_event_outputs_locked() const;
+    GraphInputPublicPortsSnapshot public_ports_locked() const;
     void apply_timeline_batch(TimelineLaneBatchUpdate const &batch);
     void publish_sample_output_block(LaneId lane, BorrowedSampleBlock const &block);
     void publish_event_output_block(LaneId lane, std::span<TimedEvent const> events);
@@ -290,8 +295,6 @@ public:
         IvModuleSourceIntrospectionLiveInputSnapshotsBuilder &builder);
     void handle_iv_module_source_introspection_configured_state_snapshot_requested(
         IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder &builder);
-    void handle_iv_module_source_introspection_public_ports_snapshot_requested(
-        IvModuleSourceIntrospectionPublicPortsSnapshotBuilder &builder) const;
     void set_sample_input_value(
         ProjectSetSampleInputValueRequest const &request);
     void set_sample_input_state(
@@ -320,27 +323,27 @@ public:
         ProjectSetEventOutputStateRequest const &request);
     void handle_project_set_sample_input_value(
         ProjectSetSampleInputValueRequest const &request,
-        ProjectAckBuilder &builder);
+        ProjectGraphInputAckBuilder &builder);
     void handle_project_set_sample_input_state(
         ProjectSetSampleInputStateRequest const &request,
-        ProjectAckBuilder &builder);
+        ProjectGraphInputAckBuilder &builder);
     void handle_project_set_public_sample_input_state(
         ProjectSetPublicSampleInputStateRequest const &request,
-        ProjectAckBuilder &builder);
+        ProjectGraphInputAckBuilder &builder);
     void handle_project_set_public_sample_input_value(
         std::string const &instance_id,
         std::string const &source_identity,
         Sample value,
-        ProjectAckBuilder &builder);
+        ProjectGraphInputAckBuilder &builder);
     void handle_project_set_event_input_state(
         ProjectSetEventInputStateRequest const &request,
-        ProjectAckBuilder &builder);
+        ProjectGraphInputAckBuilder &builder);
     void handle_project_set_sample_output_state(
         ProjectSetSampleOutputStateRequest const &request,
-        ProjectAckBuilder &builder);
+        ProjectGraphInputAckBuilder &builder);
     void handle_project_set_event_output_state(
         ProjectSetEventOutputStateRequest const &request,
-        ProjectAckBuilder &builder);
+        ProjectGraphInputAckBuilder &builder);
     void handle_project_persistence_collect_state(
         ProjectPersistenceBuilder &builder) const;
     [[nodiscard]] GraphInputLaneBindings graph_input_lane_bindings(

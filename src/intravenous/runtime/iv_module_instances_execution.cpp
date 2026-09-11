@@ -315,10 +315,13 @@ void publish_tasks_changed(VersionedTaskGraphUpdate const &update)
 }
 } // namespace
 
-void IvModuleInstancesExecution::handle_iv_module_instance_builders_completed(
-    IvModuleInstanceBuildersChanged const &changed)
+void IvModuleInstancesExecution::handle_iv_module_instances_configured(
+    IvModuleInstancesConfigured const &configured)
 {
-    publish_tasks_changed(handle_instance_builders_changed(changed));
+    if (configured.builders == nullptr) {
+        return;
+    }
+    publish_tasks_changed(handle_instance_builders_changed(*configured.builders));
 }
 
 void IvModuleInstancesExecution::handle_graph_input_lanes_runtime_dependencies_changed(

@@ -120,6 +120,13 @@ namespace iv {
         std::vector<std::string> member_states {};
     };
 
+    struct GraphInputPublicPortsSnapshot {
+        std::vector<PublicSampleInputInfo> sample_inputs {};
+        std::vector<PublicEventInputInfo> event_inputs {};
+        std::vector<PublicSampleOutputInfo> sample_outputs {};
+        std::vector<PublicEventOutputInfo> event_outputs {};
+    };
+
     struct ProjectQueryResult {
         std::vector<VirtualNodeInfo> nodes{};
     };

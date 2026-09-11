@@ -17,7 +17,6 @@
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_packages_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
 #include <intravenous/runtime/iv_module_instances_execution_task_runner_bridge.h>

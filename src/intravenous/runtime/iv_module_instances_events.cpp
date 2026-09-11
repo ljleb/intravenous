@@ -1,5 +1,7 @@
 #include <intravenous/runtime/iv_module_instances_events.h>
 
+#include <utility>
+
 namespace iv {
 void IvModuleInstanceBuildersAckBuilder::set_prerequisite_lanes(
     std::string instance_id,
@@ -30,6 +32,18 @@ std::optional<std::uint64_t> IvModuleInstanceBuildersAckBuilder::version_index()
     return version_index_;
 }
 
+void IvModuleInstanceBuildersAckBuilder::set_public_ports(
+    GraphInputPublicPortsSnapshot public_ports)
+{
+    public_ports_ = std::move(public_ports);
+}
+
+std::optional<GraphInputPublicPortsSnapshot>
+IvModuleInstanceBuildersAckBuilder::take_public_ports()
+{
+    return std::exchange(public_ports_, std::nullopt);
+}
+
 IV_DEFINE_LINKER_EVENT(
     IvModuleRequiredDefinitionsChangedEvent,
     iv_runtime_iv_module_required_definitions_changed_event);
@@ -40,8 +54,8 @@ IV_DEFINE_LINKER_EVENT(
     IvModuleInstanceBuildersChangedEvent,
     iv_runtime_iv_module_instance_builders_changed_event);
 IV_DEFINE_LINKER_EVENT(
-    IvModuleInstanceBuildersCompletedEvent,
-    iv_runtime_iv_module_instance_builders_completed_event);
+    IvModuleInstancesConfiguredEvent,
+    iv_runtime_iv_module_instances_configured_event);
 IV_DEFINE_LINKER_EVENT(
     IvModuleInstancesListChangedEvent,
     iv_runtime_iv_module_instances_list_changed_event);

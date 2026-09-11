@@ -33,13 +33,6 @@ struct IvModuleSourceIntrospectionConfiguredStateSnapshot {
     std::vector<ProjectSetEventOutputStateRequest> event_output_states {};
 };
 
-struct IvModuleSourceIntrospectionPublicPortsSnapshot {
-    std::vector<PublicSampleInputInfo> sample_inputs {};
-    std::vector<PublicEventInputInfo> event_inputs {};
-    std::vector<PublicSampleOutputInfo> sample_outputs {};
-    std::vector<PublicEventOutputInfo> event_outputs {};
-};
-
 class IvModuleSourceIntrospectionLiveInputSnapshotsBuilder {
     std::optional<std::vector<IvModuleSourceIntrospectionLiveInputSnapshot>> result;
 
@@ -56,14 +49,6 @@ public:
     [[nodiscard]] IvModuleSourceIntrospectionConfiguredStateSnapshot build() const;
 };
 
-class IvModuleSourceIntrospectionPublicPortsSnapshotBuilder {
-    std::optional<IvModuleSourceIntrospectionPublicPortsSnapshot> result;
-
-public:
-    void succeed(IvModuleSourceIntrospectionPublicPortsSnapshot value);
-    [[nodiscard]] IvModuleSourceIntrospectionPublicPortsSnapshot build() const;
-};
-
 class IvModuleInstancesSourceFileFilterBuilder {
     std::optional<std::vector<IvModuleInstanceInfo>> result;
 
@@ -78,8 +63,6 @@ using IvModuleSourceIntrospectionLiveInputSnapshotsRequestedEvent =
              IvModuleSourceIntrospectionLiveInputSnapshotsBuilder &);
 using IvModuleSourceIntrospectionConfiguredStateSnapshotRequestedEvent =
     void (*)(IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder &);
-using IvModuleSourceIntrospectionPublicPortsSnapshotRequestedEvent =
-    void (*)(IvModuleSourceIntrospectionPublicPortsSnapshotBuilder &);
 using IvModuleSourceIntrospectionNodesUpdatedEvent =
     void (*)(ProjectVirtualNodesNotification const &);
 using IvModuleInstancesSourceFileFilterEvent =
@@ -93,9 +76,6 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     IvModuleSourceIntrospectionConfiguredStateSnapshotRequestedEvent,
     iv_runtime_iv_module_source_introspection_configured_state_snapshot_requested_event);
-IV_DECLARE_LINKER_EVENT(
-    IvModuleSourceIntrospectionPublicPortsSnapshotRequestedEvent,
-    iv_runtime_iv_module_source_introspection_public_ports_snapshot_requested_event);
 IV_DECLARE_LINKER_EVENT(
     IvModuleSourceIntrospectionNodesUpdatedEvent,
     iv_runtime_iv_module_source_introspection_nodes_updated_event);

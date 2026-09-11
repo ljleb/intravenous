@@ -7,11 +7,8 @@ IV_DEFINE_LINKER_EVENT(
     IvPackageDeclarationsChangedEvent,
     iv_runtime_iv_package_declarations_changed_event);
 IV_DEFINE_LINKER_EVENT(
-    IvModuleDefinitionsChangedEvent,
-    iv_runtime_iv_module_definitions_changed_event);
-IV_DEFINE_LINKER_EVENT(
-    IvNodeTypeDefinitionsChangedEvent,
-    iv_runtime_iv_node_type_definitions_changed_event);
+    IvPackageDefinitionsChangedEvent,
+    iv_runtime_iv_package_definitions_changed_event);
 IV_DEFINE_LINKER_EVENT(
     IvModuleDefinitionsNotificationEvent,
     iv_runtime_iv_module_definitions_notification_event);

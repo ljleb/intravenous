@@ -6,6 +6,7 @@
 #include <intravenous/filesystem_paths.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
@@ -31,13 +32,10 @@ std::string public_output_node_id(Port const& output)
     return iv::public_output_node_id(output.instance_id, output.source_identity);
 }
 
-void refresh_public_ports(IvModuleSourceIntrospection &introspection)
+void apply_public_ports_snapshot(
+    IvModuleSourceIntrospection &introspection,
+    GraphInputPublicPortsSnapshot snapshot)
 {
-    IvModuleSourceIntrospectionPublicPortsSnapshotBuilder builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_source_introspection_public_ports_snapshot_requested_event,
-        builder);
-    auto snapshot = builder.build();
     introspection.set_public_sample_inputs(std::move(snapshot.sample_inputs));
     introspection.set_public_event_inputs(std::move(snapshot.event_inputs));
     introspection.set_public_sample_outputs(std::move(snapshot.sample_outputs));
@@ -837,95 +835,103 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_public_event_output(PublicEventO
     return node;
 }
 
-void IvModuleSourceIntrospection::handle_iv_module_definitions_changed(
-    IvModuleDefinitionsChanged const &diff)
-{
-    std::scoped_lock lock(mutex);
-    for (auto const &definition_id : diff.deleted_definition_ids) {
-        graph_indexes_by_definition_id.erase(definition_id);
-    }
-    for (auto const &definition : diff.created) {
-        invalidate_source_texts(definition.dependencies);
-        graph_indexes_by_definition_id[definition.definition_id] =
-            build_graph_introspection_index(
-                definition.definition_id,
-                definition.introspection,
-                definition.package_root,
-                definition.module_id,
-                definition.dependencies);
-    }
-    for (auto const &definition : diff.updated) {
-        invalidate_source_texts(definition.dependencies);
-        graph_indexes_by_definition_id[definition.definition_id] =
-            build_graph_introspection_index(
-                definition.definition_id,
-                definition.introspection,
-                definition.package_root,
-                definition.module_id,
-                definition.dependencies);
-    }
-}
-
-void IvModuleSourceIntrospection::handle_iv_module_instances_list_changed(
-    std::vector<IvModuleInstanceInfo> const &instances)
-{
-    std::scoped_lock lock(mutex);
-    realized_instances_by_id.clear();
-    for (auto const &instance : instances) {
-        if (!instance.realized || instance.instance_id.empty()) {
-            continue;
-        }
-        realized_instances_by_id.emplace(instance.instance_id, instance);
-    }
-}
-
-void IvModuleSourceIntrospection::handle_iv_module_instance_builders_completed(
-    IvModuleInstanceBuildersChanged const &diff)
+void IvModuleSourceIntrospection::handle_iv_module_instances_configured(
+    IvModuleInstancesConfigured const &configured)
 {
     std::vector<std::string> replace_instance_ids;
-    std::vector<IvModuleInstanceInfo> instances;
+    std::vector<IvModuleInstanceInfo> updated_instances;
 
-    auto append_instance = [&](IvModuleInstanceBuilderRef const &ref) {
-        auto const *instance = ref.instance;
-        if (instance == nullptr
-            || std::ranges::find(replace_instance_ids, instance->instance_id)
-                != replace_instance_ids.end()) {
-            return;
-        }
-        replace_instance_ids.push_back(instance->instance_id);
-        instances.push_back(IvModuleInstanceInfo{
-            .instance_id = instance->instance_id,
-            .definition_id = instance->definition_id,
-            .package_root = instance->package_root,
-            .default_silence_ttl_samples = instance->default_silence_ttl_samples,
-            .realized = true,
-            .module_id = instance->module_id,
-        });
-    };
+    {
+        std::scoped_lock lock(mutex);
 
-    for (auto const &created : diff.created) {
-        append_instance(created);
-    }
-    for (auto const &updated : diff.updated) {
-        append_instance(updated);
-    }
-    for (auto const &deleted_instance_id : diff.deleted_instance_ids) {
-        if (std::ranges::find(replace_instance_ids, deleted_instance_id)
-            == replace_instance_ids.end()) {
-            replace_instance_ids.push_back(deleted_instance_id);
+        if (configured.definitions != nullptr) {
+            auto const &diff = *configured.definitions;
+            for (auto const &definition_id : diff.deleted_definition_ids) {
+                graph_indexes_by_definition_id.erase(definition_id);
+            }
+            for (auto const &definition : diff.created) {
+                invalidate_source_texts(definition.dependencies);
+                graph_indexes_by_definition_id[definition.definition_id] =
+                    build_graph_introspection_index(
+                        definition.definition_id,
+                        definition.introspection,
+                        definition.package_root,
+                        definition.module_id,
+                        definition.dependencies);
+            }
+            for (auto const &definition : diff.updated) {
+                invalidate_source_texts(definition.dependencies);
+                graph_indexes_by_definition_id[definition.definition_id] =
+                    build_graph_introspection_index(
+                        definition.definition_id,
+                        definition.introspection,
+                        definition.package_root,
+                        definition.module_id,
+                        definition.dependencies);
+            }
+        }
+
+        if (configured.builders != nullptr) {
+            auto const &diff = *configured.builders;
+            auto apply_instance = [&](IvModuleInstanceBuilderRef const &ref) {
+                auto const *instance = ref.instance;
+                if (instance == nullptr) {
+                    return;
+                }
+                replace_instance_ids.push_back(instance->instance_id);
+                auto info = IvModuleInstanceInfo{
+                    .instance_id = instance->instance_id,
+                    .definition_id = instance->definition_id,
+                    .package_root = instance->package_root,
+                    .default_silence_ttl_samples = instance->default_silence_ttl_samples,
+                    .realized = true,
+                    .module_id = instance->module_id,
+                };
+                realized_instances_by_id[info.instance_id] = info;
+                updated_instances.push_back(std::move(info));
+            };
+
+            for (auto const &created : diff.created) {
+                apply_instance(created);
+            }
+            for (auto const &updated : diff.updated) {
+                apply_instance(updated);
+            }
+            for (auto const &instance_id : diff.deleted_instance_ids) {
+                realized_instances_by_id.erase(instance_id);
+                replace_instance_ids.push_back(instance_id);
+            }
+        }
+
+        if (configured.public_ports.has_value()) {
+            public_inputs_by_instance_id.clear();
+            public_event_inputs_by_instance_id.clear();
+            public_outputs_by_instance_id.clear();
+            public_event_outputs_by_instance_id.clear();
+            for (auto const &input : configured.public_ports->sample_inputs) {
+                public_inputs_by_instance_id[input.instance_id].push_back(input);
+            }
+            for (auto const &input : configured.public_ports->event_inputs) {
+                public_event_inputs_by_instance_id[input.instance_id].push_back(input);
+            }
+            for (auto const &output : configured.public_ports->sample_outputs) {
+                public_outputs_by_instance_id[output.instance_id].push_back(output);
+            }
+            for (auto const &output : configured.public_ports->event_outputs) {
+                public_event_outputs_by_instance_id[output.instance_id].push_back(output);
+            }
         }
     }
+
     if (replace_instance_ids.empty()) {
         return;
     }
 
     try {
-        replace_public_input_instances(replace_instance_ids);
-        refresh_public_ports(*this);
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_source_introspection_nodes_updated_event,
             ProjectVirtualNodesNotification{
-                .nodes = get_virtual_nodes_for_instances(instances),
+                .nodes = get_virtual_nodes_for_instances(updated_instances),
                 .replace_instance_ids = std::move(replace_instance_ids),
             });
     } catch (...) {
@@ -1481,17 +1487,15 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_value(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
+        ProjectGraphInputAckBuilder project_builder;
         if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
-            ProjectAckBuilder project_builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_project_set_public_sample_input_value_requested_event,
                 public_input->first,
                 public_input->second,
                 request.value,
                 project_builder);
-            project_builder.build();
         } else {
-            ProjectAckBuilder project_builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_project_set_sample_input_value_requested_event,
                 ProjectSetSampleInputValueRequest{
@@ -1501,10 +1505,10 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_value(
                     .value = request.value,
                 },
                 project_builder);
-            project_builder.build();
         }
-        refresh_public_ports(*this);
+        apply_public_ports_snapshot(*this, project_builder.build());
         notify_updated_node_ids(*this, {request.node_id});
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -1515,7 +1519,7 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_state(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
-        ProjectAckBuilder project_builder;
+        ProjectGraphInputAckBuilder project_builder;
         if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_project_set_public_sample_input_state_requested_event,
@@ -1537,9 +1541,9 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_state(
                 },
                 project_builder);
         }
-        project_builder.build();
-        refresh_public_ports(*this);
+        apply_public_ports_snapshot(*this, project_builder.build());
         notify_updated_node_ids(*this, {request.node_id});
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -1550,7 +1554,7 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_event_input_state(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
-        ProjectAckBuilder project_builder;
+        ProjectGraphInputAckBuilder project_builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_event_input_state_requested_event,
             ProjectSetEventInputStateRequest{
@@ -1560,9 +1564,9 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_event_input_state(
                 .state = parse_project_event_input_state(request.state),
             },
             project_builder);
-        project_builder.build();
-        refresh_public_ports(*this);
+        apply_public_ports_snapshot(*this, project_builder.build());
         notify_updated_node_ids(*this, {request.node_id});
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -1573,7 +1577,7 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_output_state(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
-        ProjectAckBuilder project_builder;
+        ProjectGraphInputAckBuilder project_builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_sample_output_state_requested_event,
             ProjectSetSampleOutputStateRequest{
@@ -1583,9 +1587,9 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_output_state(
                 .state = parse_project_sample_output_state(request.state),
             },
             project_builder);
-        project_builder.build();
-        refresh_public_ports(*this);
+        apply_public_ports_snapshot(*this, project_builder.build());
         notify_updated_node_ids(*this, {request.node_id});
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -1596,7 +1600,7 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_event_output_state(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
-        ProjectAckBuilder project_builder;
+        ProjectGraphInputAckBuilder project_builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_event_output_state_requested_event,
             ProjectSetEventOutputStateRequest{
@@ -1606,11 +1610,12 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_event_output_state(
                 .state = parse_project_event_output_state(request.state),
             },
             project_builder);
-        project_builder.build();
-        refresh_public_ports(*this);
+        apply_public_ports_snapshot(*this, project_builder.build());
         notify_updated_node_ids(*this, {request.node_id});
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
 }
+
 } // namespace iv
