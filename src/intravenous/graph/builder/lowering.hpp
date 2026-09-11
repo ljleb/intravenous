@@ -1901,14 +1901,14 @@ class GraphLowerer {
       if(config.type!=c.source_type)details::error("event source type changed before lowering");
       ports.push_back(materialize_event_output_port(logical, c.source_type));
     }
-    if(endpoints.empty())details::error("event source has no lowered endpoint");
-    if(endpoints.size()==1)return endpoints.front();
+    if(ports.empty())details::error("event source has no lowered endpoint");
+    if(ports.size()==1)return ports.front();
     auto node=append_generated(make_generated_node(
         EventConcatenationNodeSpec{
-            .input_count = endpoints.size(), .type = c.source_type},
+            .input_count = ports.size(), .type = c.source_type},
         "iv::EventConcatenation"));
-    for(size_t i=0;i<endpoints.size();++i)
-      add_event_edge({endpoints[i], {node, i},
+    for(size_t i=0;i<ports.size();++i)
+      add_event_edge({ports[i], {node, i},
                       EventConversionRegistry::instance().plan(
                           c.source_type, c.source_type)});
     return {node,0};

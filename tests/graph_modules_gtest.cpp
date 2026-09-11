@@ -17,6 +17,7 @@
 #include <cstring>
 #include <memory>
 #include <ranges>
+#include <span>
 #include <stdexcept>
 #include <string>
 
@@ -128,6 +129,20 @@ constexpr char cstring_left[] = "left label";
 constexpr char cstring_right[] = "right label";
 constexpr char cstring_first[] = "first detail";
 constexpr char cstring_second[] = "second detail";
+
+void configure_pointer_metadata_package(
+    details::BuilderSession* session,
+    std::span<NodeConfigPointerFieldData const> pointer_fields,
+    std::span<RetainedGlobalData const> retained_globals)
+{
+    std::array packages{details::BuilderPackageView{
+        .package_root = "test.pointer-metadata-package",
+        .config_pointer_fields = pointer_fields,
+        .retained_globals = retained_globals,
+    }};
+    details::set_builder_packages(session, packages);
+    details::select_builder_package(session, 0);
+}
 
 static_assert(std::invocable<decltype(&pass_module), GraphBuilder&>);
 static_assert(std::same_as<std::invoke_result_t<decltype(&pass_module), GraphBuilder&>, void>);
@@ -527,29 +542,30 @@ TEST(GraphModules, BuilderCapturesPointerConfigurationAsSymbolicRelocations)
         decltype(&details::iv_builder_session_destroy)>(
             details::iv_builder_session_create(),
             details::iv_builder_session_destroy);
-    std::array offsets{
-        offsetof(CStringConfigNode, title),
-        offsetof(CStringConfigNode, detail),
-        offsetof(CStringConfigNode, optional),
+    std::array fields{
+        NodeConfigPointerFieldData{
+            .code_key = details::node_code_key_v<CStringConfigNode>,
+            .byte_offset = offsetof(CStringConfigNode, title)},
+        NodeConfigPointerFieldData{
+            .code_key = details::node_code_key_v<CStringConfigNode>,
+            .byte_offset = offsetof(CStringConfigNode, detail)},
+        NodeConfigPointerFieldData{
+            .code_key = details::node_code_key_v<CStringConfigNode>,
+            .byte_offset = offsetof(CStringConfigNode, optional)},
     };
-    std::array layouts{details::NodeConfigLayout{
-        .node_code_key = details::node_code_key_v<CStringConfigNode>,
-        .pointer_offsets = offsets,
-    }};
-    details::set_builder_node_config_layouts(session.get(), layouts);
     std::array globals{
-        details::ConfigurationGlobalAddress{
+        RetainedGlobalData{
             .address = cstring_title,
             .size = sizeof(cstring_title),
-            .symbol = cstring_title,
+            .ordinal = 0,
         },
-        details::ConfigurationGlobalAddress{
+        RetainedGlobalData{
             .address = cstring_detail,
             .size = sizeof(cstring_detail),
-            .symbol = cstring_detail,
+            .ordinal = 1,
         },
     };
-    details::set_builder_configuration_globals(session.get(), globals);
+    configure_pointer_metadata_package(session.get(), fields, globals);
 
     GraphBuilder builder(session.get());
     auto probe = builder.node<CStringConfigNode>(CStringConfigNode{
@@ -565,13 +581,18 @@ TEST(GraphModules, BuilderCapturesPointerConfigurationAsSymbolicRelocations)
     auto const& relocations = archive.node_configs.front().relocations;
     ASSERT_EQ(relocations.size(), 3u);
     EXPECT_EQ(relocations[0].byte_offset, offsetof(CStringConfigNode, title));
-    EXPECT_EQ(relocations[0].target, cstring_title);
+    EXPECT_EQ(relocations[0].package_root, "test.pointer-metadata-package");
+    ASSERT_TRUE(relocations[0].retained_global_ordinal.has_value());
+    EXPECT_EQ(*relocations[0].retained_global_ordinal, 0u);
     EXPECT_EQ(relocations[0].addend, 0u);
     EXPECT_EQ(relocations[1].byte_offset, offsetof(CStringConfigNode, detail));
-    EXPECT_EQ(relocations[1].target, cstring_detail);
+    EXPECT_EQ(relocations[1].package_root, "test.pointer-metadata-package");
+    ASSERT_TRUE(relocations[1].retained_global_ordinal.has_value());
+    EXPECT_EQ(*relocations[1].retained_global_ordinal, 1u);
     EXPECT_EQ(relocations[1].addend, 0u);
     EXPECT_EQ(relocations[2].byte_offset, offsetof(CStringConfigNode, optional));
-    EXPECT_EQ(relocations[2].target, nullptr);
+    EXPECT_TRUE(relocations[2].package_root.empty());
+    EXPECT_FALSE(relocations[2].retained_global_ordinal.has_value());
 }
 
 TEST(GraphModules, BuilderCapturesNestedAndArrayPointerConfiguration)
@@ -581,42 +602,46 @@ TEST(GraphModules, BuilderCapturesNestedAndArrayPointerConfiguration)
         decltype(&details::iv_builder_session_destroy)>(
             details::iv_builder_session_create(),
             details::iv_builder_session_destroy);
-    std::array offsets{
-        offsetof(StructuredCStringConfigNode, labels),
-        offsetof(StructuredCStringConfigNode, labels) + sizeof(char const*),
-        offsetof(StructuredCStringConfigNode, details)
-            + offsetof(CStringConfigDetails, first),
-        offsetof(StructuredCStringConfigNode, details)
-            + offsetof(CStringConfigDetails, second),
+    std::array fields{
+        NodeConfigPointerFieldData{
+            .code_key = details::node_code_key_v<StructuredCStringConfigNode>,
+            .byte_offset = offsetof(StructuredCStringConfigNode, labels)},
+        NodeConfigPointerFieldData{
+            .code_key = details::node_code_key_v<StructuredCStringConfigNode>,
+            .byte_offset = offsetof(StructuredCStringConfigNode, labels)
+                + sizeof(char const*)},
+        NodeConfigPointerFieldData{
+            .code_key = details::node_code_key_v<StructuredCStringConfigNode>,
+            .byte_offset = offsetof(StructuredCStringConfigNode, details)
+                + offsetof(CStringConfigDetails, first)},
+        NodeConfigPointerFieldData{
+            .code_key = details::node_code_key_v<StructuredCStringConfigNode>,
+            .byte_offset = offsetof(StructuredCStringConfigNode, details)
+                + offsetof(CStringConfigDetails, second)},
     };
-    std::array layouts{details::NodeConfigLayout{
-        .node_code_key = details::node_code_key_v<StructuredCStringConfigNode>,
-        .pointer_offsets = offsets,
-    }};
-    details::set_builder_node_config_layouts(session.get(), layouts);
     std::array globals{
-        details::ConfigurationGlobalAddress{
+        RetainedGlobalData{
             .address = cstring_left,
             .size = sizeof(cstring_left),
-            .symbol = cstring_left,
+            .ordinal = 0,
         },
-        details::ConfigurationGlobalAddress{
+        RetainedGlobalData{
             .address = cstring_right,
             .size = sizeof(cstring_right),
-            .symbol = cstring_right,
+            .ordinal = 1,
         },
-        details::ConfigurationGlobalAddress{
+        RetainedGlobalData{
             .address = cstring_first,
             .size = sizeof(cstring_first),
-            .symbol = cstring_first,
+            .ordinal = 2,
         },
-        details::ConfigurationGlobalAddress{
+        RetainedGlobalData{
             .address = cstring_second,
             .size = sizeof(cstring_second),
-            .symbol = cstring_second,
+            .ordinal = 3,
         },
     };
-    details::set_builder_configuration_globals(session.get(), globals);
+    configure_pointer_metadata_package(session.get(), fields, globals);
 
     GraphBuilder builder(session.get());
     auto node = builder.node<StructuredCStringConfigNode>(
@@ -630,46 +655,39 @@ TEST(GraphModules, BuilderCapturesNestedAndArrayPointerConfiguration)
         details::take_built_graph(session.get()));
     ASSERT_EQ(archive.node_configs.size(), 1u);
     auto const& relocations = archive.node_configs.front().relocations;
-    ASSERT_EQ(relocations.size(), offsets.size());
-    EXPECT_EQ(relocations[0].byte_offset, offsets[0]);
-    EXPECT_EQ(relocations[0].target, cstring_left);
-    EXPECT_EQ(relocations[1].byte_offset, offsets[1]);
-    EXPECT_EQ(relocations[1].target, cstring_right);
-    EXPECT_EQ(relocations[2].byte_offset, offsets[2]);
-    EXPECT_EQ(relocations[2].target, cstring_first);
-    EXPECT_EQ(relocations[3].byte_offset, offsets[3]);
-    EXPECT_EQ(relocations[3].target, cstring_second);
+    ASSERT_EQ(relocations.size(), fields.size());
+    for (size_t index = 0; index < fields.size(); ++index) {
+        EXPECT_EQ(relocations[index].byte_offset, fields[index].byte_offset);
+        EXPECT_EQ(relocations[index].package_root, "test.pointer-metadata-package");
+        ASSERT_TRUE(relocations[index].retained_global_ordinal.has_value());
+        EXPECT_EQ(*relocations[index].retained_global_ordinal, index);
+        EXPECT_EQ(relocations[index].addend, 0u);
+    }
 }
 
-TEST(GraphModules, BuilderRejectsAmbiguousPointerConfigurationLayouts)
+TEST(GraphModules, BuilderRejectsInvalidPointerMetadataPackages)
 {
     auto session = std::unique_ptr<
         details::BuilderSession,
         decltype(&details::iv_builder_session_destroy)>(
             details::iv_builder_session_create(),
             details::iv_builder_session_destroy);
-    std::array<std::size_t, 2> repeated_offsets{0, 0};
-    std::array malformed{details::NodeConfigLayout{
-        .node_code_key = details::node_code_key_v<CStringConfigNode>,
-        .pointer_offsets = repeated_offsets,
-    }};
+    std::array empty_root{details::BuilderPackageView{}};
     EXPECT_THROW(
-        details::set_builder_node_config_layouts(session.get(), malformed),
+        details::set_builder_packages(session.get(), empty_root),
         std::invalid_argument);
 
-    std::array<std::size_t, 1> unique_offset{0};
-    std::array duplicate_keys{
-        details::NodeConfigLayout{
-            .node_code_key = details::node_code_key_v<CStringConfigNode>,
-            .pointer_offsets = unique_offset,
-        },
-        details::NodeConfigLayout{
-            .node_code_key = details::node_code_key_v<CStringConfigNode>,
-            .pointer_offsets = unique_offset,
-        },
-    };
+    std::array invalid_globals{RetainedGlobalData{
+        .address = nullptr,
+        .size = 1,
+        .ordinal = 0,
+    }};
+    std::array invalid_global_package{details::BuilderPackageView{
+        .package_root = "test.invalid-pointer-metadata",
+        .retained_globals = invalid_globals,
+    }};
     EXPECT_THROW(
-        details::set_builder_node_config_layouts(session.get(), duplicate_keys),
+        details::set_builder_packages(session.get(), invalid_global_package),
         std::invalid_argument);
 }
 

@@ -42,33 +42,33 @@ TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventLeavesResponseUnbuilt)
     EXPECT_THROW(static_cast<void>(builder.build(1)), std::runtime_error);
 }
 
-TEST(IvPackages, NewProjectSourcesReceiveTheSameTemplateCompileDatabase)
+TEST(IvPackages, NewProjectPackagesReceiveTheSameTemplateCompileDatabase)
 {
     auto const project_root = std::filesystem::temp_directory_path()
         / "intravenous_iv_packages_compile_commands_test";
     std::filesystem::remove_all(project_root);
 
-    iv::IvPackages sources(project_root, {});
-    auto const first = sources.create_project_source("first");
-    auto const second = sources.create_project_source("second");
+    iv::IvPackages packages(project_root, {});
+    auto const first = packages.create_project_package("first");
+    auto const second = packages.create_project_package("second");
 
-    EXPECT_TRUE(std::filesystem::exists(first.source_root / "iv_package.json"));
-    EXPECT_TRUE(std::filesystem::exists(second.source_root / "iv_package.json"));
+    EXPECT_TRUE(std::filesystem::exists(first.package_root / "iv_package.json"));
+    EXPECT_TRUE(std::filesystem::exists(second.package_root / "iv_package.json"));
 
     auto read = [](std::filesystem::path const& path) {
         std::ifstream in(path, std::ios::binary);
         return std::string(std::istreambuf_iterator<char>(in), {});
     };
-    auto const first_database = read(first.source_root / "compile_commands.json");
-    auto const second_database = read(second.source_root / "compile_commands.json");
+    auto const first_database = read(first.package_root / "compile_commands.json");
+    auto const second_database = read(second.package_root / "compile_commands.json");
 
     EXPECT_FALSE(first_database.empty());
     EXPECT_EQ(second_database, first_database);
 
-    auto const listed = sources.list_sources();
+    auto const listed = packages.list_packages();
     ASSERT_EQ(listed.size(), 2u);
-    EXPECT_EQ(listed[0].source_id, first.source_id);
-    EXPECT_EQ(listed[1].source_id, second.source_id);
+    EXPECT_EQ(listed[0].package_id, first.package_id);
+    EXPECT_EQ(listed[1].package_id, second.package_id);
 
     std::filesystem::remove_all(project_root);
 }
@@ -81,7 +81,7 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
     iv::IvModuleDefinitions definitions;
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
-    definition.source_id = std::filesystem::weakly_canonical(module_root).generic_string();
+    definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
     definitions.seed_loaded_definition(std::move(definition));
     iv::IvPackages sources("/tmp", {module_root}, &definitions);
     iv::ProjectPersistence persistence("/tmp", {});
@@ -135,7 +135,7 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
     iv::IvModuleDefinitions definitions;
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
-    definition.source_id = std::filesystem::weakly_canonical(module_root).generic_string();
+    definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
     definitions.seed_loaded_definition(std::move(definition));
     iv::IvPackages sources("/tmp", {module_root}, &definitions);
     iv::ProjectPersistence persistence("/tmp", {});

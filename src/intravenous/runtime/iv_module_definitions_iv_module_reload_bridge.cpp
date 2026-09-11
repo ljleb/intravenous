@@ -10,8 +10,8 @@ IV_DEFINE_BRIDGE(iv_module_definitions_iv_module_reload_bridge)
 
 IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_definitions_iv_module_reload_bridge,
-    iv_runtime_iv_module_definitions_declarations_changed_event,
-    &IvModuleReload::handle_definition_declarations_changed);
+    iv_runtime_iv_package_declarations_changed_event,
+    &IvModuleReload::handle_package_declarations_changed);
 IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_definitions_iv_module_reload_bridge,
     iv_runtime_iv_module_reload_results_event,

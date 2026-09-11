@@ -622,7 +622,7 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
             .created = {
                 iv::IvModuleDefinition {
                     .definition_id = definition_id,
-                    .module_root = module_root,
+                    .package_root = module_root,
                     .module_refs = old_module_refs,
                     .root = iv::WeakTypeErasedNode(old_root),
                 },
@@ -639,7 +639,7 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
             .updated = {
                 iv::IvModuleDefinition {
                     .definition_id = definition_id,
-                    .module_root = module_root,
+                    .package_root = module_root,
                     .root = iv::WeakTypeErasedNode(new_root),
                 },
             },

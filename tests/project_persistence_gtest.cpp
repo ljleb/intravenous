@@ -258,9 +258,9 @@ struct LocalCmakeSources {
     {
         auto const root = std::filesystem::weakly_canonical(workspace);
         definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
-            .source_id = root.generic_string(),
+            .package_id = root.generic_string(),
             .definition_id = root.generic_string(),
-            .module_root = root,
+            .package_root = root,
             .module_id = std::string(local_cmake_module_id),
         });
     }
@@ -299,7 +299,7 @@ iv::IvModuleInstance make_instance_with_ports()
     iv::IvModuleInstance instance {};
     instance.instance_id = "instance:graph";
     instance.definition_id = "definition:graph";
-    instance.module_root = std::filesystem::path("/tmp/module");
+    instance.package_root = std::filesystem::path("/tmp/module");
     instance.module_id = "iv.test.module";
 
     iv::IntrospectionVirtualNode node {};
@@ -1119,11 +1119,11 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
     builder.add_iv_module_instances({
         iv::IvModuleInstanceInfo{
             .instance_id = "b",
-            .module_root = workspace,
+            .package_root = workspace,
         },
         iv::IvModuleInstanceInfo{
             .instance_id = "a",
-            .module_root = workspace,
+            .package_root = workspace,
         },
     });
     builder.add_configured_lane_connections({

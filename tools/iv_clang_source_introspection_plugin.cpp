@@ -1079,7 +1079,7 @@ public:
             declaration->getInit()->IgnoreParenImpCasts());
         if (!initializer || initializer->getNumInits() < 10) return true;
 
-        auto expression = [&](unsigned index) -> Expr* {
+        auto expression = [&](unsigned index) -> Expr const* {
             return initializer->getInit(index)->IgnoreParenImpCasts();
         };
         auto const* literal = dyn_cast<StringLiteral>(expression(1));
@@ -1097,7 +1097,7 @@ public:
         }
 
         if (is_module) {
-            Expr* implementation = expression(7);
+            Expr const* implementation = expression(7);
             if (auto const* address = dyn_cast<UnaryOperator>(implementation)) {
                 implementation = address->getSubExpr()->IgnoreParenImpCasts();
             }
@@ -1106,7 +1106,7 @@ public:
                     context_, reference->getDecl());
             }
         } else {
-            Expr* compiler_record = expression(9);
+            Expr const* compiler_record = expression(9);
             if (auto const* address = dyn_cast<UnaryOperator>(compiler_record)) {
                 compiler_record = address->getSubExpr()->IgnoreParenImpCasts();
             }

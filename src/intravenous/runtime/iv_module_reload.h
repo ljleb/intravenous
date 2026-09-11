@@ -53,6 +53,11 @@ class IvModuleReload {
     IvModuleReloadResults pending_results;
     DependencyWatcher watcher;
 
+    // Bridge-only owners may intentionally have no startup configuration.
+    // Construct the persistent loader only when there is a package to load.
+    // Once created it remains the same loader, preserving its shared ORC JIT
+    // and the lifetime of previously configured package revisions.
+    [[nodiscard]] ModuleLoader& ensure_loader();
     [[nodiscard]] IvModuleReloadResults reload_packages(
         std::vector<IvPackageDeclaration> const &declarations);
     void refresh_watched_dependencies_locked();

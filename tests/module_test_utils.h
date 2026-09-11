@@ -41,7 +41,7 @@ namespace iv::test {
 
     inline std::filesystem::path repo_root()
     {
-        return std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path();
+        return std::filesystem::path(IV_CONFIGURED_SOURCE_DIR);
     }
 
     inline std::filesystem::path test_modules_root()
@@ -465,17 +465,18 @@ namespace iv::test {
 
     inline iv::IvModuleReloadedDefinition load_runtime_iv_module_definition(
         iv::StartupConfigState const& config,
-        std::filesystem::path module_root)
+        std::filesystem::path package_root)
     {
-        auto const normalized_module_root =
-            std::filesystem::weakly_canonical(module_root).lexically_normal();
+        auto const normalized_package_root =
+            std::filesystem::weakly_canonical(package_root).lexically_normal();
         auto const load_lock = ScopedFileLock(
-            runtime_module_cache_root() / ("load_" + stable_path_hash(normalized_module_root) + ".lock"));
+            runtime_module_cache_root() / ("load_" + stable_path_hash(normalized_package_root) + ".lock"));
         iv::ModuleLoader loader(config.discovery_start, config.search_roots, config.toolchain);
-        auto loaded_graph = loader.load_package_definitions(module_root).front();
+        auto loaded_graph = loader.load_package_definitions(package_root).front();
         return iv::IvModuleReloadedDefinition{
+            .package_id = normalized_package_root.generic_string(),
             .definition_id = loaded_graph.module_id,
-            .module_root = normalized_module_root,
+            .package_root = normalized_package_root,
             .module_id = loaded_graph.module_id,
             .introspection = loaded_graph.introspection,
             .dependencies = loaded_graph.dependencies,
@@ -485,16 +486,17 @@ namespace iv::test {
     }
 
     inline iv::IvModuleReloadedDefinition make_loaded_definition(
-        std::filesystem::path module_root,
+        std::filesystem::path package_root,
         std::string module_id = "iv.test.module",
         iv::GraphIntrospectionMetadata introspection = {},
         std::vector<iv::ModuleDependency> dependencies = {})
     {
-        auto const normalized_module_root =
-            std::filesystem::weakly_canonical(module_root).lexically_normal();
+        auto const normalized_package_root =
+            std::filesystem::weakly_canonical(package_root).lexically_normal();
         return iv::IvModuleReloadedDefinition{
+            .package_id = normalized_package_root.generic_string(),
             .definition_id = module_id,
-            .module_root = normalized_module_root,
+            .package_root = normalized_package_root,
             .module_id = std::move(module_id),
             .introspection = std::move(introspection),
             .dependencies = std::move(dependencies),

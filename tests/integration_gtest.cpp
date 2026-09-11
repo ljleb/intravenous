@@ -406,9 +406,9 @@ namespace {
     auto const created = instances.create_instance(
         "iv.test.graph_input_module",
         std::filesystem::weakly_canonical(workspace));
-    EXPECT_TRUE(reload.has_dirty_definitions());
+    EXPECT_TRUE(reload.has_dirty_packages());
     EXPECT_FALSE(reload_witness.results.has_value());
-    reload.compile_dirty_definitions();
+    reload.compile_dirty_packages();
     EXPECT_TRUE(reload.has_pending_results());
     reload.apply_pending_results();
 

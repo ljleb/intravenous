@@ -17,7 +17,10 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Linker/Linker.h"
+#include "llvm/Object/Archive.h"
+#include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -118,18 +121,6 @@ std::string error_string(Error error)
     return result;
 }
 
-template<class T>
-T take_expected(Expected<T> value, std::string_view context)
-{
-    if (!value) fail(std::string(context) + ": " + error_string(value.takeError()));
-    return std::move(*value);
-}
-
-void check_error(Error error, std::string_view context)
-{
-    if (error) fail(std::string(context) + ": " + error_string(std::move(error)));
-}
-
 Options parse_options(int argc, char** argv)
 {
     Options result;
@@ -194,10 +185,75 @@ bool try_parse_bitcode(
     return true;
 }
 
+bool try_parse_bitcode(
+    MemoryBufferRef buffer,
+    LLVMContext& context,
+    std::unique_ptr<Module>& output)
+{
+    auto module = parseBitcodeFile(buffer, context);
+    if (!module) {
+        consumeError(module.takeError());
+        return false;
+    }
+    output = std::move(*module);
+    return true;
+}
+
 struct LinkedModule {
     std::unique_ptr<Module> module;
     std::vector<std::filesystem::path> bitcode_inputs;
 };
+
+void link_input_module(
+    LinkedModule& result,
+    std::unique_ptr<Module> input,
+    std::filesystem::path const& input_path)
+{
+    if (!result.module) {
+        result.module = std::move(input);
+    } else if (Linker::linkModules(*result.module, std::move(input))) {
+        fail("LLVM link failed while combining '" + input_path.string() + "'");
+    }
+}
+
+void link_bitcode_archive(
+    std::filesystem::path const& path,
+    LLVMContext& context,
+    LinkedModule& result)
+{
+    auto buffer = MemoryBuffer::getFile(path.string());
+    if (!buffer) {
+        fail("cannot read LLVM archive '" + path.string() + "': "
+             + buffer.getError().message());
+    }
+    auto archive = object::Archive::create((*buffer)->getMemBufferRef());
+    if (!archive) {
+        fail("cannot read LLVM archive '" + path.string() + "': "
+             + error_string(archive.takeError()));
+    }
+
+    Error child_error = Error::success();
+    std::size_t member_count = 0;
+    for (auto const& child : (*archive)->children(child_error)) {
+        auto member_buffer = child.getMemoryBufferRef();
+        if (!member_buffer) {
+            fail("cannot read member of LLVM archive '" + path.string() + "': "
+                 + error_string(member_buffer.takeError()));
+        }
+        std::unique_ptr<Module> input;
+        if (!try_parse_bitcode(*member_buffer, context, input)) continue;
+        ++member_count;
+        link_input_module(result, std::move(input), path);
+    }
+    if (child_error) {
+        fail("cannot enumerate LLVM archive '" + path.string() + "': "
+             + error_string(std::move(child_error)));
+    }
+    if (member_count == 0) {
+        fail("LLVM archive '" + path.string() + "' contains no LLVM bitcode members");
+    }
+    result.bitcode_inputs.push_back(std::filesystem::absolute(path));
+}
 
 LinkedModule link_bitcode_inputs(
     std::span<std::string const> command,
@@ -207,14 +263,15 @@ LinkedModule link_bitcode_inputs(
     for (std::size_t i = 0; i < command.size(); ++i) {
         std::filesystem::path path(command[i]);
         if (command[i].empty() || command[i][0] == '-' || !std::filesystem::is_regular_file(path)) continue;
+        auto const extension = path.extension().string();
+        if (extension == ".a" || extension == ".lib") {
+            link_bitcode_archive(path, context, result);
+            continue;
+        }
         std::unique_ptr<Module> input;
         if (!try_parse_bitcode(path, context, input)) continue;
+        link_input_module(result, std::move(input), path);
         result.bitcode_inputs.push_back(std::filesystem::absolute(path));
-        if (!result.module) {
-            result.module = std::move(input);
-        } else if (Linker::linkModules(*result.module, std::move(input))) {
-            fail("LLVM link failed while combining '" + path.string() + "'");
-        }
     }
     if (!result.module) fail("link command contains no LLVM bitcode object inputs");
     return result;
@@ -576,17 +633,26 @@ void mark_reachable(Value const* value, SmallPtrSetImpl<GlobalValue const*>& rea
 
 void reject_node_runtime_mutable_globals(std::span<IrNodeRecord const> records)
 {
+    // node_layout_type_token<T>() deliberately uses the address of writable
+    // storage as a process-local type identity. Its value is never state and
+    // its dedicated section prevents this narrow exemption from masking
+    // ordinary mutable package globals.
+    auto const is_layout_type_token = [](GlobalVariable const& global) {
+        return global.getSection() == "iv.node_layout_type_tokens"
+            && global.getName().contains("node_layout_type_token");
+    };
     for (auto const& record : records) {
         auto const* initializer = dyn_cast_or_null<ConstantStruct>(record.initializer);
         if (!initializer || initializer->getNumOperands() != 6) {
             fail("malformed compiler record while validating node runtime globals");
         }
-        SmallPtrSet<GlobalValue const*, 64> reachable;
+        SmallPtrSet<GlobalValue const*, 32> reachable;
         mark_reachable(initializer->getOperand(1), reachable);
         for (auto const* value : reachable) {
             auto const* global = dyn_cast<GlobalVariable>(value);
             if (!global || global->isDeclaration() || global->isConstant()
-                || global->getName().starts_with("llvm.")) {
+                || global->getName().starts_with("llvm.")
+                || is_layout_type_token(*global)) {
                 continue;
             }
             fail(
@@ -607,7 +673,10 @@ std::vector<GlobalVariable*> package_definition_globals(Module& module)
 {
     std::vector<GlobalVariable*> result;
     for (auto& global : module.globals()) {
-        if (global.getSection() == iv::details::package_definition_section
+        if (global.getSection()
+                == StringRef(
+                    iv::details::package_definition_section.data(),
+                    iv::details::package_definition_section.size())
             && global.isConstant() && global.hasInitializer()) {
             result.push_back(&global);
         }
@@ -716,7 +785,7 @@ std::vector<RetainedGlobal> collect_retained_globals(
     Module& module,
     std::span<GlobalVariable* const> definitions)
 {
-    SmallPtrSet<GlobalValue const*, 64> reachable;
+    SmallPtrSet<GlobalValue const*, 32> reachable;
     for (auto* definition : definitions) mark_reachable(definition, reachable);
     if (auto* ctors = module.getGlobalVariable("llvm.global_ctors")) {
         mark_reachable(ctors, reachable);
@@ -730,7 +799,10 @@ std::vector<RetainedGlobal> collect_retained_globals(
         auto* global = dyn_cast<GlobalVariable>(const_cast<GlobalValue*>(value));
         if (!global || !global->isConstant() || global->isDeclaration()
             || !global->hasInitializer()
-            || global->getSection() == iv::details::package_definition_section
+            || global->getSection()
+                == StringRef(
+                    iv::details::package_definition_section.data(),
+                    iv::details::package_definition_section.size())
             || global->getSection() == "iv_node_types"
             || global->getName().starts_with("llvm.")) {
             continue;
@@ -869,7 +941,7 @@ void inject_package_definition_table(
     }
 
     auto* record_type = definitions.front()->getValueType();
-    for (auto const* definition : definitions) {
+    for (auto* definition : definitions) {
         if (definition->getValueType() != record_type) {
             fail("IV package definition records have inconsistent LLVM types");
         }
@@ -882,7 +954,7 @@ void inject_package_definition_table(
 
     std::vector<Constant*> values;
     values.reserve(definitions.size());
-    for (auto const* definition : definitions) {
+    for (auto* definition : definitions) {
         values.push_back(definition->getInitializer());
     }
     auto* array_type = ArrayType::get(record_type, values.size());
@@ -1087,7 +1159,7 @@ void preserve_package_code(Module& module)
         "iv_package_retained_globals",
         "iv_package_node_state_structures",
     };
-    SmallPtrSet<GlobalValue const*, 64> reachable;
+    SmallPtrSet<GlobalValue const*, 32> reachable;
     for (auto const name : entry_points) {
         auto* function = module.getFunction(name);
         if (!function || function->isDeclaration()) {
@@ -1102,11 +1174,27 @@ void preserve_package_code(Module& module)
         mark_reachable(dtors, reachable);
     }
 
+    // llvm.compiler.used is already a code-generation root. Do not add one
+    // of its COMDAT members to llvm.used a second time: the two retention
+    // lists have different lowering paths, and duplicate membership can make
+    // the backend emit a COMDAT symbol twice.
+    SmallVector<GlobalValue*, 32> compiler_used;
+    collectUsedGlobalVariables(module, compiler_used, true);
+    SmallPtrSet<GlobalValue const*, 32> compiler_used_values;
+    for (auto* value : compiler_used) compiler_used_values.insert(value);
+
     SmallVector<GlobalValue*, 64> used;
     for (auto const* value : reachable) {
         if (!value->isDeclaration()
+            && !compiler_used_values.contains(value)
             && value->getName() != "llvm.used"
-            && value->getName() != "llvm.compiler.used") {
+            && value->getName() != "llvm.compiler.used"
+            // These appending globals are special LLVM intrinsics, not
+            // ordinary GlobalValues that may appear in llvm.used. Their
+            // referenced constructor/destructor functions are already in
+            // reachable and are added below instead.
+            && value->getName() != "llvm.global_ctors"
+            && value->getName() != "llvm.global_dtors") {
             used.push_back(const_cast<GlobalValue*>(value));
         }
     }
@@ -1114,6 +1202,15 @@ void preserve_package_code(Module& module)
     legacy::PassManager passes;
     passes.add(createGlobalDCEPass());
     passes.run(module);
+}
+
+void verify_finalized_package(Module const& module)
+{
+    std::string diagnostics;
+    raw_string_ostream stream(diagnostics);
+    if (!verifyModule(module, &stream)) return;
+    stream.flush();
+    fail("finalized IV package LLVM is invalid:\n" + diagnostics);
 }
 
 
@@ -1176,6 +1273,7 @@ int finalize(Options options)
     inject_package_configuration_metadata(
         package, metadata, state_structures, retained_globals);
     preserve_package_code(package);
+    verify_finalized_package(package);
     timings.finish_stage("package_metadata_inject", stage_started_at);
 
     stage_started_at = timings.start_stage();

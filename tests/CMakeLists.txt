@@ -24,6 +24,8 @@ function(add_iv_gtest target source)
     endif()
 
     target_compile_features(${target} PRIVATE cxx_std_23)
+    target_compile_definitions(${target} PRIVATE
+        IV_CONFIGURED_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     set_target_properties(${target} PROPERTIES
         CXX_STANDARD 23
         CXX_STANDARD_REQUIRED ON
@@ -77,6 +79,10 @@ add_iv_gtest(
 add_iv_gtest(
     intravenous_module_build_behavior_tests
     module_build_behavior_gtest.cpp
+    ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
+add_iv_gtest(
+    intravenous_module_package_dependencies_tests
+    module_package_dependencies_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
     intravenous_configured_graph_binary_archive_tests
@@ -162,6 +168,8 @@ add_executable(intravenous_node_layout_storage
 )
 
 target_compile_features(intravenous_node_layout_storage PRIVATE cxx_std_23)
+target_compile_definitions(intravenous_node_layout_storage PRIVATE
+    IV_CONFIGURED_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 set_target_properties(intravenous_node_layout_storage PROPERTIES
     CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON

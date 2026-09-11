@@ -281,14 +281,14 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
             iv::IvModuleInstanceInfo{
                 .instance_id = "instance:1",
                 .definition_id = "/tmp/module-a",
-                .module_root = "/tmp/module-a",
+                .package_root = "/tmp/module-a",
                 .realized = true,
                 .module_id = "module.a",
             },
             iv::IvModuleInstanceInfo{
                 .instance_id = "instance:2",
                 .definition_id = "/tmp/module-b",
-                .module_root = "/tmp/module-b",
+                .package_root = "/tmp/module-b",
                 .realized = false,
             },
         });

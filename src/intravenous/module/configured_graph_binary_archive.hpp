@@ -4,14 +4,17 @@
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/module/abi.h>
+#include <intravenous/node/config_relocations.h>
 #include <intravenous/node/node_state_structure.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -20,6 +23,23 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+namespace iv {
+
+struct ConfiguredNodeConfigBytes {
+    std::vector<std::byte> bytes{};
+    std::size_t alignment = 1;
+    NodeConfigRelocations relocations{};
+};
+
+// This is the exact data copied into the finalized module. The graph archive
+// has native scalar fields; only strings and ranges have explicit lengths.
+struct SerializedConfiguredGraph {
+    std::vector<std::byte> bytes{};
+    std::vector<ConfiguredNodeConfigBytes> node_configs{};
+};
+
+} // namespace iv
 
 namespace iv::binary_wire_details {
 
@@ -540,17 +560,36 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
 inline ConfiguredGraph deserialize_binary_configured_graph(
     std::span<std::byte const> bytes,
     std::span<details::NodeCompilerRecord const> node_types,
-    std::span<ModuleNodeConfigRecord const> node_configs,
+    std::span<ConfiguredNodeConfigBytes const> node_configs,
     std::span<std::shared_ptr<void const> const> node_config_storage = {})
 {
     using namespace binary_wire_details;
     if (!node_config_storage.empty() && node_config_storage.size() != node_configs.size())
-        throw std::runtime_error("module node config storage count does not match config table");
+        throw std::runtime_error(
+            "configured graph node config storage count does not match config table");
     Reader reader(bytes);
     if (reader.pod<std::uint32_t>() != archive_magic)
         throw std::runtime_error("unsupported configured graph archive magic");
     if (reader.pod<std::uint32_t>() != archive_version)
         throw std::runtime_error("unsupported configured graph archive version");
+    auto make_owned_config_storage = [](ConfiguredNodeConfigBytes const& config) {
+        if (config.alignment == 0 || !std::has_single_bit(config.alignment)) {
+            throw std::runtime_error(
+                "serialized node config has an invalid alignment");
+        }
+        auto const allocation_alignment = std::max(
+            config.alignment, alignof(std::max_align_t));
+        auto* storage = ::operator new(
+            config.bytes.size(), std::align_val_t{allocation_alignment});
+        std::memcpy(storage, config.bytes.data(), config.bytes.size());
+        return std::shared_ptr<void const>(
+            storage,
+            [allocation_alignment](void const* pointer) {
+                ::operator delete(
+                    const_cast<void*>(pointer),
+                    std::align_val_t{allocation_alignment});
+            });
+    };
     auto identity = reader.string();
     auto const bundle_count = reader.count();
     std::vector<ConfiguredNodeBundleRecord> bundles;
@@ -568,13 +607,20 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             auto const& config = node_configs[ordinal];
             record.node_size = reader.size();
             record.node_alignment = reader.size();
-            if (config.size != record.node_size || config.alignment < record.node_alignment)
-                throw std::runtime_error("module node config layout does not match configured graph");
+            if (config.bytes.size() != record.node_size
+                || config.alignment < record.node_alignment) {
+                throw std::runtime_error(
+                    "serialized node config layout does not match configured graph");
+            }
             record.node_storage = node_config_storage.empty()
-                ? std::shared_ptr<void const>(config.data, [](void const*) {})
+                ? make_owned_config_storage(config)
                 : node_config_storage[ordinal];
+            if (!record.node_storage) {
+                throw std::runtime_error(
+                    "configured graph has null node configuration storage");
+            }
             record.operations.runtime = details::make_runtime_operations(
-                find_type(node_types, record.code_key), config.data);
+                find_type(node_types, record.code_key), record.node_storage.get());
             if (reader.flag()) record.lifetime.ttl_samples = reader.size();
             record.type_identity = reader.string();
             record.reflected_type_name = reader.string();

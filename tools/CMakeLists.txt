@@ -37,6 +37,7 @@ llvm_map_components_to_libnames(IV_PACKAGE_FINALIZER_LLVM_LIBS
     bitreader
     core
     linker
+    object
     passes
     support
     target)

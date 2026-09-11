@@ -62,7 +62,7 @@ iv::IvModuleDefinition make_definition(std::filesystem::path module_root)
     auto const normalized = std::filesystem::weakly_canonical(module_root).lexically_normal();
     return iv::IvModuleDefinition{
         .definition_id = std::string(module_id),
-        .module_root = normalized,
+        .package_root = normalized,
         .module_id = "iv.test.module",
     };
 }
@@ -105,7 +105,7 @@ TEST_F(IvModuleInstancesTest, CreateInstancePublishesRequiredDefinitionAndListCh
     ASSERT_TRUE(witness.required_diff.has_value());
     ASSERT_EQ(witness.required_diff->created.size(), 1u);
     EXPECT_EQ(witness.required_diff->created.front().definition_id, module_id);
-    EXPECT_EQ(witness.required_diff->created.front().module_root, module_root);
+    EXPECT_EQ(witness.required_diff->created.front().package_root, module_root);
 
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 1u);
@@ -130,7 +130,7 @@ TEST_F(IvModuleInstancesTest, CreateSecondInstanceForSameDefinitionRepublishesLo
     ASSERT_TRUE(witness.required_diff.has_value());
     ASSERT_EQ(witness.required_diff->updated.size(), 1u);
     EXPECT_EQ(witness.required_diff->updated.front().definition_id, module_id);
-    EXPECT_EQ(witness.required_diff->updated.front().module_root, module_root);
+    EXPECT_EQ(witness.required_diff->updated.front().package_root, module_root);
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 2u);
 }
@@ -154,7 +154,7 @@ TEST_F(IvModuleInstancesTest, SameDefinitionIdAtNewRootRepublishesUpdatedRequire
     ASSERT_TRUE(witness.required_diff.has_value());
     ASSERT_EQ(witness.required_diff->updated.size(), 1u);
     EXPECT_EQ(witness.required_diff->updated.front().definition_id, module_id);
-    EXPECT_EQ(witness.required_diff->updated.front().module_root, second_root);
+    EXPECT_EQ(witness.required_diff->updated.front().package_root, second_root);
 
     auto const listed = instances.list_instances();
     ASSERT_EQ(listed.size(), 2u);
@@ -186,27 +186,27 @@ TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourc
     iv::IvModuleDefinitions definitions;
     auto loaded = iv::test_support::make_loaded_definition(
         moved_root, std::string(module_id));
-    loaded.source_id = std::filesystem::weakly_canonical(moved_root).generic_string();
+    loaded.package_id = std::filesystem::weakly_canonical(moved_root).generic_string();
     definitions.seed_loaded_definition(std::move(loaded));
     iv::IvPackages sources(workspace, {}, &definitions);
 
     (void)instances.create_instance(module_id, stale_root);
     witness.reset();
 
-    instances.refresh_source_roots(sources);
+    instances.refresh_package_roots(sources);
 
     auto const expected_root = std::filesystem::weakly_canonical(moved_root);
     ASSERT_TRUE(witness.required_diff.has_value());
     ASSERT_EQ(witness.required_diff->updated.size(), 1u);
     EXPECT_EQ(witness.required_diff->updated.front().definition_id, module_id);
-    EXPECT_EQ(witness.required_diff->updated.front().module_root, expected_root);
+    EXPECT_EQ(witness.required_diff->updated.front().package_root, expected_root);
 
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 1u);
-    EXPECT_EQ(witness.listed_instances->front().module_root, expected_root);
+    EXPECT_EQ(witness.listed_instances->front().package_root, expected_root);
 }
 
-TEST_F(IvModuleInstancesTest, SourceDiscoveryListsPackagesWithoutScanningRegistrations)
+TEST_F(IvModuleInstancesTest, PackageDiscoveryListsPackagesWithoutScanningRegistrations)
 {
     auto const workspace =
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_many_source_modules");
@@ -224,12 +224,12 @@ TEST_F(IvModuleInstancesTest, SourceDiscoveryListsPackagesWithoutScanningRegistr
         "IV_MODULE(\"iv.test.module.secondary\", secondary);\n");
 
     iv::IvPackages sources(workspace, {});
-    auto const discovered = sources.list_sources();
+    auto const discovered = sources.list_packages();
 
     ASSERT_EQ(discovered.size(), 1u);
     auto const expected_root = std::filesystem::weakly_canonical(source_root);
-    EXPECT_EQ(discovered.front().source_root, expected_root);
-    EXPECT_EQ(discovered.front().source_id, expected_root.generic_string());
+    EXPECT_EQ(discovered.front().package_root, expected_root);
+    EXPECT_EQ(discovered.front().package_id, expected_root.generic_string());
 }
 
 TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPublishesDiff)

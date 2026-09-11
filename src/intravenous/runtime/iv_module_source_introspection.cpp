@@ -850,7 +850,7 @@ void IvModuleSourceIntrospection::handle_iv_module_definitions_changed(
             build_graph_introspection_index(
                 definition.definition_id,
                 definition.introspection,
-                definition.module_root,
+                definition.package_root,
                 definition.module_id,
                 definition.dependencies);
     }
@@ -860,7 +860,7 @@ void IvModuleSourceIntrospection::handle_iv_module_definitions_changed(
             build_graph_introspection_index(
                 definition.definition_id,
                 definition.introspection,
-                definition.module_root,
+                definition.package_root,
                 definition.module_id,
                 definition.dependencies);
     }
@@ -896,7 +896,7 @@ void IvModuleSourceIntrospection::handle_iv_module_instance_builders_completed(
         instances.push_back(IvModuleInstanceInfo{
             .instance_id = instance->instance_id,
             .definition_id = instance->definition_id,
-            .module_root = instance->module_root,
+            .package_root = instance->package_root,
             .default_silence_ttl_samples = instance->default_silence_ttl_samples,
             .realized = true,
             .module_id = instance->module_id,

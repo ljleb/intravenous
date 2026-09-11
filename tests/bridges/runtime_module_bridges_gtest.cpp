@@ -82,8 +82,9 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionForwardsWhenB
         startup,
         std::filesystem::weakly_canonical(workspace));
     definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
+        .package_id = loaded.package_id,
         .definition_id = loaded.definition_id,
-        .module_root = loaded.module_root,
+        .package_root = loaded.package_root,
         .module_id = loaded.module_id,
         .introspection = loaded.introspection,
         .dependencies = loaded.dependencies,

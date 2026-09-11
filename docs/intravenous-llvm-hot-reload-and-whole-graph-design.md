@@ -306,11 +306,40 @@ The system must preserve both:
 - the default IV module CMake project; and
 - user-provided/custom CMake environments.
 
-The finalizer is a linker launcher/interceptor rather than a replacement build system. It consumes the real link command and must preserve custom:
+`iv_add_package(target)` exposes `target` as an ordinary CMake **OBJECT**
+library, while `${target}__finalized` produces the `.ivpkg.bc` artifact.  This
+keeps the package's own CMake authoritative: custom projects may use normal
+`target_compile_options`, `target_include_directories`,
+`target_compile_definitions`, and `target_link_libraries` calls without
+creating a package DSO.
+`${target}__finalized` exists as soon as `iv_add_package()` returns, so custom
+CMake may add its own dependency edges before IV collects the completed link
+requirements at the end of that directory.
+
+Those link requirements intentionally have three distinct meanings:
+
+- an OBJECT library or full-LTO STATIC library is an **LLVM input**. Its
+  objects/archive members are linked into the package bitcode by the finalizer;
+- a SHARED, MODULE, or imported native-library target is a **dynamic native
+  dependency**. CMake emits its resolved library path beside the artifact, and
+  the loader installs it as a symbol generator in that package revision's ORC
+  `JITDylib`;
+- an INTERFACE target or bare CMake link item is a **header/usage
+  requirement**. It keeps its ordinary CMake compile semantics and does not
+  imply that native code is copied or loaded.
+
+For ambiguous external paths, package CMake must say which meaning it intends
+with `iv_package_add_llvm_inputs(target ...)` or
+`iv_package_add_dynamic_libraries(target ...)`.  A native archive with no LLVM
+bitcode members is an error, rather than silently being treated as either kind
+of dependency.  This makes native ownership explicit and avoids quietly
+recreating a per-package operating-system DSO boundary.
+
+This preserves custom:
 
 - compile definitions;
 - library search paths;
-- linked native libraries;
+- native-library declarations;
 - JUCE dependencies;
 - platform flags;
 - arbitrary user CMake configuration.
@@ -319,11 +348,17 @@ The future registry/source design must not regress this property.
 
 ### 4.5 Generation loading remains useful
 
-The current loader builds a signature-addressed source artifact, loads it,
-validates exported ABI/data, and holds the artifact references alive for every
-realization that uses them.  A changed source therefore receives a new DSO
-path while graphs that still use an earlier source generation retain the old
-artifact.
+The current loader builds a signature-addressed `.ivpkg.bc` source artifact,
+adds it to one shared `LLJIT` in a new package-revision `JITDylib`, validates
+its exported ABI/data, and holds its resource tracker alive for every
+realization that uses it. A changed source therefore receives a new ORC
+revision while graphs that still use an earlier source generation retain the
+old code and its dynamic-library generators.
+
+`iv_builder` is the one project runtime DSO. Package artifacts are LLVM in the
+shared ORC, not operating-system DSOs. Their `JITDylib`s resolve `iv_builder`
+explicitly, then package-declared dynamic native libraries, then ordinary
+current-process symbols.
 
 Even if the eventual realtime executor becomes a generated project kernel, the general generation model remains useful for:
 
@@ -971,12 +1006,13 @@ public ports. Realizations may later be memoized by definition revision,
 encoded arguments, and relevant retained-global revisions.
 ```
 
-The current compatibility implementation retains configuration entrypoints in the
-signature-addressed source DSO and invokes them directly once all participating
-DSOs are loaded.  It does **not** yet retain a separately executable O0 ORC
-module across reloads.  Splitting that reusable O0 artifact from the native
-compatibility artifact remains the intended cache refinement, not a property
-to assume from the current DSO implementation.
+The current compatibility implementation retains configuration entrypoints in
+the signature-addressed `.ivpkg.bc` artifact and invokes them from the shared
+ORC after all participating package revisions are loaded. Each loaded revision
+has a resource tracker and remains alive through configured-graph `ModuleRef`
+ownership, so old and new revisions can coexist without pointer rewriting.
+The remaining disk boundary is the finalized bitcode cache; replacing Clang
+compilation/finalization with a persistent in-memory service is separate work.
 
 If downstream work later discovers it needs information currently present only in `BuilderSession`, that information should be added to the durable configured result rather than making the mutable session persistent.
 

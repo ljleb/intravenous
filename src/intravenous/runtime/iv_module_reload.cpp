@@ -114,18 +114,28 @@ IvModuleReloadResults coalesce_results_by_package(IvModuleReloadResults results)
 
 IvModuleReload::IvModuleReload(StartupConfigState startup_config_)
     : startup_config(std::move(startup_config_)),
-      loader_(std::make_unique<ModuleLoader>(
-          startup_config.discovery_start,
-          startup_config.search_roots,
-          startup_config.toolchain)),
       watcher(make_dependency_watcher())
 {}
+
+ModuleLoader& IvModuleReload::ensure_loader()
+{
+    std::scoped_lock lock(mutex);
+    if (!loader_) {
+        loader_ = std::make_unique<ModuleLoader>(
+            startup_config.discovery_start,
+            startup_config.search_roots,
+            startup_config.toolchain);
+    }
+    return *loader_;
+}
 
 void IvModuleReload::set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
 {
     std::scoped_lock lock(mutex);
     startup_config.toolchain = toolchain;
-    loader_->set_toolchain_config(std::move(toolchain));
+    if (loader_) {
+        loader_->set_toolchain_config(std::move(toolchain));
+    }
 }
 
 ModuleLoaderToolchainConfig IvModuleReload::toolchain_config() const
@@ -214,10 +224,11 @@ IvModuleReloadResults IvModuleReload::reload_packages(
 #endif
 
     IvModuleReloadResults results;
+    auto& loader = ensure_loader();
 
     for (auto const &declaration : declarations) {
         try {
-            auto loaded_package = loader_->load_package(declaration.package_root);
+            auto loaded_package = loader.load_package(declaration.package_root);
             auto dependencies = std::move(loaded_package.dependencies);
             {
                 std::scoped_lock lock(mutex);

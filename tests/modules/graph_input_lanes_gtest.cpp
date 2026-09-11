@@ -82,7 +82,7 @@ iv::IvModuleInstance make_instance_base()
     iv::IvModuleInstance instance {};
     instance.instance_id = "instance:1";
     instance.definition_id = "definition:1";
-    instance.module_root = std::filesystem::path("/tmp/module");
+    instance.package_root = std::filesystem::path("/tmp/module");
     instance.module_id = "iv.test.module";
     return instance;
 }

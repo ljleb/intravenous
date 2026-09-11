@@ -131,14 +131,14 @@ namespace iv {
     struct ProjectMessageNotification {
         std::string level = "info";
         std::string message{};
-        std::filesystem::path module_root{};
+        std::filesystem::path package_root{};
     };
 
     struct ProjectStatusNotification {
         std::string level = "info";
         std::string code{};
         std::string message{};
-        std::filesystem::path module_root{};
+        std::filesystem::path package_root{};
         std::vector<std::string> created_node_ids{};
         std::vector<std::string> deleted_node_ids{};
     };

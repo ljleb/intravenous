@@ -4,6 +4,7 @@
 #include <intravenous/module/package_manifest.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/compat.h>
+#include <intravenous/graph/builder.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/graph/node.h>
@@ -87,6 +88,7 @@ struct LoadedPackageCode {
     std::string id;
     std::string package_root;
     std::filesystem::path bitcode_path;
+    std::vector<std::filesystem::path> dynamic_libraries;
     std::shared_ptr<SharedPackageJit> shared_jit;
     llvm::orc::JITDylib* jit_dylib = nullptr;
     llvm::orc::ResourceTrackerSP resources{};
@@ -180,6 +182,40 @@ std::string read_text(std::filesystem::path const &path)
         throw std::runtime_error("failed to open '" + path.string() + "'");
     }
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+std::vector<std::filesystem::path> package_dynamic_libraries(
+    std::filesystem::path const& bitcode_path)
+{
+    auto manifest = bitcode_path;
+    manifest += ".dynamic-libraries";
+    if (!std::filesystem::exists(manifest)) return {};
+    if (!std::filesystem::is_regular_file(manifest)) {
+        throw std::runtime_error(
+            "IV package dynamic-library manifest is not a regular file: '"
+            + manifest.string() + "'");
+    }
+
+    std::vector<std::filesystem::path> result;
+    std::unordered_set<std::string> seen;
+    std::istringstream lines(read_text(manifest));
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        auto library = std::filesystem::path(line);
+        if (library.is_relative()) library = manifest.parent_path() / library;
+        library = normalize(library);
+        if (!std::filesystem::is_regular_file(library)) {
+            throw std::runtime_error(
+                "IV package dynamic library listed by '" + manifest.string()
+                + "' does not exist: '" + library.string() + "'");
+        }
+        if (seen.insert(library.generic_string()).second) {
+            result.push_back(std::move(library));
+        }
+    }
+    return result;
 }
 
 void write_text_if_different(std::filesystem::path const &path, std::string const &text)
@@ -348,22 +384,6 @@ std::string quote(std::filesystem::path const &path)
     return quote_string(path.generic_string());
 }
 
-std::string cxx_string_literal(std::string_view value)
-{
-    std::string result = "\"";
-    for (char character : value) {
-        switch (character) {
-        case '\\': result += "\\\\"; break;
-        case '\"': result += "\\\""; break;
-        case '\n': result += "\\n"; break;
-        case '\r': result += "\\r"; break;
-        case '\t': result += "\\t"; break;
-        default: result += character; break;
-        }
-    }
-    return result + "\"";
-}
-
 std::filesystem::path discover_repo(std::filesystem::path start)
 {
     start = normalize(start);
@@ -426,13 +446,17 @@ std::string llvm_error_string(llvm::Error error)
 }
 
 template<class T>
-T take_llvm_expected(llvm::Expected<T> value, std::string_view context)
+decltype(auto) take_llvm_expected(llvm::Expected<T> value, std::string_view context)
 {
     if (!value) {
         throw std::runtime_error(
             std::string(context) + ": " + llvm_error_string(value.takeError()));
     }
-    return std::move(*value);
+    if constexpr (std::is_reference_v<T>) {
+        return *value;
+    } else {
+        return std::move(*value);
+    }
 }
 
 void check_llvm_error(llvm::Error error, std::string_view context)
@@ -476,7 +500,7 @@ std::shared_ptr<SharedPackageJit> create_shared_package_jit()
     return result;
 }
 
-void configure_node_type_ports(GraphBuilder& builder, NodeRef node)
+void configure_node_type_ports(GraphBuilder& builder, NodeRef& node)
 {
     for (std::size_t input = 0; input < node.sample_input_count(); ++input) {
         auto const config = builder.sample_input_config(node.node_bundle_handle(), input);
@@ -1001,6 +1025,7 @@ public:
             package->id = root.package_key;
             package->package_root = root.module_dir.generic_string();
             package->bitcode_path = bitcode_path;
+            package->dynamic_libraries = package_dynamic_libraries(bitcode_path);
             package->shared_jit = package_jit_;
             package->dependency = {
                 root.package_key,
@@ -1019,10 +1044,16 @@ public:
             }
             auto context = std::make_unique<llvm::LLVMContext>();
             llvm::orc::ThreadSafeContext thread_safe_context(std::move(context));
-            auto module = take_llvm_expected(
-                llvm::parseBitcodeFile(
-                    (*buffer)->getMemBufferRef(), *thread_safe_context.getContext()),
-                "parse finalized IV package LLVM");
+            auto module = thread_safe_context.withContextDo(
+                [&](llvm::LLVMContext* context) {
+                    if (!context) {
+                        throw std::logic_error("IV package has no LLVM context");
+                    }
+                    return take_llvm_expected(
+                        llvm::parseBitcodeFile(
+                            (*buffer)->getMemBufferRef(), *context),
+                        "parse finalized IV package LLVM");
+                });
 
             auto const suffix = package_jit_->next_package.fetch_add(
                 1, std::memory_order_relaxed);
@@ -1039,6 +1070,13 @@ public:
                     llvm::orc::DynamicLibrarySearchGenerator::Load(
                         IV_CONFIGURED_IV_BUILDER_LIBRARY, global_prefix),
                     "load iv_builder package symbol resolver"));
+            }
+            for (auto const& library : package->dynamic_libraries) {
+                auto const library_path = library.string();
+                jit_dylib.addGenerator(take_llvm_expected(
+                    llvm::orc::DynamicLibrarySearchGenerator::Load(
+                        library_path.c_str(), global_prefix),
+                    "load IV package dynamic library '" + library_path + "'"));
             }
             jit_dylib.addGenerator(take_llvm_expected(
                 llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(

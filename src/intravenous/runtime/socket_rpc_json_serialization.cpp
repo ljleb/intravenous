@@ -248,7 +248,7 @@ SocketRpcJson virtual_node_json(VirtualNodeInfo const &node)
         {"id", node.id},
         {"instanceId", node.instance_id},
         {"kind", node.kind},
-        {"sourceIdentity", node.package_identity},
+        {"sourceIdentity", node.source_identity},
         {"typeIdentity", node.type_identity},
         {"sourceSpans", live_source_spans_json(node.source_spans)},
         {"sampleInputs", virtual_ports_json(node.sample_inputs)},

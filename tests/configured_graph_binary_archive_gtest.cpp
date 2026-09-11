@@ -21,7 +21,6 @@ struct ArchiveFixture {
     std::array<iv::details::NodeCompilerRecord, 2> node_types{
         iv::details::node_compiler_record<iv::Constant>,
         iv::details::node_compiler_record<Pass>};
-    std::vector<iv::ModuleNodeConfigRecord> configs;
 
     ArchiveFixture()
     {
@@ -34,19 +33,12 @@ struct ArchiveFixture {
         graph.outputs("gain_out"_P = pass, "main"_P = source);
 
         archive = iv::serialize_configured_graph(std::move(graph).finish());
-        configs.reserve(archive.node_configs.size());
-        for (auto const& config : archive.node_configs) {
-            configs.push_back({
-                .data = config.bytes.data(),
-                .size = config.bytes.size(),
-                .alignment = config.alignment,
-            });
-        }
     }
 
     iv::ConfiguredGraph decode(std::span<std::byte const> bytes) const
     {
-        return iv::deserialize_configured_graph(bytes, node_types, configs);
+        return iv::deserialize_configured_graph(
+            bytes, node_types, archive.node_configs);
     }
 };
 
