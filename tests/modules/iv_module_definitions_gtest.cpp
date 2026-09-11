@@ -1,6 +1,9 @@
 #include "../module_test_utils.h"
 
+#include <intravenous/bridge.h>
 #include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_definitions_events.h>
+#include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/startup_config.h>
 
 #include <gtest/gtest.h>
@@ -24,6 +27,28 @@ iv::IvModuleReloadedDefinition source_definition(
     definition.package_id = std::move(package_id);
     return definition;
 }
+
+struct IvModuleDefinitionsWitness {
+    std::vector<iv::IvPackageDeclarationsChanged> package_declaration_changes{};
+
+    void handle_package_declarations_changed(
+        iv::IvPackageDeclarationsChanged const& change)
+    {
+        package_declaration_changes.push_back(change);
+    }
+};
+
+using namespace iv;
+IV_DECLARE_BRIDGE(
+    iv_module_definitions_witness_bridge,
+    iv::IvModuleDefinitions,
+    IvModuleDefinitionsWitness);
+IV_DEFINE_BRIDGE(iv_module_definitions_witness_bridge)
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    iv_module_definitions_witness_bridge,
+    iv_runtime_iv_package_declarations_changed_event,
+    &IvModuleDefinitionsWitness::handle_package_declarations_changed)
 }
 
 TEST(IvModuleDefinitions, SeedLoadedDefinitionPublishesLoadedSnapshot)
@@ -106,4 +131,46 @@ TEST(IvModuleDefinitions, PackageReloadReplacesItsCompleteModuleSet)
     ASSERT_EQ(loaded.size(), 2u);
     EXPECT_EQ(loaded[0].module_id, "iv.test.b");
     EXPECT_EQ(loaded[1].module_id, "iv.test.c");
+}
+
+
+TEST(IvModuleDefinitions, RequiredDefinitionsPropagateOneBatchedPackageDeclarationChange)
+{
+    auto const first_package =
+        fresh_module_fixture_workspace("iv_module_definitions_required_batch_a");
+    auto const second_package =
+        fresh_module_fixture_workspace("iv_module_definitions_required_batch_b");
+
+    iv::IvModuleDefinitions definitions;
+    IvModuleDefinitionsWitness witness;
+    iv_module_definitions_witness_bridge::scope witness_scope{definitions, witness};
+
+    definitions.handle_required_definitions_changed(
+        iv::IvModuleRequiredDefinitionsChanged{
+            .created = {
+                {.definition_id = "iv.test.a", .package_root = first_package},
+                {.definition_id = "iv.test.b", .package_root = first_package},
+            },
+            .updated = {
+                {.definition_id = "iv.test.c", .package_root = second_package},
+            },
+        });
+
+    ASSERT_EQ(witness.package_declaration_changes.size(), 1u);
+    auto const& change = witness.package_declaration_changes.front();
+    EXPECT_EQ(change.created.size(), 2u);
+    EXPECT_TRUE(change.updated.empty());
+    EXPECT_TRUE(change.deleted_package_ids.empty());
+
+    auto const first_root = std::filesystem::weakly_canonical(first_package);
+    auto const second_root = std::filesystem::weakly_canonical(second_package);
+    auto contains_root = [&](std::filesystem::path const& root) {
+        return std::ranges::any_of(
+            change.created,
+            [&](iv::IvPackageDeclaration const& declaration) {
+                return declaration.package_root == root;
+            });
+    };
+    EXPECT_TRUE(contains_root(first_root));
+    EXPECT_TRUE(contains_root(second_root));
 }

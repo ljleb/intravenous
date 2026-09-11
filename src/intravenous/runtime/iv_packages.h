@@ -1,14 +1,15 @@
 #pragma once
 
 #include <filesystem>
-#include <optional>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace iv {
-class IvModuleDefinitions;
-class IvPackageLookupBuilder;
+struct IvModuleDefinitionsChanged;
+struct IvNodeTypeDefinitionsChanged;
 class SocketRpcIvPackageResultBuilder;
 class SocketRpcIvPackagesResultBuilder;
 struct CreateIvPackageRequest;
@@ -26,29 +27,31 @@ struct IvPackageInfo {
     std::vector<std::string> node_type_ids;
 };
 
+[[nodiscard]] std::vector<IvPackageInfo> discover_iv_packages(
+    std::filesystem::path const& project_root,
+    std::vector<std::filesystem::path> const& shared_roots);
+[[nodiscard]] std::vector<std::pair<std::string, std::filesystem::path>>
+discover_iv_package_declarations(
+    std::filesystem::path const& project_root,
+    std::vector<std::filesystem::path> const& shared_roots);
+
 class IvPackages {
     std::filesystem::path project_root_;
     std::vector<std::filesystem::path> shared_roots_;
-    IvModuleDefinitions const* definitions_ = nullptr;
+    mutable std::mutex mutex_;
+    std::unordered_map<std::string, std::string> module_package_ids_;
+    std::unordered_map<std::string, std::string> node_type_package_ids_;
 public:
     IvPackages(
         std::filesystem::path project_root,
-        std::vector<std::filesystem::path> shared_roots,
-        IvModuleDefinitions const* definitions = nullptr);
+        std::vector<std::filesystem::path> shared_roots);
     [[nodiscard]] std::vector<IvPackageInfo> list_packages() const;
-    // Finds the package that currently owns a published IV module. Ownership is
-    // compiler-produced and only available after a successful package build.
-    [[nodiscard]] std::optional<IvPackageInfo> find_package(
-        std::string const& module_id) const;
-    // Produces the complete package declaration snapshot. The caller applies it
-    // transactionally to the loaded package set.
-    [[nodiscard]] std::vector<std::pair<std::string, std::filesystem::path>>
-    package_declarations() const;
     [[nodiscard]] IvPackageInfo create_project_package(std::string const& name) const;
 
-    void handle_iv_package_lookup(
-        std::string const &module_id,
-        IvPackageLookupBuilder &builder) const;
+    void handle_iv_module_definitions_changed(
+        IvModuleDefinitionsChanged const& diff);
+    void handle_iv_node_type_definitions_changed(
+        IvNodeTypeDefinitionsChanged const& diff);
     void handle_socket_rpc_get_iv_packages(
         GetIvPackagesRequest const &request,
         SocketRpcIvPackagesResultBuilder &builder) const;

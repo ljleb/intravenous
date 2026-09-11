@@ -10,13 +10,12 @@
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/project_persistence_events.h>
 #include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_packages.h>
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/project_persistence_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_reload_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_packages_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_execution_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -53,25 +52,6 @@ std::string runtime_node_id(std::string_view instance_id, std::string_view virtu
 {
     return std::string(instance_id) + "\x1fvirtual:" + std::string(virtual_node_id);
 }
-
-struct ProjectIvModuleInstancesBindings {
-    iv::iv_module_instances_iv_packages_bridge::scope sources_scope;
-    iv::project_persistence_iv_module_instances_bridge::scope persistence_scope;
-
-    ProjectIvModuleInstancesBindings(
-        iv::ProjectPersistence &persistence,
-        iv::IvModuleInstances &instances,
-        iv::IvPackages &sources)
-        : sources_scope(
-              iv::iv_module_instances_iv_packages_bridge::bind(
-                  instances,
-                  sources)),
-          persistence_scope(
-              iv::project_persistence_iv_module_instances_bridge::bind(
-                  persistence,
-                  instances))
-    {}
-};
 
 struct ProjectTimelineBindings {
     iv::timeline_timeline_execution_bridge::scope timeline_execution_scope;
@@ -249,14 +229,21 @@ iv::StartupConfigState make_startup(std::filesystem::path const &workspace)
 
 constexpr std::string_view local_cmake_module_id = "iv.test.local_cmake";
 
-struct LocalCmakeSources {
+struct LocalCmakeDefinitions {
     iv::IvModuleDefinitions definitions{};
-    iv::IvPackages sources;
+    std::filesystem::path root;
+    bool seeded = false;
 
-    explicit LocalCmakeSources(std::filesystem::path const& workspace)
-        : sources(workspace, {workspace}, &definitions)
+    explicit LocalCmakeDefinitions(std::filesystem::path const& workspace)
+        : root(std::filesystem::weakly_canonical(workspace))
+    {}
+
+    void seed()
     {
-        auto const root = std::filesystem::weakly_canonical(workspace);
+        if (seeded) {
+            return;
+        }
+        seeded = true;
         definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
             .package_id = root.generic_string(),
             .definition_id = root.generic_string(),
@@ -264,14 +251,36 @@ struct LocalCmakeSources {
             .module_id = std::string(local_cmake_module_id),
         });
     }
-
-    operator iv::IvPackages&() { return sources; }
 };
 
-LocalCmakeSources local_cmake_sources(std::filesystem::path const& workspace)
+LocalCmakeDefinitions local_cmake_definitions(std::filesystem::path const& workspace)
 {
-    return LocalCmakeSources(workspace);
+    return LocalCmakeDefinitions(workspace);
 }
+
+struct ProjectIvModuleInstancesBindings {
+    iv::iv_module_definitions_iv_module_instances_bridge::scope definitions_instances_scope;
+    iv::project_persistence_iv_module_instances_bridge::scope persistence_scope;
+
+    ProjectIvModuleInstancesBindings(
+        iv::ProjectPersistence &persistence,
+        iv::IvModuleInstances &instances,
+        LocalCmakeDefinitions &definitions)
+        : definitions_instances_scope(
+              iv::iv_module_definitions_iv_module_instances_bridge::bind(
+                  definitions.definitions,
+                  instances))
+        , persistence_scope(
+              iv::project_persistence_iv_module_instances_bridge::bind(
+                  persistence,
+                  instances))
+    {
+        // Production binds app modules before the initial package definitions are
+        // published. Mirror that order so the instance module receives the same
+        // one-way batched definition snapshot used by the application.
+        definitions.seed();
+    }
+};
 
 iv::TimelineLaneBatchUpdate timeline_batch_with_two_lanes()
 {
@@ -531,7 +540,7 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidRecognizedKeyLogsErrorAndLa
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
 
     auto module_instance_bindings = ProjectIvModuleInstancesBindings(
@@ -631,7 +640,7 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidSupportedFieldTypesLogError
 
         auto const startup = make_startup(workspace);
         iv::IvModuleInstances instances;
-        auto sources = local_cmake_sources(workspace);
+        auto sources = local_cmake_definitions(workspace);
         iv::ProjectPersistence persistence(workspace, startup);
         witness.messages.clear();
 
@@ -825,7 +834,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMissingInstanceMutationAndRe
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     iv::LaneViews lane_views;
     iv::ProjectPersistence persistence(workspace, startup);
 
@@ -882,7 +891,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     iv::LaneViews lane_views;
     iv::ProjectPersistence persistence(workspace, startup);
 
@@ -923,7 +932,7 @@ TEST_F(ProjectPersistenceTest, UnknownOverrideKeysWarnAndDoNotBlockLaterCommands
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
 
     auto module_instance_bindings = ProjectIvModuleInstancesBindings(
@@ -949,7 +958,7 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     write_text(toolchain_dir / "clang", "");
 
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
     iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
@@ -1050,7 +1059,7 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     project_timeline_bindings.reset();
 
     iv::IvModuleInstances fresh_instances;
-    auto fresh_sources = local_cmake_sources(workspace);
+    auto fresh_sources = local_cmake_definitions(workspace);
     iv::Timeline fresh_timeline;
     iv::TimelineExecution fresh_execution(8, 16);
     iv::AudioDeviceLanes fresh_audio_device_lanes(48000, 8, make_audio_backend());
@@ -1542,7 +1551,7 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
 
     ProjectTimelineBindings project_timeline_bindings(
         persistence, timeline, execution);
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     auto module_instance_bindings = ProjectIvModuleInstancesBindings(
         persistence,
         instances,
@@ -1618,7 +1627,7 @@ TEST_F(ProjectPersistenceTest, RepeatedProjectSaveIsIdempotent)
     auto const workspace = mutable_module_fixture_workspace("project_save_idempotent", "local_cmake");
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     instances.create_instance(local_cmake_module_id, workspace, "instance-a");
     iv::ProjectPersistence persistence(workspace, startup);
 

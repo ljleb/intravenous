@@ -162,48 +162,29 @@ TEST_F(IvModuleInstancesTest, SameDefinitionIdAtNewRootRepublishesUpdatedRequire
     EXPECT_EQ(listed[1].definition_id, module_id);
 }
 
-TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourceRoot)
+TEST_F(IvModuleInstancesTest, DefinitionChangeMovesInstanceToPublishedPackageRoot)
 {
     auto const workspace =
-        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_refresh_source_root");
-    auto const stale_root = workspace / "modules" / "saw";
-    auto const moved_root = workspace / "modules" / "saw2";
-    std::filesystem::create_directories(moved_root);
-    iv::test_support::write_text(
-        moved_root / "iv_package.json",
-        "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
-    iv::test_support::write_text(
-        moved_root / "module.cpp",
-        "#include <intravenous/dsl.h>\n\n"
-        "void module_main(iv::GraphBuilder& g)\n"
-        "{\n"
-        "    using namespace iv;\n"
-        "    g.outputs();\n"
-        "}\n\n"
-        "IV_MODULE(\"iv.test.module\", module_main);\n");
-
+        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_move_published_root");
+    auto const stale_root = std::filesystem::weakly_canonical(workspace / "stale");
+    auto const moved_root = std::filesystem::weakly_canonical(workspace);
     iv::IvModuleInstances instances;
-    iv::IvModuleDefinitions definitions;
-    auto loaded = iv::test_support::make_loaded_definition(
-        moved_root, std::string(module_id));
-    loaded.package_id = std::filesystem::weakly_canonical(moved_root).generic_string();
-    definitions.seed_loaded_definition(std::move(loaded));
-    iv::IvPackages sources(workspace, {}, &definitions);
 
     (void)instances.create_instance(module_id, stale_root);
     witness.reset();
 
-    instances.refresh_package_roots(sources);
+    instances.handle_iv_module_definitions_changed(iv::IvModuleDefinitionsChanged{
+        .created = {make_definition(moved_root)},
+    });
 
-    auto const expected_root = std::filesystem::weakly_canonical(moved_root);
-    ASSERT_TRUE(witness.required_diff.has_value());
-    ASSERT_EQ(witness.required_diff->updated.size(), 1u);
-    EXPECT_EQ(witness.required_diff->updated.front().definition_id, module_id);
-    EXPECT_EQ(witness.required_diff->updated.front().package_root, expected_root);
-
+    // A definition publication is already authoritative about package ownership.
+    // Updating the local instance snapshot must not feed a second requirement event
+    // back into IvModuleDefinitions during the same source-event propagation.
+    EXPECT_FALSE(witness.required_diff.has_value());
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 1u);
-    EXPECT_EQ(witness.listed_instances->front().package_root, expected_root);
+    EXPECT_EQ(witness.listed_instances->front().package_root, moved_root);
+    EXPECT_TRUE(witness.listed_instances->front().realized);
 }
 
 TEST_F(IvModuleInstancesTest, PackageDiscoveryListsPackagesWithoutScanningRegistrations)

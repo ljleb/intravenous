@@ -102,7 +102,6 @@ struct IvModuleReloadedNodeType {
 
 struct IvModuleRequiredDefinitionsChanged;
 struct IvModuleReloadResults;
-class IvModuleDefinitionLookupBuilder;
 
 class IvModuleDefinitions {
 public:
@@ -136,6 +135,7 @@ private:
 
     void emit_notification(IvModuleDefinitionsNotification notification) const;
     void emit_message(std::string level, std::string message, std::filesystem::path package_root = {}) const;
+    void declare_packages(std::vector<IvPackageDeclaration> declarations);
     void rebuild_published_registry_locked(
         IvModuleDefinitionsChanged& diff,
         IvNodeTypeDefinitionsChanged& node_type_diff,
@@ -156,20 +156,11 @@ public:
 
     void handle_required_definitions_changed(
         IvModuleRequiredDefinitionsChanged const &diff);
-    void handle_iv_module_definition_lookup(
-        std::string const& definition_id,
-        IvModuleDefinitionLookupBuilder& builder) const;
     void handle_reload_results(IvModuleReloadResults const &results);
 
     void seed_loaded_definition(IvModuleReloadedDefinition loaded_definition);
 
     [[nodiscard]] std::vector<IvModuleDefinition> loaded_definitions() const;
     [[nodiscard]] std::vector<IvNodeTypeDefinition> loaded_node_types() const;
-    [[nodiscard]] std::optional<std::filesystem::path> package_root_for_module(
-        std::string const& module_id) const;
-    [[nodiscard]] std::vector<std::string> module_ids_for_package(
-        std::string const& package_id) const;
-    [[nodiscard]] std::vector<std::string> node_type_ids_for_package(
-        std::string const& package_id) const;
 };
 } // namespace iv

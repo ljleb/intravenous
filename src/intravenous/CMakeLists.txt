@@ -154,7 +154,6 @@ function(iv_add_host_runtime_objects target)
         intravenous_module_loader
         intravenous_module_watcher
         intravenous_runtime_iv_module_instances_events
-        intravenous_runtime_iv_packages_events
         intravenous_runtime_iv_module_definitions_events
         intravenous_runtime_iv_module_reload_events
         intravenous_runtime_iv_module_source_introspection_events
@@ -262,10 +261,6 @@ iv_add_linker_event_object(
     runtime/iv_module_instances_events.cpp
 )
 iv_add_linker_event_object(
-    intravenous_runtime_iv_packages_events
-    runtime/iv_packages_events.cpp
-)
-iv_add_linker_event_object(
     intravenous_runtime_iv_module_definitions_events
     runtime/iv_module_definitions_events.cpp
 )
@@ -356,6 +351,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/graph_input_lanes_timeline_bridge.cpp
     runtime/iv_module_definitions.cpp
     runtime/iv_module_definitions_iv_module_instances_bridge.cpp
+    runtime/iv_module_definitions_iv_packages_bridge.cpp
     runtime/iv_module_definitions_iv_module_reload_bridge.cpp
     runtime/iv_module_definitions_iv_module_source_introspection_bridge.cpp
     runtime/iv_module_instances.cpp
@@ -387,7 +383,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/project_persistence_audio_device_lanes_bridge.cpp
     runtime/project_persistence_project_autosave_bridge.cpp
     runtime/project_persistence_graph_input_lanes_bridge.cpp
-    runtime/iv_module_instances_iv_packages_bridge.cpp
     runtime/project_persistence_iv_module_instances_bridge.cpp
     runtime/project_persistence_iv_module_reload_bridge.cpp
     runtime/project_persistence_configured_lanes_bridge.cpp

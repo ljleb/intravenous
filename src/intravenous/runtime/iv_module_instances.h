@@ -17,7 +17,6 @@
 #include <vector>
 
 namespace iv {
-class IvPackages;
 class ProjectAckBuilder;
 class ProjectPersistenceBuilder;
 class ProjectStringBuilder;
@@ -93,6 +92,10 @@ private:
     mutable std::mutex mutex;
     std::unordered_map<std::string, DesiredInstance> desired_instances_by_id;
     std::unordered_map<std::string, IvModuleRequiredDefinition> required_definitions_by_id;
+    // Local snapshot of published definitions. This is updated only by the
+    // definitions-changed event, so instance creation never synchronously queries
+    // another app module or creates a return edge in the same event propagation.
+    std::unordered_map<std::string, IvModuleDefinition> definitions_by_id;
     std::unordered_map<std::string, IvModuleInstance> realized_instances_by_id;
     std::unordered_map<std::string, std::vector<ModuleRef>> realized_module_refs_by_id;
     std::unordered_map<std::string, WeakTypeErasedNode> realized_roots_by_id;
@@ -121,7 +124,6 @@ public:
         std::string const &instance_id,
         size_t default_silence_ttl_samples);
     void update_instances(std::vector<Update> updates);
-    void refresh_package_roots(IvPackages const &packages);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
 
     void handle_iv_module_definitions_changed(

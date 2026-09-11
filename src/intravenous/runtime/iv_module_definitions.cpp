@@ -78,38 +78,59 @@ void IvModuleDefinitions::emit_message(
     });
 }
 
+void IvModuleDefinitions::declare_packages(
+    std::vector<IvPackageDeclaration> declarations)
+{
+    std::unordered_map<std::string, IvPackageDeclaration> declarations_by_id;
+    declarations_by_id.reserve(declarations.size());
+    for (auto& declaration : declarations) {
+        if (declaration.package_id.empty()) {
+            throw std::runtime_error("IV package declaration has an empty package ID");
+        }
+        declaration.package_root = normalize_path(declaration.package_root);
+        auto const position = declarations_by_id.find(declaration.package_id);
+        if (position == declarations_by_id.end()) {
+            declarations_by_id.emplace(declaration.package_id, declaration);
+        } else if (position->second.package_root != declaration.package_root) {
+            throw std::runtime_error(
+                "IV package declaration batch contains conflicting package ID '"
+                + position->first + "'");
+        }
+    }
+
+    IvPackageDeclarationsChanged diff;
+    {
+        std::scoped_lock lock(mutex);
+        for (auto& [package_id, declaration] : declarations_by_id) {
+            auto [position, inserted] = declarations_by_package_id.emplace(
+                package_id, declaration);
+            if (inserted) {
+                diff.created.push_back(declaration);
+                continue;
+            }
+            if (position->second.package_root == declaration.package_root) continue;
+            position->second = declaration;
+            diff.updated.push_back(declaration);
+        }
+    }
+
+    if (!diff.created.empty() || !diff.updated.empty()) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_package_declarations_changed_event,
+            diff);
+    }
+}
+
 std::string IvModuleDefinitions::declare_package(
     std::string package_id,
     std::filesystem::path package_root)
 {
-    IvPackageDeclaration declaration{
+    auto result = package_id;
+    declare_packages({IvPackageDeclaration{
         .package_id = std::move(package_id),
-        .package_root = normalize_path(package_root),
-    };
-    bool inserted = false;
-    {
-        std::scoped_lock lock(mutex);
-        auto [position, was_inserted] = declarations_by_package_id.emplace(
-            declaration.package_id, declaration);
-        if (!was_inserted) {
-            if (position->second.package_root == declaration.package_root) {
-                return declaration.package_id;
-            }
-            position->second = declaration;
-        }
-        inserted = was_inserted;
-    }
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_package_declarations_changed_event,
-        IvPackageDeclarationsChanged{
-            .created = inserted
-                ? std::vector<IvPackageDeclaration>{declaration}
-                : std::vector<IvPackageDeclaration>{},
-            .updated = inserted
-                ? std::vector<IvPackageDeclaration>{}
-                : std::vector<IvPackageDeclaration>{declaration},
-        });
-    return declaration.package_id;
+        .package_root = std::move(package_root),
+    }});
+    return result;
 }
 
 void IvModuleDefinitions::sync_package_declarations(
@@ -219,29 +240,24 @@ void IvModuleDefinitions::remove_package(std::string const& package_id)
 void IvModuleDefinitions::handle_required_definitions_changed(
     IvModuleRequiredDefinitionsChanged const& diff)
 {
-    // Project persistence requests package roots for required module definitions.
-    // Published data remains keyed by stable IV module ID and explicit package ID.
-    for (auto const& required : diff.created) {
-        auto const package_root = normalize_path(required.package_root);
-        declare_package(package_root.generic_string(), package_root);
-    }
-    for (auto const& required : diff.updated) {
-        auto const package_root = normalize_path(required.package_root);
-        declare_package(package_root.generic_string(), package_root);
-    }
+    // One required-definitions event is one source-event batch. Consolidate all
+    // package declarations before propagating so IvModuleReload is entered at most
+    // once for this event, even when several definitions become required together.
+    std::vector<IvPackageDeclaration> declarations;
+    declarations.reserve(diff.created.size() + diff.updated.size());
+    auto append_required = [&](IvModuleRequiredDefinition const& required) {
+        auto package_root = normalize_path(required.package_root);
+        declarations.push_back(IvPackageDeclaration{
+            .package_id = package_root.generic_string(),
+            .package_root = std::move(package_root),
+        });
+    };
+    for (auto const& required : diff.created) append_required(required);
+    for (auto const& required : diff.updated) append_required(required);
+    declare_packages(std::move(declarations));
+
     // Package declarations stay resident after the last instance goes away so the
     // package's complete candidate set can be atomically replaced on the next edit.
-}
-
-void IvModuleDefinitions::handle_iv_module_definition_lookup(
-    std::string const& definition_id,
-    IvModuleDefinitionLookupBuilder& builder) const
-{
-    std::scoped_lock lock(mutex);
-    auto const definition = loaded_definitions_by_module_id.find(definition_id);
-    builder.succeed(definition == loaded_definitions_by_module_id.end()
-        ? std::optional<IvModuleDefinition>{}
-        : std::optional<IvModuleDefinition>{definition->second->snapshot});
 }
 
 void IvModuleDefinitions::rebuild_published_registry_locked(
@@ -518,36 +534,5 @@ std::vector<IvNodeTypeDefinition> IvModuleDefinitions::loaded_node_types() const
     return node_types;
 }
 
-std::optional<std::filesystem::path> IvModuleDefinitions::package_root_for_module(
-    std::string const& module_id) const
-{
-    std::scoped_lock lock(mutex);
-    auto const definition = loaded_definitions_by_module_id.find(module_id);
-    if (definition == loaded_definitions_by_module_id.end()) return std::nullopt;
-    return definition->second->snapshot.package_root;
-}
 
-std::vector<std::string> IvModuleDefinitions::module_ids_for_package(
-    std::string const& package_id) const
-{
-    std::scoped_lock lock(mutex);
-    auto const modules = module_ids_by_package_id.find(package_id);
-    return modules == module_ids_by_package_id.end()
-        ? std::vector<std::string>{}
-        : modules->second;
-}
-
-std::vector<std::string> IvModuleDefinitions::node_type_ids_for_package(
-    std::string const& package_id) const
-{
-    std::vector<std::string> node_type_ids;
-    std::scoped_lock lock(mutex);
-    for (auto const& [id, state] : loaded_node_types_by_id) {
-        if (state->snapshot.package_id == package_id) {
-            node_type_ids.push_back(id);
-        }
-    }
-    std::ranges::sort(node_type_ids);
-    return node_type_ids;
-}
 } // namespace iv

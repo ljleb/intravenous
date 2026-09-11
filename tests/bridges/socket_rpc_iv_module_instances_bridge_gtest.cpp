@@ -3,7 +3,8 @@
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_packages.h>
-#include <intravenous/runtime/iv_module_instances_iv_packages_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_packages_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
@@ -79,15 +80,19 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
     iv::IvModuleDefinitions definitions;
+    iv::IvPackages sources("/tmp", {module_root});
+    iv::ProjectPersistence persistence("/tmp", {});
+    iv::SocketRpcServer server("/tmp", -1);
+    auto iv_module_definitions_iv_module_instances_scope =
+        iv::iv_module_definitions_iv_module_instances_bridge::bind(
+            definitions, instances);
+    auto iv_module_definitions_iv_packages_scope =
+        iv::iv_module_definitions_iv_packages_bridge::bind(
+            definitions, sources);
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
     definitions.seed_loaded_definition(std::move(definition));
-    iv::IvPackages sources("/tmp", {module_root}, &definitions);
-    iv::ProjectPersistence persistence("/tmp", {});
-    iv::SocketRpcServer server("/tmp", -1);
-    auto iv_module_instances_iv_packages_scope =
-        iv::iv_module_instances_iv_packages_bridge::bind(instances, sources);
     auto project_persistence_iv_module_instances_scope =
         iv::project_persistence_iv_module_instances_bridge::bind(
             persistence,
@@ -133,15 +138,19 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
     iv::IvModuleDefinitions definitions;
+    iv::IvPackages sources("/tmp", {module_root});
+    iv::ProjectPersistence persistence("/tmp", {});
+    iv::SocketRpcServer server("/tmp", -1);
+    auto iv_module_definitions_iv_module_instances_scope =
+        iv::iv_module_definitions_iv_module_instances_bridge::bind(
+            definitions, instances);
+    auto iv_module_definitions_iv_packages_scope =
+        iv::iv_module_definitions_iv_packages_bridge::bind(
+            definitions, sources);
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
     definitions.seed_loaded_definition(std::move(definition));
-    iv::IvPackages sources("/tmp", {module_root}, &definitions);
-    iv::ProjectPersistence persistence("/tmp", {});
-    iv::SocketRpcServer server("/tmp", -1);
-    auto iv_module_instances_iv_packages_scope =
-        iv::iv_module_instances_iv_packages_bridge::bind(instances, sources);
     auto project_persistence_iv_module_instances_scope =
         iv::project_persistence_iv_module_instances_bridge::bind(
             persistence,

@@ -15,6 +15,7 @@
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_packages_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
@@ -41,7 +42,6 @@
 #include <intravenous/runtime/project_persistence_project_autosave_bridge.h>
 #include <intravenous/runtime/project_persistence_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_graph_input_lanes_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_packages_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_reload_bridge.h>
@@ -110,20 +110,22 @@ namespace iv {
         class IvModuleReloadWatcherService {
             IvModuleReload* reload_ = nullptr;
             IvModuleDefinitions* definitions_ = nullptr;
-            IvModuleInstances* instances_ = nullptr;
-            IvPackages* packages_ = nullptr;
+            std::filesystem::path project_root_;
+            std::vector<std::filesystem::path> shared_roots_;
+            std::optional<std::vector<std::pair<std::string, std::filesystem::path>>>
+                last_package_declarations_;
             std::optional<std::jthread> thread_ {};
 
         public:
             explicit IvModuleReloadWatcherService(
                 IvModuleReload& reload,
                 IvModuleDefinitions& definitions,
-                IvModuleInstances& instances,
-                IvPackages& packages)
+                std::filesystem::path project_root,
+                std::vector<std::filesystem::path> shared_roots)
                 : reload_(&reload)
                 , definitions_(&definitions)
-                , instances_(&instances)
-                , packages_(&packages)
+                , project_root_(std::move(project_root))
+                , shared_roots_(std::move(shared_roots))
             {
             }
 
@@ -135,9 +137,22 @@ namespace iv {
 
                 thread_.emplace([this](std::stop_token stop_token) {
                     while (!stop_token.stop_requested()) {
-                        definitions_->sync_package_declarations(
-                            packages_->package_declarations());
-                        instances_->refresh_package_roots(*packages_);
+                        auto declarations = discover_iv_package_declarations(
+                            project_root_,
+                            shared_roots_);
+                        if (!last_package_declarations_.has_value()
+                            || declarations != *last_package_declarations_) {
+                            last_package_declarations_ = declarations;
+                            definitions_->sync_package_declarations(
+                                std::move(declarations));
+                            // A package-discovery change is one complete source
+                            // event. It may reach IvModuleReload through the
+                            // definitions bridge, so do not enter Reload again
+                            // from this same polling tick.
+                            std::this_thread::sleep_for(
+                                std::chrono::milliseconds(100));
+                            continue;
+                        }
                         if (reload_->has_dirty_packages()) {
                             reload_->compile_dirty_packages();
                         } else {
@@ -295,10 +310,10 @@ namespace iv {
                 std::chrono::milliseconds(33),
                 startup.execution.block_size);
             IvModuleSourceIntrospection introspection;
+            auto const package_search_roots = parse_search_path_env();
             IvPackages iv_packages(
                 startup.workspace_root,
-                parse_search_path_env(),
-                &iv_module_definitions);
+                package_search_roots);
 
             // Construct the complete runtime first.  Binding is a separate
             // phase: constructors must not observe a partially connected
@@ -315,8 +330,8 @@ namespace iv {
             IvModuleReloadWatcherService iv_module_reload_watcher(
                 iv_module_reload,
                 iv_module_definitions,
-                iv_module_instances,
-                iv_packages);
+                startup.workspace_root,
+                package_search_roots);
             std::function<void()> shutdown = [&]() {
                 iv_module_reload_watcher.request_shutdown();
                 project_autosave_service.request_shutdown();
@@ -356,6 +371,10 @@ namespace iv {
                 iv_module_definitions_iv_module_instances_bridge::bind(
                     iv_module_definitions,
                     iv_module_instances);
+            auto iv_module_definitions_iv_packages_scope =
+                iv_module_definitions_iv_packages_bridge::bind(
+                    iv_module_definitions,
+                    iv_packages);
             auto iv_module_instances_execution_task_runner_scope =
                 iv_module_instances_execution_task_runner_bridge::bind(
                     iv_module_instances_execution,
@@ -376,10 +395,6 @@ namespace iv {
                 timeline_execution_iv_module_instances_execution_bridge::bind(
                     timeline_execution,
                     iv_module_instances_execution);
-            auto iv_module_instances_iv_packages_scope =
-                iv_module_instances_iv_packages_bridge::bind(
-                    iv_module_instances,
-                    iv_packages);
             auto iv_module_definitions_iv_module_reload_scope =
                 iv_module_definitions_iv_module_reload_bridge::bind(
                     iv_module_definitions,
@@ -495,7 +510,9 @@ namespace iv {
             // then let the compiler-produced registrations establish the
             // module-ID registry used by that request.
             iv_module_definitions.sync_package_declarations(
-                iv_packages.package_declarations());
+                discover_iv_package_declarations(
+                    startup.workspace_root,
+                    package_search_roots));
             iv_module_reload.compile_dirty_packages();
             iv_module_reload.apply_pending_results();
 

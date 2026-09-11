@@ -3,8 +3,6 @@
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/iv_module_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
-#include <intravenous/runtime/iv_packages.h>
-#include <intravenous/runtime/iv_packages_events.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/project_persistence_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -67,7 +65,8 @@ bool IvModuleInstances::realize_instance_locked(
 {
     auto const desired = desired_instances_by_id.find(instance_id);
     if (desired == desired_instances_by_id.end()
-        || desired->second.definition_id != definition.definition_id) {
+        || desired->second.definition_id != definition.definition_id
+        || desired->second.package_root != definition.package_root) {
         return false;
     }
 
@@ -169,7 +168,9 @@ std::string IvModuleInstances::create_instance(
     std::optional<std::string> requested_display_name)
 {
     IvModuleRequiredDefinitionsChanged required_diff{};
-    bool list_changed = false;
+    IvModuleInstancesChanged instance_diff{};
+    IvModuleInstanceBuildersChanged builders_diff{};
+    bool realized = false;
     auto normalized_root = normalize_path(package_root);
     auto const definition_key = std::string(definition_id);
     auto display_name = requested_display_name.value_or(definition_key);
@@ -194,7 +195,6 @@ std::string IvModuleInstances::create_instance(
             .display_name = display_name,
             .package_root = normalized_root,
         });
-        list_changed = true;
 
         if (!required_definitions_by_id.contains(definition_key)) {
             IvModuleRequiredDefinition required{
@@ -208,6 +208,16 @@ std::string IvModuleInstances::create_instance(
             required.package_root = normalized_root;
             required_diff.updated.push_back(required);
         }
+
+        auto const definition = definitions_by_id.find(definition_key);
+        if (definition != definitions_by_id.end()) {
+            realized = realize_instance_locked(
+                instance_id,
+                definition->second,
+                false,
+                instance_diff,
+                builders_diff);
+        }
     }
 
     if (!required_diff.created.empty() ||
@@ -218,40 +228,12 @@ std::string IvModuleInstances::create_instance(
             required_diff);
     }
 
-    // Definitions can already be loaded before persistence recreates the desired
-    // instance set. Query the current snapshot so this instance does not have to
-    // wait for an unrelated future package reload to become realized.
-    IvModuleDefinitionLookupBuilder definition_builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_definition_lookup_event,
-        definition_key,
-        definition_builder);
-    if (definition_builder.has_response()) {
-        auto const definition = definition_builder.definition();
-        if (definition.has_value()
-            && definition->package_root == normalized_root) {
-            IvModuleInstancesChanged instance_diff{};
-            IvModuleInstanceBuildersChanged builders_diff{};
-            bool realized = false;
-            {
-                std::scoped_lock lock(mutex);
-                realized = realize_instance_locked(
-                    instance_id,
-                    *definition,
-                    false,
-                    instance_diff,
-                    builders_diff);
-            }
-            if (realized) {
-                publish_instance_changes(
-                    std::move(instance_diff),
-                    std::move(builders_diff),
-                    true);
-                list_changed = false;
-            }
-        }
-    }
-    if (list_changed) {
+    if (realized) {
+        publish_instance_changes(
+            std::move(instance_diff),
+            std::move(builders_diff),
+            true);
+    } else {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_instances_list_changed_event,
             list_instances());
@@ -413,68 +395,25 @@ void IvModuleInstances::update_instances(std::vector<Update> updates)
     }
 }
 
-void IvModuleInstances::refresh_package_roots(IvPackages const &packages)
-{
-    IvModuleRequiredDefinitionsChanged required_diff{};
-    bool list_changed = false;
-
-    {
-        std::scoped_lock lock(mutex);
-        for (auto &entry : desired_instances_by_id) {
-            auto const package = packages.find_package(entry.second.definition_id);
-            if (!package) {
-                continue;
-            }
-            auto const package_root = normalize_path(package->package_root);
-            if (entry.second.package_root == package_root) {
-                continue;
-            }
-
-            entry.second.package_root = package_root;
-            list_changed = true;
-
-            auto required = required_definitions_by_id.find(entry.second.definition_id);
-            if (required != required_definitions_by_id.end() &&
-                required->second.package_root != package_root) {
-                required->second.package_root = package_root;
-                required_diff.updated.push_back(required->second);
-            }
-        }
-    }
-
-    if (!required_diff.created.empty() ||
-        !required_diff.updated.empty() ||
-        !required_diff.deleted_definition_ids.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_required_definitions_changed_event,
-            required_diff);
-    }
-    if (list_changed) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_instances_list_changed_event,
-            list_instances());
-    }
-}
 
 void IvModuleInstances::handle_project_create_iv_module_instance(
     ProjectCreateIvModuleInstanceRequest const &request,
     ProjectStringBuilder &builder)
 {
-    IvPackageLookupBuilder package_builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_package_lookup_event,
-        request.module_id,
-        package_builder);
-    if (!package_builder.has_response()) {
-        throw std::runtime_error("IV package service is unavailable");
+    std::filesystem::path package_root;
+    {
+        std::scoped_lock lock(mutex);
+        auto const definition = definitions_by_id.find(request.module_id);
+        if (definition == definitions_by_id.end()) {
+            throw std::runtime_error(
+                "unknown loaded IV module definition: " + request.module_id);
+        }
+        package_root = definition->second.package_root;
     }
-    auto const package = package_builder.package();
-    if (!package.has_value()) {
-        throw std::runtime_error("unknown IV package for module: " + request.module_id);
-    }
+
     builder.succeed(create_instance(
         request.module_id,
-        package->package_root,
+        std::move(package_root),
         request.instance_id,
         request.display_name));
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -570,8 +509,21 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
 
     {
         std::scoped_lock lock(mutex);
-        for (auto const &definition : diff.created) {
-            for (auto const &entry : desired_instances_by_id) {
+        auto const apply_definition = [&](IvModuleDefinition const& definition) {
+            definitions_by_id[definition.definition_id] = definition;
+            for (auto& entry : desired_instances_by_id) {
+                if (entry.second.definition_id != definition.definition_id) {
+                    continue;
+                }
+                if (entry.second.package_root != definition.package_root) {
+                    entry.second.package_root = definition.package_root;
+                    if (auto required = required_definitions_by_id.find(
+                            definition.definition_id);
+                        required != required_definitions_by_id.end()) {
+                        required->second.package_root = definition.package_root;
+                    }
+                    list_changed = true;
+                }
                 if (realize_instance_locked(
                         entry.second.instance_id,
                         definition,
@@ -581,20 +533,15 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                     list_changed = true;
                 }
             }
+        };
+        for (auto const &definition : diff.created) {
+            apply_definition(definition);
         }
         for (auto const &definition : diff.updated) {
-            for (auto const &entry : desired_instances_by_id) {
-                if (realize_instance_locked(
-                        entry.second.instance_id,
-                        definition,
-                        true,
-                        instance_diff,
-                        builders_diff)) {
-                    list_changed = true;
-                }
-            }
+            apply_definition(definition);
         }
         for (auto const &definition_id : diff.deleted_definition_ids) {
+            definitions_by_id.erase(definition_id);
             for (auto it = realized_instances_by_id.begin();
                  it != realized_instances_by_id.end();) {
                 if (it->second.definition_id == definition_id) {

@@ -2,7 +2,6 @@
 
 #include <intravenous/module/package_manifest.h>
 #include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_packages_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <nlohmann/json.hpp>
@@ -91,20 +90,22 @@ void copy_initial_compile_commands(std::filesystem::path const& destination)
 
 IvPackages::IvPackages(
     std::filesystem::path project_root,
-    std::vector<std::filesystem::path> shared_roots,
-    IvModuleDefinitions const* definitions)
+    std::vector<std::filesystem::path> shared_roots)
     : project_root_(std::move(project_root))
     , shared_roots_(std::move(shared_roots))
-    , definitions_(definitions)
 {}
 
-std::vector<IvPackageInfo> IvPackages::list_packages() const
+std::vector<IvPackageInfo> discover_iv_packages(
+    std::filesystem::path const& project_root,
+    std::vector<std::filesystem::path> const& shared_roots)
 {
     std::vector<IvPackageInfo> result;
     auto scan = [&](std::filesystem::path const& root, bool local) {
         std::error_code error;
         if (!std::filesystem::exists(root, error)) return;
-        for (std::filesystem::recursive_directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
+        for (std::filesystem::recursive_directory_iterator it(root, error), end;
+             !error && it != end;
+             it.increment(error)) {
             auto const& entry = *it;
             if (entry.is_directory()) {
                 auto const name = entry.path().filename();
@@ -114,7 +115,9 @@ std::vector<IvPackageInfo> IvPackages::list_packages() const
                 continue;
             }
             if (!entry.is_regular_file()
-                || !is_iv_package_manifest_file(entry.path().filename().string())) continue;
+                || !is_iv_package_manifest_file(entry.path().filename().string())) {
+                continue;
+            }
             auto const directory = entry.path().parent_path();
             auto manifest_path = find_package_manifest(directory);
             if (!manifest_path || *manifest_path != entry.path()) continue;
@@ -132,70 +135,99 @@ std::vector<IvPackageInfo> IvPackages::list_packages() const
             it.disable_recursion_pending();
         }
     };
-    scan(project_root_, true);
-    for (auto const& root : shared_roots_) scan(root, false);
+    scan(project_root, true);
+    for (auto const& root : shared_roots) scan(root, false);
+
     std::unordered_map<std::string, std::size_t> package_index;
     std::vector<IvPackageInfo> unique;
     unique.reserve(result.size());
     for (auto& package : result) {
-        auto [found, inserted] = package_index.emplace(package.package_id, unique.size());
+        auto [found, inserted] = package_index.emplace(
+            package.package_id, unique.size());
         if (inserted) {
             unique.push_back(std::move(package));
         } else if (package.project_local) {
             unique[found->second] = std::move(package);
         }
     }
-    result = std::move(unique);
-    std::ranges::sort(result, {}, &IvPackageInfo::package_id);
-    if (definitions_) {
-        for (auto& package : result) {
-            package.module_ids = definitions_->module_ids_for_package(package.package_id);
-            package.node_type_ids =
-                definitions_->node_type_ids_for_package(package.package_id);
-        }
-    }
-    return result;
-}
-
-std::optional<IvPackageInfo> IvPackages::find_package(
-    std::string const& module_id) const
-{
-    if (!definitions_) return std::nullopt;
-    auto const package_root = definitions_->package_root_for_module(module_id);
-    if (!package_root) return std::nullopt;
-    auto const canonical_root = std::filesystem::weakly_canonical(*package_root);
-    auto const packages = list_packages();
-    auto const found = std::ranges::find_if(packages, [&](IvPackageInfo const& package) {
-        return package.package_root == canonical_root;
-    });
-    if (found != packages.end()) return *found;
-    // A persisted instance may point at an otherwise valid package root that
-    // is outside the configured discovery roots. The registry remains the
-    // authority for the ID-to-package association, so preserve that result.
-    return IvPackageInfo{
-        .package_id = canonical_root.generic_string(),
-        .package_root = canonical_root,
-        .project_local = false,
-        .module_ids = {},
-        .node_type_ids = {},
-    };
+    std::ranges::sort(unique, {}, &IvPackageInfo::package_id);
+    return unique;
 }
 
 std::vector<std::pair<std::string, std::filesystem::path>>
-IvPackages::package_declarations() const
+discover_iv_package_declarations(
+    std::filesystem::path const& project_root,
+    std::vector<std::filesystem::path> const& shared_roots)
 {
     std::vector<std::pair<std::string, std::filesystem::path>> declarations;
-    for (auto const& package : list_packages()) {
+    for (auto const& package : discover_iv_packages(project_root, shared_roots)) {
         declarations.emplace_back(package.package_id, package.package_root);
     }
     return declarations;
 }
 
-void IvPackages::handle_iv_package_lookup(
-    std::string const &module_id,
-    IvPackageLookupBuilder &builder) const
+std::vector<IvPackageInfo> IvPackages::list_packages() const
 {
-    builder.succeed(find_package(module_id));
+    auto result = discover_iv_packages(project_root_, shared_roots_);
+
+    std::unordered_map<std::string, std::vector<std::string>> module_ids_by_package;
+    std::unordered_map<std::string, std::vector<std::string>> node_type_ids_by_package;
+    {
+        std::scoped_lock lock(mutex_);
+        for (auto const& [module_id, package_id] : module_package_ids_) {
+            module_ids_by_package[package_id].push_back(module_id);
+        }
+        for (auto const& [node_type_id, package_id] : node_type_package_ids_) {
+            node_type_ids_by_package[package_id].push_back(node_type_id);
+        }
+    }
+    for (auto& [_, ids] : module_ids_by_package) {
+        std::ranges::sort(ids);
+    }
+    for (auto& [_, ids] : node_type_ids_by_package) {
+        std::ranges::sort(ids);
+    }
+    for (auto& package : result) {
+        if (auto const modules = module_ids_by_package.find(package.package_id);
+            modules != module_ids_by_package.end()) {
+            package.module_ids = modules->second;
+        }
+        if (auto const node_types = node_type_ids_by_package.find(package.package_id);
+            node_types != node_type_ids_by_package.end()) {
+            package.node_type_ids = node_types->second;
+        }
+    }
+    return result;
+}
+
+void IvPackages::handle_iv_module_definitions_changed(
+    IvModuleDefinitionsChanged const& diff)
+{
+    std::scoped_lock lock(mutex_);
+    for (auto const& definition : diff.created) {
+        module_package_ids_[definition.definition_id] = definition.package_id;
+    }
+    for (auto const& definition : diff.updated) {
+        module_package_ids_[definition.definition_id] = definition.package_id;
+    }
+    for (auto const& definition_id : diff.deleted_definition_ids) {
+        module_package_ids_.erase(definition_id);
+    }
+}
+
+void IvPackages::handle_iv_node_type_definitions_changed(
+    IvNodeTypeDefinitionsChanged const& diff)
+{
+    std::scoped_lock lock(mutex_);
+    for (auto const& definition : diff.created) {
+        node_type_package_ids_[definition.node_type_id] = definition.package_id;
+    }
+    for (auto const& definition : diff.updated) {
+        node_type_package_ids_[definition.node_type_id] = definition.package_id;
+    }
+    for (auto const& definition_id : diff.deleted_node_type_ids) {
+        node_type_package_ids_.erase(definition_id);
+    }
 }
 
 void IvPackages::handle_socket_rpc_get_iv_packages(
