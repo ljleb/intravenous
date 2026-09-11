@@ -47,8 +47,17 @@ struct PackageDefinition {
 static_assert(std::is_standard_layout_v<PackageDefinition>);
 static_assert(std::is_trivially_copyable_v<PackageDefinition>);
 
+// The compiler-only record section must not share the exported accessor's
+// symbol name. LLVM emits a section symbol for named sections on ELF; using
+// "iv_package_definitions" for both produces an MC "invalid symbol
+// redefinition" error when ORC materializes the package.
+#define IV_PACKAGE_DEFINITION_SECTION_NAME "iv_package_definition_records"
+
 inline constexpr std::string_view package_definition_section =
+    IV_PACKAGE_DEFINITION_SECTION_NAME;
+inline constexpr std::string_view package_definitions_abi_symbol =
     "iv_package_definitions";
+static_assert(package_definition_section != package_definitions_abi_symbol);
 
 // g.node<"id"> resolves synchronously through the definitions attached to
 // this GraphBuilder's BuilderSession. An iv module is fully configured before
@@ -110,7 +119,7 @@ struct IvModuleConfigureAdapter<Function> {
 
 #if defined(__clang__)
 #define IV_PACKAGE_DEFINITION_RECORD \
-    __attribute__((used, section("iv_package_definitions")))
+    __attribute__((used, section(IV_PACKAGE_DEFINITION_SECTION_NAME)))
 #else
 #error "IV package definition requires Clang"
 #endif
