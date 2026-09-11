@@ -12,7 +12,7 @@ import {
     isLiveGraphControlMessage,
     LiveGraphControlHandler,
     LiveGraphSetInstancesMessage,
-    LiveGraphSetModuleSourceMessage,
+    LiveGraphSetPackageRootMessage,
     LiveGraphSetNodesMessage,
     LiveGraphSetSelectedInstanceMessage,
     LiveGraphUpsertNodesMessage,
@@ -31,7 +31,7 @@ export class LiveGraphViewProvider {
     private instances: LiveGraphInstance[] = [];
     private nodes: VirtualNode[] = [];
     private selectedInstanceId: string | null = null;
-    private moduleRoot: string | null = null;
+    private packageRoot: string | null = null;
     private controlHandler: LiveGraphControlHandler | null = null;
 
     constructor(extensionUri: vscode.Uri) {
@@ -62,14 +62,14 @@ export class LiveGraphViewProvider {
         this.postSelectedInstance();
     }
 
-    setModuleSource(moduleRoot: string | null): void {
-        this.moduleRoot = moduleRoot;
+    setPackageRoot(packageRoot: string | null): void {
+        this.packageRoot = packageRoot;
         if (!this.view) {
             return;
         }
-        const message: LiveGraphSetModuleSourceMessage = {
-            type: "setModuleSource",
-            moduleRoot,
+        const message: LiveGraphSetPackageRootMessage = {
+            type: "setPackageRoot",
+            packageRoot,
         };
         void this.view.webview.postMessage(message);
     }
@@ -117,7 +117,7 @@ export class LiveGraphViewProvider {
         });
         webviewView.webview.html = this.getHtml(webviewView.webview);
         this.postInstances();
-        this.setModuleSource(this.moduleRoot);
+        this.setPackageRoot(this.packageRoot);
         this.postSelectedInstance();
         this.postNodes();
     }
@@ -602,7 +602,7 @@ export class LiveGraphViewProvider {
         const state = {
             instances: [],
             selectedInstanceId: null,
-            moduleRoot: null,
+            packageRoot: null,
             nodes: [],
             expanded: new Map(),
             pendingUpdates: new Map(),
@@ -1566,7 +1566,7 @@ export class LiveGraphViewProvider {
                 instanceSelect.title = instanceSelect.selectedOptions[0]?.textContent || "";
             }
             instanceSelect.disabled = state.instances.length === 0;
-            createInstance.disabled = !state.moduleRoot;
+            createInstance.disabled = !state.packageRoot;
         }
 
         function render() {
@@ -1601,8 +1601,8 @@ export class LiveGraphViewProvider {
                 state.selectedInstanceId = typeof message.selectedInstanceId === "string"
                     ? message.selectedInstanceId
                     : null;
-            } else if (message.type === "setModuleSource") {
-                state.moduleRoot = typeof message.moduleRoot === "string" ? message.moduleRoot : null;
+            } else if (message.type === "setPackageRoot") {
+                state.packageRoot = typeof message.packageRoot === "string" ? message.packageRoot : null;
             } else if (message.type === "setNodes") {
                 state.nodes = Array.isArray(message.nodes) ? message.nodes : [];
             } else if (message.type === "upsertNodes") {

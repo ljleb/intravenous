@@ -9,8 +9,8 @@ import {
 } from "./liveGraphProtocol";
 
 function virtualIdentitySummary(node: VirtualNode): string {
-    const identity = typeof node?.sourceIdentity === "string" && node.sourceIdentity.length > 0
-        ? node.sourceIdentity
+    const identity = typeof node?.packageIdentity === "string" && node.packageIdentity.length > 0
+        ? node.packageIdentity
         : (typeof node?.id === "string" ? node.id : "");
     if (!identity) {
         return "";
@@ -521,7 +521,7 @@ export type LiveGraphInstance = {
     definitionId?: string;
     displayName?: string;
     moduleId?: string;
-    moduleRoot?: string;
+    packageRoot?: string;
     realized?: boolean;
 };
 
@@ -533,7 +533,7 @@ export function serializeLiveGraphInstances(instances: LiveGraphInstance[]): Ser
             instanceId,
             definitionId: instance.definitionId || "",
             moduleId,
-            moduleRoot: instance.moduleRoot || "",
+            packageRoot: instance.packageRoot || "",
             realized: Boolean(instance.realized),
             label: instance.displayName || (moduleId ? `${moduleId} • ${instanceId}` : instanceId),
         };
