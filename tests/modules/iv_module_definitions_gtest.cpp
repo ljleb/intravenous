@@ -174,3 +174,45 @@ TEST(IvModuleDefinitions, RequiredDefinitionsPropagateOneBatchedPackageDeclarati
     EXPECT_TRUE(contains_root(first_root));
     EXPECT_TRUE(contains_root(second_root));
 }
+
+TEST(IvModuleDefinitions, DiscoveryReplacementKeepsRetainedInstancePackageDeclarations)
+{
+    auto const retained_root = fresh_module_fixture_workspace(
+        "iv_module_definitions_retained_package");
+    auto const discovered_root = fresh_module_fixture_workspace(
+        "iv_module_definitions_discovered_package");
+    auto const retained_id = std::filesystem::weakly_canonical(retained_root).generic_string();
+    auto const discovered_id = std::filesystem::weakly_canonical(discovered_root).generic_string();
+
+    iv::IvModuleDefinitions definitions;
+    definitions.handle_required_definitions_changed(
+        iv::IvModuleRequiredDefinitionsChanged{
+            .created = {{
+                .definition_id = "iv.test.retained",
+                .package_root = retained_root,
+            }},
+        });
+
+    definitions.sync_package_declarations({{
+        discovered_id,
+        discovered_root,
+    }});
+    auto snapshots = definitions.package_definition_snapshots();
+    ASSERT_EQ(snapshots.size(), 2u);
+    auto has_package = [&](std::string const& package_id) {
+        return std::ranges::any_of(
+            snapshots,
+            [&](iv::IvPackageDefinitionSnapshot const& snapshot) {
+                return snapshot.declaration.package_id == package_id;
+            });
+    };
+    EXPECT_TRUE(has_package(discovered_id));
+    EXPECT_TRUE(has_package(retained_id));
+
+    // Discovery owns only its own snapshot. Dropping the discovered path must
+    // not make a persisted instance's retained package disappear.
+    definitions.sync_package_declarations({});
+    snapshots = definitions.package_definition_snapshots();
+    ASSERT_EQ(snapshots.size(), 1u);
+    EXPECT_EQ(snapshots.front().declaration.package_id, retained_id);
+}

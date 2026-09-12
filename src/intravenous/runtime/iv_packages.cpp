@@ -48,6 +48,19 @@ std::optional<std::filesystem::path> find_package_manifest(
         : std::nullopt;
 }
 
+bool is_within(
+    std::filesystem::path const& candidate,
+    std::filesystem::path const& root)
+{
+    auto const relative = candidate.lexically_relative(root);
+    if (relative.empty()) {
+        return false;
+    }
+    return std::ranges::none_of(relative, [](auto const& component) {
+        return component == std::filesystem::path{".."};
+    });
+}
+
 bool valid_package_name(std::string const& name)
 {
     if (name.empty() || name == "." || name == "..") return false;
@@ -90,9 +103,11 @@ void copy_initial_compile_commands(std::filesystem::path const& destination)
 
 IvPackages::IvPackages(
     std::filesystem::path project_root,
-    std::vector<std::filesystem::path> shared_roots)
-    : project_root_(std::move(project_root))
-    , shared_roots_(std::move(shared_roots))
+    IvModuleDefinitions& definitions,
+    IvModuleReload const& reload)
+    : project_root_(std::filesystem::weakly_canonical(std::move(project_root)).lexically_normal())
+    , definitions_(definitions)
+    , reload_(reload)
 {}
 
 std::vector<IvPackageInfo> discover_iv_packages(
@@ -168,60 +183,37 @@ discover_iv_package_declarations(
 
 std::vector<IvPackageInfo> IvPackages::list_packages() const
 {
-    auto result = discover_iv_packages(project_root_, shared_roots_);
+    auto const registry = definitions_.package_definition_snapshots();
+    auto const build_statuses = reload_.package_build_statuses();
 
-    std::unordered_map<std::string, std::vector<std::string>> module_ids_by_package;
-    std::unordered_map<std::string, std::vector<std::string>> node_type_ids_by_package;
-    {
-        std::scoped_lock lock(mutex_);
-        for (auto const& [module_id, package_id] : module_package_ids_) {
-            module_ids_by_package[package_id].push_back(module_id);
-        }
-        for (auto const& [node_type_id, package_id] : node_type_package_ids_) {
-            node_type_ids_by_package[package_id].push_back(node_type_id);
-        }
+    std::unordered_map<std::string, IvPackageBuildStatus> status_by_package_id;
+    status_by_package_id.reserve(build_statuses.size());
+    for (auto const& status : build_statuses) {
+        status_by_package_id.emplace(status.package_id, status);
     }
-    for (auto& [_, ids] : module_ids_by_package) {
-        std::ranges::sort(ids);
-    }
-    for (auto& [_, ids] : node_type_ids_by_package) {
-        std::ranges::sort(ids);
-    }
-    for (auto& package : result) {
-        if (auto const modules = module_ids_by_package.find(package.package_id);
-            modules != module_ids_by_package.end()) {
-            package.module_ids = modules->second;
-        }
-        if (auto const node_types = node_type_ids_by_package.find(package.package_id);
-            node_types != node_type_ids_by_package.end()) {
-            package.node_type_ids = node_types->second;
-        }
-    }
-    return result;
-}
 
-void IvPackages::handle_iv_package_definitions_changed(
-    IvPackageDefinitionsChanged const& diff)
-{
-    std::scoped_lock lock(mutex_);
-    for (auto const& definition : diff.modules.created) {
-        module_package_ids_[definition.definition_id] = definition.package_id;
+    std::vector<IvPackageInfo> packages;
+    packages.reserve(registry.size());
+    for (auto const& package : registry) {
+        auto const& declaration = package.declaration;
+        auto const status = status_by_package_id.find(declaration.package_id);
+        packages.push_back(IvPackageInfo{
+            .package_id = declaration.package_id,
+            .package_root = declaration.package_root,
+            .project_local = is_within(declaration.package_root, project_root_),
+            .module_ids = package.published_module_ids,
+            .node_type_ids = package.published_node_type_ids,
+            .build_state = status == status_by_package_id.end()
+                ? IvPackageBuildState::queued
+                : status->second.state,
+            .build_message = status == status_by_package_id.end()
+                ? std::string{}
+                : status->second.message,
+            .publication_message = package.publication_message,
+        });
     }
-    for (auto const& definition : diff.modules.updated) {
-        module_package_ids_[definition.definition_id] = definition.package_id;
-    }
-    for (auto const& definition_id : diff.modules.deleted_definition_ids) {
-        module_package_ids_.erase(definition_id);
-    }
-    for (auto const& definition : diff.node_types.created) {
-        node_type_package_ids_[definition.node_type_id] = definition.package_id;
-    }
-    for (auto const& definition : diff.node_types.updated) {
-        node_type_package_ids_[definition.node_type_id] = definition.package_id;
-    }
-    for (auto const& definition_id : diff.node_types.deleted_node_type_ids) {
-        node_type_package_ids_.erase(definition_id);
-    }
+    std::ranges::sort(packages, {}, &IvPackageInfo::package_id);
+    return packages;
 }
 
 void IvPackages::handle_socket_rpc_get_iv_packages(
@@ -242,7 +234,7 @@ void IvPackages::handle_socket_rpc_create_iv_package(
     }
 }
 
-IvPackageInfo IvPackages::create_project_package(std::string const& name) const
+IvPackageInfo IvPackages::create_project_package(std::string const& name)
 {
     if (!valid_package_name(name)) {
         throw std::runtime_error("IV package name must start with a letter or '_' and contain only letters, digits, '_' or '-'");
@@ -278,12 +270,17 @@ IvPackageInfo IvPackages::create_project_package(std::string const& name) const
     }
 
     auto const normalized_root = std::filesystem::weakly_canonical(root);
+    auto const package_id = normalized_root.generic_string();
+    definitions_.declare_package(package_id, normalized_root);
     return IvPackageInfo{
-        .package_id = normalized_root.generic_string(),
+        .package_id = package_id,
         .package_root = normalized_root,
         .project_local = true,
         .module_ids = {},
         .node_type_ids = {},
+        .build_state = IvPackageBuildState::queued,
+        .build_message = {},
+        .publication_message = {},
     };
 }
 } // namespace iv

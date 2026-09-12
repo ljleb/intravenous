@@ -5,6 +5,7 @@
 #include <intravenous/runtime/iv_module_reload.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <ranges>
 #include <stdexcept>
 #include <system_error>
@@ -58,24 +59,21 @@ std::unique_ptr<IvModuleDefinitions::NodeTypeState> make_node_type_state(
 
 IvModuleDefinitions::~IvModuleDefinitions() = default;
 
-void IvModuleDefinitions::emit_notification(
-    IvModuleDefinitionsNotification notification) const
+std::unordered_map<std::string, IvPackageDeclaration>
+IvModuleDefinitions::merge_declaration_sources_locked(
+    std::unordered_map<std::string, IvPackageDeclaration> const& retained,
+    std::unordered_map<std::string, IvPackageDeclaration> const& discovered) const
 {
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_definitions_notification_event,
-        notification);
-}
-
-void IvModuleDefinitions::emit_message(
-    std::string level,
-    std::string message,
-    std::filesystem::path package_root) const
-{
-    emit_notification(IvModuleDefinitionsMessage{
-        .level = std::move(level),
-        .message = std::move(message),
-        .package_root = std::move(package_root),
-    });
+    auto merged = retained;
+    for (auto const& [package_id, declaration] : discovered) {
+        auto const [position, inserted] = merged.emplace(package_id, declaration);
+        if (!inserted && position->second.package_root != declaration.package_root) {
+            throw std::runtime_error(
+                "IV package declaration sources disagree about package ID '"
+                + package_id + "'");
+        }
+    }
+    return merged;
 }
 
 void IvModuleDefinitions::publish_package_definitions_changed(
@@ -122,7 +120,14 @@ void IvModuleDefinitions::declare_packages(
     IvPackageDeclarationsChanged diff;
     {
         std::scoped_lock lock(mutex);
+        auto next_retained = retained_package_declarations_by_id;
         for (auto& [package_id, declaration] : declarations_by_id) {
+            next_retained.insert_or_assign(package_id, declaration);
+        }
+        auto const next = merge_declaration_sources_locked(
+            next_retained,
+            discovered_package_declarations_by_id);
+        for (auto const& [package_id, declaration] : next) {
             auto [position, inserted] = declarations_by_package_id.emplace(
                 package_id, declaration);
             if (inserted) {
@@ -133,6 +138,7 @@ void IvModuleDefinitions::declare_packages(
             position->second = declaration;
             diff.updated.push_back(declaration);
         }
+        retained_package_declarations_by_id = std::move(next_retained);
     }
 
     if (!diff.created.empty() || !diff.updated.empty()) {
@@ -177,16 +183,18 @@ void IvModuleDefinitions::sync_package_declarations(
     IvPackageDeclarationsChanged declaration_diff;
     IvModuleDefinitionsChanged definition_diff;
     IvNodeTypeDefinitionsChanged node_type_diff;
-    std::vector<IvModuleDefinitionsMessage> failures;
     {
         std::scoped_lock lock(mutex);
+        auto const effective = merge_declaration_sources_locked(
+            retained_package_declarations_by_id,
+            next);
         std::unordered_set<std::string> removed_package_ids;
         for (auto const& declaration : declarations_by_package_id) {
-            if (next.contains(declaration.first)) continue;
+            if (effective.contains(declaration.first)) continue;
             declaration_diff.deleted_package_ids.push_back(declaration.first);
             removed_package_ids.insert(declaration.first);
         }
-        for (auto const& [package_id, declaration] : next) {
+        for (auto const& [package_id, declaration] : effective) {
             auto const current = declarations_by_package_id.find(package_id);
             if (current == declarations_by_package_id.end()) {
                 declaration_diff.created.push_back(declaration);
@@ -197,11 +205,13 @@ void IvModuleDefinitions::sync_package_declarations(
 
         for (auto const& package_id : removed_package_ids) {
             candidates_by_package_id.erase(package_id);
+            candidate_validation_messages_by_package_id.erase(package_id);
         }
-        declarations_by_package_id = std::move(next);
+        discovered_package_declarations_by_id = std::move(next);
+        declarations_by_package_id = std::move(effective);
         if (!removed_package_ids.empty()) {
             rebuild_published_registry_locked(
-                definition_diff, node_type_diff, failures, removed_package_ids);
+                definition_diff, node_type_diff, removed_package_ids);
         }
     }
 
@@ -211,7 +221,6 @@ void IvModuleDefinitions::sync_package_declarations(
             iv_runtime_iv_package_declarations_changed_event,
             declaration_diff);
     }
-    for (auto& failure : failures) emit_notification(std::move(failure));
     publish_package_definitions_changed(
         std::move(definition_diff),
         std::move(node_type_diff));
@@ -221,15 +230,17 @@ void IvModuleDefinitions::remove_package(std::string const& package_id)
 {
     IvModuleDefinitionsChanged definition_diff;
     IvNodeTypeDefinitionsChanged node_type_diff;
-    std::vector<IvModuleDefinitionsMessage> failures;
     bool removed = false;
     {
         std::scoped_lock lock(mutex);
+        retained_package_declarations_by_id.erase(package_id);
+        discovered_package_declarations_by_id.erase(package_id);
         removed = declarations_by_package_id.erase(package_id) > 0;
         if (removed) {
             candidates_by_package_id.erase(package_id);
+            candidate_validation_messages_by_package_id.erase(package_id);
             rebuild_published_registry_locked(
-                definition_diff, node_type_diff, failures,
+                definition_diff, node_type_diff,
                 std::unordered_set<std::string>{package_id});
         }
     }
@@ -243,7 +254,6 @@ void IvModuleDefinitions::remove_package(std::string const& package_id)
     publish_package_definitions_changed(
         std::move(definition_diff),
         std::move(node_type_diff));
-    for (auto& failure : failures) emit_notification(std::move(failure));
 }
 
 void IvModuleDefinitions::handle_required_definitions_changed(
@@ -272,7 +282,6 @@ void IvModuleDefinitions::handle_required_definitions_changed(
 void IvModuleDefinitions::rebuild_published_registry_locked(
     IvModuleDefinitionsChanged& diff,
     IvNodeTypeDefinitionsChanged& node_type_diff,
-    std::vector<IvModuleDefinitionsMessage>& failures,
     std::unordered_set<std::string> const& changed_package_ids)
 {
     struct ModuleProvider {
@@ -283,12 +292,9 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
         std::string package_id;
         IvModuleReloadedNodeType const* definition = nullptr;
     };
-    struct RegisteredProvider {
-        std::string package_id;
-    };
     std::unordered_map<std::string, std::vector<ModuleProvider>> module_providers;
     std::unordered_map<std::string, std::vector<NodeTypeProvider>> node_type_providers;
-    std::unordered_map<std::string, std::vector<RegisteredProvider>> providers_by_id;
+    std::unordered_map<std::string, std::size_t> provider_count_by_id;
     for (auto const& [package_id, candidate] : candidates_by_package_id) {
         if (!declarations_by_package_id.contains(package_id)) continue;
         for (auto const& definition : candidate.modules) {
@@ -296,48 +302,35 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
                 .package_id = package_id,
                 .definition = &definition,
             });
-            providers_by_id[definition.module_id].push_back({.package_id = package_id});
+            ++provider_count_by_id[definition.module_id];
         }
         for (auto const& definition : candidate.node_types) {
             node_type_providers[definition.node_type_id].push_back({
                 .package_id = package_id,
                 .definition = &definition,
             });
-            providers_by_id[definition.node_type_id].push_back({.package_id = package_id});
+            ++provider_count_by_id[definition.node_type_id];
         }
     }
 
     // Validate the complete package candidate set before publishing any ID. A
     // collision leaves all published maps and ownership records unchanged.
     bool valid = true;
-    for (auto const& [id, providers] : providers_by_id) {
-        if (providers.size() == 1) continue;
+    for (auto const& [_, provider_count] : provider_count_by_id) {
+        if (provider_count == 1) continue;
         valid = false;
-        if (std::ranges::any_of(providers, [&](RegisteredProvider const& provider) {
-                return changed_package_ids.contains(provider.package_id);
-            })) {
-            auto package = declarations_by_package_id.find(providers.front().package_id);
-            failures.push_back({
-                .level = "error",
-                .message = "IV package definition ID '" + id
-                    + "' is provided by multiple IV packages",
-                .package_root = package == declarations_by_package_id.end()
-                    ? std::filesystem::path{}
-                    : package->second.package_root,
-            });
-        }
     }
     if (!valid) return;
 
     std::unordered_map<std::string, ModuleProvider> selected_modules;
     for (auto const& [id, providers] : module_providers) {
-        if (providers_by_id[id].size() == 1) {
+        if (provider_count_by_id[id] == 1) {
             selected_modules.emplace(id, providers.front());
         }
     }
     std::unordered_map<std::string, NodeTypeProvider> selected_node_types;
     for (auto const& [id, providers] : node_type_providers) {
-        if (providers_by_id[id].size() == 1) {
+        if (provider_count_by_id[id] == 1) {
             selected_node_types.emplace(id, providers.front());
         }
     }
@@ -401,7 +394,7 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
         std::ranges::sort(module_ids);
     }
 
-    // One atomic state transition: notifications above describe exactly this
+    // One atomic state transition: downstream consumers see exactly this
     // complete snapshot, never a mixture of old and candidate providers.
     loaded_definitions_by_module_id = std::move(next_modules);
     loaded_node_types_by_id = std::move(next_node_types);
@@ -424,7 +417,6 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
 
     IvModuleDefinitionsChanged definition_diff;
     IvNodeTypeDefinitionsChanged node_type_diff;
-    std::vector<IvModuleDefinitionsMessage> failures;
     {
         std::scoped_lock lock(mutex);
         std::unordered_set<std::string> changed_package_ids;
@@ -473,23 +465,19 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
                 }
             }
             if (!error.empty()) {
-                failures.push_back({
-                    .level = "error",
-                    .message = std::move(error),
-                    .package_root = declaration->second.package_root,
-                });
+                candidate_validation_messages_by_package_id[package.package_id] = error;
                 continue;
             }
 
+            candidate_validation_messages_by_package_id.erase(package.package_id);
             candidates_by_package_id[package.package_id] = std::move(candidate);
             changed_package_ids.insert(package.package_id);
         }
         if (!changed_package_ids.empty()) {
             rebuild_published_registry_locked(
-                definition_diff, node_type_diff, failures, changed_package_ids);
+                definition_diff, node_type_diff, changed_package_ids);
         }
     }
-    for (auto& failure : failures) emit_notification(std::move(failure));
     publish_package_definitions_changed(
         std::move(definition_diff),
         std::move(node_type_diff));
@@ -510,6 +498,85 @@ void IvModuleDefinitions::seed_loaded_definition(
     });
     results.loaded.push_back(std::move(loaded_definition));
     handle_reload_results(results);
+}
+
+std::vector<IvPackageDefinitionSnapshot>
+IvModuleDefinitions::package_definition_snapshots() const
+{
+    std::vector<IvPackageDefinitionSnapshot> snapshots;
+    std::scoped_lock lock(mutex);
+
+    std::unordered_map<std::string, std::vector<std::string>> candidate_ids_by_package;
+    std::unordered_map<std::string, std::vector<std::string>> candidate_packages_by_id;
+    for (auto const& [package_id, candidate] : candidates_by_package_id) {
+        if (!declarations_by_package_id.contains(package_id)) continue;
+        auto& ids = candidate_ids_by_package[package_id];
+        ids.reserve(candidate.modules.size() + candidate.node_types.size());
+        for (auto const& module : candidate.modules) {
+            ids.push_back(module.module_id);
+            candidate_packages_by_id[module.module_id].push_back(package_id);
+        }
+        for (auto const& node_type : candidate.node_types) {
+            ids.push_back(node_type.node_type_id);
+            candidate_packages_by_id[node_type.node_type_id].push_back(package_id);
+        }
+    }
+
+    snapshots.reserve(declarations_by_package_id.size());
+    for (auto const& [package_id, declaration] : declarations_by_package_id) {
+        IvPackageDefinitionSnapshot snapshot{
+            .declaration = declaration,
+        };
+        if (auto modules = module_ids_by_package_id.find(package_id);
+            modules != module_ids_by_package_id.end()) {
+            snapshot.published_module_ids = modules->second;
+        }
+        for (auto const& [node_type_id, state] : loaded_node_types_by_id) {
+            if (state->snapshot.package_id == package_id) {
+                snapshot.published_node_type_ids.push_back(node_type_id);
+            }
+        }
+        std::ranges::sort(snapshot.published_node_type_ids);
+
+        if (auto const validation =
+                candidate_validation_messages_by_package_id.find(package_id);
+            validation != candidate_validation_messages_by_package_id.end()) {
+            snapshot.publication_message = validation->second;
+        } else if (auto candidates = candidate_ids_by_package.find(package_id);
+                   candidates != candidate_ids_by_package.end()) {
+            for (auto const& id : candidates->second) {
+                auto const providers = candidate_packages_by_id.find(id);
+                if (providers != candidate_packages_by_id.end()
+                    && providers->second.size() > 1) {
+                    snapshot.publication_message =
+                        "IV package definition ID '" + id
+                        + "' is provided by multiple IV packages";
+                    break;
+                }
+            }
+            if (snapshot.publication_message.empty()) {
+                auto const has_unpublished_candidate = std::ranges::any_of(
+                    candidates->second,
+                    [&](std::string const& id) {
+                        auto const owner = package_id_by_definition_id.find(id);
+                        return owner == package_id_by_definition_id.end()
+                            || owner->second != package_id;
+                    });
+                if (has_unpublished_candidate) {
+                    snapshot.publication_message =
+                        "Definitions are waiting for the registry to publish them";
+                }
+            }
+        }
+        snapshots.push_back(std::move(snapshot));
+    }
+    std::ranges::sort(
+        snapshots,
+        {},
+        [](IvPackageDefinitionSnapshot const& snapshot) {
+            return snapshot.declaration.package_id;
+        });
+    return snapshots;
 }
 
 std::vector<IvModuleDefinition> IvModuleDefinitions::loaded_definitions() const

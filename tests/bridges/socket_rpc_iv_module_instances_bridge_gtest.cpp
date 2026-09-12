@@ -2,9 +2,10 @@
 
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_reload.h>
 #include <intravenous/runtime/iv_packages.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_packages_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
@@ -16,9 +17,11 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string_view>
+#include <vector>
 
 namespace {
 using Json = nlohmann::ordered_json;
@@ -49,7 +52,9 @@ TEST(IvPackages, NewProjectPackagesReceiveTheSameTemplateCompileDatabase)
         / "intravenous_iv_packages_compile_commands_test";
     std::filesystem::remove_all(project_root);
 
-    iv::IvPackages packages(project_root, {});
+    iv::IvModuleDefinitions definitions;
+    iv::IvModuleReload reload({});
+    iv::IvPackages packages(project_root, definitions, reload);
     auto const first = packages.create_project_package("first");
     auto const second = packages.create_project_package("second");
 
@@ -70,8 +75,70 @@ TEST(IvPackages, NewProjectPackagesReceiveTheSameTemplateCompileDatabase)
     ASSERT_EQ(listed.size(), 2u);
     EXPECT_EQ(listed[0].package_id, first.package_id);
     EXPECT_EQ(listed[1].package_id, second.package_id);
+    EXPECT_EQ(listed[0].build_state, iv::IvPackageBuildState::queued);
+    EXPECT_EQ(listed[1].build_state, iv::IvPackageBuildState::queued);
 
     std::filesystem::remove_all(project_root);
+}
+
+TEST(IvPackages, ListsPublishedDefinitionsFromTheRegistrySnapshot)
+{
+    auto const package_root = iv::test::test_modules_root() / "local_cmake";
+    auto const normalized_root = std::filesystem::weakly_canonical(package_root);
+    iv::IvModuleDefinitions definitions;
+    iv::IvModuleReload reload({});
+    iv::IvPackages packages("/tmp", definitions, reload);
+
+    auto definition = iv::test_support::make_loaded_definition(
+        package_root, "iv.test.local_cmake");
+    definition.package_id = normalized_root.generic_string();
+    definitions.seed_loaded_definition(std::move(definition));
+
+    auto const listed = packages.list_packages();
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed.front().package_id, normalized_root.generic_string());
+    EXPECT_EQ(listed.front().module_ids,
+        std::vector<std::string>{"iv.test.local_cmake"});
+    EXPECT_TRUE(listed.front().publication_message.empty());
+}
+
+TEST(IvPackages, RegistryConflictIsNotReportedAsAnEmptyPackage)
+{
+    auto const workspace = iv::test::fresh_module_fixture_workspace(
+        "iv_packages_registry_conflict");
+    auto const first_root = workspace / "first";
+    auto const second_root = workspace / "second";
+    std::filesystem::create_directories(first_root);
+    std::filesystem::create_directories(second_root);
+
+    iv::IvModuleDefinitions definitions;
+    iv::IvModuleReload reload({});
+    iv::IvPackages packages(workspace, definitions, reload);
+    definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
+        .package_id = "iv.test.first",
+        .definition_id = "iv.test.shared",
+        .package_root = first_root,
+        .module_id = "iv.test.shared",
+    });
+    definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
+        .package_id = "iv.test.second",
+        .definition_id = "iv.test.shared",
+        .package_root = second_root,
+        .module_id = "iv.test.shared",
+    });
+
+    auto const listed = packages.list_packages();
+    auto const second = std::ranges::find_if(
+        listed,
+        [](iv::IvPackageInfo const& package) {
+            return package.package_id == "iv.test.second";
+        });
+    ASSERT_NE(second, listed.end());
+    EXPECT_TRUE(second->module_ids.empty());
+    EXPECT_EQ(second->build_state, iv::IvPackageBuildState::queued);
+    EXPECT_NE(
+        second->publication_message.find("provided by multiple IV packages"),
+        std::string::npos);
 }
 
 TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
@@ -80,15 +147,13 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
     iv::IvModuleDefinitions definitions;
-    iv::IvPackages sources("/tmp", {module_root});
+    iv::IvModuleReload reload({});
+    iv::IvPackages sources("/tmp", definitions, reload);
     iv::ProjectPersistence persistence("/tmp", {});
     iv::SocketRpcServer server("/tmp", -1);
     auto iv_module_definitions_iv_module_instances_scope =
         iv::iv_module_definitions_iv_module_instances_bridge::bind(
             definitions, instances);
-    auto iv_module_definitions_iv_packages_scope =
-        iv::iv_module_definitions_iv_packages_bridge::bind(
-            definitions, sources);
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
@@ -138,15 +203,13 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
     iv::IvModuleDefinitions definitions;
-    iv::IvPackages sources("/tmp", {module_root});
+    iv::IvModuleReload reload({});
+    iv::IvPackages sources("/tmp", definitions, reload);
     iv::ProjectPersistence persistence("/tmp", {});
     iv::SocketRpcServer server("/tmp", -1);
     auto iv_module_definitions_iv_module_instances_scope =
         iv::iv_module_definitions_iv_module_instances_bridge::bind(
             definitions, instances);
-    auto iv_module_definitions_iv_packages_scope =
-        iv::iv_module_definitions_iv_packages_bridge::bind(
-            definitions, sources);
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();

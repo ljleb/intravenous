@@ -3,6 +3,8 @@
 #include <intravenous/bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_reload.h>
 #include <intravenous/runtime/iv_packages.h>
 
 #include <gtest/gtest.h>
@@ -199,7 +201,7 @@ TEST_F(IvModuleInstancesTest, DefinitionChangeMovesInstanceToPublishedPackageRoo
     EXPECT_TRUE(witness.listed_instances->front().realized);
 }
 
-TEST_F(IvModuleInstancesTest, PackageDiscoveryListsPackagesWithoutScanningRegistrations)
+TEST_F(IvModuleInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirstBuild)
 {
     auto const workspace =
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_many_source_modules");
@@ -216,13 +218,19 @@ TEST_F(IvModuleInstancesTest, PackageDiscoveryListsPackagesWithoutScanningRegist
         "IV_MODULE(\"iv.test.module\", primary);\n"
         "IV_MODULE(\"iv.test.module.secondary\", secondary);\n");
 
-    iv::IvPackages sources(workspace, {});
+    iv::IvModuleDefinitions definitions;
+    iv::IvModuleReload reload({});
+    definitions.sync_package_declarations(
+        iv::discover_iv_package_declarations(workspace, {}));
+    iv::IvPackages sources(workspace, definitions, reload);
     auto const discovered = sources.list_packages();
 
     ASSERT_EQ(discovered.size(), 1u);
     auto const expected_root = std::filesystem::weakly_canonical(source_root);
     EXPECT_EQ(discovered.front().package_root, expected_root);
     EXPECT_EQ(discovered.front().package_id, expected_root.generic_string());
+    EXPECT_EQ(discovered.front().build_state, iv::IvPackageBuildState::queued);
+    EXPECT_TRUE(discovered.front().module_ids.empty());
 }
 
 TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPublishesDiff)

@@ -1,7 +1,5 @@
 #include <intravenous/runtime/iv_module_reload.h>
 
-#include <intravenous/runtime/task_runner_events.h>
-
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/iv_module_reload_events.h>
 #include <intravenous/runtime/project_persistence_builder.h>
@@ -194,7 +192,7 @@ void IvModuleReload::emit_status(
     std::string message,
     std::filesystem::path package_root)
 {
-    IV_INVOKE_LINKER_EVENT(
+    IV_INVOKE_LINKER_EVENT_SOURCE(
         iv_runtime_project_notification_event,
         ProjectNotification(ProjectStatusNotification{
             .level = std::move(level),
@@ -283,15 +281,28 @@ void IvModuleReload::handle_package_declarations_changed(
         for (auto const &declaration : diff.created) {
             package_declarations_by_id[declaration.package_id] = declaration;
             dirty_package_ids.insert(declaration.package_id);
+            build_status_by_package_id.insert_or_assign(
+                declaration.package_id,
+                IvPackageBuildStatus{
+                    .package_id = declaration.package_id,
+                    .state = IvPackageBuildState::queued,
+                });
         }
         for (auto const &declaration : diff.updated) {
             package_declarations_by_id[declaration.package_id] = declaration;
             dirty_package_ids.insert(declaration.package_id);
+            build_status_by_package_id.insert_or_assign(
+                declaration.package_id,
+                IvPackageBuildStatus{
+                    .package_id = declaration.package_id,
+                    .state = IvPackageBuildState::queued,
+                });
         }
         for (auto const &package_id : diff.deleted_package_ids) {
             package_declarations_by_id.erase(package_id);
             dependencies_by_package_id.erase(package_id);
             dirty_package_ids.erase(package_id);
+            build_status_by_package_id.erase(package_id);
         }
         refresh_watched_dependencies_locked();
     }
@@ -301,6 +312,20 @@ bool IvModuleReload::has_dirty_packages() const
 {
     std::scoped_lock lock(mutex);
     return !dirty_package_ids.empty();
+}
+
+std::vector<IvPackageBuildStatus> IvModuleReload::package_build_statuses() const
+{
+    std::vector<IvPackageBuildStatus> statuses;
+    {
+        std::scoped_lock lock(mutex);
+        statuses.reserve(build_status_by_package_id.size());
+        for (auto const& [_, status] : build_status_by_package_id) {
+            statuses.push_back(status);
+        }
+    }
+    std::ranges::sort(statuses, {}, &IvPackageBuildStatus::package_id);
+    return statuses;
 }
 
 void IvModuleReload::compile_dirty_packages()
@@ -316,6 +341,12 @@ void IvModuleReload::compile_dirty_packages()
             if (auto const it = package_declarations_by_id.find(package_id);
                 it != package_declarations_by_id.end()) {
                 declarations.push_back(it->second);
+                build_status_by_package_id.insert_or_assign(
+                    package_id,
+                    IvPackageBuildStatus{
+                        .package_id = package_id,
+                        .state = IvPackageBuildState::building,
+                    });
             }
         }
         dirty_package_ids.clear();
@@ -340,6 +371,32 @@ void IvModuleReload::compile_dirty_packages()
     if (results.packages.empty() && results.loaded.empty()
         && results.node_types.empty() && results.failed.empty()) {
         return;
+    }
+
+    // Publish the terminal build state before emitting the RPC status event.
+    // The client refreshes its package card in response to a failure event;
+    // publishing it afterwards leaves a timing window where that refresh can
+    // still observe the prior "building" state forever (failed results do not
+    // produce a definitions-changed event).
+    {
+        std::scoped_lock lock(mutex);
+        for (auto const& package : results.packages) {
+            build_status_by_package_id.insert_or_assign(
+                package.package_id,
+                IvPackageBuildStatus{
+                    .package_id = package.package_id,
+                    .state = IvPackageBuildState::built,
+                });
+        }
+        for (auto const& failure : results.failed) {
+            build_status_by_package_id.insert_or_assign(
+                failure.package_id,
+                IvPackageBuildStatus{
+                    .package_id = failure.package_id,
+                    .state = IvPackageBuildState::failed,
+                    .message = failure.message,
+                });
+        }
     }
 
     if (!results.failed.empty()) {
@@ -406,12 +463,6 @@ void IvModuleReload::compile_dirty_packages()
     }
 }
 
-bool IvModuleReload::has_changes()
-{
-    std::scoped_lock lock(mutex);
-    return watcher.has_changes();
-}
-
 void IvModuleReload::reload_changed_packages()
 {
     {
@@ -421,6 +472,12 @@ void IvModuleReload::reload_changed_packages()
         }
         for (auto const &entry : package_declarations_by_id) {
             dirty_package_ids.insert(entry.first);
+            build_status_by_package_id.insert_or_assign(
+                entry.first,
+                IvPackageBuildStatus{
+                    .package_id = entry.first,
+                    .state = IvPackageBuildState::queued,
+                });
         }
     }
     compile_dirty_packages();
@@ -433,14 +490,14 @@ bool IvModuleReload::has_pending_results() const
         || !pending_results.node_types.empty() || !pending_results.failed.empty();
 }
 
-void IvModuleReload::apply_pending_results()
+bool IvModuleReload::apply_pending_results()
 {
     IvModuleReloadResults results;
     {
         std::scoped_lock lock(mutex);
         if (pending_results.packages.empty() && pending_results.loaded.empty()
             && pending_results.node_types.empty() && pending_results.failed.empty()) {
-            return;
+            return false;
         }
         results = std::move(pending_results);
         pending_results = {};
@@ -448,18 +505,13 @@ void IvModuleReload::apply_pending_results()
     results = coalesce_results_by_package(std::move(results));
     if (results.packages.empty() && results.loaded.empty()
         && results.node_types.empty() && results.failed.empty()) {
-        return;
+        return false;
     }
 
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_iv_module_reload_results_event,
         results);
+    return true;
 }
 
-void IvModuleReload::handle_task_runner_before_pass(TasksRunnerBeforePass const &)
-{
-    if (has_pending_results()) {
-        apply_pending_results();
-    }
-}
 } // namespace iv

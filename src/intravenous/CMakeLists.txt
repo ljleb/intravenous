@@ -351,7 +351,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/graph_input_lanes_timeline_bridge.cpp
     runtime/iv_module_definitions.cpp
     runtime/iv_module_definitions_iv_module_instances_bridge.cpp
-    runtime/iv_module_definitions_iv_packages_bridge.cpp
     runtime/iv_module_definitions_iv_module_reload_bridge.cpp
     runtime/iv_module_instances.cpp
     runtime/iv_module_instances_execution.cpp
@@ -360,6 +359,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/iv_module_instances_graph_input_lanes_bridge.cpp
     runtime/iv_module_instances_iv_module_source_introspection_bridge.cpp
     runtime/iv_module_reload.cpp
+    runtime/iv_package_reload_service.cpp
     runtime/lane_filters.cpp
     runtime/lane_filters_lane_views_bridge.cpp
     runtime/lane_views_lanes_visualization_bridge.cpp
@@ -397,7 +397,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_project_autosave_bridge.cpp
     runtime/socket_rpc_project_persistence_bridge.cpp
     runtime/socket_rpc_timeline_execution_bridge.cpp
-    runtime/iv_module_definitions_socket_rpc_notification_bridge.cpp
+    runtime/iv_module_definitions_socket_rpc_packages_bridge.cpp
     runtime/lanes_visualization_socket_rpc_notification_bridge.cpp
     runtime/socket_rpc_json_serialization.cpp
     runtime/socket_rpc_requests.cpp
@@ -408,7 +408,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/task_runner.cpp
     runtime/task_runner_audio_device_lanes_bridge.cpp
     runtime/task_runner_graph_input_lanes_bridge.cpp
-    runtime/task_runner_iv_module_reload_bridge.cpp
     runtime/timeline_execution.cpp
     runtime/timeline_execution_iv_module_instances_execution_bridge.cpp
     runtime/timeline_execution_lanes_visualization_bridge.cpp

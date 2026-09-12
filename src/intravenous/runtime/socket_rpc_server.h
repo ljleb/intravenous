@@ -24,6 +24,7 @@
 
 namespace iv {
     struct LaneQuerySchemaChanged;
+    struct IvPackageCatalogChanged;
 
     using SocketRpcGraphQueryResult = ProjectQueryResult;
     using SocketRpcRegionQueryResult = ProjectRegionQueryResult;
@@ -189,11 +190,12 @@ namespace iv {
         void send_lane_query_schema_changed(query::LaneQuerySchemaChange const &notification);
         void send_iv_module_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
+        void send_iv_packages_updated();
         void send_virtual_nodes_updated(
             ProjectVirtualNodesNotification const &notification);
         void handle_project_notification(ProjectNotification const &notification);
-        void handle_iv_module_definitions_notification(
-            IvModuleDefinitionsNotification const &notification);
+        void handle_iv_package_catalog_changed(
+            IvPackageCatalogChanged const &changed);
         void handle_lane_views_updated(LaneViewResult const &lane_view);
         void handle_lane_view_content_updated(LaneViewContentUpdate const &update);
         void handle_lane_query_schema_changed(

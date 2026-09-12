@@ -103,6 +103,12 @@ TEST_F(IvModuleReloadTest, DirtyDeclarationCompilesAndPublishesLoadedDefinition)
     EXPECT_TRUE(reload.has_pending_results());
     EXPECT_FALSE(witness.results.has_value());
 
+    auto const build_statuses = reload.package_build_statuses();
+    ASSERT_EQ(build_statuses.size(), 1u);
+    EXPECT_EQ(build_statuses.front().package_id, "iv.test.local_cmake");
+    EXPECT_EQ(build_statuses.front().state, iv::IvPackageBuildState::built);
+    EXPECT_TRUE(build_statuses.front().message.empty());
+
     reload.apply_pending_results();
 
     ASSERT_TRUE(witness.results.has_value());
@@ -131,6 +137,12 @@ TEST_F(IvModuleReloadTest, DirtyInvalidDeclarationCompilesAndPublishesFailure)
 
     reload.compile_dirty_packages();
     EXPECT_TRUE(reload.has_pending_results());
+
+    auto const build_statuses = reload.package_build_statuses();
+    ASSERT_EQ(build_statuses.size(), 1u);
+    EXPECT_EQ(build_statuses.front().package_id, "iv.test.missing_export");
+    EXPECT_EQ(build_statuses.front().state, iv::IvPackageBuildState::failed);
+    EXPECT_FALSE(build_statuses.front().message.empty());
 
     reload.apply_pending_results();
 

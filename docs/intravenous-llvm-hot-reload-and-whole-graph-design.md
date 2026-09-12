@@ -405,6 +405,45 @@ It does not manufacture one source-list item per macro spelling. A node-only
 source is visible with an empty `moduleIds` list and its registered node-type
 IDs; a source with several `IV_MODULE`s exposes every instantiable module ID.
 
+### 5.0.1 Package lifecycle is not definition publication
+
+The package browser must distinguish these control-plane facts rather than
+turning every empty `moduleIds` list into “no module exists”:
+
+```text
+discovered package
+    -> queued / building
+    -> built artifact
+    -> validated, published definition set
+
+or
+
+discovered package
+    -> queued / building
+    -> failed (diagnostic retained; prior valid definitions remain live)
+```
+
+`IV_MODULE(...)` is compiler-produced registration data. Before a package has
+successfully compiled and been loaded, the server cannot honestly claim a
+module ID is published; it must instead report that the package is queued,
+building, or failed and retain the diagnostic. A successfully built package
+with no module IDs is then an intentional empty/node-only package, not an
+ambiguous failure state.
+
+Server readiness is independent from package discovery and compilation.
+Persisted module instances retain their package declarations themselves;
+filesystem discovery is a second declaration source, not the owner of those
+references. Startup can therefore start RPC first, then the package control
+service scans, builds, and publishes candidates. This keeps the UI responsive
+and, crucially, makes first-start build errors observable by the connected
+client. Publishing does not wait for an audio task pass: package registry state
+must progress even when no project graph is executing.
+
+The browser queries the declaration registry and the published registry as
+snapshots. It must not rescan the filesystem and reconstruct ownership from
+incremental definition-change notifications, because those are two different
+states and can briefly disagree during discovery, build, conflict, or reload.
+
 The initial implementation supports the dynamic, zero-argument form above.
 Public cross-source construction arguments and typed interface recovery remain
 follow-on registry work; the design below specifies them, but they are not

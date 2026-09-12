@@ -15,7 +15,6 @@
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_packages_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
@@ -24,6 +23,7 @@
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_reload.h>
+#include <intravenous/runtime/iv_package_reload_service.h>
 #include <intravenous/runtime/lane_filters.h>
 #include <intravenous/runtime/lane_filters_lane_views_bridge.h>
 #include <intravenous/runtime/lane_query_schema_service.h>
@@ -41,7 +41,6 @@
 #include <intravenous/runtime/project_persistence_project_autosave_bridge.h>
 #include <intravenous/runtime/project_persistence_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_graph_input_lanes_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_reload_bridge.h>
 #include <intravenous/runtime/project_persistence_configured_lanes_bridge.h>
@@ -54,7 +53,7 @@
 #include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_packages_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_socket_rpc_notification_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_socket_rpc_packages_bridge.h>
 #include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_autosave_bridge.h>
@@ -65,7 +64,6 @@
 #include <intravenous/runtime/task_runner.h>
 #include <intravenous/runtime/task_runner_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/task_runner_graph_input_lanes_bridge.h>
-#include <intravenous/runtime/task_runner_iv_module_reload_bridge.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_execution.h>
 #include <intravenous/runtime/timeline_execution_iv_module_instances_execution_bridge.h>
@@ -104,71 +102,6 @@ namespace iv {
 
             ScopedShutdownCallback(ScopedShutdownCallback const&) = delete;
             ScopedShutdownCallback& operator=(ScopedShutdownCallback const&) = delete;
-        };
-
-        class IvModuleReloadWatcherService {
-            IvModuleReload* reload_ = nullptr;
-            IvModuleDefinitions* definitions_ = nullptr;
-            std::filesystem::path project_root_;
-            std::vector<std::filesystem::path> shared_roots_;
-            std::optional<std::vector<std::pair<std::string, std::filesystem::path>>>
-                last_package_declarations_;
-            std::optional<std::jthread> thread_ {};
-
-        public:
-            explicit IvModuleReloadWatcherService(
-                IvModuleReload& reload,
-                IvModuleDefinitions& definitions,
-                std::filesystem::path project_root,
-                std::vector<std::filesystem::path> shared_roots)
-                : reload_(&reload)
-                , definitions_(&definitions)
-                , project_root_(std::move(project_root))
-                , shared_roots_(std::move(shared_roots))
-            {
-            }
-
-            void start()
-            {
-                if (thread_.has_value()) {
-                    return;
-                }
-
-                thread_.emplace([this](std::stop_token stop_token) {
-                    while (!stop_token.stop_requested()) {
-                        auto declarations = discover_iv_package_declarations(
-                            project_root_,
-                            shared_roots_);
-                        if (!last_package_declarations_.has_value()
-                            || declarations != *last_package_declarations_) {
-                            last_package_declarations_ = declarations;
-                            definitions_->sync_package_declarations(
-                                std::move(declarations));
-                            // A package-discovery change is one complete source
-                            // event. It may reach IvModuleReload through the
-                            // definitions bridge, so do not enter Reload again
-                            // from this same polling tick.
-                            std::this_thread::sleep_for(
-                                std::chrono::milliseconds(100));
-                            continue;
-                        }
-                        if (reload_->has_dirty_packages()) {
-                            reload_->compile_dirty_packages();
-                        } else {
-                            reload_->reload_changed_packages();
-                        }
-                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    }
-                });
-            }
-
-            void request_shutdown()
-            {
-                if (thread_.has_value()) {
-                    thread_->request_stop();
-                }
-            }
-
         };
 
         class ProjectAutosaveService {
@@ -312,7 +245,8 @@ namespace iv {
             auto const package_search_roots = parse_search_path_env();
             IvPackages iv_packages(
                 startup.workspace_root,
-                package_search_roots);
+                iv_module_definitions,
+                iv_module_reload);
 
             // Construct the complete runtime first.  Binding is a separate
             // phase: constructors must not observe a partially connected
@@ -326,13 +260,13 @@ namespace iv {
                 project_persistence);
             startup_log("constructing socket rpc server");
             SocketRpcServer server(options.workspace_root, options.rpc_fd);
-            IvModuleReloadWatcherService iv_module_reload_watcher(
+            IvPackageReloadService iv_package_reload_service(
                 iv_module_reload,
                 iv_module_definitions,
                 startup.workspace_root,
                 package_search_roots);
             std::function<void()> shutdown = [&]() {
-                iv_module_reload_watcher.request_shutdown();
+                iv_package_reload_service.request_shutdown();
                 project_autosave_service.request_shutdown();
                 server.request_shutdown();
             };
@@ -370,10 +304,6 @@ namespace iv {
                 iv_module_definitions_iv_module_instances_bridge::bind(
                     iv_module_definitions,
                     iv_module_instances);
-            auto iv_module_definitions_iv_packages_scope =
-                iv_module_definitions_iv_packages_bridge::bind(
-                    iv_module_definitions,
-                    iv_packages);
             auto iv_module_instances_execution_task_runner_scope =
                 iv_module_instances_execution_task_runner_bridge::bind(
                     iv_module_instances_execution,
@@ -398,8 +328,6 @@ namespace iv {
                 iv_module_definitions_iv_module_reload_bridge::bind(
                     iv_module_definitions,
                     iv_module_reload);
-            auto task_runner_iv_module_reload_scope =
-                task_runner_iv_module_reload_bridge::bind(task_runner, iv_module_reload);
             auto iv_module_instances_iv_module_source_introspection_scope =
                 iv_module_instances_iv_module_source_introspection_bridge::bind(
                     iv_module_instances,
@@ -487,8 +415,8 @@ namespace iv {
                 socket_rpc_iv_module_source_introspection_bridge::bind(
                     server,
                     introspection);
-            auto iv_module_definitions_socket_rpc_notification_scope =
-                iv_module_definitions_socket_rpc_notification_bridge::bind(
+            auto iv_module_definitions_socket_rpc_packages_scope =
+                iv_module_definitions_socket_rpc_packages_bridge::bind(
                     iv_module_definitions,
                     server);
             auto lanes_visualization_socket_rpc_notification_scope =
@@ -499,17 +427,6 @@ namespace iv {
                 socket_rpc_project_persistence_bridge::bind(server, project_persistence);
             auto socket_rpc_project_autosave_scope =
                 socket_rpc_project_autosave_bridge::bind(server, project_autosave);
-
-            // Manifest discovery is deliberately package-level. Build the
-            // discovered candidates before serving module-instance creation,
-            // then let the compiler-produced registrations establish the
-            // module-ID registry used by that request.
-            iv_module_definitions.sync_package_declarations(
-                discover_iv_package_declarations(
-                    startup.workspace_root,
-                    package_search_roots));
-            iv_module_reload.compile_dirty_packages();
-            iv_module_reload.apply_pending_results();
 
             startup_log("initializing execution state");
             timeline_execution.publish_task_graph_update(
@@ -530,11 +447,11 @@ namespace iv {
                 throw std::runtime_error("socket rpc server did not deliver server.ready");
             }
             startup_log("starting iv module reload watcher");
-            iv_module_reload_watcher.start();
+            iv_package_reload_service.start();
             std::cout << "Intravenous server connected on rpc fd " << options.rpc_fd << '\n';
             server.wait();
             startup_log("socket rpc server stopped");
-            iv_module_reload_watcher.request_shutdown();
+            iv_package_reload_service.request_shutdown();
             project_autosave_service.stop();
             audio_device_lanes.request_shutdown();
             return 0;

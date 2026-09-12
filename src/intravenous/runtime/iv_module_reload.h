@@ -17,7 +17,6 @@
 #include <vector>
 
 namespace iv {
-struct TasksRunnerBeforePass;
 struct IvModuleReloadFailure {
     std::string package_id{};
     std::filesystem::path package_root{};
@@ -40,6 +39,22 @@ struct IvModuleReloadResults {
     std::vector<IvModuleReloadFailure> failed{};
 };
 
+// Compilation is deliberately separate from definition publication. A package
+// can be discovered before it has a usable artifact, and a failed rebuild must
+// not be misrepresented to the UI as a source with no definitions.
+enum class IvPackageBuildState {
+    queued,
+    building,
+    built,
+    failed,
+};
+
+struct IvPackageBuildStatus {
+    std::string package_id{};
+    IvPackageBuildState state = IvPackageBuildState::queued;
+    std::string message{};
+};
+
 struct ProjectOverrideSettingsRequest;
 class ProjectPersistenceBuilder;
 
@@ -50,6 +65,7 @@ class IvModuleReload {
     std::unordered_map<std::string, IvPackageDeclaration> package_declarations_by_id;
     std::unordered_map<std::string, std::vector<ModuleDependency>> dependencies_by_package_id;
     std::unordered_set<std::string> dirty_package_ids;
+    std::unordered_map<std::string, IvPackageBuildStatus> build_status_by_package_id;
     IvModuleReloadResults pending_results;
     DependencyWatcher watcher;
 
@@ -78,11 +94,10 @@ public:
         IvPackageDeclarationsChanged const &diff);
 
     [[nodiscard]] bool has_dirty_packages() const;
-    bool has_changes();
+    [[nodiscard]] std::vector<IvPackageBuildStatus> package_build_statuses() const;
     void compile_dirty_packages();
     void reload_changed_packages();
     [[nodiscard]] bool has_pending_results() const;
-    void apply_pending_results();
-    void handle_task_runner_before_pass(TasksRunnerBeforePass const &pass);
+    bool apply_pending_results();
 };
 } // namespace iv

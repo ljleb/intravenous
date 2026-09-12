@@ -2,6 +2,9 @@
 
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_definitions_events.h>
+#include <intravenous/runtime/iv_module_definitions_socket_rpc_packages_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/lane_query_schema_service.h>
@@ -302,6 +305,34 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
     EXPECT_EQ(json["params"]["instances"][0]["moduleId"], "module.a");
     EXPECT_EQ(json["params"]["instances"][1]["realized"], false);
 
+}
+
+TEST(SocketRpcNotificationBridge, PublishedPackageDefinitionsRefreshThePackageCatalog)
+{
+    auto const workspace = iv::test::fresh_module_fixture_workspace(
+        "socket_rpc_package_catalog_notification_server");
+    auto harness = NotificationServerHarness(workspace);
+    IvModuleDefinitions definitions;
+    auto package_catalog_scope =
+        iv_module_definitions_socket_rpc_packages_bridge::bind(
+            definitions,
+            harness.server);
+
+    definitions.seed_loaded_definition(IvModuleReloadedDefinition{
+        .package_id = "iv.test.catalog",
+        .definition_id = "iv.test.catalog.module",
+        .package_root = workspace,
+        .module_id = "iv.test.catalog.module",
+    });
+    IV_INVOKE_LINKER_EVENT_SOURCE(
+        iv_runtime_iv_package_catalog_changed_event,
+        IvPackageCatalogChanged{});
+
+    auto const line = harness.read_line();
+    ASSERT_FALSE(line.empty());
+    auto const json = parse_json_line(line);
+    EXPECT_EQ(json["method"], "ivPackages.updated");
+    EXPECT_EQ(json["params"], Json::object());
 }
 
 TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)

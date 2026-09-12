@@ -288,12 +288,14 @@ export class WorkspaceSession {
                 this.resetCapturedServerLogs();
                 this.logServerState("Intravenous rebuild started", params);
                 this.showRebuildStatus(params);
+                await this.refreshModulesPanel();
                 return;
             }
 
             if (params.code === "rebuildFinished") {
                 this.logServerState("Intravenous rebuild finished", params);
                 this.rebuildStatusBar.hide();
+                await this.refreshModulesPanel();
                 return;
             }
 
@@ -301,10 +303,15 @@ export class WorkspaceSession {
                 this.logServerState("Intravenous rebuild failed", params);
                 this.logCapturedServerFailureContext();
                 this.showRebuildFailure(params);
+                await this.refreshModulesPanel();
                 return;
             }
 
             this.logServerState("Intravenous status", params);
+        });
+
+        this.notifications.subscribe<Record<string, never>>("ivPackages.updated", async () => {
+            await this.refreshModulesPanel();
         });
     }
 
@@ -381,6 +388,17 @@ export class WorkspaceSession {
             packageId: packageInfo.packageId,
             moduleIds: stringArray(packageInfo.moduleIds),
             nodeTypeIds: stringArray(packageInfo.nodeTypeIds),
+            buildState: packageInfo.buildState === "building"
+                || packageInfo.buildState === "built"
+                || packageInfo.buildState === "failed"
+                ? packageInfo.buildState
+                : "queued",
+            buildMessage: typeof packageInfo.buildMessage === "string"
+                ? packageInfo.buildMessage
+                : "",
+            publicationMessage: typeof packageInfo.publicationMessage === "string"
+                ? packageInfo.publicationMessage
+                : "",
             packageRoot: packageInfo.packageRoot,
             projectLocal: packageInfo.projectLocal === true,
         };
@@ -1013,9 +1031,16 @@ export class WorkspaceSession {
             throw new Error(`IV package is no longer available: ${packageRoot}`);
         }
         if (packageInfo.moduleIds.length !== 1) {
+            const reason = packageInfo.buildState === "failed"
+                ? `package build failed: ${packageInfo.buildMessage || packageRoot}`
+                : packageInfo.buildState === "building" || packageInfo.buildState === "queued"
+                    ? `package definitions are not ready yet: ${packageRoot}`
+                    : packageInfo.publicationMessage
+                        ? `package definitions are not published: ${packageInfo.publicationMessage}`
+                    : `package has no published iv modules yet: ${packageRoot}`;
             throw new Error(
                 packageInfo.moduleIds.length === 0
-                    ? `package has no published iv modules yet: ${packageRoot}`
+                    ? reason
                     : `package provides multiple iv modules; choose one explicitly: ${packageRoot}`,
             );
         }

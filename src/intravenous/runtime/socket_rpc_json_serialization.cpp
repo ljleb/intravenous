@@ -107,6 +107,21 @@ std::string_view lane_query_completion_kind_json(query::LaneQueryCompletionKind 
     return "property";
 }
 
+std::string_view package_build_state_json(IvPackageBuildState state)
+{
+    switch (state) {
+    case IvPackageBuildState::queued:
+        return "queued";
+    case IvPackageBuildState::building:
+        return "building";
+    case IvPackageBuildState::built:
+        return "built";
+    case IvPackageBuildState::failed:
+        return "failed";
+    }
+    return "queued";
+}
+
 SocketRpcJson lane_query_source_range_json(query::LaneQuerySourceRange const &range)
 {
     return SocketRpcJson{
@@ -175,6 +190,9 @@ SocketRpcJson iv_package_json(IvPackageInfo const &package)
         {"projectLocal", package.project_local},
         {"moduleIds", package.module_ids},
         {"nodeTypeIds", package.node_type_ids},
+        {"buildState", package_build_state_json(package.build_state)},
+        {"buildMessage", package.build_message},
+        {"publicationMessage", package.publication_message},
     };
 }
 

@@ -1,14 +1,14 @@
 #pragma once
 
+#include <intravenous/runtime/iv_module_reload.h>
+
 #include <filesystem>
-#include <mutex>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace iv {
-struct IvPackageDefinitionsChanged;
+class IvModuleDefinitions;
 class SocketRpcIvPackageResultBuilder;
 class SocketRpcIvPackagesResultBuilder;
 struct CreateIvPackageRequest;
@@ -24,6 +24,15 @@ struct IvPackageInfo {
     // node type IDs are exposed separately so node-only packages remain visible.
     std::vector<std::string> module_ids;
     std::vector<std::string> node_type_ids;
+    // Publication and compilation are separate states. A package with no
+    // modules may be a valid node-only/empty package, still building, or have
+    // failed before its compiler-produced definitions could be published.
+    IvPackageBuildState build_state = IvPackageBuildState::queued;
+    std::string build_message{};
+    // A completed artifact can still be withheld by the definition registry.
+    // This is distinct from a compiler failure and from a package that simply
+    // contains no IV_MODULE/IV_NODE registrations.
+    std::string publication_message{};
 };
 
 [[nodiscard]] std::vector<IvPackageInfo> discover_iv_packages(
@@ -36,19 +45,16 @@ discover_iv_package_declarations(
 
 class IvPackages {
     std::filesystem::path project_root_;
-    std::vector<std::filesystem::path> shared_roots_;
-    mutable std::mutex mutex_;
-    std::unordered_map<std::string, std::string> module_package_ids_;
-    std::unordered_map<std::string, std::string> node_type_package_ids_;
+    IvModuleDefinitions& definitions_;
+    IvModuleReload const& reload_;
 public:
     IvPackages(
         std::filesystem::path project_root,
-        std::vector<std::filesystem::path> shared_roots);
+        IvModuleDefinitions& definitions,
+        IvModuleReload const& reload);
     [[nodiscard]] std::vector<IvPackageInfo> list_packages() const;
-    [[nodiscard]] IvPackageInfo create_project_package(std::string const& name) const;
+    [[nodiscard]] IvPackageInfo create_project_package(std::string const& name);
 
-    void handle_iv_package_definitions_changed(
-        IvPackageDefinitionsChanged const& diff);
     void handle_socket_rpc_get_iv_packages(
         GetIvPackagesRequest const &request,
         SocketRpcIvPackagesResultBuilder &builder) const;
