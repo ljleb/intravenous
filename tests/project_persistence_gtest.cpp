@@ -246,7 +246,7 @@ struct LocalCmakeDefinitions {
         seeded = true;
         definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
             .package_id = root.generic_string(),
-            .definition_id = root.generic_string(),
+            .definition_id = std::string(local_cmake_module_id),
             .package_root = root,
             .module_id = std::string(local_cmake_module_id),
         });
@@ -553,9 +553,12 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidRecognizedKeyLogsErrorAndLa
     auto const listed = instances.list_instances();
     ASSERT_EQ(listed.size(), 1u);
     EXPECT_EQ(listed.front().instance_id, "instance-z");
-    ASSERT_EQ(witness.messages.size(), 1u);
-    EXPECT_EQ(witness.messages.front().level, "error");
-    EXPECT_TRUE(witness.messages.front().message.contains("compiled_sample_cache_chunk_size_multiplier"));
+    ASSERT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
+    auto const error = std::ranges::find_if(witness.messages, [](auto const &message) {
+        return message.level == "error";
+    });
+    ASSERT_NE(error, witness.messages.end());
+    EXPECT_TRUE(error->message.contains("compiled_sample_cache_chunk_size_multiplier"));
 
 }
 
@@ -906,7 +909,11 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
     EXPECT_EQ(instances.list_instances().front().instance_id, "instance-a");
     EXPECT_TRUE(lane_views.active_view_requests().empty());
     EXPECT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
-    EXPECT_TRUE(witness.messages.front().message.contains("missing"));
+    auto const error = std::ranges::find_if(witness.messages, [](auto const &message) {
+        return message.level == "error";
+    });
+    ASSERT_NE(error, witness.messages.end());
+    EXPECT_TRUE(error->message.contains("missing"));
 
 }
 

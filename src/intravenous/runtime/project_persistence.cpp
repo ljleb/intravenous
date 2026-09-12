@@ -1,5 +1,6 @@
 #include <intravenous/runtime/project_persistence.h>
 
+#include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/task_runner_events.h>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <system_error>
+#include <utility>
 
 namespace iv {
 namespace {
@@ -181,6 +183,15 @@ ProjectEventOutputState parse_project_event_output_state(std::string const &stat
         return ProjectEventOutputState::timeline_lane;
     }
     throw std::runtime_error("unknown project event output state: " + state);
+}
+
+void publish_graph_input_public_ports(GraphInputPublicPortsSnapshot public_ports)
+{
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_instances_configured_event,
+        IvModuleInstancesConfigured{
+            .public_ports = std::move(public_ports)
+        });
 }
 
 bool is_recognized_project_override_key(std::string const &key)
@@ -436,7 +447,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .value = Sample{args["value"].get<Sample::storage>()},
             },
             builder);
-        builder.build();
+        publish_graph_input_public_ports(builder.build());
         return;
     }
 
@@ -454,7 +465,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .lane_id = optional_interned_string(args, "lane_id"),
             },
             builder);
-        builder.build();
+        publish_graph_input_public_ports(builder.build());
         return;
     }
 
@@ -472,7 +483,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .lane_id = optional_interned_string(args, "lane_id"),
             },
             builder);
-        builder.build();
+        publish_graph_input_public_ports(builder.build());
         return;
     }
 
@@ -490,7 +501,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .lane_id = optional_interned_string(args, "lane_id"),
             },
             builder);
-        builder.build();
+        publish_graph_input_public_ports(builder.build());
         return;
     }
 
@@ -508,7 +519,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .lane_id = optional_interned_string(args, "lane_id"),
             },
             builder);
-        builder.build();
+        publish_graph_input_public_ports(builder.build());
         return;
     }
 

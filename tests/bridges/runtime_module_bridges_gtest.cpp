@@ -2,8 +2,8 @@
 
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
 #include <intravenous/runtime/iv_module_instances_execution_events.h>
 #include <intravenous/runtime/iv_module_instances_execution_task_runner_bridge.h>
@@ -47,12 +47,17 @@ bool wait_until(std::function<bool()> const &predicate)
 void noop_task(void *) {}
 }
 
-TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionRequiresBinding)
+TEST(IntrospectionBridges, ConfiguredInstancesToIvModuleSourceIntrospectionRequiresBinding)
 {
     auto const workspace =
         fresh_module_fixture_workspace("runtime_bridges_defs_to_introspection_unbound");
+    iv::IvModuleInstances instances;
     iv::IvModuleDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
+    auto definitions_instances_scope =
+        iv::iv_module_definitions_iv_module_instances_bridge::bind(
+            definitions,
+            instances);
 
     definitions.seed_loaded_definition(make_loaded_definition(workspace));
     auto const result = introspection.query_by_spans(
@@ -66,15 +71,20 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionRequiresBindi
     EXPECT_TRUE(result.nodes.empty());
 }
 
-TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionForwardsWhenBound)
+TEST(IntrospectionBridges, ConfiguredInstancesToIvModuleSourceIntrospectionForwardsWhenBound)
 {
     auto const workspace =
         read_only_module_fixture_workspace("local_cmake");
+    iv::IvModuleInstances instances;
     iv::IvModuleDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
-    auto bridge_scope =
-        iv::iv_module_definitions_iv_module_source_introspection_bridge::bind(
+    auto definitions_instances_scope =
+        iv::iv_module_definitions_iv_module_instances_bridge::bind(
             definitions,
+            instances);
+    auto instances_introspection_scope =
+        iv::iv_module_instances_iv_module_source_introspection_bridge::bind(
+            instances,
             introspection);
 
     auto const startup = iv::StartupConfig(workspace, iv::test::repo_root(), {}).initialize();
@@ -95,7 +105,6 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionForwardsWhenB
         std::filesystem::weakly_canonical(workspace / "module.cpp"));
 
     EXPECT_FALSE(result.source_spans.empty());
-
 }
 
 TEST(IntrospectionBridges, InstancesToDefinitionsRequiresBinding)

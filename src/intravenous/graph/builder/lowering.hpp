@@ -646,7 +646,11 @@ constexpr void apply_virtual_port_metadata(
     if (!index) {
       std::vector<SourceSpan> spans;
       spans.reserve(record.source_infos.size());
-      for (auto const& info : record.source_infos) spans.push_back(info.span);
+      for (auto const& info : record.source_infos) {
+        if (!info.span.file_path.empty() && info.span.begin <= info.span.end) {
+          spans.push_back(info.span);
+        }
+      }
       sort_and_deduplicate_spans(spans);
       metadata.virtual_nodes.push_back(IntrospectionVirtualNode {
           .id = record.id,

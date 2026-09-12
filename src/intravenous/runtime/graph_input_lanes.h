@@ -315,6 +315,7 @@ public:
     std::vector<PublicEventInputInfo> public_event_inputs() const;
     std::vector<PublicSampleOutputInfo> public_sample_outputs() const;
     std::vector<PublicEventOutputInfo> public_event_outputs() const;
+    GraphInputPublicPortsSnapshot public_ports() const;
     void set_event_input_state(
         ProjectSetEventInputStateRequest const &request);
     void set_sample_output_state(

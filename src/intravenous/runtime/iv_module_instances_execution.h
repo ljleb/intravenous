@@ -17,6 +17,7 @@ struct PauseRequest;
 struct ResumeRequest;
 struct TasksRunnerAfterPass;
 struct TimelineExecutionResumed;
+struct IvModuleInstancesConfigured;
 
 class IvModuleInstancesExecution {
     struct InstanceTaskContext {

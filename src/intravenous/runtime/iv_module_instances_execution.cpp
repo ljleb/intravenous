@@ -1,5 +1,6 @@
 #include <intravenous/runtime/iv_module_instances_execution.h>
 
+#include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_instances_execution_events.h>
 #include <intravenous/runtime/task_runner_events.h>
 #include <intravenous/runtime/timeline_execution_events.h>

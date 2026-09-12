@@ -3,9 +3,7 @@
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/lane_filters.h>
@@ -43,8 +41,6 @@ struct SeededIvModuleSourceIntrospectionApp {
     iv::timeline_lane_filters_bridge::scope timeline_lane_filters_scope;
     iv::iv_module_definitions_iv_module_instances_bridge::scope
         iv_module_definitions_iv_module_instances_scope;
-    iv::iv_module_definitions_iv_module_source_introspection_bridge::scope
-        iv_module_definitions_iv_module_source_introspection_scope;
     iv::iv_module_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
     iv::iv_module_instances_graph_input_lanes_bridge::scope
@@ -64,9 +60,6 @@ struct SeededIvModuleSourceIntrospectionApp {
               std::move(extra_search_roots)),
           timeline_lane_filters_scope(timeline, lane_filters),
           iv_module_definitions_iv_module_instances_scope(definitions, instances),
-          iv_module_definitions_iv_module_source_introspection_scope(
-              definitions,
-              introspection),
           iv_module_instances_iv_module_source_introspection_scope(
               instances,
               introspection),

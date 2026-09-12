@@ -400,10 +400,6 @@ namespace iv {
                     iv_module_reload);
             auto task_runner_iv_module_reload_scope =
                 task_runner_iv_module_reload_bridge::bind(task_runner, iv_module_reload);
-            auto iv_module_definitions_iv_module_source_introspection_scope =
-                iv_module_definitions_iv_module_source_introspection_bridge::bind(
-                    iv_module_definitions,
-                    introspection);
             auto iv_module_instances_iv_module_source_introspection_scope =
                 iv_module_instances_iv_module_source_introspection_bridge::bind(
                     iv_module_instances,

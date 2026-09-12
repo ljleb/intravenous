@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <string>
 
 namespace {
@@ -13,6 +14,7 @@ IV_DECLARE_LINKER_EVENT(VoidEvent, iv_test_propagation_left_event);
 IV_DECLARE_LINKER_EVENT(VoidEvent, iv_test_propagation_right_event);
 IV_DECLARE_LINKER_EVENT(VoidEvent, iv_test_propagation_direct_event);
 IV_DECLARE_LINKER_EVENT(VoidEvent, iv_test_propagation_nested_source_event);
+IV_DECLARE_LINKER_EVENT(VoidEvent, iv_test_propagation_throwing_event);
 
 struct RootEndpoint {};
 
@@ -45,12 +47,20 @@ struct NestedSourceModule {
     }
 };
 
+struct ThrowingModule {
+    void handle_root()
+    {
+        throw std::runtime_error("propagation test failure");
+    }
+};
+
 IV_DECLARE_BRIDGE(test_root_left_bridge, RootEndpoint, LeftModule);
 IV_DECLARE_BRIDGE(test_root_right_bridge, RootEndpoint, RightModule);
 IV_DECLARE_BRIDGE(test_left_sink_bridge, LeftModule, SinkModule);
 IV_DECLARE_BRIDGE(test_right_sink_bridge, RightModule, SinkModule);
 IV_DECLARE_BRIDGE(test_direct_sink_bridge, RootEndpoint, SinkModule);
 IV_DECLARE_BRIDGE(test_root_nested_bridge, RootEndpoint, NestedSourceModule);
+IV_DECLARE_BRIDGE(test_root_throwing_bridge, RootEndpoint, ThrowingModule);
 
 IV_DEFINE_BRIDGE(test_root_left_bridge)
 IV_DEFINE_BRIDGE(test_root_right_bridge)
@@ -58,6 +68,7 @@ IV_DEFINE_BRIDGE(test_left_sink_bridge)
 IV_DEFINE_BRIDGE(test_right_sink_bridge)
 IV_DEFINE_BRIDGE(test_direct_sink_bridge)
 IV_DEFINE_BRIDGE(test_root_nested_bridge)
+IV_DEFINE_BRIDGE(test_root_throwing_bridge)
 
 IV_SUBSCRIBE_LINKER_EVENT(
     test_root_left_bridge,
@@ -83,18 +94,20 @@ IV_SUBSCRIBE_LINKER_EVENT(
     test_root_nested_bridge,
     iv_test_propagation_nested_source_event,
     &NestedSourceModule::handle_root);
+IV_SUBSCRIBE_LINKER_EVENT(
+    test_root_throwing_bridge,
+    iv_test_propagation_throwing_event,
+    &ThrowingModule::handle_root);
 
 IV_DEFINE_LINKER_EVENT(VoidEvent, iv_test_propagation_root_event)
 IV_DEFINE_LINKER_EVENT(VoidEvent, iv_test_propagation_left_event)
 IV_DEFINE_LINKER_EVENT(VoidEvent, iv_test_propagation_right_event)
 IV_DEFINE_LINKER_EVENT(VoidEvent, iv_test_propagation_direct_event)
 IV_DEFINE_LINKER_EVENT(VoidEvent, iv_test_propagation_nested_source_event)
+IV_DEFINE_LINKER_EVENT(VoidEvent, iv_test_propagation_throwing_event)
 
 TEST(LinkerEventPropagation, RejectsSiblingConvergenceOnOneModule)
 {
-#ifdef NDEBUG
-    GTEST_SKIP() << "propagation validation is a debug-build invariant";
-#else
     RootEndpoint root;
     LeftModule left;
     RightModule right;
@@ -113,7 +126,6 @@ TEST(LinkerEventPropagation, RejectsSiblingConvergenceOnOneModule)
         EXPECT_NE(message.find("first path"), std::string::npos);
         EXPECT_NE(message.find("second path"), std::string::npos);
     }
-#endif
 }
 
 TEST(LinkerEventPropagation, SeparateSourcesMayVisitTheSameModule)
@@ -127,11 +139,25 @@ TEST(LinkerEventPropagation, SeparateSourcesMayVisitTheSameModule)
     EXPECT_EQ(sink.calls, 2);
 }
 
+TEST(LinkerEventPropagation, SourceContextIsRestoredAfterSubscriberThrows)
+{
+    RootEndpoint root;
+    ThrowingModule throwing;
+    {
+        auto scope = test_root_throwing_bridge::bind(root, throwing);
+        EXPECT_THROW(
+            IV_INVOKE_LINKER_EVENT_SOURCE(iv_test_propagation_throwing_event),
+            std::runtime_error);
+    }
+
+    SinkModule sink;
+    auto scope = test_direct_sink_bridge::bind(root, sink);
+    EXPECT_NO_THROW(IV_INVOKE_LINKER_EVENT_SOURCE(iv_test_propagation_direct_event));
+    EXPECT_EQ(sink.calls, 1);
+}
+
 TEST(LinkerEventPropagation, RejectsNestedSourceEvent)
 {
-#ifdef NDEBUG
-    GTEST_SKIP() << "propagation validation is a debug-build invariant";
-#else
     RootEndpoint root;
     NestedSourceModule nested;
     auto scope = test_root_nested_bridge::bind(root, nested);
@@ -141,6 +167,5 @@ TEST(LinkerEventPropagation, RejectsNestedSourceEvent)
     EXPECT_THROW(
         IV_INVOKE_LINKER_EVENT_SOURCE(iv_test_propagation_nested_source_event),
         std::logic_error);
-#endif
 }
 } // namespace

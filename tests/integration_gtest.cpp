@@ -12,11 +12,10 @@
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_reload.h>
 #include <intravenous/runtime/iv_module_reload_events.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
@@ -333,11 +332,16 @@ TEST(Integration, StartupConfigDefinitionsAndIvModuleSourceIntrospectionInitiali
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
+    iv::IvModuleInstances instances;
     iv::IvModuleDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
-    auto iv_module_definitions_iv_module_source_introspection_scope =
-        iv::iv_module_definitions_iv_module_source_introspection_bridge::bind(
+    auto definitions_instances_scope =
+        iv::iv_module_definitions_iv_module_instances_bridge::bind(
             definitions,
+            instances);
+    auto instances_introspection_scope =
+        iv::iv_module_instances_iv_module_source_introspection_bridge::bind(
+            instances,
             introspection);
 
     auto const loaded = iv::test_support::BoundIvModuleSourceIntrospection::load_definition(

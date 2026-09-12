@@ -49,14 +49,11 @@ void notify_updated_node_ids(
     if (node_ids.empty()) {
         return;
     }
-    try {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_source_introspection_nodes_updated_event,
-            ProjectVirtualNodesNotification{
-                .nodes = introspection.get_virtual_nodes(std::move(node_ids)),
-            });
-    } catch (...) {
-    }
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_source_introspection_nodes_updated_event,
+        ProjectVirtualNodesNotification{
+            .nodes = introspection.get_virtual_nodes(std::move(node_ids)),
+        });
 }
 
 ProjectSampleInputState parse_project_sample_input_state(std::string const &state)
@@ -375,11 +372,12 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
         }
     }
     for (auto &virtual_node : graph_index.virtual_nodes) {
+        std::erase_if(virtual_node.source_spans, [](SourceSpan const &span) {
+            return span.file_path.empty() || span.begin > span.end;
+        });
         for (auto &span : virtual_node.source_spans) {
-            if (!span.file_path.empty()) {
-                span.file_path = normalized_path_string(span.file_path);
-                graph_index.dependency_file_paths.insert(span.file_path);
-            }
+            span.file_path = normalized_path_string(span.file_path);
+            graph_index.dependency_file_paths.insert(span.file_path);
         }
         sort_and_deduplicate_spans(virtual_node.source_spans);
     }
@@ -927,15 +925,12 @@ void IvModuleSourceIntrospection::handle_iv_module_instances_configured(
         return;
     }
 
-    try {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_source_introspection_nodes_updated_event,
-            ProjectVirtualNodesNotification{
-                .nodes = get_virtual_nodes_for_instances(updated_instances),
-                .replace_instance_ids = std::move(replace_instance_ids),
-            });
-    } catch (...) {
-    }
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_source_introspection_nodes_updated_event,
+        ProjectVirtualNodesNotification{
+            .nodes = get_virtual_nodes_for_instances(updated_instances),
+            .replace_instance_ids = std::move(replace_instance_ids),
+        });
 }
 
 ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(

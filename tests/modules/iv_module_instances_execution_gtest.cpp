@@ -11,6 +11,7 @@
 
 #include <array>
 #include <filesystem>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -591,6 +592,15 @@ TEST(IvModuleInstancesExecution, PausedPreviewIgnoresTransportPlayheadUntilFollo
     EXPECT_EQ(indices, (std::vector<size_t>{0u, 8u, 128u}));
 }
 
+void apply_module_definitions(
+    iv::IvModuleInstances &instances,
+    iv::IvModuleDefinitionsChanged diff)
+{
+    instances.handle_iv_package_definitions_changed(iv::IvPackageDefinitionsChanged{
+        .modules = std::move(diff),
+    });
+}
+
 TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecutorRelease)
 {
     iv::IvModuleInstancesExecution execution(8);
@@ -617,7 +627,8 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
         &old_module_is_live,
         &old_release_saw_live_module,
     };
-    instances.handle_iv_module_definitions_changed(
+    apply_module_definitions(
+        instances,
         iv::IvModuleDefinitionsChanged {
             .created = {
                 iv::IvModuleDefinition {
@@ -634,7 +645,8 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
     old_module_refs.clear();
 
     NoopNode new_root;
-    instances.handle_iv_module_definitions_changed(
+    apply_module_definitions(
+        instances,
         iv::IvModuleDefinitionsChanged {
             .updated = {
                 iv::IvModuleDefinition {

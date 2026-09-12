@@ -3,7 +3,6 @@
 #include <span>
 #include <utility>
 
-#ifndef NDEBUG
 #include <source_location>
 #include <sstream>
 #include <stdexcept>
@@ -12,7 +11,6 @@
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
-#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 #define IV_LINKER_EVENT_USED __attribute__((used))
@@ -28,7 +26,6 @@
 #define IV_LINKER_EVENT_CONCAT(a, b) IV_LINKER_EVENT_CONCAT_INNER(a, b)
 
 namespace iv::details {
-#ifndef NDEBUG
 struct LinkerEventTraceFrame {
     enum class Kind {
         event,
@@ -98,28 +95,30 @@ inline std::string format_linker_event_path(
 }
 
 class LinkerEventFrameScope {
+    LinkerEventPropagationContext* context_ = nullptr;
     bool active_ = false;
 
 public:
     LinkerEventFrameScope(
         std::string_view event_name,
         std::source_location location)
+        : context_(current_linker_event_propagation)
     {
-        ++linker_event_depth;
-        if (current_linker_event_propagation != nullptr) {
-            current_linker_event_propagation->path.push_back(LinkerEventTraceFrame{
+        if (context_ != nullptr) {
+            context_->path.push_back(LinkerEventTraceFrame{
                 .kind = LinkerEventTraceFrame::Kind::event,
                 .name = std::string(event_name),
                 .location = location,
             });
             active_ = true;
         }
+        ++linker_event_depth;
     }
 
     ~LinkerEventFrameScope()
     {
         if (active_) {
-            current_linker_event_propagation->path.pop_back();
+            context_->path.pop_back();
         }
         --linker_event_depth;
     }
@@ -129,16 +128,18 @@ public:
 };
 
 class LinkerEventModuleFrameScope {
+    LinkerEventPropagationContext* context_ = nullptr;
     bool active_ = false;
 
 public:
     template<class Module>
     explicit LinkerEventModuleFrameScope(std::type_identity<Module>)
+        : context_(current_linker_event_propagation)
     {
-        auto* context = current_linker_event_propagation;
-        if (context == nullptr) {
+        if (context_ == nullptr) {
             return;
         }
+        auto* context = context_;
 
         auto const module_id = static_cast<void const*>(
             &linker_event_module_identity<Module>);
@@ -181,12 +182,29 @@ public:
     ~LinkerEventModuleFrameScope()
     {
         if (active_) {
-            current_linker_event_propagation->path.pop_back();
+            context_->path.pop_back();
         }
     }
 
     LinkerEventModuleFrameScope(LinkerEventModuleFrameScope const&) = delete;
     LinkerEventModuleFrameScope& operator=(LinkerEventModuleFrameScope const&) = delete;
+};
+
+class LinkerEventPropagationScope {
+    LinkerEventPropagationContext* previous_ = nullptr;
+
+public:
+    explicit LinkerEventPropagationScope(LinkerEventPropagationContext& context)
+        : previous_(std::exchange(current_linker_event_propagation, &context))
+    {}
+
+    ~LinkerEventPropagationScope()
+    {
+        current_linker_event_propagation = previous_;
+    }
+
+    LinkerEventPropagationScope(LinkerEventPropagationScope const&) = delete;
+    LinkerEventPropagationScope& operator=(LinkerEventPropagationScope const&) = delete;
 };
 
 template<class Dispatch>
@@ -211,22 +229,9 @@ decltype(auto) invoke_linker_event(
         .root_event = std::string(event_name),
         .root_location = location,
     };
-    auto* previous = std::exchange(current_linker_event_propagation, &context);
-    try {
-        LinkerEventFrameScope frame(event_name, location);
-        if constexpr (std::is_void_v<std::invoke_result_t<Dispatch>>) {
-            std::forward<Dispatch>(dispatch)();
-            current_linker_event_propagation = previous;
-            return;
-        } else {
-            auto result = std::forward<Dispatch>(dispatch)();
-            current_linker_event_propagation = previous;
-            return result;
-        }
-    } catch (...) {
-        current_linker_event_propagation = previous;
-        throw;
-    }
+    LinkerEventPropagationScope propagation_scope(context);
+    LinkerEventFrameScope frame(event_name, location);
+    return std::forward<Dispatch>(dispatch)();
 }
 
 template<class Module, class Dispatch>
@@ -235,24 +240,6 @@ decltype(auto) invoke_linker_event_module(Dispatch&& dispatch)
     LinkerEventModuleFrameScope frame(std::type_identity<Module>{});
     return std::forward<Dispatch>(dispatch)();
 }
-#else
-
-template<class Dispatch>
-decltype(auto) invoke_linker_event(
-    char const*,
-    int,
-    bool,
-    Dispatch&& dispatch)
-{
-    return std::forward<Dispatch>(dispatch)();
-}
-
-template<class Module, class Dispatch>
-decltype(auto) invoke_linker_event_module(Dispatch&& dispatch)
-{
-    return std::forward<Dispatch>(dispatch)();
-}
-#endif
 } // namespace iv::details
 
 #define IV_DECLARE_LINKER_EVENT(event_type, event_name) \
@@ -290,11 +277,7 @@ decltype(auto) invoke_linker_event_module(Dispatch&& dispatch)
         return {begin, end}; \
     }
 
-#ifndef NDEBUG
 #define IV_LINKER_EVENT_LOCATION std::source_location::current()
-#else
-#define IV_LINKER_EVENT_LOCATION 0
-#endif
 
 #define IV_INVOKE_LINKER_EVENT_IMPL(source_, event_name, ...) \
     do { \

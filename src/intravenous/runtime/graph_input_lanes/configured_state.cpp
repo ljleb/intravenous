@@ -510,6 +510,12 @@ GraphInputPublicPortsSnapshot GraphInputLanes::public_ports_locked() const
     };
 }
 
+GraphInputPublicPortsSnapshot GraphInputLanes::public_ports() const
+{
+    std::scoped_lock lock(mutex);
+    return public_ports_locked();
+}
+
 std::vector<PublicSampleInputInfo> GraphInputLanes::public_sample_inputs() const
 {
     std::scoped_lock lock(mutex);

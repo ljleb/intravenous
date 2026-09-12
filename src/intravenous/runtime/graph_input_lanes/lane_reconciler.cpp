@@ -1009,6 +1009,119 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
     return result;
 }
 
+GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
+    ProjectGraphInputLaneBindingsRequest const &request)
+{
+    std::scoped_lock lock(mutex);
+    GraphInputLaneBindings bindings;
+
+    auto find_lane = [&](std::function<bool(ExistingTrackedLane const &)> const &matches) -> LaneId {
+        for (auto const &tracked : tracked_lanes) {
+            if (matches(tracked)) {
+                return tracked.lane;
+            }
+        }
+        return LaneId{};
+    };
+
+    for (auto const &port : request.ports) {
+        if (port.port_kind == PortKind::sample && !port.node_bundle_port_ordinal.has_value()) {
+            auto virtual_lane = find_lane([&](ExistingTrackedLane const &tracked) {
+                return tracked.metadata.has_unit(metadata_knob)
+                    && tracked.metadata.has_unit(metadata_virtual)
+                    && tracked.metadata.has_unit(metadata_sample)
+                    && tracked.metadata.int_value(metadata_virtual_node_id) == hash_string(port.virtual_node_id)
+                    && tracked.metadata.int_value(metadata_port_kind) == 0
+                    && tracked.metadata.int_value(metadata_port_ordinal) == static_cast<int>(port.port_ordinal)
+                    && tracked.metadata.int_value(metadata_channel_type)
+                        == (port.sample_channel_type.has_value()
+                            ? std::optional<int>(static_cast<int>(*port.sample_channel_type))
+                            : std::nullopt);
+            });
+            if (virtual_lane) {
+                bindings.virtual_sample_knobs.push_back(GraphInputLaneBinding{
+                    .port = port,
+                    .knob_lane = virtual_lane,
+                });
+            }
+        }
+    }
+
+    for (auto const &port : request.ports) {
+        if (port.port_kind == PortKind::sample) {
+            auto node_bundle_lane = find_lane([&](ExistingTrackedLane const &tracked) {
+                return tracked.metadata.has_unit(metadata_knob)
+                    && tracked.metadata.has_unit(metadata_node_bundle)
+                    && tracked.metadata.has_unit(metadata_sample)
+                    && tracked.metadata.int_value(metadata_virtual_node_id) == hash_string(port.virtual_node_id)
+                    && tracked.metadata.int_value(metadata_port_kind) == 0
+                    && tracked.metadata.int_value(metadata_port_ordinal) == static_cast<int>(port.port_ordinal)
+                    && tracked.metadata.int_value(metadata_channel_type)
+                        == (port.sample_channel_type.has_value()
+                            ? std::optional<int>(static_cast<int>(*port.sample_channel_type))
+                            : std::nullopt)
+                    && tracked.metadata.int_value(metadata_node_bundle_port_ordinal)
+                        == (port.node_bundle_port_ordinal.has_value()
+                            ? std::optional<int>(static_cast<int>(*port.node_bundle_port_ordinal))
+                            : std::nullopt);
+            });
+            auto graph_input_lane = find_lane([&](ExistingTrackedLane const &tracked) {
+                return tracked.metadata.has_unit(metadata_input)
+                    && tracked.metadata.has_unit(metadata_sample)
+                    && tracked.metadata.int_value(metadata_virtual_node_id) == hash_string(port.virtual_node_id)
+                    && tracked.metadata.int_value(metadata_port_kind) == 0
+                    && tracked.metadata.int_value(metadata_port_ordinal) == static_cast<int>(port.port_ordinal)
+                    && tracked.metadata.int_value(metadata_channel_type)
+                        == (port.sample_channel_type.has_value()
+                            ? std::optional<int>(static_cast<int>(*port.sample_channel_type))
+                            : std::nullopt)
+                    && tracked.metadata.int_value(metadata_node_bundle_port_ordinal)
+                        == (port.node_bundle_port_ordinal.has_value()
+                            ? std::optional<int>(static_cast<int>(*port.node_bundle_port_ordinal))
+                            : std::nullopt);
+            });
+            if (node_bundle_lane || graph_input_lane) {
+                std::optional<LaneId> virtual_knob;
+                for (auto const &binding : bindings.virtual_sample_knobs) {
+                    if (binding.port.virtual_node_id == port.virtual_node_id
+                        && binding.port.port_kind == port.port_kind
+                        && binding.port.port_ordinal == port.port_ordinal) {
+                        virtual_knob = binding.knob_lane;
+                        break;
+                    }
+                }
+                bindings.sample_inputs.push_back(GraphInputLaneBinding{
+                    .port = port,
+                    .knob_lane = node_bundle_lane,
+                    .graph_input_lane = graph_input_lane,
+                    .virtual_knob_lane = virtual_knob,
+                });
+            }
+            continue;
+        }
+
+        auto graph_input_lane = find_lane([&](ExistingTrackedLane const &tracked) {
+            return tracked.metadata.has_unit(metadata_input)
+                && tracked.metadata.has_unit(metadata_event)
+                && tracked.metadata.int_value(metadata_virtual_node_id) == hash_string(port.virtual_node_id)
+                && tracked.metadata.int_value(metadata_port_kind) == 1
+                && tracked.metadata.int_value(metadata_port_ordinal) == static_cast<int>(port.port_ordinal)
+                && tracked.metadata.int_value(metadata_node_bundle_port_ordinal)
+                    == (port.node_bundle_port_ordinal.has_value()
+                        ? std::optional<int>(static_cast<int>(*port.node_bundle_port_ordinal))
+                        : std::nullopt);
+        });
+        if (graph_input_lane) {
+            bindings.event_inputs.push_back(GraphInputLaneBinding{
+                .port = port,
+                .graph_input_lane = graph_input_lane,
+            });
+        }
+    }
+
+    return bindings;
+}
+
 GraphInputLaneBindings GraphInputLanes::sample_input_bindings(
     std::string const &node_id,
     std::optional<size_t> member_ordinal,
