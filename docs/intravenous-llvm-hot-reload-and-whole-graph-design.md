@@ -451,15 +451,24 @@ snapshots. It must not rescan the filesystem and reconstruct ownership from
 incremental definition-change notifications, because those are two different
 states and can briefly disagree during discovery, build, conflict, or reload.
 
-The initial implementation supports the dynamic, zero-argument form above.
-Public cross-source construction arguments and typed interface recovery remain
-follow-on registry work; the design below specifies them, but they are not
-claimed as implemented by this compatibility-runtime branch.
+The compatibility-runtime API is deliberately **dynamic**: every
+`g.node<Id>(...)` returns `NodeRef`. It does not generate a C++
+`node_interface<Id>`, try to infer a static port shape, or make a consumer's
+source build depend on a provider-facing header. A registered primitive node
+is a zero-argument leaf; an implementation that needs caller-supplied graph
+configuration is exposed as an `IV_MODULE` wrapper instead.
 
-Follow-on work in this branch adds registration identities, source-local
-configuration outputs, and their cache/invalidation boundaries. The current
-finalizer continues to produce and load the existing runtime graph while that
-work lands.
+Package invalidation is deliberately conservative in this stage. A watched
+package edit queues the declared package set for reload and reconfigures any
+consumer that realizes the changed definition. There is no intended
+interface-hash-versus-definition-hash optimization boundary here: a provider
+change means its consumers reload. This keeps the dynamic API simple and
+avoids treating static typing as an architectural prerequisite.
+
+This branch establishes registration identities, source-local configuration
+outputs, conservative reload, and the existing per-module compatibility
+runtime. The current finalizer continues to produce and load that runtime
+graph; it is not reshaped around the later whole-project execution design.
 
 The whole-project finalizer and the generated execution model (sections 12
 through 25) are deliberately deferred to a separate branch. They must consume
@@ -493,7 +502,8 @@ This gives a valuable replacement property:
 "audio.filter" implemented by an iv module containing many nodes
 ```
 
-If the public interface remains compatible, callers do not need to change.
+If the realized dynamic ports remain usable by callers, no caller source needs
+to know which implementation kind supplied them.
 
 ### 5.2 Registration spellings
 
@@ -520,7 +530,7 @@ The exact macro expansion remains an implementation detail. The important semant
 
 - `IV_NODE(id, T)` registers a primitive node implementation under `id`;
 - `IV_MODULE(id, fn)` registers a graph-producing function under `id`;
-- both expose the same kind of public node interface to callers;
+- both expose the same dynamic `NodeRef` construction result to callers;
 - both participate in one stable-ID registry;
 - a C++ call site uses only `g.node<id>(...)`.
 
@@ -583,13 +593,11 @@ A node type definition contains what the server/finalizer needs to instantiate, 
 
 ```text
 stable id
-public node interface
 state layout / state metadata
 lifecycle implementation
 LLVM tick/skip/declare implementation
-configuration construction support
 source/type metadata
-implementation revision/hash
+configuration construction entry
 ```
 
 This is the mechanism that prevents the same primitive implementation from being copied into every iv module that uses it.
@@ -603,13 +611,13 @@ Registered iv modules are also keyed by stable ID:
 ```text
 IvModuleId
     -> cached ConfiguredGraph
-       public node interface
        dependency IDs
        source metadata
-       definition revision/hash
+       compiled configuration entry
 ```
 
-The internal implementation remains a `GraphBuilder` function, but consumers only see the ID and public interface.
+The internal implementation remains a `GraphBuilder` function, but consumers
+only name the ID and receive the dynamically realized result.
 
 ### 6.3 Registry updates are transactional per IV package
 
@@ -628,13 +636,15 @@ generation. Validation failure publishes no partial per-ID result: every live
 map, ownership record, and consumer notification continues to describe the
 previous complete generation.
 
-Validation includes at least:
+Registry validation includes:
 
 - duplicate stable IDs across IV packages;
-- duplicate IDs within one IV package;
-- missing referenced IDs;
-- incompatible/generated interface data;
-- iv-module dependency cycles.
+- duplicate IDs within one IV package.
+
+Missing `g.node<Id>` providers and iv-module dependency cycles are rejected
+while executing the shared configuration generation for the affected package.
+The failed package keeps its previous candidate/live generation; the registry
+does not publish a partial result.
 
 The live project/kernel should remain on the last valid generation while the candidate registry is invalid.
 
@@ -655,286 +665,104 @@ The candidate registry is invalid, but the live generation remains valid. Once A
 If the source is saved first:
 
 ```text
-"iv.foo" temporarily has no provider
-        -> temporary missing definition
+source A no longer provides "iv.foo"
+        -> successful empty candidate for A
+        -> "iv.foo" is unpublished
 ```
 
-Again the live generation remains. When the destination is saved, the ID resolves again.
+This is a valid new registry revision. Any desired project instance of
+`"iv.foo"` remains visible as unrealized so the user can delete it; desired
+project state is not a registry-validation input. When the destination is
+saved, the ID publishes from B again.
 
 No special “move detection” is required, and stable IDs never depend on source paths.
 
 ---
 
-## 7. Public node interface and generated C++ data
+## 7. Dynamic registered-ID configuration
 
-### 7.1 `node_interface<Id>`
+`g.node<Id>(...)` is intrinsically available for every stable ID. It needs no
+generated provider header, source-to-ID scan, or textual inclusion of provider
+implementation code merely to name `Id`.
 
-`g.node<Id>(...)` is intrinsically available for every stable ID. Its
-bootstrap form does not need a generated C++ declaration, a provider header,
-or a source-to-ID scan merely to name `Id`.
+Every registered-ID call returns `NodeRef`. The actual public ports are the
+ports of the immediately realized node or embedded iv-module graph, and are
+therefore available to the existing dynamic/indexed DSL after configuration.
+The public API deliberately has no `node_interface<Id>` specialization,
+typed-return recovery, or provider-generated include protocol.
 
-Optional static interface data can later expose enough C++ information for a
-consumer to receive a typed node ref without including the provider's
-implementation type or source.
+This is a semantic simplification, not a bootstrap compromise. Static typing
+would require a second public contract whose correctness and invalidation rules
+are separate from the executable configuration result. The current system has
+one authority instead: compiler-produced package definitions and the
+`ConfiguredGraph` they realize.
 
-Conceptually:
+### 7.1 Package dependencies are executable dependencies
 
-```cpp
-template<fixed_string Id>
-struct node_interface;
-```
+An IV package using another stable ID does not compile that provider's C++
+implementation into its own artifact. It resolves the provider from the shared
+configuration generation and executes its already-compiled configuration entry
+immediately.
 
-The interface may describe:
-
-- the public argument/configuration signature;
-- whether the port interface is static or dynamic;
-- static sample input/output configs when available;
-- static event input/output configs when available;
-- any compile-time data required to return a typed node ref;
-- stable interface revision/hash metadata if useful.
-
-Such a specialization is a distillation of the provider, not a source include.
-It is an optimization for static typing and validation, not a prerequisite for
-dynamic configuration.
-
-### 7.2 Imported interfaces do not include implementation code
-
-An IV package using another registered ID must not parse that node's/iv module's
-implementation headers merely to call it. The generic ID API removes the need
-for generated headers during bootstrap entirely.
-
-The essential dependency split is:
+The reload policy is intentionally broad:
 
 ```text
-implementation changes, interface unchanged
-    -> consumers do not recompile
-
-public interface changes
-    -> consumers using that ID recompile
+provider package changes
+    -> reload declared IV packages
+    -> reconfigure every consuming package definition
 ```
 
-### 7.3 Optional generated static-interface data
+There is no static-interface fast path to preserve. This is correct for both
+primitive nodes and iv modules, and makes replacement of one implementation
+kind with the other private to the provider so long as the realized graph
+remains usable by its consumers.
 
-A later static-interface system may materialize compact metadata for one
-registered definition at a time, for example as
-`<iv/nodes/iv.gain>`. Such a unit contains only the distilled static contract
-for that stable ID; it never includes provider implementation source and is
-not needed to make `g.node<"iv.gain">()` compile.
+### 7.2 Same-package freshness
 
-This remains driven by compiler-produced interface metadata and interface
-hashes. Textual scanning of an include or of a registration macro is neither a
-registration authority nor a dependency authority.
+A registration in the current translation unit is authoritative for later
+`g.node<"id">()` calls in that translation unit during the same compile. The
+generic dynamic path avoids stale generated metadata and explicit-specialization
+redefinition problems entirely.
 
-### 7.4 Same-IV-source definitions are immediately usable
+### 7.3 Configuration arguments
 
-A critical compiler invariant is:
-
-> A registration in the current translation unit is authoritative for later uses in that same translation unit during the same compile.
-
-For example:
+The registered primitive-node form is intentionally a zero-argument leaf:
 
 ```cpp
-struct Gain {
-    // current edited definition
-};
-
 IV_NODE("iv.gain", Gain);
-
-void voice(GraphBuilder& g)
-{
-    auto gain = g.node<"iv.gain">();
-}
 ```
 
-`voice` must be able to call the generic `g.node<"iv.gain">()` immediately.
-It does not require a generated specialization, so there is no stale-import
-or duplicate-explicit-specialization failure mode in the dynamic path.
+An implementation requiring caller-supplied graph configuration exposes an
+`IV_MODULE` function and forwards those values through its local
+`g.node<"id">(...)` calls. The `IV_MODULE` adapter checks the function's
+concrete argument count and types when it executes. This avoids inventing a
+second, provider-independent constructor schema for arbitrary C++ node types.
 
-### 7.5 Static-interface synthesis at registration sites
-
-**Provisional implementation direction:** when static typing becomes useful,
-let the Clang plugin recognize `IV_NODE`/`IV_MODULE` registration declarations
-and make fresh local static-interface data available immediately after the
-registration point.
-
-For node types, this is plausible because the complete C++ type AST exists when the registration declaration is processed.
-
-The implementation should prefer AST/Sema-level synthesis or an equivalent explicit compiler mechanism rather than fragile textual source injection.
-
-A useful internal distinction is:
-
-```text
-local interface
-    derived from a registration in the current translation unit
-
-imported interface
-    generated by the server for a registration provided elsewhere
-```
-
-The public DSL always supports the generic dynamic call. A local static
-interface must supersede stale imported static metadata without creating an
-illegal C++ explicit-specialization redefinition.
-
-The exact trait layering/macros used to achieve that should be chosen after a Clang 23 prototype.
-
-### 7.6 IV module same-source freshness
-
-Node types can often expose their static interface from AST-visible C++ declarations. Iv modules are harder because their public ports may currently be discovered by executing the `GraphBuilder` function.
-
-The design therefore distinguishes:
-
-- **static-port iv modules**, whose public port interface can be declared/distilled before configuration execution; and
-- **dynamic-port iv modules**, whose realized ports depend on configuration/configuration and therefore cannot provide a typed node ref to later same-TU consumers purely from pre-JIT static data.
-
-This leads naturally to the typed/untyped rule described next rather than requiring a two-build stale-interface cycle.
+The project-level module-instance surface remains zero-argument in this
+compatibility runtime. Persistent construction configuration, if it becomes a
+product requirement, belongs with project-instance persistence and the later
+project connection/finalizer representation rather than in generated C++
+headers.
 
 ---
 
-## 8. `g.node<Id>`: typed versus untyped
+## 8. Configuration values at package boundaries
 
-### 8.1 Decided rule
+Cross-package construction does not reproduce arbitrary primitive-node C++
+constructors in a consumer. The dynamic ID API instead calls a provider's
+already-compiled `IV_MODULE` configuration entry, whose actual function
+signature is checked at invocation time.
 
-`g.node<"id">(...)` returns a typed node only when the public port interface is statically known from the registered ID alone.
+Existing relocatable pointer configuration remains supported. A pointer into
+retained LLVM global data is represented through the existing relocation path,
+not treated as a raw cross-package process address. The configured graph retains
+the package revisions it used, so caller-owned globals and provider-owned code
+remain alive together.
 
-Otherwise it returns `NodeRef`.
-
-Typed-vs-untyped is therefore a property of the **registered public interface**, not a property of whether the implementation is a primitive node type or an iv module.
-
-### 8.2 Static interface
-
-A static-interface definition has sample/event inputs/outputs that do not depend on the constructed configuration.
-
-For primitive node types, a conservative rule is that the relevant `inputs()`, `outputs()`, `event_inputs()`, and `event_outputs()` descriptions are static/constexpr and therefore can be distilled into `node_interface<Id>`.
-
-Then:
-
-```cpp
-auto gain = g.node<"iv.gain">(0.25f);
-```
-
-can return something conceptually equivalent to:
-
-```cpp
-TypedNodeRef<node_interface<"iv.gain">>
-```
-
-and named ports are compile-time checked.
-
-### 8.3 Dynamic interface
-
-If the public port count/layout/names depend on configuration or on executing the iv-module graph builder, the call returns `NodeRef`.
-
-Example:
-
-```cpp
-void mixer(GraphBuilder& g, std::size_t channels)
-{
-    // public ports depend on channels
-}
-
-IV_MODULE("iv.mixer", mixer);
-
-auto mixer = g.node<"iv.mixer">(8); // NodeRef
-```
-
-The actual realized port descriptions are stored in the configured result after the instance is configured/resolved.
-
-### 8.4 Extra iv-module arguments are first-class
-
-Iv-module functions may request arbitrary supported configuration arguments:
-
-```cpp
-void sampler(
-    GraphBuilder& g,
-    /* supported configuration arguments ... */);
-```
-
-Those values may affect:
-
-- internal node count;
-- internal topology;
-- node configuration;
-- public ports;
-- subgraphs;
-- defaults and policies.
-
-If the public ports remain static despite the arguments, a typed node ref is still possible. If the public ports vary, the call is untyped.
-
-This avoids forcing the C++ type system to encode arbitrary runtime/config-dependent graph shapes.
-
-### 8.5 Named typed API is the preferred fast path
-
-Node implementation code should use the static name-typed port API whenever the interface is static.
-
-The untyped/indexed API remains for genuinely dynamic algorithms and dynamic port sets.
-
-This is not merely an configuration preference. In the future graph kernel compiler, typed named ports give the compiler constants for:
-
-- node interface;
-- port identity/ordinal;
-- channel layout;
-- sample layout;
-
-which makes semantic port accesses easier to resolve and specialize.
-
----
-
-## 9. Public arguments and configuration
-
-### 9.1 Do not reproduce arbitrary implementation constructors in consumers
-
-A consuming IV package should not have to include a provider's arbitrary C++ parameter types, overload sets, helper headers, or default-expression dependencies merely to instantiate a registered ID.
-
-The generated interface therefore describes a **public argument/configuration contract** that is sufficient to author the instance without seeing the implementation type.
-
-The provider owns the implementation-side construction logic.
-
-### 9.2 Preserve existing relocatable pointer support
-
-The public argument/configuration model must not forbid pointers simply because cross-source representation is harder.
-
-Pointers to retained LLVM global state are already supported by the current relocation mechanism and remain a required capability.
-
-A public configured value may therefore contain a pointer that, during configuration/finalization, is represented symbolically as:
-
-```text
-retained LLVM global + addend
-```
-
-rather than as a raw process address.
-
-This can cover strings, lookup tables, immutable arrays, immutable structs, and other retained global data.
-
-### 9.3 Caller-owned global dependencies
-
-If an configured argument points into a global defined by the **calling IV package**, but the registered primitive node implementation belongs to another source, the cached configured graph still depends on the retained global definition from the caller.
-
-The cache/finalizer must therefore preserve the source LLVM/global artifact needed to materialize such symbolic references. It must not assume every configuration global belongs to the node type's implementation artifact.
-
-This dependency should be explicit in the cache key/data model.
-
-### 9.4 Defaults need not reproduce arbitrary C++ expressions
-
-If an implementation constructor has a default expression with implementation-only dependencies, the consumer does not necessarily need the source expression.
-
-The public interface needs to know that an argument may be omitted. The provider-side construction thunk can apply the true implementation default.
-
-Where a default is representable and useful for UI/introspection, it may also be serialized as public metadata, but consumer compilation should not depend on reproducing arbitrary provider code.
-
-### 9.5 Open design point: exact public argument schema
-
-The exact supported argument types and conversion rules are intentionally not frozen yet.
-
-The initial implementation should prefer a small, explicit set of value forms that can be:
-
-- represented in an `ConfiguredGraph`;
-- serialized/cached;
-- supplied by the server/project UI;
-- reconstructed for iv-module configuration or node construction;
-- specialized into LLVM;
-- combined with existing global-pointer relocation.
-
-The node implementation object itself does **not** need to be POD or trivially structured merely because its public argument contract is constrained.
+This branch intentionally has no serialized, UI-authored generic constructor
+schema, overload/default metadata, or project-instance argument persistence.
+Those are separate product/API decisions, not requirements for dynamic
+registered-ID configuration or package reload.
 
 ---
 
@@ -1001,55 +829,40 @@ The configuration generation also keeps an execution stack. That stack is the
 authoritative check for argument/control-flow-dependent realizations and
 reports the concrete `A -> B -> C -> A` request chain before recursion occurs.
 
-### 10.5 Interface hash versus definition hash
+### 10.5 Conservative provider invalidation
 
-Each registered ID naturally has at least two relevant revisions/hashes:
+This branch has one definition revision, not separate public-interface and
+implementation hashes. The dependency watcher queues the declared IV package
+set when a package artifact changes, which reloads and reconfigures consumers
+of the changed registered ID.
 
-```text
-interface hash
-    public arguments + public port information used by C++ consumers
-
-definition hash
-    primitive LLVM implementation OR iv-module ConfiguredGraph/definition
-```
-
-If only a primitive definition changes:
-
-- consumer IV packages do not need to recompile;
-- projects using the ID need a new finalized kernel.
-
-If an iv-module definition changes, its transitive configuration dependents are
-re-configured from reusable compiled source artifacts. They do not require a
-Clang frontend pass unless a C++ compilation interface changed.
-
-If the interface changes:
-
-- consuming IV packages that use that ID may need to recompile/reauthor;
-- project kernels also need to rebuild.
-
-This distinction is central to fast graph reload.
+That policy is intentionally stronger than the minimum necessary. It gives a
+correct and understandable result for every dynamic `NodeRef` shape without
+inventing generated C++ interfaces or an interface-hash dependency graph.
+More selective rebuilds are a future performance optimization only if profiling
+shows that the broad package reload is material.
 
 ---
 
 ## 11. What is cached
 
-### 11.1 Cache compiled configuration code first; cache realizations opportunistically
+### 11.1 Retain compiled configuration code and the current realization
 
 Do not cache `BuilderSession`.
 
 `BuilderSession` is mutable configuration machinery. It contains the data structures used to construct a graph efficiently, not the durable semantic result.
 
-The durable source artifact boundary is:
+The current artifact boundary is:
 
 ```text
-Clang once per changed IV package
+Clang/finalization per changed IV package
     -> reusable source configuration artifact
     -> current configuration generation
 
-An `ConfiguredGraph` is the completed result of an **iv-module invocation**, not
-an unconditional one-per-definition value when arguments can alter topology or
-public ports. Realizations may later be memoized by definition revision,
-encoded arguments, and relevant retained-global revisions.
+An `ConfiguredGraph` is the completed result of the zero-argument registered
+iv-module realization. It is retained with the currently published definition;
+there is no separate persistent realization cache or invocation memo table in
+this compatibility runtime.
 ```
 
 The current compatibility implementation retains configuration entrypoints in
@@ -1060,11 +873,11 @@ ownership, so old and new revisions can coexist without pointer rewriting.
 The remaining disk boundary is the finalized bitcode cache; replacing Clang
 compilation/finalization with a persistent in-memory service is separate work.
 
-If downstream work later discovers it needs information currently present only in `BuilderSession`, that information should be added to the durable configured result rather than making the mutable session persistent.
+If downstream work later discovers it needs information currently present only in `BuilderSession`, that information should be added to the retained configured result rather than making the mutable session persistent.
 
 ### 11.2 `ConfiguredGraph` remains lossless
 
-The cacheable `ConfiguredGraph` should not be a reduced execution graph.
+The retained `ConfiguredGraph` should not be a reduced execution graph.
 
 It must retain everything necessary to:
 
@@ -1082,15 +895,13 @@ It must retain everything necessary to:
 - inspect the module without rerunning configuration;
 - eventually lower the graph after all project connections are known.
 
-The representation may be rephrased/canonicalized later if profiling or implementation convenience proves useful, but the first cache is `ConfiguredGraph` itself.
+The representation may be rephrased/canonicalized later if profiling or implementation convenience proves useful. For now it is immutable state attached to the live definition, not a new disk-cache format.
 
 ### 11.3 Node implementation code is not owned by an `ConfiguredGraph`
 
 An `ConfiguredGraph` contains ordinary realized primitive node descriptions, but
 does not own or duplicate their implementation LLVM. Primitive code belongs
-to the node-type registry/cache.
-
-Primitive code belongs to the node-type registry/cache.
+to the node-type registry.
 
 This changes the ownership model from today's per-TU `NodeCompilerRecord<T>` emission.
 
@@ -1098,7 +909,8 @@ This changes the ownership model from today's per-TU `NodeCompilerRecord<T>` emi
 
 Although node implementation LLVM is registered independently, an IV package may still need retained LLVM globals because configured arguments/configurations can symbolically point into them.
 
-The module/source cache therefore may need a compiler artifact alongside its configured graphs containing only source-owned retained globals or other configuration data that must survive into project finalization.
+The package artifact retains source-owned globals or other configuration data
+that must survive while its configured graphs are live.
 
 The exact packaging can be optimized later; the dependency must not be lost.
 
@@ -1106,11 +918,9 @@ The exact packaging can be optimized later; the dependency must not be lost.
 
 The presence of an intermediate representation does not automatically justify another disk cache.
 
-Initially persist only what has a clear invalidation/performance value:
-
-- registered node-type artifacts;
-- registered iv-module `ConfiguredGraph`s;
-- optionally a finalized native project-kernel cache keyed by all its inputs.
+Initially persist only the finalized package bitcode artifact that has a clear
+build-time value. Registered node types and `ConfiguredGraph`s are retained in
+the live package registry, not separately serialized.
 
 SCCs, schedules, storage plans, generated LLVM, and other whole-project derived data should be recomputed until profiling demonstrates a need to cache them.
 
@@ -1120,9 +930,8 @@ SCCs, schedules, storage plans, generated LLVM, and other whole-project derived 
 
 ### 12.1 Definition versus instance
 
-A zero-argument registered iv-module realization may be cached once; in the
-general case the cache key includes the invocation's encoded configuration
-arguments and retained-global revisions.
+A published registered iv module has one retained, zero-argument
+`ConfiguredGraph` realization in the compatibility runtime.
 
 A project may contain many instances of that definition.
 
@@ -1228,7 +1037,6 @@ active module instances
 project connections
 
 node type registry
-    -> public interface
     -> state/lifecycle metadata
     -> LLVM implementation
 
@@ -1836,24 +1644,16 @@ A central design requirement is that every stage has an explicit invalidation bo
 
 ### 23.1 Registered node type change
 
-If only the primitive implementation changes while its public interface remains compatible:
+The compatibility reload policy is deliberately conservative. A change to a
+registered primitive node queues the declared package set, then reconfigures
+the definitions which use that ID:
 
 ```text
-invalidate:
-    node type implementation revision
-    finalized project kernels using it
-
-preserve:
-    consuming IV package compilations
-    cached iv-module realizations that do not instantiate it
-```
-
-If the public interface changes:
-
-```text
-also invalidate:
-    IV packages that import/use that ID's interface
-    their affected ConfiguredGraphs
+provider package changes
+    -> reload package registry candidates
+    -> reconfigure consumers
+    -> replace their current ConfiguredGraphs
+    -> invalidate future project finalization
 ```
 
 ### 23.2 IV module definition change
@@ -1866,9 +1666,9 @@ replace that module's cached ConfiguredGraph
 invalidate finalized projects containing instances of it
 ```
 
-A parent iv module that instantiates `g.node<"child">()` is re-configured, as
-are its transitive configuration dependents. This reuses their compiled configuration
-artifacts and is deliberately distinct from recompiling their C++ sources.
+A parent iv module that instantiates `g.node<"child">()` is re-configured with
+the declared package set. Artifact reuse is an implementation optimization;
+the product rule is simply that a provider change reloads consumers.
 
 ### 23.3 Project connection edit
 
@@ -1913,10 +1713,8 @@ Source annotations, presentation hierarchy, tags, query metadata, and similar no
 
 | Change | Rebuild node type? | Rebuild consuming IV package? | Re-author iv module? | Re-finalize project kernel? |
 |---|---:|---:|---:|---:|
-| primitive tick implementation only | yes | no | no | yes |
-| primitive public interface | yes | yes, users | yes, affected users | yes |
-| iv-module internal graph, public interface stable | no | source itself | module and configuration dependents | yes |
-| iv-module public interface | no/depends | yes, users | affected users and dependents | yes |
+| registered primitive-node change | yes | yes, declared set | yes, users | yes |
+| registered iv-module change | no | yes, declared set | yes, users and dependents | yes |
 | project connection | no | no | no | yes |
 | add/remove module instance | no | no | no | yes |
 | immutable specialization config | no | no | no | yes |
@@ -2279,16 +2077,15 @@ The design is intentionally staged so the existing 443-test runtime can remain t
 2. Resolve registered IDs in a shared configuration generation and greedily embed iv modules.
 3. Preserve existing global-pointer configuration relocation.
 4. Transition reusable cross-source nodes away from `g.node<T>()`.
-5. Add optional static interface metadata only when typed refs justify it.
-6. Establish the static-interface -> typed ref / dynamic-interface -> `NodeRef` rule.
+5. Keep the package-facing result dynamic: registered IDs always return `NodeRef`.
 
-### Phase C — cache configured iv modules
+### Phase C — retain configured iv modules
 
-1. Persist/cache `ConfiguredGraph` per registered iv-module definition.
+1. Retain a lossless `ConfiguredGraph` per published iv-module definition.
 2. Ensure all information necessary for virtual-node/member port addressing survives the cache.
 3. Keep node implementations out of the configured-graph cache.
 4. Keep any required source-owned retained globals/compiler data available for symbolic configured values.
-5. Distinguish interface and definition hashes for invalidation.
+5. Use conservative package reload while profiling determines whether a more selective cache is worthwhile.
 
 ### Phase D — project connections and multi-graph finalizer input
 
@@ -2304,7 +2101,7 @@ Start deliberately small:
 ```text
 fixed B
 acyclic sample graph
-static typed ports
+known static port layouts
 identity layouts
 no events
 no feedback/detach
@@ -2412,7 +2209,7 @@ The following are treated as strong architectural decisions unless implementatio
 5. **Node types are registered independently from iv modules.** Primitive implementation LLVM belongs to the node-type registry.
 6. **Stable string IDs identify registered graph nodes.** An ID may be implemented by a primitive node type or an iv module.
 7. **The normal cross-source configuration API is `g.node<"id">(...)`.** Callers do not name implementation C++ types.
-8. **Typed-vs-untyped depends on public-port staticness, not implementation kind.** Static interface -> typed ref; dynamic/config-dependent interface -> `NodeRef`.
+8. **Registered-ID construction is always dynamic.** `g.node<"id">(...)` returns `NodeRef`; no generated static `node_interface<Id>` contract exists.
 9. **IV packages may register many nodes and iv modules.** A node-only IV package is valid; experimental inline definitions remain convenient.
 10. **Same-TU registered IDs are immediately usable.** The generic dynamic API does not rely on a second save/build or a generated `node_interface` specialization.
 11. **Project cross-module connections use stable virtual-node/direct-member port identity, not concrete configured node IDs.**
@@ -2439,23 +2236,20 @@ The following should remain open until prototypes or profiling provide evidence.
 ### Registration/compiler implementation
 
 - exact macro expansion for `IV_NODE` / `IV_MODULE`;
-- exact Clang 23 mechanism for optional static `node_interface<Id>` metadata;
-- typed/static interface encoding and its interface-hash format;
-- exact representation of encoded generic configuration arguments.
+- diagnostics and introspection metadata for package registrations.
 
 ### Public arguments/configuration
 
-- exact set of cross-source configuration value types;
-- overload/default rules;
-- how general pointer/reference values beyond retained LLVM globals should be;
-- how server-created free/rogue nodes expose/edit construction configuration;
-- whether constructor metadata or an explicit registration-side config declaration becomes the preferred source of public arguments.
+- whether project-instance construction configuration becomes a product feature;
+- if it does, how that persisted state is represented without exposing arbitrary
+  provider C++ constructors;
+- how general pointer/reference values beyond retained LLVM globals should be
+  represented at that product boundary.
 
 ### Configured graph representation
 
 - whether `ConfiguredGraph` itself remains the long-term persisted representation;
 - whether a later lossless canonical form becomes worth caching closer to project lowering;
-- cache-key and eviction policy for configured iv-module invocation realizations;
 - how much current bundle/virtual-node data can be simplified without losing semantics.
 
 ### Whole-project lowering
@@ -2497,10 +2291,9 @@ A practical first sequence is:
 4. reusable source configuration artifacts and a shared configuration generation
 5. generic `g.node<Id>()` with immediate registered-definition resolution
 6. fully realized `ConfiguredGraph` invocation results and configuration-cycle checks
-7. optional typed/static `node_interface<Id>` data and interface hashes
-8. project connections through stable virtual-node/member ports
-9. finalizer accepts the complete active project graph
-10. only then begin replacing the generic runtime with whole-graph LLVM execution
+7. project connections through stable virtual-node/member ports
+8. finalizer accepts the complete active project graph
+9. only then begin replacing the generic runtime with whole-graph LLVM execution
 ```
 
 This ordering is important because the whole-graph execution compiler should be built on the representation that will actually drive future project reloads. Otherwise execution work risks being optimized around per-module boundaries that the cache/registry design immediately removes.
@@ -2532,7 +2325,7 @@ This ordering is important because the whole-graph execution compiler should be 
                 |                                |
                 v                                v
        NodeTypeDefinition                  ConfiguredGraph invocation
-     interface + state + LLVM             realized subgraphs only
+        state + LLVM                     realized subgraphs only
                 |                                |
                 +---------------+----------------+
                                 |
@@ -2541,7 +2334,7 @@ This ordering is important because the whole-graph execution compiler should be 
                          stable ID -> definition
                                 |
                     generic g.node<"some.id">(...)
-                    optional static interface metadata
+                    dynamic NodeRef result
 
 
                             PROJECT STATE

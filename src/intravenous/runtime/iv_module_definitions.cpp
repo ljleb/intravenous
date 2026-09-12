@@ -315,6 +315,9 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
 
     // Validate the complete package candidate set before publishing any ID. A
     // collision leaves all published maps and ownership records unchanged.
+    // Desired project instances do not participate in this validation: a
+    // successfully removed definition must publish so the desired instance can
+    // remain visible as unrealized and the user can remove it from the project.
     bool valid = true;
     for (auto const& [_, provider_count] : provider_count_by_id) {
         if (provider_count == 1) continue;

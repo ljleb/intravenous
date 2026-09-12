@@ -28,13 +28,26 @@ iv::IvModuleReloadedDefinition source_definition(
     return definition;
 }
 
+std::string canonical_package_id(std::filesystem::path const& package_root)
+{
+    return std::filesystem::weakly_canonical(package_root)
+        .lexically_normal()
+        .generic_string();
+}
+
 struct IvModuleDefinitionsWitness {
     std::vector<iv::IvPackageDeclarationsChanged> package_declaration_changes{};
+    std::vector<iv::IvPackageDefinitionsChanged> package_definition_changes{};
 
     void handle_package_declarations_changed(
         iv::IvPackageDeclarationsChanged const& change)
     {
         package_declaration_changes.push_back(change);
+    }
+    void handle_package_definitions_changed(
+        iv::IvPackageDefinitionsChanged const& change)
+    {
+        package_definition_changes.push_back(change);
     }
 };
 
@@ -49,6 +62,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_definitions_witness_bridge,
     iv_runtime_iv_package_declarations_changed_event,
     &IvModuleDefinitionsWitness::handle_package_declarations_changed)
+IV_SUBSCRIBE_LINKER_EVENT(
+    iv_module_definitions_witness_bridge,
+    iv_runtime_iv_package_definitions_changed_event,
+    &IvModuleDefinitionsWitness::handle_package_definitions_changed)
 }
 
 TEST(IvModuleDefinitions, SeedLoadedDefinitionPublishesLoadedSnapshot)
@@ -131,6 +148,124 @@ TEST(IvModuleDefinitions, PackageReloadReplacesItsCompleteModuleSet)
     ASSERT_EQ(loaded.size(), 2u);
     EXPECT_EQ(loaded[0].module_id, "iv.test.b");
     EXPECT_EQ(loaded[1].module_id, "iv.test.c");
+}
+
+TEST(IvModuleDefinitions, RequiredDefinitionSourceFirstMovePublishesRemovalUntilReplacement)
+{
+    auto const source_root = fresh_module_fixture_workspace(
+        "iv_module_definitions_source_first_move_source");
+    auto const destination_root = fresh_module_fixture_workspace(
+        "iv_module_definitions_source_first_move_destination");
+    auto const source_package_id = canonical_package_id(source_root);
+    auto const destination_package_id = canonical_package_id(destination_root);
+    constexpr std::string_view definition_id = "iv.test.moved";
+
+    iv::IvModuleDefinitions definitions;
+    IvModuleDefinitionsWitness witness;
+    iv_module_definitions_witness_bridge::scope witness_scope{definitions, witness};
+    definitions.declare_package(source_package_id, source_root);
+    definitions.declare_package(destination_package_id, destination_root);
+    definitions.handle_reload_results(iv::IvModuleReloadResults{
+        .packages = {{
+            .package_id = source_package_id,
+            .package_root = source_root,
+        }},
+        .loaded = {source_definition(
+            source_root, source_package_id, std::string(definition_id))},
+    });
+    definitions.handle_required_definitions_changed(
+        iv::IvModuleRequiredDefinitionsChanged{
+            .created = {{
+                .definition_id = std::string(definition_id),
+                .package_root = source_root,
+            }},
+        });
+    witness.package_definition_changes.clear();
+
+    // Desired project instances do not make a missing definition a registry
+    // conflict. Publish the successful empty source candidate; the instance
+    // becomes unrealized but remains available for the user to delete.
+    definitions.handle_reload_results(iv::IvModuleReloadResults{
+        .packages = {{
+            .package_id = source_package_id,
+            .package_root = source_root,
+        }},
+    });
+    auto loaded = definitions.loaded_definitions();
+    EXPECT_TRUE(loaded.empty());
+    ASSERT_EQ(witness.package_definition_changes.size(), 1u);
+    EXPECT_EQ(
+        witness.package_definition_changes.front().modules.deleted_definition_ids,
+        std::vector<std::string>{std::string(definition_id)});
+
+    // The destination can later recreate the ID from its own complete
+    // candidate without any third save or retained stale provider.
+    definitions.handle_reload_results(iv::IvModuleReloadResults{
+        .packages = {{
+            .package_id = destination_package_id,
+            .package_root = destination_root,
+        }},
+        .loaded = {source_definition(
+            destination_root, destination_package_id, std::string(definition_id))},
+    });
+    loaded = definitions.loaded_definitions();
+    ASSERT_EQ(loaded.size(), 1u);
+    EXPECT_EQ(loaded.front().module_id, definition_id);
+    EXPECT_EQ(loaded.front().package_id, destination_package_id);
+}
+
+TEST(IvModuleDefinitions, RequiredDefinitionDestinationFirstMoveHoldsCollisionUntilSourceDropsId)
+{
+    auto const source_root = fresh_module_fixture_workspace(
+        "iv_module_definitions_destination_first_move_source");
+    auto const destination_root = fresh_module_fixture_workspace(
+        "iv_module_definitions_destination_first_move_destination");
+    auto const source_package_id = canonical_package_id(source_root);
+    auto const destination_package_id = canonical_package_id(destination_root);
+    constexpr std::string_view definition_id = "iv.test.moved";
+
+    iv::IvModuleDefinitions definitions;
+    definitions.declare_package(source_package_id, source_root);
+    definitions.declare_package(destination_package_id, destination_root);
+    definitions.handle_reload_results(iv::IvModuleReloadResults{
+        .packages = {{
+            .package_id = source_package_id,
+            .package_root = source_root,
+        }},
+        .loaded = {source_definition(
+            source_root, source_package_id, std::string(definition_id))},
+    });
+    definitions.handle_required_definitions_changed(
+        iv::IvModuleRequiredDefinitionsChanged{
+            .created = {{
+                .definition_id = std::string(definition_id),
+                .package_root = source_root,
+            }},
+        });
+
+    // Saving the destination first creates a duplicate candidate ID. Preserve
+    // the prior live provider until the source candidate is complete too.
+    definitions.handle_reload_results(iv::IvModuleReloadResults{
+        .packages = {{
+            .package_id = destination_package_id,
+            .package_root = destination_root,
+        }},
+        .loaded = {source_definition(
+            destination_root, destination_package_id, std::string(definition_id))},
+    });
+    auto loaded = definitions.loaded_definitions();
+    ASSERT_EQ(loaded.size(), 1u);
+    EXPECT_EQ(loaded.front().package_id, source_package_id);
+
+    definitions.handle_reload_results(iv::IvModuleReloadResults{
+        .packages = {{
+            .package_id = source_package_id,
+            .package_root = source_root,
+        }},
+    });
+    loaded = definitions.loaded_definitions();
+    ASSERT_EQ(loaded.size(), 1u);
+    EXPECT_EQ(loaded.front().package_id, destination_package_id);
 }
 
 

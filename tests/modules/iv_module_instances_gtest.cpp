@@ -261,6 +261,37 @@ TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPubl
         witness.listed_instances->front().default_silence_ttl_samples.has_value());
 }
 
+TEST_F(IvModuleInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnrealized)
+{
+    auto const workspace =
+        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_removed_definition");
+    auto const module_root = std::filesystem::weakly_canonical(workspace);
+    iv::IvModuleInstances instances;
+
+    auto const instance_id = instances.create_instance(module_id, module_root);
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+        .created = {make_definition(module_root)},
+    });
+    witness.reset();
+
+    // A successful package revision may intentionally remove a definition even
+    // while the project still desires an instance of it. Drop only the realized
+    // execution root; preserve the desired instance so the UI can show it as
+    // unresolved and offer deletion instead of hiding orphaned project state.
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+        .deleted_definition_ids = {std::string(module_id)},
+    });
+
+    ASSERT_TRUE(witness.instances_diff.has_value());
+    ASSERT_EQ(witness.instances_diff->deleted_instance_ids.size(), 1u);
+    EXPECT_EQ(witness.instances_diff->deleted_instance_ids.front(), instance_id);
+    ASSERT_TRUE(witness.listed_instances.has_value());
+    ASSERT_EQ(witness.listed_instances->size(), 1u);
+    EXPECT_EQ(witness.listed_instances->front().instance_id, instance_id);
+    EXPECT_EQ(witness.listed_instances->front().definition_id, module_id);
+    EXPECT_FALSE(witness.listed_instances->front().realized);
+}
+
 TEST_F(IvModuleInstancesTest, DefinitionReloadCreatesNewRuntimeBindingGeneration)
 {
     auto const workspace = iv::test_support::fresh_module_fixture_workspace(
