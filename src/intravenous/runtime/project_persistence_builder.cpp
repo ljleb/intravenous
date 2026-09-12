@@ -263,6 +263,7 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
             .args = nlohmann::ordered_json{
                 {"instance_id", instance.instance_id},
                 {"module_id", instance.definition_id},
+                {"package_root", relativize_path(instance.package_root)},
                 {"display_name", display_name != instance.definition_id
                     ? nlohmann::ordered_json(display_name)
                     : nlohmann::ordered_json(nullptr)},

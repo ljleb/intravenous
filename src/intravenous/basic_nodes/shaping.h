@@ -157,16 +157,53 @@ namespace iv {
         // libstdc++ does not yet make std::sin constexpr under Clang 23.
         // The table is immutable process-lifetime data, so one ordinary static
         // initialization is sufficient and keeps module authorship runtime.
-        inline static const std::array<Sample, table_size + 1> table = [] {
+        inline static constexpr std::array<Sample, table_size + 1> table = []() consteval {
+            auto constexpr sin_for_table = [](double x) consteval {
+                constexpr double pi = std::numbers::pi;
+                constexpr double half_pi = pi * 0.5;
+
+                // Caller supplies x in [-pi, pi].
+                // Reduce to [-pi/2, pi/2].
+                if (x > half_pi) {
+                    x = pi - x;
+                } else if (x < -half_pi) {
+                    x = -pi - x;
+                }
+
+                double const x2 = x * x;
+
+                // sin(x), Taylor polynomial through x^15.
+                return x * (
+                    1.0 +
+                    x2 * (
+                        -1.0 / 6.0 +
+                        x2 * (
+                            1.0 / 120.0 +
+                            x2 * (
+                                -1.0 / 5040.0 +
+                                x2 * (
+                                    1.0 / 362880.0 +
+                                    x2 * (
+                                        -1.0 / 39916800.0 +
+                                        x2 * (
+                                            1.0 / 6227020800.0 +
+                                            x2 * (
+                                                -1.0 / 1307674368000.0
+                                            )
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    )
+                );
+            };
+
             std::array<Sample, table_size + 1> table{};
 
             for (size_t i = 0; i < table_size; ++i) {
-                double const phase =
-                    -1.0 + 2.0 * static_cast<double>(i) / static_cast<double>(table_size);
-
-                table[i] = static_cast<Sample>(
-                    std::sin(phase * std::numbers::pi)
-                );
+                double const phase = -1.0 + 2.0 * static_cast<double>(i) / static_cast<double>(table_size);
+                table[i] = Sample{sin_for_table(phase * std::numbers::pi)};
             }
 
             // Exact periodic endpoint, rather than evaluating sin(pi) separately.

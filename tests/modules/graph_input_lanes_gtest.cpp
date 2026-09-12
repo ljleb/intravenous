@@ -1191,6 +1191,58 @@ TEST_F(GraphInputLanesTest, PublicSampleInputCreatesAutomaticTimelineLaneAndDepe
         1u);
 }
 
+TEST_F(GraphInputLanesTest, EachDistinctPublicPortFamilyCreatesItsDefaultTimelineLane)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_base();
+    add_public_sample_input(
+        instance,
+        0,
+        "frequency",
+        iv::Sample{220.0f},
+        iv::Sample{0.0f},
+        iv::Sample{1000.0f},
+        source_info("saw-frequency"));
+    add_public_sample_input(
+        instance,
+        1,
+        "detune",
+        iv::Sample{2.5f},
+        iv::Sample{-100.0f},
+        iv::Sample{100.0f},
+        source_info("saw-detune"));
+    set_public_sample_output(instance, "main", iv::ChannelTypeId::stereo);
+
+    iv::IvModuleInstanceBuildersAckBuilder ack;
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance}},
+    }, &ack);
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
+
+    std::unordered_set<std::uint64_t> public_input_lanes;
+    std::unordered_set<std::uint64_t> public_output_lanes;
+    for (auto const& batch : witness.timeline_batches) {
+        for (auto const& upsert : batch.upserts) {
+            if (upsert.metadata.has_unit("dsp_graph.public_input")
+                && upsert.metadata.has_unit("dsp_graph.sample")) {
+                public_input_lanes.insert(upsert.lane.value);
+            }
+            if (upsert.metadata.has_unit("dsp_graph.public_output")
+                && upsert.metadata.has_unit("dsp_graph.sample")) {
+                public_output_lanes.insert(upsert.lane.value);
+            }
+        }
+    }
+
+    EXPECT_EQ(public_input_lanes.size(), 2u);
+    EXPECT_EQ(public_output_lanes.size(), 1u);
+    EXPECT_EQ(
+        ack.prerequisite_lanes_for("instance:1")
+            .value_or(std::vector<iv::LaneId>{})
+            .size(),
+        2u);
+}
+
 TEST_F(GraphInputLanesTest, PublicSampleInputPreservesBoundsFromIntrospection)
 {
     iv::GraphInputLanes lanes;

@@ -188,7 +188,7 @@ AnnotatableRefKind annotatable_ref_kind(QualType type)
         || name == "TypedSamplePortTileChannelRef")
         return AnnotatableRefKind::sample_port;
     if (name == "EventPortRef") return AnnotatableRefKind::event_port;
-    if (name == "PublicSampleInputRef")
+    if (name == "PublicSampleInputRef" || name == "TypedPublicSampleInputRef")
         return AnnotatableRefKind::public_sample_input;
     if (name == "PublicEventInputRef")
         return AnnotatableRefKind::public_event_input;
@@ -731,13 +731,16 @@ private:
         if (!builder) return nullptr;
         builder = builder->IgnoreParenImpCasts();
         if (auto* ref = dyn_cast<DeclRefExpr>(builder)) {
-            // Rebuilding an annotation for an enclosing GraphBuilder inside
-            // a lambda would require Sema to recreate its capture after the
-            // lambda has been parsed. The original outputs call remains
-            // valid; lambda-local node mapping does not need this synthetic
-            // public-output annotation.
-            if (ref->refersToEnclosingVariableOrCapture()) return nullptr;
-            auto* fresh = make_decl_ref(ref->getDecl(), location);
+            // The annotation is a separate statement, so it needs its own
+            // expression tree. Preserve Clang's capture bit when cloning a
+            // reference from a lambda body: a plain BuildDeclRefExpr here
+            // would refer to the enclosing GraphBuilder directly instead of
+            // the already-declared closure capture, and the output span would
+            // silently disappear from the configured graph.
+            auto* fresh = DeclRefExpr::Create(
+                context_, NestedNameSpecifierLoc{}, SourceLocation{},
+                ref->getDecl(), ref->refersToEnclosingVariableOrCapture(),
+                location, ref->getType(), ref->getValueKind());
             return make_address(fresh, location);
         }
         // GraphBuilder's public API is unchanged; ordinary configured code uses

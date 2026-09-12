@@ -71,6 +71,10 @@ namespace iv {
     struct ProjectCreateIvModuleInstanceRequest {
         std::optional<std::string> instance_id {};
         std::string module_id {};
+        // Project replay supplies the persisted provider location. Interactive
+        // creation deliberately leaves this empty and resolves the already
+        // published definition instead.
+        std::optional<std::filesystem::path> package_root {};
         std::optional<std::string> display_name {};
     };
 

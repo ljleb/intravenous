@@ -575,9 +575,9 @@ void Timeline::handle_graph_input_lanes_knob_value_updated(
         if (!graph.contains(lane)) {
             return;
         }
-        if (auto *knob = graph.lane(lane).node.try_as<KnobLaneNode>()) {
+        if (auto *knob = graph.lane(lane).node->try_as<KnobLaneNode>()) {
             knob->value = value;
-        } else if (auto *input = graph.lane(lane).node.try_as<GraphSampleInputLaneNode>()) {
+        } else if (auto *input = graph.lane(lane).node->try_as<GraphSampleInputLaneNode>()) {
             input->default_value = value;
         }
     });
@@ -597,7 +597,7 @@ void Timeline::handle_lanes_visualization_lane_output_query(
             .config = record.output,
             .sample_channel_type = record.sample_channel_type,
             .subscribes_to_compiled_output_changes =
-                record.node.subscribes_to_compiled_output_changes(),
+                record.node->subscribes_to_compiled_output_changes(),
         };
     });
     if (descriptor.has_value()) {

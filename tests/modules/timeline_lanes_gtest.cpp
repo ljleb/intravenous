@@ -576,21 +576,27 @@ TEST(Lanes, BeatTriggerUiStateWriteInvalidatesItsCompiledEventOutput)
     EXPECT_EQ(events[2].time, 24000u);
 }
 
-TEST(Lanes, AddingLanesDoesNotMoveExistingLaneNodes)
+TEST(Lanes, ReplacingOrAppendingLanesKeepsPublishedNodeOwnershipStable)
 {
     iv::LaneGraph graph;
     auto const compiled = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledEventLaneNode {}));
     auto const realtime = graph.add_lane(iv::TypeErasedLaneNode(TestUiModelLaneNode {}));
-    auto const* compiled_node = &graph.lane(compiled).node;
-    auto const* realtime_node = &graph.lane(realtime).node;
+    auto const compiled_node = graph.lane(compiled).node;
+    auto const realtime_node = graph.lane(realtime).node;
 
-    // TimelineExecution keeps non-owning pointers to these nodes for task
-    // callbacks. Appending an unrelated lane must not invalidate them.
+    // Execution snapshots retain shared ownership. Appending unrelated lanes
+    // must not change an existing node identity.
     (void)graph.add_lane(iv::TypeErasedLaneNode(TestCompiledEventLaneNode {}));
     (void)graph.add_lane(iv::TypeErasedLaneNode(TestUiModelLaneNode {}));
 
-    EXPECT_EQ(&graph.lane(compiled).node, compiled_node);
-    EXPECT_EQ(&graph.lane(realtime).node, realtime_node);
+    EXPECT_EQ(graph.lane(compiled).node, compiled_node);
+    EXPECT_EQ(graph.lane(realtime).node, realtime_node);
+
+    graph.upsert_lane(
+        compiled,
+        iv::TypeErasedLaneNode(TestCompiledEventLaneNode {}));
+    EXPECT_NE(graph.lane(compiled).node, compiled_node);
+    EXPECT_NE(compiled_node, nullptr);
 }
 
 TEST(Lanes, TimelineForwardsOptionalUiModelStateToTheOwningLane)

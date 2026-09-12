@@ -392,20 +392,26 @@ void IvModuleInstances::handle_project_create_iv_module_instance(
     ProjectCreateIvModuleInstanceRequest const &request,
     ProjectStringBuilder &builder)
 {
-    std::filesystem::path package_root;
+    std::optional<std::filesystem::path> package_root;
     {
         std::scoped_lock lock(mutex);
         auto const definition = definitions_by_id.find(request.module_id);
-        if (definition == definitions_by_id.end()) {
-            throw std::runtime_error(
-                "unknown loaded IV module definition: " + request.module_id);
+        if (definition != definitions_by_id.end()) {
+            package_root = definition->second.package_root;
         }
-        package_root = definition->second.package_root;
+    }
+
+    if (!package_root.has_value()) {
+        package_root = request.package_root;
+    }
+    if (!package_root.has_value()) {
+        throw std::runtime_error(
+            "unknown loaded IV module definition: " + request.module_id);
     }
 
     builder.succeed(create_instance(
         request.module_id,
-        std::move(package_root),
+        std::move(*package_root),
         request.instance_id,
         request.display_name));
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);

@@ -234,7 +234,7 @@ void IvPackages::handle_socket_rpc_create_iv_package(
     }
 }
 
-IvPackageInfo IvPackages::create_project_package(std::string const& name)
+IvPackageInfo IvPackages::create_project_package(std::string const& name) const
 {
     if (!valid_package_name(name)) {
         throw std::runtime_error("IV package name must start with a letter or '_' and contain only letters, digits, '_' or '-'");

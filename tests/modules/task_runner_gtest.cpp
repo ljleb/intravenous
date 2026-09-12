@@ -384,22 +384,42 @@ namespace {
         }));
     }
 
-    TEST_F(TasksRunnerTest, DifferentVersionWhilePendingIncompleteThrows)
+    TEST_F(TasksRunnerTest, DifferentVersionCompletesDeferredIncompletePendingGraph)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
         iv::TasksRunner runner(1);
 
-        runner.update_tasks(versioned(1, iv::TaskGraphUpdate{
+        auto first = versioned(1, iv::TaskGraphUpdate{
             .to_create = { task("a", { "b" }, &record_callback, &a) },
-        }));
+        });
+        first.activation_deferred = true;
+        runner.update_tasks(first);
 
-        EXPECT_THROW(
-            runner.update_tasks(versioned(2, iv::TaskGraphUpdate{
-                .to_create = { task("b", {}, &record_callback, &b) },
-            })),
-            std::runtime_error);
+        // Updates from independently-owned application concerns may arrive
+        // while a graph is incomplete. They must layer on the pending graph;
+        // version_index is producer-local correlation metadata, not a global
+        // transaction identity.
+        EXPECT_NO_THROW(runner.update_tasks(versioned(2, iv::TaskGraphUpdate{
+            .to_create = { task("b", {}, &record_callback, &b) },
+        })));
+
+        // The second producer does not own the IV reload transaction, so its
+        // update must not accidentally activate the completed pending graph.
+        std::this_thread::sleep_for(20ms);
+        EXPECT_EQ(runner.active_graph_revision(), 0u);
+        bool committed = false;
+        EXPECT_TRUE(runner.activate_deferred_graph_after([&] {
+            committed = true;
+        }));
+        EXPECT_TRUE(committed);
+
+        ASSERT_TRUE(wait_until([&] {
+            return runner.active_graph_revision() == 2
+                && a.invocations.load() > 0
+                && b.invocations.load() > 0;
+        }));
     }
 
     TEST_F(TasksRunnerTest, DeleteAutomaticallyRemovesDependencyReferencesFromSuccessorGraph)
@@ -502,6 +522,53 @@ namespace {
             auto ids = runner.active_task_ids();
             return runner.active_graph_revision() == 3
                 && ids == std::vector<std::string>({ "a", "b", "c" });
+        }));
+    }
+
+    TEST_F(TasksRunnerTest, GraphOwnsCallbackContextUntilADeletedRunningTaskReturns)
+    {
+        LogState log;
+        auto context = std::make_shared<BlockingContext>();
+        context->name = "a";
+        context->log = &log;
+        std::weak_ptr<BlockingContext> weak_context = context;
+        iv::TasksRunner runner(1);
+
+        runner.update_tasks(iv::TaskGraphUpdate{
+            .to_create = { iv::TaskRecord{
+                .id = "a",
+                .callback = iv::TaskCallback{
+                    .invoke = &blocking_callback,
+                    .context = context.get(),
+                    .context_owner = context,
+                },
+            } },
+        });
+
+        {
+            std::unique_lock lock(context->mutex);
+            ASSERT_TRUE(context->cv.wait_for(lock, 2s, [&] {
+                return context->entered;
+            }));
+        }
+
+        runner.update_tasks(iv::TaskGraphUpdate{ .to_delete = { "a" } });
+        context.reset();
+        ASSERT_FALSE(weak_context.expired());
+
+        auto retained_context = weak_context.lock();
+        ASSERT_NE(retained_context, nullptr);
+        {
+            std::scoped_lock lock(retained_context->mutex);
+            retained_context->release = true;
+        }
+        retained_context->cv.notify_all();
+        retained_context.reset();
+
+        ASSERT_TRUE(wait_until([&] {
+            return weak_context.expired()
+                && runner.active_task_ids().empty()
+                && !runner.pass_active();
         }));
     }
 

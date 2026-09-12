@@ -1,6 +1,7 @@
 // @ts-nocheck
 import * as vscode from "vscode";
 import { lanePresentationPlugins } from "./lanePlugins";
+import { requestedLaneViewCount } from "./laneViewport";
 
 function utf8ByteOffsetForUtf16Offset(source, utf16Offset) {
     const bounded = Math.max(0, Math.min(source.length, utf16Offset));
@@ -188,7 +189,10 @@ export class LaneViewProvider {
             // result in the view so it can apply its own order before local
             // viewport virtualization; filtering itself remains server-side.
             startIndex: 0,
-            visibleLaneCount: Math.max(this.visibleLaneCount, this.totalLaneCount),
+            visibleLaneCount: requestedLaneViewCount(
+                this.visibleLaneCount,
+                this.totalLaneCount,
+            ),
             firstSampleIndex: this.firstSampleIndex,
             lastSampleIndex: this.lastSampleIndex,
             displaySampleCount: this.displaySampleCount,

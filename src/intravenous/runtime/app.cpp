@@ -202,8 +202,11 @@ namespace iv {
             IvModuleReload iv_module_reload(startup);
             GraphInputLanes graph_input_lanes;
             ConfiguredLanes configured_lanes(LaneCreationContext{.sample_rate = startup.execution.sample_rate});
-            TasksRunner task_runner;
             startup_log("constructing runtime modules");
+            // TasksRunner owns worker threads whose task callbacks target the
+            // execution services below. Construct all of those targets first:
+            // reverse destruction then stops and joins the runner before any
+            // callback target is destroyed.
             TimelineExecution timeline_execution(
                 startup.execution.block_size,
                 startup.execution.compiled_sample_cache_chunk_size_multiplier,
@@ -212,6 +215,7 @@ namespace iv {
                 startup.execution.block_size,
                 false,
                 startup.execution.sample_rate);
+            TasksRunner task_runner;
             AudioDeviceLanes audio_device_lanes(
                 startup.execution.sample_rate,
                 startup.execution.block_size,

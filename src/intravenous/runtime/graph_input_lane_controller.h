@@ -167,7 +167,7 @@ namespace iv {
                     has_unit_metadata(lane.metadata, metadata_graph_input)
                     && has_unit_metadata(lane.metadata, metadata_sample)
                     && metadata_matches_port(lane.metadata, port)
-                    && lane.node.try_as<GraphSampleInputLaneNode>()
+                    && lane.node->try_as<GraphSampleInputLaneNode>()
                 ) {
                     found = lane.id;
                 }
@@ -186,7 +186,7 @@ namespace iv {
                     has_unit_metadata(lane.metadata, metadata_graph_input)
                     && has_unit_metadata(lane.metadata, metadata_event)
                     && metadata_matches_port(lane.metadata, port)
-                    && lane.node.try_as<GraphEventInputLaneNode>()
+                    && lane.node->try_as<GraphEventInputLaneNode>()
                 ) {
                     found = lane.id;
                 }
@@ -365,7 +365,7 @@ namespace iv {
                 : virtual_knob_identity(port);
             auto const identity_hash = hash_string(identity);
             graph.for_each_lane([&](LaneRecord& lane) {
-                auto* knob = lane.node.try_as<KnobLaneNode>();
+                auto* knob = lane.node->try_as<KnobLaneNode>();
                 if (!knob || int_metadata(lane.metadata, metadata_identity_hash) != identity_hash) {
                     return;
                 }
@@ -395,7 +395,7 @@ namespace iv {
             auto const virtual_hash = hash_string(virtual_identity);
             auto const concrete_hash = hash_string(concrete_identity);
             graph.for_each_lane([&](LaneRecord const& lane) {
-                auto const* knob = lane.node.try_as<KnobLaneNode>();
+                auto const* knob = lane.node->try_as<KnobLaneNode>();
                 if (!knob) {
                     return;
                 }

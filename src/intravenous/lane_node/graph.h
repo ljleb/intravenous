@@ -180,7 +180,10 @@ namespace iv {
 
     struct LaneRecord {
         LaneId id {};
-        TypeErasedLaneNode node {};
+        // A timeline execution revision may still use this node while a later
+        // timeline transaction replaces or removes the lane. The graph and
+        // execution snapshot therefore share its lifetime.
+        std::shared_ptr<TypeErasedLaneNode> node {};
         LaneOutputConfig output {};
         std::optional<ChannelTypeId> sample_channel_type {};
         LaneMetadata metadata {};
@@ -207,8 +210,9 @@ namespace iv {
 
     struct LaneGraphLaneStore {
         LaneIdAllocator ids;
-        // Task execution keeps non-owning pointers to lane nodes. Deque keeps
-        // existing records at stable addresses when lanes are appended.
+        // Deque preserves record addresses for graph users. Timeline
+        // execution receives shared node ownership, so replacement and
+        // removal are safe while an older task graph drains.
         std::deque<CompiledLaneRecord> compiled;
         std::deque<RealtimeLaneRecord> realtime;
         std::unordered_map<LaneId, LaneLocation, LaneIdHash> indices;
@@ -337,7 +341,7 @@ namespace iv {
                         && input.domain == LanePortDomain::realtime))) {
                 throw std::runtime_error("lane connection domain mismatch");
             }
-            if (input.ordinal >= input_count(target_record.node, input)) {
+            if (input.ordinal >= input_count(*target_record.node, input)) {
                 throw std::runtime_error("lane connection target input ordinal out of range");
             }
             if (would_create_cycle(source, target)) {
@@ -361,7 +365,7 @@ namespace iv {
             LaneOutputConfig output = node.output();
             auto record = LaneRecord {
                 .id = id,
-                .node = std::move(node),
+                .node = std::make_shared<TypeErasedLaneNode>(std::move(node)),
                 .output = std::move(output),
                 .sample_channel_type = sample_channel_type.has_value()
                     ? sample_channel_type
@@ -404,7 +408,7 @@ namespace iv {
                     throw std::runtime_error("lane upsert cannot change output domain");
                 }
                 auto& record = lane(id);
-                record.node = std::move(node);
+                record.node = std::make_shared<TypeErasedLaneNode>(std::move(node));
                 record.output = std::move(output);
                 record.sample_channel_type = sample_channel_type.has_value()
                     ? sample_channel_type
@@ -417,7 +421,7 @@ namespace iv {
             _lanes.ids.observe(id);
             auto record = LaneRecord {
                 .id = id,
-                .node = std::move(node),
+                .node = std::make_shared<TypeErasedLaneNode>(std::move(node)),
                 .output = std::move(output),
                 .sample_channel_type = sample_channel_type.has_value()
                     ? sample_channel_type

@@ -44,8 +44,8 @@ class IvModuleInstancesExecution {
         std::shared_ptr<GraphRuntimeBindings> runtime_bindings {};
         std::shared_ptr<BlockNodeExecutor> executor {};
         std::optional<PendingReload> pending_reload {};
-        std::unique_ptr<InstanceTaskContext> active_context {};
-        std::unique_ptr<InstanceTaskContext> pending_context {};
+        std::shared_ptr<InstanceTaskContext> active_context {};
+        std::shared_ptr<InstanceTaskContext> pending_context {};
         bool pending_delete = false;
     };
 
@@ -55,8 +55,8 @@ class IvModuleInstancesExecution {
         // before the binary generations containing its callbacks are released.
         std::vector<ModuleRef> module_refs {};
         std::shared_ptr<GraphRuntimeBindings> runtime_bindings {};
-        std::unique_ptr<InstanceTaskContext> active_context {};
-        std::unique_ptr<InstanceTaskContext> pending_context {};
+        std::shared_ptr<InstanceTaskContext> active_context {};
+        std::shared_ptr<InstanceTaskContext> pending_context {};
         std::shared_ptr<BlockNodeExecutor> executor {};
         BlockNodeExecutor::RetiredState graph {};
     };

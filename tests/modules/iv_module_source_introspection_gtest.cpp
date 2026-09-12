@@ -362,6 +362,53 @@ namespace {
     }
 }
 
+TEST(IvModuleSourceIntrospection, TypedPublicInputsAndCapturedBuilderOutputsRemainSourceAnnotated)
+{
+    auto const workspace = make_inline_module_workspace(
+        "iv_module_source_introspection_typed_public_ports_in_lambda",
+        R"(#include <intravenous/dsl.h>
+
+namespace {
+    void typed_public_ports_in_lambda(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto const frequency = g.input<"frequency">(220.0);
+        auto const detune = g.input<"detune">(2.5);
+        auto emit = [&] {
+            g.outputs("main"_P = frequency + detune);
+        };
+        emit();
+    }
+}
+)");
+
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    app.initialize();
+
+    auto const inputs = app.graph_input_lanes.public_sample_inputs();
+    ASSERT_EQ(inputs.size(), 2u);
+    for (auto const& input : inputs) {
+        EXPECT_FALSE(input.source_identity.empty());
+        EXPECT_FALSE(input.source_infos.empty());
+    }
+    auto const outputs = app.graph_input_lanes.public_sample_outputs();
+    ASSERT_EQ(outputs.size(), 1u);
+    EXPECT_FALSE(outputs.front().source_identity.empty());
+    EXPECT_FALSE(outputs.front().source_infos.empty());
+
+    auto const result = app.query_by_spans(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"),
+        {{.start = {.line = 1, .column = 1}, .end = {.line = 20, .column = 1}}});
+    size_t public_inputs = 0;
+    size_t public_outputs = 0;
+    for (auto const& node : result.nodes) {
+        if (node.kind == "Public input") ++public_inputs;
+        if (node.kind == "Public output") ++public_outputs;
+    }
+    EXPECT_EQ(public_inputs, 2u);
+    EXPECT_EQ(public_outputs, 1u);
+}
+
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableAcrossReload)
 {
     auto const workspace = make_inline_module_workspace(

@@ -35,6 +35,25 @@ std::optional<std::string> optional_nullable_string(Json const &args, std::strin
     return it->get<std::string>();
 }
 
+std::filesystem::path require_project_path(
+    Json const &args,
+    std::string const &key,
+    std::filesystem::path const &workspace_root)
+{
+    auto path = std::filesystem::path(require_string(args, key));
+    if (!path.is_absolute()) {
+        path = workspace_root / path;
+    }
+
+    std::error_code ec;
+    auto const normalized = std::filesystem::weakly_canonical(path, ec);
+    if (ec) {
+        throw std::runtime_error(
+            "command args key '" + key + "' cannot be resolved: " + ec.message());
+    }
+    return normalized.lexically_normal();
+}
+
 std::optional<InternedString> optional_interned_string(Json const &args, std::string const &key)
 {
     auto const it = args.find(key);
@@ -384,6 +403,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
             ProjectCreateIvModuleInstanceRequest{
                 .instance_id = require_string(args, "instance_id"),
                 .module_id = require_string(args, "module_id"),
+                .package_root = require_project_path(args, "package_root", workspace_root_),
                 .display_name = optional_nullable_string(args, "display_name"),
             },
             builder);
@@ -742,6 +762,7 @@ void ProjectPersistence::handle_socket_rpc_set_timeline_compiled_sample_cache_ch
             },
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -761,6 +782,7 @@ void ProjectPersistence::handle_socket_rpc_set_timeline_lane_sample_channel_type
             },
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -782,6 +804,7 @@ void ProjectPersistence::handle_socket_rpc_set_timeline_lane_ui_state(
             },
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -805,6 +828,7 @@ void ProjectPersistence::handle_socket_rpc_connect_timeline_lanes(
             },
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -827,6 +851,7 @@ void ProjectPersistence::handle_socket_rpc_disconnect_timeline_lanes(
             },
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -858,6 +883,7 @@ void ProjectPersistence::handle_socket_rpc_create_timeline_lane(
             ProjectCreateTimelineLaneRequest{.type_id = request.type_id},
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -874,6 +900,7 @@ void ProjectPersistence::handle_socket_rpc_delete_timeline_lane(
             ProjectDeleteTimelineLaneRequest{.lane_id = request.lane_id},
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -890,6 +917,7 @@ void ProjectPersistence::handle_socket_rpc_duplicate_timeline_lane(
             ProjectDuplicateTimelineLaneRequest{.lane_id = request.lane_id},
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }

@@ -53,7 +53,7 @@ public:
         IvModuleDefinitions& definitions,
         IvModuleReload const& reload);
     [[nodiscard]] std::vector<IvPackageInfo> list_packages() const;
-    [[nodiscard]] IvPackageInfo create_project_package(std::string const& name);
+    [[nodiscard]] IvPackageInfo create_project_package(std::string const& name) const;
 
     void handle_socket_rpc_get_iv_packages(
         GetIvPackagesRequest const &request,

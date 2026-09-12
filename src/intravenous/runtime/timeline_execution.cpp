@@ -226,7 +226,7 @@ VersionedTaskGraphUpdate TimelineExecution::synchronize_from_graph(LaneGraph con
     graph.for_each_lane([&](LaneRecord const &record) {
         lanes.push_back(TrackedLane {
             .id = record.id,
-            .node = &record.node,
+            .node = record.node,
             .output = record.output,
             .sample_channel_type = record.sample_channel_type,
             .inputs = graph.inputs_for(record.id),
@@ -269,11 +269,11 @@ VersionedTaskGraphUpdate TimelineExecution::handle_timeline_lanes_changed(Timeli
                 std::unique(visited.begin(), visited.end()),
                 visited.end());
         }
-        change.visit_lanes(visited, [&](LaneId lane, TypeErasedLaneNode const &node, LaneOutputConfig const &output, std::optional<ChannelTypeId> sample_channel_type, std::vector<LaneInputConnection> const &inputs, std::vector<std::string> const &external_task_dependencies) {
+        change.visit_lanes(visited, [&](LaneId lane, std::shared_ptr<TypeErasedLaneNode const> const &node, LaneOutputConfig const &output, std::optional<ChannelTypeId> sample_channel_type, std::vector<LaneInputConnection> const &inputs, std::vector<std::string> const &external_task_dependencies) {
             auto &tracked = tracked_lanes_[lane];
             bool const existed = tracked.id == lane && tracked.node != nullptr;
             tracked.id = lane;
-            tracked.node = &node;
+            tracked.node = node;
             tracked.output = output;
             tracked.sample_channel_type = sample_channel_type;
             tracked.inputs = inputs;
@@ -281,13 +281,14 @@ VersionedTaskGraphUpdate TimelineExecution::handle_timeline_lanes_changed(Timeli
 
             auto &callback = callback_contexts_[lane];
             if (!callback) {
-                callback = std::make_unique<LaneCallbackContext>();
+                callback = std::make_shared<LaneCallbackContext>();
             }
             callback->execution = this;
             callback->lane = lane;
             tracked.callback = TaskCallback {
                 .invoke = &TimelineExecution::invoke_lane_task,
                 .context = callback.get(),
+                .context_owner = callback,
             };
 
             compiled_sample_cache_.erase(lane);
@@ -847,13 +848,14 @@ VersionedTaskGraphUpdate TimelineExecution::replace_all_lanes_locked(std::vector
         stored = std::move(tracked);
         auto &callback = callback_contexts_[tracked.id];
         if (!callback) {
-            callback = std::make_unique<LaneCallbackContext>();
+            callback = std::make_shared<LaneCallbackContext>();
         }
         callback->execution = this;
         callback->lane = tracked.id;
         stored.callback = TaskCallback {
             .invoke = &TimelineExecution::invoke_lane_task,
             .context = callback.get(),
+            .context_owner = callback,
         };
 
         std::vector<std::string> depends_on;

@@ -439,6 +439,13 @@ and, crucially, makes first-start build errors observable by the connected
 client. Publishing does not wait for an audio task pass: package registry state
 must progress even when no project graph is executing.
 
+The persisted `ivModuleInstances.create` record therefore includes a
+project-relative `package_root` alongside the stable module ID. Replay creates
+the desired instance and retains that package declaration even if its
+definition has not yet been published; publication realizes the same instance
+later. A project file must not rely on startup discovery racing quickly enough
+to resolve a bare module ID.
+
 The browser queries the declaration registry and the published registry as
 snapshots. It must not rescan the filesystem and reconstruct ownership from
 incremental definition-change notifications, because those are two different

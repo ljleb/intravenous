@@ -435,13 +435,6 @@ void TasksRunner::update_tasks(VersionedTaskGraphUpdate const &update)
         if (shutdown_requested_) {
             throw std::runtime_error("cannot update tasks after shutdown");
         }
-        if (pending_graph_ && !pending_graph_is_complete_) {
-            if (!pending_update_version_index_.has_value()) {
-                pending_update_version_index_ = update.version_index;
-            } else if (*pending_update_version_index_ != update.version_index) {
-                throw std::runtime_error("cannot mix task graph update version indices while pending graph has unmet dependencies");
-            }
-        }
         base = pending_graph_ ? std::const_pointer_cast<GraphVersion const>(pending_graph_)
                               : std::const_pointer_cast<GraphVersion const>(active_graph_);
         activation_deferred = activation_deferred ||
@@ -456,15 +449,6 @@ void TasksRunner::update_tasks(VersionedTaskGraphUpdate const &update)
         pending_graph_ = std::move(next_graph);
         pending_graph_is_complete_ = pending_graph_->is_complete;
         pending_graph_activation_deferred_ = activation_deferred;
-        if (!pending_graph_is_complete_) {
-            if (!pending_update_version_index_.has_value()) {
-                pending_update_version_index_ = update.version_index;
-            } else if (*pending_update_version_index_ != update.version_index) {
-                throw std::runtime_error("cannot mix task graph update version indices while pending graph has unmet dependencies");
-            }
-        } else {
-            pending_update_version_index_.reset();
-        }
     }
     state_cv_.notify_all();
 }
