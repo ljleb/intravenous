@@ -3,17 +3,17 @@
 This inventory assigns every field of the current lowering/preparation path to
 one of four destinations:
 
-- **AuthoredGraph**: lossless author intent.
+- **ConfiguredGraph**: lossless author intent.
 - **ExecutableGraphIR**: closed, self-sufficient executable semantics.
 - **temporary lowering state**: implementation workspace, not retained across
-  the authored-to-executable boundary.
+  the configured-to-executable boundary.
 - **remove**: diagnostic/profiling-only machinery or a round-trip that the new
   representation must eliminate.
 
 The target has exactly two semantic representations:
 
 ```text
-AuthoredGraph -> ExecutableGraphIR -> Graph
+ConfiguredGraph -> ExecutableGraphIR -> Graph
 ```
 
 ## `LoweringWorkspace`
@@ -21,8 +21,8 @@ AuthoredGraph -> ExecutableGraphIR -> Graph
 | Current field | Destination | Reason |
 |---|---|---|
 | `topology` | temporary lowering state, then ExecutableGraphIR | Its concrete nodes and edges are the basis of executable semantics, but `TopologyPortId` and `SubgraphNode` are not a public IR boundary. |
-| `bundle_projections` | temporary lowering state | Needed to map authored logical ports to projected endpoints while lowering; no later compiler phase should need it. |
-| `bundle_by_lowered_node` | remove; replace with forward provenance | Later code uses it to recover authored bundles. Executable nodes instead carry authored origin, source information, and virtual IDs forward. |
+| `bundle_projections` | temporary lowering state | Needed to map configured logical ports to projected endpoints while lowering; no later compiler phase should need it. |
+| `bundle_by_lowered_node` | remove; replace with forward provenance | Later code uses it to recover configured bundles. Executable nodes instead carry configured origin, source information, and virtual IDs forward. |
 | `subgraph_input_of_boundary_source` | temporary lowering state | Boundary traversal is a lowering concern. The executable IR carries completed scope interfaces directly. |
 | `subgraph_event_input_of_boundary_source` | temporary lowering state | Same as sample boundary mappings. |
 | `detached_info_by_source` | ExecutableGraphIR | Detach is executable semantics after its topology addresses are translated to concrete addresses. |
@@ -32,11 +32,11 @@ AuthoredGraph -> ExecutableGraphIR -> Graph
 
 | Current field | Destination | Reason |
 |---|---|---|
-| `identity` | AuthoredGraph identity, copied as graph identity into ExecutableGraphIR | The compiler needs a stable graph ID but not a reference to the builder. |
+| `identity` | ConfiguredGraph identity, copied as graph identity into ExecutableGraphIR | The compiler needs a stable graph ID but not a reference to the builder. |
 | `lowered` | remove as a retained dependency | A closed executable IR must not retain the whole lowering workspace. |
 | `topology` | temporary lowering state | Consume it while lowering; do not expose it to scheduling/layout. |
-| `node_bundles` | AuthoredGraph only | Required only while deriving executable-node provenance. |
-| `virtual_nodes` | AuthoredGraph only | Required only while carrying virtual provenance forward. |
+| `node_bundles` | ConfiguredGraph only | Required only while deriving executable-node provenance. |
+| `virtual_nodes` | ConfiguredGraph only | Required only while carrying virtual provenance forward. |
 | `graph` | ExecutableGraphIR | It already owns reflected nodes, concrete edges, detach data, and most node provenance. |
 | `runtime_node_indices` | temporary lowering state | Translation map from topology node IDs to executable node IDs. |
 | `source_of` | temporary lowering state | Topology traversal helper. Its result must be represented by completed executable edges. |
@@ -71,7 +71,7 @@ AuthoredGraph -> ExecutableGraphIR -> Graph
 
 ## Required semantic moves
 
-The following current late synthesis must move into authored-to-executable
+The following current late synthesis must move into configured-to-executable
 lowering before `ExecutableGraphIR` is finished:
 
 - subgraph default `Constant` insertion;
@@ -84,11 +84,11 @@ lowering before `ExecutableGraphIR` is finished:
 After these moves, `GraphCompiler::compile(ExecutableGraphIR const&)` may
 validate, sort, construct SCCs, assign buffers, calculate latency, build
 dormancy groups, create wrappers, and freeze static storage. It may not insert
-semantic nodes or edges and must not receive `AuthoredGraph` components.
+semantic nodes or edges and must not receive `ConfiguredGraph` components.
 
 ## Profiling cleanup
 
 All `GraphBuilderCompileProfiler` and `GraphBuilderFinalizer::count_execution_*`
 methods, plus their `ModuleCompileStage` variants, are diagnostic-only and are
 removed before the representation migration. Future profiling invokes ordinary
-`AuthoredGraph`/`ExecutableGraphIR` operations directly.
+`ConfiguredGraph`/`ExecutableGraphIR` operations directly.

@@ -70,8 +70,8 @@ void ProjectPersistenceBuilder::add_iv_module_instances(
     iv_module_instances_ = std::move(instances);
 }
 
-void ProjectPersistenceBuilder::add_graph_input_authored_state(
-    GraphInputLanes::AuthoredStateSnapshot const &state)
+void ProjectPersistenceBuilder::add_graph_input_configured_state(
+    GraphInputLanes::ConfiguredStateSnapshot const &state)
 {
     sample_input_values_ = state.sample_input_values;
     sample_input_states_ = state.sample_input_states;
@@ -92,14 +92,14 @@ void ProjectPersistenceBuilder::add_lane_connections(
     lane_connections_ = std::move(connections);
 }
 
-void ProjectPersistenceBuilder::add_authored_lane_connections(std::vector<AuthoredLaneConnection> connections)
+void ProjectPersistenceBuilder::add_configured_lane_connections(std::vector<ConfiguredLaneConnection> connections)
 {
-    authored_lane_connections_ = std::move(connections);
+    configured_lane_connections_ = std::move(connections);
 }
 
-void ProjectPersistenceBuilder::add_authored_lanes(std::vector<AuthoredLaneRecord> lanes)
+void ProjectPersistenceBuilder::add_configured_lanes(std::vector<ConfiguredLaneRecord> lanes)
 {
-    authored_lanes_ = std::move(lanes);
+    configured_lanes_ = std::move(lanes);
 }
 
 std::string ProjectPersistenceBuilder::relativize_path(std::filesystem::path const &path) const
@@ -233,11 +233,11 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
         });
     }
 
-    auto authored_lanes = authored_lanes_;
-    std::ranges::sort(authored_lanes, {}, &AuthoredLaneRecord::lane_id);
-    for (auto const& lane : authored_lanes) {
+    auto configured_lanes = configured_lanes_;
+    std::ranges::sort(configured_lanes, {}, &ConfiguredLaneRecord::lane_id);
+    for (auto const& lane : configured_lanes) {
         commands.push_back(ProjectCommand{
-            .command = "timeline.createAuthoredLane",
+            .command = "timeline.createConfiguredLane",
             .args = Json{{"lane_id", lane.lane_id.str()}, {"type_id", lane.type_id},
                          {"serialized_state", lane.serialized_state}},
         });
@@ -263,6 +263,7 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
             .args = nlohmann::ordered_json{
                 {"instance_id", instance.instance_id},
                 {"module_id", instance.definition_id},
+                {"package_root", relativize_path(instance.package_root)},
                 {"display_name", display_name != instance.definition_id
                     ? nlohmann::ordered_json(display_name)
                     : nlohmann::ordered_json(nullptr)},
@@ -399,7 +400,7 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
         });
     }
 
-    auto connections = authored_lane_connections_;
+    auto connections = configured_lane_connections_;
     std::ranges::sort(connections, [](auto const &a, auto const &b) {
         if (a.source_lane_id != b.source_lane_id) {
             return a.source_lane_id < b.source_lane_id;
@@ -417,7 +418,7 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
     });
     for (auto const &connection : connections) {
         commands.push_back(ProjectCommand{
-            .command = "timeline.connectAuthoredLanes",
+            .command = "timeline.connectConfiguredLanes",
             .args = nlohmann::ordered_json{
                 {"source_lane_id", connection.source_lane_id.str()},
                 {"target_lane_id", connection.target_lane_id.str()},

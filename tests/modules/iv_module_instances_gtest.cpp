@@ -3,14 +3,18 @@
 #include <intravenous/bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
-#include <intravenous/runtime/iv_module_sources.h>
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_reload.h>
+#include <intravenous/runtime/iv_packages.h>
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -19,14 +23,14 @@ constexpr std::string_view module_id = "iv.test.module";
 struct IvModuleInstancesWitness {
     std::optional<iv::IvModuleRequiredDefinitionsChanged> required_diff {};
     std::optional<iv::IvModuleInstancesChanged> instances_diff {};
-    std::optional<iv::IvModuleInstanceBuildersChanged> builders_completed {};
+    std::optional<iv::IvModuleInstanceBuildersChanged> configured_builders {};
     std::optional<std::vector<iv::IvModuleInstanceInfo>> listed_instances {};
 
     void reset()
     {
         required_diff.reset();
         instances_diff.reset();
-        builders_completed.reset();
+        configured_builders.reset();
         listed_instances.reset();
     }
     void handle_required_definitions_changed(
@@ -43,9 +47,11 @@ struct IvModuleInstancesWitness {
     {
         listed_instances = instances;
     }
-    void handle_builders_completed(iv::IvModuleInstanceBuildersChanged const &changed)
+    void handle_instances_configured(iv::IvModuleInstancesConfigured const &configured)
     {
-        builders_completed = changed;
+        if (configured.builders != nullptr) {
+            configured_builders = *configured.builders;
+        }
     }
 };
 
@@ -61,9 +67,18 @@ iv::IvModuleDefinition make_definition(std::filesystem::path module_root)
     auto const normalized = std::filesystem::weakly_canonical(module_root).lexically_normal();
     return iv::IvModuleDefinition{
         .definition_id = std::string(module_id),
-        .module_root = normalized,
+        .package_root = normalized,
         .module_id = "iv.test.module",
     };
+}
+
+void apply_module_definitions(
+    iv::IvModuleInstances &instances,
+    iv::IvModuleDefinitionsChanged diff)
+{
+    instances.handle_iv_package_definitions_changed(iv::IvPackageDefinitionsChanged{
+        .modules = std::move(diff),
+    });
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
@@ -80,8 +95,8 @@ IV_SUBSCRIBE_LINKER_EVENT(
     &IvModuleInstancesWitness::handle_instances_list_changed)
 IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_instances_witness_bridge,
-    iv_runtime_iv_module_instance_builders_completed_event,
-    &IvModuleInstancesWitness::handle_builders_completed)
+    iv_runtime_iv_module_instances_configured_event,
+    &IvModuleInstancesWitness::handle_instances_configured)
 
 class IvModuleInstancesTest : public ::testing::Test {
 protected:
@@ -104,7 +119,7 @@ TEST_F(IvModuleInstancesTest, CreateInstancePublishesRequiredDefinitionAndListCh
     ASSERT_TRUE(witness.required_diff.has_value());
     ASSERT_EQ(witness.required_diff->created.size(), 1u);
     EXPECT_EQ(witness.required_diff->created.front().definition_id, module_id);
-    EXPECT_EQ(witness.required_diff->created.front().module_root, module_root);
+    EXPECT_EQ(witness.required_diff->created.front().package_root, module_root);
 
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 1u);
@@ -129,7 +144,7 @@ TEST_F(IvModuleInstancesTest, CreateSecondInstanceForSameDefinitionRepublishesLo
     ASSERT_TRUE(witness.required_diff.has_value());
     ASSERT_EQ(witness.required_diff->updated.size(), 1u);
     EXPECT_EQ(witness.required_diff->updated.front().definition_id, module_id);
-    EXPECT_EQ(witness.required_diff->updated.front().module_root, module_root);
+    EXPECT_EQ(witness.required_diff->updated.front().package_root, module_root);
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 2u);
 }
@@ -153,7 +168,7 @@ TEST_F(IvModuleInstancesTest, SameDefinitionIdAtNewRootRepublishesUpdatedRequire
     ASSERT_TRUE(witness.required_diff.has_value());
     ASSERT_EQ(witness.required_diff->updated.size(), 1u);
     EXPECT_EQ(witness.required_diff->updated.front().definition_id, module_id);
-    EXPECT_EQ(witness.required_diff->updated.front().module_root, second_root);
+    EXPECT_EQ(witness.required_diff->updated.front().package_root, second_root);
 
     auto const listed = instances.list_instances();
     ASSERT_EQ(listed.size(), 2u);
@@ -161,42 +176,61 @@ TEST_F(IvModuleInstancesTest, SameDefinitionIdAtNewRootRepublishesUpdatedRequire
     EXPECT_EQ(listed[1].definition_id, module_id);
 }
 
-TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourceRoot)
+TEST_F(IvModuleInstancesTest, DefinitionChangeMovesInstanceToPublishedPackageRoot)
 {
     auto const workspace =
-        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_refresh_source_root");
-    auto const stale_root = workspace / "modules" / "saw";
-    auto const moved_root = workspace / "modules" / "saw2";
-    std::filesystem::create_directories(moved_root);
-    iv::test_support::write_text(
-        moved_root / "iv_module.json",
-        "{\"schema\":1,\"id\":\"iv.test.module\",\"entry\":\"module.cpp\",\"main\":\"module_main\"}\n");
-    iv::test_support::write_text(
-        moved_root / "module.cpp",
-        "#include <intravenous/dsl.h>\n\n"
-        "void module_main(iv::GraphBuilder& g)\n"
-        "{\n"
-        "    using namespace iv;\n"
-        "    g.outputs();\n"
-        "}\n");
-
+        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_move_published_root");
+    auto const stale_root = std::filesystem::weakly_canonical(workspace / "stale");
+    auto const moved_root = std::filesystem::weakly_canonical(workspace);
     iv::IvModuleInstances instances;
-    iv::IvModuleSources sources(workspace, {});
 
     (void)instances.create_instance(module_id, stale_root);
     witness.reset();
 
-    instances.refresh_source_roots(sources);
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+        .created = {make_definition(moved_root)},
+    });
 
-    auto const expected_root = std::filesystem::weakly_canonical(moved_root);
-    ASSERT_TRUE(witness.required_diff.has_value());
-    ASSERT_EQ(witness.required_diff->updated.size(), 1u);
-    EXPECT_EQ(witness.required_diff->updated.front().definition_id, module_id);
-    EXPECT_EQ(witness.required_diff->updated.front().module_root, expected_root);
-
+    // A definition publication is already authoritative about package ownership.
+    // Updating the local instance snapshot must not feed a second requirement event
+    // back into IvModuleDefinitions during the same source-event propagation.
+    EXPECT_FALSE(witness.required_diff.has_value());
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 1u);
-    EXPECT_EQ(witness.listed_instances->front().module_root, expected_root);
+    EXPECT_EQ(witness.listed_instances->front().package_root, moved_root);
+    EXPECT_TRUE(witness.listed_instances->front().realized);
+}
+
+TEST_F(IvModuleInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirstBuild)
+{
+    auto const workspace =
+        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_many_source_modules");
+    auto const source_root = workspace / "modules" / "many";
+    std::filesystem::create_directories(source_root);
+    iv::test_support::write_text(
+        source_root / "iv_package.json",
+        "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
+    iv::test_support::write_text(
+        source_root / "module.cpp",
+        "#include <intravenous/dsl.h>\n\n"
+        "void primary(iv::GraphBuilder& g) { g.outputs(); }\n"
+        "void secondary(iv::GraphBuilder& g) { g.outputs(); }\n\n"
+        "IV_MODULE(\"iv.test.module\", primary);\n"
+        "IV_MODULE(\"iv.test.module.secondary\", secondary);\n");
+
+    iv::IvModuleDefinitions definitions;
+    iv::IvModuleReload reload({});
+    definitions.sync_package_declarations(
+        iv::discover_iv_package_declarations(workspace, {}));
+    iv::IvPackages sources(workspace, definitions, reload);
+    auto const discovered = sources.list_packages();
+
+    ASSERT_EQ(discovered.size(), 1u);
+    auto const expected_root = std::filesystem::weakly_canonical(source_root);
+    EXPECT_EQ(discovered.front().package_root, expected_root);
+    EXPECT_EQ(discovered.front().package_id, expected_root.generic_string());
+    EXPECT_EQ(discovered.front().build_state, iv::IvPackageBuildState::queued);
+    EXPECT_TRUE(discovered.front().module_ids.empty());
 }
 
 TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPublishesDiff)
@@ -209,7 +243,7 @@ TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPubl
     auto const instance_id = instances.create_instance(module_id, module_root);
     witness.reset();
 
-    instances.handle_iv_module_definitions_changed(iv::IvModuleDefinitionsChanged{
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
 
@@ -227,6 +261,37 @@ TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPubl
         witness.listed_instances->front().default_silence_ttl_samples.has_value());
 }
 
+TEST_F(IvModuleInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnrealized)
+{
+    auto const workspace =
+        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_removed_definition");
+    auto const module_root = std::filesystem::weakly_canonical(workspace);
+    iv::IvModuleInstances instances;
+
+    auto const instance_id = instances.create_instance(module_id, module_root);
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+        .created = {make_definition(module_root)},
+    });
+    witness.reset();
+
+    // A successful package revision may intentionally remove a definition even
+    // while the project still desires an instance of it. Drop only the realized
+    // execution root; preserve the desired instance so the UI can show it as
+    // unresolved and offer deletion instead of hiding orphaned project state.
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+        .deleted_definition_ids = {std::string(module_id)},
+    });
+
+    ASSERT_TRUE(witness.instances_diff.has_value());
+    ASSERT_EQ(witness.instances_diff->deleted_instance_ids.size(), 1u);
+    EXPECT_EQ(witness.instances_diff->deleted_instance_ids.front(), instance_id);
+    ASSERT_TRUE(witness.listed_instances.has_value());
+    ASSERT_EQ(witness.listed_instances->size(), 1u);
+    EXPECT_EQ(witness.listed_instances->front().instance_id, instance_id);
+    EXPECT_EQ(witness.listed_instances->front().definition_id, module_id);
+    EXPECT_FALSE(witness.listed_instances->front().realized);
+}
+
 TEST_F(IvModuleInstancesTest, DefinitionReloadCreatesNewRuntimeBindingGeneration)
 {
     auto const workspace = iv::test_support::fresh_module_fixture_workspace(
@@ -235,7 +300,7 @@ TEST_F(IvModuleInstancesTest, DefinitionReloadCreatesNewRuntimeBindingGeneration
     iv::IvModuleInstances instances;
 
     (void)instances.create_instance(module_id, module_root);
-    instances.handle_iv_module_definitions_changed(iv::IvModuleDefinitionsChanged{
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
     ASSERT_TRUE(witness.instances_diff.has_value());
@@ -245,7 +310,7 @@ TEST_F(IvModuleInstancesTest, DefinitionReloadCreatesNewRuntimeBindingGeneration
     ASSERT_NE(original_bindings, nullptr);
     witness.reset();
 
-    instances.handle_iv_module_definitions_changed(iv::IvModuleDefinitionsChanged{
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
         .updated = {make_definition(module_root)},
     });
 
@@ -265,23 +330,23 @@ TEST_F(IvModuleInstancesTest, SettingPerInstanceDefaultSilenceTtlRepublishesReal
     iv::IvModuleInstances instances;
 
     auto const instance_id = instances.create_instance(module_id, module_root);
-    instances.handle_iv_module_definitions_changed(iv::IvModuleDefinitionsChanged{
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
     witness.reset();
 
     instances.set_default_silence_ttl_samples(instance_id, 8192);
 
-    ASSERT_TRUE(witness.builders_completed.has_value());
-    ASSERT_EQ(witness.builders_completed->updated.size(), 1u);
-    ASSERT_NE(witness.builders_completed->updated.front().instance, nullptr);
+    ASSERT_TRUE(witness.configured_builders.has_value());
+    ASSERT_EQ(witness.configured_builders->updated.size(), 1u);
+    ASSERT_NE(witness.configured_builders->updated.front().instance, nullptr);
     EXPECT_EQ(
-        witness.builders_completed->updated.front().instance->instance_id,
+        witness.configured_builders->updated.front().instance->instance_id,
         instance_id);
     ASSERT_TRUE(
-        witness.builders_completed->updated.front().default_silence_ttl_samples.has_value());
+        witness.configured_builders->updated.front().default_silence_ttl_samples.has_value());
     EXPECT_EQ(
-        *witness.builders_completed->updated.front().default_silence_ttl_samples,
+        *witness.configured_builders->updated.front().default_silence_ttl_samples,
         8192u);
 
     auto const listed = instances.list_instances();
@@ -298,7 +363,7 @@ TEST_F(IvModuleInstancesTest, RemoveLastRealizedInstancePublishesDeleteAndDropsR
     iv::IvModuleInstances instances;
 
     auto const instance_id = instances.create_instance(module_id, module_root);
-    instances.handle_iv_module_definitions_changed(iv::IvModuleDefinitionsChanged{
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
     witness.reset();

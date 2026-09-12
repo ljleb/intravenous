@@ -1,7 +1,7 @@
 #include <intravenous/runtime/timeline.h>
 
 #include <intravenous/basic_lane_nodes/controls.h>
-#include <intravenous/runtime/authored_lanes_events.h>
+#include <intravenous/runtime/configured_lanes_events.h>
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/lanes_visualization_events.h>
 #include <intravenous/runtime/project_persistence_builder.h>
@@ -317,7 +317,7 @@ void Timeline::handle_lanes_visualization_timeline_batch(
     apply_lane_batch_and_publish_change(batch);
 }
 
-void Timeline::handle_authored_lanes_timeline_batch(
+void Timeline::handle_configured_lanes_timeline_batch(
     TimelineLaneBatchUpdate const &batch)
 {
     apply_lane_batch_and_publish_change(batch);
@@ -364,10 +364,10 @@ void Timeline::handle_project_set_timeline_lane_ui_state(
         }
         auto const snapshot = lane_ui_state_snapshot(*lane);
         if (!snapshot.has_value()) {
-            throw std::runtime_error("authored lane did not provide canonical UI state");
+            throw std::runtime_error("configured lane did not provide canonical UI state");
         }
         IV_INVOKE_LINKER_EVENT(
-            iv_runtime_timeline_authored_lane_canonical_state_updated_event,
+            iv_runtime_timeline_configured_lane_canonical_state_updated_event,
             request.lane_id,
             snapshot->serialized_state);
     }
@@ -402,10 +402,10 @@ void Timeline::handle_project_connect_timeline_lanes(
     };
     auto const connections_before = lane_connections();
     connect_public_lanes_or_defer(request.source_lane_id, request.target_lane_id, input);
-    if (request.authored) {
+    if (request.configured) {
         IV_INVOKE_LINKER_EVENT(
-            iv_runtime_timeline_authored_lane_connection_recorded_event,
-            AuthoredLaneConnection{
+            iv_runtime_timeline_configured_lane_connection_recorded_event,
+            ConfiguredLaneConnection{
                 .source_lane_id = request.source_lane_id,
                 .target_lane_id = request.target_lane_id,
                 .input = input,
@@ -458,8 +458,8 @@ void Timeline::handle_project_disconnect_timeline_lanes(
         graph.disconnect(*source, *target, input);
     });
     IV_INVOKE_LINKER_EVENT(
-        iv_runtime_timeline_authored_lane_connection_removed_event,
-        AuthoredLaneConnection{
+        iv_runtime_timeline_configured_lane_connection_removed_event,
+        ConfiguredLaneConnection{
             .source_lane_id = request.source_lane_id,
             .target_lane_id = request.target_lane_id,
             .input = input,
@@ -506,18 +506,18 @@ void Timeline::handle_project_persistence_collect_state(
     }
     builder.add_lane_sample_channel_types(std::move(lane_sample_channel_types));
 
-    TimelineAuthoredLaneConnectionsBuilder authored_connections_builder;
+    TimelineConfiguredLaneConnectionsBuilder configured_connections_builder;
     IV_INVOKE_LINKER_EVENT(
-        iv_runtime_timeline_authored_lane_connections_requested_event,
-        authored_connections_builder);
-    auto const authored_connections = authored_connections_builder.has_response()
-        ? authored_connections_builder.build()
-        : std::vector<AuthoredLaneConnection>{};
-    auto is_authored_connection = [&](AuthoredLaneConnection const &connection) {
-        return std::ranges::any_of(authored_connections, [&](auto const &authored) {
-            return authored.source_lane_id == connection.source_lane_id
-                && authored.target_lane_id == connection.target_lane_id
-                && authored.input == connection.input;
+        iv_runtime_timeline_configured_lane_connections_requested_event,
+        configured_connections_builder);
+    auto const configured_connections = configured_connections_builder.has_response()
+        ? configured_connections_builder.build()
+        : std::vector<ConfiguredLaneConnection>{};
+    auto is_configured_connection = [&](ConfiguredLaneConnection const &connection) {
+        return std::ranges::any_of(configured_connections, [&](auto const &configured) {
+            return configured.source_lane_id == connection.source_lane_id
+                && configured.target_lane_id == connection.target_lane_id
+                && configured.input == connection.input;
         });
     };
 
@@ -539,20 +539,20 @@ void Timeline::handle_project_persistence_collect_state(
             || !lane_is_persistent(connection.target)) {
             continue;
         }
-        auto const authored_connection = AuthoredLaneConnection{
+        auto const configured_connection = ConfiguredLaneConnection{
             .source_lane_id = lane_public_id(connection.source),
             .target_lane_id = lane_public_id(connection.target),
             .input = connection.input,
         };
-        if (is_authored_connection(authored_connection)) {
+        if (is_configured_connection(configured_connection)) {
             continue;
         }
         add_connection(ProjectConnectTimelineLanesRequest{
-            .source_lane_id = authored_connection.source_lane_id,
-            .target_lane_id = authored_connection.target_lane_id,
-            .port_domain = authored_connection.input.domain,
-            .port_kind = authored_connection.input.kind,
-            .port_ordinal = authored_connection.input.ordinal,
+            .source_lane_id = configured_connection.source_lane_id,
+            .target_lane_id = configured_connection.target_lane_id,
+            .port_domain = configured_connection.input.domain,
+            .port_kind = configured_connection.input.kind,
+            .port_ordinal = configured_connection.input.ordinal,
         });
     }
     for (auto const &[source_lane_id, target_lane_id, input] : pending_public_connections()) {
@@ -575,9 +575,9 @@ void Timeline::handle_graph_input_lanes_knob_value_updated(
         if (!graph.contains(lane)) {
             return;
         }
-        if (auto *knob = graph.lane(lane).node.try_as<KnobLaneNode>()) {
+        if (auto *knob = graph.lane(lane).node->try_as<KnobLaneNode>()) {
             knob->value = value;
-        } else if (auto *input = graph.lane(lane).node.try_as<GraphSampleInputLaneNode>()) {
+        } else if (auto *input = graph.lane(lane).node->try_as<GraphSampleInputLaneNode>()) {
             input->default_value = value;
         }
     });
@@ -597,7 +597,7 @@ void Timeline::handle_lanes_visualization_lane_output_query(
             .config = record.output,
             .sample_channel_type = record.sample_channel_type,
             .subscribes_to_compiled_output_changes =
-                record.node.subscribes_to_compiled_output_changes(),
+                record.node->subscribes_to_compiled_output_changes(),
         };
     });
     if (descriptor.has_value()) {

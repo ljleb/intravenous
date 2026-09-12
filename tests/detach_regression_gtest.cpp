@@ -1,6 +1,6 @@
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
-#include <authored_graph_test_view.h>
+#include <configured_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/node/block_executor.h>
@@ -89,17 +89,17 @@ namespace {
 
         sink(voice_a + voice_b);
         graph.outputs();
-        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
+        return iv::freeze_configured_graph_for_test(std::move(graph).finish());
     }
 
     iv::RuntimeGraphRoot build_runtime_root(
-        iv::AuthoredGraphTestView view,
+        iv::ConfiguredGraphTestView view,
         bool execution_root = false)
     {
-        auto authored = iv::thaw_authored_graph_for_test(view);
+        auto configured = iv::thaw_configured_graph_for_test(view);
         auto plan = iv::GraphCompiler::compile(
             iv::GraphLowerer::lower(
-                std::move(authored), {.execution_root = execution_root}));
+                std::move(configured), {.execution_root = execution_root}));
         return iv::RuntimeGraphRoot(std::move(plan.graph));
     }
 
@@ -121,7 +121,7 @@ namespace {
         }).ttl(1);
         nested("in"_P = source);
         graph.outputs("out"_P = nested);
-        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
+        return iv::freeze_configured_graph_for_test(std::move(graph).finish());
     }
 
     iv::RuntimeGraphRoot build_dormancy_runtime_root()
@@ -146,7 +146,7 @@ namespace {
         auto const sink = graph.node<RuntimeBufferSink>();
         sink(nested);
         graph.outputs();
-        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
+        return iv::freeze_configured_graph_for_test(std::move(graph).finish());
     }
 
     iv::RuntimeGraphRoot build_default_sink_runtime_root()

@@ -57,11 +57,11 @@ struct DeferredDetachNode {
   size_t loop_extra_latency = 1;
 };
 
-// Authored concrete-node data stays owned by GraphBuilderNodeBundles throughout
+// Configured concrete-node data stays owned by GraphBuilderNodeBundles throughout
 // topology lowering. The workspace carries this lightweight handle instead of
 // copying ports, strings, callbacks, and static values into another graph
 // representation.
-struct AuthoredConcreteNodeRef {
+struct ConfiguredConcreteNodeRef {
   size_t node_bundle_handle = 0;
 };
 
@@ -84,7 +84,7 @@ struct ConcreteNode {
   size_t maximum_block_size = MAX_BLOCK_SIZE;
   std::optional<size_t> default_ttl_samples{};
   bool block_skippable = false;
-  // Static data attached to an authored node survives semantic lowering so
+  // Static data attached to an configured node survives semantic lowering so
   // later compiler passes can materialize it without a ticking producer.
   std::optional<Sample> static_sample_value{};
   std::optional<DeferredDetachNode> deferred_detach{};
@@ -124,7 +124,7 @@ struct SubgraphNode {
   }
 };
 
-using StoredNode = std::variant<AuthoredConcreteNodeRef, ConcreteNode,
+using StoredNode = std::variant<ConfiguredConcreteNodeRef, ConcreteNode,
                                 SubgraphNode>;
 
 } // namespace iv

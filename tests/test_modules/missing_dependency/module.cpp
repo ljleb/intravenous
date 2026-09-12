@@ -1,9 +1,10 @@
 #include <intravenous/dsl.h>
-#include <iv/modules/iv.test.this_does_not_exist>
 
 namespace iv {
-constexpr missing_dependency(GraphBuilder& g)
+void missing_dependency(GraphBuilder& g)
 {
-    g.outputs();
+    g.outputs(g.node<"iv.test.this_does_not_exist">());
 }
 }
+
+IV_MODULE("iv.test.missing_dependency", iv::missing_dependency);

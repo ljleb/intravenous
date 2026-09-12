@@ -7,7 +7,7 @@
 #include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/public_ports.hpp>
 #include <intravenous/graph/builder/virtual_nodes.hpp>
-#include <intravenous/graph/authored_graph.hpp>
+#include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/error.h>
 #include <intravenous/graph/executable_graph_ir.hpp>
 #include <intravenous/graph/hash.hpp>
@@ -87,7 +87,7 @@ struct SampleLoweringPassFacts {
   size_t assigned_subgraph_outputs = 0;
 };
 
-// Mechanical workspace used only while converting authored intent into the
+// Mechanical workspace used only while converting configured intent into the
 // closed ExecutableGraphIR. It is not a third semantic graph representation.
 struct LoweringWorkspace {
   std::vector<StoredNode> topology_nodes{};
@@ -100,7 +100,7 @@ struct LoweringWorkspace {
   std::vector<std::optional<NodeBundleHandle>> bundle_by_lowered_node{};
   // Scope membership is retained for every topology node once the complete
   // topology exists. Generated nodes inherit memberships from their adjacent
-  // authored components in one global closure rather than being rediscovered
+  // configured components in one global closure rather than being rediscovered
   // separately for every scope.
   std::vector<std::vector<size_t>> scope_memberships{};
   details::ConstexprHashMap<TopologyPortId, TopologyPortId,
@@ -221,13 +221,13 @@ using VirtualMetadataBuildResult =
 constexpr VirtualMetadataBuildResult
 build_virtual_metadata(ExecutableGraphData const& g,
                        std::span<LoweredSubgraphSpec const> lowered_scopes) {
-  // The authored virtual-node records already hold the port metadata for
+  // The configured virtual-node records already hold the port metadata for
   // ordinary nodes. Rebuilding it from every reflected runtime node here used
   // to visit every generated ConnectionNode and then discard it: nodes without
   // an ID never enter a virtual group, while nodes with one are overwritten by
   // apply_virtual_port_metadata below. Preserve only the runtime association
   // needed by the compiler, and reserve graph-derived metadata work for
-  // lowered scopes, which have no authored record to reuse.
+  // lowered scopes, which have no configured record to reuse.
   VirtualNodeIdsByBackingNodeId virtual_node_ids_by_backing_node_id;
   for (size_t node_i = 0; node_i < g.nodes.size(); ++node_i) {
     if (node_i >= g.node_virtual_ids.size() ||
@@ -465,26 +465,26 @@ struct EventPortIdHash {
   }
 };
 
-// Authored connectivity is queried heavily while projecting introspection.
-// Build this lowerer-local index once instead of rescanning all authored
+// Configured connectivity is queried heavily while projecting introspection.
+// Build this lowerer-local index once instead of rescanning all configured
 // connections for every virtual/public port.
-struct LoweringAuthoredConnectivity {
+struct LoweringConfiguredConnectivity {
   ConstexprHashSet<SampleInputChannelId, SampleChannelIdHash> sample_inputs;
   ConstexprHashSet<SampleOutputChannelId, SampleChannelIdHash> sample_outputs;
   ConstexprHashSet<EventInputPortId, EventPortIdHash> event_inputs;
   ConstexprHashSet<EventOutputPortId, EventPortIdHash> event_outputs;
 };
 
-constexpr LoweringAuthoredConnectivity build_lowering_authored_connectivity(
+constexpr LoweringConfiguredConnectivity build_lowering_configured_connectivity(
     GraphBuilderConnections const& connections) {
-  LoweringAuthoredConnectivity result;
-  for (auto const& connection : connections.authored_sample_connections()) {
+  LoweringConfiguredConnectivity result;
+  for (auto const& connection : connections.configured_sample_connections()) {
     result.sample_inputs.insert_range(connection.target_channels.begin(),
                                       connection.target_channels.end());
     result.sample_outputs.insert_range(connection.source_channels.begin(),
                                        connection.source_channels.end());
   }
-  for (auto const& connection : connections.authored_event_connections()) {
+  for (auto const& connection : connections.configured_event_connections()) {
     result.event_inputs.insert_range(connection.targets.begin(),
                                      connection.targets.end());
     result.event_outputs.insert_range(connection.sources.begin(),
@@ -495,13 +495,13 @@ constexpr LoweringAuthoredConnectivity build_lowering_authored_connectivity(
 
 namespace {
 constexpr bool sample_channel_is_connected(
-    LoweringAuthoredConnectivity const& connectivity,
+    LoweringConfiguredConnectivity const& connectivity,
     SampleInputChannelId channel) {
   return connectivity.sample_inputs.contains(channel);
 }
 
 constexpr bool sample_channel_is_connected(
-    LoweringAuthoredConnectivity const& connectivity,
+    LoweringConfiguredConnectivity const& connectivity,
     SampleOutputChannelId channel) {
   return connectivity.sample_outputs.contains(channel);
 }
@@ -510,7 +510,7 @@ template <class Mapping>
 constexpr std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
     std::vector<Mapping> const& mappings,
     GraphBuilderNodeBundles const& node_bundles,
-    LoweringAuthoredConnectivity const& connectivity, bool inputs) {
+    LoweringConfiguredConnectivity const& connectivity, bool inputs) {
   std::vector<IntrospectionPortInfo> result;
   result.reserve(mappings.size());
   for (auto const& mapping : mappings) {
@@ -563,7 +563,7 @@ template <class Mapping>
 constexpr std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
     std::vector<Mapping> const& mappings,
     GraphBuilderNodeBundles const& node_bundles,
-    LoweringAuthoredConnectivity const& connectivity,
+    LoweringConfiguredConnectivity const& connectivity,
     NodeBundleHandle bundle_handle,
     bool inputs) {
   std::vector<Mapping> bundle_mappings;
@@ -583,7 +583,7 @@ constexpr std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
 constexpr std::vector<IntrospectionPortInfo> project_virtual_event_ports(
     std::vector<VirtualEventPortMapping> const& mappings,
     GraphBuilderNodeBundles const&,
-    LoweringAuthoredConnectivity const& connectivity, bool inputs) {
+    LoweringConfiguredConnectivity const& connectivity, bool inputs) {
   std::vector<IntrospectionPortInfo> result;
   result.reserve(mappings.size());
   for (auto const& mapping : mappings) {
@@ -609,7 +609,7 @@ constexpr std::vector<IntrospectionPortInfo> project_virtual_event_ports(
 constexpr std::vector<IntrospectionPortInfo> project_bundle_event_ports(
     std::vector<VirtualEventPortMapping> const& mappings,
     GraphBuilderNodeBundles const& node_bundles,
-    LoweringAuthoredConnectivity const& connectivity,
+    LoweringConfiguredConnectivity const& connectivity,
     NodeBundleHandle bundle_handle, bool inputs) {
   auto projected = mappings;
   for (auto& mapping : projected) {
@@ -635,7 +635,7 @@ constexpr void apply_virtual_port_metadata(
     GraphIntrospectionMetadata& metadata,
     GraphBuilderNodeBundles const& node_bundles,
     GraphBuilderVirtualNodes const& virtual_nodes,
-    LoweringAuthoredConnectivity const& connectivity) {
+    LoweringConfiguredConnectivity const& connectivity) {
   details::ConstexprHashMap<std::string, size_t, details::ConstexprStringHash>
       virtual_node_index;
   for (size_t i = 0; i < metadata.virtual_nodes.size(); ++i) {
@@ -646,7 +646,11 @@ constexpr void apply_virtual_port_metadata(
     if (!index) {
       std::vector<SourceSpan> spans;
       spans.reserve(record.source_infos.size());
-      for (auto const& info : record.source_infos) spans.push_back(info.span);
+      for (auto const& info : record.source_infos) {
+        if (!info.span.file_path.empty() && info.span.begin <= info.span.end) {
+          spans.push_back(info.span);
+        }
+      }
       sort_and_deduplicate_spans(spans);
       metadata.virtual_nodes.push_back(IntrospectionVirtualNode {
           .id = record.id,
@@ -1107,25 +1111,25 @@ class GraphLowerer {
   constexpr ConcreteNode const& topology_generated_node(size_t index) const {
     return std::get<ConcreteNode>(out.topology_nodes.at(index));
   }
-  constexpr AuthoredConcreteNodeRef const& topology_authored_node(
+  constexpr ConfiguredConcreteNodeRef const& topology_configured_node(
       size_t index) const {
-    return std::get<AuthoredConcreteNodeRef>(out.topology_nodes.at(index));
+    return std::get<ConfiguredConcreteNodeRef>(out.topology_nodes.at(index));
   }
-  constexpr bool topology_is_authored_concrete_node(size_t index) const {
-    return std::holds_alternative<AuthoredConcreteNodeRef>(
+  constexpr bool topology_is_configured_concrete_node(size_t index) const {
+    return std::holds_alternative<ConfiguredConcreteNodeRef>(
         out.topology_nodes.at(index));
   }
   constexpr NodePorts const& topology_concrete_ports(size_t index) const {
-    if (topology_is_authored_concrete_node(index)) {
+    if (topology_is_configured_concrete_node(index)) {
       return bundles.typed_ports(
-          topology_authored_node(index).node_bundle_handle);
+          topology_configured_node(index).node_bundle_handle);
     }
     return topology_generated_node(index).ports;
   }
   constexpr NodeLifetime const& topology_concrete_lifetime(size_t index) const {
-    if (topology_is_authored_concrete_node(index)) {
+    if (topology_is_configured_concrete_node(index)) {
       return bundles.concrete_lifetime(
-          topology_authored_node(index).node_bundle_handle);
+          topology_configured_node(index).node_bundle_handle);
     }
     return topology_generated_node(index).lifetime;
   }
@@ -1142,7 +1146,7 @@ class GraphLowerer {
     out.topology_nodes.emplace_back(std::move(node));
     return out.topology_nodes.size() - 1;
   }
-  constexpr size_t append_topology_node(AuthoredConcreteNodeRef node) {
+  constexpr size_t append_topology_node(ConfiguredConcreteNodeRef node) {
     out.topology_nodes.emplace_back(node);
     return out.topology_nodes.size() - 1;
   }
@@ -1316,9 +1320,14 @@ class GraphLowerer {
     for (NodeBundleHandle handle=0; handle<bundles.size(); ++handle) {
       auto const& bundle = bundles.bundle(handle);
       auto& p = out.bundle_projections[handle];
+      // A nested configured subgraph is resolved by appending its provider
+      // bundles after the caller's original handle. Project all concrete and
+      // boundary bundles first; subgraphs are projected in reverse order
+      // below so every child subgraph has already acquired topology nodes.
+      if (bundle.is_subgraph()) continue;
       if (bundle.is_concrete()) {
         auto node = append_topology_node(
-            AuthoredConcreteNodeRef{.node_bundle_handle = handle});
+            ConfiguredConcreteNodeRef{.node_bundle_handle = handle});
         p.topology_node = node;
         if (out.bundle_by_lowered_node.size() <= node) out.bundle_by_lowered_node.resize(node+1);
         out.bundle_by_lowered_node[node] = handle;
@@ -1334,24 +1343,24 @@ class GraphLowerer {
           out.bundle_by_lowered_node.at(*member_node) = handle;
         }
         for(size_t port=0;port<bundle.sample_input_count();++port){
-          std::vector<TopologyPortId> endpoints;
-          for(auto member:members) endpoints.push_back(out.bundle_projections.at(member).sample_inputs.at(port).at(0));
-          p.sample_inputs.push_back(std::move(endpoints));
+          std::vector<TopologyPortId> ports;
+          for(auto member:members) ports.push_back(out.bundle_projections.at(member).sample_inputs.at(port).at(0));
+          p.sample_inputs.push_back(std::move(ports));
         }
         for(size_t port=0;port<bundle.sample_output_count();++port){
-          std::vector<TopologyPortId> endpoints;
-          for(auto member:members) endpoints.push_back(out.bundle_projections.at(member).sample_outputs.at(port).at(0));
-          p.sample_outputs.push_back(std::move(endpoints));
+          std::vector<TopologyPortId> ports;
+          for(auto member:members) ports.push_back(out.bundle_projections.at(member).sample_outputs.at(port).at(0));
+          p.sample_outputs.push_back(std::move(ports));
         }
         for(size_t port=0;port<bundle.event_input_count();++port){
-          std::vector<TopologyPortId> endpoints;
-          for(auto member:members) endpoints.push_back(out.bundle_projections.at(member).event_inputs.at(port).at(0));
-          p.event_inputs.push_back(std::move(endpoints));
+          std::vector<TopologyPortId> ports;
+          for(auto member:members) ports.push_back(out.bundle_projections.at(member).event_inputs.at(port).at(0));
+          p.event_inputs.push_back(std::move(ports));
         }
         for(size_t port=0;port<bundle.event_output_count();++port){
-          std::vector<TopologyPortId> endpoints;
-          for(auto member:members) endpoints.push_back(out.bundle_projections.at(member).event_outputs.at(port).at(0));
-          p.event_outputs.push_back(std::move(endpoints));
+          std::vector<TopologyPortId> ports;
+          for(auto member:members) ports.push_back(out.bundle_projections.at(member).event_outputs.at(port).at(0));
+          p.event_outputs.push_back(std::move(ports));
         }
       } else if (bundle.is_boundary()) {
         if (handle == root_boundary) {
@@ -1372,7 +1381,21 @@ class GraphLowerer {
           }
         }
       } else if (bundle.is_subgraph()) {
+        // Covered by the reverse subgraph pass below. Keeping this arm makes
+        // the mutually exclusive bundle-kind chain explicit.
+        continue;
+      }
+    }
+    std::vector<bool> projected_subgraphs(bundles.size());
+    auto project_subgraph = [&](auto&& self, NodeBundleHandle handle) -> void {
+      auto const& bundle = bundles.bundle(handle);
+      if (!bundle.is_subgraph() || projected_subgraphs[handle]) return;
+      auto& p = out.bundle_projections[handle];
         auto info=bundles.subgraph_info(handle);
+        for (size_t child = info.child_begin;
+             child < info.child_begin + info.child_count; ++child) {
+          if (bundles.bundle(child).is_subgraph()) self(self, child);
+        }
         auto const& boundary=bundles.bundle(info.boundary);
         size_t begin=topology_node_count(), end=begin;
         bool found=false;
@@ -1409,7 +1432,10 @@ class GraphLowerer {
           if(!bp.sample_outputs[i].empty())out.subgraph_input_of_boundary_source.try_emplace(bp.sample_outputs[i].front(),TopologyPortId{node,i});
         for(size_t i=0;i<bp.event_outputs.size();++i)
           if(!bp.event_outputs[i].empty())out.subgraph_event_input_of_boundary_source.try_emplace(bp.event_outputs[i].front(),TopologyPortId{node,i});
-      }
+        projected_subgraphs[handle] = true;
+    };
+    for (NodeBundleHandle handle = 0; handle < bundles.size(); ++handle) {
+      if (bundles.bundle(handle).is_subgraph()) project_subgraph(project_subgraph, handle);
     }
   }
 
@@ -1523,18 +1549,18 @@ class GraphLowerer {
   };
 
   struct SampleLoweringState {
-    size_t authored_topology_node_count = 0;
+    size_t configured_topology_node_count = 0;
     details::ConstexprHashSet<NodeBundlePortId, details::NodeBundlePortIdHash>
         assigned_subgraph_outputs;
-    // Input ports of authored concrete nodes form a dense domain. A bitmap is
+    // Input ports of configured concrete nodes form a dense domain. A bitmap is
     // both the natural representation of this one-pass marking problem and
-    // avoids a flat_set insertion for every authored connection.
+    // avoids a flat_set insertion for every configured connection.
     std::vector<size_t> input_slot_offsets;
     std::vector<bool> bound_target_slots;
     // Public and subgraph-boundary targets are outside that dense domain.
     // They are few, but still count as bound targets for the lowering pass.
     details::ConstexprHashSet<TopologyPortId, TopologyPortIdHash>
-        non_authored_bound_targets;
+        non_configured_bound_targets;
     size_t bound_target_count = 0;
   };
 
@@ -1698,39 +1724,39 @@ class GraphLowerer {
   constexpr SampleLoweringState lower_connected_sample_groups(
       SampleLoweringPlan const& plan) {
     SampleLoweringState state{
-        .authored_topology_node_count = topology_node_count(),
+        .configured_topology_node_count = topology_node_count(),
         .assigned_subgraph_outputs = {},
         .input_slot_offsets = {},
         .bound_target_slots = {},
-        .non_authored_bound_targets = {},
+        .non_configured_bound_targets = {},
         .bound_target_count = 0,
     };
-    state.input_slot_offsets.resize(state.authored_topology_node_count + 1);
+    state.input_slot_offsets.resize(state.configured_topology_node_count + 1);
     size_t input_slot_count = 0;
-    for (size_t node = 0; node < state.authored_topology_node_count; ++node) {
+    for (size_t node = 0; node < state.configured_topology_node_count; ++node) {
       state.input_slot_offsets[node] = input_slot_count;
       if (!topology_is_subgraph_node(node)) {
         input_slot_count +=
             topology_concrete_ports(node).sample_inputs.size();
       }
     }
-    state.input_slot_offsets[state.authored_topology_node_count] =
+    state.input_slot_offsets[state.configured_topology_node_count] =
         input_slot_count;
     state.bound_target_slots.assign(input_slot_count, false);
     auto mark_bound = [&](TopologyPortId target) {
-      if (target.node >= state.authored_topology_node_count ||
+      if (target.node >= state.configured_topology_node_count ||
           topology_is_subgraph_node(target.node)) {
-        if (state.non_authored_bound_targets.insert(target))
+        if (state.non_configured_bound_targets.insert(target))
           ++state.bound_target_count;
         return;
       }
       if (target.port >=
           topology_concrete_ports(target.node).sample_inputs.size()) {
-        details::error("sample target is outside its authored input range");
+        details::error("sample target is outside its configured input range");
       }
       auto const slot = state.input_slot_offsets[target.node] + target.port;
       if (slot >= state.bound_target_slots.size())
-        details::error("sample target is outside its authored input range");
+        details::error("sample target is outside its configured input range");
       if (!state.bound_target_slots[slot]) {
         state.bound_target_slots[slot] = true;
         ++state.bound_target_count;
@@ -1813,13 +1839,13 @@ class GraphLowerer {
     auto mark_bound = [&](TopologyPortId target) {
       auto const slot = state.input_slot_offsets[target.node] + target.port;
       if (slot >= state.bound_target_slots.size())
-        details::error("vacant sample target is outside its authored input range");
+        details::error("vacant sample target is outside its configured input range");
       if (!state.bound_target_slots[slot]) {
         state.bound_target_slots[slot] = true;
         ++state.bound_target_count;
       }
     };
-    for (size_t node = 0; node < state.authored_topology_node_count; ++node) {
+    for (size_t node = 0; node < state.configured_topology_node_count; ++node) {
       if (topology_is_subgraph_node(node)) continue;
       auto const input_count =
           topology_concrete_ports(node).sample_inputs.size();
@@ -1845,7 +1871,7 @@ class GraphLowerer {
       for (size_t output = 0; output < binding.sample_output_sources.size(); ++output)
         if (!state.assigned_subgraph_outputs.contains(
                 {boundary, PortKind::sample, output}))
-          details::error("subgraph sample output has no authored source");
+          details::error("subgraph sample output has no configured source");
     }
   }
 
@@ -1870,23 +1896,23 @@ class GraphLowerer {
         logical, TopologyPortId{node, 0}).value;
   }
 
-  constexpr TopologyPortId materialize_event_source(AuthoredEventConnection const& c) {
-    std::vector<TopologyPortId> endpoints;
+  constexpr TopologyPortId materialize_event_source(ConfiguredEventConnection const& c) {
+    std::vector<TopologyPortId> ports;
     for(auto source:c.sources) {
       NodeBundlePortId const logical{
           source.bundle, PortKind::event, source.port};
       auto const config=bundles.resolve_event_output(logical).config;
       if(config.type!=c.source_type)details::error("event source type changed before lowering");
-      endpoints.push_back(materialize_event_output_port(logical, c.source_type));
+      ports.push_back(materialize_event_output_port(logical, c.source_type));
     }
-    if(endpoints.empty())details::error("event source has no lowered endpoint");
-    if(endpoints.size()==1)return endpoints.front();
+    if(ports.empty())details::error("event source has no lowered endpoint");
+    if(ports.size()==1)return ports.front();
     auto node=append_generated(make_generated_node(
         EventConcatenationNodeSpec{
-            .input_count = endpoints.size(), .type = c.source_type},
+            .input_count = ports.size(), .type = c.source_type},
         "iv::EventConcatenation"));
-    for(size_t i=0;i<endpoints.size();++i)
-      add_event_edge({endpoints[i], {node, i},
+    for(size_t i=0;i<ports.size();++i)
+      add_event_edge({ports[i], {node, i},
                       EventConversionRegistry::instance().plan(
                           c.source_type, c.source_type)});
     return {node,0};
@@ -1912,7 +1938,7 @@ class GraphLowerer {
   constexpr void lower_events() {
     details::ConstexprHashSet<NodeBundlePortId, details::NodeBundlePortIdHash>
         assigned_subgraph_outputs;
-    for(auto const& c:connections.authored_event_connections()) {
+    for(auto const& c:connections.configured_event_connections()) {
       auto source=materialize_event_source(c);
       for(auto target:c.targets) {
         auto config=bundles.resolve_event_input({target.bundle,PortKind::event,target.port}).config;
@@ -1938,12 +1964,12 @@ class GraphLowerer {
       for (size_t output = 0; output < binding.event_output_sources.size(); ++output)
         if (!assigned_subgraph_outputs.contains(
                 {boundary, PortKind::event, output}))
-          details::error("subgraph event output has no authored source");
+          details::error("subgraph event output has no configured source");
     }
   }
 
   constexpr void lower_detach() {
-    if (detach.authored_infos().empty()) return;
+    if (detach.configured_infos().empty()) return;
     // This lookup is meaningful only for detach writers. Building it while
     // every ordinary sample edge is added made no-detach graphs maintain a
     // large, repeatedly shifted flat_map for no consumer.
@@ -1958,7 +1984,7 @@ class GraphLowerer {
       }
       return std::nullopt;
     };
-    for(auto const& info:detach.authored_infos()) {
+    for(auto const& info:detach.configured_infos()) {
       auto writer=out.bundle_projections.at(info.writer_bundle).topology_node;
       if(!writer)details::error("detach writer is not a concrete lowered node");
       auto const source = source_for_target({*writer, 0});
@@ -2166,9 +2192,9 @@ class GraphLowerer {
       if (topology_is_subgraph_node(node_i)) continue;
       runtime_node_indices[node_i] = graph.nodes.size();
       ReflectedNodeDescription description;
-      if (topology_is_authored_concrete_node(node_i)) {
+      if (topology_is_configured_concrete_node(node_i)) {
         description = bundles.materialize_concrete_description(
-            topology_authored_node(node_i).node_bundle_handle);
+            topology_configured_node(node_i).node_bundle_handle);
       } else {
         auto materialized = details::materialize_generated_node(
             topology_generated_node(node_i).generated_node);
@@ -2643,9 +2669,9 @@ public:
         runtime_node_indices(topology_node_count(), GRAPH_ID) {}
 
   static ExecutableGraphIR lower(
-      AuthoredGraph const&, GraphLoweringOptions = {});
+      ConfiguredGraph const&, GraphLoweringOptions = {});
   static size_t profile(
-      AuthoredGraph const&, GraphLoweringOptions,
+      ConfiguredGraph const&, GraphLoweringOptions,
       GraphLoweringProfileStage);
   constexpr void run(bool normalize = true) {
     project_bundles();
@@ -2663,12 +2689,12 @@ public:
 };
 
 inline size_t GraphLowerer::profile(
-    AuthoredGraph const& authored, GraphLoweringOptions options,
+    ConfiguredGraph const& configured, GraphLoweringOptions options,
     GraphLoweringProfileStage stage) {
   details::LoweringWorkspace lowered;
   GraphLowerer lowerer(
-      authored.identity, authored.node_bundles, authored.connections,
-      authored.public_ports, authored.virtual_nodes, authored.detach, lowered,
+      configured.identity, configured.node_bundles, configured.connections,
+      configured.public_ports, configured.virtual_nodes, configured.detach, lowered,
       options.execution_root);
   auto topology_cardinality = [&] {
     return lowerer.out.topology_nodes.size()
@@ -2723,32 +2749,32 @@ inline size_t GraphLowerer::profile(
   auto sample_inputs = options.execution_root
       ? std::vector<InputConfig>{}
       : std::vector<InputConfig>(
-            authored.public_ports.sample_inputs(authored.node_bundles).begin(),
-            authored.public_ports.sample_inputs(authored.node_bundles).end());
+            configured.public_ports.sample_inputs(configured.node_bundles).begin(),
+            configured.public_ports.sample_inputs(configured.node_bundles).end());
   auto sample_outputs = options.execution_root
       ? std::vector<OutputConfig>{}
       : std::vector<OutputConfig>(
-            authored.public_ports.sample_outputs(authored.node_bundles).begin(),
-            authored.public_ports.sample_outputs(authored.node_bundles).end());
+            configured.public_ports.sample_outputs(configured.node_bundles).begin(),
+            configured.public_ports.sample_outputs(configured.node_bundles).end());
 
-  details::expand_lowered_hyperedge_ports(lowerer.graph, authored.identity.value);
+  details::expand_lowered_hyperedge_ports(lowerer.graph, configured.identity.value);
   details::stub_lowered_dangling_ports(
-      lowerer.graph, sample_inputs.size(), authored.identity.value);
+      lowerer.graph, sample_inputs.size(), configured.identity.value);
   details::resolve_lowered_sample_edge_conversions(
       lowerer.graph, sample_inputs, sample_outputs);
   details::validate_lowered_graph(
       lowerer.graph, sample_inputs.size(), sample_outputs.size());
   details::validate_lowered_detached_edges(
-      lowerer.graph, authored.identity.value);
+      lowerer.graph, configured.identity.value);
   return graph_cardinality();
 }
 
 inline ExecutableGraphIR GraphLowerer::lower(
-    AuthoredGraph const& authored, GraphLoweringOptions options) {
+    ConfiguredGraph const& configured, GraphLoweringOptions options) {
   details::LoweringWorkspace lowered;
   GraphLowerer lowerer(
-      authored.identity, authored.node_bundles, authored.connections,
-      authored.public_ports, authored.virtual_nodes, authored.detach, lowered,
+      configured.identity, configured.node_bundles, configured.connections,
+      configured.public_ports, configured.virtual_nodes, configured.detach, lowered,
       options.execution_root);
   lowerer.run();
   lowerer.begin_materialization();
@@ -2762,80 +2788,80 @@ inline ExecutableGraphIR GraphLowerer::lower(
   auto sample_inputs = options.execution_root
       ? std::vector<InputConfig>{}
       : std::vector<InputConfig>(
-            authored.public_ports.sample_inputs(authored.node_bundles).begin(),
-            authored.public_ports.sample_inputs(authored.node_bundles).end());
+            configured.public_ports.sample_inputs(configured.node_bundles).begin(),
+            configured.public_ports.sample_inputs(configured.node_bundles).end());
   auto sample_outputs = options.execution_root
       ? std::vector<OutputConfig>{}
       : std::vector<OutputConfig>(
-            authored.public_ports.sample_outputs(authored.node_bundles).begin(),
-            authored.public_ports.sample_outputs(authored.node_bundles).end());
+            configured.public_ports.sample_outputs(configured.node_bundles).begin(),
+            configured.public_ports.sample_outputs(configured.node_bundles).end());
   auto event_inputs = options.execution_root
       ? std::vector<EventInputConfig>{}
       : std::vector<EventInputConfig>(
-            authored.public_ports.event_inputs(authored.node_bundles).begin(),
-            authored.public_ports.event_inputs(authored.node_bundles).end());
+            configured.public_ports.event_inputs(configured.node_bundles).begin(),
+            configured.public_ports.event_inputs(configured.node_bundles).end());
   auto event_outputs = options.execution_root
       ? std::vector<EventOutputConfig>{}
       : std::vector<EventOutputConfig>(
-            authored.public_ports.event_outputs(authored.node_bundles).begin(),
-            authored.public_ports.event_outputs(authored.node_bundles).end());
+            configured.public_ports.event_outputs(configured.node_bundles).begin(),
+            configured.public_ports.event_outputs(configured.node_bundles).end());
 
-  details::expand_lowered_hyperedge_ports(lowerer.graph, authored.identity.value);
+  details::expand_lowered_hyperedge_ports(lowerer.graph, configured.identity.value);
   details::stub_lowered_dangling_ports(
-      lowerer.graph, sample_inputs.size(), authored.identity.value);
+      lowerer.graph, sample_inputs.size(), configured.identity.value);
   details::resolve_lowered_sample_edge_conversions(
       lowerer.graph, sample_inputs, sample_outputs);
   details::validate_lowered_graph(lowerer.graph, sample_inputs.size(),
                           sample_outputs.size());
-  details::validate_lowered_detached_edges(lowerer.graph, authored.identity.value);
+  details::validate_lowered_detached_edges(lowerer.graph, configured.identity.value);
 
   auto scopes = lowerer.build_lowered_scopes();
   auto virtual_metadata =
       details::build_virtual_metadata(lowerer.graph, scopes);
   auto [virtual_nodes, virtual_node_ids_by_backing_node_id] =
       std::move(virtual_metadata);
-  auto const authored_connectivity =
-      details::build_lowering_authored_connectivity(authored.connections);
+  auto const configured_connectivity =
+      details::build_lowering_configured_connectivity(configured.connections);
   GraphIntrospectionMetadata introspection;
   introspection.virtual_nodes = std::move(virtual_nodes);
   details::apply_virtual_port_metadata(
-      introspection, authored.node_bundles, authored.virtual_nodes,
-      authored_connectivity);
+      introspection, configured.node_bundles, configured.virtual_nodes,
+      configured_connectivity);
 
   auto sample_families =
-      authored.public_ports.sample_input_families(authored.node_bundles);
+      configured.public_ports.sample_input_families(configured.node_bundles);
   for (auto& family : sample_families.families) {
-    family.authored_connected = std::ranges::any_of(
+    family.configured_connected = std::ranges::any_of(
         family.channels, [&](auto const& channel) {
           return std::ranges::any_of(channel.port_ordinals, [&](auto ordinal) {
-            auto channels = authored.node_bundles.sample_output_channels(
-                {authored.public_ports.boundary_handle(), PortKind::sample,
+            auto channels = configured.node_bundles.sample_output_channels(
+                {configured.public_ports.boundary_handle(), PortKind::sample,
                  ordinal});
             return std::ranges::any_of(channels, [&](auto c) {
-              return authored_connectivity.sample_outputs.contains(c);
+              return configured_connectivity.sample_outputs.contains(c);
             });
           });
         });
   }
   introspection.public_sample_inputs = std::move(sample_families.families);
   introspection.public_event_inputs =
-      authored.public_ports.collected_event_inputs(authored.node_bundles);
+      configured.public_ports.collected_event_inputs(configured.node_bundles);
   for (auto& input : introspection.public_event_inputs) {
-    auto ports = authored.node_bundles.event_output_ports(
-        {authored.public_ports.boundary_handle(), PortKind::event,
+    auto ports = configured.node_bundles.event_output_ports(
+        {configured.public_ports.boundary_handle(), PortKind::event,
          input.port_ordinal});
     input.graph_connected = std::ranges::any_of(ports, [&](auto p) {
-      return authored_connectivity.event_outputs.contains(p);
+      return configured_connectivity.event_outputs.contains(p);
     });
   }
   introspection.public_sample_outputs =
-      authored.public_ports.sample_output_families(authored.node_bundles)
+      configured.public_ports.sample_output_families(configured.node_bundles)
           .families;
   introspection.public_event_outputs =
-      authored.public_ports.collected_event_outputs(authored.node_bundles);
+      configured.public_ports.collected_event_outputs(configured.node_bundles);
 
   return {
-      .graph_id = authored.identity.value,
+      .graph_id = configured.identity.value,
       .graph = std::move(lowerer.graph),
       .scopes = std::move(scopes),
       .public_inputs = std::move(sample_inputs),
@@ -2851,11 +2877,11 @@ inline ExecutableGraphIR GraphLowerer::lower(
 namespace details {
 struct GraphLowererTestAccess {
   static constexpr SampleLoweringPassFacts sample_lowering_pass_facts(
-      AuthoredGraph const& authored) {
+      ConfiguredGraph const& configured) {
     LoweringWorkspace workspace;
     GraphLowerer lowerer(
-        authored.identity, authored.node_bundles, authored.connections,
-        authored.public_ports, authored.virtual_nodes, authored.detach,
+        configured.identity, configured.node_bundles, configured.connections,
+        configured.public_ports, configured.virtual_nodes, configured.detach,
         workspace, false);
     lowerer.project_bundles();
     lowerer.index_runtime_sample_bindings();

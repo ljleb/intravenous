@@ -107,6 +107,21 @@ std::string_view lane_query_completion_kind_json(query::LaneQueryCompletionKind 
     return "property";
 }
 
+std::string_view package_build_state_json(IvPackageBuildState state)
+{
+    switch (state) {
+    case IvPackageBuildState::queued:
+        return "queued";
+    case IvPackageBuildState::building:
+        return "building";
+    case IvPackageBuildState::built:
+        return "built";
+    case IvPackageBuildState::failed:
+        return "failed";
+    }
+    return "queued";
+}
+
 SocketRpcJson lane_query_source_range_json(query::LaneQuerySourceRange const &range)
 {
     return SocketRpcJson{
@@ -149,7 +164,7 @@ SocketRpcJson iv_module_instance_json(IvModuleInstanceInfo const &instance)
         {"instanceId", instance.instance_id},
         {"definitionId", instance.definition_id},
         {"displayName", display_name},
-        {"moduleRoot", instance.module_root.generic_string()},
+        {"packageRoot", instance.package_root.generic_string()},
         {"realized", instance.realized},
     };
     if (!instance.module_id.empty()) {
@@ -167,20 +182,25 @@ SocketRpcJson iv_module_instances_json(std::vector<IvModuleInstanceInfo> const &
     return json;
 }
 
-SocketRpcJson iv_module_source_json(IvModuleSourceInfo const &source)
+SocketRpcJson iv_package_json(IvPackageInfo const &package)
 {
     return SocketRpcJson{
-        {"moduleId", source.module_id},
-        {"moduleRoot", source.module_root.generic_string()},
-        {"projectLocal", source.project_local},
+        {"packageId", package.package_id},
+        {"packageRoot", package.package_root.generic_string()},
+        {"projectLocal", package.project_local},
+        {"moduleIds", package.module_ids},
+        {"nodeTypeIds", package.node_type_ids},
+        {"buildState", package_build_state_json(package.build_state)},
+        {"buildMessage", package.build_message},
+        {"publicationMessage", package.publication_message},
     };
 }
 
-SocketRpcJson iv_module_sources_json(std::vector<IvModuleSourceInfo> const &sources)
+SocketRpcJson iv_packages_json(std::vector<IvPackageInfo> const &packages)
 {
     SocketRpcJson json = SocketRpcJson::array();
-    for (auto const &source : sources) {
-        json.push_back(iv_module_source_json(source));
+    for (auto const &package : packages) {
+        json.push_back(iv_package_json(package));
     }
     return json;
 }

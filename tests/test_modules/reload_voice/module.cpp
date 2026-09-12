@@ -11,3 +11,5 @@ void reload_voice(iv::GraphBuilder& g)
     saw("frequency"_P = frequency, "phase_offset"_P = phase_offset);
     g.outputs("out"_P = saw * amplitude);
 }
+
+IV_MODULE("iv.test.reload_voice", reload_voice);

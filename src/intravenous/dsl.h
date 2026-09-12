@@ -4,11 +4,12 @@
 #include "intravenous/basic_nodes/constant.h"
 #include "intravenous/basic_nodes/arithmetic.h"
 #ifdef IV_INTERNAL_TRANSLATION_UNIT
-#error "dsl.h is reserved for user-authored DSL code; include graph/builder.h or module/abi.h from internal code."
+#error "dsl.h is reserved for user-configured DSL code; include graph/builder.h or module/abi.h from internal code."
 #endif
 
 #include <intravenous/channel_ports.h>
 #include <intravenous/module/source_annotations.h>
+#include <intravenous/module/package_definitions.h>
 #include <intravenous/node/module_api.h>
 
 #include <cstddef>
@@ -326,7 +327,7 @@ namespace iv {
         SamplePortRef rhs_sample_port = lift_sample_operand(*g, std::forward<R>(rhs));
 
         if constexpr (std::same_as<ChannelType, void>) {
-            return g->author_runtime_binary_op<Node>(
+            return g->configure_runtime_binary_op<Node>(
                 std::move(lhs_sample_port),
                 std::move(rhs_sample_port),
                 op_name);

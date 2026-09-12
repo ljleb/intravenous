@@ -3,7 +3,7 @@
 #include <intravenous/bridge.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
-#include <authored_graph_test_view.h>
+#include <configured_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/module/builder_session.h>
@@ -12,11 +12,10 @@
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_reload.h>
 #include <intravenous/runtime/iv_module_reload_events.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
@@ -297,21 +296,21 @@ void focused_stereo_saw_module(iv::GraphBuilder& graph)
         "main"_P[stereo::right] = voice[stereo::right] * 0.1f);
 }
 
-iv::AuthoredGraphTestView focused_stereo_saw_authored_graph_value()
+iv::ConfiguredGraphTestView focused_stereo_saw_configured_graph_value()
 {
     iv::GraphBuilder builder;
     focused_stereo_saw_module(builder);
-    return iv::freeze_authored_graph_for_test(std::move(builder).finish());
+    return iv::freeze_configured_graph_for_test(std::move(builder).finish());
 }
 
 iv::WeakTypeErasedNode focused_stereo_saw_root()
 {
-    static const auto view = focused_stereo_saw_authored_graph_value();
+    static const auto view = focused_stereo_saw_configured_graph_value();
     static auto graph = [] {
-        auto authored = iv::thaw_authored_graph_for_test(view);
+        auto configured = iv::thaw_configured_graph_for_test(view);
         auto plan = iv::GraphCompiler::compile(
             iv::GraphLowerer::lower(
-                std::move(authored), {.execution_root = true}));
+                std::move(configured), {.execution_root = true}));
         return iv::RuntimeGraphRoot(std::move(plan.graph));
     }();
     return iv::WeakTypeErasedNode(graph);
@@ -319,10 +318,10 @@ iv::WeakTypeErasedNode focused_stereo_saw_root()
 
 iv::GraphIntrospectionMetadata focused_stereo_saw_metadata()
 {
-    static const auto view = focused_stereo_saw_authored_graph_value();
-    auto authored = iv::thaw_authored_graph_for_test(view);
+    static const auto view = focused_stereo_saw_configured_graph_value();
+    auto configured = iv::thaw_configured_graph_for_test(view);
     return iv::GraphCompiler::compile(
-        iv::GraphLowerer::lower(std::move(authored))).introspection;
+        iv::GraphLowerer::lower(std::move(configured))).introspection;
 }
 }
 
@@ -333,11 +332,16 @@ TEST(Integration, StartupConfigDefinitionsAndIvModuleSourceIntrospectionInitiali
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
+    iv::IvModuleInstances instances;
     iv::IvModuleDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
-    auto iv_module_definitions_iv_module_source_introspection_scope =
-        iv::iv_module_definitions_iv_module_source_introspection_bridge::bind(
+    auto definitions_instances_scope =
+        iv::iv_module_definitions_iv_module_instances_bridge::bind(
             definitions,
+            instances);
+    auto instances_introspection_scope =
+        iv::iv_module_instances_iv_module_source_introspection_bridge::bind(
+            instances,
             introspection);
 
     auto const loaded = iv::test_support::BoundIvModuleSourceIntrospection::load_definition(
@@ -406,9 +410,9 @@ namespace {
     auto const created = instances.create_instance(
         "iv.test.graph_input_module",
         std::filesystem::weakly_canonical(workspace));
-    EXPECT_TRUE(reload.has_dirty_definitions());
+    EXPECT_TRUE(reload.has_dirty_packages());
     EXPECT_FALSE(reload_witness.results.has_value());
-    reload.compile_dirty_definitions();
+    reload.compile_dirty_packages();
     EXPECT_TRUE(reload.has_pending_results());
     reload.apply_pending_results();
 
@@ -494,6 +498,101 @@ namespace {
     EXPECT_TRUE(lane_names.contains("main"));
     EXPECT_TRUE(lane_names.contains("frequency"));
 
+}
+
+TEST(Integration, UnfilteredViewRefreshesWithEveryPublicPortOfNewInstance)
+{
+    auto const workspace = shared_inline_module_workspace(
+        "runtime_integration_public_port_lane_view",
+        R"(#include <intravenous/dsl.h>
+
+namespace {
+    void public_port_module(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto const frequency = g.input<"frequency">(220.0);
+        auto const detune = g.input<"detune">(2.5);
+        g.outputs(
+            "main"_P[stereo::left] = frequency,
+            "main"_P[stereo::right] = detune);
+    }
+}
+)");
+
+    iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
+    auto const startup = startup_config.initialize();
+    iv::Timeline timeline;
+    iv::IvModuleInstances instances;
+    iv::IvModuleDefinitions definitions;
+    iv::IvModuleReload reload(startup);
+    iv::GraphInputLanes graph_input_lanes;
+    iv::LaneFilters lane_filters;
+    iv::LaneViews lane_views;
+
+    auto graph_input_lanes_timeline_scope =
+        iv::graph_input_lanes_timeline_bridge::bind(graph_input_lanes, timeline);
+    auto timeline_lane_filters_scope =
+        iv::timeline_lane_filters_bridge::bind(timeline, lane_filters);
+    auto lane_filters_lane_views_scope =
+        iv::lane_filters_lane_views_bridge::bind(&lane_filters, &lane_views);
+    auto definitions_instances_scope =
+        iv::iv_module_definitions_iv_module_instances_bridge::bind(definitions, instances);
+    auto definitions_reload_scope =
+        iv::iv_module_definitions_iv_module_reload_bridge::bind(definitions, reload);
+    auto instances_graph_input_lanes_scope =
+        iv::iv_module_instances_graph_input_lanes_bridge::bind(
+            instances,
+            graph_input_lanes);
+
+    IntegrationReloadWitness reload_witness;
+    auto reload_witness_scope =
+        integration_reload_witness_bridge::bind(reload, reload_witness);
+    IntegrationLaneViewUpdates updates;
+    auto updates_scope = integration_lane_view_updates_bridge::bind(lane_views, updates);
+
+    // This is the normal client order: open an all-lanes view before the
+    // asynchronous package build publishes its public-port catalog.
+    auto const initially_open = lane_views.open_view(iv::LaneViewRequest{
+        .view_id = intern("public-ports"),
+        .query = iv::LaneQuery{.filter = iv::LaneQueryFilter{}},
+    });
+    EXPECT_EQ(initially_open.lanes.total_lane_count, 0u);
+    updates.updates.clear();
+
+    (void)instances.create_instance(
+        "iv.test.public_port_module",
+        std::filesystem::weakly_canonical(workspace));
+    reload.compile_dirty_packages();
+    reload.apply_pending_results();
+    ASSERT_TRUE(reload_witness.results.has_value());
+    ASSERT_TRUE(reload_witness.results->failed.empty())
+        << reload_witness.results->failed.front().message;
+
+    // Builder acknowledgement applies the public-port batch before the
+    // instance DSP task can depend on it. It must publish one lane per input
+    // family plus one aggregate lane for the stereo output family.
+    auto const refreshed = std::find_if(
+        updates.updates.rbegin(), updates.updates.rend(), [](auto const &update) {
+            return update.view_id == intern("public-ports");
+        });
+    ASSERT_NE(refreshed, updates.updates.rend());
+    EXPECT_EQ(refreshed->lanes.total_lane_count, 3u);
+
+    size_t public_inputs = 0;
+    size_t public_outputs = 0;
+    for (auto const &lane : refreshed->lanes.lanes) {
+        if (lane.metadata.has_unit("dsp_graph.public_input")
+            && lane.metadata.has_unit("dsp_graph.sample")) {
+            ++public_inputs;
+        }
+        if (lane.metadata.has_unit("dsp_graph.public_output")
+            && lane.metadata.has_unit("dsp_graph.sample")) {
+            ++public_outputs;
+            EXPECT_EQ(lane.sample_channel_type, iv::ChannelTypeId::stereo);
+        }
+    }
+    EXPECT_EQ(public_inputs, 2u);
+    EXPECT_EQ(public_outputs, 1u);
 }
 
 TEST(Integration, SampleInputMutationsFlowThroughLiveSnapshots)
@@ -708,7 +807,7 @@ TEST(Integration, StereoSawModulePublishesIntoItsAutomaticTimelineLane)
         "iv.test.focused_stereo_saw");
 }
 
-TEST(Integration, LoadedModuleDsoPublishesIntoItsAutomaticTimelineLane)
+TEST(Integration, LoadedIvPackagePublishesIntoItsAutomaticTimelineLane)
 {
     auto const workspace = read_only_module_fixture_workspace("local_cmake");
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});

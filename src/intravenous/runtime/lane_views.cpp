@@ -113,7 +113,7 @@ namespace iv {
             std::unordered_map<uint64_t, std::vector<LaneInputInfo>> inputs;
             snapshot->visit_lanes(
                 requested_output_lanes,
-                [&domains, &sample_channel_types, &output_kinds, &inputs](LaneId lane, TypeErasedLaneNode const &node, LaneOutputConfig const &output,
+                [&domains, &sample_channel_types, &output_kinds, &inputs](LaneId lane, std::shared_ptr<TypeErasedLaneNode const> const &node, LaneOutputConfig const &output,
                            std::optional<ChannelTypeId> sample_channel_type, std::vector<LaneInputConnection> const &,
                            std::vector<std::string> const &) {
                     domains[lane.value] = lane_domain(output);
@@ -130,10 +130,10 @@ namespace iv {
                             });
                         }
                     };
-                    append_inputs(node.compiled_sample_inputs(), LanePortDomain::compiled, PortKind::sample);
-                    append_inputs(node.compiled_event_inputs(), LanePortDomain::compiled, PortKind::event);
-                    append_inputs(node.realtime_sample_inputs(), LanePortDomain::realtime, PortKind::sample);
-                    append_inputs(node.realtime_event_inputs(), LanePortDomain::realtime, PortKind::event);
+                    append_inputs(node->compiled_sample_inputs(), LanePortDomain::compiled, PortKind::sample);
+                    append_inputs(node->compiled_event_inputs(), LanePortDomain::compiled, PortKind::event);
+                    append_inputs(node->realtime_sample_inputs(), LanePortDomain::realtime, PortKind::sample);
+                    append_inputs(node->realtime_event_inputs(), LanePortDomain::realtime, PortKind::event);
                 });
             for (auto &lane : result.lanes) {
                 if (auto const it = domains.find(lane.runtime_lane.value); it != domains.end()) {

@@ -1,1 +1,8 @@
-// Deliberately empty: duplicate module-id tests fail during manifest resolution.
+#include <intravenous/dsl.h>
+
+void duplicate_one(iv::GraphBuilder& builder)
+{
+    builder.outputs();
+}
+
+IV_MODULE("iv.test.duplicate", duplicate_one);

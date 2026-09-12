@@ -17,7 +17,6 @@
 #include <vector>
 
 namespace iv {
-class IvModuleSources;
 class ProjectAckBuilder;
 class ProjectPersistenceBuilder;
 class ProjectStringBuilder;
@@ -29,7 +28,7 @@ struct GetIvModuleInstancesRequest;
 
 struct IvModuleRequiredDefinition {
     std::string definition_id{};
-    std::filesystem::path module_root{};
+    std::filesystem::path package_root{};
 };
 
 struct IvModuleRequiredDefinitionsChanged {
@@ -42,7 +41,7 @@ struct IvModuleInstance {
     std::string instance_id{};
     std::string definition_id{};
     std::string display_name{};
-    std::filesystem::path module_root{};
+    std::filesystem::path package_root{};
     std::string module_id{};
     GraphIntrospectionMetadata introspection{};
     std::shared_ptr<GraphRuntimeBindings> runtime_bindings =
@@ -59,8 +58,8 @@ struct IvModuleInstancesChanged {
 struct IvModuleInstanceBuilderRef {
     IvModuleInstance const *instance = nullptr;
     WeakTypeErasedNode root{};
-    // Keeps the binary generation owning the root graph and callbacks live
-    // until consumers have replaced and released their previous execution graph.
+    // Keeps the package revision owning the root graph and callbacks live until
+    // consumers have replaced and released their previous execution graph.
     std::vector<ModuleRef> module_refs {};
     std::vector<LaneId> prerequisite_lanes {};
     std::optional<size_t> default_silence_ttl_samples {};
@@ -86,23 +85,39 @@ private:
         std::string instance_id{};
         std::string definition_id{};
         std::string display_name{};
-        std::filesystem::path module_root{};
+        std::filesystem::path package_root{};
         std::optional<size_t> default_silence_ttl_samples{};
     };
 
     mutable std::mutex mutex;
     std::unordered_map<std::string, DesiredInstance> desired_instances_by_id;
     std::unordered_map<std::string, IvModuleRequiredDefinition> required_definitions_by_id;
+    // Local snapshot of published definitions. This is updated only by the
+    // definitions-changed event, so instance creation never synchronously queries
+    // another app module or creates a return edge in the same event propagation.
+    std::unordered_map<std::string, IvModuleDefinition> definitions_by_id;
     std::unordered_map<std::string, IvModuleInstance> realized_instances_by_id;
     std::unordered_map<std::string, std::vector<ModuleRef>> realized_module_refs_by_id;
     std::unordered_map<std::string, WeakTypeErasedNode> realized_roots_by_id;
+
+    bool realize_instance_locked(
+        std::string const& instance_id,
+        IvModuleDefinition const& definition,
+        bool update_existing,
+        IvModuleInstancesChanged& instance_diff,
+        IvModuleInstanceBuildersChanged& builders_diff);
+    void publish_instance_changes(
+        IvModuleInstancesChanged instance_diff,
+        IvModuleInstanceBuildersChanged builders_diff,
+        bool list_changed,
+        IvModuleDefinitionsChanged const* definitions = nullptr);
 
 public:
     IvModuleInstances() = default;
 
     std::string create_instance(
         std::string_view definition_id,
-        std::filesystem::path module_root,
+        std::filesystem::path package_root,
         std::optional<std::string> instance_id = std::nullopt,
         std::optional<std::string> display_name = std::nullopt);
     void remove_instance(std::string const &instance_id);
@@ -110,11 +125,10 @@ public:
         std::string const &instance_id,
         size_t default_silence_ttl_samples);
     void update_instances(std::vector<Update> updates);
-    void refresh_source_roots(IvModuleSources const &sources);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
 
-    void handle_iv_module_definitions_changed(
-        IvModuleDefinitionsChanged const &diff);
+    void handle_iv_package_definitions_changed(
+        IvPackageDefinitionsChanged const &diff);
     void handle_project_create_iv_module_instance(
         ProjectCreateIvModuleInstanceRequest const &request,
         ProjectStringBuilder &builder);

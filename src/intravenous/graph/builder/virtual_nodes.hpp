@@ -96,7 +96,7 @@ public:
       size_t node_bundle_offset);
 
   constexpr std::vector<VirtualNodeRecord> const& records() const;
-  static constexpr GraphBuilderVirtualNodes from_authored_records(
+  static constexpr GraphBuilderVirtualNodes from_configured_records(
       std::span<VirtualNodeRecord const>);
   constexpr GraphBuilderVirtualPorts ports(
       GraphBuilderNodeBundles const&) const;
@@ -312,7 +312,7 @@ GraphBuilderVirtualNodes::records() const {
   return _records;
 }
 constexpr GraphBuilderVirtualNodes
-GraphBuilderVirtualNodes::from_authored_records(
+GraphBuilderVirtualNodes::from_configured_records(
     std::span<VirtualNodeRecord const> records) {
   GraphBuilderVirtualNodes result;
   result._records.assign(records.begin(), records.end());

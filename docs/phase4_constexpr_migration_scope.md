@@ -22,7 +22,7 @@ graph root is the only runtime `TypeErasedNode` boundary.
 
 `GraphBuilder::node<T>(args...)` constructs the structural `T` value during
 constant evaluation and reflects it immediately. It does not store, serialize,
-reconstruct, register, or runtime-materialize the authored node.
+reconstruct, register, or runtime-materialize the configured node.
 
 The focused GCC 16 prototype established this shape:
 
@@ -37,14 +37,14 @@ constexpr auto GraphBuilder::node(Args&&... args)
         // retain their ordinary runtime function pointers.
         // Append the existing semantic node record and return its NodeRef.
     } else {
-        // GraphBuilder has no runtime authoring path after Phase 4.
+        // GraphBuilder has no runtime configuration path after Phase 4.
     }
 }
 ```
 
 The `if consteval` supplies the immediate context required by
-`reflect_constant` throughout graph authoring. Module entries are `consteval`,
-so authored graph construction is never runtime-callable. Do not replace this
+`reflect_constant` throughout graph configuration. Module entries are `consteval`,
+so configured graph construction is never runtime-callable. Do not replace this
 with a byte representation, erased object pointer, node-type registry, or
 deferred reflection pass.
 
@@ -56,7 +56,7 @@ by the existing compiler/runtime interfaces.
 
 ## Node model
 
-- Authored node types must satisfy the actual `reflect_constant` requirements:
+- Configured node types must satisfy the actual `reflect_constant` requirements:
   structural and copy constructible. Do not impose unrelated POD or trivial
   default-construction constraints.
 - Immutable node configuration is constructor state stored in the reflected
@@ -84,15 +84,15 @@ There is one implementation of each graph responsibility:
 4. Replace `NodeMaterialization` in place with the immediate reflected
    exact-value operations. Do not create a parallel node representation.
 5. Keep transient `std::vector` and other standard containers throughout
-   authoring, lowering, compilation, and metadata construction.
+   configuration, lowering, compilation, and metadata construction.
 6. Freeze only the final compiled graph and metadata that leave constant
    evaluation. Use the C++26 `std::define_static_array`,
    `std::define_static_string`, and `std::define_static_object` facilities to
    promote variable-length collections and objects, then return views into
    that static storage. Generated nodes such as `ConnectionNode` receive their
    structural static views at this final boundary and use the same exact-value
-   reflection path as authored nodes. No `AuthoredSizes` pass is required
-   merely because authored storage is transient.
+   reflection path as configured nodes. No `ConfiguredSizes` pass is required
+   merely because configured storage is transient.
 7. Expand execution using compile-time-known indices with the smallest changes
    to the existing `Graph`, `GraphSccWrapper`, and `GraphNodeWrapper`
    responsibilities. Preserve the existing graph compiler.
@@ -106,7 +106,7 @@ Intermediate revisions may fail to compile; fix the direct destination path.
 ## Runtime and ABI boundary
 
 The eventual compiled module ABI is the generated translation unit's immutable
-metadata plus `create()`. Module-authored code sees only GraphBuilder and does
+metadata plus `create()`. Module-configured code sees only GraphBuilder and does
 not implement ABI details. Change the loader/runtime only when the completed
 compiled result reaches that boundary, and keep any adapter as narrow as the
 existing consumers permit.
@@ -124,12 +124,14 @@ operation may occur in `tick_block()` or another audio-thread execution path.
 
 - Project and module compilation use GCC 16 or newer with C++26 reflection.
 - A GCC plugin annotates source identities and token spans in the same parse
-  that compiles the module. It inserts void annotation calls after authored
+  that compiles the module. It inserts void annotation calls after configured
   statements in both the saved function body and GCC's constexpr body.
 - The plugin owns only information unavailable through C++ reflection. It must
   not register node types or `Node::State` structure.
-- Module imports are generated forwarding headers to the original authored
-  files. There is no rewritten source tree and no separate Clang parse.
+- Registered IV definitions use the generic `g.node<"stable.id">()` configuration
+  API. They do not use generated forwarding headers or include provider
+  implementation source; optional generated static-interface metadata remains
+  a later optimization rather than a bootstrap requirement.
 - Do not use `-fimplicit-constexpr`; annotate every required function.
 - Do not add compiler-selection macros or transitional conditional paths.
 - Validate uncertain C++ or reflection behavior with one focused prototype
@@ -149,9 +151,9 @@ such a branch by extending this document after the fact.
 
 Phase 4 is complete only when:
 
-- the existing module authoring, lowering, compiler, and metadata construction
+- the existing module configuration, lowering, compiler, and metadata construction
   execute at compile time;
-- authored nodes are reflected immediately into exact-value NTTP wrappers;
+- configured nodes are reflected immediately into exact-value NTTP wrappers;
 - only one builder/compiler implementation remains;
 - only the final compiled result uses fixed persistent storage;
 - internal node execution is statically expanded without per-node type erasure;

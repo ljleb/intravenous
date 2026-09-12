@@ -20,7 +20,7 @@ Measures a cold IV-module build followed by a source-only hot reload in an
 isolated retained workspace.
 
 Options:
-  --module PATH        Module directory or iv_module.json to snapshot.
+  --module PATH        Source directory or iv_package.json to snapshot.
                        May be specified more than once.
   --simple-sine-modules
                        Profile every module in projects/simple_sine/modules.
@@ -86,7 +86,7 @@ while (($#)); do
 done
 
 if (( simple_sine_modules )); then
-    for manifest in "$repo_root"/projects/simple_sine/modules/*/iv_module.json; do
+    for manifest in "$repo_root"/projects/simple_sine/modules/*/iv_package.json; do
         [[ -f "$manifest" ]] || continue
         module_paths+=("${manifest#"$repo_root"/}")
     done
@@ -154,7 +154,7 @@ fi
 for module_index in "${!module_paths[@]}"; do
     module_path="${module_paths[module_index]}"
     module_name="${module_path%/}"
-    if [[ "${module_name##*/}" == "iv_module.json" ]]; then
+    if [[ "${module_name##*/}" == "iv_package.json" ]]; then
         module_name="${module_name%/*}"
     fi
     module_name="${module_name##*/}"

@@ -5,8 +5,8 @@
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/audio_device_lanes.h>
 #include <intravenous/runtime/audio_device_lanes_iv_module_instances_execution_bridge.h>
-#include <intravenous/runtime/authored_lanes.h>
-#include <intravenous/runtime/authored_lanes_timeline_bridge.h>
+#include <intravenous/runtime/configured_lanes.h>
+#include <intravenous/runtime/configured_lanes_timeline_bridge.h>
 #include <intravenous/runtime/audio_device_lanes_timeline_bridge.h>
 #include <intravenous/runtime/audio_device_lanes_timeline_execution_bridge.h>
 #include <intravenous/runtime/graph_input_lanes.h>
@@ -16,7 +16,6 @@
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
 #include <intravenous/runtime/iv_module_instances_execution_task_runner_bridge.h>
@@ -24,6 +23,7 @@
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_reload.h>
+#include <intravenous/runtime/iv_package_reload_service.h>
 #include <intravenous/runtime/lane_filters.h>
 #include <intravenous/runtime/lane_filters_lane_views_bridge.h>
 #include <intravenous/runtime/lane_query_schema_service.h>
@@ -33,7 +33,7 @@
 #include <intravenous/runtime/lanes_visualization_timeline_bridge.h>
 #include <intravenous/runtime/task_runner_lanes_visualization_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
-#include <intravenous/runtime/iv_module_sources.h>
+#include <intravenous/runtime/iv_packages.h>
 #include <intravenous/module/search_paths.h>
 #include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
@@ -41,11 +41,9 @@
 #include <intravenous/runtime/project_persistence_project_autosave_bridge.h>
 #include <intravenous/runtime/project_persistence_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_graph_input_lanes_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_sources_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_reload_bridge.h>
-#include <intravenous/runtime/project_persistence_authored_lanes_bridge.h>
+#include <intravenous/runtime/project_persistence_configured_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_execution_bridge.h>
 #include <intravenous/runtime/server_options.h>
@@ -54,8 +52,8 @@
 #include <intravenous/runtime/socket_rpc_lane_query_completion_bridge.h>
 #include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
-#include <intravenous/runtime/socket_rpc_iv_module_sources_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_socket_rpc_notification_bridge.h>
+#include <intravenous/runtime/socket_rpc_iv_packages_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_socket_rpc_packages_bridge.h>
 #include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_autosave_bridge.h>
@@ -66,7 +64,6 @@
 #include <intravenous/runtime/task_runner.h>
 #include <intravenous/runtime/task_runner_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/task_runner_graph_input_lanes_bridge.h>
-#include <intravenous/runtime/task_runner_iv_module_reload_bridge.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_execution.h>
 #include <intravenous/runtime/timeline_execution_iv_module_instances_execution_bridge.h>
@@ -105,51 +102,6 @@ namespace iv {
 
             ScopedShutdownCallback(ScopedShutdownCallback const&) = delete;
             ScopedShutdownCallback& operator=(ScopedShutdownCallback const&) = delete;
-        };
-
-        class IvModuleReloadWatcherService {
-            IvModuleReload* reload_ = nullptr;
-            IvModuleInstances* instances_ = nullptr;
-            IvModuleSources* sources_ = nullptr;
-            std::optional<std::jthread> thread_ {};
-
-        public:
-            explicit IvModuleReloadWatcherService(
-                IvModuleReload& reload,
-                IvModuleInstances& instances,
-                IvModuleSources& sources)
-                : reload_(&reload)
-                , instances_(&instances)
-                , sources_(&sources)
-            {
-            }
-
-            void start()
-            {
-                if (thread_.has_value()) {
-                    return;
-                }
-
-                thread_.emplace([this](std::stop_token stop_token) {
-                    while (!stop_token.stop_requested()) {
-                        instances_->refresh_source_roots(*sources_);
-                        if (reload_->has_dirty_definitions()) {
-                            reload_->compile_dirty_definitions();
-                        } else {
-                            reload_->reload_changed_definitions();
-                        }
-                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    }
-                });
-            }
-
-            void request_shutdown()
-            {
-                if (thread_.has_value()) {
-                    thread_->request_stop();
-                }
-            }
-
         };
 
         class ProjectAutosaveService {
@@ -249,9 +201,12 @@ namespace iv {
             IvModuleDefinitions iv_module_definitions;
             IvModuleReload iv_module_reload(startup);
             GraphInputLanes graph_input_lanes;
-            AuthoredLanes authored_lanes(LaneCreationContext{.sample_rate = startup.execution.sample_rate});
-            TasksRunner task_runner;
+            ConfiguredLanes configured_lanes(LaneCreationContext{.sample_rate = startup.execution.sample_rate});
             startup_log("constructing runtime modules");
+            // TasksRunner owns worker threads whose task callbacks target the
+            // execution services below. Construct all of those targets first:
+            // reverse destruction then stops and joins the runner before any
+            // callback target is destroyed.
             TimelineExecution timeline_execution(
                 startup.execution.block_size,
                 startup.execution.compiled_sample_cache_chunk_size_multiplier,
@@ -260,6 +215,7 @@ namespace iv {
                 startup.execution.block_size,
                 false,
                 startup.execution.sample_rate);
+            TasksRunner task_runner;
             AudioDeviceLanes audio_device_lanes(
                 startup.execution.sample_rate,
                 startup.execution.block_size,
@@ -290,9 +246,11 @@ namespace iv {
                 std::chrono::milliseconds(33),
                 startup.execution.block_size);
             IvModuleSourceIntrospection introspection;
-            IvModuleSources iv_module_sources(
+            auto const package_search_roots = parse_search_path_env();
+            IvPackages iv_packages(
                 startup.workspace_root,
-                parse_search_path_env());
+                iv_module_definitions,
+                iv_module_reload);
 
             // Construct the complete runtime first.  Binding is a separate
             // phase: constructors must not observe a partially connected
@@ -306,12 +264,13 @@ namespace iv {
                 project_persistence);
             startup_log("constructing socket rpc server");
             SocketRpcServer server(options.workspace_root, options.rpc_fd);
-            IvModuleReloadWatcherService iv_module_reload_watcher(
+            IvPackageReloadService iv_package_reload_service(
                 iv_module_reload,
-                iv_module_instances,
-                iv_module_sources);
+                iv_module_definitions,
+                startup.workspace_root,
+                package_search_roots);
             std::function<void()> shutdown = [&]() {
-                iv_module_reload_watcher.request_shutdown();
+                iv_package_reload_service.request_shutdown();
                 project_autosave_service.request_shutdown();
                 server.request_shutdown();
             };
@@ -343,8 +302,8 @@ namespace iv {
                 timeline_execution_task_runner_bridge::bind(timeline_execution, task_runner);
             auto timeline_timeline_execution_scope =
                 timeline_timeline_execution_bridge::bind(timeline, timeline_execution);
-            auto authored_lanes_timeline_scope =
-                authored_lanes_timeline_bridge::bind(authored_lanes, timeline);
+            auto configured_lanes_timeline_scope =
+                configured_lanes_timeline_bridge::bind(configured_lanes, timeline);
             auto iv_module_definitions_iv_module_instances_scope =
                 iv_module_definitions_iv_module_instances_bridge::bind(
                     iv_module_definitions,
@@ -369,20 +328,10 @@ namespace iv {
                 timeline_execution_iv_module_instances_execution_bridge::bind(
                     timeline_execution,
                     iv_module_instances_execution);
-            auto iv_module_instances_iv_module_sources_scope =
-                iv_module_instances_iv_module_sources_bridge::bind(
-                    iv_module_instances,
-                    iv_module_sources);
             auto iv_module_definitions_iv_module_reload_scope =
                 iv_module_definitions_iv_module_reload_bridge::bind(
                     iv_module_definitions,
                     iv_module_reload);
-            auto task_runner_iv_module_reload_scope =
-                task_runner_iv_module_reload_bridge::bind(task_runner, iv_module_reload);
-            auto iv_module_definitions_iv_module_source_introspection_scope =
-                iv_module_definitions_iv_module_source_introspection_bridge::bind(
-                    iv_module_definitions,
-                    introspection);
             auto iv_module_instances_iv_module_source_introspection_scope =
                 iv_module_instances_iv_module_source_introspection_bridge::bind(
                     iv_module_instances,
@@ -423,10 +372,10 @@ namespace iv {
                 project_persistence_timeline_bridge::bind(
                     project_persistence,
                     timeline);
-            auto project_persistence_authored_lanes_scope =
-                project_persistence_authored_lanes_bridge::bind(
+            auto project_persistence_configured_lanes_scope =
+                project_persistence_configured_lanes_bridge::bind(
                     project_persistence,
-                    authored_lanes);
+                    configured_lanes);
             auto project_persistence_iv_module_instances_scope =
                 project_persistence_iv_module_instances_bridge::bind(
                     project_persistence,
@@ -460,18 +409,18 @@ namespace iv {
                 socket_rpc_iv_module_instances_bridge::bind(
                     server,
                     iv_module_instances);
-            auto socket_rpc_iv_module_sources_scope =
-                socket_rpc_iv_module_sources_bridge::bind(
+            auto socket_rpc_iv_packages_scope =
+                socket_rpc_iv_packages_bridge::bind(
                     server,
-                    iv_module_sources);
+                    iv_packages);
             auto socket_rpc_timeline_execution_scope =
                 socket_rpc_timeline_execution_bridge::bind(server, timeline_execution);
             auto socket_rpc_iv_module_source_introspection_scope =
                 socket_rpc_iv_module_source_introspection_bridge::bind(
                     server,
                     introspection);
-            auto iv_module_definitions_socket_rpc_notification_scope =
-                iv_module_definitions_socket_rpc_notification_bridge::bind(
+            auto iv_module_definitions_socket_rpc_packages_scope =
+                iv_module_definitions_socket_rpc_packages_bridge::bind(
                     iv_module_definitions,
                     server);
             auto lanes_visualization_socket_rpc_notification_scope =
@@ -502,11 +451,11 @@ namespace iv {
                 throw std::runtime_error("socket rpc server did not deliver server.ready");
             }
             startup_log("starting iv module reload watcher");
-            iv_module_reload_watcher.start();
+            iv_package_reload_service.start();
             std::cout << "Intravenous server connected on rpc fd " << options.rpc_fd << '\n';
             server.wait();
             startup_log("socket rpc server stopped");
-            iv_module_reload_watcher.request_shutdown();
+            iv_package_reload_service.request_shutdown();
             project_autosave_service.stop();
             audio_device_lanes.request_shutdown();
             return 0;

@@ -119,7 +119,7 @@ inline void append_graph_input_port_descriptors(
                 .port_type = port.type,
                 .sample_channel_type = port.sample_channel_type,
             },
-            .authored_connected = port.connectivity != VirtualPortConnectivity::disconnected,
+            .configured_connected = port.connectivity != VirtualPortConnectivity::disconnected,
             .default_value = port.default_value,
             .min = port.min,
             .max = port.max,

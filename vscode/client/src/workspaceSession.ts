@@ -13,7 +13,7 @@ import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { autoDetectedServerDirectoriesForWorkspaceRoot } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc } from "./workspaceRpc";
-import { ModuleInstanceInfo, ModuleSourceInfo, ModulesControlMessage } from "./modulesViewProvider";
+import { ModuleInstanceInfo, IvPackageInfo, ModulesControlMessage } from "./modulesViewProvider";
 
 declare const __INTRAVENOUS_DEFAULT_DIR__: string;
 
@@ -25,7 +25,7 @@ type LiveGraphProviderLike = {
     setNodes(nodes: VirtualNode[]): void;
     upsertNodes(nodes: VirtualNode[], replaceInstanceIds?: string[]): void;
     setSelectedInstanceId(instanceId: string | null): void;
-    setModuleSource(moduleRoot: string | null): void;
+    setPackageRoot(packageRoot: string | null): void;
 };
 
 type LaneProviderLike = {
@@ -71,14 +71,14 @@ type LaneQuerySchemaChangeNotification = {
 };
 
 type ModulesProviderLike = {
-    setState(sources: ModuleSourceInfo[], instances: ModuleInstanceInfo[], selectedInstanceId: string | null): void;
+    setState(packages: IvPackageInfo[], instances: ModuleInstanceInfo[], selectedInstanceId: string | null): void;
 };
 
 type ServerStatusNotification = {
     level?: string;
     code?: string;
     message?: string;
-    moduleRoot?: string;
+    packageRoot?: string;
     deletedNodeIds?: string[];
 };
 
@@ -104,7 +104,7 @@ type IvModuleInstanceInfo = {
     definitionId?: string;
     displayName?: string;
     moduleId?: string;
-    moduleRoot?: string;
+    packageRoot?: string;
     realized?: boolean;
 };
 
@@ -153,10 +153,10 @@ export class WorkspaceSession {
     }> = [];
     private ivModuleInstances: IvModuleInstanceInfo[] = [];
     private projectModuleInstances: IvModuleInstanceInfo[] = [];
-    private ivModuleSources: ModuleSourceInfo[] = [];
+    private ivPackages: IvPackageInfo[] = [];
     private selectedInstanceId: string | null = null;
     private activeSourceFilePath: string | null = null;
-    private activeModuleRoot: string | null = null;
+    private activePackageRoot: string | null = null;
     private readonly selectedInstanceIdBySourceFile = new Map<string, string>();
     private clangdRestartTimer: NodeJS.Timeout | null = null;
     private laneQuerySchema: LaneQuerySchemaSnapshot | null = null;
@@ -288,12 +288,14 @@ export class WorkspaceSession {
                 this.resetCapturedServerLogs();
                 this.logServerState("Intravenous rebuild started", params);
                 this.showRebuildStatus(params);
+                await this.refreshModulesPanel();
                 return;
             }
 
             if (params.code === "rebuildFinished") {
                 this.logServerState("Intravenous rebuild finished", params);
                 this.rebuildStatusBar.hide();
+                await this.refreshModulesPanel();
                 return;
             }
 
@@ -301,10 +303,15 @@ export class WorkspaceSession {
                 this.logServerState("Intravenous rebuild failed", params);
                 this.logCapturedServerFailureContext();
                 this.showRebuildFailure(params);
+                await this.refreshModulesPanel();
                 return;
             }
 
             this.logServerState("Intravenous status", params);
+        });
+
+        this.notifications.subscribe<Record<string, never>>("ivPackages.updated", async () => {
+            await this.refreshModulesPanel();
         });
     }
 
@@ -370,22 +377,42 @@ export class WorkspaceSession {
             !!candidate && typeof candidate === "object");
     }
 
-    private parseIvModuleSource(payload: unknown): ModuleSourceInfo | null {
+    private parseIvPackage(payload: unknown): IvPackageInfo | null {
         if (!payload || typeof payload !== "object") return null;
-        const source = payload as Record<string, unknown>;
-        if (typeof source.moduleId !== "string" || typeof source.moduleRoot !== "string") return null;
-        return { moduleId: source.moduleId, moduleRoot: source.moduleRoot, projectLocal: source.projectLocal === true };
+        const packageInfo = payload as Record<string, unknown>;
+        if (typeof packageInfo.packageId !== "string" || typeof packageInfo.packageRoot !== "string") return null;
+        const stringArray = (value: unknown): string[] => Array.isArray(value)
+            ? value.filter((item): item is string => typeof item === "string")
+            : [];
+        return {
+            packageId: packageInfo.packageId,
+            moduleIds: stringArray(packageInfo.moduleIds),
+            nodeTypeIds: stringArray(packageInfo.nodeTypeIds),
+            buildState: packageInfo.buildState === "building"
+                || packageInfo.buildState === "built"
+                || packageInfo.buildState === "failed"
+                ? packageInfo.buildState
+                : "queued",
+            buildMessage: typeof packageInfo.buildMessage === "string"
+                ? packageInfo.buildMessage
+                : "",
+            publicationMessage: typeof packageInfo.publicationMessage === "string"
+                ? packageInfo.publicationMessage
+                : "",
+            packageRoot: packageInfo.packageRoot,
+            projectLocal: packageInfo.projectLocal === true,
+        };
     }
 
-    private parseIvModuleSources(payload: unknown): ModuleSourceInfo[] {
+    private parseIvPackages(payload: unknown): IvPackageInfo[] {
         if (!Array.isArray(payload)) return [];
-        return payload.map((source) => this.parseIvModuleSource(source))
-            .filter((source): source is ModuleSourceInfo => source !== null);
+        return payload.map((packageInfo) => this.parseIvPackage(packageInfo))
+            .filter((packageInfo): packageInfo is IvPackageInfo => packageInfo !== null);
     }
 
     private modulePanelInstances(): ModuleInstanceInfo[] {
         return this.projectModuleInstances.flatMap((instance) => {
-            if (typeof instance.instanceId !== "string" || typeof instance.definitionId !== "string" || typeof instance.moduleRoot !== "string") return [];
+            if (typeof instance.instanceId !== "string" || typeof instance.definitionId !== "string" || typeof instance.packageRoot !== "string") return [];
             return [{
                 instanceId: instance.instanceId,
                 definitionId: instance.definitionId,
@@ -393,14 +420,14 @@ export class WorkspaceSession {
                     ? instance.displayName
                     : instance.definitionId,
                 moduleId: instance.moduleId,
-                moduleRoot: instance.moduleRoot,
+                packageRoot: instance.packageRoot,
                 realized: instance.realized === true,
             }];
         });
     }
 
     private refreshModulesPanelState(): void {
-        this.modulesProvider.setState(this.ivModuleSources, this.modulePanelInstances(), this.selectedInstanceId);
+        this.modulesProvider.setState(this.ivPackages, this.modulePanelInstances(), this.selectedInstanceId);
     }
 
     private refreshLaneInstanceNames(): void {
@@ -637,7 +664,7 @@ export class WorkspaceSession {
                 id: typeof candidate.id === "string" ? candidate.id : undefined,
                 instanceId: typeof candidate.instanceId === "string" ? candidate.instanceId : undefined,
                 kind: typeof candidate.kind === "string" ? candidate.kind : undefined,
-                sourceIdentity: typeof candidate.sourceIdentity === "string" ? candidate.sourceIdentity : undefined,
+                packageIdentity: typeof candidate.packageIdentity === "string" ? candidate.packageIdentity : undefined,
                 typeIdentity: typeof candidate.typeIdentity === "string" ? candidate.typeIdentity : undefined,
                 sourceSpans,
                 sampleInputs: Array.isArray(candidate.sampleInputs)
@@ -823,12 +850,12 @@ export class WorkspaceSession {
             return;
 
         case "createInstance":
-            if (!(await this.ensureReady()) || !this.rpc || !this.activeModuleRoot) {
+            if (!(await this.ensureReady()) || !this.rpc || !this.activePackageRoot) {
                 return;
             }
             {
                 const created = await this.rpc.createIvModuleInstance(
-                    await this.moduleIdForRoot(this.activeModuleRoot),
+                    await this.moduleIdForPackageRoot(this.activePackageRoot),
                 );
                 this.selectedInstanceId = created.instanceId;
                 this.rememberSelectedInstance();
@@ -901,11 +928,11 @@ export class WorkspaceSession {
 
     async refreshModulesPanel(): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) return;
-        const [sources, instances] = await Promise.all([
-            this.rpc.getIvModuleSources(),
+        const [packages, instances] = await Promise.all([
+            this.rpc.getIvPackages(),
             this.rpc.getIvModuleInstances(),
         ]);
-        this.ivModuleSources = this.parseIvModuleSources(sources.sources);
+        this.ivPackages = this.parseIvPackages(packages.packages);
         this.projectModuleInstances = this.parseIvModuleInstances(instances.instances);
         this.refreshLaneInstanceNames();
         this.refreshModulesPanelState();
@@ -930,17 +957,17 @@ export class WorkspaceSession {
         }
         if (!(await this.ensureReady()) || !this.rpc) return;
         switch (message.type) {
-        case "createSource": {
-            const result = await this.rpc.createIvModuleSource(message.name);
-            const source = this.parseIvModuleSource(result.source);
+        case "createPackage": {
+            const result = await this.rpc.createIvPackage(message.name);
+            const packageInfo = this.parseIvPackage(result.package);
             await this.refreshModulesPanel();
-            if (source) await this.revealModuleSource(source.moduleRoot);
+            if (packageInfo) await this.revealPackageSource(packageInfo.packageRoot);
             return;
         }
         case "instantiate":
         case "duplicate": {
             const created = await this.rpc.createIvModuleInstance(
-                await this.moduleIdForRoot(message.moduleRoot),
+                message.moduleId,
             );
             this.selectedInstanceId = created.instanceId;
             await this.refreshModulesPanel();
@@ -949,7 +976,7 @@ export class WorkspaceSession {
         case "open":
             this.selectedInstanceId = message.instanceId;
             this.syncSelectedInstanceViews();
-            await this.revealModuleSource(message.moduleRoot);
+            await this.revealPackageSource(message.packageRoot);
             await this.refreshModulesPanel();
             return;
         case "rename":
@@ -965,13 +992,13 @@ export class WorkspaceSession {
             await this.refreshModulesPanel();
             return;
         case "reveal":
-            await this.revealModuleSource(message.moduleRoot);
+            await this.revealPackageSource(message.packageRoot);
             return;
         }
     }
 
-    private async revealModuleSource(moduleRoot: string): Promise<void> {
-        const uri = vscode.Uri.file(path.join(moduleRoot, "module.cpp"));
+    private async revealPackageSource(packageRoot: string): Promise<void> {
+        const uri = vscode.Uri.file(path.join(packageRoot, "module.cpp"));
         const existing = vscode.window.visibleTextEditors.find(
             (editor) => editor.document.uri.toString() === uri.toString(),
         );
@@ -993,17 +1020,31 @@ export class WorkspaceSession {
         await vscode.window.showTextDocument(document, { preview: false });
     }
 
-    private async moduleIdForRoot(moduleRoot: string): Promise<string> {
-        let source = this.ivModuleSources.find((candidate) => candidate.moduleRoot === moduleRoot);
-        if (!source && this.rpc) {
-            const result = await this.rpc.getIvModuleSources();
-            this.ivModuleSources = this.parseIvModuleSources(result.sources);
-            source = this.ivModuleSources.find((candidate) => candidate.moduleRoot === moduleRoot);
+    private async moduleIdForPackageRoot(packageRoot: string): Promise<string> {
+        let packageInfo = this.ivPackages.find((candidate) => candidate.packageRoot === packageRoot);
+        if (!packageInfo && this.rpc) {
+            const result = await this.rpc.getIvPackages();
+            this.ivPackages = this.parseIvPackages(result.packages);
+            packageInfo = this.ivPackages.find((candidate) => candidate.packageRoot === packageRoot);
         }
-        if (!source) {
-            throw new Error(`module source is no longer available: ${moduleRoot}`);
+        if (!packageInfo) {
+            throw new Error(`IV package is no longer available: ${packageRoot}`);
         }
-        return source.moduleId;
+        if (packageInfo.moduleIds.length !== 1) {
+            const reason = packageInfo.buildState === "failed"
+                ? `package build failed: ${packageInfo.buildMessage || packageRoot}`
+                : packageInfo.buildState === "building" || packageInfo.buildState === "queued"
+                    ? `package definitions are not ready yet: ${packageRoot}`
+                    : packageInfo.publicationMessage
+                        ? `package definitions are not published: ${packageInfo.publicationMessage}`
+                    : `package has no published iv modules yet: ${packageRoot}`;
+            throw new Error(
+                packageInfo.moduleIds.length === 0
+                    ? reason
+                    : `package provides multiple iv modules; choose one explicitly: ${packageRoot}`,
+            );
+        }
+        return packageInfo.moduleIds[0];
     }
 
     private async refreshActiveEditorSelection(): Promise<void> {
@@ -1286,14 +1327,15 @@ export class WorkspaceSession {
         const nextSourceFilePath = editor.document.uri.fsPath;
         if (nextSourceFilePath !== this.activeSourceFilePath) {
             this.activeSourceFilePath = nextSourceFilePath;
-            const sourceDirectory = path.dirname(nextSourceFilePath);
-            this.activeModuleRoot = path.basename(nextSourceFilePath) === "module.cpp"
-                && fs.existsSync(path.join(sourceDirectory, "iv_module.json"))
-                ? sourceDirectory
+            const packageDirectory = path.dirname(nextSourceFilePath);
+            const hasPackageManifest = fs.existsSync(path.join(packageDirectory, "iv_package.json"));
+            this.activePackageRoot = path.basename(nextSourceFilePath) === "module.cpp"
+                && hasPackageManifest
+                ? packageDirectory
                 : null;
             const result = await this.rpc.getIvModuleInstances(nextSourceFilePath);
             this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
-            this.provider.setModuleSource(this.activeModuleRoot);
+            this.provider.setPackageRoot(this.activePackageRoot);
             this.refreshVisibleInstances();
         }
 
@@ -1364,8 +1406,8 @@ export class WorkspaceSession {
 
     private logServerState(prefix: string, params: ServerStatusNotification): void {
         const parts = [prefix];
-        if (params.moduleRoot) {
-            parts.push(params.moduleRoot);
+        if (params.packageRoot) {
+            parts.push(params.packageRoot);
         }
         if (params.message) {
             parts.push(params.message);

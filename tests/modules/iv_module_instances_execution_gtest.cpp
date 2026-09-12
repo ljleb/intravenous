@@ -2,7 +2,7 @@
 #include <intravenous/runtime/iv_module_instances_iv_module_instances_execution_bridge.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
-#include <authored_graph_test_view.h>
+#include <configured_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/graph/runtime_binding_nodes.hpp>
@@ -11,6 +11,7 @@
 
 #include <array>
 #include <filesystem>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -148,7 +149,7 @@ namespace {
         iv::GraphBuilder graph;
         auto input = graph.input<"input">(iv::Sample{0.0f});
         graph.outputs(iv::PortName<"output">{} = input);
-        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
+        return iv::freeze_configured_graph_for_test(std::move(graph).finish());
     }
 
     auto make_runtime_event_binding_graph()
@@ -157,15 +158,15 @@ namespace {
         auto input = graph.event_input<"input">(iv::EventTypeId::trigger);
         graph.event_outputs(iv::PortName<"output">{} = input);
         graph.outputs();
-        return iv::freeze_authored_graph_for_test(std::move(graph).finish());
+        return iv::freeze_configured_graph_for_test(std::move(graph).finish());
     }
 
-    iv::RuntimeGraphRoot build_runtime_binding_root(iv::AuthoredGraphTestView view)
+    iv::RuntimeGraphRoot build_runtime_binding_root(iv::ConfiguredGraphTestView view)
     {
-        auto authored = iv::thaw_authored_graph_for_test(view);
+        auto configured = iv::thaw_configured_graph_for_test(view);
         auto plan = iv::GraphCompiler::compile(
             iv::GraphLowerer::lower(
-                std::move(authored), {.execution_root = true}));
+                std::move(configured), {.execution_root = true}));
         return iv::RuntimeGraphRoot(std::move(plan.graph));
     }
 
@@ -591,6 +592,15 @@ TEST(IvModuleInstancesExecution, PausedPreviewIgnoresTransportPlayheadUntilFollo
     EXPECT_EQ(indices, (std::vector<size_t>{0u, 8u, 128u}));
 }
 
+void apply_module_definitions(
+    iv::IvModuleInstances &instances,
+    iv::IvModuleDefinitionsChanged diff)
+{
+    instances.handle_iv_package_definitions_changed(iv::IvPackageDefinitionsChanged{
+        .modules = std::move(diff),
+    });
+}
+
 TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecutorRelease)
 {
     iv::IvModuleInstancesExecution execution(8);
@@ -617,12 +627,13 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
         &old_module_is_live,
         &old_release_saw_live_module,
     };
-    instances.handle_iv_module_definitions_changed(
+    apply_module_definitions(
+        instances,
         iv::IvModuleDefinitionsChanged {
             .created = {
                 iv::IvModuleDefinition {
                     .definition_id = definition_id,
-                    .module_root = module_root,
+                    .package_root = module_root,
                     .module_refs = old_module_refs,
                     .root = iv::WeakTypeErasedNode(old_root),
                 },
@@ -634,12 +645,13 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
     old_module_refs.clear();
 
     NoopNode new_root;
-    instances.handle_iv_module_definitions_changed(
+    apply_module_definitions(
+        instances,
         iv::IvModuleDefinitionsChanged {
             .updated = {
                 iv::IvModuleDefinition {
                     .definition_id = definition_id,
-                    .module_root = module_root,
+                    .package_root = module_root,
                     .root = iv::WeakTypeErasedNode(new_root),
                 },
             },

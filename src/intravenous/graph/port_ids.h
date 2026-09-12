@@ -6,7 +6,7 @@
 
 namespace iv {
 
-// These are stable authoring identities, not node-bundle implementation
+// These are stable configuration identities, not node-bundle implementation
 // details. Keeping them independently includable lets the DSL reference ABI
 // name ports without importing GraphBuilderNodeBundles and its storage.
 using NodeBundleHandle = size_t;

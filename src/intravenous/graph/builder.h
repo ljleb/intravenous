@@ -10,6 +10,7 @@
 #include <intravenous/graph/builder/subgraphs.hpp>
 #include <intravenous/graph/source_info.h>
 #include <intravenous/node/build_request.h>
+#include <intravenous/module/configuration_argument.h>
 
 #include <array>
 #include <concepts>
@@ -23,15 +24,18 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <tuple>
 #include <utility>
 
 namespace iv {
-struct AuthoredGraph;
+struct ConfiguredGraph;
 class GraphBuilder;
 class GraphBuilderState;
 
 namespace details {
 struct BuilderSession;
+NodeRef configure_package_definition(
+    GraphBuilder&, std::string_view, std::span<ConfigurationArgument>);
 GraphBuilderState& builder_graph_state(GraphBuilder&);
 NodeBundleHandle iv_builder_append_node(
     GraphBuilder&, NodeBuildRequest const&);
@@ -40,7 +44,7 @@ NodeBundleHandle iv_builder_append_tiled_node(
 void* iv_builder_allocate_node_config(
     BuilderSession*, std::size_t size, std::size_t alignment);
 void iv_builder_discard_node_config(BuilderSession*, void* storage) noexcept;
-// Unary DSL connection validation is shared authoring behavior. These helpers
+// Unary DSL connection validation is shared configuration behavior. These helpers
 // return only the runtime result the DSL needs to preserve its static return
 // type.
 bool iv_builder_connect_unary_sample(
@@ -57,6 +61,9 @@ class GraphBuilder {
       GraphBuilder&, details::NodeBuildRequest const&);
   friend NodeBundleHandle details::iv_builder_append_tiled_node(
       GraphBuilder&, details::NodeBuildRequest const&, ChannelLayout);
+  friend NodeRef details::configure_package_definition(
+      GraphBuilder&, std::string_view,
+      std::span<details::ConfigurationArgument>);
   friend class SubgraphBuilder;
 
   details::BuilderSession* _session = nullptr;
@@ -116,6 +123,19 @@ public:
     }
   }
 
+  // Package definition IDs are the package-facing node creation API. The bootstrap
+  // dynamic path is available for every ID without a generated interface
+  // header. The loaded IV packages resolve the provider immediately, so
+  // this returns the provider's genuine realized NodeRef.
+  template<fixed_string Id, class... Args>
+  auto node(Args&&... args) {
+    auto values = std::tuple<std::remove_cvref_t<Args>...>(
+        std::forward<Args>(args)...);
+    auto arguments = details::configuration_arguments(values);
+    return details::configure_package_definition(
+        *this, Id.view(), arguments);
+  }
+
   template<class Node, class ChannelType, class... Args>
   auto node(Args&&... args) {
     using StoredNode = std::remove_cvref_t<Node>;
@@ -158,16 +178,16 @@ public:
   void event_outputs(std::span<EventOutputRequest const>);
 
   // Runtime channel negotiation, graph mutation, and connection validation
-  // belong to the shared authoring library. The templated overload below is
+  // belong to the shared configuration library. The templated overload below is
   // the only node-type-specific part of this path.
-  NodeRef author_runtime_binary_op(
+  NodeRef configure_runtime_binary_op(
       SamplePortRef lhs,
       SamplePortRef rhs,
       std::string_view op_name,
       details::NodeBuildRequest const& request);
 
   template<class Node>
-  NodeRef author_runtime_binary_op(
+  NodeRef configure_runtime_binary_op(
       SamplePortRef lhs, SamplePortRef rhs, std::string_view op_name) {
     using StoredNode = std::remove_cvref_t<Node>;
     static_assert(std::is_trivially_copyable_v<StoredNode>,
@@ -177,7 +197,7 @@ public:
             _session, sizeof(StoredNode), alignof(StoredNode)));
     try {
       std::construct_at(value);
-      return author_runtime_binary_op(
+      return configure_runtime_binary_op(
           std::move(lhs), std::move(rhs), op_name,
           details::make_node_build_request(*value));
     } catch (...) {
@@ -268,6 +288,8 @@ public:
   size_t sample_output_count(NodeBundleHandle) const;
   size_t event_input_count(NodeBundleHandle) const;
   size_t event_output_count(NodeBundleHandle) const;
+  InputConfig sample_input_config(NodeBundleHandle, size_t) const;
+  EventInputConfig event_input_config(NodeBundleHandle, size_t) const;
   NodeBundleHandle tiled_member(NodeBundleHandle, size_t) const;
   NodePorts const& typed_ports(NodeBundleHandle) const;
   SamplePortRef sample_port_from_output(NodeBundlePortId);
@@ -292,8 +314,8 @@ public:
   void annotate_public_event_output_source_info(std::span<SourceInfo const>);
   void annotate_public_sample_output_source_info(size_t, SourceInfo);
   void annotate_public_event_output_source_info(size_t, SourceInfo);
-  AuthoredGraph finish() const &;
-  AuthoredGraph finish() &&;
+  ConfiguredGraph finish() const &;
+  ConfiguredGraph finish() &&;
 
 private:
   NodeRef embed_child(GraphBuilder&, std::string_view);

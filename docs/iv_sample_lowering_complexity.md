@@ -37,12 +37,12 @@ representation.
 
 | Measure | Value |
 |---|---:|
-| authored bundles | 403 |
-| authored concrete / tiled / subgraph bundles | 336 / 66 / 0 |
-| authored sample connections / endpoints | 289 / 825 |
-| authored event connections / endpoints | 0 / 0 |
-| authored virtual nodes / members / port mappings | 3 / 35 / 9 |
-| authored public ports | 3 |
+| configured bundles | 403 |
+| configured concrete / tiled / subgraph bundles | 336 / 66 / 0 |
+| configured sample connections / endpoints | 289 / 825 |
+| configured event connections / endpoints | 0 / 0 |
+| configured virtual nodes / members / port mappings | 3 / 35 / 9 |
+| configured public ports | 3 |
 | lowered nodes | 410 |
 | lowered generated / `ConnectionNode` / runtime nodes | 74 / 71 / 3 |
 | lowered sample input / output ports / edges | 543 / 407 / 544 |
@@ -60,7 +60,7 @@ These same-snapshot measurements established where to investigate:
 
 | Cut point | GCC total | constexpr evaluation | GGC |
 |---|---:|---:|---:|
-| authoring | 9.55 s | 6.09 s | 1,471 M |
+| configuration | 9.55 s | 6.09 s | 1,471 M |
 | execution projection | 11.57 s | 7.90 s | 1,782 M |
 | execution sample lowering | 33.91 s | 30.36 s | 5,854 M |
 | execution lowering | 38.51 s | 34.82 s | 6,769 M |
@@ -155,10 +155,10 @@ The exact accounting profile for real connected-group control flow is:
 On average, each real lookup visits **147.5 bundles**, **148.4 output ports**,
 and constructs **125 temporary channel vectors**. All 191 lookups eventually
 succeed. This is the relevant scaling mechanism, rather than the raw number
-of authored connections alone.
+of configured connections alone.
 
 A deliberately non-semantic control performs this global lookup once for each
-of the 289 authored connections, after projection and grouping but without
+of the 289 configured connections, after projection and grouping but without
 normal connection-node construction:
 
 | Diagnostic | GCC total | constexpr evaluation | GGC |

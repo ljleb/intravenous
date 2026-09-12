@@ -24,6 +24,8 @@ function(add_iv_gtest target source)
     endif()
 
     target_compile_features(${target} PRIVATE cxx_std_23)
+    target_compile_definitions(${target} PRIVATE
+        IV_CONFIGURED_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     set_target_properties(${target} PROPERTIES
         CXX_STANDARD 23
         CXX_STANDARD_REQUIRED ON
@@ -79,8 +81,12 @@ add_iv_gtest(
     module_build_behavior_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
-    intravenous_authored_graph_binary_archive_tests
-    authored_graph_binary_archive_gtest.cpp)
+    intravenous_module_package_dependencies_tests
+    module_package_dependencies_gtest.cpp
+    ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
+add_iv_gtest(
+    intravenous_configured_graph_binary_archive_tests
+    configured_graph_binary_archive_gtest.cpp)
 add_iv_gtest(
     intravenous_node_build_request_tests
     node_build_request_gtest.cpp)
@@ -97,6 +103,10 @@ add_iv_gtest(
     intravenous_module_context_boundary_tests
     module_context_boundary_gtest.cpp)
 add_iv_gtest(intravenous_compat_tests compat_gtest.cpp)
+add_iv_gtest(
+    intravenous_linker_event_propagation_tests
+    linker_event_propagation_gtest.cpp
+    NO_HOST_RUNTIME_OBJECTS)
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_channels_tests channels_gtest.cpp)
 add_iv_gtest(
@@ -162,6 +172,8 @@ add_executable(intravenous_node_layout_storage
 )
 
 target_compile_features(intravenous_node_layout_storage PRIVATE cxx_std_23)
+target_compile_definitions(intravenous_node_layout_storage PRIVATE
+    IV_CONFIGURED_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 set_target_properties(intravenous_node_layout_storage PROPERTIES
     CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON

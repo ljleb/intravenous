@@ -23,6 +23,7 @@
 #include <vector>
 
 namespace iv {
+class GraphBuilderState;
 template<class Config>
 struct SamplePortDescriptor {
   Config config{};
@@ -167,6 +168,7 @@ private:
   NodeSourceAnnotations _source_annotations{};
 
   friend class GraphBuilderNodeBundles;
+  friend class GraphBuilderState;
 };
 
 struct SemanticSubgraphInfo {
@@ -177,7 +179,7 @@ struct SemanticSubgraphInfo {
   NodeLifetime lifetime{};
 };
 
-enum class AuthoredNodeBundleKind : std::uint8_t {
+enum class ConfiguredNodeBundleKind : std::uint8_t {
   concrete,
   tiled,
   boundary,
@@ -187,8 +189,8 @@ enum class AuthoredNodeBundleKind : std::uint8_t {
 // A public, lossless record of the semantic bundle.  It deliberately contains
 // no NodeBundle implementation details, so the frozen module ABI can be
 // defined in terms of this data rather than the variant used by GraphBuilder.
-struct AuthoredNodeBundleRecord {
-  AuthoredNodeBundleKind kind = AuthoredNodeBundleKind::boundary;
+struct ConfiguredNodeBundleRecord {
+  ConfiguredNodeBundleKind kind = ConfiguredNodeBundleKind::boundary;
   NodePorts ports{};
   ReflectedNodeOperations operations{};
   std::shared_ptr<void const> node_storage{};
@@ -226,10 +228,10 @@ struct AuthoredNodeBundleRecord {
 };
 
 // A non-owning serialization view of a semantic bundle. It is valid only for
-// the duration of the for_each_authored_bundle callback, allowing freezing to
+// the duration of the for_each_configured_bundle callback, allowing freezing to
 // promote GraphBuilder storage directly without materializing an owning record.
-struct AuthoredNodeBundleView {
-  AuthoredNodeBundleKind kind = AuthoredNodeBundleKind::boundary;
+struct ConfiguredNodeBundleView {
+  ConfiguredNodeBundleKind kind = ConfiguredNodeBundleKind::boundary;
   NodePorts const* ports = nullptr;
   ReflectedNodeOperations const* operations = nullptr;
   std::shared_ptr<void const> const* node_storage = nullptr;
@@ -331,9 +333,9 @@ public:
   constexpr size_t import_child(
       GraphBuilderNodeBundles const &, size_t detach_id_offset);
   template<class Visitor>
-  constexpr void for_each_authored_bundle(Visitor&& visitor) const;
-  static constexpr GraphBuilderNodeBundles from_authored_records(
-      std::span<AuthoredNodeBundleRecord const>);
+  constexpr void for_each_configured_bundle(Visitor&& visitor) const;
+  static constexpr GraphBuilderNodeBundles from_configured_records(
+      std::span<ConfiguredNodeBundleRecord const>);
 
 private:
   std::vector<NodeBundle> _bundles{};
@@ -1224,17 +1226,17 @@ constexpr size_t GraphBuilderNodeBundles::import_child(
 }
 
 template<class Visitor>
-constexpr void GraphBuilderNodeBundles::for_each_authored_bundle(
+constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
     Visitor&& visitor) const {
   for (auto const& bundle : _bundles) {
-    AuthoredNodeBundleView view{
+    ConfiguredNodeBundleView view{
         .virtual_node_handles = bundle._virtual_node_handles,
         .source_infos = bundle._source_annotations.infos,
     };
     std::visit([&](auto const& payload) {
       using Payload = std::remove_cvref_t<decltype(payload)>;
       if constexpr (std::same_as<Payload, NodeBundle::ConcreteNodeBundle>) {
-        view.kind = AuthoredNodeBundleKind::concrete;
+        view.kind = ConfiguredNodeBundleKind::concrete;
         view.ports = &payload.ports;
         view.operations = &payload.operations;
         view.node_storage = &payload.node_storage;
@@ -1253,7 +1255,7 @@ constexpr void GraphBuilderNodeBundles::for_each_authored_bundle(
         view.static_sample_value = &payload.static_sample_value;
         view.deferred_detach = &payload.deferred_detach;
       } else if constexpr (std::same_as<Payload, NodeBundle::TiledNodeBundle>) {
-        view.kind = AuthoredNodeBundleKind::tiled;
+        view.kind = ConfiguredNodeBundleKind::tiled;
         view.tiled_members = std::span<NodeBundleHandle const>{
             payload.member_bundles};
         view.type_identity = &payload.type_identity.value;
@@ -1266,7 +1268,7 @@ constexpr void GraphBuilderNodeBundles::for_each_authored_bundle(
         view.event_output_configs = std::span<EventOutputConfig const>{
             payload.event_output_configs};
       } else if constexpr (std::same_as<Payload, NodeBundle::BoundaryNodeBundle>) {
-        view.kind = AuthoredNodeBundleKind::boundary;
+        view.kind = ConfiguredNodeBundleKind::boundary;
         view.sample_input_configs = std::span<InputConfig const>{
             payload.sample_inputs};
         view.sample_output_configs = std::span<OutputConfig const>{
@@ -1276,7 +1278,7 @@ constexpr void GraphBuilderNodeBundles::for_each_authored_bundle(
         view.event_output_configs = std::span<EventOutputConfig const>{
             payload.event_outputs};
       } else {
-        view.kind = AuthoredNodeBundleKind::subgraph;
+        view.kind = ConfiguredNodeBundleKind::subgraph;
         view.subgraph_boundary = payload.boundary;
         view.subgraph_child_begin = payload.child_begin;
         view.subgraph_child_count = payload.child_count;
@@ -1293,14 +1295,14 @@ constexpr void GraphBuilderNodeBundles::for_each_authored_bundle(
   }
 }
 
-constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_authored_records(
-    std::span<AuthoredNodeBundleRecord const> records) {
+constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_records(
+    std::span<ConfiguredNodeBundleRecord const> records) {
   GraphBuilderNodeBundles result;
   result._bundles.reserve(records.size());
   for (auto const& record : records) {
     NodeBundle bundle;
     switch (record.kind) {
-    case AuthoredNodeBundleKind::concrete: {
+    case ConfiguredNodeBundleKind::concrete: {
       auto operations = record.operations;
       // The archive reader owns this structure while reconstructing records.
       // Once the bundle takes its shared ownership, its runtime callback must
@@ -1328,7 +1330,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_authored_records
       });
       break;
     }
-    case AuthoredNodeBundleKind::tiled:
+    case ConfiguredNodeBundleKind::tiled:
       bundle = NodeBundle(NodeBundle::TiledNodeBundle{
           .member_bundles = record.tiled_members,
           .type_identity = {.value = record.type_identity},
@@ -1338,7 +1340,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_authored_records
           .event_output_configs = record.event_output_configs,
       });
       break;
-    case AuthoredNodeBundleKind::boundary:
+    case ConfiguredNodeBundleKind::boundary:
       bundle = NodeBundle(NodeBundle::BoundaryNodeBundle{
           .sample_inputs = record.sample_input_configs,
           .sample_outputs = record.sample_output_configs,
@@ -1346,7 +1348,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_authored_records
           .event_outputs = record.event_output_configs,
       });
       break;
-    case AuthoredNodeBundleKind::subgraph:
+    case ConfiguredNodeBundleKind::subgraph:
       bundle = NodeBundle(NodeBundle::SubgraphNodeBundle{
           .boundary = record.subgraph_boundary,
           .child_begin = record.subgraph_child_begin,

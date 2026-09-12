@@ -2,16 +2,16 @@
 
 ## Current understanding
 
-Project persistence should store authored project state, not runtime object graphs and not execution-derived state.
+Project persistence should store configured project state, not runtime object graphs and not execution-derived state.
 
 That means we want to persist:
 
 - iv-module instances that exist
-- authored per-instance settings, such as `default_silence_ttl_samples`
-- authored graph-input override state
-- authored knob override values
-- the authored timeline lane DAG
-- authored lane-node parameters
+- configured per-instance settings, such as `default_silence_ttl_samples`
+- configured graph-input override state
+- configured knob override values
+- the configured timeline lane DAG
+- configured lane-node parameters
 - later, automation data as its own first-class persistent structure
 
 That means we do **not** want to persist:
@@ -57,7 +57,7 @@ For `project.overrideSettings` specifically:
 
 The project file should not store C++ binary objects.
 
-It should store a reconstruction program for the current authored project state.
+It should store a reconstruction program for the current configured project state.
 
 The reconstruction program should be:
 
@@ -104,7 +104,7 @@ This module should not depend on the UI.
 ## Save policy
 
 Project file writes should not happen on every state change. The server coalesces
-ordinary authored mutations with a short debounce and writes atomically. The UI
+ordinary configured mutations with a short debounce and writes atomically. The UI
 can explicitly save immediately, or disable and re-enable server-owned autosave.
 
 The intended save flow is:
@@ -122,5 +122,5 @@ an immediate disk write.
 
 ## Open questions
 
-- Which currently existing linker events are already suitable as canonical reconstruction commands, and which authored-state commands still need to be introduced.
+- Which currently existing linker events are already suitable as canonical reconstruction commands, and which configured-state commands still need to be introduced.
 - How lane-view 2D layout should be represented and restored from the VS Code side once that deferred work starts.

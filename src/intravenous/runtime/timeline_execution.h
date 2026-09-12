@@ -103,7 +103,7 @@ public:
 private:
     struct TrackedLane {
         LaneId id {};
-        TypeErasedLaneNode const *node = nullptr;
+        std::shared_ptr<TypeErasedLaneNode const> node {};
         LaneOutputConfig output {};
         std::optional<ChannelTypeId> sample_channel_type {};
         std::vector<LaneInputConnection> inputs {};
@@ -145,7 +145,10 @@ private:
     size_t compiled_sample_cache_chunk_size_multiplier_ = 16;
     mutable std::mutex mutex_;
     std::unordered_map<LaneId, TrackedLane, LaneIdHash> tracked_lanes_;
-    std::unordered_map<LaneId, std::unique_ptr<LaneCallbackContext>, LaneIdHash> callback_contexts_;
+    // A TaskCallback carries a shared owner for each raw context.  Removing a
+    // lane can therefore remove this active lookup immediately while an old
+    // TaskRunner graph still retains the context it may invoke.
+    std::unordered_map<LaneId, std::shared_ptr<LaneCallbackContext>, LaneIdHash> callback_contexts_;
     std::vector<RealtimeSamplePortDescriptor> realtime_sample_descriptors_;
     std::unordered_map<LaneId, RealtimeSamplePortDescriptor, LaneIdHash> realtime_sample_slot_by_lane_;
     std::vector<Sample> realtime_sample_storage_;

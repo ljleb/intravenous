@@ -124,7 +124,7 @@ function(iv_add_host_runtime_objects target)
     target_compile_definitions(${target} PRIVATE
         JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
         JUCE_USE_CURL=${JUCE_USE_CURL}
-        IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY="$<TARGET_FILE:iv_module_shared>"
+        IV_CONFIGURED_IV_BUILDER_LIBRARY="$<TARGET_FILE:iv_builder>"
         IV_CONFIGURED_JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
         IV_CONFIGURED_JUCE_USE_CURL=${JUCE_USE_CURL}
         IV_CONFIGURED_CMAKE_COMMAND="${CMAKE_COMMAND}"
@@ -150,11 +150,10 @@ function(iv_add_host_runtime_objects target)
     endif()
 
     target_link_libraries(${target} PRIVATE
-        intravenous_graph_builder
+        iv_builder
         intravenous_module_loader
         intravenous_module_watcher
         intravenous_runtime_iv_module_instances_events
-        intravenous_runtime_iv_module_sources_events
         intravenous_runtime_iv_module_definitions_events
         intravenous_runtime_iv_module_reload_events
         intravenous_runtime_iv_module_source_introspection_events
@@ -168,7 +167,7 @@ function(iv_add_host_runtime_objects target)
         intravenous_runtime_socket_rpc_events
         intravenous_runtime_task_runner_events
         intravenous_runtime_timeline_events
-        intravenous_runtime_authored_lanes_events
+        intravenous_runtime_configured_lanes_events
         intravenous_runtime_timeline_execution_events
         intravenous_runtime_iv_module_instances_execution_events
         intravenous_tooling_runtime_objects
@@ -198,6 +197,7 @@ add_library(intravenous_graph_builder OBJECT
     graph/builder/state.cpp
     graph/reflected_node_description.cpp
     module/builder_session.cpp
+    module/package_definitions.cpp
     module/source_annotations.cpp
     node/config_storage.cpp
     node/layout.cpp
@@ -205,16 +205,12 @@ add_library(intravenous_graph_builder OBJECT
 )
 iv_configure_intravenous_target(intravenous_graph_builder PUBLIC)
 
-add_library(iv_module_shared SHARED
+add_library(iv_builder SHARED
     $<TARGET_OBJECTS:intravenous_graph_builder>
 )
-# The temporary module-building JIT resolves this library directly. Keep the
-# established target name for project-template compatibility, but make the
-# produced DSO describe its actual responsibility.
-add_library(iv_builder ALIAS iv_module_shared)
-set_target_properties(iv_module_shared PROPERTIES OUTPUT_NAME iv_builder)
-iv_configure_intravenous_target(iv_module_shared PUBLIC)
-iv_link_stacktrace_support(iv_module_shared)
+set_target_properties(iv_builder PROPERTIES OUTPUT_NAME iv_builder)
+iv_configure_intravenous_target(iv_builder PUBLIC)
+iv_link_stacktrace_support(iv_builder)
 
 # This source represents the default project-local module. Its compilation
 # database entry is copied to new module sources, where clangd infers the
@@ -223,7 +219,7 @@ add_library(intravenous_module_source_template_tooling OBJECT EXCLUDE_FROM_ALL
     runtime/module_source_template/module.cpp
 )
 iv_configure_intravenous_target(intravenous_module_source_template_tooling PUBLIC)
-target_link_libraries(intravenous_module_source_template_tooling PRIVATE iv_module_shared)
+target_link_libraries(intravenous_module_source_template_tooling PRIVATE iv_builder)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(intravenous_module_source_template_tooling PRIVATE
         -Wno-unused-function)
@@ -239,7 +235,19 @@ add_library(intravenous_module_loader OBJECT
     module/loader.cpp
 )
 iv_configure_intravenous_target(intravenous_module_loader PUBLIC)
+target_include_directories(intravenous_module_loader PRIVATE ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(intravenous_module_loader PRIVATE ${LLVM_DEFINITIONS})
+llvm_map_components_to_libnames(IV_PACKAGE_LOADER_LLVM_LIBS
+    bitreader
+    core
+    executionengine
+    native
+    nativecodegen
+    orcjit
+    support
+    target)
 target_link_libraries(intravenous_module_loader PRIVATE
+    ${IV_PACKAGE_LOADER_LLVM_LIBS}
     nlohmann_json::nlohmann_json
 )
 
@@ -251,10 +259,6 @@ iv_configure_intravenous_target(intravenous_module_watcher PUBLIC)
 iv_add_linker_event_object(
     intravenous_runtime_iv_module_instances_events
     runtime/iv_module_instances_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_iv_module_sources_events
-    runtime/iv_module_sources_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_iv_module_definitions_events
@@ -312,8 +316,8 @@ iv_add_linker_event_object(
     runtime/timeline_events.cpp
 )
 iv_add_linker_event_object(
-    intravenous_runtime_authored_lanes_events
-    runtime/authored_lanes_events.cpp
+    intravenous_runtime_configured_lanes_events
+    runtime/configured_lanes_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_timeline_execution_events
@@ -328,8 +332,8 @@ target_link_libraries(intravenous_runtime_runtime_project_events PRIVATE
 )
 
 add_library(intravenous_tooling_runtime_objects OBJECT
-    runtime/authored_lanes.cpp
-    runtime/authored_lanes_timeline_bridge.cpp
+    runtime/configured_lanes.cpp
+    runtime/configured_lanes_timeline_bridge.cpp
     runtime/audio_device_lanes.cpp
     runtime/audio_device_lanes_iv_module_instances_execution_bridge.cpp
     runtime/audio_device_lanes_timeline_bridge.cpp
@@ -338,7 +342,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/config.cpp
     runtime/graph_input_lanes.cpp
     runtime/graph_input_lanes/block_store.cpp
-    runtime/graph_input_lanes/authored_state.cpp
+    runtime/graph_input_lanes/configured_state.cpp
     runtime/graph_input_lanes/builder_completion.cpp
     runtime/graph_input_lanes/lane_reconciler.cpp
     runtime/graph_input_lanes/port_catalog.cpp
@@ -348,7 +352,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/iv_module_definitions.cpp
     runtime/iv_module_definitions_iv_module_instances_bridge.cpp
     runtime/iv_module_definitions_iv_module_reload_bridge.cpp
-    runtime/iv_module_definitions_iv_module_source_introspection_bridge.cpp
     runtime/iv_module_instances.cpp
     runtime/iv_module_instances_execution.cpp
     runtime/iv_module_instances_execution_task_runner_bridge.cpp
@@ -356,6 +359,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/iv_module_instances_graph_input_lanes_bridge.cpp
     runtime/iv_module_instances_iv_module_source_introspection_bridge.cpp
     runtime/iv_module_reload.cpp
+    runtime/iv_package_reload_service.cpp
     runtime/lane_filters.cpp
     runtime/lane_filters_lane_views_bridge.cpp
     runtime/lane_views_lanes_visualization_bridge.cpp
@@ -367,7 +371,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/lane_query_schema_service.cpp
     runtime/lane_query_schema_events.cpp
     runtime/iv_module_source_introspection.cpp
-    runtime/iv_module_sources.cpp
+    runtime/iv_packages.cpp
     runtime/iv_module_source_introspection_events.cpp
     runtime/iv_module_source_introspection_graph_input_lanes_bridge.cpp
     runtime/project_persistence.cpp
@@ -378,10 +382,9 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/project_persistence_audio_device_lanes_bridge.cpp
     runtime/project_persistence_project_autosave_bridge.cpp
     runtime/project_persistence_graph_input_lanes_bridge.cpp
-    runtime/iv_module_instances_iv_module_sources_bridge.cpp
     runtime/project_persistence_iv_module_instances_bridge.cpp
     runtime/project_persistence_iv_module_reload_bridge.cpp
-    runtime/project_persistence_authored_lanes_bridge.cpp
+    runtime/project_persistence_configured_lanes_bridge.cpp
     runtime/project_persistence_timeline_bridge.cpp
     runtime/project_persistence_timeline_execution_bridge.cpp
     runtime/socket_rpc_lane_views_bridge.cpp
@@ -390,11 +393,11 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_audio_device_lanes_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
     runtime/socket_rpc_iv_module_instances_bridge.cpp
-    runtime/socket_rpc_iv_module_sources_bridge.cpp
+    runtime/socket_rpc_iv_packages_bridge.cpp
     runtime/socket_rpc_project_autosave_bridge.cpp
     runtime/socket_rpc_project_persistence_bridge.cpp
     runtime/socket_rpc_timeline_execution_bridge.cpp
-    runtime/iv_module_definitions_socket_rpc_notification_bridge.cpp
+    runtime/iv_module_definitions_socket_rpc_packages_bridge.cpp
     runtime/lanes_visualization_socket_rpc_notification_bridge.cpp
     runtime/socket_rpc_json_serialization.cpp
     runtime/socket_rpc_requests.cpp
@@ -405,7 +408,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/task_runner.cpp
     runtime/task_runner_audio_device_lanes_bridge.cpp
     runtime/task_runner_graph_input_lanes_bridge.cpp
-    runtime/task_runner_iv_module_reload_bridge.cpp
     runtime/timeline_execution.cpp
     runtime/timeline_execution_iv_module_instances_execution_bridge.cpp
     runtime/timeline_execution_lanes_visualization_bridge.cpp
@@ -453,11 +455,11 @@ if(JUCE_FOUND)
 
     # This library remains the runtime-symbol provider for JUCE/VST node
     # modules. The builder boundary must not remove that opt-in capability.
-    target_compile_definitions(iv_module_shared PUBLIC
+    target_compile_definitions(iv_builder PUBLIC
         IV_ENABLE_JUCE_VST=1
         JUCE_PLUGINHOST_VST3=1
     )
-    target_link_libraries(iv_module_shared PRIVATE intravenous_juce_runtime)
+    target_link_libraries(iv_builder PRIVATE intravenous_juce_runtime)
 
     target_compile_definitions(intravenous_module_loader PRIVATE
         IV_CONFIGURED_ENABLE_JUCE_VST=1
@@ -465,7 +467,7 @@ if(JUCE_FOUND)
         IV_CONFIGURED_JUCE_MODULES_DIR="${IV_JUCE_MODULES_DIR}"
     )
 else()
-    target_compile_definitions(iv_module_shared PUBLIC
+    target_compile_definitions(iv_builder PUBLIC
         IV_ENABLE_JUCE_VST=0
     )
 
@@ -477,7 +479,7 @@ else()
 endif()
 
 target_compile_definitions(intravenous_module_loader PRIVATE
-    IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY="$<TARGET_FILE:iv_module_shared>"
+    IV_CONFIGURED_IV_BUILDER_LIBRARY="$<TARGET_FILE:iv_builder>"
     IV_CONFIGURED_JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
     IV_CONFIGURED_JUCE_USE_CURL=${JUCE_USE_CURL}
     IV_CONFIGURED_CMAKE_COMMAND="${CMAKE_COMMAND}"

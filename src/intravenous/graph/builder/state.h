@@ -8,7 +8,7 @@
 #include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/channel_ports.h>
 #include <intravenous/graph/builder/annotations.hpp>
-#include <intravenous/graph/authored_graph.hpp>
+#include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/builder/connections.hpp>
 #include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/identity.h>
@@ -210,6 +210,8 @@ public:
   size_t sample_output_count(NodeBundleHandle) const;
   size_t event_input_count(NodeBundleHandle) const;
   size_t event_output_count(NodeBundleHandle) const;
+  InputConfig sample_input_config(NodeBundleHandle, size_t) const;
+  EventInputConfig event_input_config(NodeBundleHandle, size_t) const;
   NodeBundleHandle tiled_member(NodeBundleHandle, size_t) const;
   NodePorts const& typed_ports(NodeBundleHandle) const;
   SamplePortRef sample_port_from_output(NodeBundlePortId);
@@ -217,8 +219,8 @@ public:
   void apply_ttl(NodeBundleHandle, size_t);
   void annotate_node(NodeBundleHandle, std::string_view, std::string_view,
       uint32_t, uint32_t);
-  constexpr AuthoredGraph finish() const &;
-  constexpr AuthoredGraph finish() &&;
+  constexpr ConfiguredGraph finish() const &;
+  constexpr ConfiguredGraph finish() &&;
 
 private:
   constexpr SamplePortRef detach_sample_port(
@@ -231,11 +233,11 @@ private:
       EventTypeId, std::span<EventOutputPortId const>);
   std::span<EventOutputPortId const> event_port_sources(
       EventPortRef const&) const;
-  constexpr void record_authored_sample_connection(
+  constexpr void record_configured_sample_connection(
       NodeBundlePortId, SamplePortRef const&);
-  constexpr void record_authored_sample_connection(SampleInputChannelId, SamplePortRef const&);
-  void record_authored_sample_connection(NodeBundlePortId, std::span<SamplePortRef const>);
-  void record_authored_event_connection(NodeBundlePortId, EventPortRef const&);
+  constexpr void record_configured_sample_connection(SampleInputChannelId, SamplePortRef const&);
+  void record_configured_sample_connection(NodeBundlePortId, std::span<SamplePortRef const>);
+  void record_configured_event_connection(NodeBundlePortId, EventPortRef const&);
   constexpr SamplePortRef lift_to_sample_port(
       SamplePortRef const& sample_port);
   constexpr SamplePortRef lift_to_sample_port(SamplePortRef&& sample_port);
@@ -284,8 +286,8 @@ constexpr void GraphBuilderPublicPorts::define_sample_outputs(
     if (refs[i].target_channel_ordinal) {
       auto channels = bundles.sample_input_channels(target); auto channel = *refs[i].target_channel_ordinal;
       if (channel >= channels.size()) details::error("public sample output channel ordinal is out of bounds");
-      builder.record_authored_sample_connection(channels[channel], ref);
-    } else builder.record_authored_sample_connection(target, ref);
+      builder.record_configured_sample_connection(channels[channel], ref);
+    } else builder.record_configured_sample_connection(target, ref);
     _last_sample_output_port_ordinals.push_back(output);
   }
   _sample_outputs_defined = true;
@@ -318,7 +320,7 @@ constexpr void GraphBuilderPublicPorts::define_event_outputs(
     auto config = refs[i].config;
     config.type = ref.type;
     auto output = boundary.append_boundary_event_output(std::move(config));
-    builder.record_authored_event_connection(
+    builder.record_configured_event_connection(
         {_boundary, PortKind::event, output}, ref);
   }
 }
@@ -392,7 +394,7 @@ constexpr void GraphBuilderState::populate_public_introspection_metadata(
 {
   auto sample_inputs = public_sample_input_families();
   for (auto& family : sample_inputs.families) {
-    family.authored_connected = std::ranges::any_of(
+    family.configured_connected = std::ranges::any_of(
         family.channels, [&](auto const& channel) {
           return std::ranges::any_of(
               channel.port_ordinals, [&](auto ordinal) {
@@ -408,7 +410,7 @@ constexpr void GraphBuilderState::populate_public_introspection_metadata(
   metadata.public_event_outputs = public_event_outputs();
 }
 
-constexpr AuthoredGraph GraphBuilderState::finish() const & {
+constexpr ConfiguredGraph GraphBuilderState::finish() const & {
   auto bundles = _node_bundles;
   bundles.materialize_deferred_detaches();
   return {
@@ -422,7 +424,7 @@ constexpr AuthoredGraph GraphBuilderState::finish() const & {
   };
 }
 
-constexpr AuthoredGraph GraphBuilderState::finish() && {
+constexpr ConfiguredGraph GraphBuilderState::finish() && {
   _node_bundles.materialize_deferred_detaches();
   return {
       .identity = std::move(_identity),
@@ -451,15 +453,15 @@ constexpr SamplePortRef GraphBuilderState::lift_to_sample_port(
   return std::move(port);
 }
 
-constexpr void GraphBuilderState::record_authored_sample_connection(
+constexpr void GraphBuilderState::record_configured_sample_connection(
     NodeBundlePortId target,
     SamplePortRef const& source)
 {
   if (target.port_kind != PortKind::sample || !source.graph_builder
       || source.graph_builder != &facade())
-    details::error("invalid authored sample connection");
+    details::error("invalid configured sample connection");
   auto descriptor = _node_bundles.resolve_sample_input(target);
-  _connections.record_authored_sample_connection({
+  _connections.record_configured_sample_connection({
       source.channel_type,
       {source.channels().begin(), source.channels().end()},
       descriptor.config.channel_layout.channel_type,
@@ -467,17 +469,17 @@ constexpr void GraphBuilderState::record_authored_sample_connection(
   });
 }
 
-constexpr void GraphBuilderState::record_authored_sample_connection(
+constexpr void GraphBuilderState::record_configured_sample_connection(
     SampleInputChannelId target,
     SamplePortRef const& source)
 {
   if (!source.graph_builder || source.graph_builder != &facade())
-    details::error("invalid authored sample channel connection");
+    details::error("invalid configured sample channel connection");
   auto channels = _node_bundles.sample_input_channels(
       {target.bundle, PortKind::sample, target.port});
   if (target.channel >= channels.size() || channels[target.channel] != target)
     details::error("sample input channel does not belong to its NodeBundle port");
-  _connections.record_authored_sample_connection({
+  _connections.record_configured_sample_connection({
       source.channel_type,
       {source.channels().begin(), source.channels().end()},
       ChannelTypeId::mono,
@@ -488,7 +490,7 @@ constexpr void GraphBuilderState::connect_sample_input(
     NodeBundlePortId target,
     SamplePortRef source)
 {
-  record_authored_sample_connection(target, source);
+  record_configured_sample_connection(target, source);
 }
 
 constexpr SamplePortRef GraphBuilderState::detach_sample_port(
@@ -511,7 +513,7 @@ constexpr SamplePortRef GraphBuilderState::detach_sample_port(
   auto id = _detach.allocate_detach_id();
   auto writer = NodeRef(
       facade(), _node_bundles.append_deferred_detach_writer(id, latency));
-  record_authored_sample_connection(
+  record_configured_sample_connection(
       {writer.node_bundle_handle(), PortKind::sample, 0}, source);
   auto reader = NodeRef(
       facade(), _node_bundles.append_deferred_detach_reader(id, latency));

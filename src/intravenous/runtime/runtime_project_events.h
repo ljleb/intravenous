@@ -6,7 +6,7 @@
 #include <intravenous/runtime/graph_input_lane_controller.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
-#include <intravenous/runtime/authored_lane_api.h>
+#include <intravenous/runtime/configured_lane_api.h>
 #include <intravenous/runtime/uuid.h>
 
 #include <filesystem>
@@ -25,6 +25,17 @@ namespace iv {
         void succeed();
         void fail(std::string message);
         void build() const;
+    };
+
+    class ProjectGraphInputAckBuilder {
+        std::optional<std::string> error_message;
+        std::optional<GraphInputPublicPortsSnapshot> public_ports;
+        bool handled = false;
+
+    public:
+        void succeed(GraphInputPublicPortsSnapshot value);
+        void fail(std::string message);
+        [[nodiscard]] GraphInputPublicPortsSnapshot build() const;
     };
 
     class ProjectStringBuilder {
@@ -60,6 +71,10 @@ namespace iv {
     struct ProjectCreateIvModuleInstanceRequest {
         std::optional<std::string> instance_id {};
         std::string module_id {};
+        // Project replay supplies the persisted provider location. Interactive
+        // creation deliberately leaves this empty and resolves the already
+        // published definition instead.
+        std::optional<std::filesystem::path> package_root {};
         std::optional<std::string> display_name {};
     };
 
@@ -246,7 +261,7 @@ namespace iv {
         LanePortDomain port_domain = LanePortDomain::realtime;
         PortKind port_kind = PortKind::sample;
         size_t port_ordinal = 0;
-        bool authored = false;
+        bool configured = false;
     };
 
     struct ProjectDisconnectTimelineLanesRequest {
@@ -302,19 +317,19 @@ namespace iv {
     using ProjectDisconnectTimelineLanesRequestedEvent =
         void (*)(ProjectDisconnectTimelineLanesRequest const &, ProjectAckBuilder &);
     using ProjectSetSampleInputValueRequestedEvent =
-        void (*)(ProjectSetSampleInputValueRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetSampleInputValueRequest const &, ProjectGraphInputAckBuilder &);
     using ProjectSetSampleInputStateRequestedEvent =
-        void (*)(ProjectSetSampleInputStateRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetSampleInputStateRequest const &, ProjectGraphInputAckBuilder &);
     using ProjectSetPublicSampleInputStateRequestedEvent =
-        void (*)(ProjectSetPublicSampleInputStateRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetPublicSampleInputStateRequest const &, ProjectGraphInputAckBuilder &);
     using ProjectSetPublicSampleInputValueRequestedEvent =
-        void (*)(std::string const &, std::string const &, Sample, ProjectAckBuilder &);
+        void (*)(std::string const &, std::string const &, Sample, ProjectGraphInputAckBuilder &);
     using ProjectSetEventInputStateRequestedEvent =
-        void (*)(ProjectSetEventInputStateRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetEventInputStateRequest const &, ProjectGraphInputAckBuilder &);
     using ProjectSetSampleOutputStateRequestedEvent =
-        void (*)(ProjectSetSampleOutputStateRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetSampleOutputStateRequest const &, ProjectGraphInputAckBuilder &);
     using ProjectSetEventOutputStateRequestedEvent =
-        void (*)(ProjectSetEventOutputStateRequest const &, ProjectAckBuilder &);
+        void (*)(ProjectSetEventOutputStateRequest const &, ProjectGraphInputAckBuilder &);
     IV_DECLARE_LINKER_EVENT(
         ProjectNotificationEvent,
         iv_runtime_project_notification_event);

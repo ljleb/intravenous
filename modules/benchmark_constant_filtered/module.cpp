@@ -23,3 +23,5 @@ void benchmark_constant_filtered(iv::GraphBuilder& g)
     auto const tone = high_pass * 0.12;
     g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
 }
+
+IV_MODULE("iv.test.benchmark_constant_filtered", benchmark_constant_filtered);

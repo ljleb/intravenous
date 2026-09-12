@@ -3,21 +3,23 @@
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/iv_module_definitions.h>
 
+
 namespace iv {
-using IvModuleDefinitionDeclarationsChangedEvent =
-    void (*)(IvModuleDefinitionDeclarationsChanged const &);
-using IvModuleDefinitionsChangedEvent =
-    void (*)(IvModuleDefinitionsChanged const &);
-using IvModuleDefinitionsNotificationEvent =
-    void (*)(IvModuleDefinitionsNotification const &);
+using IvPackageDeclarationsChangedEvent =
+    void (*)(IvPackageDeclarationsChanged const &);
+using IvPackageDefinitionsChangedEvent =
+    void (*)(IvPackageDefinitionsChanged const &);
+struct IvPackageCatalogChanged {};
+using IvPackageCatalogChangedEvent =
+    void (*)(IvPackageCatalogChanged const &);
 
 IV_DECLARE_LINKER_EVENT(
-    IvModuleDefinitionDeclarationsChangedEvent,
-    iv_runtime_iv_module_definitions_declarations_changed_event);
+    IvPackageDeclarationsChangedEvent,
+    iv_runtime_iv_package_declarations_changed_event);
 IV_DECLARE_LINKER_EVENT(
-    IvModuleDefinitionsChangedEvent,
-    iv_runtime_iv_module_definitions_changed_event);
+    IvPackageDefinitionsChangedEvent,
+    iv_runtime_iv_package_definitions_changed_event);
 IV_DECLARE_LINKER_EVENT(
-    IvModuleDefinitionsNotificationEvent,
-    iv_runtime_iv_module_definitions_notification_event);
+    IvPackageCatalogChangedEvent,
+    iv_runtime_iv_package_catalog_changed_event);
 } // namespace iv

@@ -9,16 +9,17 @@
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/project_persistence_events.h>
-#include <intravenous/runtime/iv_module_sources.h>
+#include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/project_persistence_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_reload_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_sources_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_execution_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
+#include <intravenous/runtime/socket_rpc_requests.h>
 #include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_execution.h>
@@ -52,25 +53,6 @@ std::string runtime_node_id(std::string_view instance_id, std::string_view virtu
 {
     return std::string(instance_id) + "\x1fvirtual:" + std::string(virtual_node_id);
 }
-
-struct ProjectIvModuleInstancesBindings {
-    iv::iv_module_instances_iv_module_sources_bridge::scope sources_scope;
-    iv::project_persistence_iv_module_instances_bridge::scope persistence_scope;
-
-    ProjectIvModuleInstancesBindings(
-        iv::ProjectPersistence &persistence,
-        iv::IvModuleInstances &instances,
-        iv::IvModuleSources &sources)
-        : sources_scope(
-              iv::iv_module_instances_iv_module_sources_bridge::bind(
-                  instances,
-                  sources)),
-          persistence_scope(
-              iv::project_persistence_iv_module_instances_bridge::bind(
-                  persistence,
-                  instances))
-    {}
-};
 
 struct ProjectTimelineBindings {
     iv::timeline_timeline_execution_bridge::scope timeline_execution_scope;
@@ -246,12 +228,63 @@ iv::StartupConfigState make_startup(std::filesystem::path const &workspace)
     };
 }
 
-iv::IvModuleSources local_cmake_sources(std::filesystem::path const &workspace)
+constexpr std::string_view local_cmake_module_id = "iv.test.local_cmake";
+
+struct LocalCmakeDefinitions {
+    iv::IvModuleDefinitions definitions{};
+    std::filesystem::path root;
+    bool seeded = false;
+
+    explicit LocalCmakeDefinitions(std::filesystem::path const& workspace)
+        : root(std::filesystem::weakly_canonical(workspace))
+    {}
+
+    void seed()
+    {
+        if (seeded) {
+            return;
+        }
+        seeded = true;
+        definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
+            .package_id = root.generic_string(),
+            .definition_id = std::string(local_cmake_module_id),
+            .package_root = root,
+            .module_id = std::string(local_cmake_module_id),
+        });
+    }
+};
+
+LocalCmakeDefinitions local_cmake_definitions(std::filesystem::path const& workspace)
 {
-    return iv::IvModuleSources(workspace, {workspace});
+    return LocalCmakeDefinitions(workspace);
 }
 
-constexpr std::string_view local_cmake_module_id = "iv.test.local_cmake";
+struct ProjectIvModuleInstancesBindings {
+    iv::iv_module_definitions_iv_module_instances_bridge::scope definitions_instances_scope;
+    iv::project_persistence_iv_module_instances_bridge::scope persistence_scope;
+
+    ProjectIvModuleInstancesBindings(
+        iv::ProjectPersistence &persistence,
+        iv::IvModuleInstances &instances,
+        LocalCmakeDefinitions &definitions,
+        bool publish_initial_definitions = true)
+        : definitions_instances_scope(
+              iv::iv_module_definitions_iv_module_instances_bridge::bind(
+                  definitions.definitions,
+                  instances))
+        , persistence_scope(
+              iv::project_persistence_iv_module_instances_bridge::bind(
+                  persistence,
+                  instances))
+    {
+        if (publish_initial_definitions) {
+            // Most persistence tests need an already-published definition. The
+            // explicit deferred-replay test below exercises the production
+            // startup ordering where this happens later.
+            definitions.seed();
+        }
+    }
+};
 
 iv::TimelineLaneBatchUpdate timeline_batch_with_two_lanes()
 {
@@ -279,7 +312,7 @@ iv::IvModuleInstance make_instance_with_ports()
     iv::IvModuleInstance instance {};
     instance.instance_id = "instance:graph";
     instance.definition_id = "definition:graph";
-    instance.module_root = std::filesystem::path("/tmp/module");
+    instance.package_root = std::filesystem::path("/tmp/module");
     instance.module_id = "iv.test.module";
 
     iv::IntrospectionVirtualNode node {};
@@ -506,12 +539,13 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidRecognizedKeyLogsErrorAndLa
             {"args", Json{
                 {"instance_id", "instance-z"},
                 {"module_id", local_cmake_module_id},
+                {"package_root", "."},
             }},
         }.dump() + "\n");
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
 
     auto module_instance_bindings = ProjectIvModuleInstancesBindings(
@@ -524,10 +558,55 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidRecognizedKeyLogsErrorAndLa
     auto const listed = instances.list_instances();
     ASSERT_EQ(listed.size(), 1u);
     EXPECT_EQ(listed.front().instance_id, "instance-z");
-    ASSERT_EQ(witness.messages.size(), 1u);
-    EXPECT_EQ(witness.messages.front().level, "error");
-    EXPECT_TRUE(witness.messages.front().message.contains("compiled_sample_cache_chunk_size_multiplier"));
+    ASSERT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
+    auto const error = std::ranges::find_if(witness.messages, [](auto const &message) {
+        return message.level == "error";
+    });
+    ASSERT_NE(error, witness.messages.end());
+    EXPECT_TRUE(error->message.contains("compiled_sample_cache_chunk_size_multiplier"));
 
+}
+
+TEST_F(ProjectPersistenceTest, ReplayRetainsInstanceUntilItsPackageIsPublished)
+{
+    auto const workspace = mutable_module_fixture_workspace(
+        "project_replay_before_package_publication", "local_cmake");
+    write_text(
+        workspace / "iv_project.jsonl",
+        Json{
+            {"command", "ivModuleInstances.create"},
+            {"args", Json{
+                {"instance_id", "instance-waiting"},
+                {"module_id", local_cmake_module_id},
+                {"package_root", "."},
+                {"display_name", nullptr},
+            }},
+        }.dump() + "\n");
+
+    auto const startup = make_startup(workspace);
+    iv::IvModuleInstances instances;
+    auto sources = local_cmake_definitions(workspace);
+    iv::ProjectPersistence persistence(workspace, startup);
+    auto module_instance_bindings = ProjectIvModuleInstancesBindings(
+        persistence,
+        instances,
+        sources,
+        false);
+
+    persistence.load();
+
+    auto const waiting = instances.list_instances();
+    ASSERT_EQ(waiting.size(), 1u);
+    EXPECT_EQ(waiting.front().instance_id, "instance-waiting");
+    EXPECT_EQ(waiting.front().package_root, std::filesystem::weakly_canonical(workspace));
+    EXPECT_FALSE(waiting.front().realized);
+    EXPECT_EQ(count_messages_with_level(witness.messages, "error"), 0u);
+
+    sources.seed();
+
+    auto const realized = instances.list_instances();
+    ASSERT_EQ(realized.size(), 1u);
+    EXPECT_TRUE(realized.front().realized);
 }
 
 TEST_F(ProjectPersistenceTest, OverrideParsingInvalidSupportedFieldTypesLogErrorsAndReplayContinues)
@@ -606,12 +685,13 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidSupportedFieldTypesLogError
                 {"args", Json{
                     {"instance_id", "instance-ok"},
                     {"module_id", local_cmake_module_id},
+                    {"package_root", "."},
                 }},
             }.dump() + "\n");
 
         auto const startup = make_startup(workspace);
         iv::IvModuleInstances instances;
-        auto sources = local_cmake_sources(workspace);
+        auto sources = local_cmake_definitions(workspace);
         iv::ProjectPersistence persistence(workspace, startup);
         witness.messages.clear();
 
@@ -805,7 +885,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMissingInstanceMutationAndRe
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     iv::LaneViews lane_views;
     iv::ProjectPersistence persistence(workspace, startup);
 
@@ -833,6 +913,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
             {"args", Json{
                 {"instance_id", "instance-a"},
                 {"module_id", local_cmake_module_id},
+                {"package_root", "."},
             }},
         }.dump() + "\n" +
         Json{
@@ -862,7 +943,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     iv::LaneViews lane_views;
     iv::ProjectPersistence persistence(workspace, startup);
 
@@ -877,7 +958,11 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
     EXPECT_EQ(instances.list_instances().front().instance_id, "instance-a");
     EXPECT_TRUE(lane_views.active_view_requests().empty());
     EXPECT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
-    EXPECT_TRUE(witness.messages.front().message.contains("missing"));
+    auto const error = std::ranges::find_if(witness.messages, [](auto const &message) {
+        return message.level == "error";
+    });
+    ASSERT_NE(error, witness.messages.end());
+    EXPECT_TRUE(error->message.contains("missing"));
 
 }
 
@@ -898,12 +983,13 @@ TEST_F(ProjectPersistenceTest, UnknownOverrideKeysWarnAndDoNotBlockLaterCommands
             {"args", Json{
                 {"instance_id", "instance-after-warning"},
                 {"module_id", local_cmake_module_id},
+                {"package_root", "."},
             }},
         }.dump() + "\n");
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
 
     auto module_instance_bindings = ProjectIvModuleInstancesBindings(
@@ -929,7 +1015,7 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     write_text(toolchain_dir / "clang", "");
 
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
     iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
@@ -1030,7 +1116,7 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     project_timeline_bindings.reset();
 
     iv::IvModuleInstances fresh_instances;
-    auto fresh_sources = local_cmake_sources(workspace);
+    auto fresh_sources = local_cmake_definitions(workspace);
     iv::Timeline fresh_timeline;
     iv::TimelineExecution fresh_execution(8, 16);
     iv::AudioDeviceLanes fresh_audio_device_lanes(48000, 8, make_audio_backend());
@@ -1099,20 +1185,20 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
     builder.add_iv_module_instances({
         iv::IvModuleInstanceInfo{
             .instance_id = "b",
-            .module_root = workspace,
+            .package_root = workspace,
         },
         iv::IvModuleInstanceInfo{
             .instance_id = "a",
-            .module_root = workspace,
+            .package_root = workspace,
         },
     });
-    builder.add_authored_lane_connections({
-        iv::AuthoredLaneConnection{
+    builder.add_configured_lane_connections({
+        iv::ConfiguredLaneConnection{
             .source_lane_id = intern("lane-z"),
             .target_lane_id = intern("lane-a"),
             .input = iv::LanePortId{.domain = iv::LanePortDomain::compiled, .kind = iv::PortKind::event, .ordinal = 2},
         },
-        iv::AuthoredLaneConnection{
+        iv::ConfiguredLaneConnection{
             .source_lane_id = intern("lane-a"),
             .target_lane_id = intern("lane-z"),
             .input = iv::LanePortId{.domain = iv::LanePortDomain::realtime, .kind = iv::PortKind::sample, .ordinal = 0},
@@ -1135,7 +1221,8 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
     for (auto const &command : commands) {
         if (command.command == "ivModuleInstances.create") {
             created_instance_ids.push_back(command.args["instance_id"].get<std::string>());
-        } else if (command.command == "timeline.connectAuthoredLanes") {
+            EXPECT_EQ(command.args["package_root"].get<std::string>(), ".");
+        } else if (command.command == "timeline.connectConfiguredLanes") {
             connection_order.emplace_back(
                 command.args["source_lane_id"].get<std::string>(),
                 command.args["port_domain"].get<std::string>());
@@ -1154,9 +1241,9 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
         }));
 }
 
-TEST_F(ProjectPersistenceTest, GraphInputAuthoredStateCoversAllMutationKinds)
+TEST_F(ProjectPersistenceTest, GraphInputConfiguredStateCoversAllMutationKinds)
 {
-    iv::GraphInputLanes::AuthoredStateSnapshot snapshot;
+    iv::GraphInputLanes::ConfiguredStateSnapshot snapshot;
     snapshot.sample_input_values.push_back(iv::ProjectSetSampleInputValueRequest{
         .node_id = "node-1",
         .member_ordinal = std::nullopt,
@@ -1193,7 +1280,7 @@ TEST_F(ProjectPersistenceTest, GraphInputAuthoredStateCoversAllMutationKinds)
     });
 
     iv::ProjectPersistenceBuilder builder(std::filesystem::current_path(), make_startup(std::filesystem::current_path()));
-    builder.add_graph_input_authored_state(snapshot);
+    builder.add_graph_input_configured_state(snapshot);
     auto const commands = builder.build();
     std::multiset<std::string> names;
     for (auto const &command : commands) {
@@ -1206,7 +1293,7 @@ TEST_F(ProjectPersistenceTest, GraphInputAuthoredStateCoversAllMutationKinds)
     EXPECT_TRUE(names.contains("graph.setEventOutputState"));
 }
 
-TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsForMemberAndVirtualPorts)
+TEST(ProjectPersistenceBuilder, GraphInputConfiguredStateSerializesStateVariantsForMemberAndVirtualPorts)
 {
     auto const virtual_sample_input_node_id = runtime_node_id("instance:a", "node-virtual");
     auto const member_sample_input_node_id = runtime_node_id("instance:a", "node-member");
@@ -1214,7 +1301,7 @@ TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsFo
     auto const member_event_input_node_id = runtime_node_id("instance:b", "event-member");
     auto const virtual_sample_output_node_id = runtime_node_id("instance:c", "sample-out");
     auto const member_event_output_node_id = runtime_node_id("instance:c", "event-out");
-    iv::GraphInputLanes::AuthoredStateSnapshot snapshot;
+    iv::GraphInputLanes::ConfiguredStateSnapshot snapshot;
     snapshot.sample_input_states.push_back(iv::ProjectSetSampleInputStateRequest{
         .node_id = virtual_sample_input_node_id,
         .member_ordinal = std::nullopt,
@@ -1261,7 +1348,7 @@ TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsFo
     iv::ProjectPersistenceBuilder builder(
         std::filesystem::current_path(),
         make_startup(std::filesystem::current_path()));
-    builder.add_graph_input_authored_state(snapshot);
+    builder.add_graph_input_configured_state(snapshot);
     auto const commands = builder.build();
 
     auto const find_command = [&](std::string_view name, std::string_view node_id) -> Json {
@@ -1460,6 +1547,58 @@ TEST_F(ProjectPersistenceTest, ProjectSaveUnboundLeavesResponseUnchanged)
     EXPECT_FALSE(builder.has_response());
 }
 
+TEST_F(ProjectPersistenceTest, TimelineConnectionSocketRpcAcknowledgesSuccessfulMutations)
+{
+    auto const workspace = mutable_module_fixture_workspace(
+        "project_timeline_connection_socket_ack",
+        "local_cmake");
+    auto const startup = make_startup(workspace);
+    iv::Timeline timeline;
+    iv::TimelineExecution execution(8, 16);
+    iv::ProjectPersistence persistence(workspace, startup);
+    initialize_two_timeline_lanes(timeline);
+    ProjectTimelineBindings bindings(persistence, timeline, execution);
+    iv::SocketRpcServer server(workspace, -1);
+    auto socket_persistence_scope =
+        iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
+
+    iv::SocketRpcAckResponseBuilder connect_builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_socket_rpc_connect_timeline_lanes_event,
+        iv::ConnectTimelineLanesRequest{
+            .source_lane_id = intern("lane-a"),
+            .target_lane_id = intern("lane-b"),
+            .port_domain = iv::LanePortDomain::realtime,
+            .port_kind = iv::PortKind::sample,
+            .port_ordinal = 0,
+        },
+        connect_builder);
+
+    EXPECT_TRUE(connect_builder.has_response());
+    EXPECT_EQ(
+        parse_json_line(connect_builder.build(1))["result"]["ok"],
+        true);
+    ASSERT_EQ(timeline.lane_connections().size(), 1u);
+
+    iv::SocketRpcAckResponseBuilder disconnect_builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_socket_rpc_disconnect_timeline_lanes_event,
+        iv::DisconnectTimelineLanesRequest{
+            .source_lane_id = intern("lane-a"),
+            .target_lane_id = intern("lane-b"),
+            .port_domain = iv::LanePortDomain::realtime,
+            .port_kind = iv::PortKind::sample,
+            .port_ordinal = 0,
+        },
+        disconnect_builder);
+
+    EXPECT_TRUE(disconnect_builder.has_response());
+    EXPECT_EQ(
+        parse_json_line(disconnect_builder.build(2))["result"]["ok"],
+        true);
+    EXPECT_TRUE(timeline.lane_connections().empty());
+}
+
 TEST_F(ProjectPersistenceTest, ProjectSaveWithNoContributorsWritesEmptyFile)
 {
     auto const workspace = mutable_module_fixture_workspace("project_save_empty", "local_cmake");
@@ -1522,7 +1661,7 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
 
     ProjectTimelineBindings project_timeline_bindings(
         persistence, timeline, execution);
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     auto module_instance_bindings = ProjectIvModuleInstancesBindings(
         persistence,
         instances,
@@ -1598,7 +1737,7 @@ TEST_F(ProjectPersistenceTest, RepeatedProjectSaveIsIdempotent)
     auto const workspace = mutable_module_fixture_workspace("project_save_idempotent", "local_cmake");
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_sources(workspace);
+    auto sources = local_cmake_definitions(workspace);
     instances.create_instance(local_cmake_module_id, workspace, "instance-a");
     iv::ProjectPersistence persistence(workspace, startup);
 

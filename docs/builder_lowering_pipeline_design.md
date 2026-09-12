@@ -8,18 +8,18 @@ the same production units, rather than relying on diagnostic-only cut points.
 
 ## Architectural direction
 
-The authored graph has the same compiler role as an AST/HIR: it is the stable,
+The configured graph has the same compiler role as an AST/HIR: it is the stable,
 loss-minimizing representation of the structure the author intended. It is
 not literally syntax, but it must have the same ownership boundary.
 
-`GraphBuilder` is an authoring convenience. Its only compilation-adjacent
-responsibility should be to finish an immutable `AuthoredGraph` value:
+`GraphBuilder` is an configuration convenience. Its only compilation-adjacent
+responsibility should be to finish an immutable `ConfiguredGraph` value:
 
 ```cpp
-consteval AuthoredGraph GraphBuilder::finish() &&;
+consteval ConfiguredGraph GraphBuilder::finish() &&;
 ```
 
-`AuthoredGraph` owns node bundles, authored connections, public ports, detach
+`ConfiguredGraph` owns node bundles, configured connections, public ports, detach
 declarations, source annotations, and virtual-node declarations. Once it is
 finished, the builder no longer participates in lowering, metadata production,
 or runtime graph construction.
@@ -27,7 +27,7 @@ or runtime graph construction.
 The compiler has exactly three representations and two conversions:
 
 ```text
-AuthoredGraph (HIR)
+ConfiguredGraph (HIR)
   -> ExecutableGraphIR
   -> Graph (frozen runtime value)
 ```
@@ -39,7 +39,7 @@ entry points.
 
 Each semantic transition has one owner and one invariant:
 
-- `GraphLowerer::lower(AuthoredGraph const&, GraphLoweringOptions)` resolves authored structure,
+- `GraphLowerer::lower(ConfiguredGraph const&, GraphLoweringOptions)` resolves configured structure,
   tiling, channel semantics, defaults, routing, hierarchy, detach behavior,
   and provenance into a closed `ExecutableGraphIR`.
 - `GraphCompiler::compile(ExecutableGraphIR)` validates, schedules,
@@ -62,7 +62,7 @@ struct CompiledGraph {
 };
 ```
 
-Metadata is a product of the `AuthoredGraph -> ExecutableGraphIR` conversion;
+Metadata is a product of the `ConfiguredGraph -> ExecutableGraphIR` conversion;
 it is not an alternate semantic build path. The former
 `build_metadata`, `build_root_node`, `build_execution_root_node`, and
 `build_execution_root_node_with_metadata` façades have been removed. Callers
@@ -71,23 +71,23 @@ convenience.
 
 ## Current state
 
-`GraphBuilder` owns authored node bundles, connections, public ports, virtual
-nodes, and detach declarations. Finishing transfers those into `AuthoredGraph`.
+`GraphBuilder` owns configured node bundles, connections, public ports, virtual
+nodes, and detach declarations. Finishing transfers those into `ConfiguredGraph`.
 `GraphLowerer::lower()` is the sole public lowering entry point. One
-`GraphLowerer` instance carries the authored references and scratch state for
-the whole authored-to-IR conversion.
+`GraphLowerer` instance carries the configured references and scratch state for
+the whole configured-to-IR conversion.
 
 ## Target two-conversion architecture
 
 ```text
-AuthoredGraph
-  -> GraphLowerer::lower() // authored graph -> closed executable IR
+ConfiguredGraph
+  -> GraphLowerer::lower() // configured graph -> closed executable IR
   -> GraphCompiler::compile(std::move(ir)) // executable IR -> fixed Graph
   -> Graph
 ```
 
-`GraphLowerer` is one stateful class for the whole authored-graph-to-IR
-conversion. It owns the authored reference, lowering options, the topology
+`GraphLowerer` is one stateful class for the whole configured-graph-to-IR
+conversion. It owns the configured reference, lowering options, the topology
 under construction, and plain nested scratch structs. Its public macro step is
 one function, `lower()`, which composes smaller member functions.
 
@@ -143,13 +143,13 @@ This is also a physical source-organization rule, not merely an API rule. The
 required layout has exactly one self-contained implementation file for each
 owner:
 
-- one `GraphBuilder` file for the authoring convenience and its authored-data
+- one `GraphBuilder` file for the configuration convenience and its configured-data
   construction;
-- one `GraphLowerer` file for `AuthoredGraph -> ExecutableGraphIR`; and
+- one `GraphLowerer` file for `ConfiguredGraph -> ExecutableGraphIR`; and
 - one `GraphCompiler` file for `ExecutableGraphIR ->` the static data and
   frozen runtime `Graph` that actually execute.
 
-The authored and executable IR data types may be shared definitions, but they
+The configured and executable IR data types may be shared definitions, but they
 must not become a collection of pseudo-pass headers. Existing fragmented
 `graph/builder` headers are a migration artifact to be consolidated before
 further compiler optimization work. The single-file rule is valuable now
@@ -173,7 +173,7 @@ meaning of the work, not which helper happens to contain it today.
 Likewise, preserve information at the point where it is known when a later
 step needs it. Do not discard a resolved routing decision, ownership relation,
 binding lookup, or edge classification only to reconstruct it later by scanning
-authored data or the lowered topology. Carry a narrow phase fact or index
+configured data or the lowered topology. Carry a narrow phase fact or index
 forward instead. A later scan is appropriate only when it is genuinely a new
 analysis of the completed representation, rather than recovery of an earlier
 fact.
@@ -205,15 +205,15 @@ two conversions. They are ordered by expected compile-time effect.
    export IDs and latencies are both available.
 5. Lowering metadata must retain results it has already produced, including the
    virtual-node IDs by backing node. Connectivity queries used for virtual and
-   public-port metadata need one lowering-local authored-connectivity index,
-   not a scan of every authored connection per port.
+   public-port metadata need one lowering-local configured-connectivity index,
+   not a scan of every configured connection per port.
 
 Small cleanup targets follow the same rule: retain the next construction-order
 counter instead of repeatedly finding a maximum, avoid copying immutable
 detach-validation adjacency, and use the compiler connectivity index for event
 output bindings.
 
-## Inside authored lowering
+## Inside configured lowering
 
 `GraphLowerer::lower()` is deliberately flat at the macro level:
 
@@ -227,7 +227,7 @@ lower_events
 lower_detach
 materialize_runtime_ports
 materialize_executable_ir
-complete_executable_ir // an internal authored-to-IR helper, not a phase
+complete_executable_ir // an internal configured-to-IR helper, not a phase
 ```
 
 Each listed operation may call smaller helpers, but each temporary data type is
@@ -236,13 +236,13 @@ functions, so all AST-to-IR work remains together and can be reordered or
 regrouped without crossing representation boundaries.
 
 The sample-lowering boundary is between semantic planning and topology
-materialization. `plan_sample_lowering` groups authored connections by logical
+materialization. `plan_sample_lowering` groups configured connections by logical
 target; the three consumers then have distinct responsibilities.
 
 `SampleLoweringPlan` currently owns, per target logical sample port:
 
 - the exact logical target; and
-- references to its authored connection group.
+- references to its configured connection group.
 
 Channel resolution, direct-routing eligibility, conversion planning, and
 runtime-binding lookup still belong to connected materialization. They should
@@ -253,15 +253,15 @@ The private phase products should be correspondingly narrow:
 
 | Producer | Product consumed later |
 |---|---|
-| Bundle projection | boundary-to-subgraph map and the number of authored topology nodes |
+| Bundle projection | boundary-to-subgraph map and the number of configured topology nodes |
 | Connected sample lowering | bound concrete sample inputs and assigned subgraph sample outputs |
 | Event lowering | materialized multi-member event output ports |
 
-The lowered topology is a field on `GraphLowerer`, because it is authored
+The lowered topology is a field on `GraphLowerer`, because it is configured
 lowering scratch, not the externally meaningful IR. The resulting
 `ExecutableGraphIR` is the only value passed to the next macro step.
 
-The plan is computed from authored graph state. Connected lowering consumes it
+The plan is computed from configured graph state. Connected lowering consumes it
 to append direct edges or generated connection nodes and returns only the
 bound-input and assigned-subgraph-output facts needed by later sample phases.
 Vacant-input lowering then provides each unbound concrete input's default path.
@@ -284,7 +284,7 @@ routing, fan-in, and vacant defaults.
 | Unit | Contract examples |
 |---|---|
 | Bundle projection | concrete, tiled, and boundary ports map to expected topology endpoints |
-| Sample plan | authored connections group by logical target |
+| Sample plan | configured connections group by logical target |
 | Connected materialization | native ordered channels are direct; reordered or fan-in routes create the expected connection nodes |
 | Vacant-input lowering | each unbound concrete input receives one default path |
 | Metadata indexing | disconnected, connected, and mixed ports retain their reported connectivity |
@@ -305,12 +305,12 @@ preserving this context as a de facto API.
 - `GraphBuilder` has no named lowering, metadata, or root-building façade. Do
   not add one; use `finish`, `GraphLowerer`, and `GraphCompiler` when the
   conversion boundary matters.
-- Keep all authored-to-IR synthesis in `GraphLowerer`; in particular subgraph
+- Keep all configured-to-IR synthesis in `GraphLowerer`; in particular subgraph
   defaults, fan-in/fan-out, dangling-port completion, and scope construction
   must occur before executable IR is finished.
-- Carry source, virtual-node, and authored-node provenance forward into
+- Carry source, virtual-node, and configured-node provenance forward into
   executable nodes. Later compilation must not need `GraphBuilderNodeBundles`,
-  `GraphBuilderConnections`, or stringified node IDs to recover authored
+  `GraphBuilderConnections`, or stringified node IDs to recover configured
   meaning.
 - Treat scopes as executable-IR hierarchy metadata, not pseudo executable
   `StoredNode`s that later passes skip and traverse around.
@@ -326,5 +326,5 @@ preserving this context as a de facto API.
 
 The lowerer is an ordered private pipeline with phase-local state, existing
 end-to-end graph tests preserve behavior, and `ExecutableGraphIR` remains the
-only closed intermediate representation exposed between authoring and
+only closed intermediate representation exposed between configuration and
 compilation. `GraphCompiler` accepts no partially completed form.

@@ -52,7 +52,7 @@ This note tracks the test work for the last two commits:
 - chunk size omitted when matching startup default
 - lane, view, and connection ordering remain stable
 
-## 6. Graph Input Authored-State Coverage
+## 6. Graph Input Configured-State Coverage
 
 - sample input values
 - sample input states

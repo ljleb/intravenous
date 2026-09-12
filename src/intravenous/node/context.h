@@ -33,6 +33,13 @@ namespace iv {
     };
 
     namespace details {
+#if defined(__clang__) || defined(__GNUC__)
+#define IV_NODE_LAYOUT_TYPE_TOKEN_STORAGE \
+    __attribute__((section("iv.node_layout_type_tokens")))
+#else
+#define IV_NODE_LAYOUT_TYPE_TOKEN_STORAGE
+#endif
+
         struct NodeLayoutNodeRegistration {
             void const* node = nullptr;
             void const* node_type = nullptr;
@@ -67,7 +74,13 @@ namespace iv {
         template<typename A>
         void const* node_layout_type_token()
         {
-            static int token = 0;
+            // The address, including its mutability, is this process's type
+            // identity. It is not persistent runtime data; the package
+            // finalizer recognizes its dedicated section accordingly. The
+            // published compiler record reaches this storage, so a `used`
+            // attribute would be redundant and would retain the COMDAT both
+            // through llvm.compiler.used and the finalizer's llvm.used root.
+            static int token IV_NODE_LAYOUT_TYPE_TOKEN_STORAGE = 0;
             return &token;
         }
 
@@ -109,6 +122,8 @@ namespace iv {
             NodeStorage const&, std::string const&, void const* element_type);
 
     }
+
+#undef IV_NODE_LAYOUT_TYPE_TOKEN_STORAGE
 
     template<typename Node>
     struct DeclarationContext;

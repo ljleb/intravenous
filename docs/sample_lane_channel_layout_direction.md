@@ -247,7 +247,7 @@ This keeps most lane-node definitions simple.
 Nodes that want interleaved access can opt into it explicitly.
 
 Channel type should not be forced into every lane-node type definition.
-Channel type remains an authored graph property of the connected sample stream,
+Channel type remains an configured graph property of the connected sample stream,
 while the port config expresses storage preference.
 
 ## Lane-Level Semantics

@@ -36,8 +36,16 @@ ReflectedNodeDescription materialize_node_build_request(
         request.compiler_record->code_key,
         storage.get(),
         request.config_size);
-    return details::materialize_node_description(
+    auto description = details::materialize_node_description(
         request, std::move(storage), std::move(relocations));
+    description.state_structure_storage =
+        details::copy_builder_node_state_structure(
+            session, request.compiler_record->code_key);
+    description.operations.runtime.state_structure =
+        description.state_structure_storage
+            ? description.state_structure_storage.get()
+            : nullptr;
+    return description;
 }
 } // namespace
 
@@ -183,7 +191,7 @@ void GraphBuilder::event_outputs(std::span<EventOutputRequest const> refs)
     state(*this).event_outputs(refs);
 }
 
-NodeRef GraphBuilder::author_runtime_binary_op(
+NodeRef GraphBuilder::configure_runtime_binary_op(
     SamplePortRef lhs,
     SamplePortRef rhs,
     std::string_view op_name,
@@ -302,6 +310,18 @@ size_t GraphBuilder::event_input_count(NodeBundleHandle handle) const
 size_t GraphBuilder::event_output_count(NodeBundleHandle handle) const
 {
     return state(*this).event_output_count(handle);
+}
+
+InputConfig GraphBuilder::sample_input_config(
+    NodeBundleHandle handle, size_t port) const
+{
+    return state(*this).sample_input_config(handle, port);
+}
+
+EventInputConfig GraphBuilder::event_input_config(
+    NodeBundleHandle handle, size_t port) const
+{
+    return state(*this).event_input_config(handle, port);
 }
 NodeBundleHandle GraphBuilder::tiled_member(
     NodeBundleHandle handle, size_t channel) const
@@ -473,11 +493,11 @@ void GraphBuilder::subgraph_event_outputs(
     state(*this).subgraph_event_outputs(*scope, refs);
 }
 
-AuthoredGraph GraphBuilder::finish() const &
+ConfiguredGraph GraphBuilder::finish() const &
 {
     return state(*this).finish();
 }
-AuthoredGraph GraphBuilder::finish() &&
+ConfiguredGraph GraphBuilder::finish() &&
 {
     if (!_session) throw std::logic_error("cannot finish an empty GraphBuilder");
     return details::take_built_graph(_session);

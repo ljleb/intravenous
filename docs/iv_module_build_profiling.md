@@ -34,7 +34,7 @@ parallelism differs from the defaults.
 
 The first line for each `cold` and `hot` phase reports:
 
-- `pipeline_ms`: complete `ModuleLoader::compile_root_definition` wall time.
+- `pipeline_ms`: complete `ModuleLoader::compile_package` wall time.
 - `configure_us` and `ninja_build_us`: the two external build invocations.
 - `pch_ms`, `export_ms`, and `link_ms`: newly appended Ninja edge durations.
 - `generation_copy_us`: copying the finished DSO into its unique generation
@@ -43,8 +43,8 @@ The first line for each `cold` and `hot` phase reports:
 The following lines, prefixed `finalizer_`, come from
 `cmake-build/iv-module-finalizer-timings.txt` in that workspace. They split
 the LLVM finalizer into bitcode parse/link, node-record scanning, metadata
-load/bind, authoring-module clone, JIT creation/materialization,
-builder-session setup, `module_main`, JIT release, graph serialization,
+load/bind, configuration-module clone, JIT creation/materialization,
+builder-session setup, registered-source-module configuration, JIT release, graph serialization,
 module-data injection, runtime optimization, native object emission, native
 link, and total time. Values are integer microseconds.
 
@@ -69,7 +69,7 @@ largest measured stage:
 - high `finalizer_runtime_optimize_us` or
   `finalizer_native_object_emit_us`: evaluate O2 versus O3 before designing
   caching;
-- high JIT/authoring timings: reduce builder-side IR and work;
+- high JIT/configuration timings: reduce builder-side IR and work;
 - high load timings: profile DSO and runtime graph materialization separately.
 
 The broader `scripts/verify_release_performance.sh` is for release validation,

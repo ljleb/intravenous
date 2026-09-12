@@ -926,3 +926,5 @@ void module_main(iv::GraphBuilder& g)
 
     g.outputs("main"_P = spatialized_left + spatialized_right);
 }
+
+IV_MODULE("iv.project.brown_duda", module_main);

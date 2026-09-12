@@ -11,7 +11,7 @@ function sampleNode(): VirtualNode {
     return {
         id: "node-1",
         kind: "Oscillator",
-        sourceIdentity: "module@Oscillator",
+        packageIdentity: "module@Oscillator",
         memberCount: 2,
         sampleInputs: [{
             ordinal: 1,
@@ -164,7 +164,7 @@ test("serializeLiveGraphInstances builds stable dropdown labels", () => {
         instanceId: "instance-1",
         definitionId: "definition-1",
         moduleId: "iv.project.simple_sine",
-        moduleRoot: "/tmp/simple_sine",
+        packageRoot: "/tmp/simple_sine",
         realized: true,
     }]);
 
@@ -172,7 +172,7 @@ test("serializeLiveGraphInstances builds stable dropdown labels", () => {
         instanceId: "instance-1",
         definitionId: "definition-1",
         moduleId: "iv.project.simple_sine",
-        moduleRoot: "/tmp/simple_sine",
+        packageRoot: "/tmp/simple_sine",
         realized: true,
         label: "iv.project.simple_sine • instance-1",
     }]);

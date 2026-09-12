@@ -3,9 +3,7 @@
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/lane_filters.h>
@@ -43,8 +41,6 @@ struct SeededIvModuleSourceIntrospectionApp {
     iv::timeline_lane_filters_bridge::scope timeline_lane_filters_scope;
     iv::iv_module_definitions_iv_module_instances_bridge::scope
         iv_module_definitions_iv_module_instances_scope;
-    iv::iv_module_definitions_iv_module_source_introspection_bridge::scope
-        iv_module_definitions_iv_module_source_introspection_scope;
     iv::iv_module_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
     iv::iv_module_instances_graph_input_lanes_bridge::scope
@@ -64,9 +60,6 @@ struct SeededIvModuleSourceIntrospectionApp {
               std::move(extra_search_roots)),
           timeline_lane_filters_scope(timeline, lane_filters),
           iv_module_definitions_iv_module_instances_scope(definitions, instances),
-          iv_module_definitions_iv_module_source_introspection_scope(
-              definitions,
-              introspection),
           iv_module_instances_iv_module_source_introspection_scope(
               instances,
               introspection),
@@ -255,7 +248,7 @@ namespace {
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
-    auto definition = loader.load_root_definition(workspace);
+    auto definition = loader.load_package_definitions(workspace).front();
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(definition.root), 8);
 
@@ -367,6 +360,53 @@ namespace {
             EXPECT_EQ(member.sample_outputs.front().connectivity, iv::VirtualPortConnectivity::connected);
         }
     }
+}
+
+TEST(IvModuleSourceIntrospection, TypedPublicInputsAndCapturedBuilderOutputsRemainSourceAnnotated)
+{
+    auto const workspace = make_inline_module_workspace(
+        "iv_module_source_introspection_typed_public_ports_in_lambda",
+        R"(#include <intravenous/dsl.h>
+
+namespace {
+    void typed_public_ports_in_lambda(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto const frequency = g.input<"frequency">(220.0);
+        auto const detune = g.input<"detune">(2.5);
+        auto emit = [&] {
+            g.outputs("main"_P = frequency + detune);
+        };
+        emit();
+    }
+}
+)");
+
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    app.initialize();
+
+    auto const inputs = app.graph_input_lanes.public_sample_inputs();
+    ASSERT_EQ(inputs.size(), 2u);
+    for (auto const& input : inputs) {
+        EXPECT_FALSE(input.source_identity.empty());
+        EXPECT_FALSE(input.source_infos.empty());
+    }
+    auto const outputs = app.graph_input_lanes.public_sample_outputs();
+    ASSERT_EQ(outputs.size(), 1u);
+    EXPECT_FALSE(outputs.front().source_identity.empty());
+    EXPECT_FALSE(outputs.front().source_infos.empty());
+
+    auto const result = app.query_by_spans(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"),
+        {{.start = {.line = 1, .column = 1}, .end = {.line = 20, .column = 1}}});
+    size_t public_inputs = 0;
+    size_t public_outputs = 0;
+    for (auto const& node : result.nodes) {
+        if (node.kind == "Public input") ++public_inputs;
+        if (node.kind == "Public output") ++public_outputs;
+    }
+    EXPECT_EQ(public_inputs, 2u);
+    EXPECT_EQ(public_outputs, 1u);
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableAcrossReload)

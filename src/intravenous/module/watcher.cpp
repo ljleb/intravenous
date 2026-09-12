@@ -46,7 +46,7 @@ namespace iv {
                 if (!entry.is_regular_file()) {
                     continue;
                 }
-                if (!is_module_dependency_source_path(entry.path())) {
+                if (!is_module_dependency_package_path(entry.path())) {
                     continue;
                 }
 
@@ -165,7 +165,7 @@ namespace iv {
     {
         auto const stamps_changed = [&] {
             for (auto const& dependency : _dependencies) {
-                if (compute_directory_stamp(dependency.module_dir) != dependency.source_stamp) {
+                if (compute_directory_stamp(dependency.module_dir) != dependency.package_stamp) {
                     return true;
                 }
             }

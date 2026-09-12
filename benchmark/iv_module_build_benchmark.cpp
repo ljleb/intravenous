@@ -52,8 +52,6 @@ struct Options {
         std::filesystem::temp_directory_path() / "intravenous-module-build-benchmark";
     size_t voices = 1;
     bool keep_workspace = false;
-    iv::ModuleCompileStage compile_stage = iv::ModuleCompileStage::full;
-    iv::ModuleOptimization optimization = iv::ModuleOptimization::O3;
     bool source_introspection = true;
     bool precompiled_header = true;
     bool clang_time_trace = false;
@@ -85,56 +83,6 @@ SourceShape parse_source_shape(std::string_view value)
     throw std::runtime_error("invalid source shape '" + std::string(value) + "'");
 }
 
-std::string_view compile_stage_name(iv::ModuleCompileStage stage)
-{
-    switch (stage) {
-    case iv::ModuleCompileStage::full: return "full";
-    case iv::ModuleCompileStage::authoring: return "authoring";
-    case iv::ModuleCompileStage::lowering_topology:
-        return "lowering-topology";
-    case iv::ModuleCompileStage::lowering_materialization:
-        return "lowering-materialization";
-    case iv::ModuleCompileStage::lowering_normalization:
-        return "lowering-normalization";
-    case iv::ModuleCompileStage::lowering: return "lowering";
-    case iv::ModuleCompileStage::compilation: return "compilation";
-    case iv::ModuleCompileStage::static_metadata: return "static-metadata";
-    }
-    throw std::logic_error("invalid module compile stage");
-}
-
-iv::ModuleCompileStage parse_compile_stage(std::string_view value)
-{
-    if (value == "full") return iv::ModuleCompileStage::full;
-    if (value == "authoring") return iv::ModuleCompileStage::authoring;
-    if (value == "lowering-topology")
-        return iv::ModuleCompileStage::lowering_topology;
-    if (value == "lowering-materialization")
-        return iv::ModuleCompileStage::lowering_materialization;
-    if (value == "lowering-normalization")
-        return iv::ModuleCompileStage::lowering_normalization;
-    if (value == "lowering") return iv::ModuleCompileStage::lowering;
-    if (value == "compilation") return iv::ModuleCompileStage::compilation;
-    if (value == "static-metadata") return iv::ModuleCompileStage::static_metadata;
-    throw std::runtime_error("invalid compile stage '" + std::string(value) + "'");
-}
-
-std::string_view optimization_name(iv::ModuleOptimization optimization)
-{
-    switch (optimization) {
-    case iv::ModuleOptimization::O0: return "O0";
-    case iv::ModuleOptimization::O3: return "O3";
-    }
-    throw std::logic_error("invalid module optimization");
-}
-
-iv::ModuleOptimization parse_optimization(std::string_view value)
-{
-    if (value == "O0") return iv::ModuleOptimization::O0;
-    if (value == "O3") return iv::ModuleOptimization::O3;
-    throw std::runtime_error("invalid optimization '" + std::string(value) + "'");
-}
-
 std::string read(std::filesystem::path const& path)
 {
     std::ifstream input(path, std::ios::binary);
@@ -153,6 +101,10 @@ void write(std::filesystem::path const& path, std::string_view text)
 std::string benchmark_source(size_t voices, SourceShape shape)
 {
     std::ostringstream source;
+    auto finish = [&] {
+        source << "\nIV_MODULE(\"iv.benchmark.compile\", module_main);\n";
+        return source.str();
+    };
     source << "#include <intravenous/dsl.h>\n";
     if (shape == SourceShape::nodes
         || shape == SourceShape::connected
@@ -164,20 +116,20 @@ std::string benchmark_source(size_t voices, SourceShape shape)
     if (shape == SourceShape::empty) {
         source << "    (void)g;\n"
                << "}\n";
-        return source.str();
+        return finish();
     }
     source << "    using namespace iv;\n"
            << "    auto const frequency = g.input<\"frequency\">(220.0f);\n";
     if (shape == SourceShape::input) {
         source << "}\n";
-        return source.str();
+        return finish();
     }
     for (size_t voice = 0; voice < voices; ++voice) {
         source << "    auto const osc" << voice << " = g.node<SawOscillator>();\n";
     }
     if (shape == SourceShape::nodes) {
         source << "}\n";
-        return source.str();
+        return finish();
     }
     for (size_t voice = 0; voice < voices; ++voice) {
         source << "    osc" << voice << "(\"frequency\"_P = frequency + "
@@ -186,7 +138,7 @@ std::string benchmark_source(size_t voices, SourceShape shape)
     }
     if (shape == SourceShape::connected) {
         source << "}\n";
-        return source.str();
+        return finish();
     }
     source << "    g.outputs(\"main\"_P = ";
     if (voices == 0) {
@@ -198,7 +150,7 @@ std::string benchmark_source(size_t voices, SourceShape shape)
         }
     }
     source << ");\n}\n";
-    return source.str();
+    return finish();
 }
 
 Options parse_options(int argc, char** argv)
@@ -216,10 +168,6 @@ Options parse_options(int argc, char** argv)
             options.voices = std::stoull(std::string(require_value(arg)));
         } else if (arg == "--keep") {
             options.keep_workspace = true;
-        } else if (arg == "--stage") {
-            options.compile_stage = parse_compile_stage(require_value(arg));
-        } else if (arg == "--optimization") {
-            options.optimization = parse_optimization(require_value(arg));
         } else if (arg == "--no-source-introspection") {
             options.source_introspection = false;
         } else if (arg == "--no-pch") {
@@ -237,8 +185,6 @@ Options parse_options(int argc, char** argv)
         } else if (arg == "--help") {
             std::cout
                 << "Usage: iv_module_build_benchmark [--voices N] [--workspace PATH]"
-                << " [--stage full|authoring|lowering-topology|lowering-materialization|lowering-normalization|lowering|compilation|static-metadata]"
-                << " [--optimization O0|O3]"
                 << " [--source-shape empty|input|nodes|connected|full]"
                 << " [--module PATH]"
                 << " [--c-compiler PATH] [--cxx-compiler PATH]"
@@ -260,17 +206,17 @@ std::filesystem::path module_directory(std::filesystem::path path)
 {
     path = std::filesystem::absolute(path).lexically_normal();
     if (std::filesystem::is_regular_file(path)) {
-        if (path.filename() != "iv_module.json") {
+        if (path.filename() != "iv_package.json") {
             throw std::runtime_error(
-                "module path must be a directory or iv_module.json: '" +
+                "source path must be a directory or iv_package.json: '" +
                 path.string() + "'");
         }
         path = path.parent_path();
     }
     if (!std::filesystem::is_directory(path)
-        || !std::filesystem::exists(path / "iv_module.json")) {
+        || !std::filesystem::exists(path / "iv_package.json")) {
         throw std::runtime_error(
-            "module path is missing iv_module.json: '" + path.string() + "'");
+            "source path is missing iv_package.json: '" + path.string() + "'");
     }
     return path;
 }
@@ -340,7 +286,7 @@ std::filesystem::path find_finalizer_timings(std::filesystem::path const& worksp
     std::vector<std::filesystem::path> candidates;
     for (std::filesystem::recursive_directory_iterator it(workspace), end; it != end; ++it) {
         if (it->is_regular_file()
-            && it->path().filename() == "iv-module-finalizer-timings.txt") {
+            && it->path().filename() == "iv-package-finalizer-timings.txt") {
             candidates.push_back(it->path());
         }
     }
@@ -489,9 +435,7 @@ PhaseResult summarize(
     if (edges) {
         for (auto const& edge : *edges) {
             if (edge.output.ends_with("cmake_pch.hxx.gch")) result.pch_ms += edge.duration_ms;
-            if (edge.output.ends_with("root_export.cpp.o")) result.export_ms += edge.duration_ms;
-            if (edge.output.ends_with(".so") || edge.output.ends_with(".dylib")
-                || edge.output.ends_with(".dll")) result.link_ms += edge.duration_ms;
+            if (edge.output.ends_with(".ivpkg.bc")) result.link_ms += edge.duration_ms;
         }
     }
     return result;
@@ -500,8 +444,6 @@ PhaseResult summarize(
 void print(
     std::string_view phase,
     std::string_view workload,
-    iv::ModuleCompileStage stage,
-    iv::ModuleOptimization optimization,
     SourceShape shape,
     bool source_introspection,
     bool precompiled_header,
@@ -510,15 +452,13 @@ void print(
     std::cout << "iv-module-build-benchmark"
               << " phase=" << phase
               << " workload=" << workload
-              << " stage=" << compile_stage_name(stage)
-              << " optimization=" << optimization_name(optimization)
+              << " package_llvm=O0"
               << " source_shape=" << source_shape_name(shape)
               << " source_introspection=" << source_introspection
               << " pch=" << precompiled_header
               << " pipeline_ms=" << result.pipeline_ms
               << " pch_ms=" << result.pch_ms
-              << " export_ms=" << result.export_ms
-              << " link_ms=" << result.link_ms
+              << " package_finalize_ms=" << result.link_ms
               << " configure_us=" << result.configure_us
               << " ninja_build_us=" << result.ninja_build_us
               << " generation_copy_us=" << result.generation_copy_us
@@ -563,7 +503,7 @@ void run(Options const& options)
         module = options.workspace / "modules" / "compile_benchmark";
         hot_source = module / "module.cpp";
         write(options.workspace / "iv_project.jsonl", "");
-        write(module / "iv_module.json", R"({"schema":1,"id":"iv.benchmark.compile","entry":"module.cpp","main":"module_main"})");
+        write(module / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");
         write(hot_source, benchmark_source(options.voices, options.source_shape));
     }
     auto source = read(hot_source);
@@ -575,8 +515,6 @@ void run(Options const& options)
             iv::ModuleLoaderToolchainConfig{
                 .c_compiler = options.c_compiler,
                 .cxx_compiler = options.cxx_compiler,
-                .compile_stage = options.compile_stage,
-                .optimization = options.optimization,
                 .source_introspection = options.source_introspection,
                 .precompiled_header = options.precompiled_header,
                 .clang_time_trace = options.clang_time_trace,
@@ -584,7 +522,7 @@ void run(Options const& options)
             [&](std::string const& entry) { loader_log.push_back(entry); });
 
         auto const cold_start = Clock::now();
-        (void)loader.compile_root_definition(module);
+        (void)loader.compile_package(module);
         auto const cold_elapsed = Clock::now() - cold_start;
         auto const ninja_log = find_ninja_log(options.workspace);
         auto const cold_log = read(ninja_log);
@@ -598,7 +536,7 @@ void run(Options const& options)
             ? clang_time_trace_snapshot(ninja_log.parent_path())
             : ClangTimeTraceSnapshot{};
         print(
-            "cold", workload, options.compile_stage, options.optimization,
+            "cold", workload,
             options.source_shape,
             options.source_introspection, options.precompiled_header,
             summarize(
@@ -611,7 +549,7 @@ void run(Options const& options)
         write(hot_source, source);
         loader_log.clear();
         auto const hot_start = Clock::now();
-        (void)loader.compile_root_definition(module);
+        (void)loader.compile_package(module);
         auto const hot_elapsed = Clock::now() - hot_start;
         auto const hot_log = read(ninja_log);
         auto const hot_finalizer_timings = finalizer_timings(
@@ -622,7 +560,7 @@ void run(Options const& options)
                 traces_before_hot);
         }
         print(
-            "hot", workload, options.compile_stage, options.optimization,
+            "hot", workload,
             options.source_shape,
             options.source_introspection, options.precompiled_header,
             summarize(

@@ -49,7 +49,7 @@ void append_descriptors(
                 .port_type = port.type,
                 .sample_channel_type = port.sample_channel_type,
             },
-            .authored_connected = port.connectivity != VirtualPortConnectivity::disconnected,
+            .configured_connected = port.connectivity != VirtualPortConnectivity::disconnected,
             .default_value = port.default_value,
             .min = port.min,
             .max = port.max,
@@ -116,7 +116,7 @@ auto GraphInputLanesPortCatalog::public_inputs(
             .default_value = family.input_config.default_value, .min = family.input_config.min, .max = family.input_config.max,
             .source_infos = family.source_infos,
             .source_identity = family.source_infos.empty() ? std::string{} : family.source_infos.front().declaration_identity,
-            .graph_connected = family.authored_connected,
+            .graph_connected = family.configured_connected,
             .channels = std::move(channels),
         });
     }

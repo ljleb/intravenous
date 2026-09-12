@@ -1,6 +1,7 @@
 // @ts-nocheck
 import * as vscode from "vscode";
 import { lanePresentationPlugins } from "./lanePlugins";
+import { requestedLaneViewCount } from "./laneViewport";
 
 function utf8ByteOffsetForUtf16Offset(source, utf16Offset) {
     const bounded = Math.max(0, Math.min(source.length, utf16Offset));
@@ -188,7 +189,10 @@ export class LaneViewProvider {
             // result in the view so it can apply its own order before local
             // viewport virtualization; filtering itself remains server-side.
             startIndex: 0,
-            visibleLaneCount: Math.max(this.visibleLaneCount, this.totalLaneCount),
+            visibleLaneCount: requestedLaneViewCount(
+                this.visibleLaneCount,
+                this.totalLaneCount,
+            ),
             firstSampleIndex: this.firstSampleIndex,
             lastSampleIndex: this.lastSampleIndex,
             displaySampleCount: this.displaySampleCount,
@@ -1053,7 +1057,7 @@ export class LaneViewProvider {
         let pendingLaneQueryCompletion = 0;
         let laneQueryCompletionRequestId = 0;
         let activeLaneQuerySuggestion = 0;
-        function isAuthoredLane(lane) {
+        function isConfiguredLane(lane) {
             return Boolean(lane?.modelTypeId);
         }
         function requestLaneDeletion(laneIds) {
@@ -1341,11 +1345,11 @@ export class LaneViewProvider {
             if (active?.matches?.("input, textarea, select, [contenteditable='true']")
                 || active?.isContentEditable) return;
             if (event.key === "Delete" && state.selectedLaneIds.size > 0) {
-                const authoredIds = visibleSelectedLaneIds().filter((laneId) =>
-                    isAuthoredLane(state.lanes.find((lane) => String(lane.laneId) === laneId)));
-                if (authoredIds.length > 0) {
+                const configuredIds = visibleSelectedLaneIds().filter((laneId) =>
+                    isConfiguredLane(state.lanes.find((lane) => String(lane.laneId) === laneId)));
+                if (configuredIds.length > 0) {
                     event.preventDefault();
-                    requestLaneDeletion(authoredIds);
+                    requestLaneDeletion(configuredIds);
                 }
                 return;
             }
@@ -1832,24 +1836,24 @@ export class LaneViewProvider {
                 showRenameDialog(lane);
             });
             menu.appendChild(rename);
-            if (isAuthoredLane(lane)) {
+            if (isConfiguredLane(lane)) {
                 const duplicate = document.createElement("button");
-                const selectedAuthoredIds = visibleSelectedLaneIds().filter((laneId) =>
-                    isAuthoredLane(state.lanes.find((candidate) => String(candidate.laneId) === laneId)));
-                duplicate.textContent = selectedAuthoredIds.length > 1 ? "Duplicate selected lanes" : "Duplicate lane";
+                const selectedConfiguredIds = visibleSelectedLaneIds().filter((laneId) =>
+                    isConfiguredLane(state.lanes.find((candidate) => String(candidate.laneId) === laneId)));
+                duplicate.textContent = selectedConfiguredIds.length > 1 ? "Duplicate selected lanes" : "Duplicate lane";
                 duplicate.addEventListener("click", () => {
                     menu.remove();
-                    for (const laneId of selectedAuthoredIds) {
+                    for (const laneId of selectedConfiguredIds) {
                         vscode.postMessage({ type: "duplicateLane", laneId });
                     }
                 });
                 menu.appendChild(duplicate);
                 const remove = document.createElement("button");
-                remove.textContent = selectedAuthoredIds.length > 1 ? "Delete selected lanes" : "Delete lane";
+                remove.textContent = selectedConfiguredIds.length > 1 ? "Delete selected lanes" : "Delete lane";
                 remove.addEventListener("click", () => {
-                    connectionDebug("webview context-menu delete clicked laneIds=" + selectedAuthoredIds.join(","));
+                    connectionDebug("webview context-menu delete clicked laneIds=" + selectedConfiguredIds.join(","));
                     menu.remove();
-                    requestLaneDeletion(selectedAuthoredIds);
+                    requestLaneDeletion(selectedConfiguredIds);
                 });
                 menu.appendChild(remove);
             }

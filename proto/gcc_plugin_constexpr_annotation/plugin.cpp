@@ -44,7 +44,7 @@ bool function_is_named(tree function, std::string_view name)
         && std::string_view(IDENTIFIER_POINTER(DECL_NAME(function))) == name;
 }
 
-tree log_real_authored_expression(tree* node, int*, void*)
+tree log_real_configured_expression(tree* node, int*, void*)
 {
     if (!node || !*node || !EXPR_P(*node))
         return nullptr;
@@ -52,7 +52,7 @@ tree log_real_authored_expression(tree* node, int*, void*)
     expanded_location const start = expand_location(range.m_start);
     expanded_location const finish = expand_location(range.m_finish);
     std::string_view const file = start.file ? start.file : "";
-    constexpr std::string_view suffix = "real_authored.hpp";
+    constexpr std::string_view suffix = "real_configured.hpp";
     if (file.size() < suffix.size()
         || file.substr(file.size() - suffix.size()) != suffix
         || start.line != 43)
@@ -165,7 +165,7 @@ tree find_initialized_node_call(
     expanded_location const start = expand_location(range.m_start);
     expanded_location const finish = expand_location(range.m_finish);
     std::string_view const source_file = start.file ? start.file : "";
-    constexpr std::string_view source_suffix = "real_authored.hpp";
+    constexpr std::string_view source_suffix = "real_configured.hpp";
     if (source_file.size() < source_suffix.size()
         || source_file.substr(source_file.size() - source_suffix.size())
             != source_suffix)
@@ -263,7 +263,7 @@ void transform_function_body(tree* body)
     AnnotationTarget graph_target{
         .function = graph_annotation_function,
         .callee_name = "node",
-        .source_suffix = "real_authored.hpp",
+        .source_suffix = "real_configured.hpp",
     };
     cp_walk_tree_without_duplicates(
         body, wrap_node_call, &graph_target);
@@ -291,10 +291,10 @@ void annotate_function(void* gcc_data, void*)
     if (!function || TREE_CODE(function) != FUNCTION_DECL
         || !DECL_SAVED_TREE(function))
         return;
-    if (function_is_named(function, "real_authored_entry"))
+    if (function_is_named(function, "real_configured_entry"))
         cp_walk_tree_without_duplicates(
             &DECL_SAVED_TREE(function),
-            log_real_authored_expression,
+            log_real_configured_expression,
             nullptr);
     transform_function_body(&DECL_SAVED_TREE(function));
     if (auto* constexpr_definition = retrieve_constexpr_fundef(function))

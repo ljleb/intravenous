@@ -1,5 +1,6 @@
 #include <intravenous/runtime/project_persistence.h>
 
+#include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/task_runner_events.h>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <system_error>
+#include <utility>
 
 namespace iv {
 namespace {
@@ -31,6 +33,25 @@ std::optional<std::string> optional_nullable_string(Json const &args, std::strin
         throw std::runtime_error("command args key '" + key + "' must be a string or null");
     }
     return it->get<std::string>();
+}
+
+std::filesystem::path require_project_path(
+    Json const &args,
+    std::string const &key,
+    std::filesystem::path const &workspace_root)
+{
+    auto path = std::filesystem::path(require_string(args, key));
+    if (!path.is_absolute()) {
+        path = workspace_root / path;
+    }
+
+    std::error_code ec;
+    auto const normalized = std::filesystem::weakly_canonical(path, ec);
+    if (ec) {
+        throw std::runtime_error(
+            "command args key '" + key + "' cannot be resolved: " + ec.message());
+    }
+    return normalized.lexically_normal();
 }
 
 std::optional<InternedString> optional_interned_string(Json const &args, std::string const &key)
@@ -181,6 +202,15 @@ ProjectEventOutputState parse_project_event_output_state(std::string const &stat
         return ProjectEventOutputState::timeline_lane;
     }
     throw std::runtime_error("unknown project event output state: " + state);
+}
+
+void publish_graph_input_public_ports(GraphInputPublicPortsSnapshot public_ports)
+{
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_instances_configured_event,
+        IvModuleInstancesConfigured{
+            .public_ports = std::move(public_ports)
+        });
 }
 
 bool is_recognized_project_override_key(std::string const &key)
@@ -373,6 +403,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
             ProjectCreateIvModuleInstanceRequest{
                 .instance_id = require_string(args, "instance_id"),
                 .module_id = require_string(args, "module_id"),
+                .package_root = require_project_path(args, "package_root", workspace_root_),
                 .display_name = optional_nullable_string(args, "display_name"),
             },
             builder);
@@ -424,7 +455,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
     }
 
     if (command.command == "graph.setSampleInputValue") {
-        ProjectAckBuilder builder;
+        ProjectGraphInputAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_sample_input_value_requested_event,
             ProjectSetSampleInputValueRequest{
@@ -436,12 +467,12 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .value = Sample{args["value"].get<Sample::storage>()},
             },
             builder);
-        builder.build();
+        publish_graph_input_public_ports(builder.build());
         return;
     }
 
     if (command.command == "graph.setSampleInputState") {
-        ProjectAckBuilder builder;
+        ProjectGraphInputAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_sample_input_state_requested_event,
             ProjectSetSampleInputStateRequest{
@@ -454,12 +485,12 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .lane_id = optional_interned_string(args, "lane_id"),
             },
             builder);
-        builder.build();
+        publish_graph_input_public_ports(builder.build());
         return;
     }
 
     if (command.command == "graph.setEventInputState") {
-        ProjectAckBuilder builder;
+        ProjectGraphInputAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_event_input_state_requested_event,
             ProjectSetEventInputStateRequest{
@@ -472,12 +503,12 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .lane_id = optional_interned_string(args, "lane_id"),
             },
             builder);
-        builder.build();
+        publish_graph_input_public_ports(builder.build());
         return;
     }
 
     if (command.command == "graph.setSampleOutputState") {
-        ProjectAckBuilder builder;
+        ProjectGraphInputAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_sample_output_state_requested_event,
             ProjectSetSampleOutputStateRequest{
@@ -490,12 +521,12 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .lane_id = optional_interned_string(args, "lane_id"),
             },
             builder);
-        builder.build();
+        publish_graph_input_public_ports(builder.build());
         return;
     }
 
     if (command.command == "graph.setEventOutputState") {
-        ProjectAckBuilder builder;
+        ProjectGraphInputAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_event_output_state_requested_event,
             ProjectSetEventOutputStateRequest{
@@ -508,7 +539,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .lane_id = optional_interned_string(args, "lane_id"),
             },
             builder);
-        builder.build();
+        publish_graph_input_public_ports(builder.build());
         return;
     }
 
@@ -532,7 +563,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
         return;
     }
 
-    if (command.command == "timeline.createAuthoredLane") {
+    if (command.command == "timeline.createConfiguredLane") {
         ProjectAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_create_timeline_lane_requested_event,
@@ -561,7 +592,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
         return;
     }
 
-    if (command.command == "timeline.connectAuthoredLanes") {
+    if (command.command == "timeline.connectConfiguredLanes") {
         ProjectAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_connect_timeline_lanes_requested_event,
@@ -571,7 +602,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .port_domain = require_port_domain(args, "port_domain"),
                 .port_kind = require_port_kind(args, "port_kind"),
                 .port_ordinal = require_size(args, "port_ordinal"),
-                .authored = true,
+                .configured = true,
             },
             builder);
         builder.build();
@@ -731,6 +762,7 @@ void ProjectPersistence::handle_socket_rpc_set_timeline_compiled_sample_cache_ch
             },
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -750,6 +782,7 @@ void ProjectPersistence::handle_socket_rpc_set_timeline_lane_sample_channel_type
             },
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -771,6 +804,7 @@ void ProjectPersistence::handle_socket_rpc_set_timeline_lane_ui_state(
             },
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -790,10 +824,11 @@ void ProjectPersistence::handle_socket_rpc_connect_timeline_lanes(
                 .port_domain = request.port_domain,
                 .port_kind = request.port_kind,
                 .port_ordinal = request.port_ordinal,
-                .authored = true,
+                .configured = true,
             },
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -816,6 +851,7 @@ void ProjectPersistence::handle_socket_rpc_disconnect_timeline_lanes(
             },
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -847,6 +883,7 @@ void ProjectPersistence::handle_socket_rpc_create_timeline_lane(
             ProjectCreateTimelineLaneRequest{.type_id = request.type_id},
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -863,6 +900,7 @@ void ProjectPersistence::handle_socket_rpc_delete_timeline_lane(
             ProjectDeleteTimelineLaneRequest{.lane_id = request.lane_id},
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -879,6 +917,7 @@ void ProjectPersistence::handle_socket_rpc_duplicate_timeline_lane(
             ProjectDuplicateTimelineLaneRequest{.lane_id = request.lane_id},
             project_builder);
         project_builder.build();
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }

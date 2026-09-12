@@ -120,6 +120,13 @@ namespace iv {
         std::vector<std::string> member_states {};
     };
 
+    struct GraphInputPublicPortsSnapshot {
+        std::vector<PublicSampleInputInfo> sample_inputs {};
+        std::vector<PublicEventInputInfo> event_inputs {};
+        std::vector<PublicSampleOutputInfo> sample_outputs {};
+        std::vector<PublicEventOutputInfo> event_outputs {};
+    };
+
     struct ProjectQueryResult {
         std::vector<VirtualNodeInfo> nodes{};
     };
@@ -131,14 +138,14 @@ namespace iv {
     struct ProjectMessageNotification {
         std::string level = "info";
         std::string message{};
-        std::filesystem::path module_root{};
+        std::filesystem::path package_root{};
     };
 
     struct ProjectStatusNotification {
         std::string level = "info";
         std::string code{};
         std::string message{};
-        std::filesystem::path module_root{};
+        std::filesystem::path package_root{};
         std::vector<std::string> created_node_ids{};
         std::vector<std::string> deleted_node_ids{};
     };

@@ -1,14 +1,13 @@
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
-#include <iv/modules/iv.test.reload_voice>
 
 void reload_project(iv::GraphBuilder& g)
 {
     using namespace iv;
     auto const left_phase = g.node<PhaseIntegrator>();
     auto const right_phase = g.node<PhaseIntegrator>();
-    auto const left_voice = g.module<reload_voice>();
-    auto const right_voice = g.module<reload_voice>();
+    auto const left_voice = g.node<"iv.test.reload_voice">();
+    auto const right_voice = g.node<"iv.test.reload_voice">();
     left_phase(0.0);
     right_phase(0.0);
     g.outputs(
@@ -21,3 +20,5 @@ void reload_project(iv::GraphBuilder& g)
             "frequency"_P = 330.0,
             "phase_offset"_P = right_phase));
 }
+
+IV_MODULE("iv.test.reload_project", reload_project);

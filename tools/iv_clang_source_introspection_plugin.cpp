@@ -28,6 +28,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <set>
 #include <string>
@@ -187,7 +188,7 @@ AnnotatableRefKind annotatable_ref_kind(QualType type)
         || name == "TypedSamplePortTileChannelRef")
         return AnnotatableRefKind::sample_port;
     if (name == "EventPortRef") return AnnotatableRefKind::event_port;
-    if (name == "PublicSampleInputRef")
+    if (name == "PublicSampleInputRef" || name == "TypedPublicSampleInputRef")
         return AnnotatableRefKind::public_sample_input;
     if (name == "PublicEventInputRef")
         return AnnotatableRefKind::public_event_input;
@@ -322,7 +323,7 @@ public:
             // A class-type declaration without source syntax for an
             // initializer (for example `NodeRef x;`) has an implicit
             // CXXConstructExpr in Clang's AST. It is still uninitialized in
-            // the authored-graph sense and must wait for its first assignment.
+            // the configured-graph sense and must wait for its first assignment.
             if (!has_explicit_initializer(variable)) continue;
             append_ref({variable, identity, *span});
         }
@@ -450,7 +451,7 @@ private:
         // instantiation, but that USR embeds concrete template arguments
         // (for example the polyphonic voice index). Source annotations need
         // the lexical declaration identity instead so equivalent callback
-        // instances aggregate by their exact authored source span. This is
+        // instances aggregate by their exact configured source span. This is
         // only a source annotation key; NodeCodeKey remains the build-local
         // compiler-record join key.
         return "source-local:" + span->file + ':' + std::to_string(span->begin)
@@ -564,7 +565,7 @@ public:
         if (!source_annotation_template_ || !public_output_annotation_function_) {
             auto id = compiler_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
-                "IV source annotation helpers were not found; include <intravenous/dsl.h> before authored module code");
+                "IV package annotation helpers were not found; include <intravenous/dsl.h> before configured module code");
             compiler_.getDiagnostics().Report(function->getLocation(), id);
             return;
         }
@@ -694,7 +695,7 @@ private:
         if (result != TemplateDeductionResult::Success || !specialization) {
             auto id = compiler_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
-                "cannot instantiate IV source annotation helper for type '%0'");
+                "cannot instantiate IV package annotation helper for type '%0'");
             compiler_.getDiagnostics().Report(location, id)
                 << type_string(context_, ref_type);
             return nullptr;
@@ -730,16 +731,19 @@ private:
         if (!builder) return nullptr;
         builder = builder->IgnoreParenImpCasts();
         if (auto* ref = dyn_cast<DeclRefExpr>(builder)) {
-            // Rebuilding an annotation for an enclosing GraphBuilder inside
-            // a lambda would require Sema to recreate its capture after the
-            // lambda has been parsed. The original outputs call remains
-            // valid; lambda-local node mapping does not need this synthetic
-            // public-output annotation.
-            if (ref->refersToEnclosingVariableOrCapture()) return nullptr;
-            auto* fresh = make_decl_ref(ref->getDecl(), location);
+            // The annotation is a separate statement, so it needs its own
+            // expression tree. Preserve Clang's capture bit when cloning a
+            // reference from a lambda body: a plain BuildDeclRefExpr here
+            // would refer to the enclosing GraphBuilder directly instead of
+            // the already-declared closure capture, and the output span would
+            // silently disappear from the configured graph.
+            auto* fresh = DeclRefExpr::Create(
+                context_, NestedNameSpecifierLoc{}, SourceLocation{},
+                ref->getDecl(), ref->refersToEnclosingVariableOrCapture(),
+                location, ref->getType(), ref->getValueKind());
             return make_address(fresh, location);
         }
-        // GraphBuilder's public API is unchanged; ordinary authored code uses
+        // GraphBuilder's public API is unchanged; ordinary configured code uses
         // a builder lvalue. Do not re-evaluate arbitrary object expressions
         // after the statement merely to obtain an annotation target.
         auto id = compiler_.getDiagnostics().getCustomDiagID(
@@ -1052,6 +1056,94 @@ private:
     std::vector<CXXRecordDecl const*> nodes_;
 };
 
+class PackageDefinitionCollector final
+    : public RecursiveASTVisitor<PackageDefinitionCollector> {
+public:
+    explicit PackageDefinitionCollector(ASTContext& context)
+        : context_(context)
+    {}
+
+    bool VisitVarDecl(VarDecl* declaration)
+    {
+        if (!declaration || !declaration->hasInit()) return true;
+        auto const* record = declaration->getType()->getAsCXXRecordDecl();
+        if (!record
+            || record->getQualifiedNameAsString()
+                != "iv::details::PackageDefinition") {
+            return true;
+        }
+
+        auto const variable_name = declaration->getName();
+        bool const is_module = variable_name.starts_with("iv_package_module_definition_");
+        bool const is_node = variable_name.starts_with("iv_package_node_definition_");
+        if (!is_module && !is_node) return true;
+
+        auto const* initializer = dyn_cast<InitListExpr>(
+            declaration->getInit()->IgnoreParenImpCasts());
+        if (!initializer || initializer->getNumInits() < 10) return true;
+
+        auto expression = [&](unsigned index) -> Expr const* {
+            return initializer->getInit(index)->IgnoreParenImpCasts();
+        };
+        auto const* literal = dyn_cast<StringLiteral>(expression(1));
+        if (!literal || literal->getString().empty()) return true;
+
+        auto id = literal->getString().str();
+        if (!seen_.insert(id).second) return true;
+        llvm::json::Object metadata{
+            {"id", std::move(id)},
+            {"kind", is_module ? "module" : "node"},
+            {"declaration_usr", declaration_usr(context_, declaration)},
+        };
+        if (auto const* source_file = dyn_cast<StringLiteral>(expression(3))) {
+            metadata["source_file"] = source_file->getString();
+        }
+
+        if (is_module) {
+            Expr const* implementation = expression(7);
+            if (auto const* address = dyn_cast<UnaryOperator>(implementation)) {
+                implementation = address->getSubExpr()->IgnoreParenImpCasts();
+            }
+            if (auto const* reference = dyn_cast<DeclRefExpr>(implementation)) {
+                metadata["implementation_usr"] = declaration_usr(
+                    context_, reference->getDecl());
+            }
+        } else {
+            Expr const* compiler_record = expression(9);
+            if (auto const* address = dyn_cast<UnaryOperator>(compiler_record)) {
+                compiler_record = address->getSubExpr()->IgnoreParenImpCasts();
+            }
+            if (auto const* reference = dyn_cast<DeclRefExpr>(compiler_record)) {
+                auto const* specialization = dyn_cast<VarTemplateSpecializationDecl>(
+                    reference->getDecl());
+                if (auto const* node = node_type_from_compiler_record_specialization(
+                        specialization)) {
+                    auto const type = context_.getCanonicalTagType(node);
+                    metadata["node_type_usr"] = declaration_usr(context_, node);
+                    metadata["node_code_key"] = node_code_key(context_, type);
+                }
+            }
+        }
+        definitions_.push_back(std::move(metadata));
+        return true;
+    }
+
+    llvm::json::Array take_definitions() &&
+    {
+        std::ranges::sort(definitions_, [](llvm::json::Value const& lhs,
+                                           llvm::json::Value const& rhs) {
+            return lhs.getAsObject()->getString("id")->str()
+                < rhs.getAsObject()->getString("id")->str();
+        });
+        return std::move(definitions_);
+    }
+
+private:
+    ASTContext& context_;
+    llvm::json::Array definitions_;
+    std::set<std::string> seen_;
+};
+
 std::filesystem::path metadata_path(
     CompilerInstance& compiler,
     std::filesystem::path const& directory)
@@ -1073,6 +1165,8 @@ void write_state_metadata(
     StateMetadataCollector state_collector(context);
     NodeConfigMetadataCollector node_config_collector(context);
     ReflectedNodeDiscovery reflected_node_discovery(context);
+    PackageDefinitionCollector package_definition_collector(context);
+    package_definition_collector.TraverseDecl(context.getTranslationUnitDecl());
     // A compiler record is emitted only for a type passed to GraphBuilder.
     // Calls at HandleTranslationUnit see ordinary records; the exact
     // variable-template listener re-runs this small collection when CodeGen
@@ -1103,9 +1197,10 @@ void write_state_metadata(
     }
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
-            {"version", 6},
+            {"version", 7},
             {"states", std::move(state_collector).take_states()},
             {"config_pointers", std::move(node_config_collector).take_fields()},
+            {"package_definitions", std::move(package_definition_collector).take_definitions()},
         }));
     stream << '\n';
 }
@@ -1223,7 +1318,7 @@ public:
         if (source_introspection_) {
             // Template instantiations can be materialized after their owning
             // top-level declaration was first seen. Catch any remaining
-            // authored function bodies before the frontend finishes.
+            // configured function bodies before the frontend finishes.
             FunctionDiscovery discovery(instrumenter_);
             discovery.TraverseDecl(context.getTranslationUnitDecl());
         }

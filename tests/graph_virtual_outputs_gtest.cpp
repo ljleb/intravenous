@@ -1,7 +1,7 @@
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/builder/host.hpp>
-#include <authored_graph_test_view.h>
+#include <configured_graph_test_view.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/basic_nodes/routing.h>
@@ -12,12 +12,12 @@ namespace iv {
 namespace {
 
 iv::RuntimeGraphPlan compile_graph(
-    iv::AuthoredGraphTestView view,
+    iv::ConfiguredGraphTestView view,
     bool execution_root = false)
 {
-    auto authored = iv::thaw_authored_graph_for_test(view);
+    auto configured = iv::thaw_configured_graph_for_test(view);
     auto executable = iv::GraphLowerer::lower(
-        std::move(authored), {.execution_root = execution_root});
+        std::move(configured), {.execution_root = execution_root});
     return iv::GraphCompiler::compile(std::move(executable));
 }
 
@@ -147,7 +147,7 @@ FamilySnapshot stereo_family_snapshot(bool connect_left)
     return result;
 }
 
-AuthoredGraphTestView author_stereo_metadata_graph()
+ConfiguredGraphTestView configure_stereo_metadata_graph()
 {
     GraphBuilder g;
     auto source = g.node<Sum<stereo, SampleStreamLayout::planar, 1>>();
@@ -155,12 +155,12 @@ AuthoredGraphTestView author_stereo_metadata_graph()
     (void)annotated;
     auto sink = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
     sink(source.static_output<0>()[stereo::left]);
-    return freeze_authored_graph_for_test(std::move(g).finish());
+    return freeze_configured_graph_for_test(std::move(g).finish());
 }
 
 VirtualPortConnectivity stereo_metadata_connectivity()
 {
-    auto const metadata = compile_graph(author_stereo_metadata_graph()).introspection;
+    auto const metadata = compile_graph(configure_stereo_metadata_graph()).introspection;
     for (auto const& node : metadata.virtual_nodes) {
         if (node.source_identity == "stereo" && !node.sample_outputs.empty())
             return node.sample_outputs.front().connectivity;
@@ -213,15 +213,15 @@ struct PublicOutputSnapshot {
     bool right_maps_to_zero = false;
 };
 
-struct NamedChannelOutputAuthoring {
-    AuthoredGraphTestView view;
+struct NamedChannelOutputConfiguration {
+    ConfiguredGraphTestView view;
     size_t family_count;
     size_t family_channels;
     bool left_maps_to_zero;
     bool right_maps_to_zero;
 };
 
-NamedChannelOutputAuthoring author_named_channel_output()
+NamedChannelOutputConfiguration configure_named_channel_output()
 {
     GraphBuilder g;
     g.outputs("main"_P[stereo::left] = 0.0f,
@@ -239,7 +239,7 @@ NamedChannelOutputAuthoring author_named_channel_output()
         && families.families.front().channels[1].port_ordinals.size() == 1
         && families.families.front().channels[1].port_ordinals[0] == 0;
     return {
-        .view = freeze_authored_graph_for_test(std::move(g).finish()),
+        .view = freeze_configured_graph_for_test(std::move(g).finish()),
         .family_count = family_count,
         .family_channels = family_channels,
         .left_maps_to_zero = left_maps,
@@ -249,8 +249,8 @@ NamedChannelOutputAuthoring author_named_channel_output()
 
 PublicOutputSnapshot named_channel_output_snapshot()
 {
-    auto const authored = author_named_channel_output();
-    auto const built = compile_graph(authored.view);
+    auto const configured = configure_named_channel_output();
+    auto const built = compile_graph(configured.view);
     PublicOutputSnapshot result{
         .graph_output_count = built.graph.outputs().size(),
         .name_main = built.graph.outputs().size() == 1
@@ -258,29 +258,29 @@ PublicOutputSnapshot named_channel_output_snapshot()
         .channel_type = built.graph.outputs().size() == 1
             ? built.graph.outputs()[0].channel_layout.channel_type
             : ChannelTypeId::mono,
-        .family_count = authored.family_count,
+        .family_count = configured.family_count,
     };
-    result.family_channels = authored.family_channels;
-    result.left_maps_to_zero = authored.left_maps_to_zero;
-    result.right_maps_to_zero = authored.right_maps_to_zero;
+    result.family_channels = configured.family_channels;
+    result.left_maps_to_zero = configured.left_maps_to_zero;
+    result.right_maps_to_zero = configured.right_maps_to_zero;
     return result;
 }
 
-struct RepeatedOutputAuthoring {
-    AuthoredGraphTestView view;
+struct RepeatedOutputConfiguration {
+    ConfiguredGraphTestView view;
     size_t family_count;
     size_t family_channels;
     bool left_maps_to_zero;
 };
 
-RepeatedOutputAuthoring author_repeated_named_output()
+RepeatedOutputConfiguration configure_repeated_named_output()
 {
     GraphBuilder g;
     g.outputs("main"_P = 0.25f);
     g.outputs("main"_P = 0.5f);
     auto const families = iv::host::public_sample_output_families(g);
     return {
-        .view = freeze_authored_graph_for_test(std::move(g).finish()),
+        .view = freeze_configured_graph_for_test(std::move(g).finish()),
         .family_count = families.families.size(),
         .family_channels = families.families.empty()
             ? 0 : families.families.front().channels.size(),
@@ -293,8 +293,8 @@ RepeatedOutputAuthoring author_repeated_named_output()
 
 PublicOutputSnapshot repeated_named_output_snapshot()
 {
-    auto const authored = author_repeated_named_output();
-    auto const built = compile_graph(authored.view);
+    auto const configured = configure_repeated_named_output();
+    auto const built = compile_graph(configured.view);
     return {
         .graph_output_count = built.graph.outputs().size(),
         .name_main = built.graph.outputs().size() == 1
@@ -302,20 +302,20 @@ PublicOutputSnapshot repeated_named_output_snapshot()
         .channel_type = built.graph.outputs().size() == 1
             ? built.graph.outputs().front().channel_layout.channel_type
             : ChannelTypeId::stereo,
-        .family_count = authored.family_count,
-        .family_channels = authored.family_channels,
-        .left_maps_to_zero = authored.left_maps_to_zero,
+        .family_count = configured.family_count,
+        .family_channels = configured.family_channels,
+        .left_maps_to_zero = configured.left_maps_to_zero,
     };
 }
 
-RepeatedOutputAuthoring author_repeated_unnamed_output()
+RepeatedOutputConfiguration configure_repeated_unnamed_output()
 {
     GraphBuilder g;
     g.outputs(0.25f);
     g.outputs(0.5f);
     auto const families = iv::host::public_sample_output_families(g);
     return {
-        .view = freeze_authored_graph_for_test(std::move(g).finish()),
+        .view = freeze_configured_graph_for_test(std::move(g).finish()),
         .family_count = families.families.size(),
         .family_channels = families.families.empty()
             ? 0 : families.families.front().channels.size(),
@@ -328,8 +328,8 @@ RepeatedOutputAuthoring author_repeated_unnamed_output()
 
 PublicOutputSnapshot repeated_unnamed_output_snapshot()
 {
-    auto const authored = author_repeated_unnamed_output();
-    auto const built = compile_graph(authored.view);
+    auto const configured = configure_repeated_unnamed_output();
+    auto const built = compile_graph(configured.view);
     return {
         .graph_output_count = built.graph.outputs().size(),
         .name_main = built.graph.outputs().size() == 1
@@ -337,21 +337,21 @@ PublicOutputSnapshot repeated_unnamed_output_snapshot()
         .channel_type = built.graph.outputs().size() == 1
             ? built.graph.outputs().front().channel_layout.channel_type
             : ChannelTypeId::stereo,
-        .family_count = authored.family_count,
-        .family_channels = authored.family_channels,
-        .left_maps_to_zero = authored.left_maps_to_zero,
+        .family_count = configured.family_count,
+        .family_channels = configured.family_channels,
+        .left_maps_to_zero = configured.left_maps_to_zero,
     };
 }
 
-struct WholeAndChannelAuthoring {
-    AuthoredGraphTestView view;
+struct WholeAndChannelConfiguration {
+    ConfiguredGraphTestView view;
     size_t family_count;
     size_t family_channels;
     bool left_maps_to_zero;
     bool right_maps_to_zero;
 };
 
-WholeAndChannelAuthoring author_whole_and_channel_output()
+WholeAndChannelConfiguration configure_whole_and_channel_output()
 {
     GraphBuilder g;
     auto stereo_source = g.node<Sum<stereo, SampleStreamLayout::interleaved, 1>>();
@@ -370,7 +370,7 @@ WholeAndChannelAuthoring author_whole_and_channel_output()
         && families.families.front().channels[1].port_ordinals.size() == 1
         && families.families.front().channels[1].port_ordinals[0] == 0;
     return {
-        .view = freeze_authored_graph_for_test(std::move(g).finish()),
+        .view = freeze_configured_graph_for_test(std::move(g).finish()),
         .family_count = family_count,
         .family_channels = family_channels,
         .left_maps_to_zero = left_maps,
@@ -380,8 +380,8 @@ WholeAndChannelAuthoring author_whole_and_channel_output()
 
 PublicOutputSnapshot whole_and_channel_output_snapshot()
 {
-    auto const authored = author_whole_and_channel_output();
-    auto const built = compile_graph(authored.view);
+    auto const configured = configure_whole_and_channel_output();
+    auto const built = compile_graph(configured.view);
     PublicOutputSnapshot result{
         .graph_output_count = built.graph.outputs().size(),
         .name_main = built.graph.outputs().size() == 1
@@ -392,30 +392,30 @@ PublicOutputSnapshot whole_and_channel_output_snapshot()
         .sample_layout = built.graph.outputs().size() == 1
             ? built.graph.outputs().front().channel_layout.sample_layout
             : SampleStreamLayout::interleaved,
-        .family_count = authored.family_count,
+        .family_count = configured.family_count,
     };
-    result.family_channels = authored.family_channels;
-    result.left_maps_to_zero = authored.left_maps_to_zero;
-    result.right_maps_to_zero = authored.right_maps_to_zero;
+    result.family_channels = configured.family_channels;
+    result.left_maps_to_zero = configured.left_maps_to_zero;
+    result.right_maps_to_zero = configured.right_maps_to_zero;
     return result;
 }
 
-AuthoredGraphTestView author_named_channel_contributions()
+ConfiguredGraphTestView configure_named_channel_contributions()
 {
     GraphBuilder g;
     g.outputs("main"_P[stereo::left] = 0.25f,
               "main"_P[stereo::right] = 0.5f);
-    return freeze_authored_graph_for_test(std::move(g).finish());
+    return freeze_configured_graph_for_test(std::move(g).finish());
 }
 
 bool named_channel_contributions_share_family()
 {
-    auto const built = compile_graph(author_named_channel_contributions());
+    auto const built = compile_graph(configure_named_channel_contributions());
     return built.graph.outputs().size() == 1
         && built.graph.outputs().front().name == "main";
 }
 
-AuthoredGraphTestView author_functional_subgraph_output()
+ConfiguredGraphTestView configure_functional_subgraph_output()
 {
     GraphBuilder g;
     auto nested = g.subgraph([&](SubgraphBuilder& boundary) {
@@ -426,16 +426,16 @@ AuthoredGraphTestView author_functional_subgraph_output()
     });
     nested("in"_P = 0.25f);
     g.outputs("main"_P = nested);
-    return freeze_authored_graph_for_test(std::move(g).finish());
+    return freeze_configured_graph_for_test(std::move(g).finish());
 }
 
 bool functional_subgraph_has_main_output()
 {
-    auto const built = compile_graph(author_functional_subgraph_output());
+    auto const built = compile_graph(configure_functional_subgraph_output());
     return built.graph.outputs().size() == 1
         && built.graph.outputs().front().name == "main";
 }
-AuthoredGraphTestView author_nested_functional_subgraphs()
+ConfiguredGraphTestView configure_nested_functional_subgraphs()
 
 {
     GraphBuilder g;
@@ -452,12 +452,12 @@ AuthoredGraphTestView author_nested_functional_subgraphs()
     });
     outer("in"_P = 0.5f);
     g.outputs("main"_P = outer);
-    return freeze_authored_graph_for_test(std::move(g).finish());
+    return freeze_configured_graph_for_test(std::move(g).finish());
 }
 
 bool nested_functional_subgraphs_compile()
 {
-    (void)compile_graph(author_nested_functional_subgraphs());
+    (void)compile_graph(configure_nested_functional_subgraphs());
     return true;
 }
 
@@ -480,7 +480,7 @@ TEST(GraphVirtualOutputsTest, ReportsExistingDownstreamConnection)
     EXPECT_TRUE(s.first_connected);
 }
 
-TEST(GraphVirtualOutputsTest, ReportsAuthoredEventDownstreamConnection)
+TEST(GraphVirtualOutputsTest, ReportsConfiguredEventDownstreamConnection)
 {
     auto s = event_output_snapshot();
     EXPECT_EQ(s.event_count, 1u);
@@ -488,7 +488,7 @@ TEST(GraphVirtualOutputsTest, ReportsAuthoredEventDownstreamConnection)
     EXPECT_TRUE(s.first_connected);
 }
 
-TEST(GraphVirtualOutputsTest, PublicEventInputConnectivityUsesAuthoredConnections)
+TEST(GraphVirtualOutputsTest, PublicEventInputConnectivityUsesConfiguredConnections)
 {
     EXPECT_TRUE(public_event_input_connected());
     EXPECT_TRUE(public_event_input_connected());
@@ -515,14 +515,14 @@ TEST(GraphVirtualOutputsTest, GroupsStereoChannelOutputsIntoOneFamily)
     EXPECT_EQ(s.right_sources, 1u);
 }
 
-TEST(GraphVirtualOutputsTest, ReportsAuthoredStereoChannelConnectivity)
+TEST(GraphVirtualOutputsTest, ReportsConfiguredStereoChannelConnectivity)
 {
     auto s = stereo_family_snapshot(true);
     EXPECT_TRUE(s.left_connected);
     EXPECT_FALSE(s.right_connected);
 }
 
-TEST(GraphVirtualOutputsTest, MetadataReportsMixedAuthoredStereoConnectivity)
+TEST(GraphVirtualOutputsTest, MetadataReportsMixedConfiguredStereoConnectivity)
 {
     EXPECT_EQ(stereo_metadata_connectivity(), VirtualPortConnectivity::mixed);
     EXPECT_EQ(stereo_metadata_connectivity(), VirtualPortConnectivity::mixed);

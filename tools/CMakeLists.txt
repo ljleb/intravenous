@@ -26,26 +26,22 @@ endif()
 target_compile_options(iv_clang_source_introspection_plugin PRIVATE
     -Wall -Wextra -Wpedantic)
 
-add_executable(iv_module_finalize iv_module_finalize.cpp)
-target_include_directories(iv_module_finalize PRIVATE
+add_executable(iv_package_finalize iv_package_finalize.cpp)
+target_include_directories(iv_package_finalize PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${LLVM_INCLUDE_DIRS})
-target_compile_definitions(iv_module_finalize PRIVATE
+target_compile_definitions(iv_package_finalize PRIVATE
     IV_INTERNAL_TRANSLATION_UNIT=1
     ${LLVM_DEFINITIONS})
-llvm_map_components_to_libnames(IV_MODULE_FINALIZER_LLVM_LIBS
+llvm_map_components_to_libnames(IV_PACKAGE_FINALIZER_LLVM_LIBS
     bitreader
     core
-    executionengine
     linker
-    native
-    nativecodegen
-    orcjit
+    object
     passes
     support
     target)
-target_link_libraries(iv_module_finalize PRIVATE
-    ${IV_MODULE_FINALIZER_LLVM_LIBS}
-    iv_module_shared)
-target_compile_options(iv_module_finalize PRIVATE
+target_link_libraries(iv_package_finalize PRIVATE
+    ${IV_PACKAGE_FINALIZER_LLVM_LIBS})
+target_compile_options(iv_package_finalize PRIVATE
     -Wall -Wextra -Wpedantic)
