@@ -69,6 +69,14 @@ bool IvModuleInstances::realize_instance_locked(
         || desired->second.package_root != definition.package_root) {
         return false;
     }
+    // A registered module with required configuration arguments is valid for
+    // nested g.node<Id>(...) use, but this compatibility instance runtime has
+    // no persisted argument payload with which to realize it. Keep the
+    // desired project instance visible and unrealized instead of publishing a
+    // null execution root into downstream graph consumers.
+    if (!definition.root) {
+        return false;
+    }
 
     auto const is_new_instance = !realized_instances_by_id.contains(instance_id);
     if (!is_new_instance && !update_existing) {
@@ -522,6 +530,16 @@ void IvModuleInstances::handle_iv_package_definitions_changed(
                         required->second.package_root = definition.package_root;
                     }
                     list_changed = true;
+                }
+                if (!definition.root) {
+                    if (realized_instances_by_id.erase(entry.second.instance_id) > 0) {
+                        instance_diff.deleted_instance_ids.push_back(entry.second.instance_id);
+                        builders_diff.deleted_instance_ids.push_back(entry.second.instance_id);
+                        realized_module_refs_by_id.erase(entry.second.instance_id);
+                        realized_roots_by_id.erase(entry.second.instance_id);
+                        list_changed = true;
+                    }
+                    continue;
                 }
                 if (realize_instance_locked(
                         entry.second.instance_id,

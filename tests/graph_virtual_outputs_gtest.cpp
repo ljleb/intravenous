@@ -37,10 +37,10 @@ VirtualOutputSnapshot single_sample_output_snapshot(bool connected)
 {
     GraphBuilder g;
     auto node = _annotate_node_source_info(
-        g.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(),
+        details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(g).node_ref(),
         "node-1");
     if (connected) {
-        auto sink = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+        auto sink = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(g);
         sink(node);
     }
     auto const outputs = iv::host::virtual_outputs(g);
@@ -60,9 +60,9 @@ VirtualOutputSnapshot event_output_snapshot()
 {
     GraphBuilder g;
     auto source = _annotate_node_source_info(
-        g.node<EventConcatenation>(1, EventTypeId::empty).node_ref(),
+        details::configure_concrete_node<EventConcatenation>(g, 1, EventTypeId::empty).node_ref(),
         "event-source");
-    auto sink = g.node<DummyEventSink>();
+    auto sink = details::configure_concrete_node<DummyEventSink>(g);
     sink.connect_event_input(0, source.event_port());
     auto const outputs = iv::host::virtual_outputs(g);
     return {
@@ -79,7 +79,7 @@ bool public_event_input_connected()
 {
     GraphBuilder g;
     auto input = g.event_input(EventTypeId::empty);
-    auto sink = g.node<DummyEventSink>();
+    auto sink = details::configure_concrete_node<DummyEventSink>(g);
     sink.connect_event_input(0, input);
     return iv::host::public_event_input_is_connected(g, 0);
 }
@@ -88,9 +88,9 @@ VirtualOutputSnapshot shared_virtual_output_snapshot()
 {
     GraphBuilder g;
     auto a = _annotate_node_source_info(
-        g.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(), "shared");
+        details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(g).node_ref(), "shared");
     auto b = _annotate_node_source_info(
-        g.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(), "shared");
+        details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(g).node_ref(), "shared");
     (void)a;
     (void)b;
     auto const outputs = iv::host::virtual_outputs(g);
@@ -121,11 +121,11 @@ struct FamilySnapshot {
 FamilySnapshot stereo_family_snapshot(bool connect_left)
 {
     GraphBuilder g;
-    auto source = g.node<Sum<stereo, SampleStreamLayout::planar, 1>>();
+    auto source = details::configure_concrete_node<Sum<stereo, SampleStreamLayout::planar, 1>>(g);
     auto annotated = _annotate_node_source_info(source.node_ref(), "stereo");
     (void)annotated;
     if (connect_left) {
-        auto sink = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+        auto sink = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(g);
         sink(source.static_output<0>()[stereo::left]);
     }
     auto const families = iv::host::virtual_sample_output_families(g);
@@ -150,10 +150,10 @@ FamilySnapshot stereo_family_snapshot(bool connect_left)
 ConfiguredGraphTestView configure_stereo_metadata_graph()
 {
     GraphBuilder g;
-    auto source = g.node<Sum<stereo, SampleStreamLayout::planar, 1>>();
+    auto source = details::configure_concrete_node<Sum<stereo, SampleStreamLayout::planar, 1>>(g);
     auto annotated = _annotate_node_source_info(source.node_ref(), "stereo");
     (void)annotated;
-    auto sink = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+        auto sink = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(g);
     sink(source.static_output<0>()[stereo::left]);
     return freeze_configured_graph_for_test(std::move(g).finish());
 }
@@ -177,17 +177,18 @@ TypedIdentitySnapshot typed_identity_snapshot()
 {
     GraphBuilder single;
     auto single_sum = _annotate_node_source_info(
-        single.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(),
+        details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(single).node_ref(),
         "shared");
     (void)single_sum;
     auto const single_id = iv::host::virtual_outputs(single).sample.front().virtual_node_id;
 
     GraphBuilder split;
     auto split_sum = _annotate_node_source_info(
-        split.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(),
+        details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(split).node_ref(),
         "shared");
     auto split_events = _annotate_node_source_info(
-        split.node<EventConcatenation>(1, EventTypeId::empty).node_ref(),
+        details::configure_concrete_node<EventConcatenation>(
+            split, 1, EventTypeId::empty).node_ref(),
         "shared");
     (void)split_sum;
     (void)split_events;
@@ -354,7 +355,8 @@ struct WholeAndChannelConfiguration {
 WholeAndChannelConfiguration configure_whole_and_channel_output()
 {
     GraphBuilder g;
-    auto stereo_source = g.node<Sum<stereo, SampleStreamLayout::interleaved, 1>>();
+    auto stereo_source = details::configure_concrete_node<
+        Sum<stereo, SampleStreamLayout::interleaved, 1>>(g);
     g.outputs("main"_P = stereo_source);
     g.outputs("main"_P[stereo::left] = 0.25f);
     auto const families = iv::host::public_sample_output_families(g);
@@ -420,7 +422,8 @@ ConfiguredGraphTestView configure_functional_subgraph_output()
     GraphBuilder g;
     auto nested = g.subgraph([&](SubgraphBuilder& boundary) {
         auto input = boundary.input<"in">(0.0f);
-        auto passthrough = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+        auto passthrough = details::configure_concrete_node<
+            Sum<mono, SampleStreamLayout::planar, 1>>(g);
         passthrough(input);
         boundary.outputs("out"_P = passthrough);
     });
@@ -443,7 +446,8 @@ ConfiguredGraphTestView configure_nested_functional_subgraphs()
         auto outer_input = outer_boundary.input<"in">(0.0f);
         auto inner = g.subgraph([&](SubgraphBuilder& inner_boundary) {
             auto inner_input = inner_boundary.input<"in">(0.0f);
-            auto passthrough = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+            auto passthrough = details::configure_concrete_node<
+                Sum<mono, SampleStreamLayout::planar, 1>>(g);
             passthrough(inner_input);
             inner_boundary.outputs("out"_P = passthrough);
         });

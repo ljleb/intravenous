@@ -4,8 +4,8 @@
 void reload_project(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto const left_phase = g.node<PhaseIntegrator>();
-    auto const right_phase = g.node<PhaseIntegrator>();
+    auto const left_phase = g.node<"phase_integrator">();
+    auto const right_phase = g.node<"phase_integrator">();
     auto const left_voice = g.node<"iv.test.reload_voice">();
     auto const right_voice = g.node<"iv.test.reload_voice">();
     left_phase(0.0);

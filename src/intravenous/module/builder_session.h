@@ -81,6 +81,10 @@ std::shared_ptr<void const> take_builder_node_config(
 
 // Private bridge used by GraphBuilder's out-of-line facade implementation.
 GraphBuilderState& builder_graph_state(GraphBuilder&);
+// A GraphBuilder used directly by host/lowering code has no package table.
+// Source-configured package builders always have one, including the shipped
+// built-in package, so source sugar can resolve its registered IDs normally.
+bool builder_session_has_packages(BuilderSession const*) noexcept;
 
 }
 } // namespace iv

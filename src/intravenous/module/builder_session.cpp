@@ -46,6 +46,9 @@ void validate_definition(PackageDefinition const& definition)
     if (!definition.package_root || definition.package_root_size == 0) {
         throw std::invalid_argument("IV package definition has no package root");
     }
+    if (!definition.signature) {
+        throw std::invalid_argument("IV package definition has no construction signature");
+    }
     if (definition.kind == PackageDefinitionKind::module) {
         if (!definition.module_build || definition.node_build
             || definition.node_compiler_record) {
@@ -160,6 +163,11 @@ GraphBuilderState& builder_graph_state(GraphBuilder& builder)
     return state;
 }
 
+bool builder_session_has_packages(BuilderSession const* session) noexcept
+{
+    return session && session->configuration && !session->configuration->packages.empty();
+}
+
 ConfiguredGraph take_built_graph(BuilderSession* session)
 {
     if (!session || !session->state || session->graph_taken) {
@@ -259,24 +267,37 @@ BuilderDefinition find_builder_definition(
     if (!session || !session->configuration) {
         throw std::invalid_argument("builder session is null");
     }
-    std::optional<BuilderDefinition> found;
-    for (std::size_t package_index = 0;
-         package_index < session->configuration->packages.size(); ++package_index) {
-        for (auto const& definition
-             : session->configuration->packages[package_index].definitions) {
-            if (std::string_view(definition.id, definition.id_size) != id) continue;
-            if (found) {
-                throw std::runtime_error(
-                    "IV package definition '" + std::string(id)
-                    + "' has multiple providers in the loaded package definitions");
+    auto find_exact = [&](std::string_view requested) -> std::optional<BuilderDefinition> {
+        std::optional<BuilderDefinition> found;
+        for (std::size_t package_index = 0;
+             package_index < session->configuration->packages.size(); ++package_index) {
+            for (auto const& definition
+                 : session->configuration->packages[package_index].definitions) {
+                if (std::string_view(definition.id, definition.id_size) != requested) continue;
+                if (found) {
+                    throw std::runtime_error(
+                        "IV package definition '" + std::string(requested)
+                        + "' has multiple providers in the loaded package definitions");
+                }
+                found = BuilderDefinition{
+                    .definition = definition,
+                    .package_index = package_index,
+                };
             }
-            found = BuilderDefinition{
-                .definition = definition,
-                .package_index = package_index,
-            };
         }
+        return found;
+    };
+
+    if (auto found = find_exact(id)) return *found;
+
+    // Builtins have canonical stable IDs, but their short names are useful in
+    // ordinary package source.  Resolve a bare name only after exact lookup,
+    // so a package's deliberately registered `saw_oscillator` still wins over
+    // the convenience alias for `iv.builtin.saw_oscillator`.
+    if (id.find('.') == std::string_view::npos) {
+        auto const builtin_id = "iv.builtin." + std::string(id);
+        if (auto found = find_exact(builtin_id)) return *found;
     }
-    if (found) return *found;
     throw std::runtime_error(
         "IV package definition '" + std::string(id)
         + "' is unavailable in the loaded package definitions");
@@ -320,7 +341,12 @@ void* iv_builder_allocate_node_config(
         throw std::invalid_argument("invalid builder node configuration allocation");
     }
     auto* storage = ::operator new(size, std::align_val_t{alignment});
-    session->pending_node_configs.emplace_back(storage, size, alignment);
+    try {
+        session->pending_node_configs.emplace_back(storage, size, alignment);
+    } catch (...) {
+        ::operator delete(storage, std::align_val_t{alignment});
+        throw;
+    }
     return storage;
 }
 
@@ -396,22 +422,55 @@ NodeConfigRelocations capture_node_config(
             continue;
         }
         auto const value_address = reinterpret_cast<std::uintptr_t>(value);
-        auto const global = std::find_if(
-            package.retained_globals.begin(), package.retained_globals.end(),
-            [&](RetainedGlobalData const& candidate) {
-                auto const begin = reinterpret_cast<std::uintptr_t>(candidate.address);
-                return value_address >= begin && value_address - begin < candidate.size;
-            });
-        if (global == package.retained_globals.end()) {
+        // The field layout belongs to the concrete node's provider package,
+        // but the value stored in the field may have originated in the
+        // package that called g.node<Id>(...).  A string literal is the
+        // ordinary example: the provider node stores the caller's literal
+        // pointer.  Find the retained global across the complete configured
+        // package set rather than incorrectly assuming both sides share one
+        // package.
+        struct FoundGlobal {
+            std::size_t package_index = 0;
+            RetainedGlobalData const* global = nullptr;
+        };
+        std::optional<FoundGlobal> found_global;
+        for (std::size_t candidate_package_index = 0;
+             candidate_package_index < session->configuration->packages.size();
+             ++candidate_package_index) {
+            auto const& candidate_package =
+                session->configuration->packages[candidate_package_index];
+            auto const global = std::find_if(
+                candidate_package.retained_globals.begin(),
+                candidate_package.retained_globals.end(),
+                [&](RetainedGlobalData const& candidate) {
+                    auto const begin = reinterpret_cast<std::uintptr_t>(candidate.address);
+                    return value_address >= begin
+                        && value_address - begin < candidate.size;
+                });
+            if (global == candidate_package.retained_globals.end()) continue;
+            found_global = FoundGlobal{
+                .package_index = candidate_package_index,
+                .global = std::addressof(*global),
+            };
+            break;
+        }
+        if (!found_global) {
             throw std::logic_error(
                 "node configuration pointer does not refer to a retained LLVM global");
         }
+        auto const& global_package =
+            session->configuration->packages[found_global->package_index];
+        // It is possible for a configuration pointer to be the only reason
+        // this package participates in the graph. Retain its code/data just
+        // as we retain a package selected for a node or nested module.
+        session->configuration->used_packages[found_global->package_index] = true;
         relocations.push_back({
             .byte_offset = offset,
-            .package_root = package.package_root,
-            .retained_global_ordinal = global->ordinal,
+            .package_root = global_package.package_root,
+            .retained_global_ordinal = found_global->global->ordinal,
             .addend = static_cast<std::size_t>(
-                value_address - reinterpret_cast<std::uintptr_t>(global->address)),
+                value_address
+                - reinterpret_cast<std::uintptr_t>(found_global->global->address)),
         });
     }
     std::ranges::sort(relocations, {}, &NodeConfigRelocation::byte_offset);

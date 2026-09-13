@@ -34,7 +34,6 @@
 #include <intravenous/runtime/task_runner_lanes_visualization_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_packages.h>
-#include <intravenous/module/search_paths.h>
 #include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_autosave.h>
@@ -80,7 +79,9 @@
 #include <algorithm>
 #include <chrono>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 namespace iv {
     namespace {
@@ -191,10 +192,17 @@ namespace iv {
             startup_log("parsing server options");
             auto const options = ServerOptions::parse(argc, argv);
             startup_log("initializing startup config");
+            std::vector<std::filesystem::path> builtin_package_roots;
+#if defined(IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT)
+            if (std::string_view(IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT).size()) {
+                builtin_package_roots.emplace_back(
+                    IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT);
+            }
+#endif
             StartupConfig startup_config(
                 options.workspace_root,
                 std::filesystem::current_path(),
-                std::vector<std::filesystem::path>{});
+                std::move(builtin_package_roots));
             auto const startup = startup_config.initialize();
             startup_log("startup config initialized");
             IvModuleInstances iv_module_instances;
@@ -246,7 +254,6 @@ namespace iv {
                 std::chrono::milliseconds(33),
                 startup.execution.block_size);
             IvModuleSourceIntrospection introspection;
-            auto const package_search_roots = parse_search_path_env();
             IvPackages iv_packages(
                 startup.workspace_root,
                 iv_module_definitions,
@@ -268,7 +275,7 @@ namespace iv {
                 iv_module_reload,
                 iv_module_definitions,
                 startup.workspace_root,
-                package_search_roots);
+                startup.search_roots);
             std::function<void()> shutdown = [&]() {
                 iv_package_reload_service.request_shutdown();
                 project_autosave_service.request_shutdown();

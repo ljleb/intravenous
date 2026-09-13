@@ -108,13 +108,17 @@ This is an important architectural property. Once a `GraphBuilder` is finished, 
 
 `GraphBuilder` is already a facade over an opaque `BuilderSession` owned by the shared builder library. Mutable containers and graph bookkeeping have been moved out of the module-facing C++ template layer.
 
-Today, however, node construction remains type-based:
+Before the registered-ID migration, node construction was type-based:
 
 ```cpp
 g.node<Gain>(0.25f);
 ```
 
-and that type-based call still creates a type-specific `NodeBuildRequest`, compiler record, and node description inside the consuming C++ build. The new registration design described later intentionally changes this.
+That call created a type-specific `NodeBuildRequest`, compiler record, and node
+description inside the consuming C++ build. The public source-facing builder no
+longer exposes it. Source code names a registered ID; concrete type
+construction remains an implementation primitive used by provider adapters,
+lowering, and finalization.
 
 ### 3.3 Current compiler records
 
@@ -454,9 +458,10 @@ states and can briefly disagree during discovery, build, conflict, or reload.
 The compatibility-runtime API is deliberately **dynamic**: every
 `g.node<Id>(...)` returns `NodeRef`. It does not generate a C++
 `node_interface<Id>`, try to infer a static port shape, or make a consumer's
-source build depend on a provider-facing header. A registered primitive node
-is a zero-argument leaf; an implementation that needs caller-supplied graph
-configuration is exposed as an `IV_MODULE` wrapper instead.
+source build depend on a provider-facing header. A registered node type and a
+registered iv module both expose their real provider-side construction
+arguments through the same call. The provider implementation kind stays
+private even when it has configuration arguments.
 
 Package invalidation is deliberately conservative in this stage. A watched
 package edit queues the declared package set for reload and reconfigures any
@@ -574,6 +579,48 @@ package while their declaration locations remain available as metadata.
 
 The manifest should describe how to build the source, not redundantly enumerate identities already registered in C++ unless a real use case requires that duplication.
 
+### 5.5 Built-in node package
+
+The application ships its ordinary reusable node types as one global IV
+package, `builtin`. This is not a second implementation path or a special
+link-time exemption: it is discovered, compiled, finalized, registered, and
+loaded through the same package path as a user package. The executable adds
+the deployable copied package root to startup search roots; direct
+`ModuleLoader` users use the source-tree package only when no deployed root
+was supplied.
+
+Every existing non-template, source-facing basic node has one explicit
+`IV_NODE("iv.builtin.…", Type)` registration in that package. Consequently,
+the public `GraphBuilder` surface has no `g.node<NodeType>` overload. A source
+uses, for example:
+
+```cpp
+auto oscillator = g.node<"saw_oscillator", stereo>();
+```
+
+`iv.builtin.saw_oscillator` remains the canonical registered ID. A bare name
+first resolves an exact user/package registration and only then falls back to
+`iv.builtin.<name>`, so this readability shortcut cannot silently override a
+locally registered definition. The optional channel type creates a promoted
+tiled `IV_NODE` bundle while still returning dynamic `NodeRef`; callers do
+not receive the builtin C++ type or a static port interface. A registered
+`IV_MODULE` is tiled by configuring one child subgraph per channel. Its sample
+inputs and outputs must all be mono; the enclosing tiled bundle promotes those
+matching ports to the requested channel layout. This is a precondition of the
+whole `g.node<Id, ChannelType>(...)` call: a non-mono interface rejects the
+tile request and contributes no partial child subgraphs to the caller.
+
+Source-level scalar lifting (for example a numeric value supplied to a public
+output or node input) resolves `iv.builtin.constant` as well. It does not
+instantiate `Constant` in the consuming package. The only direct-concrete
+fallback is private host/lowering code that deliberately has no package table.
+
+Template families used to implement DSL operators, tiling, lowering, or
+finalization remain internal implementation machinery. A template
+specialization becomes source-facing only by giving that concrete
+specialization its own explicit stable ID and registering it in a package;
+there is no catch-all registration for a template family.
+
 ---
 
 ## 6. Server registry
@@ -600,6 +647,13 @@ source/type metadata
 configuration construction entry
 ```
 
+Publishing a node type does not construct a speculative zero-argument node.
+That would make a perfectly valid required-argument constructor impossible to
+register and would fabricate ports/state for an arbitrary configuration. The
+provider's compiler record and construction callback are the node-type
+artifact; a concrete node exists only when an actual `g.node<Id>(...)` call
+supplies its configuration.
+
 This is the mechanism that prevents the same primitive implementation from being copied into every iv module that uses it.
 
 If 100 iv modules use `iv.gain`, the desired system contains one registered `iv.gain` implementation artifact, not 100 copies of `Gain::tick` and lifecycle wrappers.
@@ -610,14 +664,16 @@ Registered iv modules are also keyed by stable ID:
 
 ```text
 IvModuleId
-    -> cached ConfiguredGraph
+    -> compiled configuration entry
+       default ConfiguredGraph when its signature permits an empty call
        dependency IDs
        source metadata
-       compiled configuration entry
 ```
 
 The internal implementation remains a `GraphBuilder` function, but consumers
-only name the ID and receive the dynamically realized result.
+only name the ID and receive the dynamically realized result. A
+required-argument module has no compatibility instance root, but it remains a
+valid registered provider for a caller that supplies its required arguments.
 
 ### 6.3 Registry updates are transactional per IV package
 
@@ -726,32 +782,62 @@ redefinition problems entirely.
 
 ### 7.3 Configuration arguments
 
-The registered primitive-node form is intentionally a zero-argument leaf:
+Both registration forms support ordinary C++ configuration arguments:
 
 ```cpp
+struct Gain {
+    explicit Gain(Sample amount = 1.0f);
+    // ...
+};
 IV_NODE("iv.gain", Gain);
+
+void voice(GraphBuilder& g, Sample gain = 0.25f)
+{
+    g.outputs(g.node<"iv.gain">(gain));
+}
+IV_MODULE("iv.voice", voice);
 ```
 
-An implementation requiring caller-supplied graph configuration exposes an
-`IV_MODULE` function and forwards those values through its local
-`g.node<"id">(...)` calls. The `IV_MODULE` adapter checks the function's
-concrete argument count and types when it executes. This avoids inventing a
-second, provider-independent constructor schema for arbitrary C++ node types.
+`IV_NODE` has exactly one public, non-copy/non-move, non-template constructor.
+This is deliberately not an overload-resolution protocol exported to every
+consumer. The Clang plugin identifies that constructor and installs provider
+package callbacks which construct the concrete node. `IV_MODULE` receives the
+same treatment through its registered function type, omitting the leading
+`GraphBuilder&` from the public argument signature.
 
-The project-level module-instance surface remains zero-argument in this
-compatibility runtime. Persistent construction configuration, if it becomes a
-product requirement, belongs with project-instance persistence and the later
-project connection/finalizer representation rather than in generated C++
-headers.
+The compiler records the canonical transported type for every argument as a
+Clang nominal type identity plus a definition fingerprint. The finalizer
+embeds those identities in the package. At `g.node<Id>(...)`, the builder
+validates arity and exact transported type identity before calling the provider
+callback. There are intentionally no numeric, pointer, enum, or user-defined
+implicit conversions across the package boundary; the normal C++
+array-to-pointer decay (for example a string literal passed to `char const*`)
+is preserved.
+
+Calls retain references to the caller's real arguments for the synchronous
+configuration call, including constness and value category. The adapter then
+performs ordinary C++ binding/copy/move at the provider boundary. Default
+arguments remain provider-owned: the callback dispatches the supplied prefix
+through a real provider expression, so normal C++ defaults apply without a
+duplicated default-value schema.
+
+The compatibility project-instance surface still realizes an iv module with
+its empty/default argument call. An iv module with required arguments is
+usable from another module's `g.node<Id>(...)`, but persisted instance
+construction arguments are a separate project-persistence/execution-model
+feature. Such a module is still published; a desired project instance remains
+visible but unrealized until that later feature provides an argument payload.
+This branch does not invent a serialized UI constructor schema.
 
 ---
 
 ## 8. Configuration values at package boundaries
 
 Cross-package construction does not reproduce arbitrary primitive-node C++
-constructors in a consumer. The dynamic ID API instead calls a provider's
-already-compiled `IV_MODULE` configuration entry, whose actual function
-signature is checked at invocation time.
+constructors or iv-module function declarations in a consumer. The dynamic ID
+API calls a provider's already-compiled construction entry after exact
+compiler-produced signature validation. The constructor/function body and its
+defaults remain compiled only by the provider package.
 
 Existing relocatable pointer configuration remains supported. A pointer into
 retained LLVM global data is represented through the existing relocation path,
@@ -859,10 +945,11 @@ Clang/finalization per changed IV package
     -> reusable source configuration artifact
     -> current configuration generation
 
-An `ConfiguredGraph` is the completed result of the zero-argument registered
-iv-module realization. It is retained with the currently published definition;
-there is no separate persistent realization cache or invocation memo table in
-this compatibility runtime.
+An `ConfiguredGraph` is the completed result of one registered iv-module
+realization. The compatibility definition cache retains the empty/default
+realization used by project instances; nested registered invocations are
+configured eagerly with their supplied arguments. There is no separate
+persistent invocation memo table in this compatibility runtime.
 ```
 
 The current compatibility implementation retains configuration entrypoints in
@@ -930,7 +1017,7 @@ SCCs, schedules, storage plans, generated LLVM, and other whole-project derived 
 
 ### 12.1 Definition versus instance
 
-A published registered iv module has one retained, zero-argument
+A published registered iv module has one retained empty/default
 `ConfiguredGraph` realization in the compatibility runtime.
 
 A project may contain many instances of that definition.
@@ -2076,8 +2163,12 @@ The design is intentionally staged so the existing 443-test runtime can remain t
 1. Add generic `g.node<Id>(...)` without generated provider headers.
 2. Resolve registered IDs in a shared configuration generation and greedily embed iv modules.
 3. Preserve existing global-pointer configuration relocation.
-4. Transition reusable cross-source nodes away from `g.node<T>()`.
+4. Move reusable source-facing node types into IV packages and delete the
+   public `g.node<T>()` overloads.
 5. Keep the package-facing result dynamic: registered IDs always return `NodeRef`.
+   `g.node<Id, ChannelType>(...)` may request a tiled registered definition
+   (a node or an iv module whose sample interface is fully mono) without
+   reviving a typed source-facing node result.
 
 ### Phase C — retain configured iv modules
 
@@ -2208,8 +2299,8 @@ The following are treated as strong architectural decisions unless implementatio
 4. **`ConfiguredGraph` remains lossless.** Do not discard virtual/tiled/subgraph/addressability information merely to make lowering simpler.
 5. **Node types are registered independently from iv modules.** Primitive implementation LLVM belongs to the node-type registry.
 6. **Stable string IDs identify registered graph nodes.** An ID may be implemented by a primitive node type or an iv module.
-7. **The normal cross-source configuration API is `g.node<"id">(...)`.** Callers do not name implementation C++ types.
-8. **Registered-ID construction is always dynamic.** `g.node<"id">(...)` returns `NodeRef`; no generated static `node_interface<Id>` contract exists.
+7. **The normal cross-source configuration API is `g.node<"id">(...)`.** Callers do not name implementation C++ types. `g.node<"id", stereo>(...)` is the channel-layout request form for registered primitive nodes.
+8. **Registered-ID construction is always dynamic.** Both forms return `NodeRef`; no generated static `node_interface<Id>` contract exists.
 9. **IV packages may register many nodes and iv modules.** A node-only IV package is valid; experimental inline definitions remain convenient.
 10. **Same-TU registered IDs are immediately usable.** The generic dynamic API does not rely on a second save/build or a generated `node_interface` specialization.
 11. **Project cross-module connections use stable virtual-node/direct-member port identity, not concrete configured node IDs.**
@@ -2226,6 +2317,13 @@ The following are treated as strong architectural decisions unless implementatio
 22. **The finalizer generates lifecycle/state migration plans; the live host executes migration.**
 23. **Profiling and LLVM visibility are first-class.** Every important whole-graph compiler stage should be dumpable and timed.
 24. **Lane graph deletion is later and orthogonal.** The new execution compiler should be reusable when the canonical project graph replaces the current producer.
+25. **Registered constructors/functions are provider-owned.** `IV_NODE` and
+    `IV_MODULE` accept ordinary configuration arguments through exact
+    compiler-produced type identities; no cross-package implicit conversion or
+    generated static interface is introduced.
+26. **Built-ins are an ordinary shipped IV package.** Public non-template
+    basic node types are registered there; template families stay internal
+    until a concrete specialization receives an explicit stable ID.
 
 ---
 

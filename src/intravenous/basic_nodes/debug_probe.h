@@ -14,6 +14,12 @@ struct DebugProbe {
     char const* label = "debug";
     size_t every_n_ticks = 4800;
 
+    constexpr DebugProbe(
+        char const* label_ = "debug", size_t every_n_ticks_ = 4800)
+        : label(label_)
+        , every_n_ticks(every_n_ticks_)
+    {}
+
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 1>{};

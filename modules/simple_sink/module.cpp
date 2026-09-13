@@ -1,6 +1,4 @@
 #include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
-#include <intravenous/basic_nodes/shaping.h>
 
 void simple_sink(iv::GraphBuilder& g)
 {
@@ -9,8 +7,8 @@ void simple_sink(iv::GraphBuilder& g)
     SamplePortRef right;
 
     auto make_channel = [&]<auto Ch>() {
-        auto const phase = g.node<PhaseIntegrator>();
-        auto const osc = g.node<SawOscillator>();
+        auto const phase = g.node<"phase_integrator">();
+        auto const osc = g.node<"saw_oscillator">();
         constexpr Sample channel_offset =
             std::same_as<decltype(Ch), decltype(stereo::left)> ? 0.0f : 1.0f;
 

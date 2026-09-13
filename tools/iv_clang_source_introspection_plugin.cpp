@@ -4,6 +4,7 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/Mangle.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
@@ -23,6 +24,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -123,6 +125,116 @@ std::string type_usr(ASTContext& context, QualType type)
         return type_string(context, type);
     }
     return buffer.str().str();
+}
+
+std::string hex_u64(std::uint64_t value);
+
+QualType transported_configuration_type(QualType type)
+{
+    return type.getNonReferenceType().getUnqualifiedType().getCanonicalType();
+}
+
+std::uint64_t fingerprint_hash(std::string_view value)
+{
+    std::uint64_t result = 14695981039346656037ull;
+    for (auto const character : value) {
+        result ^= static_cast<unsigned char>(character);
+        result *= 1099511628211ull;
+    }
+    return result;
+}
+
+void append_type_definition_fingerprint(
+    ASTContext& context,
+    QualType type,
+    std::set<Type const*>& visited,
+    std::string& material)
+{
+    type = transported_configuration_type(type);
+    auto const* raw = type.getTypePtrOrNull();
+    if (!raw || !visited.insert(raw).second) return;
+    material += type_usr(context, type);
+    material += ':';
+
+    // ODRHash walks every declaration currently attached to the record. That
+    // is not a stable package boundary identity: implicit specializations of
+    // a friend/template member appear only after a particular package happens
+    // to use them. Two packages can therefore see the same Sample declaration
+    // with different ODRHash values. Fingerprint the spelled definition
+    // instead. This is both compiler-produced and invariant under unrelated
+    // use-site instantiations; removing whitespace avoids formatting-only
+    // churn.
+    auto definition_text = [&](Decl const* declaration) {
+        if (!declaration) return std::string{};
+        bool invalid = false;
+        auto const text = Lexer::getSourceText(
+            CharSourceRange::getTokenRange(declaration->getSourceRange()),
+            context.getSourceManager(), context.getLangOpts(), &invalid);
+        if (invalid || text.empty()) return std::string{};
+        std::string normalized;
+        normalized.reserve(text.size());
+        for (unsigned char character : text.bytes()) {
+            if (!std::isspace(character))
+                normalized.push_back(static_cast<char>(character));
+        }
+        return normalized;
+    };
+    if (auto const* record = type->getAsCXXRecordDecl()) {
+        auto const* definition = record->getDefinition();
+        material += definition_text(definition);
+    } else if (auto const* enumeration = type->getAs<EnumType>()) {
+        if (auto const* definition = enumeration->getDecl()->getDefinition()) {
+            material += definition_text(definition);
+        }
+    } else {
+        material += type_string(context, type);
+    }
+    material += ';';
+
+    if (auto const* pointer = type->getAs<PointerType>()) {
+        append_type_definition_fingerprint(
+            context, pointer->getPointeeType(), visited, material);
+    } else if (auto const* reference = type->getAs<ReferenceType>()) {
+        append_type_definition_fingerprint(
+            context, reference->getPointeeType(), visited, material);
+    } else if (auto const* array = context.getAsArrayType(type)) {
+        append_type_definition_fingerprint(
+            context, array->getElementType(), visited, material);
+    } else if (auto const* function = type->getAs<FunctionProtoType>()) {
+        append_type_definition_fingerprint(
+            context, function->getReturnType(), visited, material);
+        for (auto parameter : function->param_types()) {
+            append_type_definition_fingerprint(
+                context, parameter, visited, material);
+        }
+    }
+}
+
+std::string type_definition_fingerprint(ASTContext& context, QualType type)
+{
+    std::set<Type const*> visited;
+    std::string material;
+    append_type_definition_fingerprint(context, type, visited, material);
+    return hex_u64(fingerprint_hash(material));
+}
+
+llvm::json::Object configuration_type_metadata(
+    ASTContext& context,
+    QualType type)
+{
+    type = transported_configuration_type(type);
+    return llvm::json::Object{
+        {"nominal_id", type_usr(context, type)},
+        {"definition_fingerprint", type_definition_fingerprint(context, type)},
+        {"display_name", type_string(context, type)},
+    };
+}
+
+std::string mangled_global_name(ASTContext& context, VarDecl const* declaration)
+{
+    if (!declaration) return {};
+    ASTNameGenerator names(context);
+    return names.getName(declaration);
 }
 
 std::uint64_t node_code_key_hash(
@@ -326,6 +438,24 @@ public:
             // the configured-graph sense and must wait for its first assignment.
             if (!has_explicit_initializer(variable)) continue;
             append_ref({variable, identity, *span});
+
+            // Keep the narrow declaration-name annotation for stable local
+            // identity and precise selection, but also publish the expression
+            // that configured the ref. In particular, a multiline generic
+            // node construction may spell its node type on a later line:
+            //
+            //   auto const node = details::configure_concrete_node<
+            //       Sum<stereo>>(g);
+            //
+            // The configured node must be discoverable from either the local
+            // name or that type/call syntax. Both annotations have the same
+            // declaration identity, so they enrich one virtual node rather
+            // than creating two nodes or changing its stable ID.
+            if (auto const expression_span =
+                    sources_.source_span(variable->getInit()->getSourceRange());
+                expression_span && *expression_span != *span) {
+                append_ref({variable, identity, *expression_span});
+            }
         }
         return true;
     }
@@ -1056,11 +1186,75 @@ private:
     std::vector<CXXRecordDecl const*> nodes_;
 };
 
+class ConfigurationTypeIdentityCollector final
+    : public RecursiveASTVisitor<ConfigurationTypeIdentityCollector> {
+public:
+    explicit ConfigurationTypeIdentityCollector(ASTContext& context)
+        : context_(context)
+    {}
+
+    bool VisitVarTemplateSpecializationDecl(
+        VarTemplateSpecializationDecl* specialization)
+    {
+        if (!specialization) return true;
+        auto const* variable_template = specialization->getSpecializedTemplate();
+        if (!variable_template
+            || variable_template->getCanonicalDecl()->getQualifiedNameAsString()
+                != "iv::details::configuration_type_identity_storage") {
+            return true;
+        }
+        auto const arguments = specialization->getTemplateArgs().asArray();
+        if (arguments.size() != 1 || arguments.front().getKind() != TemplateArgument::Type) {
+            return true;
+        }
+        auto const symbol = mangled_global_name(context_, specialization);
+        if (symbol.empty() || !seen_.insert(symbol).second) return true;
+        auto metadata = configuration_type_metadata(context_, arguments.front().getAsType());
+        metadata["symbol"] = symbol;
+        identities_.push_back(std::move(metadata));
+        return true;
+    }
+
+    llvm::json::Array take_identities() &&
+    {
+        std::ranges::sort(identities_, [](llvm::json::Value const& lhs,
+                                          llvm::json::Value const& rhs) {
+            return lhs.getAsObject()->getString("symbol")->str()
+                < rhs.getAsObject()->getString("symbol")->str();
+        });
+        return std::move(identities_);
+    }
+
+private:
+    ASTContext& context_;
+    llvm::json::Array identities_;
+    std::set<std::string> seen_;
+};
+
+class RegisteredNodeAdapterFinder final
+    : public RecursiveASTVisitor<RegisteredNodeAdapterFinder> {
+public:
+    bool VisitFunctionTemplateDecl(FunctionTemplateDecl* declaration)
+    {
+        if (!declaration) return true;
+        auto const name = declaration->getQualifiedNameAsString();
+        if (name == "iv::details::configure_node_constructor") {
+            configure = declaration;
+        } else if (name == "iv::details::node_constructor_signature") {
+            signature = declaration;
+        }
+        return true;
+    }
+
+    FunctionTemplateDecl* configure = nullptr;
+    FunctionTemplateDecl* signature = nullptr;
+};
+
 class PackageDefinitionCollector final
     : public RecursiveASTVisitor<PackageDefinitionCollector> {
 public:
-    explicit PackageDefinitionCollector(ASTContext& context)
-        : context_(context)
+    explicit PackageDefinitionCollector(CompilerInstance& compiler)
+        : compiler_(compiler), context_(compiler.getASTContext())
     {}
 
     bool VisitVarDecl(VarDecl* declaration)
@@ -1078,18 +1272,25 @@ public:
         bool const is_node = variable_name.starts_with("iv_package_node_definition_");
         if (!is_module && !is_node) return true;
 
-        auto const* initializer = dyn_cast<InitListExpr>(
+        auto* initializer = dyn_cast<InitListExpr>(
             declaration->getInit()->IgnoreParenImpCasts());
-        if (!initializer || initializer->getNumInits() < 10) return true;
+        if (!initializer || initializer->getNumInits() < 11) return true;
 
-        auto expression = [&](unsigned index) -> Expr const* {
+        auto expression = [&](unsigned index) -> Expr* {
             return initializer->getInit(index)->IgnoreParenImpCasts();
         };
         auto const* literal = dyn_cast<StringLiteral>(expression(1));
         if (!literal || literal->getString().empty()) return true;
 
         auto id = literal->getString().str();
-        if (!seen_.insert(id).second) return true;
+        if (!seen_.insert(id).second) {
+            auto diagnostic = compiler_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error,
+                "IV package defines stable ID '%0' more than once");
+            compiler_.getDiagnostics().Report(declaration->getLocation(), diagnostic)
+                << id;
+            return true;
+        }
         llvm::json::Object metadata{
             {"id", std::move(id)},
             {"kind", is_module ? "module" : "node"},
@@ -1121,6 +1322,7 @@ public:
                     auto const type = context_.getCanonicalTagType(node);
                     metadata["node_type_usr"] = declaration_usr(context_, node);
                     metadata["node_code_key"] = node_code_key(context_, type);
+                    install_node_adapter(initializer, declaration, node);
                 }
             }
         }
@@ -1139,9 +1341,136 @@ public:
     }
 
 private:
+    CompilerInstance& compiler_;
     ASTContext& context_;
     llvm::json::Array definitions_;
     std::set<std::string> seen_;
+
+    Sema& sema() { return compiler_.getSema(); }
+
+    void ensure_node_adapter_templates()
+    {
+        if (helpers_searched_) return;
+        helpers_searched_ = true;
+        RegisteredNodeAdapterFinder finder;
+        finder.TraverseDecl(context_.getTranslationUnitDecl());
+        node_configure_template_ = finder.configure;
+        node_signature_template_ = finder.signature;
+    }
+
+    FunctionDecl* specialize(
+        FunctionTemplateDecl* function_template,
+        std::span<QualType const> arguments,
+        SourceLocation location)
+    {
+        if (!function_template) return nullptr;
+        TemplateArgumentListInfo explicit_arguments(location, location);
+        for (auto type : arguments) {
+            explicit_arguments.addArgument(sema().getTrivialTemplateArgumentLoc(
+                TemplateArgument(type), QualType{}, location));
+        }
+        sema::TemplateDeductionInfo deduction(location);
+        FunctionDecl* specialization = nullptr;
+        auto const result = sema().DeduceTemplateArguments(
+            function_template, &explicit_arguments, specialization, deduction, false);
+        if (result == TemplateDeductionResult::Success && specialization) {
+            return specialization;
+        }
+        auto id = compiler_.getDiagnostics().getCustomDiagID(
+            DiagnosticsEngine::Error,
+            "cannot synthesize IV_NODE constructor adapter");
+        compiler_.getDiagnostics().Report(location, id);
+        return nullptr;
+    }
+
+    Expr* function_pointer(FunctionDecl* function, SourceLocation location)
+    {
+        if (!function) return nullptr;
+        auto reference = sema().BuildDeclRefExpr(
+            function, function->getType(), VK_LValue, location);
+        auto address = sema().BuildUnaryOp(
+            nullptr, location, UO_AddrOf, reference);
+        return address.isInvalid() ? nullptr : address.get();
+    }
+
+    std::optional<std::vector<QualType>> visible_node_constructor_parameters(
+        CXXRecordDecl const* node,
+        SourceLocation location)
+    {
+        std::vector<CXXConstructorDecl*> constructors;
+        for (auto* constructor : node->ctors()) {
+            if (!constructor || constructor->isCopyOrMoveConstructor()) continue;
+            if (constructor->isDeleted()) continue;
+            constructors.push_back(constructor);
+        }
+        // An aggregate/default-only node has no CXXConstructorDecl until Sema
+        // materializes one lazily.  Do not ask Sema to materialize or inspect
+        // that special member while the parser is delivering the IV_NODE's
+        // top-level declaration: Clang 23 can crash in that re-entrant state.
+        // An empty explicit-constructor list is the zero-argument adapter;
+        // constructing it remains the normal C++ compiler's responsibility,
+        // so a deleted/inaccessible implicit default constructor still yields
+        // an ordinary provider-package diagnostic.
+        if (constructors.empty()) return std::vector<QualType>{};
+        if (constructors.size() != 1) {
+            auto id = compiler_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error,
+                "IV_NODE requires exactly one non-copy, non-move constructor");
+            compiler_.getDiagnostics().Report(location, id);
+            return std::nullopt;
+        }
+        auto* constructor = constructors.front();
+        if (constructor->getDescribedFunctionTemplate()
+            || constructor->getAccess() != AS_public) {
+            auto id = compiler_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error,
+                "IV_NODE constructor must be a public non-template constructor");
+            compiler_.getDiagnostics().Report(location, id);
+            return std::nullopt;
+        }
+        std::vector<QualType> parameters;
+        parameters.reserve(constructor->getNumParams());
+        for (auto const* parameter : constructor->parameters()) {
+            parameters.push_back(parameter->getType());
+        }
+        return parameters;
+    }
+
+    void install_node_adapter(
+        InitListExpr* initializer,
+        VarDecl* declaration,
+        CXXRecordDecl const* node)
+    {
+        ensure_node_adapter_templates();
+        auto const location = declaration->getLocation();
+        if (!node_configure_template_ || !node_signature_template_) {
+            auto id = compiler_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error,
+                "IV_NODE adapter templates were not found; include <intravenous/dsl.h>");
+            compiler_.getDiagnostics().Report(location, id);
+            return;
+        }
+        auto parameters = visible_node_constructor_parameters(node, location);
+        if (!parameters) return;
+
+        std::vector<QualType> arguments;
+        arguments.reserve(1 + parameters->size());
+        arguments.push_back(context_.getCanonicalTagType(node));
+        arguments.insert(arguments.end(), parameters->begin(), parameters->end());
+        auto* configure = specialize(
+            node_configure_template_, arguments, location);
+        auto* signature = specialize(
+            node_signature_template_, arguments, location);
+        auto* configure_pointer = function_pointer(configure, location);
+        auto* signature_pointer = function_pointer(signature, location);
+        if (!configure_pointer || !signature_pointer) return;
+        initializer->setInit(8, configure_pointer);
+        initializer->setInit(10, signature_pointer);
+    }
+
+    bool helpers_searched_ = false;
+    FunctionTemplateDecl* node_configure_template_ = nullptr;
+    FunctionTemplateDecl* node_signature_template_ = nullptr;
 };
 
 std::filesystem::path metadata_path(
@@ -1165,8 +1494,15 @@ void write_state_metadata(
     StateMetadataCollector state_collector(context);
     NodeConfigMetadataCollector node_config_collector(context);
     ReflectedNodeDiscovery reflected_node_discovery(context);
-    PackageDefinitionCollector package_definition_collector(context);
+    ConfigurationTypeIdentityCollector configuration_type_collector(context);
+    PackageDefinitionCollector package_definition_collector(compiler);
+    // IV_NODE rewrites materialize the constructor-adapter specializations
+    // that reference configuration_type_identity_storage<T>. Discover those
+    // first so the same snapshot sees eagerly materialized identities; the
+    // mutation listener below still refreshes the sidecar for CodeGen-lazy
+    // specializations.
     package_definition_collector.TraverseDecl(context.getTranslationUnitDecl());
+    configuration_type_collector.TraverseDecl(context.getTranslationUnitDecl());
     // A compiler record is emitted only for a type passed to GraphBuilder.
     // Calls at HandleTranslationUnit see ordinary records; the exact
     // variable-template listener re-runs this small collection when CodeGen
@@ -1197,9 +1533,10 @@ void write_state_metadata(
     }
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
-            {"version", 7},
+            {"version", 8},
             {"states", std::move(state_collector).take_states()},
             {"config_pointers", std::move(node_config_collector).take_fields()},
+            {"configuration_types", std::move(configuration_type_collector).take_identities()},
             {"package_definitions", std::move(package_definition_collector).take_definitions()},
         }));
     stream << '\n';
@@ -1249,8 +1586,17 @@ public:
         // after HandleTranslationUnit has written the initial sidecar. Refresh
         // only for that event; unrelated completed AST records must neither
         // trigger a snapshot nor become node metadata.
+        auto const is_configuration_identity = [&] {
+            auto const* variable_template = specialization
+                ? specialization->getSpecializedTemplate()
+                : nullptr;
+            return variable_template
+                && variable_template->getCanonicalDecl()->getQualifiedNameAsString()
+                    == "iv::details::configuration_type_identity_storage";
+        };
         if (initial_snapshot_written_
-            && node_type_from_compiler_record_specialization(specialization)) {
+            && (node_type_from_compiler_record_specialization(specialization)
+                || is_configuration_identity())) {
             write_snapshot();
         }
     }
@@ -1290,15 +1636,25 @@ public:
               compiler,
               std::move(metadata_dir),
               source_introspection ? &instrumenter_ : nullptr),
+          package_definition_rewriter_(compiler),
           source_introspection_(source_introspection)
     {}
 
     bool HandleTopLevelDecl(DeclGroupRef declarations) override
     {
+        // AddBeforeMainAction invokes this before the normal CodeGen consumer
+        // receives a top-level declaration.  IV_NODE records are const data,
+        // so their placeholder callbacks must be replaced here rather than
+        // during HandleTranslationUnit, after CodeGen has emitted the record.
+        for (auto* declaration : declarations) {
+            package_definition_rewriter_.TraverseDecl(declaration);
+        }
+
         if (!source_introspection_) return true;
         FunctionDiscovery discovery(instrumenter_);
-        for (auto* declaration : declarations)
+        for (auto* declaration : declarations) {
             discovery.TraverseDecl(declaration);
+        }
         return true;
     }
 
@@ -1332,6 +1688,7 @@ private:
     SourceModel sources_;
     FunctionInstrumenter instrumenter_;
     ModuleMutationListener mutation_listener_;
+    PackageDefinitionCollector package_definition_rewriter_;
     bool source_introspection_ = true;
 };
 

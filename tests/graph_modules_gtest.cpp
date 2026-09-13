@@ -20,6 +20,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace iv {
 namespace {
@@ -27,7 +28,7 @@ namespace {
 void pass_module(GraphBuilder& g)
 {
     auto input = g.input<"in">(0.0f);
-    auto pass = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+    auto pass = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(g);
     pass(input);
     g.outputs("out"_P = pass);
 }
@@ -43,7 +44,8 @@ void nested_module(GraphBuilder& g)
 void tiled_module(GraphBuilder& g)
 {
     auto input = g.input<"in">(0.0f);
-    auto tiled = g.node<Sum<mono, SampleStreamLayout::planar, 1>, stereo>();
+    auto tiled = details::configure_concrete_tiled_node<
+        Sum<mono, SampleStreamLayout::planar, 1>, stereo>(g);
     tiled(input);
     g.outputs("out"_P = tiled);
 }
@@ -51,7 +53,8 @@ void tiled_module(GraphBuilder& g)
 void event_module(GraphBuilder& g)
 {
     auto input = g.event_input<"event">(EventTypeId::empty);
-    auto relay = g.node<EventConcatenation>(1, EventTypeId::empty);
+    auto relay = details::configure_concrete_node<EventConcatenation>(
+        g, 1, EventTypeId::empty);
     relay.connect_event_input(0, input);
     g.event_outputs("event"_P = relay.event_port());
     g.outputs();
@@ -356,9 +359,10 @@ ConfiguredGraphTestView configure_event_interfaces()
 {
     GraphBuilder g;
     auto child = g.module<event_module>();
-    auto source = g.node<EventConcatenation>(0, EventTypeId::empty);
+    auto source = details::configure_concrete_node<EventConcatenation>(
+        g, 0, EventTypeId::empty);
     child.connect_event_input("event", source.event_port());
-    auto sink = g.node<DummyEventSink>();
+    auto sink = details::configure_concrete_node<DummyEventSink>(g);
     sink.connect_event_input(0, child.event_port("event"));
     g.outputs();
     return freeze_configured_graph_for_test(std::move(g).finish());
@@ -375,7 +379,8 @@ ConfiguredGraphTestView configure_functional_subgraph()
     GraphBuilder g;
     auto nested = g.subgraph([&](SubgraphBuilder& boundary) {
         auto input = boundary.input<"in">(0.0f);
-        auto pass = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+        auto pass = details::configure_concrete_node<
+            Sum<mono, SampleStreamLayout::planar, 1>>(g);
         pass(input);
         boundary.outputs("out"_P = pass);
     });
@@ -415,7 +420,7 @@ IntrospectionRegressionConfiguration configure_introspection_regression()
     GraphBuilder g;
     auto input = g.input<"in">(0.25f);
     auto event = g.event_input<"event">(EventTypeId::empty);
-    auto sum = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+    auto sum = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(g);
     auto annotated = _annotate_node_source_info(sum.node_ref(), "sum");
     sum(input);
     g.outputs("out"_P = sum);
@@ -514,9 +519,9 @@ TEST(GraphModules, TypedNodeCallsForwardNormalizedSampleAndEventRequests)
     GraphBuilder graph;
     auto left = graph.input<"left">(0.0f);
     auto right = graph.input<"right">(0.0f);
-    auto source = graph.node<NodeCallEventSource>();
-    auto sink = graph.node<NodeCallMixedSink>();
-    auto tiled_sink = graph.node<NodeCallMixedSink, stereo>();
+    auto source = details::configure_concrete_node<NodeCallEventSource>(graph);
+    auto sink = details::configure_concrete_node<NodeCallMixedSink>(graph);
+    auto tiled_sink = details::configure_concrete_tiled_node<NodeCallMixedSink, stereo>(graph);
 
     sink(
         "left"_P = left,
@@ -568,7 +573,7 @@ TEST(GraphModules, BuilderCapturesPointerConfigurationAsSymbolicRelocations)
     configure_pointer_metadata_package(session.get(), fields, globals);
 
     GraphBuilder builder(session.get());
-    auto probe = builder.node<CStringConfigNode>(CStringConfigNode{
+    auto probe = details::configure_concrete_node<CStringConfigNode>(builder, CStringConfigNode{
         .title = cstring_title,
         .detail = cstring_detail,
         .optional = nullptr,
@@ -593,6 +598,56 @@ TEST(GraphModules, BuilderCapturesPointerConfigurationAsSymbolicRelocations)
     EXPECT_EQ(relocations[2].byte_offset, offsetof(CStringConfigNode, optional));
     EXPECT_TRUE(relocations[2].package_root.empty());
     EXPECT_FALSE(relocations[2].retained_global_ordinal.has_value());
+}
+
+TEST(GraphModules, BuilderRelocatesProviderNodePointerToCallerPackageGlobal)
+{
+    auto session = std::unique_ptr<
+        details::BuilderSession,
+        decltype(&details::iv_builder_session_destroy)>(
+            details::iv_builder_session_create(),
+            details::iv_builder_session_destroy);
+    std::array provider_fields{
+        NodeConfigPointerFieldData{
+            .code_key = details::node_code_key_v<CStringConfigNode>,
+            .byte_offset = offsetof(CStringConfigNode, title)},
+    };
+    std::array caller_globals{
+        RetainedGlobalData{
+            .address = cstring_title,
+            .size = sizeof(cstring_title),
+            .ordinal = 7,
+        },
+    };
+    std::array packages{
+        details::BuilderPackageView{
+            .package_root = "test.provider-package",
+            .config_pointer_fields = provider_fields,
+        },
+        details::BuilderPackageView{
+            .package_root = "test.caller-package",
+            .retained_globals = caller_globals,
+        },
+    };
+    details::set_builder_packages(session.get(), packages);
+    details::select_builder_package(session.get(), 0);
+
+    GraphBuilder builder(session.get());
+    auto node = details::configure_concrete_node<CStringConfigNode>(builder,
+        CStringConfigNode{.title = cstring_title, .detail = nullptr, .optional = nullptr});
+    builder.outputs(node);
+
+    auto archive = serialize_configured_graph(
+        details::take_built_graph(session.get()));
+    ASSERT_EQ(archive.node_configs.size(), 1u);
+    auto const& relocations = archive.node_configs.front().relocations;
+    ASSERT_EQ(relocations.size(), 1u);
+    EXPECT_EQ(relocations.front().package_root, "test.caller-package");
+    ASSERT_TRUE(relocations.front().retained_global_ordinal.has_value());
+    EXPECT_EQ(*relocations.front().retained_global_ordinal, 7u);
+
+    auto const used_packages = details::builder_used_packages(session.get());
+    EXPECT_EQ(used_packages, (std::vector<std::size_t>{0, 1}));
 }
 
 TEST(GraphModules, BuilderCapturesNestedAndArrayPointerConfiguration)
@@ -644,7 +699,7 @@ TEST(GraphModules, BuilderCapturesNestedAndArrayPointerConfiguration)
     configure_pointer_metadata_package(session.get(), fields, globals);
 
     GraphBuilder builder(session.get());
-    auto node = builder.node<StructuredCStringConfigNode>(
+    auto node = details::configure_concrete_node<StructuredCStringConfigNode>(builder,
         StructuredCStringConfigNode{
             .labels = {cstring_left, cstring_right},
             .details = {cstring_first, cstring_second},
@@ -694,7 +749,7 @@ TEST(GraphModules, BuilderRejectsInvalidPointerMetadataPackages)
 TEST(GraphModules, OutputRequestCopiesBorrowedStringsIntoTheSession)
 {
     GraphBuilder builder;
-    auto source = builder.node<Constant>(Sample{0.25f});
+    auto source = details::configure_concrete_node<Constant>(builder, Sample{0.25f});
     std::string name = "main";
     auto const request = SampleOutputRequest{
         .ref = static_cast<SamplePortRef>(source),
@@ -820,7 +875,8 @@ TEST(GraphModules, EventOnlyFunctionalSubgraphDoesNotRequireSampleOutputs)
     auto const source = g.event_input<"event">(EventTypeId::empty);
     auto const scope = g.subgraph([&](SubgraphBuilder& boundary) {
         auto const input = boundary.event_input<"event">(EventTypeId::empty);
-        auto const relay = g.node<EventConcatenation>(1, EventTypeId::empty);
+        auto const relay = details::configure_concrete_node<EventConcatenation>(
+            g, 1, EventTypeId::empty);
         relay.connect_event_input(0, input);
         g.event_outputs("event"_P = relay.event_port());
     });

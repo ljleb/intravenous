@@ -12,7 +12,7 @@ Here are the sensible groups of similar intent I’d split this into. No filenam
 | **5. Builder node storage model**                          | `BuilderNode` and its accumulated fields: configs, materialization, TTL, subgraph bookkeeping, source info, logical IDs, type identity                                                                       | This should become a set of encapsulated subobjects. Right now it mixes port config, materialization, lifetime, lowered-subgraph data, source metadata, logical grouping metadata, and vacant-input ownership.                  |
 | **6. GraphBuilder core state and identity**                | Builder identity, `_nodes`, `_edges`, `_event_edges`, public inputs/outputs, placed ports, detach IDs, root/nested builder identity                                                                          | This is the core mutable graph assembly state. It should be kept distinct from syntax sugar, metadata, and lowering.                                                                                                            |
 | **7. Public graph input/output declaration API**           | `input(...)`, `event_input(...)`, `outputs(...)`, `event_outputs(...)`, output validation, scope-aware input/output declaration                                                                              | This is the user-facing boundary declaration layer: declaring public graph ports and exported outputs. It has enough logic to justify being separated from node insertion.                                                      |
-| **8. Node insertion and materialization API**              | `node<Node>(...)`, `validate_output_port_configs`, node value construction, `materialize` lambda, return-type selection                                                                                      | This is the “add concrete node to builder” path. It deals with node construction, input/output config extraction, type erasure, detach-node special casing, and returned ref type selection.                                    |
+| **8. Node insertion and materialization API**              | `node<"id">(...)`, private concrete-node adapters, `validate_output_port_configs`, node value construction, `materialize` lambda, return-type selection                                                     | Public source code resolves a registered ID; providers and lowering use the private concrete-node path. It deals with node construction, input/output config extraction, type erasure, detach-node special casing, and returned ref type selection. |
 | **9. Connection operations**                               | `connect_sample_input`, `connect_event_input`, `NodeRefBase::connect_input`, `connect_event_input`, `operator()`, `input_is_connected`, placement tracking                                                   | This is graph wiring logic. It should own the rules for sample/event edge creation, validating source/target compatibility, and detecting duplicate/filled inputs.                                                              |
 | **10. Detach / feedback-loop support**                     | `detach_sample_port`, `SamplePortRef::detach`, detached writer/reader info, `_detached_info_by_source`, `_detached_reader_outputs`, detach ID offset handling                                                | Detach is a specialized feature with its own lifecycle and remapping rules. It should not be mixed into generic node insertion or subgraph embedding except through a narrow interface.                                         |
 | **11. Scoped subgraph construction**                       | `ScopedSubgraph`, `subgraph(...)`, `define_scope_outputs`, `define_scope_event_outputs`, placeholder input nodes, lowered-subgraph placeholder creation                                                      | This is one of the biggest independent responsibilities. It handles temporary scope state, placeholder nodes, translation of internal edges, and exposure of subgraph boundaries.                                               |
@@ -58,7 +58,8 @@ public:
     // keep existing public API
     input(...);
     event_input(...);
-    node<T>(...);
+    node<"stable.id">(...);
+    node<"stable.id", stereo>(...);
     outputs(...);
     event_outputs(...);
     subgraph(...);
@@ -473,8 +474,8 @@ public:
     EventPortRef event_input(std::string_view name, EventTypeId type);
     EventPortRef event_input(EventTypeId type);
 
-    template<class Node, class... Args>
-    auto node(Args&&... args);
+    template<fixed_string Id, class... Args>
+    NodeRef node(Args&&... args);
 
     template<class... Refs>
     void outputs(Refs&&... refs);

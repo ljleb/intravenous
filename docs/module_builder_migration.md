@@ -48,13 +48,15 @@ contexts. JUCE/VST support remains available through its explicit API.
 
 ## Node-build request boundary
 
-`GraphBuilder::node<T>` now constructs `T` and sends a compact
-`NodeBuildRequest` to `iv_builder`. The request contains only a borrowed
-configuration address and extent, the build-local compiler record, and a
-type-specialized callback that enumerates port configs and node traits. The
-builder library immediately copies the configuration, captures C-string
+An `IV_NODE` provider's private concrete adapter constructs `T` and sends a
+compact `NodeBuildRequest` to `iv_builder`. The request contains only a
+borrowed configuration address and extent, the build-local compiler record,
+and a type-specialized callback that enumerates port configs and node traits.
+The builder library immediately copies the configuration, captures C-string
 relocations, invokes the callback against the copied configuration, and owns
-the resulting `ReflectedNodeDescription`.
+the resulting `ReflectedNodeDescription`. Source code reaches that adapter only
+through `g.node<"stable.id">(...)`; it has no public type-based construction
+overload.
 
 This deliberately does not add a node trait, registration hook, or other
 boilerplate to node definitions. A precompiled library cannot discover the
@@ -120,13 +122,14 @@ string storage does not point into an unloaded JIT generation.
   loaded configuration must retain every original value.
 - `ModuleCompilerMetadata.CapturesImplicitConstantForScalarNodeInput` covers a
   node record introduced by an inline builder helper rather than a source-level
-  `g.node<Constant>` call. A scalar input materializes `Constant` during
-  `GraphBuilder::node<T>` template instantiation, and it must receive an empty
-  configuration layout before finalization.
+  type construction call. A scalar input materializes `Constant` inside the
+  private provider/lowering path, and it must receive an empty configuration
+  layout before finalization.
 - `ModuleCompilerMetadata.IgnoresUnusedTypesThatOnlyResembleNodes` proves that
-  State ABI validation follows actual `g.node<T>` compiler records rather than
-  all AST records. An unused type deliberately has an invalid node-style State;
-  the used node still receives complete state metadata and initializes normally.
+  State ABI validation follows actual private concrete-node compiler records
+  rather than all AST records. An unused type deliberately has an invalid
+  node-style State; the used node still receives complete state metadata and
+  initializes normally.
 - The existing node-config materialization test still verifies alignment,
   empty strings, embedded NUL payloads, and duplicate relocation rejection.
 - `NodeBuildRequest.MaterializesHostOwnedDescriptionFromTypeSpecificCallback`

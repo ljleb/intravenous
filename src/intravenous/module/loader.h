@@ -25,6 +25,7 @@ namespace iv {
         std::optional<std::string> cmake_generator {};
         std::optional<std::filesystem::path> make_program {};
         std::optional<std::filesystem::path> juce_dir {};
+        std::optional<std::filesystem::path> iv_package_pch {};
         bool source_introspection = true;
         bool precompiled_header = true;
         bool clang_time_trace = false;
@@ -66,7 +67,6 @@ namespace iv {
             details::NodeCompilerRecord compiler_record{};
             std::filesystem::path package_path;
             std::vector<ModuleRef> module_refs;
-            std::shared_ptr<ConfiguredGraph const> configured_graph;
         };
 
         struct LoadedPackage {

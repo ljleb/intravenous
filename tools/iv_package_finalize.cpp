@@ -378,6 +378,13 @@ struct ConfigPointerMetadata {
     std::vector<std::size_t> byte_offsets{};
 };
 
+struct ConfigurationTypeMetadata {
+    std::string symbol;
+    std::string nominal_id;
+    std::string definition_fingerprint;
+    std::string display_name;
+};
+
 struct PackageDefinitionMetadata {
     std::string id;
     std::string kind;
@@ -389,6 +396,7 @@ struct PackageDefinitionMetadata {
 struct CompilerMetadata {
     std::vector<StateMetadata> states;
     std::vector<ConfigPointerMetadata> config_pointers;
+    std::vector<ConfigurationTypeMetadata> configuration_types;
     std::vector<PackageDefinitionMetadata> package_definitions;
 };
 
@@ -410,7 +418,7 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         auto* object = parsed->getAsObject();
         if (!object) fail("metadata root is not an object in '" + entry.path().string() + "'");
         auto version = object->getInteger("version");
-        if (!version || *version != 7) {
+        if (!version || *version != 8) {
             fail("unsupported compiler metadata version in '" + entry.path().string() + "'");
         }
         auto* states = object->getArray("states");
@@ -421,10 +429,53 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         if (!config_pointers) {
             fail("metadata has no config-pointer array in '" + entry.path().string() + "'");
         }
+        auto* configuration_types = object->getArray("configuration_types");
+        if (!configuration_types) {
+            fail("metadata has no configuration-type array in '"
+                 + entry.path().string() + "'");
+        }
         auto* package_definitions = object->getArray("package_definitions");
         if (!package_definitions) {
             fail("metadata has no package-definition array in '"
                  + entry.path().string() + "'");
+        }
+        for (auto const& type_value : *configuration_types) {
+            auto* type = type_value.getAsObject();
+            if (!type) {
+                fail("configuration-type metadata entry is not an object in '"
+                     + entry.path().string() + "'");
+            }
+            auto symbol = type->getString("symbol");
+            auto nominal_id = type->getString("nominal_id");
+            auto fingerprint = type->getString("definition_fingerprint");
+            auto display_name = type->getString("display_name");
+            if (!symbol || symbol->empty() || !nominal_id || nominal_id->empty()
+                || !fingerprint || fingerprint->empty()
+                || !display_name || display_name->empty()) {
+                fail("incomplete configuration-type metadata entry in '"
+                     + entry.path().string() + "'");
+            }
+            ConfigurationTypeMetadata metadata_type{
+                .symbol = symbol->str(),
+                .nominal_id = nominal_id->str(),
+                .definition_fingerprint = fingerprint->str(),
+                .display_name = display_name->str(),
+            };
+            auto const duplicate = std::find_if(
+                result.configuration_types.begin(),
+                result.configuration_types.end(),
+                [&](ConfigurationTypeMetadata const& existing) {
+                    return existing.symbol == metadata_type.symbol;
+                });
+            if (duplicate == result.configuration_types.end()) {
+                result.configuration_types.push_back(std::move(metadata_type));
+            } else if (duplicate->nominal_id != metadata_type.nominal_id
+                || duplicate->definition_fingerprint
+                    != metadata_type.definition_fingerprint
+                || duplicate->display_name != metadata_type.display_name) {
+                fail("conflicting configuration-type metadata for LLVM symbol '"
+                     + duplicate->symbol + "'");
+            }
         }
         for (auto const& definition_value : *package_definitions) {
             auto* definition_object = definition_value.getAsObject();
@@ -721,15 +772,28 @@ iv::NodeCodeKey compiler_record_key(Constant* pointer)
     };
 }
 
+Function const* definition_callback(Constant* pointer, std::string_view field)
+{
+    auto const* function = dyn_cast<Function>(getUnderlyingObject(pointer));
+    if (!function || function->isDeclaration()) {
+        fail("IV package definition has an invalid " + std::string(field)
+             + " callback");
+    }
+    return function;
+}
+
 void validate_package_definitions(
     std::span<GlobalVariable* const> definitions,
     CompilerMetadata const& metadata)
 {
-    std::set<std::pair<std::string, std::string>> runtime;
-    std::optional<std::string> package_root;
+    // Node types and iv modules deliberately occupy one stable-ID namespace.
+    // A duplicate in a single package is a package build error, not a later
+    // cross-package registry conflict.
+    std::set<std::string> runtime_ids;
+    std::set<std::pair<std::string, std::string>> runtime_definitions;
     for (auto* global : definitions) {
         auto* record = dyn_cast_or_null<ConstantStruct>(global->getInitializer());
-        if (!record || record->getNumOperands() != 10) {
+        if (!record || record->getNumOperands() != 11) {
             fail("malformed IV package definition record");
         }
         auto const kind_value = constant_u64(record->getOperand(0));
@@ -744,14 +808,34 @@ void validate_package_definitions(
         auto const id = constant_string_field(
             record->getOperand(1), record->getOperand(2), "stable ID");
         if (id.empty()) fail("IV package definition has an empty stable ID");
-        auto const root = constant_string_field(
-            record->getOperand(5), record->getOperand(6), "package root");
-        if (!package_root) package_root = root;
-        else if (*package_root != root) {
-            fail("one IV package emitted definitions for multiple package roots");
+        if (!runtime_ids.insert(id).second) {
+            fail("duplicate IV package definition ID within one IV package: '"
+                 + id + "'");
         }
-        if (!runtime.emplace(kind, id).second) {
-            fail("duplicate IV package definition ID within one IV package: '" + id + "'");
+        runtime_definitions.emplace(kind, id);
+        if (isa<ConstantPointerNull>(record->getOperand(10))) {
+            fail("IV " + kind + " '" + id
+                + "' has no compiler-generated construction signature");
+        }
+        if (kind == "node") {
+            if (isa<ConstantPointerNull>(record->getOperand(8))) {
+                fail("IV node '" + id + "' has no compiler-generated constructor adapter");
+            }
+            auto const* constructor = definition_callback(
+                record->getOperand(8), "node constructor adapter");
+            auto const* signature = definition_callback(
+                record->getOperand(10), "node construction signature");
+            if (constructor->getName().contains("iv_package_node_configuration_pending_")
+                || signature->getName().contains("iv_package_node_signature_pending_")) {
+                fail("IV node '" + id
+                    + "' was not processed by the IV Clang registration plugin");
+            }
+        } else {
+            if (isa<ConstantPointerNull>(record->getOperand(7))) {
+                fail("IV module '" + id + "' has no configuration callback");
+            }
+            (void)definition_callback(record->getOperand(10), "construction signature");
+            (void)definition_callback(record->getOperand(7), "module configuration");
         }
 
         auto const compiler = std::find_if(
@@ -774,7 +858,7 @@ void validate_package_definitions(
     }
 
     for (auto const& definition : metadata.package_definitions) {
-        if (!runtime.contains({definition.kind, definition.id})) {
+        if (!runtime_definitions.contains({definition.kind, definition.id})) {
             fail("compiler metadata describes " + definition.kind + " '"
                 + definition.id + "' but the IV package definition table did not");
         }
@@ -886,6 +970,79 @@ GlobalVariable* constant_bytes(
     global->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
     global->setAlignment(Align(std::max<std::size_t>(1, alignment)));
     return global;
+}
+
+void inject_configuration_type_identities(
+    Module& module,
+    CompilerMetadata const& metadata)
+{
+    auto& context = module.getContext();
+    auto* pointer_type = PointerType::getUnqual(context);
+    auto* size_type = IntegerType::get(
+        context, module.getDataLayout().getPointerSizeInBits());
+    // The C++ definition is emitted as a named LLVM struct.  This literal
+    // struct is only the ABI shape against which that emitted definition is
+    // checked; two structurally identical LLVM struct types are not pointer
+    // equal when one is named.
+    auto* identity_abi_type = StructType::get(
+        pointer_type, size_type, pointer_type, size_type, pointer_type, size_type);
+    auto const identity_size = module.getDataLayout().getTypeAllocSize(identity_abi_type);
+    if (identity_size.isScalable()
+        || identity_size.getFixedValue()
+            != sizeof(iv::details::ConfigurationTypeIdentity)) {
+        fail("configuration type-identity ABI does not match ConfigurationTypeIdentity");
+    }
+
+    std::unordered_set<std::string> metadata_symbols;
+    metadata_symbols.reserve(metadata.configuration_types.size());
+    for (auto const& metadata_type : metadata.configuration_types) {
+        metadata_symbols.insert(metadata_type.symbol);
+    }
+    for (auto const& global : module.globals()) {
+        if (global.getSection() != "iv_configuration_type_identities") continue;
+        if (!metadata_symbols.contains(global.getName().str())) {
+            fail("emitted configuration identity global '" + global.getName().str()
+                 + "' has no compiler metadata");
+        }
+    }
+
+    for (std::size_t index = 0; index < metadata.configuration_types.size(); ++index) {
+        auto const& metadata_type = metadata.configuration_types[index];
+        auto* identity = module.getGlobalVariable(metadata_type.symbol, true);
+        if (!identity || identity->isDeclaration() || !identity->hasInitializer()) {
+            fail("compiler metadata names missing configuration identity global '"
+                 + metadata_type.symbol + "'");
+        }
+        auto* identity_type = dyn_cast<StructType>(identity->getValueType());
+        if (!identity_type
+            || identity_type->isOpaque()
+            || !identity_type->isLayoutIdentical(identity_abi_type)) {
+            fail("configuration identity global '" + metadata_type.symbol
+                + "' has an incompatible LLVM type");
+        }
+        auto const make_string = [&](std::string_view field, StringRef suffix) {
+            auto bytes = std::as_bytes(std::span(field.data(), field.size()));
+            auto* storage = constant_bytes(
+                module,
+                "iv.configuration_type." + std::to_string(index) + "." + suffix.str(),
+                bytes,
+                1);
+            return std::pair<Constant*, Constant*>{
+                ConstantExpr::getPointerCast(storage, pointer_type),
+                ConstantInt::get(size_type, field.size()),
+            };
+        };
+        auto const nominal = make_string(metadata_type.nominal_id, "nominal");
+        auto const fingerprint = make_string(
+            metadata_type.definition_fingerprint, "fingerprint");
+        auto const display = make_string(metadata_type.display_name, "display");
+        identity->setInitializer(ConstantStruct::get(
+            identity_type,
+            {nominal.first, nominal.second,
+             fingerprint.first, fingerprint.second,
+             display.first, display.second}));
+        identity->setConstant(true);
+    }
 }
 
 Function* emit_view_accessor(
@@ -1269,6 +1426,7 @@ int finalize(Options options)
 
     stage_started_at = timings.start_stage();
     inject_package_abi_version(package);
+    inject_configuration_type_identities(package, metadata);
     inject_package_definition_table(package, definitions);
     inject_package_configuration_metadata(
         package, metadata, state_structures, retained_globals);

@@ -5,11 +5,9 @@
 void behavior_project(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto const phase = g.node<PhaseIntegrator>();
-    auto const probe = g.node<DebugProbe>(DebugProbe{
-        .label = "behavior probe",
-        .every_n_ticks = 0,
-    });
+    auto const phase = g.node<"phase_integrator">();
+    auto const probe = g.node<"debug_probe">(
+        "behavior probe", std::size_t{0});
     auto const voice = g.node<"iv.test.behavior_voice">();
     phase(0.0);
     auto const tone = voice(

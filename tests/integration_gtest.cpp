@@ -285,8 +285,9 @@ void apply_timeline_batch_to_execution_and_runner(
 void focused_stereo_saw_module(iv::GraphBuilder& graph)
 {
     using namespace iv;
-    auto const frequencies = graph.node<Constant, stereo>(220.0f);
-    auto const voice = graph.node<SawOscillator, stereo>();
+    auto const frequencies = details::configure_concrete_tiled_node<Constant, stereo>(
+        graph, Sample{220.0f});
+    auto const voice = details::configure_concrete_tiled_node<SawOscillator, stereo>(graph);
     auto const detuned = graph.tile<stereo>(
         frequencies[stereo::left] + 2.5f,
         frequencies[stereo::right] - 2.5f);
@@ -366,7 +367,7 @@ namespace {
     void graph_input_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const voice = g.node<SawOscillator>();
+        auto const voice = g.node<"iv.test.graph_input.saw">();
         voice(
             "phase_offset"_P = 0.0,
             "frequency"_P = 440.0
@@ -377,6 +378,8 @@ namespace {
             "main"_P[stereo::right] = contribution);
     }
 }
+
+IV_NODE("iv.test.graph_input.saw", iv::SawOscillator);
 )");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
@@ -610,7 +613,7 @@ void polyphonic_module(iv::GraphBuilder& g)
 
 
     iv::polyphonic<2>(g, [&]<size_t Voice>(auto m) {
-        auto const saw = g.node<SawOscillator>();
+        auto const saw = g.node<"iv.test.polyphonic.saw">();
         saw(
             "phase_offset"_P = 0.0,
             "frequency"_P = 440.0
@@ -619,6 +622,8 @@ void polyphonic_module(iv::GraphBuilder& g)
         g.outputs("main"_P = saw * m["amplitude"_P]);
     });
 }
+
+IV_NODE("iv.test.polyphonic.saw", iv::SawOscillator);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");

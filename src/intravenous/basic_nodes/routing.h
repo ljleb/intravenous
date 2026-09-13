@@ -179,9 +179,15 @@ namespace iv {
         }
     };
 
-    struct DetachWriterNode {
-        DetachArrayId id;
-        size_t loop_extra_latency = 1;
+struct DetachWriterNode {
+    DetachArrayId id;
+    size_t loop_extra_latency = 1;
+
+    constexpr explicit DetachWriterNode(
+        DetachArrayId id_, size_t loop_extra_latency_ = 1)
+        : id(id_)
+        , loop_extra_latency(loop_extra_latency_)
+    {}
 
         struct State {
             std::span<Sample> samples;
@@ -215,9 +221,15 @@ namespace iv {
         }
     };
 
-    struct DetachReaderNode {
-        DetachArrayId id;
-        size_t loop_extra_latency = 1;
+struct DetachReaderNode {
+    DetachArrayId id;
+    size_t loop_extra_latency = 1;
+
+    constexpr explicit DetachReaderNode(
+        DetachArrayId id_, size_t loop_extra_latency_ = 1)
+        : id(id_)
+        , loop_extra_latency(loop_extra_latency_)
+    {}
 
         struct State {
             std::span<Sample> samples;

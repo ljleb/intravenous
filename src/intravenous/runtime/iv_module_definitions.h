@@ -60,7 +60,6 @@ struct IvNodeTypeDefinition {
     std::filesystem::path package_root{};
     details::NodeCompilerRecord compiler_record{};
     std::vector<ModuleRef> module_refs{};
-    std::shared_ptr<ConfiguredGraph const> configured_graph{};
 };
 
 struct IvNodeTypeDefinitionsChanged {
@@ -105,7 +104,6 @@ struct IvModuleReloadedNodeType {
     std::filesystem::path package_root{};
     details::NodeCompilerRecord compiler_record{};
     std::vector<ModuleRef> module_refs{};
-    std::shared_ptr<ConfiguredGraph const> configured_graph{};
 };
 
 struct IvModuleRequiredDefinitionsChanged;

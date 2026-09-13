@@ -1,8 +1,4 @@
 #include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/noise.h>
-#include <intravenous/basic_nodes/filters.h>
-#include <intravenous/basic_nodes/shaping.h>
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/juce/vst_wrapper.h>
 
@@ -16,7 +12,7 @@ void project_v1(iv::GraphBuilder& g)
     auto make_channel = [&]<auto Channel>() {
         polyphonic<16>(g, [&]<size_t Voice>(auto m) {
             auto& [a, f] = m;
-            auto saw = g.node<SawOscillator>();
+            auto saw = g.node<"saw_oscillator">();
             (void)Voice;
             g.outputs("main"_P[Channel] = saw("frequency"_P = f) * a);
         });

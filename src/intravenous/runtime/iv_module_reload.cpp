@@ -172,6 +172,7 @@ void IvModuleReload::handle_project_override_settings(
     assign_string(request.cmake_generator, &ModuleLoaderToolchainConfig::cmake_generator);
     assign_path(request.make_program, &ModuleLoaderToolchainConfig::make_program);
     assign_path(request.juce_dir, &ModuleLoaderToolchainConfig::juce_dir);
+    assign_path(request.iv_package_pch, &ModuleLoaderToolchainConfig::iv_package_pch);
     if (!touched) {
         return;
     }
@@ -258,7 +259,6 @@ IvModuleReloadResults IvModuleReload::reload_packages(
                     .package_root = declaration.package_root,
                     .compiler_record = node_type.compiler_record,
                     .module_refs = std::move(node_type.module_refs),
-                    .configured_graph = std::move(node_type.configured_graph),
                 });
             }
         } catch (...) {

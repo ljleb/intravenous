@@ -21,7 +21,7 @@ int main()
     }
 
     {
-        auto loader = iv::test::make_loader();
+        auto loader = iv::test::make_loader({fixtures / "missing_export"});
         iv::test::expect_failure(
             [&] { (void)loader.load_package_definitions(fixtures / "missing_export"); },
             "iv_package.json",
@@ -29,7 +29,7 @@ int main()
     }
 
     {
-        auto loader = iv::test::make_loader();
+        auto loader = iv::test::make_loader({fixtures / "build_failure"});
         iv::test::expect_failure(
             [&] { (void)loader.load_package_definitions(fixtures / "build_failure"); },
             "command failed",
@@ -37,7 +37,7 @@ int main()
     }
 
     {
-        auto loader = iv::test::make_loader();
+        auto loader = iv::test::make_loader({fixtures / "missing_dependency"});
         iv::test::expect_failure(
             [&] { (void)loader.load_package_definitions(fixtures / "missing_dependency"); },
             "imports missing",
@@ -45,7 +45,13 @@ int main()
     }
 
     {
-        auto loader = iv::test::make_loader({fixtures, iv::test::duplicate_modules_root()});
+        auto const duplicates = iv::test::duplicate_modules_root();
+        auto loader = iv::test::make_loader({
+            fixtures / "nested_loader_project",
+            fixtures / "nested_loader_voice",
+            duplicates / "one",
+            duplicates / "two",
+        });
         iv::test::expect_failure(
             [&] { (void)loader.load_package_definitions(fixtures / "nested_loader_project"); },
             "duplicate stable IV definition ID",

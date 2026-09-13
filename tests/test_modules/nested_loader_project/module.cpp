@@ -4,7 +4,7 @@
 void nested_loader_project(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto const phase = g.node<PhaseIntegrator>();
+    auto const phase = g.node<"phase_integrator">();
     auto const voice = g.node<"iv.test.nested_loader_voice">();
     phase(0.0);
     auto const tone = voice(

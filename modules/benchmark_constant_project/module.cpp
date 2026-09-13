@@ -1,11 +1,9 @@
 #include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
-#include <intravenous/basic_nodes/shaping.h>
 
 void benchmark_constant_project(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto const phase = g.node<PhaseIntegrator>();
+    auto const phase = g.node<"phase_integrator">();
 
     phase(0.0);
     auto const voice = g.node<"iv.test.benchmark_constant_project.voice">();

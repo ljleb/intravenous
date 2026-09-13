@@ -250,6 +250,7 @@ struct LocalCmakeDefinitions {
             .definition_id = std::string(local_cmake_module_id),
             .package_root = root,
             .module_id = std::string(local_cmake_module_id),
+            .root = iv::WeakTypeErasedNode(iv::test::loaded_definition_test_root),
         });
     }
 };

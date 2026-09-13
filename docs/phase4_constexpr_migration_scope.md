@@ -1,5 +1,11 @@
 # Phase 4 constexpr migration scope
 
+> Historical exploration. This document predates the registered-ID IV-package
+> boundary. It is not the contract for current module-source APIs: source code
+> uses only `g.node<"stable.id">(...)`. Any concrete-type construction named
+> below is an implementation-only provider/lowering operation and must not
+> reintroduce a public `GraphBuilder::node<T>` overload.
+
 Read this file completely after every context compaction before changing Phase
 4 code. It is the implementation contract. If a required change is not implied
 by this document or by a compiler diagnostic on the existing call chain, stop
@@ -20,15 +26,19 @@ graph root is the only runtime `TypeErasedNode` boundary.
 
 ## Proven immediate-reflection mechanism
 
-`GraphBuilder::node<T>(args...)` constructs the structural `T` value during
-constant evaluation and reflects it immediately. It does not store, serialize,
-reconstruct, register, or runtime-materialize the configured node.
+The private concrete-node configuration adapter constructs the structural `T`
+value during constant evaluation and reflects it immediately. It does not
+store, serialize, reconstruct, register, or runtime-materialize the configured
+node. Module source reaches a provider only through a registered stable ID;
+the provider/lowering implementation may use this adapter after ID resolution.
 
 The focused GCC 16 prototype established this shape:
 
 ```cpp
 template <class Node, class... Args>
-constexpr auto GraphBuilder::node(Args&&... args)
+constexpr auto details::configure_concrete_node(
+    GraphBuilder& builder,
+    Args&&... args)
 {
     if consteval {
         Node node(std::forward<Args>(args)...);

@@ -123,6 +123,10 @@ public:
   NodeBundleHandle append_node_description(ReflectedNodeDescription);
   NodeBundleHandle append_tiled_node_description(
       ReflectedNodeDescription const&, ChannelLayout);
+  NodeBundleHandle append_tiled_node_bundles(
+      std::span<NodeBundleHandle const>, ChannelLayout);
+  void validate_tiled_module_interfaces(
+      std::span<GraphBuilderState* const>) const;
   PublicSampleInputRef input();
   PublicSampleInputRef input(Sample default_value,
                              std::optional<Sample> min = std::nullopt,
@@ -541,8 +545,7 @@ constexpr SamplePortRef GraphBuilderState::lift_to_sample_port(
         if constexpr (std::same_as<T, EventPortRef>)
           details::error("expected sample value, got event");
         else if constexpr (std::same_as<T, Sample>)
-          return static_cast<SamplePortRef>(
-              facade().template node<Constant>(value));
+          return facade().lift_to_sample_port(value);
         else
           return lift_to_sample_port(value);
       },

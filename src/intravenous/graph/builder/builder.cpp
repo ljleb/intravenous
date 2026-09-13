@@ -65,6 +65,31 @@ NodeBundleHandle iv_builder_append_tiled_node(
     return state(builder).append_tiled_node_description(description, layout);
 }
 
+NodeBundleHandle iv_builder_append_tiled_node_bundles(
+    GraphBuilder& builder,
+    std::span<NodeBundleHandle const> members,
+    ChannelLayout layout)
+{
+    return state(builder).append_tiled_node_bundles(members, layout);
+}
+
+void iv_builder_validate_tiled_module_interfaces(
+    std::span<GraphBuilder* const> children)
+{
+    std::vector<GraphBuilderState*> child_states;
+    child_states.reserve(children.size());
+    for (auto* child : children) {
+        if (!child) {
+            error("tiled IV module has a null child graph");
+        }
+        child_states.push_back(std::addressof(state(*child)));
+    }
+    if (child_states.empty()) {
+        error("tiled IV module requires child graphs");
+    }
+    child_states.front()->validate_tiled_module_interfaces(child_states);
+}
+
 bool iv_builder_connect_unary_sample(
     NodeRef const& target, SamplePortRef source, std::string_view operation)
 {

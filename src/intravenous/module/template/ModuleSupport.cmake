@@ -268,7 +268,12 @@ function(_iv_package_define_finalizer target)
             "--metadata-dir=${_iv_metadata_dir}"
             "--timings-file=${_iv_timings_file}"
             "--output=${_iv_output}"
-            -- $<TARGET_OBJECTS:${target}> ${_iv_llvm_inputs}
+            # CMake exposes its precompiled-header artifact through
+            # TARGET_OBJECTS for an OBJECT library.  It is a compiler input,
+            # not package LLVM, and must not be parsed/linked by the
+            # finalizer.  Keep ${target} in DEPENDS below so the PCH is still
+            # built before its real object files.
+            -- $<FILTER:$<TARGET_OBJECTS:${target}>,EXCLUDE,.*\\.pch$> ${_iv_llvm_inputs}
         DEPENDS
             ${target}
             ${_iv_dependencies}
@@ -333,9 +338,6 @@ function(iv_add_package target)
         CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
     target_compile_features(${_iv_objects_target} PRIVATE cxx_std_26)
     target_compile_options(${_iv_objects_target} PRIVATE -O0 -flto=full)
-    target_compile_definitions(${_iv_objects_target} PRIVATE
-        "IV_PACKAGE_ROOT=\"${IV_PACKAGE_DIR}\"")
-
     if(IV_PACKAGE_CLANG_TIME_TRACE)
         target_compile_options(${_iv_objects_target} PRIVATE -ftime-trace)
     endif()
@@ -378,10 +380,16 @@ function(iv_add_package target)
         target_link_libraries(${_iv_objects_target} PRIVATE iv_builder)
     endif()
 
-    if(NOT DEFINED IV_PACKAGE_PCH_HEADER)
+    if(DEFINED IV_DSL_PCH AND NOT IV_DSL_PCH STREQUAL "")
+        if(NOT EXISTS "${IV_DSL_PCH}")
+            message(FATAL_ERROR "IV_DSL_PCH does not exist: ${IV_DSL_PCH}")
+        endif()
+        target_compile_options(${_iv_objects_target} PRIVATE
+            "-include-pch" "${IV_DSL_PCH}")
+    elseif(NOT DEFINED IV_PACKAGE_PCH_HEADER)
         set(IV_PACKAGE_PCH_HEADER "${IV_SOURCE_DIR}/module/template/module_pch.h")
-    endif()
-    if(NOT IV_PACKAGE_PCH_HEADER STREQUAL "")
+        target_precompile_headers(${_iv_objects_target} PRIVATE "${IV_PACKAGE_PCH_HEADER}")
+    elseif(NOT IV_PACKAGE_PCH_HEADER STREQUAL "")
         target_precompile_headers(${_iv_objects_target} PRIVATE "${IV_PACKAGE_PCH_HEADER}")
     endif()
 

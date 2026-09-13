@@ -208,6 +208,11 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
                 ? Json(relativize_path(*toolchain.juce_dir))
                 : Json(nullptr);
         }
+        if (!normalized_path_equal(toolchain.iv_package_pch, startup_.toolchain.iv_package_pch)) {
+            settings["iv_package_pch"] = toolchain.iv_package_pch.has_value()
+                ? Json(relativize_path(*toolchain.iv_package_pch))
+                : Json(nullptr);
+        }
     }
     if (compiled_sample_cache_chunk_size_multiplier_.has_value() &&
         *compiled_sample_cache_chunk_size_multiplier_

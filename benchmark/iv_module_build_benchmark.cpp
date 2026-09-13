@@ -125,7 +125,8 @@ std::string benchmark_source(size_t voices, SourceShape shape)
         return finish();
     }
     for (size_t voice = 0; voice < voices; ++voice) {
-        source << "    auto const osc" << voice << " = g.node<SawOscillator>();\n";
+        source << "    auto const osc" << voice
+               << " = g.node<\"saw_oscillator\">();\n";
     }
     if (shape == SourceShape::nodes) {
         source << "}\n";

@@ -221,6 +221,7 @@ bool is_recognized_project_override_key(std::string const &key)
         || key == "cmake_generator"
         || key == "make_program"
         || key == "juce_dir"
+        || key == "iv_package_pch"
         || key == "compiled_sample_cache_chunk_size_multiplier"
         || key == "output_device_id"
         || key == "input_device_id";
@@ -241,7 +242,7 @@ std::optional<ProjectOverrideSettingsRequest> parse_project_override_settings_re
             continue;
         }
         if (key == "c_compiler" || key == "cxx_compiler" || key == "cmake_program" ||
-            key == "make_program" || key == "juce_dir") {
+            key == "make_program" || key == "juce_dir" || key == "iv_package_pch") {
             if (!value.is_null() && !value.is_string()) {
                 throw std::runtime_error("project override toolchain settings must be strings or null");
             }
@@ -257,7 +258,11 @@ std::optional<ProjectOverrideSettingsRequest> parse_project_override_settings_re
             } else if (key == "make_program") {
                 assign_if_present(request.make_program, has_any, std::move(parsed_value));
             } else {
-                assign_if_present(request.juce_dir, has_any, std::move(parsed_value));
+                if (key == "juce_dir") {
+                    assign_if_present(request.juce_dir, has_any, std::move(parsed_value));
+                } else {
+                    assign_if_present(request.iv_package_pch, has_any, std::move(parsed_value));
+                }
             }
             continue;
         }

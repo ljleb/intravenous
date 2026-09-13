@@ -76,10 +76,12 @@ namespace {
     void state_reload_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const probe = g.node<ReloadProbe>();
+        auto const probe = g.node<"iv.test.state_reload.probe">();
         g.outputs("main"_P = probe);
     }
 }
+
+IV_NODE("iv.test.state_reload.probe", ReloadProbe);
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
@@ -202,11 +204,13 @@ namespace {
     {
         using namespace iv;
         auto const signal = g.input<"signal">(0.0f);
-        auto const node = g.node<ModuleNodeDefinitionContract>();
+        auto const node = g.node<"iv.test.node_definition.contract">();
         node("signal"_P = signal);
         g.outputs("main"_P = node);
     }
 }
+
+IV_NODE("iv.test.node_definition.contract", ModuleNodeDefinitionContract);
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
@@ -245,6 +249,14 @@ namespace {
         char const* labels[2] = {nullptr, nullptr};
         Details details{};
 
+        constexpr CStringCaptureProbe(
+            char const* first = nullptr,
+            char const* second = nullptr,
+            char const* trailing = nullptr)
+            : labels{first, second}
+            , details{trailing}
+        {}
+
         static constexpr auto outputs()
         {
             return std::array<iv::OutputConfig, 1>{};
@@ -262,13 +274,13 @@ namespace {
         char const* first = "A first configuration string";
         char const* second = "A second configuration string";
         char const* trailing = "A nested configuration string";
-        auto const probe = g.node<CStringCaptureProbe>(CStringCaptureProbe{
-            .labels = {first, second},
-            .details = {trailing},
-        });
+        auto const probe = g.node<"iv.test.c_string_capture.probe">(
+            first, second, trailing);
         g.outputs("main"_P = probe);
     }
 }
+
+IV_NODE("iv.test.c_string_capture.probe", CStringCaptureProbe);
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
@@ -340,13 +352,15 @@ namespace {
     void implicit_constant_configuration_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const passthrough = g.node<ScalarPassthrough>();
+        auto const passthrough = g.node<"iv.test.implicit_constant.passthrough">();
         passthrough(
             "input"_P = 0.25f,
             "modulation"_P = 0.5f);
         g.outputs("main"_P = passthrough);
     }
 }
+
+IV_NODE("iv.test.implicit_constant.passthrough", ScalarPassthrough);
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});
@@ -400,10 +414,12 @@ namespace {
     void metadata_ignores_unused_state_carrier_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const node = g.node<UsedNode>();
+        auto const node = g.node<"iv.test.metadata.used_node">();
         g.outputs("main"_P = node);
     }
 }
+
+IV_NODE("iv.test.metadata.used_node", UsedNode);
 )");
 
     iv::ModuleLoader loader(iv::test::repo_root(), {});

@@ -65,8 +65,8 @@ namespace {
     {
         auto const reset = 1.0f;
         auto const frequency = 220.0f;
-        auto const integrator = g.node<iv::PhaseIntegrator>();
-        auto const warper = g.node<iv::Warper>();
+        auto const integrator = details::configure_concrete_node<iv::PhaseIntegrator>(g);
+        auto const warper = details::configure_concrete_node<iv::Warper>(g);
 
         integrator((warper["aliased"].detach() * reset + frequency * 2.0f) * dt);
         warper(integrator + noise);
@@ -76,16 +76,19 @@ namespace {
     auto build_detached_graph()
     {
         iv::GraphBuilder graph;
-        auto const dt = graph.node<RuntimeValueSource>(RuntimeValueSlot::dt);
-        auto const src_a = graph.node<RuntimeValueSource>(RuntimeValueSlot::noise_a);
-        auto const src_b = graph.node<RuntimeValueSource>(RuntimeValueSlot::noise_b);
+        auto const dt = details::configure_concrete_node<RuntimeValueSource>(
+            graph, RuntimeValueSlot::dt);
+        auto const src_a = details::configure_concrete_node<RuntimeValueSource>(
+            graph, RuntimeValueSlot::noise_a);
+        auto const src_b = details::configure_concrete_node<RuntimeValueSource>(
+            graph, RuntimeValueSlot::noise_b);
         auto const voice_a = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
             detached_voice(graph, boundary, dt, src_a, 0.5f);
         });
         auto const voice_b = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
             detached_voice(graph, boundary, dt, src_b, 0.25f);
         });
-        auto const sink = graph.node<RuntimeBufferSink>();
+        auto const sink = details::configure_concrete_node<RuntimeBufferSink>(graph);
 
         sink(voice_a + voice_b);
         graph.outputs();
@@ -112,10 +115,12 @@ namespace {
     auto build_static_dormancy_graph()
     {
         iv::GraphBuilder graph;
-        auto const source = graph.node<iv::Constant>(iv::Sample{0.0f});
+        auto const source = details::configure_concrete_node<iv::Constant>(
+            graph, iv::Sample{0.0f});
         auto const nested = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
             auto const input = boundary.input<"in">(0.0f);
-            auto const pass = graph.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>();
+            auto const pass = details::configure_concrete_node<
+                iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>(graph);
             pass(input);
             boundary.outputs("out"_P = pass);
         }).ttl(1);
@@ -138,12 +143,12 @@ namespace {
         iv::GraphBuilder graph;
         auto const nested = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
             auto const input = boundary.input<"in">(iv::Sample{0.375f});
-            auto const pass = graph.node<
-                iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>();
+            auto const pass = details::configure_concrete_node<
+                iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>(graph);
             pass(input);
             boundary.outputs("out"_P = pass);
         });
-        auto const sink = graph.node<RuntimeBufferSink>();
+        auto const sink = details::configure_concrete_node<RuntimeBufferSink>(graph);
         sink(nested);
         graph.outputs();
         return iv::freeze_configured_graph_for_test(std::move(graph).finish());

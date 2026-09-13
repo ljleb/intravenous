@@ -17,7 +17,7 @@ implementation details. Virtual-node-to-bundle membership is explicit and
 many-to-many; it must never be inferred from names, source spans, types, tile
 order, or adjacency.
 
-## Public node-reference types
+## Node-reference types
 
 ```cpp
 NodeRef
@@ -30,7 +30,11 @@ TiledNodeRef<Node, ChannelType>
 `TiledNodeRef<Node, C>` adds `Node`'s constexpr port shape, the promoted
 channel type `C`, and typed access to its concrete member bundles.
 
-The CRTP implementation helper is internal. It is not a DSL-facing type.
+`NodeRef` is the public source-facing result of `g.node<"stable.id">(...)`
+and `g.node<"stable.id", ChannelType>(...)`.
+The typed and tiled forms remain builder/lowering implementation tools for a
+provider's concrete node and generated internal nodes; they are not an
+alternative source API. The CRTP implementation helper is likewise internal.
 Typed refs derive from `NodeRef`, but an erased handle for an lvalue is made by
 `node_ref()`, not by copying or slicing a node ref.
 
@@ -76,10 +80,19 @@ match.
 
 ## Expression rules
 
-- `g.node<N>()` returns a concrete typed ref when `N` has preserved static
-  shape, otherwise `NodeRef`.
-- `g.node<N, C>()` returns `TiledNodeRef<N, C>` and is valid only for supported
-  tiling mappings.
+- `g.node<"stable.id">(args...)` is the normal source-facing node-construction
+  operation. It resolves a registered `IV_NODE` or `IV_MODULE` synchronously
+  and returns `NodeRef`; its public result does not disclose which provider
+  kind supplied the ID.
+- `g.node<"stable.id", ChannelType>(args...)` requests a tiled registered
+  `IV_NODE` bundle or a tiled `IV_MODULE` subgraph and still returns `NodeRef`.
+  It replaces the old `g.node<Node, C>()` spelling without exposing `Node`'s
+  type or static ports. Every sample input/output of a tiled iv module must be
+  mono so the enclosing bundle can promote matching ports consistently. If
+  that condition is not met, the entire node-construction call fails without
+  adding its attempted module children to the caller's graph.
+- Concrete typed construction remains a private provider, lowering, and
+  finalization operation.
 - `g.subgraph(...)`, embedding, and module loading return `NodeRef` to one
   subgraph bundle.
 - `ref(...)`, `connect_input`, and `connect_event_input` connect positional or

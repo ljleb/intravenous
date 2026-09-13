@@ -121,10 +121,12 @@ function(iv_add_linker_event_object target source)
 endfunction()
 
 function(iv_add_host_runtime_objects target)
+    add_dependencies(${target} intravenous_dsl_pch)
     target_compile_definitions(${target} PRIVATE
         JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
         JUCE_USE_CURL=${JUCE_USE_CURL}
         IV_CONFIGURED_IV_BUILDER_LIBRARY="$<TARGET_FILE:iv_builder>"
+        IV_CONFIGURED_IV_DSL_PCH="${IV_DSL_PCH}"
         IV_CONFIGURED_JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
         IV_CONFIGURED_JUCE_USE_CURL=${JUCE_USE_CURL}
         IV_CONFIGURED_CMAKE_COMMAND="${CMAKE_COMMAND}"
@@ -133,6 +135,7 @@ function(iv_add_host_runtime_objects target)
         IV_CONFIGURED_MAKE_PROGRAM="${CMAKE_MAKE_PROGRAM}"
         IV_CONFIGURED_C_COMPILER="${CMAKE_C_COMPILER}"
         IV_CONFIGURED_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
+        IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT="${IV_BUILTIN_PACKAGE_SEARCH_ROOT}"
     )
 
     if(JUCE_FOUND)
@@ -189,6 +192,28 @@ function(iv_add_host_runtime_objects target)
     iv_link_stacktrace_support(${target})
 endfunction()
 
+# Built-ins are a single shipped IV package rather than code linked directly
+# into iv_builder.  Copy the source package into the build layout so the
+# application discovers it through the normal global-package path.
+set(IV_BUILTIN_PACKAGE_SOURCE_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/builtin_packages")
+set(IV_BUILTIN_PACKAGE_SEARCH_ROOT
+    "${CMAKE_CURRENT_BINARY_DIR}/builtin_packages")
+set(_iv_builtin_package_manifest
+    "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin/iv_package.json")
+add_custom_command(
+    OUTPUT "${_iv_builtin_package_manifest}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+        "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}"
+        "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}"
+    DEPENDS
+        "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/iv_package.json"
+        "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/module.cpp"
+    VERBATIM
+)
+add_custom_target(intravenous_builtin_package_assets
+    DEPENDS "${_iv_builtin_package_manifest}")
+
 add_library(intravenous_graph_builder OBJECT
     basic_nodes/debug_probe.cpp
     compat.cpp
@@ -211,6 +236,20 @@ add_library(iv_builder SHARED
 set_target_properties(iv_builder PROPERTIES OUTPUT_NAME iv_builder)
 iv_configure_intravenous_target(iv_builder PUBLIC)
 iv_link_stacktrace_support(iv_builder)
+
+set(IV_DSL_PCH "${CMAKE_CURRENT_BINARY_DIR}/iv_dsl.pch")
+file(GLOB_RECURSE IV_PACKAGE_PCH_HEADERS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.h" "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp")
+add_custom_command(
+    OUTPUT "${IV_DSL_PCH}"
+    COMMAND "${CMAKE_CXX_COMPILER}" -std=c++26 -O0 -flto=full
+        "-I${IV_PUBLIC_INCLUDE_ROOT}" -isystem "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+        -DIV_ENABLE_JUCE_VST=0 -x c++-header
+        "${CMAKE_CURRENT_SOURCE_DIR}/module/template/module_pch.h"
+        -o "${IV_DSL_PCH}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/module/template/module_pch.h" ${IV_PACKAGE_PCH_HEADERS}
+    VERBATIM)
+add_custom_target(intravenous_dsl_pch DEPENDS "${IV_DSL_PCH}")
 
 # This source represents the default project-local module. Its compilation
 # database entry is copied to new module sources, where clangd infers the
@@ -480,6 +519,12 @@ endif()
 
 target_compile_definitions(intravenous_module_loader PRIVATE
     IV_CONFIGURED_IV_BUILDER_LIBRARY="$<TARGET_FILE:iv_builder>"
+    # Direct ModuleLoader users (including the module-loader test harness)
+    # have no app StartupConfig to contribute the copied, deployable built-in
+    # package root. They use the source root unless the executable's copied
+    # root was supplied explicitly.
+    IV_CONFIGURED_BUILTIN_PACKAGE_SOURCE_ROOT="${IV_BUILTIN_PACKAGE_SOURCE_ROOT}"
+    IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT="${IV_BUILTIN_PACKAGE_SEARCH_ROOT}"
     IV_CONFIGURED_JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
     IV_CONFIGURED_JUCE_USE_CURL=${JUCE_USE_CURL}
     IV_CONFIGURED_CMAKE_COMMAND="${CMAKE_COMMAND}"
@@ -510,6 +555,8 @@ target_include_directories(intravenous SYSTEM PRIVATE
 )
 
 iv_add_host_runtime_objects(intravenous)
+add_dependencies(intravenous intravenous_builtin_package_assets)
+add_dependencies(intravenous intravenous_dsl_pch)
 
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/.intravenous_defaults"
@@ -520,6 +567,7 @@ cmake_program=${CMAKE_COMMAND}
 cmake_generator=${CMAKE_GENERATOR}
 make_program=${CMAKE_MAKE_PROGRAM}
 juce_dir=${JUCE_DIR}
+iv_package_pch=${IV_DSL_PCH}
 sample_rate=48000
 block_size=256
 compiled_sample_cache_chunk_size_multiplier=16

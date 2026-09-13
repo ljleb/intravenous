@@ -500,67 +500,6 @@ std::shared_ptr<SharedPackageJit> create_shared_package_jit()
     return result;
 }
 
-void configure_node_type_ports(GraphBuilder& builder, NodeRef& node)
-{
-    for (std::size_t input = 0; input < node.sample_input_count(); ++input) {
-        auto const config = builder.sample_input_config(node.node_bundle_handle(), input);
-        auto const name = config.name.empty()
-            ? std::string("input") + std::to_string(input)
-            : config.name;
-        node.connect_input(input, builder.input_named(
-            name,
-            config.channel_layout,
-            config.default_value,
-            config.min,
-            config.max));
-    }
-    for (std::size_t input = 0; input < node.event_input_count(); ++input) {
-        auto const config = builder.event_input_config(node.node_bundle_handle(), input);
-        auto const name = config.name.empty()
-            ? std::string("eventInput") + std::to_string(input)
-            : config.name;
-        node.connect_event_input(input, builder.event_input_named(name, config.type));
-    }
-
-    std::vector<SampleOutputRequest> sample_outputs;
-    std::vector<std::string> sample_output_names;
-    sample_outputs.reserve(node.sample_output_count());
-    sample_output_names.reserve(node.sample_output_count());
-    for (std::size_t output = 0; output < node.sample_output_count(); ++output) {
-        auto port = node[output];
-        sample_output_names.push_back("output" + std::to_string(output));
-        auto const& name = sample_output_names.back();
-        sample_outputs.push_back({
-            .ref = port,
-            .name = name,
-            .channel_layout = {
-                .channel_type = port.channel_type,
-                .sample_layout = SampleStreamLayout::planar,
-            },
-            .family_name = name,
-            .family_channel_type = port.channel_type,
-        });
-    }
-    if (!sample_outputs.empty()) {
-        builder.outputs(std::span<SampleOutputRequest const>(sample_outputs));
-    }
-
-    std::vector<EventOutputRequest> event_outputs;
-    std::vector<std::string> event_output_names;
-    event_outputs.reserve(node.event_output_count());
-    event_output_names.reserve(node.event_output_count());
-    for (std::size_t output = 0; output < node.event_output_count(); ++output) {
-        event_output_names.push_back("eventOutput" + std::to_string(output));
-        event_outputs.push_back({
-            .ref = node.event_port(output),
-            .name = event_output_names.back(),
-        });
-    }
-    if (!event_outputs.empty()) {
-        builder.event_outputs(std::span<EventOutputRequest const>(event_outputs));
-    }
-}
-
 void run(
     std::string const &command,
     ModuleLoader::LogSink const &sink,
@@ -891,6 +830,9 @@ class ModuleLoader::Impl {
         }
         if (!toolchain_.precompiled_header) {
             configure << " -DIV_PACKAGE_PCH_HEADER=";
+        } else if (toolchain_.iv_package_pch.has_value()) {
+            configure << " -DIV_DSL_PCH="
+                      << quote(*toolchain_.iv_package_pch);
         }
         if (toolchain_.clang_time_trace) {
             configure << " -DIV_PACKAGE_CLANG_TIME_TRACE=ON";
@@ -958,6 +900,27 @@ public:
           package_jit_(create_shared_package_jit())
     {
         std::filesystem::create_directories(global_cache_root_);
+        // The executable contributes its copied built-in package directory
+        // through StartupConfig. Direct ModuleLoader users, including the
+        // test harness, have no startup layer at all, so add the source-tree
+        // built-ins alongside their other global roots. The configured
+        // executable root is the one exception: adding the source package
+        // beside its deployed copy would create two providers for every
+        // built-in stable ID.
+#if defined(IV_CONFIGURED_BUILTIN_PACKAGE_SOURCE_ROOT) \
+    && defined(IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT)
+        auto const configured_deployable_builtin_root = normalize(
+            std::filesystem::path(IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT));
+        auto const has_deployable_builtin_root = std::ranges::any_of(
+            roots,
+            [&](std::filesystem::path const& root) {
+                return normalize(root) == configured_deployable_builtin_root;
+            });
+        if (!has_deployable_builtin_root
+            && std::string_view(IV_CONFIGURED_BUILTIN_PACKAGE_SOURCE_ROOT).size() != 0) {
+            roots.emplace_back(IV_CONFIGURED_BUILTIN_PACKAGE_SOURCE_ROOT);
+        }
+#endif
         for (auto const &root : roots) {
             extra_search_roots.push_back(normalize(root));
         }
@@ -1194,17 +1157,14 @@ public:
                 });
             }
 
-            for (auto const& definition : package->definitions) {
-                if (!definition.package_root || definition.package_root_size == 0) {
-                    throw std::runtime_error("IV package definition has no package root");
-                }
-                auto const definition_root = normalize(
-                    std::filesystem::path(std::string(
-                        definition.package_root, definition.package_root_size)));
-                if (definition_root != normalize(root.module_dir)) {
-                    throw std::runtime_error(
-                        "IV package definition belongs to a different package root");
-                }
+            // Package ownership comes from the loader's resolved manifest, not
+            // a per-package compiler definition. This keeps package code—and
+            // therefore its PCH compile environment—independent of its source
+            // directory. BuilderPackageView still carries the resolved root
+            // for symbolic config relocations and provider selection.
+            for (auto& definition : package->definitions) {
+                definition.package_root = package->package_root.c_str();
+                definition.package_root_size = package->package_root.size();
             }
 
             loaded_packages_by_bitcode_.insert_or_assign(bitcode_key, package);
@@ -1216,19 +1176,13 @@ public:
             }
         }
 
-        details::BuilderPackageView const package_view{
-            .package_root = package->package_root,
-            .definitions = package->definitions,
-            .config_pointer_fields = package->config_pointer_fields,
-            .retained_globals = package->retained_globals,
-            .node_state_structures = package->node_state_structures,
-        };
         std::vector<LoadedNodeType> loaded_node_types;
         std::unordered_set<std::string> node_type_ids;
         for (auto const& definition : package->definitions) {
             if (definition.kind != details::PackageDefinitionKind::node) continue;
             if (!definition.id || definition.id_size == 0
-                || !definition.node_build || !definition.node_compiler_record) {
+                || !definition.node_build || !definition.node_compiler_record
+                || !definition.signature) {
                 throw std::runtime_error("IV package node type definition is incomplete");
             }
             auto node_type_id = std::string(definition.id, definition.id_size);
@@ -1244,23 +1198,17 @@ public:
                     + "' has invalid compiler operations");
             }
 
-            auto session = std::unique_ptr<details::BuilderSession,
-                decltype(&details::iv_builder_session_destroy)>(
-                    details::iv_builder_session_create(),
-                    details::iv_builder_session_destroy);
-            details::set_builder_packages(session.get(), std::span(&package_view, 1));
-            details::select_builder_package(session.get(), 0);
-            GraphBuilder builder(session.get());
-            auto node = definition.node_build(builder);
-            configure_node_type_ports(builder, node);
-            auto configured = std::make_shared<ConfiguredGraph const>(
-                details::take_built_graph(session.get()));
+            auto const* signature = definition.signature();
+            if (!signature) {
+                throw std::runtime_error(
+                    "IV package node type definition has no construction signature");
+            }
+            details::validate_registered_signature_shape(node_type_id, *signature);
             loaded_node_types.push_back({
                 .node_type_id = std::move(node_type_id),
                 .compiler_record = *compiler_record,
                 .package_path = root.module_dir,
                 .module_refs = {package},
-                .configured_graph = std::move(configured),
             });
         }
 
@@ -1310,13 +1258,37 @@ public:
         std::unordered_set<std::string> module_ids;
         for (auto const& definition : root_package->definitions) {
             if (definition.kind != details::PackageDefinitionKind::module) continue;
-            if (!definition.id || definition.id_size == 0 || !definition.module_build) {
+            if (!definition.id || definition.id_size == 0 || !definition.module_build
+                || !definition.signature) {
                 throw std::runtime_error("IV module definition is incomplete");
             }
             auto module_id = std::string(definition.id, definition.id_size);
             if (!module_ids.insert(module_id).second) {
                 throw std::runtime_error(
                     "IV package contains duplicate iv module ID '" + module_id + "'");
+            }
+
+            auto const* signature = definition.signature();
+            if (!signature) {
+                throw std::runtime_error(
+                    "IV module definition has no construction signature");
+            }
+            details::validate_registered_signature_shape(module_id, *signature);
+            // The compatibility instance runtime has no persisted module
+            // construction arguments yet. Publish a required-argument module
+            // nonetheless: it is a valid provider for another module's
+            // g.node<Id>(...) call, but has no default execution root for a
+            // project instance to realize.
+            if (signature->required_argument_count != 0) {
+                definitions.emplace_back(
+                    std::vector<ModuleRef>{root_package},
+                    WeakTypeErasedNode{},
+                    GraphIntrospectionMetadata{},
+                    compiled.root.module_dir,
+                    std::move(module_id),
+                    package_result.dependencies,
+                    nullptr);
+                continue;
             }
 
             auto session = std::unique_ptr<details::BuilderSession,
@@ -1337,6 +1309,7 @@ public:
             } const module_call{session.get()};
 
             GraphBuilder builder(session.get());
+            details::validate_registered_signature(module_id, *signature, {});
             definition.module_build(builder, {});
             auto configured = std::make_shared<ConfiguredGraph const>(
                 details::take_built_graph(session.get()));

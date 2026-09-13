@@ -78,6 +78,74 @@ NodeBundleHandle GraphBuilderState::append_tiled_node_description(
   return _node_bundles.append_tiled(members, layout);
 }
 
+NodeBundleHandle GraphBuilderState::append_tiled_node_bundles(
+    std::span<NodeBundleHandle const> members, ChannelLayout layout)
+{
+  return _node_bundles.append_tiled(members, layout);
+}
+
+void GraphBuilderState::validate_tiled_module_interfaces(
+    std::span<GraphBuilderState* const> members) const
+{
+  if (members.empty()) {
+    details::error("tiled IV module requires child graphs");
+  }
+  auto same_sample_input = [](InputConfig const& lhs, InputConfig const& rhs) {
+    return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
+        && lhs.history == rhs.history
+        && lhs.default_value.value == rhs.default_value.value
+        && lhs.min.value == rhs.min.value && lhs.max.value == rhs.max.value;
+  };
+  auto same_sample_output = [](OutputConfig const& lhs, OutputConfig const& rhs) {
+    return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
+        && lhs.latency == rhs.latency && lhs.history == rhs.history;
+  };
+  auto same_event_port = [](auto const& lhs, auto const& rhs) {
+    return lhs.name == rhs.name && lhs.type == rhs.type;
+  };
+
+  auto const& first = *members.front();
+  if (!first._public_ports.sample_outputs_defined()) {
+    details::error(
+        "tiled IV module must call g.outputs(...) before it can be configured");
+  }
+  auto const first_inputs = first._public_ports.sample_inputs(first._node_bundles);
+  auto const first_outputs = first._public_ports.sample_outputs(first._node_bundles);
+  auto const first_event_inputs = first._public_ports.event_inputs(first._node_bundles);
+  auto const first_event_outputs = first._public_ports.event_outputs(first._node_bundles);
+
+  for (auto const* member : members) {
+    if (!member) details::error("tiled IV module has a null child graph");
+    if (!member->_public_ports.sample_outputs_defined()) {
+      details::error(
+          "tiled IV module must call g.outputs(...) before it can be configured");
+    }
+    auto const inputs = member->_public_ports.sample_inputs(member->_node_bundles);
+    auto const outputs = member->_public_ports.sample_outputs(member->_node_bundles);
+    auto const event_inputs = member->_public_ports.event_inputs(member->_node_bundles);
+    auto const event_outputs = member->_public_ports.event_outputs(member->_node_bundles);
+    for (auto const& config : inputs) {
+      if (config.channel_layout.channel_type != ChannelTypeId::mono) {
+        details::error(
+            "tiled IV module members must expose only mono sample inputs");
+      }
+    }
+    for (auto const& config : outputs) {
+      if (config.channel_layout.channel_type != ChannelTypeId::mono) {
+        details::error(
+            "tiled IV module members must expose only mono sample outputs");
+      }
+    }
+    if (!std::ranges::equal(first_inputs, inputs, same_sample_input)
+        || !std::ranges::equal(first_outputs, outputs, same_sample_output)
+        || !std::ranges::equal(first_event_inputs, event_inputs, same_event_port)
+        || !std::ranges::equal(first_event_outputs, event_outputs, same_event_port)) {
+      details::error(
+          "tiled IV module members do not expose equivalent port configurations");
+    }
+  }
+}
+
 SamplePortRef GraphBuilderPublicPorts::add_sample_input(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     std::string_view name, Sample value, std::optional<Sample> min,

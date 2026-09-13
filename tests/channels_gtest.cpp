@@ -406,8 +406,8 @@ struct StaticConstantFanoutSnapshot {
 iv::ConfiguredGraphTestView configure_boundary_adapter()
 {
     iv::GraphBuilder g;
-    (void)g.node<iv::ChannelPack<iv::stereo>>();
-    (void)g.node<iv::ChannelUnpack<iv::stereo>>();
+    (void)iv::details::configure_concrete_node<iv::ChannelPack<iv::stereo>>(g);
+    (void)iv::details::configure_concrete_node<iv::ChannelUnpack<iv::stereo>>(g);
     g.outputs();
     return iv::freeze_configured_graph_for_test(std::move(g).finish());
 }
@@ -421,7 +421,8 @@ ChannelTopologySnapshot boundary_adapter_snapshot()
 iv::ConfiguredGraphTestView configure_tiled_source()
 {
     iv::GraphBuilder g;
-    auto source = g.node<iv::Constant, iv::stereo>(iv::Sample{0.25f});
+    auto source = iv::details::configure_concrete_tiled_node<iv::Constant, iv::stereo>(
+        g, iv::Sample{0.25f});
     auto stream = source.get<0>();
     auto left = stream[iv::stereo::left];
 
@@ -454,8 +455,8 @@ struct SampleRefConfiguration {
 SampleRefConfiguration configure_sample_ref()
 {
     iv::GraphBuilder g;
-    auto source = g.node<NamedStereoSource>(
-        iv::Sample{0.25f}, iv::Sample{-0.5f});
+    auto source = iv::details::configure_concrete_node<NamedStereoSource>(
+        g, iv::Sample{0.25f}, iv::Sample{-0.5f});
     auto stream = source[iv::PortName<"main">{}];
     auto erased = static_cast<iv::SamplePortRef>(stream);
     auto left = static_cast<iv::SamplePortRef>(stream[iv::stereo::left]);
@@ -500,8 +501,10 @@ struct StructuralTileConfiguration {
 StructuralTileConfiguration configure_structural_tile()
 {
     iv::GraphBuilder g;
-    auto left = g.node<iv::Constant>(iv::Sample{0.25f});
-    auto right = g.node<iv::Constant>(iv::Sample{-0.5f});
+    auto left = iv::details::configure_concrete_node<iv::Constant>(
+        g, iv::Sample{0.25f});
+    auto right = iv::details::configure_concrete_node<iv::Constant>(
+        g, iv::Sample{-0.5f});
     auto tiled = g.tile<iv::stereo>(left, right);
     auto erased = static_cast<iv::SamplePortRef>(tiled);
 
@@ -541,15 +544,18 @@ struct QualifiedOutputConfiguration {
 QualifiedOutputConfiguration configure_qualified_output()
 {
     iv::GraphBuilder g;
-    auto left = g.node<iv::Constant>(iv::Sample{0.25f});
-    auto right = g.node<iv::Constant>(iv::Sample{-0.5f});
+    auto left = iv::details::configure_concrete_node<iv::Constant>(
+        g, iv::Sample{0.25f});
+    auto right = iv::details::configure_concrete_node<iv::Constant>(
+        g, iv::Sample{-0.5f});
     g.outputs(
         iv::PortName<"main">{}[iv::stereo::left] =
             static_cast<iv::SamplePortRef>(left),
         iv::PortName<"main">{}[iv::stereo::right] =
             static_cast<iv::SamplePortRef>(right));
 
-    auto after_outputs = g.node<iv::Constant>(iv::Sample{1.0f});
+    auto after_outputs = iv::details::configure_concrete_node<iv::Constant>(
+        g, iv::Sample{1.0f});
     return {
         .view = iv::freeze_configured_graph_for_test(std::move(g).finish()),
         .after_outputs_handle = after_outputs.node_bundle_handle(),
@@ -588,11 +594,14 @@ struct DetachConfiguration {
 DetachConfiguration configure_detach()
 {
     iv::GraphBuilder g;
-    auto left = g.node<iv::Constant>(iv::Sample{0.25f});
-    auto right = g.node<iv::Constant>(iv::Sample{-0.5f});
+    auto left = iv::details::configure_concrete_node<iv::Constant>(
+        g, iv::Sample{0.25f});
+    auto right = iv::details::configure_concrete_node<iv::Constant>(
+        g, iv::Sample{-0.5f});
     auto structural = g.tile<iv::stereo>(left, right);
     auto detached = static_cast<iv::SamplePortRef>(structural).detach();
-    auto after_detach = g.node<iv::Constant>(iv::Sample{1.0f});
+    auto after_detach = iv::details::configure_concrete_node<iv::Constant>(
+        g, iv::Sample{1.0f});
     g.outputs(detached);
     return {
         .view = iv::freeze_configured_graph_for_test(std::move(g).finish()),
@@ -634,11 +643,13 @@ TiledEventConfiguration configure_tiled_event()
 {
     iv::GraphBuilder g;
     auto tiled = iv::_annotate_node_source_info(
-        g.node<EventfulMonoPass, iv::stereo>(), "eventful-tiled");
-    auto source = g.node<iv::EventConcatenation>(0, iv::EventTypeId::trigger);
+        iv::details::configure_concrete_tiled_node<EventfulMonoPass, iv::stereo>(g), "eventful-tiled");
+    auto source = iv::details::configure_concrete_node<iv::EventConcatenation>(
+        g, 0, iv::EventTypeId::trigger);
     tiled("trigger"_F = source.event_port(0));
     auto merged = tiled.event_port(0);
-    auto sink = g.node<iv::EventConcatenation>(1, iv::EventTypeId::trigger);
+    auto sink = iv::details::configure_concrete_node<iv::EventConcatenation>(
+        g, 1, iv::EventTypeId::trigger);
     sink.connect_event_input(0, merged);
     g.outputs();
 
@@ -686,7 +697,7 @@ ChannelTopologySnapshot annotation_snapshot()
 {
     iv::GraphBuilder g;
     auto node = iv::_annotate_node_source_info(
-        g.node<MonoPass, iv::stereo>(), "tiled-pass");
+        iv::details::configure_concrete_tiled_node<MonoPass, iv::stereo>(g), "tiled-pass");
     auto const inputs = iv::host::virtual_sample_input_families(g);
     auto const outputs = iv::host::virtual_sample_output_families(g);
     bool ok = inputs.families.size() == 1
@@ -715,7 +726,7 @@ iv::ConfiguredGraphTestView configure_introspection()
 {
     iv::GraphBuilder g;
     (void)iv::_annotate_node_source_info(
-        g.node<MonoPass, iv::stereo>(),
+        iv::details::configure_concrete_tiled_node<MonoPass, iv::stereo>(g),
         "tiled-introspection",
         "/tmp/tiled-module.cpp",
         40,
@@ -753,8 +764,8 @@ ChannelTopologySnapshot introspection_snapshot()
 ChannelTopologySnapshot typed_operator_snapshot()
 {
     iv::GraphBuilder g;
-    auto planar_source = g.node<NamedStereoSource>();
-    auto interleaved_source = g.node<NamedInterleavedStereoSource>();
+    auto planar_source = iv::details::configure_concrete_node<NamedStereoSource>(g);
+    auto interleaved_source = iv::details::configure_concrete_node<NamedInterleavedStereoSource>(g);
     auto planar = planar_source[iv::PortName<"main">{}];
     auto interleaved = interleaved_source[iv::PortName<"main">{}];
     auto same_layout_sum = planar + planar;
@@ -796,9 +807,9 @@ struct StereoScalarProductConfiguration {
 StereoScalarProductConfiguration configure_stereo_scalar_product()
 {
     iv::GraphBuilder g;
-    auto source = g.node<NamedStereoSource>(
-        iv::Sample{0.25f}, iv::Sample{-0.5f});
-    auto modulation = g.node<MonoPass, iv::stereo>();
+    auto source = iv::details::configure_concrete_node<NamedStereoSource>(
+        g, iv::Sample{0.25f}, iv::Sample{-0.5f});
+    auto modulation = iv::details::configure_concrete_tiled_node<MonoPass, iv::stereo>(g);
     auto stream = source[iv::PortName<"main">{}];
     auto scaled = stream * 0.1f * modulation;
     g.outputs(scaled);
@@ -831,15 +842,16 @@ ChannelTopologySnapshot stereo_scalar_product_snapshot()
 iv::ConfiguredGraphTestView configure_reconstructed_sequence_reversed()
 {
     iv::GraphBuilder g;
-    auto source = g.node<NamedStereoSource>(
-        iv::Sample{0.25f}, iv::Sample{-0.5f});
+    auto source = iv::details::configure_concrete_node<NamedStereoSource>(
+        g, iv::Sample{0.25f}, iv::Sample{-0.5f});
     auto stream = source[iv::PortName<"main">{}];
     auto erased = static_cast<iv::SamplePortRef>(stream);
     auto reconstructed = iv::SamplePortRef(
         g, iv::ChannelTypeId::stereo,
         std::vector<iv::SampleOutputChannelId>{
             erased.channels()[1], erased.channels()[0]});
-    auto pass = g.node<iv::Sum<iv::stereo, iv::SampleStreamLayout::planar, 1>>();
+    auto pass = iv::details::configure_concrete_node<
+        iv::Sum<iv::stereo, iv::SampleStreamLayout::planar, 1>>(g);
     pass(reconstructed);
     g.outputs(pass);
     return iv::freeze_configured_graph_for_test(std::move(g).finish());
@@ -848,15 +860,16 @@ iv::ConfiguredGraphTestView configure_reconstructed_sequence_reversed()
 iv::ConfiguredGraphTestView configure_reconstructed_sequence_ordered()
 {
     iv::GraphBuilder g;
-    auto source = g.node<NamedStereoSource>(
-        iv::Sample{0.25f}, iv::Sample{-0.5f});
+    auto source = iv::details::configure_concrete_node<NamedStereoSource>(
+        g, iv::Sample{0.25f}, iv::Sample{-0.5f});
     auto stream = source[iv::PortName<"main">{}];
     auto erased = static_cast<iv::SamplePortRef>(stream);
     auto reconstructed = iv::SamplePortRef(
         g, iv::ChannelTypeId::stereo,
         std::vector<iv::SampleOutputChannelId>{
             erased.channels()[0], erased.channels()[1]});
-    auto pass = g.node<iv::Sum<iv::stereo, iv::SampleStreamLayout::planar, 1>>();
+    auto pass = iv::details::configure_concrete_node<
+        iv::Sum<iv::stereo, iv::SampleStreamLayout::planar, 1>>(g);
     pass(reconstructed);
     g.outputs(pass);
     return iv::freeze_configured_graph_for_test(std::move(g).finish());
@@ -881,8 +894,9 @@ ChannelTopologySnapshot reconstructed_sequence_snapshot(bool reverse)
 iv::ConfiguredGraphTestView configure_tiled_mono_direct_route()
 {
     iv::GraphBuilder g;
-    auto source = g.node<iv::Constant>(iv::Sample{0.25f});
-    auto target = g.node<MonoPass, iv::stereo>();
+    auto source = iv::details::configure_concrete_node<iv::Constant>(
+        g, iv::Sample{0.25f});
+    auto target = iv::details::configure_concrete_tiled_node<MonoPass, iv::stereo>(g);
     target(source);
     g.outputs(target);
     return iv::freeze_configured_graph_for_test(std::move(g).finish());
@@ -905,9 +919,10 @@ ChannelTopologySnapshot tiled_mono_direct_route_snapshot()
 iv::ConfiguredGraphTestView configure_static_constant_fanout()
 {
     iv::GraphBuilder g;
-    auto source = g.node<iv::Constant>(iv::Sample{0.25f});
-    auto first = g.node<MonoPass>();
-    auto second = g.node<MonoPass>();
+    auto source = iv::details::configure_concrete_node<iv::Constant>(
+        g, iv::Sample{0.25f});
+    auto first = iv::details::configure_concrete_node<MonoPass>(g);
+    auto second = iv::details::configure_concrete_node<MonoPass>(g);
     first(source);
     second(source);
     g.outputs(
@@ -977,10 +992,10 @@ template<bool Connected>
 iv::ConfiguredGraphTestView configure_connection_lowering()
 {
     iv::GraphBuilder g;
-    auto pass = g.node<DefaultMonoPass>();
+    auto pass = iv::details::configure_concrete_node<DefaultMonoPass>(g);
     if constexpr (Connected) {
-        pass(g.node<iv::Constant>(iv::Sample{0.25f}));
-        pass(g.node<iv::Constant>(iv::Sample{-0.5f}));
+        pass(iv::details::configure_concrete_node<iv::Constant>(g, iv::Sample{0.25f}));
+        pass(iv::details::configure_concrete_node<iv::Constant>(g, iv::Sample{-0.5f}));
     }
     g.outputs(pass);
     return iv::freeze_configured_graph_for_test(std::move(g).finish());
@@ -1005,9 +1020,9 @@ template<bool Connected>
 iv::ConfiguredGraphTestView configure_sample_lowering_pass_graph()
 {
     iv::GraphBuilder g;
-    auto pass = g.node<DefaultMonoPass>();
+    auto pass = iv::details::configure_concrete_node<DefaultMonoPass>(g);
     if constexpr (Connected)
-        pass(g.node<iv::Constant>(iv::Sample{0.25f}));
+        pass(iv::details::configure_concrete_node<iv::Constant>(g, iv::Sample{0.25f}));
     g.outputs(pass);
     return iv::freeze_configured_graph_for_test(std::move(g).finish());
 }
@@ -1030,7 +1045,7 @@ ExecutionRootConfiguration configure_execution_root()
 {
     iv::GraphBuilder g;
     auto input = g.input<"in">(iv::Sample{-1.0f});
-    auto pass = g.node<MonoPass>();
+    auto pass = iv::details::configure_concrete_node<MonoPass>(g);
     pass(input);
     g.outputs(iv::PortName<"main">{} = pass);
     return {.view = iv::freeze_configured_graph_for_test(std::move(g).finish())};
@@ -1345,8 +1360,10 @@ TEST(Channels, SampleRefsExposeOrderedStructuralChannelIdentity)
 TEST(Channels, PortExpressionHandlesAreBuilderOwnedAndValidated)
 {
     iv::GraphBuilder source_builder;
-    auto sample_node = source_builder.node<iv::Constant>(iv::Sample{0.25f});
-    auto event_node = source_builder.node<iv::EventConcatenation>(
+    auto sample_node = iv::details::configure_concrete_node<iv::Constant>(
+        source_builder, iv::Sample{0.25f});
+    auto event_node = iv::details::configure_concrete_node<iv::EventConcatenation>(
+        source_builder,
         0, iv::EventTypeId::trigger);
     iv::SamplePortRef sample = sample_node;
     iv::EventPortRef event = event_node.event_port();
@@ -1471,8 +1488,8 @@ TEST(Channels, SubgraphNamedInputsRetainTheirStaticChannelType)
 TEST(Channels, ErasedSampleAndNodeRefsUseRuntimeCheckedChannelMembers)
 {
     iv::GraphBuilder graph;
-    iv::NodeRef left = graph.node<NamedStereoSource>().node_ref();
-    iv::NodeRef right = graph.node<NamedStereoSource>().node_ref();
+    iv::NodeRef left = iv::details::configure_concrete_node<NamedStereoSource>(graph).node_ref();
+    iv::NodeRef right = iv::details::configure_concrete_node<NamedStereoSource>(graph).node_ref();
 
     auto const named_port = left["main"];
     auto const named_left = named_port[iv::stereo::left];
@@ -1490,7 +1507,7 @@ TEST(Channels, ErasedSampleAndNodeRefsUseRuntimeCheckedChannelMembers)
     EXPECT_EQ(static_cast<iv::SamplePortRef>(sum_left).channel_type,
               iv::ChannelTypeId::mono);
 
-    iv::NodeRef mono = graph.node<MonoPass>().node_ref();
+    iv::NodeRef mono = iv::details::configure_concrete_node<MonoPass>(graph).node_ref();
     EXPECT_THROW((void)named_port[iv::mono::center], std::logic_error);
     EXPECT_THROW((void)mono[iv::stereo::left], std::logic_error);
 }
@@ -1581,7 +1598,8 @@ TEST(Channels, SampleLoweringPassesHaveExplicitConnectedAndVacantHandOffs)
 iv::ConfiguredGraphTestView configure_explicit_three_stage()
 {
     iv::GraphBuilder builder;
-    auto source = builder.node<iv::Constant>(iv::Sample{0.25f});
+    auto source = iv::details::configure_concrete_node<iv::Constant>(
+        builder, iv::Sample{0.25f});
     builder.outputs(source);
     return iv::freeze_configured_graph_for_test(std::move(builder).finish());
 }
@@ -1598,7 +1616,8 @@ bool explicit_three_stage_pipeline_builds_a_graph()
 iv::ConfiguredGraphTestView configure_builder_finish()
 {
     iv::GraphBuilder builder;
-    builder.outputs(builder.node<iv::Constant>(iv::Sample{0.5f}));
+    builder.outputs(iv::details::configure_concrete_node<iv::Constant>(
+        builder, iv::Sample{0.5f}));
     return iv::freeze_configured_graph_for_test(std::move(builder).finish());
 }
 

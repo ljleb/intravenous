@@ -97,7 +97,12 @@ struct LoweringWorkspace {
   std::vector<TopologyEventEdge> pending_topology_event_edges{};
   size_t scope_boundary_port_count = 0;
   std::vector<LoweredNodeBundleProjection> bundle_projections{};
+  // The semantic bundle owns topology/lowering semantics.  A tiled wrapper
+  // may present the same runtime node to introspection, but it must never
+  // replace the member subgraph here: scope construction needs the real
+  // SubgraphNodeBundle.
   std::vector<std::optional<NodeBundleHandle>> bundle_by_lowered_node{};
+  std::vector<std::optional<NodeBundleHandle>> metadata_bundle_by_lowered_node{};
   // Scope membership is retained for every topology node once the complete
   // topology exists. Generated nodes inherit memberships from their adjacent
   // configured components in one global closure rather than being rediscovered
@@ -1288,6 +1293,9 @@ class GraphLowerer {
     if (out.bundle_by_lowered_node.size() <= index)
       out.bundle_by_lowered_node.resize(index + 1);
     out.bundle_by_lowered_node[index] = std::nullopt;
+    if (out.metadata_bundle_by_lowered_node.size() <= index)
+      out.metadata_bundle_by_lowered_node.resize(index + 1);
+    out.metadata_bundle_by_lowered_node[index] = std::nullopt;
     return index;
   }
 
@@ -1324,44 +1332,22 @@ class GraphLowerer {
       // bundles after the caller's original handle. Project all concrete and
       // boundary bundles first; subgraphs are projected in reverse order
       // below so every child subgraph has already acquired topology nodes.
-      if (bundle.is_subgraph()) continue;
+      // Tiled bundles come last because their members may themselves be
+      // configured iv-module subgraphs.
+      if (bundle.is_subgraph() || bundle.is_tiled()) continue;
       if (bundle.is_concrete()) {
         auto node = append_topology_node(
             ConfiguredConcreteNodeRef{.node_bundle_handle = handle});
         p.topology_node = node;
         if (out.bundle_by_lowered_node.size() <= node) out.bundle_by_lowered_node.resize(node+1);
         out.bundle_by_lowered_node[node] = handle;
+        if (out.metadata_bundle_by_lowered_node.size() <= node)
+          out.metadata_bundle_by_lowered_node.resize(node + 1);
+        out.metadata_bundle_by_lowered_node[node] = handle;
         for(size_t i=0;i<bundle.sample_input_count();++i)p.sample_inputs.push_back({{node,i}});
         for(size_t i=0;i<bundle.sample_output_count();++i)p.sample_outputs.push_back({{node,i}});
         for(size_t i=0;i<bundle.event_input_count();++i)p.event_inputs.push_back({{node,i}});
         for(size_t i=0;i<bundle.event_output_count();++i)p.event_outputs.push_back({{node,i}});
-      } else if (bundle.is_tiled()) {
-        auto members = bundle.tiled_members();
-        for (auto const member : members) {
-          auto const member_node = out.bundle_projections.at(member).topology_node;
-          if (!member_node) details::error("tiled member has no lowered concrete node");
-          out.bundle_by_lowered_node.at(*member_node) = handle;
-        }
-        for(size_t port=0;port<bundle.sample_input_count();++port){
-          std::vector<TopologyPortId> ports;
-          for(auto member:members) ports.push_back(out.bundle_projections.at(member).sample_inputs.at(port).at(0));
-          p.sample_inputs.push_back(std::move(ports));
-        }
-        for(size_t port=0;port<bundle.sample_output_count();++port){
-          std::vector<TopologyPortId> ports;
-          for(auto member:members) ports.push_back(out.bundle_projections.at(member).sample_outputs.at(port).at(0));
-          p.sample_outputs.push_back(std::move(ports));
-        }
-        for(size_t port=0;port<bundle.event_input_count();++port){
-          std::vector<TopologyPortId> ports;
-          for(auto member:members) ports.push_back(out.bundle_projections.at(member).event_inputs.at(port).at(0));
-          p.event_inputs.push_back(std::move(ports));
-        }
-        for(size_t port=0;port<bundle.event_output_count();++port){
-          std::vector<TopologyPortId> ports;
-          for(auto member:members) ports.push_back(out.bundle_projections.at(member).event_outputs.at(port).at(0));
-          p.event_outputs.push_back(std::move(ports));
-        }
       } else if (bundle.is_boundary()) {
         if (handle == root_boundary) {
           for(size_t i=0;i<bundle.sample_input_count();++i)p.sample_inputs.push_back({{GRAPH_ID,i}});
@@ -1420,6 +1406,9 @@ class GraphLowerer {
         p.topology_node=node;
         if(out.bundle_by_lowered_node.size()<=node)out.bundle_by_lowered_node.resize(node+1);
         out.bundle_by_lowered_node[node]=handle;
+        if (out.metadata_bundle_by_lowered_node.size() <= node)
+          out.metadata_bundle_by_lowered_node.resize(node + 1);
+        out.metadata_bundle_by_lowered_node[node] = handle;
         for(size_t i=0;i<bundle.sample_input_count();++i)p.sample_inputs.push_back({{node,i}});
         for(size_t i=0;i<bundle.sample_output_count();++i)p.sample_outputs.push_back({{node,i}});
         for(size_t i=0;i<bundle.event_input_count();++i)p.event_inputs.push_back({{node,i}});
@@ -1436,6 +1425,41 @@ class GraphLowerer {
     };
     for (NodeBundleHandle handle = 0; handle < bundles.size(); ++handle) {
       if (bundles.bundle(handle).is_subgraph()) project_subgraph(project_subgraph, handle);
+    }
+    for (NodeBundleHandle handle = 0; handle < bundles.size(); ++handle) {
+      auto const& bundle = bundles.bundle(handle);
+      if (!bundle.is_tiled()) continue;
+      auto& p = out.bundle_projections[handle];
+      auto const members = bundle.tiled_members();
+      for (auto const member : members) {
+        auto const member_node = out.bundle_projections.at(member).topology_node;
+        if (!member_node) details::error("tiled member has no lowered node");
+        out.metadata_bundle_by_lowered_node.at(*member_node) = handle;
+      }
+      for (size_t port = 0; port < bundle.sample_input_count(); ++port) {
+        std::vector<TopologyPortId> ports;
+        for (auto member : members)
+          ports.push_back(out.bundle_projections.at(member).sample_inputs.at(port).at(0));
+        p.sample_inputs.push_back(std::move(ports));
+      }
+      for (size_t port = 0; port < bundle.sample_output_count(); ++port) {
+        std::vector<TopologyPortId> ports;
+        for (auto member : members)
+          ports.push_back(out.bundle_projections.at(member).sample_outputs.at(port).at(0));
+        p.sample_outputs.push_back(std::move(ports));
+      }
+      for (size_t port = 0; port < bundle.event_input_count(); ++port) {
+        std::vector<TopologyPortId> ports;
+        for (auto member : members)
+          ports.push_back(out.bundle_projections.at(member).event_inputs.at(port).at(0));
+        p.event_inputs.push_back(std::move(ports));
+      }
+      for (size_t port = 0; port < bundle.event_output_count(); ++port) {
+        std::vector<TopologyPortId> ports;
+        for (auto member : members)
+          ports.push_back(out.bundle_projections.at(member).event_outputs.at(port).at(0));
+        p.event_outputs.push_back(std::move(ports));
+      }
     }
   }
 
@@ -2158,6 +2182,12 @@ class GraphLowerer {
     return out.bundle_by_lowered_node[node];
   }
 
+  constexpr std::optional<NodeBundleHandle>
+  metadata_bundle_for_lowered_node(size_t node) const {
+    if (node >= out.metadata_bundle_by_lowered_node.size()) return std::nullopt;
+    return out.metadata_bundle_by_lowered_node[node];
+  }
+
   constexpr NodeBundleHandle subgraph_bundle_handle(
       size_t topology_node) const {
     auto const handle = bundle_for_lowered_node(topology_node);
@@ -2215,7 +2245,7 @@ class GraphLowerer {
     graph.node_ids.push_back(identity.child_id(node_i));
     std::vector<std::string> virtual_ids;
     std::vector<SourceInfo> source_infos;
-    if (auto handle = bundle_for_lowered_node(node_i)) {
+    if (auto handle = metadata_bundle_for_lowered_node(node_i)) {
       auto const& bundle = bundles.bundle(*handle);
       virtual_ids = virtuals.ids_for_bundle(bundle);
       source_infos = bundle.source_annotations().infos;
@@ -2704,6 +2734,7 @@ inline size_t GraphLowerer::profile(
         + lowerer.out.pending_topology_event_edges.size()
         + lowerer.out.bundle_projections.size()
         + lowerer.out.bundle_by_lowered_node.size()
+        + lowerer.out.metadata_bundle_by_lowered_node.size()
         + lowerer.out.scope_memberships.size()
         + lowerer.out.subgraph_input_of_boundary_source.size()
         + lowerer.out.subgraph_event_input_of_boundary_source.size()

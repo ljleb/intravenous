@@ -236,9 +236,9 @@ namespace {
     void aliased_state_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const direct = g.node<AliasedStateNode>();
-        auto const inherited = g.node<InheritedStateNode>();
-        auto const scalar = g.node<ScalarStateNode>();
+        auto const direct = details::configure_concrete_node<AliasedStateNode>(g);
+        auto const inherited = details::configure_concrete_node<InheritedStateNode>(g);
+        auto const scalar = details::configure_concrete_node<ScalarStateNode>(g);
         g.outputs(
             "direct"_P = direct,
             "inherited"_P = inherited,
@@ -292,7 +292,8 @@ namespace {
     template<int I>
     iv::NodeRef make_value(iv::GraphBuilder& g)
     {
-        return g.node<iv::Constant>(static_cast<float>(I)).node_ref();
+        return iv::details::configure_concrete_node<iv::Constant>(
+            g, static_cast<iv::Sample>(I)).node_ref();
     }
 
     void merged_virtual_module(iv::GraphBuilder& g)
@@ -333,7 +334,7 @@ namespace {
     void generic_channel_outputs(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const source = g.node<Constant>(0.25f);
+        auto const source = details::configure_concrete_node<Constant>(g, 0.25f);
         g.outputs("main"_P[stereo::left] = source, "main"_P[stereo::right] = source);
     }
 }
@@ -420,7 +421,7 @@ namespace {
     {
         using namespace iv;
         auto const a = _annotate_node_source_info(
-            g.node<Constant>(0.0f).node_ref(),
+            details::configure_concrete_node<Constant>(g, 0.0f).node_ref(),
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
@@ -470,7 +471,7 @@ namespace {
     {
         using namespace iv;
         auto const a = _annotate_node_source_info(
-            g.node<Constant>(0.0f).node_ref(),
+            details::configure_concrete_node<Constant>(g, 0.0f).node_ref(),
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
@@ -515,11 +516,12 @@ namespace {
     void tiled_value_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const left = g.node<Constant>(0.25f);
-        auto const right = g.node<Constant>(-0.25f);
+        auto const left = details::configure_concrete_node<Constant>(g, 0.25f);
+        auto const right = details::configure_concrete_node<Constant>(g, -0.25f);
         auto const p = g.tile<stereo>(left, right);
-        auto const trigger = g.node<TriggerSource>().event_port();
-        auto const sink = g.node<Sum<stereo, SampleStreamLayout::planar, 1>>();
+        auto const trigger = details::configure_concrete_node<TriggerSource>(g).event_port();
+        auto const sink = details::configure_concrete_node<
+            Sum<stereo, SampleStreamLayout::planar, 1>>(g);
         sink(p);
         g.outputs(sink);
         g.event_outputs(trigger);
@@ -586,7 +588,7 @@ namespace {
     {
         using namespace iv;
         NodeRef x;
-        x = g.node<Constant>(0.0f).node_ref();
+        x = details::configure_concrete_node<Constant>(g, 0.0f).node_ref();
         auto const& sink = x;
         g.outputs("main"_P = sink);
     }
@@ -618,8 +620,8 @@ namespace {
     {
         using namespace iv;
         NodeRef x;
-        x = g.node<Constant>(0.0f).node_ref();
-        x = g.node<Constant>(1.0f).node_ref();
+        x = details::configure_concrete_node<Constant>(g, 0.0f).node_ref();
+        x = details::configure_concrete_node<Constant>(g, 1.0f).node_ref();
         auto const& sink = x;
         g.outputs("main"_P = sink);
     }
@@ -641,7 +643,8 @@ namespace {
     template<size_t Inputs>
     iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
-        return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, Inputs>>().node_ref();
+        return iv::details::configure_concrete_node<
+            iv::Sum<iv::mono, iv::SampleStreamLayout::planar, Inputs>>(g).node_ref();
     }
 
     void schema_mismatch_module(iv::GraphBuilder& g)
@@ -683,7 +686,7 @@ namespace {
     {
         using namespace iv;
         auto make_branch = [&]<bool Add>(auto output) {
-            auto const value = g.node<Constant>(1.0f);
+            auto const value = details::configure_concrete_node<Constant>(g, 1.0f);
             NodeRef p;
             if constexpr (Add) {
                 p = value + 1.0f;
@@ -757,13 +760,15 @@ namespace {
     iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         (void)I;
-        return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref();
+        return iv::details::configure_concrete_node<
+            iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>(g).node_ref();
     }
 
     void mixed_connectivity_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const value = g.node<iv::Constant>(0.0f).node_ref();
+        auto const value = details::configure_concrete_node<iv::Constant>(
+            g, 0.0f).node_ref();
         auto const a = make_sum<0>(g);
         auto const b = make_sum<1>(g);
         a(value);
@@ -905,7 +910,7 @@ void polyphonic_module(iv::GraphBuilder& g)
 
 
     iv::polyphonic<2>(g, [&]<size_t Voice>(auto m) {
-        auto const saw = g.node<SawOscillator>();
+        auto const saw = details::configure_concrete_node<SawOscillator>(g);
         saw(
             "phase_offset"_P = 0.0,
             "frequency"_P = 440.0
@@ -999,7 +1004,7 @@ void polyphonic_module(iv::GraphBuilder& g)
 
 
     iv::polyphonic<2>(g, [&]<size_t Voice>(auto m) {
-        auto const saw = g.node<SawOscillator>();
+        auto const saw = details::configure_concrete_node<SawOscillator>(g);
         saw(
             "phase_offset"_P = 0.0,
             "frequency"_P = 440.0

@@ -36,11 +36,37 @@ namespace details {
 struct BuilderSession;
 NodeRef configure_package_definition(
     GraphBuilder&, std::string_view, std::span<ConfigurationArgument>);
+NodeRef configure_tiled_package_definition(
+    GraphBuilder&, std::string_view, ChannelLayout,
+    std::span<ConfigurationArgument>);
+NodeRef configure_package_definition_impl(
+    GraphBuilder&, std::string_view, std::optional<ChannelLayout>,
+    std::span<ConfigurationArgument>);
+template<class Node, class... Args>
+node_ref_for_t<Node> configure_concrete_node(GraphBuilder&, Args&&...);
+template<class Node, class ChannelType, class... Args>
+TiledNodeRef<Node, ChannelType> configure_concrete_tiled_node(
+    GraphBuilder&, Args&&...);
+template<class Node, class... Args>
+NodeRef configure_concrete_node_tiled(
+    GraphBuilder&, ChannelLayout, Args&&...);
+template<class Node>
+NodeRef configure_runtime_binary_op(
+    GraphBuilder&, SamplePortRef, SamplePortRef, std::string_view);
 GraphBuilderState& builder_graph_state(GraphBuilder&);
+bool builder_session_has_packages(BuilderSession const*) noexcept;
 NodeBundleHandle iv_builder_append_node(
     GraphBuilder&, NodeBuildRequest const&);
 NodeBundleHandle iv_builder_append_tiled_node(
     GraphBuilder&, NodeBuildRequest const&, ChannelLayout);
+NodeBundleHandle iv_builder_append_tiled_node_bundles(
+    GraphBuilder&, std::span<NodeBundleHandle const>, ChannelLayout);
+// A tiled registered IV_MODULE first configures its independent child graphs,
+// then validates their public interfaces before any child is embedded in the
+// caller. This prevents a rejected tile request from leaving partial subgraphs
+// in a graph when provider code catches the diagnostic.
+void iv_builder_validate_tiled_module_interfaces(
+    std::span<GraphBuilder* const>);
 void* iv_builder_allocate_node_config(
     BuilderSession*, std::size_t size, std::size_t alignment);
 void iv_builder_discard_node_config(BuilderSession*, void* storage) noexcept;
@@ -61,9 +87,29 @@ class GraphBuilder {
       GraphBuilder&, details::NodeBuildRequest const&);
   friend NodeBundleHandle details::iv_builder_append_tiled_node(
       GraphBuilder&, details::NodeBuildRequest const&, ChannelLayout);
+  friend NodeBundleHandle details::iv_builder_append_tiled_node_bundles(
+      GraphBuilder&, std::span<NodeBundleHandle const>, ChannelLayout);
   friend NodeRef details::configure_package_definition(
       GraphBuilder&, std::string_view,
       std::span<details::ConfigurationArgument>);
+  friend NodeRef details::configure_tiled_package_definition(
+      GraphBuilder&, std::string_view, ChannelLayout,
+      std::span<details::ConfigurationArgument>);
+  friend NodeRef details::configure_package_definition_impl(
+      GraphBuilder&, std::string_view, std::optional<ChannelLayout>,
+      std::span<details::ConfigurationArgument>);
+  template<class Node, class... Args>
+  friend details::node_ref_for_t<Node> details::configure_concrete_node(
+      GraphBuilder&, Args&&...);
+  template<class Node, class ChannelType, class... Args>
+  friend TiledNodeRef<Node, ChannelType> details::configure_concrete_tiled_node(
+      GraphBuilder&, Args&&...);
+  template<class Node, class... Args>
+  friend NodeRef details::configure_concrete_node_tiled(
+      GraphBuilder&, ChannelLayout, Args&&...);
+  template<class Node>
+  friend NodeRef details::configure_runtime_binary_op(
+      GraphBuilder&, SamplePortRef, SamplePortRef, std::string_view);
   friend class SubgraphBuilder;
 
   details::BuilderSession* _session = nullptr;
@@ -101,61 +147,35 @@ public:
   }
   PublicEventInputRef event_input(EventTypeId type);
 
-  template<class Node, class... Args>
-  details::node_ref_for_t<Node> node(Args&&... args) {
-    using StoredNode = std::remove_cvref_t<Node>;
-    static_assert(std::is_trivially_copyable_v<StoredNode>,
-        "node values must be trivially copyable");
-    auto* value = static_cast<StoredNode*>(
-        details::iv_builder_allocate_node_config(
-            _session, sizeof(StoredNode), alignof(StoredNode)));
-    try {
-      std::construct_at(value, std::forward<Args>(args)...);
-      auto handle = details::iv_builder_append_node(
-          *this, details::make_node_build_request(*value));
-      if constexpr (details::should_preserve_node_type_v<StoredNode>)
-        return TypedNodeRef<StoredNode>(*this, handle);
-      else
-        return NodeRef(*this, handle);
-    } catch (...) {
-      details::iv_builder_discard_node_config(_session, value);
-      throw;
-    }
-  }
-
-  // Package definition IDs are the package-facing node creation API. The bootstrap
-  // dynamic path is available for every ID without a generated interface
-  // header. The loaded IV packages resolve the provider immediately, so
-  // this returns the provider's genuine realized NodeRef.
+  // A package definition ID is the only source-facing node-creation API.
+  // Concrete node-type construction is deliberately private to lowering,
+  // finalization, and the implementation of registered provider adapters.
+  // The loaded IV packages resolve the provider immediately, so this returns
+  // the provider's genuine realized NodeRef.
   template<fixed_string Id, class... Args>
   auto node(Args&&... args) {
-    auto values = std::tuple<std::remove_cvref_t<Args>...>(
-        std::forward<Args>(args)...);
-    auto arguments = details::configuration_arguments(values);
+    // Configuration is synchronous. Keep references to the actual caller
+    // objects so the provider receives ordinary C++ value/reference semantics;
+    // a registered-ID call must not silently copy an lvalue before validation.
+    auto arguments = details::configuration_arguments(std::forward<Args>(args)...);
     return details::configure_package_definition(
-        *this, Id.view(), arguments);
+        *this, Id.view(), std::span<details::ConfigurationArgument>{arguments});
   }
 
-  template<class Node, class ChannelType, class... Args>
-  auto node(Args&&... args) {
-    using StoredNode = std::remove_cvref_t<Node>;
-    static_assert(std::is_trivially_copyable_v<StoredNode>,
-        "node values must be trivially copyable");
-    auto* value = static_cast<StoredNode*>(
-        details::iv_builder_allocate_node_config(
-            _session, sizeof(StoredNode), alignof(StoredNode)));
-    try {
-      std::construct_at(value, std::forward<Args>(args)...);
-      auto handle = details::iv_builder_append_tiled_node(
-          *this, details::make_node_build_request(*value), {
-            .channel_type = ChannelTypeTraits<ChannelType>::id,
-            .sample_layout = SampleStreamLayout::planar,
-          });
-      return TiledNodeRef<StoredNode, ChannelType>(*this, handle);
-    } catch (...) {
-      details::iv_builder_discard_node_config(_session, value);
-      throw;
-    }
+  // A registered definition can request a promoted channel layout without
+  // exposing its implementation type. The result intentionally remains
+  // NodeRef: an ID never promises a static port interface to its caller.
+  // An IV_MODULE definition repeats a mono-interface subgraph once per
+  // channel.
+  template<fixed_string Id, class ChannelType, class... Args>
+    requires requires { ChannelTypeTraits<ChannelType>::id; }
+  NodeRef node(Args&&... args) {
+    auto arguments = details::configuration_arguments(std::forward<Args>(args)...);
+    return details::configure_tiled_package_definition(
+        *this, Id.view(), {
+          .channel_type = ChannelTypeTraits<ChannelType>::id,
+          .sample_layout = SampleStreamLayout::planar,
+        }, std::span<details::ConfigurationArgument>{arguments});
   }
 
   template<class ChannelType, class... Refs>
@@ -176,35 +196,6 @@ public:
   template<class... Refs>
   void event_outputs(Refs&&... refs);
   void event_outputs(std::span<EventOutputRequest const>);
-
-  // Runtime channel negotiation, graph mutation, and connection validation
-  // belong to the shared configuration library. The templated overload below is
-  // the only node-type-specific part of this path.
-  NodeRef configure_runtime_binary_op(
-      SamplePortRef lhs,
-      SamplePortRef rhs,
-      std::string_view op_name,
-      details::NodeBuildRequest const& request);
-
-  template<class Node>
-  NodeRef configure_runtime_binary_op(
-      SamplePortRef lhs, SamplePortRef rhs, std::string_view op_name) {
-    using StoredNode = std::remove_cvref_t<Node>;
-    static_assert(std::is_trivially_copyable_v<StoredNode>,
-        "node values must be trivially copyable");
-    auto* value = static_cast<StoredNode*>(
-        details::iv_builder_allocate_node_config(
-            _session, sizeof(StoredNode), alignof(StoredNode)));
-    try {
-      std::construct_at(value);
-      return configure_runtime_binary_op(
-          std::move(lhs), std::move(rhs), op_name,
-          details::make_node_build_request(*value));
-    } catch (...) {
-      details::iv_builder_discard_node_config(_session, value);
-      throw;
-    }
-  }
 
   template<auto Module>
   NodeRef module(std::string_view kind = "Module") {
@@ -266,7 +257,18 @@ public:
     requires (std::is_arithmetic_v<std::remove_cvref_t<T>> ||
       std::same_as<std::remove_cvref_t<T>, Sample>)
   SamplePortRef lift_to_sample_port(T value) {
-    return static_cast<SamplePortRef>(node<Constant>(static_cast<Sample>(value)));
+    // Scalar syntax is source sugar for the shipped constant definition, not
+    // a second public path that materializes Constant in every consuming IV
+    // package. A host-only GraphBuilder with no package table at all retains
+    // the private concrete fallback used by compiler/lowering tests; a
+    // configured package missing the built-in is still an error rather than a
+    // silent direct construction.
+    if (details::builder_session_has_packages(_session)) {
+      return static_cast<SamplePortRef>(
+          node<"constant">(static_cast<Sample>(value)));
+    }
+    return static_cast<SamplePortRef>(
+        details::configure_concrete_node<Constant>(*this, static_cast<Sample>(value)));
   }
   SamplePortRef lift_to_sample_port(NamedRef const&);
 
@@ -318,6 +320,13 @@ public:
   ConfiguredGraph finish() &&;
 
 private:
+  // Runtime channel negotiation and direct concrete construction are builder
+  // internals. The DSL reaches this only through details::configure_runtime_binary_op.
+  NodeRef configure_runtime_binary_op(
+      SamplePortRef lhs,
+      SamplePortRef rhs,
+      std::string_view op_name,
+      details::NodeBuildRequest const& request);
   NodeRef embed_child(GraphBuilder&, std::string_view);
   details::SubgraphBuildScope* begin_subgraph();
   NodeRef finish_subgraph(details::SubgraphBuildScope*, std::string_view);
@@ -334,6 +343,101 @@ private:
   void subgraph_event_outputs(
       details::SubgraphBuildScope*, std::span<EventOutputRequest const>);
 };
+
+namespace details {
+template<class Node, class... Args>
+node_ref_for_t<Node> configure_concrete_node(GraphBuilder& builder, Args&&... args)
+{
+  using StoredNode = std::remove_cvref_t<Node>;
+  static_assert(std::is_trivially_copyable_v<StoredNode>,
+      "node values must be trivially copyable");
+  auto* value = static_cast<StoredNode*>(
+      iv_builder_allocate_node_config(
+          builder._session, sizeof(StoredNode), alignof(StoredNode)));
+  try {
+    std::construct_at(value, std::forward<Args>(args)...);
+    auto handle = iv_builder_append_node(
+        builder, make_node_build_request(*value));
+    if constexpr (should_preserve_node_type_v<StoredNode>) {
+      return TypedNodeRef<StoredNode>(builder, handle);
+    } else {
+      return NodeRef(builder, handle);
+    }
+  } catch (...) {
+    iv_builder_discard_node_config(builder._session, value);
+    throw;
+  }
+}
+
+template<class Node, class ChannelType, class... Args>
+TiledNodeRef<Node, ChannelType> configure_concrete_tiled_node(
+    GraphBuilder& builder, Args&&... args)
+{
+  using StoredNode = std::remove_cvref_t<Node>;
+  static_assert(std::is_trivially_copyable_v<StoredNode>,
+      "node values must be trivially copyable");
+  auto* value = static_cast<StoredNode*>(
+      iv_builder_allocate_node_config(
+          builder._session, sizeof(StoredNode), alignof(StoredNode)));
+  try {
+    std::construct_at(value, std::forward<Args>(args)...);
+    auto handle = iv_builder_append_tiled_node(
+        builder, make_node_build_request(*value), {
+          .channel_type = ChannelTypeTraits<ChannelType>::id,
+          .sample_layout = SampleStreamLayout::planar,
+        });
+    return TiledNodeRef<StoredNode, ChannelType>(builder, handle);
+  } catch (...) {
+    iv_builder_discard_node_config(builder._session, value);
+    throw;
+  }
+}
+
+template<class Node, class... Args>
+NodeRef configure_concrete_node_tiled(
+    GraphBuilder& builder, ChannelLayout layout, Args&&... args)
+{
+  using StoredNode = std::remove_cvref_t<Node>;
+  static_assert(std::is_trivially_copyable_v<StoredNode>,
+      "node values must be trivially copyable");
+  auto* value = static_cast<StoredNode*>(
+      iv_builder_allocate_node_config(
+          builder._session, sizeof(StoredNode), alignof(StoredNode)));
+  try {
+    std::construct_at(value, std::forward<Args>(args)...);
+    auto handle = iv_builder_append_tiled_node(
+        builder, make_node_build_request(*value), layout);
+    return NodeRef(builder, handle);
+  } catch (...) {
+    iv_builder_discard_node_config(builder._session, value);
+    throw;
+  }
+}
+
+template<class Node>
+NodeRef configure_runtime_binary_op(
+    GraphBuilder& builder,
+    SamplePortRef lhs,
+    SamplePortRef rhs,
+    std::string_view op_name)
+{
+  using StoredNode = std::remove_cvref_t<Node>;
+  static_assert(std::is_trivially_copyable_v<StoredNode>,
+      "node values must be trivially copyable");
+  auto* value = static_cast<StoredNode*>(
+      iv_builder_allocate_node_config(
+          builder._session, sizeof(StoredNode), alignof(StoredNode)));
+  try {
+    std::construct_at(value);
+    return builder.configure_runtime_binary_op(
+        std::move(lhs), std::move(rhs), op_name,
+        make_node_build_request(*value));
+  } catch (...) {
+    iv_builder_discard_node_config(builder._session, value);
+    throw;
+  }
+}
+} // namespace details
 
 namespace details {
 template<class... Args>

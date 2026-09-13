@@ -1,5 +1,4 @@
 #include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/shaping.h>
 
 void benchmark_constant_voice(iv::GraphBuilder& g)
 {
@@ -9,7 +8,7 @@ void benchmark_constant_voice(iv::GraphBuilder& g)
     auto const frequency = g.input<"frequency">(110.0);
     auto const phase_offset = g.input<"phase_offset">(0.0);
 
-    auto const saw = g.node<SawOscillator>();
+    auto const saw = g.node<"saw_oscillator">();
     saw(
         "frequency"_P = frequency,
         "phase_offset"_P = phase_offset

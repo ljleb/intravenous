@@ -20,6 +20,17 @@
 namespace {
 constexpr std::string_view module_id = "iv.test.module";
 
+// Normal instance-lifecycle tests need a usable execution root.  Keep this
+// separate from the deliberately rootless definition helper below: a
+// rootless module is valid in the package registry when it requires
+// construction arguments, but it cannot be realized as a project instance
+// until project persistence has an argument payload for it.
+struct TestModuleRoot {
+    void tick_block(auto const&) const {}
+};
+
+TestModuleRoot const test_module_root{};
+
 struct IvModuleInstancesWitness {
     std::optional<iv::IvModuleRequiredDefinitionsChanged> required_diff {};
     std::optional<iv::IvModuleInstancesChanged> instances_diff {};
@@ -63,6 +74,17 @@ IV_DECLARE_BRIDGE(
 IV_DEFINE_BRIDGE(iv_module_instances_witness_bridge)
 
 iv::IvModuleDefinition make_definition(std::filesystem::path module_root)
+{
+    auto const normalized = std::filesystem::weakly_canonical(module_root).lexically_normal();
+    return iv::IvModuleDefinition{
+        .definition_id = std::string(module_id),
+        .package_root = normalized,
+        .module_id = "iv.test.module",
+        .root = iv::WeakTypeErasedNode(test_module_root),
+    };
+}
+
+iv::IvModuleDefinition make_rootless_definition(std::filesystem::path module_root)
 {
     auto const normalized = std::filesystem::weakly_canonical(module_root).lexically_normal();
     return iv::IvModuleDefinition{
@@ -290,6 +312,60 @@ TEST_F(IvModuleInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnre
     EXPECT_EQ(witness.listed_instances->front().instance_id, instance_id);
     EXPECT_EQ(witness.listed_instances->front().definition_id, module_id);
     EXPECT_FALSE(witness.listed_instances->front().realized);
+}
+
+TEST_F(IvModuleInstancesTest, RootlessDefinitionKeepsDesiredInstanceVisibleAsUnrealized)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
+        "iv_module_instances_rootless_definition");
+    auto const module_root = std::filesystem::weakly_canonical(workspace);
+    iv::IvModuleInstances instances;
+
+    auto const instance_id = instances.create_instance(module_id, module_root);
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+        .created = {make_rootless_definition(module_root)},
+    });
+
+    // A module with required g.node<Id>(...) arguments is a valid registered
+    // definition even though a persisted project instance has no arguments to
+    // supply to it yet.  It remains addressable so the UI can explain the
+    // problem and the user can delete it.
+    EXPECT_FALSE(witness.instances_diff.has_value());
+    auto const listed = instances.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed.front().instance_id, instance_id);
+    EXPECT_EQ(listed.front().definition_id, module_id);
+    EXPECT_FALSE(listed.front().realized);
+}
+
+TEST_F(IvModuleInstancesTest, RootlessRevisionUnrealizesButDoesNotDeleteDesiredInstance)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
+        "iv_module_instances_rootless_revision");
+    auto const module_root = std::filesystem::weakly_canonical(workspace);
+    iv::IvModuleInstances instances;
+
+    auto const instance_id = instances.create_instance(module_id, module_root);
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+        .created = {make_definition(module_root)},
+    });
+    witness.reset();
+
+    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+        .updated = {make_rootless_definition(module_root)},
+    });
+
+    ASSERT_TRUE(witness.instances_diff.has_value());
+    ASSERT_EQ(witness.instances_diff->deleted_instance_ids.size(), 1u);
+    EXPECT_EQ(witness.instances_diff->deleted_instance_ids.front(), instance_id);
+    ASSERT_TRUE(witness.configured_builders.has_value());
+    ASSERT_EQ(witness.configured_builders->deleted_instance_ids.size(), 1u);
+    EXPECT_EQ(witness.configured_builders->deleted_instance_ids.front(), instance_id);
+
+    auto const listed = instances.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed.front().instance_id, instance_id);
+    EXPECT_FALSE(listed.front().realized);
 }
 
 TEST_F(IvModuleInstancesTest, DefinitionReloadCreatesNewRuntimeBindingGeneration)

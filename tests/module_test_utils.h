@@ -485,6 +485,16 @@ namespace iv::test {
         };
     }
 
+    // Synthetic "loaded" definitions model a usable, zero-argument IV module
+    // unless a test explicitly asks for a rootless definition.  Production
+    // rootless definitions remain valid registry entries, but cannot realize a
+    // persisted project instance because there is no execution root to hand to
+    // the instance runtime.
+    struct LoadedDefinitionTestRoot {
+        void tick_block(auto const&) const {}
+    };
+    inline LoadedDefinitionTestRoot const loaded_definition_test_root{};
+
     inline iv::IvModuleReloadedDefinition make_loaded_definition(
         std::filesystem::path package_root,
         std::string module_id = "iv.test.module",
@@ -501,7 +511,7 @@ namespace iv::test {
             .introspection = std::move(introspection),
             .dependencies = std::move(dependencies),
             .module_refs = {},
-            .root = {},
+            .root = iv::WeakTypeErasedNode(loaded_definition_test_root),
         };
     }
 
@@ -577,9 +587,13 @@ namespace iv::test {
     }
 
     inline iv::ModuleLoader make_loader(
-        std::vector<std::filesystem::path> extra_roots = {test_modules_root()})
+        std::vector<std::filesystem::path> extra_roots = {})
     {
-        return iv::ModuleLoader(repo_root(), std::move(extra_roots));
+        iv::ModuleLoaderToolchainConfig toolchain;
+#if defined(IV_CONFIGURED_IV_DSL_PCH)
+        toolchain.iv_package_pch = IV_CONFIGURED_IV_DSL_PCH;
+#endif
+        return iv::ModuleLoader(repo_root(), std::move(extra_roots), std::move(toolchain));
     }
 
     template<typename Device>

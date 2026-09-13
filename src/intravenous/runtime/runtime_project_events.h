@@ -133,6 +133,7 @@ namespace iv {
         std::optional<std::string> cmake_generator {};
         std::optional<std::filesystem::path> make_program {};
         std::optional<std::filesystem::path> juce_dir {};
+        std::optional<std::filesystem::path> iv_package_pch {};
         std::optional<size_t> compiled_sample_cache_chunk_size_multiplier {};
         std::optional<std::string> output_device_id {};
         std::optional<std::string> input_device_id {};

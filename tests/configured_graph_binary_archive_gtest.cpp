@@ -27,8 +27,9 @@ struct ArchiveFixture {
         using namespace iv;
         iv::GraphBuilder graph;
         auto const gain = graph.input<"gain">(0.25f);
-        auto const source = graph.node<iv::Constant>(iv::Sample{0.75f});
-        auto const pass = graph.node<Pass>();
+        auto const source = iv::details::configure_concrete_node<iv::Constant>(
+            graph, iv::Sample{0.75f});
+        auto const pass = iv::details::configure_concrete_node<Pass>(graph);
         pass(gain);
         graph.outputs("gain_out"_P = pass, "main"_P = source);
 

@@ -51,7 +51,6 @@ std::unique_ptr<IvModuleDefinitions::NodeTypeState> make_node_type_state(
         .package_root = normalize_path(loaded.package_root),
         .compiler_record = loaded.compiler_record,
         .module_refs = state->module_refs,
-        .configured_graph = loaded.configured_graph,
     };
     return state;
 }
@@ -452,11 +451,6 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const& res
                 for (auto const* node_type : node_types->second) {
                     if (node_type->node_type_id.empty()) {
                         error = "IV package published a node type with an empty ID";
-                        break;
-                    }
-                    if (!node_type->configured_graph) {
-                        error = "IV package node type '" + node_type->node_type_id
-                            + "' has no configured graph";
                         break;
                     }
                     if (!definition_ids.insert(node_type->node_type_id).second) {

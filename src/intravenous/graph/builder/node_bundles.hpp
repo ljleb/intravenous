@@ -460,14 +460,12 @@ constexpr void GraphBuilderNodeBundles::materialize_deferred_detaches() {
     if (deferred.kind == DeferredDetachNodeKind::writer) {
       materialized = make_concrete_node(details::reflect_node(
           DetachWriterNode{
-              .id = DetachArrayId{deferred.id},
-              .loop_extra_latency = deferred.loop_extra_latency,
+              DetachArrayId{deferred.id}, deferred.loop_extra_latency,
           }));
     } else {
       materialized = make_concrete_node(details::reflect_node(
           DetachReaderNode{
-              .id = DetachArrayId{deferred.id},
-              .loop_extra_latency = deferred.loop_extra_latency,
+              DetachArrayId{deferred.id}, deferred.loop_extra_latency,
           }));
     }
 
@@ -1021,35 +1019,118 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
     ChannelLayout promoted_channel_layout) {
   if (members.empty()) details::error("tiled NodeBundle requires members");
   auto const &first = bundle(members.front());
-  if (!first.is_concrete()) details::error("tiled NodeBundle members must be concrete");
+  if (!first.is_concrete() && !first.is_subgraph()) {
+    details::error(
+        "tiled NodeBundle members must be concrete nodes or subgraphs");
+  }
+
+  auto sample_inputs_of = [&](NodeBundleHandle handle) {
+    std::vector<InputConfig> configs;
+    auto const& candidate = bundle(handle);
+    configs.reserve(candidate.sample_input_count());
+    for (size_t i = 0; i < candidate.sample_input_count(); ++i) {
+      auto config = resolve_sample_input({handle, PortKind::sample, i}).config;
+      if (config.channel_layout.channel_type != ChannelTypeId::mono) {
+        details::error(
+            "tiled NodeBundle members must expose only mono sample inputs");
+      }
+      configs.push_back(std::move(config));
+    }
+    return configs;
+  };
+  auto sample_outputs_of = [&](NodeBundleHandle handle) {
+    std::vector<OutputConfig> configs;
+    auto const& candidate = bundle(handle);
+    configs.reserve(candidate.sample_output_count());
+    for (size_t i = 0; i < candidate.sample_output_count(); ++i) {
+      auto config = resolve_sample_output({handle, PortKind::sample, i}).config;
+      if (config.channel_layout.channel_type != ChannelTypeId::mono) {
+        details::error(
+            "tiled NodeBundle members must expose only mono sample outputs");
+      }
+      configs.push_back(std::move(config));
+    }
+    return configs;
+  };
+  auto event_inputs_of = [&](NodeBundleHandle handle) {
+    std::vector<EventInputConfig> configs;
+    auto const& candidate = bundle(handle);
+    configs.reserve(candidate.event_input_count());
+    for (size_t i = 0; i < candidate.event_input_count(); ++i)
+      configs.push_back(
+          resolve_event_input({handle, PortKind::event, i}).config);
+    return configs;
+  };
+  auto event_outputs_of = [&](NodeBundleHandle handle) {
+    std::vector<EventOutputConfig> configs;
+    auto const& candidate = bundle(handle);
+    configs.reserve(candidate.event_output_count());
+    for (size_t i = 0; i < candidate.event_output_count(); ++i)
+      configs.push_back(
+          resolve_event_output({handle, PortKind::event, i}).config);
+    return configs;
+  };
+  auto same_sample_input = [](InputConfig const& lhs, InputConfig const& rhs) {
+    return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
+        && lhs.history == rhs.history
+        && lhs.default_value.value == rhs.default_value.value
+        && lhs.min.value == rhs.min.value && lhs.max.value == rhs.max.value;
+  };
+  auto same_sample_output = [](OutputConfig const& lhs, OutputConfig const& rhs) {
+    return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
+        && lhs.latency == rhs.latency && lhs.history == rhs.history;
+  };
+  auto same_event_port = [](auto const& lhs, auto const& rhs) {
+    return lhs.name == rhs.name && lhs.type == rhs.type;
+  };
+
+  auto sample_input_configs = sample_inputs_of(members.front());
+  auto sample_output_configs = sample_outputs_of(members.front());
+  auto event_input_configs = event_inputs_of(members.front());
+  auto event_output_configs = event_outputs_of(members.front());
 
   NodeBundle::TiledNodeBundle payload;
   payload.member_bundles.assign(members.begin(), members.end());
   payload.type_identity.value = std::string(first.type_identity());
 
-  for (size_t i = 0; i < first.sample_input_count(); ++i) {
-    auto config = first.sample_input_config(i);
+  for (auto config : sample_input_configs) {
     config.channel_layout = promoted_channel_layout;
     payload.sample_input_configs.push_back(std::move(config));
   }
-  for (size_t i = 0; i < first.sample_output_count(); ++i) {
-    auto config = first.sample_output_config(i);
+  for (auto config : sample_output_configs) {
     config.channel_layout = promoted_channel_layout;
     payload.sample_output_configs.push_back(std::move(config));
   }
-  for (size_t i = 0; i < first.event_input_count(); ++i)
-    payload.event_input_configs.push_back(first.event_input_config(i));
-  for (size_t i = 0; i < first.event_output_count(); ++i)
-    payload.event_output_configs.push_back(first.event_output_config(i));
+  payload.event_input_configs = event_input_configs;
+  payload.event_output_configs = event_output_configs;
 
   for (auto const member : members.subspan(1)) {
     auto const &candidate = bundle(member);
-    if (!candidate.is_concrete()) details::error("tiled NodeBundle members must be concrete");
+    if (candidate.is_concrete() != first.is_concrete()
+        || candidate.is_subgraph() != first.is_subgraph()) {
+      details::error(
+          "tiled NodeBundle members must all be concrete nodes or all be subgraphs");
+    }
     if (candidate.sample_input_count() != first.sample_input_count() ||
         candidate.sample_output_count() != first.sample_output_count() ||
         candidate.event_input_count() != first.event_input_count() ||
         candidate.event_output_count() != first.event_output_count()) {
       details::error("tiled NodeBundle members do not expose the same ports");
+    }
+    auto candidate_inputs = sample_inputs_of(member);
+    auto candidate_outputs = sample_outputs_of(member);
+    auto candidate_event_inputs = event_inputs_of(member);
+    auto candidate_event_outputs = event_outputs_of(member);
+    if (!std::ranges::equal(
+            sample_input_configs, candidate_inputs, same_sample_input)
+        || !std::ranges::equal(
+            sample_output_configs, candidate_outputs, same_sample_output)
+        || !std::ranges::equal(
+            event_input_configs, candidate_event_inputs, same_event_port)
+        || !std::ranges::equal(
+            event_output_configs, candidate_event_outputs, same_event_port)) {
+      details::error(
+          "tiled NodeBundle members do not expose equivalent port configurations");
     }
   }
 
