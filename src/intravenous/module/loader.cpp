@@ -530,13 +530,46 @@ void initialize_package_jit_target()
     });
 }
 
-std::shared_ptr<SharedPackageJit> create_shared_package_jit()
+llvm::CodeGenOptLevel package_codegen_optimization_level(
+    ModuleLoader::OptimizationLevel optimization_level)
+{
+    switch (optimization_level) {
+    case ModuleLoader::OptimizationLevel::O0:
+        return llvm::CodeGenOptLevel::None;
+    case ModuleLoader::OptimizationLevel::O1:
+        return llvm::CodeGenOptLevel::Less;
+    case ModuleLoader::OptimizationLevel::O2:
+        return llvm::CodeGenOptLevel::Default;
+    case ModuleLoader::OptimizationLevel::O3:
+        return llvm::CodeGenOptLevel::Aggressive;
+    }
+    throw std::logic_error("unknown IV package optimization level");
+}
+
+llvm::OptimizationLevel package_ir_optimization_level(
+    ModuleLoader::OptimizationLevel optimization_level)
+{
+    switch (optimization_level) {
+    case ModuleLoader::OptimizationLevel::O0:
+        return llvm::OptimizationLevel::O0;
+    case ModuleLoader::OptimizationLevel::O1:
+        return llvm::OptimizationLevel::O1;
+    case ModuleLoader::OptimizationLevel::O2:
+        return llvm::OptimizationLevel::O2;
+    case ModuleLoader::OptimizationLevel::O3:
+        return llvm::OptimizationLevel::O3;
+    }
+    throw std::logic_error("unknown IV package optimization level");
+}
+
+std::shared_ptr<SharedPackageJit> create_shared_package_jit(
+    ModuleLoader::OptimizationLevel optimization_level)
 {
     initialize_package_jit_target();
     auto target = take_llvm_expected(
         llvm::orc::JITTargetMachineBuilder::detectHost(),
         "detect package ORC target");
-    target.setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
+    target.setCodeGenOptLevel(package_codegen_optimization_level(optimization_level));
     auto jit = take_llvm_expected(
         llvm::orc::LLJITBuilder()
             .setJITTargetMachineBuilder(std::move(target))
@@ -606,8 +639,11 @@ void collect_compatibility_runtime_code(
     }
 }
 
-void optimize_package_for_compatibility_runtime(llvm::Module& module)
+void optimize_package_for_compatibility_runtime(
+    llvm::Module& module,
+    ModuleLoader::OptimizationLevel optimization_level)
 {
+    if (optimization_level == ModuleLoader::OptimizationLevel::O0) return;
     // Package artifacts intentionally stop at Clang O0 so source rebuilds stay
     // cheap and the future whole-graph compiler receives the unoptimized IR.
     // The current reflected executor only needs native-quality node tick/skip
@@ -637,7 +673,7 @@ void optimize_package_for_compatibility_runtime(llvm::Module& module)
     pass_builder.registerLoopAnalyses(loops);
     pass_builder.crossRegisterProxies(loops, functions, cgscc, modules);
     auto pipeline = pass_builder.buildPerModuleDefaultPipeline(
-        llvm::OptimizationLevel::O3);
+        package_ir_optimization_level(optimization_level));
     pipeline.run(module, modules);
 }
 
@@ -716,6 +752,7 @@ class ModuleLoader::Impl {
     std::filesystem::path global_cache_root_;
     ModuleLoaderToolchainConfig toolchain_;
     LogSink log_sink_;
+    OptimizationLevel optimization_level_;
     mutable std::mutex mutex_;
 
     struct CompiledPackage {
@@ -985,12 +1022,14 @@ public:
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> roots,
         ModuleLoaderToolchainConfig toolchain,
-        LogSink sink)
+        LogSink sink,
+        OptimizationLevel optimization_level)
         : repo_root_(discover_repo(std::move(discovery_start))),
           global_cache_root_(global_cache_root()),
           toolchain_(std::move(toolchain)),
           log_sink_(std::move(sink)),
-          package_jit_(create_shared_package_jit())
+          optimization_level_(optimization_level),
+          package_jit_(create_shared_package_jit(optimization_level))
     {
         apply_configured_dsl_pch(toolchain_);
         std::filesystem::create_directories(global_cache_root_);
@@ -1089,13 +1128,15 @@ public:
                             (*buffer)->getMemBufferRef(), *context),
                         "parse finalized IV package LLVM");
                 });
-            auto const optimize_started_at = std::chrono::steady_clock::now();
-            optimize_package_for_compatibility_runtime(*module);
-            if (log_sink_) {
-                log_sink_(
-                    "[package-orc-optimize] elapsed_us="
-                    + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - optimize_started_at).count()));
+            if (optimization_level_ != OptimizationLevel::O0) {
+                auto const optimize_started_at = std::chrono::steady_clock::now();
+                optimize_package_for_compatibility_runtime(*module, optimization_level_);
+                if (log_sink_) {
+                    log_sink_(
+                        "[package-orc-optimize] elapsed_us="
+                        + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - optimize_started_at).count()));
+                }
             }
 
             auto const suffix = package_jit_->next_package.fetch_add(
@@ -1599,12 +1640,14 @@ ModuleLoader::ModuleLoader(
     std::filesystem::path start,
     std::vector<std::filesystem::path> roots,
     ModuleLoaderToolchainConfig toolchain,
-    LogSink sink)
+    LogSink sink,
+    OptimizationLevel optimization_level)
     : _impl(std::make_unique<Impl>(
           std::move(start),
           std::move(roots),
           std::move(toolchain),
-          std::move(sink)))
+          std::move(sink),
+          optimization_level))
 {}
 
 ModuleLoader::~ModuleLoader() = default;

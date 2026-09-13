@@ -221,7 +221,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 
     iv::ModuleLoader time_trace_loader(
         iv::test::repo_root(), {},
-        iv::ModuleLoaderToolchainConfig{.clang_time_trace = true});
+        iv::ModuleLoaderToolchainConfig{.clang_time_trace = true},
+        {},
+        iv::ModuleLoader::OptimizationLevel::O0);
     // This secondary direct loader deliberately uses a different toolchain
     // setting, so it also needs the explicit default catalog setup supplied by
     // the primary test loader above.

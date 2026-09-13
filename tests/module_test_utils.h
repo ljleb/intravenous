@@ -486,7 +486,12 @@ namespace iv::test {
             std::filesystem::weakly_canonical(package_root).lexically_normal();
         auto const load_lock = ScopedFileLock(
             runtime_module_cache_root() / ("load_" + stable_path_hash(normalized_package_root) + ".lock"));
-        iv::ModuleLoader loader(config.discovery_start, config.search_roots, config.toolchain);
+        iv::ModuleLoader loader(
+            config.discovery_start,
+            config.search_roots,
+            config.toolchain,
+            {},
+            iv::ModuleLoader::OptimizationLevel::O0);
         load_test_default_package_catalog(loader);
         auto loaded_graph = loader.load_package_definitions(package_root).front();
         return iv::IvModuleReloadedDefinition{
@@ -609,7 +614,12 @@ namespace iv::test {
         // explicit override is requested. The production catalog explicitly
         // declares its default package roots before module configuration; make
         // that setup equally explicit in direct-loader tests.
-        iv::ModuleLoader loader(repo_root(), std::move(extra_roots));
+        iv::ModuleLoader loader(
+            repo_root(),
+            std::move(extra_roots),
+            {},
+            {},
+            iv::ModuleLoader::OptimizationLevel::O0);
         load_test_default_package_catalog(loader);
         return loader;
     }

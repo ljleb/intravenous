@@ -39,6 +39,16 @@ namespace iv {
     public:
         using LogSink = std::function<void(std::string const&)>;
 
+        // Package artifacts remain O0 regardless of this setting. This controls
+        // only optimization of the in-memory compatibility ORC copy after a
+        // package is loaded.
+        enum class OptimizationLevel {
+            O0,
+            O1,
+            O2,
+            O3,
+        };
+
         struct LoadedDefinition {
             std::vector<ModuleRef> module_refs;
             WeakTypeErasedNode root;
@@ -98,7 +108,8 @@ namespace iv {
             std::filesystem::path discovery_start = std::filesystem::current_path(),
             std::vector<std::filesystem::path> extra_search_roots = {},
             ModuleLoaderToolchainConfig toolchain = ModuleLoaderToolchainConfig(),
-            LogSink log_sink = {}
+            LogSink log_sink = {},
+            OptimizationLevel optimization_level = OptimizationLevel::O3
         );
         ~ModuleLoader();
         ModuleLoader(ModuleLoader&&) noexcept;

@@ -114,7 +114,9 @@ void load_builtin_package(iv::ModuleLoader& loader)
 
 void benchmark_module(std::filesystem::path const& path, Options const& options)
 {
-    iv::ModuleLoader loader(std::filesystem::current_path(), {});
+    iv::ModuleLoader loader(
+        std::filesystem::current_path(), {}, {}, {},
+        iv::ModuleLoader::OptimizationLevel::O3);
     load_builtin_package(loader);
     auto definitions = loader.load_package_definitions(path);
     if (definitions.empty()) {

@@ -80,7 +80,9 @@ IV_SUBSCRIBE_LINKER_EVENT(
 
 class IvModuleReloadTest : public ::testing::Test {
 protected:
-    iv::IvModuleReload bridge_source {iv::StartupConfigState{}};
+    iv::IvModuleReload bridge_source {
+        iv::StartupConfigState{},
+        iv::ModuleLoader::OptimizationLevel::O0};
     IvModuleReloadWitness witness {};
     iv_module_reload_witness_bridge::scope witness_scope {bridge_source, witness};
     IvModuleReloadStatusWitness status_witness {};
@@ -97,7 +99,8 @@ TEST_F(IvModuleReloadTest, DirtyDeclarationCompilesAndPublishesLoadedDefinition)
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
 
     reload.handle_package_declarations_changed(
         iv::IvPackageDeclarationsChanged{
@@ -139,7 +142,8 @@ TEST_F(IvModuleReloadTest, DirtyInvalidDeclarationCompilesAndPublishesFailure)
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
 
     reload.handle_package_declarations_changed(
         iv::IvPackageDeclarationsChanged{
@@ -173,7 +177,8 @@ TEST_F(IvModuleReloadTest, SuccessfulBuildStatusIncludesElapsedTime)
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
     reload.handle_package_declarations_changed(
         iv::IvPackageDeclarationsChanged{
             .created = {
@@ -202,7 +207,8 @@ TEST_F(IvModuleReloadTest, CompiledDefinitionPublishesUsableExecutionRoot)
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
 
     reload.handle_package_declarations_changed(
         iv::IvPackageDeclarationsChanged{
@@ -239,7 +245,8 @@ TEST_F(IvModuleReloadTest, ReloadChangedDefinitionsDoesNothingWithoutWatcherChan
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
 
     reload.handle_package_declarations_changed(
         iv::IvPackageDeclarationsChanged{

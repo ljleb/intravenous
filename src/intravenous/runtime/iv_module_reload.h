@@ -60,6 +60,7 @@ class ProjectPersistenceBuilder;
 
 class IvModuleReload {
     StartupConfigState startup_config;
+    ModuleLoader::OptimizationLevel loader_optimization_level_;
     std::unique_ptr<ModuleLoader> loader_;
     mutable std::mutex mutex;
     std::unordered_map<std::string, IvPackageDeclaration> package_declarations_by_id;
@@ -84,7 +85,10 @@ class IvModuleReload {
         std::filesystem::path package_root = {});
 
 public:
-    explicit IvModuleReload(StartupConfigState startup_config_);
+    explicit IvModuleReload(
+        StartupConfigState startup_config_,
+        ModuleLoader::OptimizationLevel loader_optimization_level =
+            ModuleLoader::OptimizationLevel::O3);
 
     void set_toolchain_config(ModuleLoaderToolchainConfig toolchain);
     [[nodiscard]] ModuleLoaderToolchainConfig toolchain_config() const;

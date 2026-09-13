@@ -123,8 +123,11 @@ IvModuleReloadResults coalesce_results_by_package(IvModuleReloadResults results)
 }
 } // namespace
 
-IvModuleReload::IvModuleReload(StartupConfigState startup_config_)
+IvModuleReload::IvModuleReload(
+    StartupConfigState startup_config_,
+    ModuleLoader::OptimizationLevel loader_optimization_level)
     : startup_config(std::move(startup_config_)),
+      loader_optimization_level_(loader_optimization_level),
       watcher(make_dependency_watcher())
 {}
 
@@ -135,7 +138,9 @@ ModuleLoader& IvModuleReload::ensure_loader()
         loader_ = std::make_unique<ModuleLoader>(
             startup_config.discovery_start,
             startup_config.search_roots,
-            startup_config.toolchain);
+            startup_config.toolchain,
+            ModuleLoader::LogSink{},
+            loader_optimization_level_);
     }
     return *loader_;
 }

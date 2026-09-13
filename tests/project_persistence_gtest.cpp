@@ -460,7 +460,8 @@ TEST_F(ProjectPersistenceTest, OverrideParsingAppliesTypedOverridesAcrossOwnersA
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
     iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
     iv::ProjectPersistence persistence(workspace, startup);
 
     ProjectTimelineBindings project_timeline_bindings(
@@ -509,7 +510,8 @@ TEST_F(ProjectPersistenceTest, OverrideParsingDefaultAndUnknownOnlyDoNotMutateSt
     auto const startup = make_startup(workspace);
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
     iv::ProjectPersistence persistence(workspace, startup);
 
     ProjectTimelineBindings project_timeline_bindings(
@@ -724,7 +726,8 @@ TEST_F(ProjectPersistenceTest, DirectTypedOverrideRequestsMutateRelevantOwnersOn
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
     iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
     iv::ProjectPersistence persistence(workspace, startup);
 
     ProjectTimelineBindings project_timeline_bindings(
@@ -769,7 +772,8 @@ TEST_F(ProjectPersistenceTest, DirectTypedOverrideRequestsIgnoreIrrelevantFields
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
     iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
     iv::ProjectPersistence persistence(workspace, startup);
 
     ProjectTimelineBindings project_timeline_bindings(
@@ -834,7 +838,8 @@ TEST_F(ProjectPersistenceTest, DirectTypedOverrideRequestUpdatesOnlyReloadSubscr
     write_text(toolchain_dir / "clang", "");
     write_text(toolchain_dir / "clangxx", "");
 
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
     iv::ProjectPersistence persistence(workspace, startup);
     auto project_persistence_reload_scope =
         iv::project_persistence_iv_module_reload_bridge::bind(persistence, reload);
@@ -1021,7 +1026,8 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     iv::TimelineExecution execution(8, 16);
     iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
     iv::LaneViews lane_views;
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
     iv::ProjectPersistence persistence(workspace, startup);
 
     initialize_two_timeline_lanes(timeline);
@@ -1122,7 +1128,8 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     iv::TimelineExecution fresh_execution(8, 16);
     iv::AudioDeviceLanes fresh_audio_device_lanes(48000, 8, make_audio_backend());
     iv::LaneViews fresh_lane_views;
-    iv::IvModuleReload fresh_reload(startup);
+    iv::IvModuleReload fresh_reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
     iv::ProjectPersistence fresh_persistence(workspace, startup);
 
     initialize_two_timeline_lanes(fresh_timeline);

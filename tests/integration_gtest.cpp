@@ -387,7 +387,8 @@ IV_NODE("iv.test.graph_input.saw", iv::SawOscillator);
     iv::Timeline timeline;
     iv::IvModuleInstances instances;
     iv::IvModuleDefinitions definitions;
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
     iv::GraphInputLanes graph_input_lanes;
     iv::LaneFilters lane_filters;
     iv::LaneViews lane_views;
@@ -535,7 +536,8 @@ namespace {
     iv::Timeline timeline;
     iv::IvModuleInstances instances;
     iv::IvModuleDefinitions definitions;
-    iv::IvModuleReload reload(startup);
+    iv::IvModuleReload reload(
+        startup, iv::ModuleLoader::OptimizationLevel::O0);
     iv::GraphInputLanes graph_input_lanes;
     iv::LaneFilters lane_filters;
     iv::LaneViews lane_views;
