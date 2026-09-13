@@ -339,8 +339,7 @@ std::filesystem::file_time_type directory_stamp(std::filesystem::path const &dir
          it.increment(ec)) {
         if (ec) break;
         if (it->is_directory()) {
-            auto const name = it->path().filename();
-            if (name == ".git" || name == "build") {
+            if (is_module_dependency_ignored_directory(it->path())) {
                 it.disable_recursion_pending();
             } else if (it->path() != dir
                        && std::filesystem::exists(

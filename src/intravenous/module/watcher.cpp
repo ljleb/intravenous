@@ -13,12 +13,6 @@
 
 namespace iv {
     namespace {
-        bool is_ignored_dependency_directory(std::filesystem::path const& path)
-        {
-            auto const name = path.filename();
-            return name == "build" || name == ".git";
-        }
-
         std::filesystem::file_time_type compute_directory_stamp(std::filesystem::path const& dir)
         {
             std::error_code ec;
@@ -38,7 +32,7 @@ namespace iv {
                 }
                 auto const& entry = *it;
                 if (entry.is_directory()) {
-                    if (is_ignored_dependency_directory(entry.path())) {
+                    if (is_module_dependency_ignored_directory(entry.path())) {
                         it.disable_recursion_pending();
                     }
                     continue;
@@ -132,7 +126,7 @@ namespace iv {
             if (!entry.is_directory()) {
                 continue;
             }
-            if (is_ignored_dependency_directory(entry.path())) {
+            if (is_module_dependency_ignored_directory(entry.path())) {
                 it.disable_recursion_pending();
                 continue;
             }

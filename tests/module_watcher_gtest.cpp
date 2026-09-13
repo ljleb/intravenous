@@ -29,6 +29,14 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
     EXPECT_FALSE(watcher.has_changes());
 
+    // Opening a package source in clangd can populate a persistent background
+    // index below .cache without modifying package source. That editor cache
+    // must not make the package dirty.
+    auto const clangd_cache = project_dst / ".cache" / "clangd" / "index";
+    std::filesystem::create_directories(clangd_cache);
+    iv::test::write_text_advancing_timestamp(clangd_cache / "module.cpp.fake.idx", "index\n");
+    EXPECT_FALSE(watcher.has_changes());
+
     // The configured graph watches its own source and every provider it
     // resolves through g.node<Id>().
     auto module_cpp = project_dst / "module.cpp";

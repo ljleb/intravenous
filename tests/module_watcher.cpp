@@ -29,6 +29,11 @@ int main()
     iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
     iv::test::require(!watcher.has_changes(), "watcher should ignore generated compile databases");
 
+    auto const clangd_cache = project_dst / ".cache" / "clangd" / "index";
+    std::filesystem::create_directories(clangd_cache);
+    iv::test::write_text_advancing_timestamp(clangd_cache / "module.cpp.fake.idx", "index\n");
+    iv::test::require(!watcher.has_changes(), "watcher should ignore clangd cache writes");
+
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
     auto needle = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);");
