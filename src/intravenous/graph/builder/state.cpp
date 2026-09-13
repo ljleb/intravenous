@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <ranges>
+#include <utility>
 
 namespace iv {
 namespace {
@@ -82,6 +83,12 @@ NodeBundleHandle GraphBuilderState::append_tiled_node_bundles(
     std::span<NodeBundleHandle const> members, ChannelLayout layout)
 {
   return _node_bundles.append_tiled(members, layout);
+}
+
+void GraphBuilderState::set_registered_node_type_identity(
+    NodeBundleHandle handle, RegisteredNodeTypeIdentity identity)
+{
+  _node_bundles.set_registered_node_type_identity(handle, std::move(identity));
 }
 
 void GraphBuilderState::validate_tiled_module_interfaces(

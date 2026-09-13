@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 1;
+inline constexpr std::uint32_t archive_version = 2;
 
 class Writer {
 public:
@@ -427,6 +427,12 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
                 throw std::runtime_error("concrete configured node has incomplete compiler storage");
             write_ports(bundles, *view.ports);
             write_code_key(bundles, *view.code_key);
+            bundles.flag(view.registered_node_type_identity != nullptr);
+            if (view.registered_node_type_identity) {
+                bundles.string(view.registered_node_type_identity->node_type_id);
+                bundles.string(
+                    view.registered_node_type_identity->provider_package_root);
+            }
             bundles.size(config_ordinal++);
             bundles.size(view.node_size);
             bundles.size(view.node_alignment);
@@ -602,6 +608,12 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
         if (record.kind == ConfiguredNodeBundleKind::concrete) {
             record.ports = read_ports(reader);
             record.code_key = read_code_key(reader);
+            if (reader.flag()) {
+                record.registered_node_type_identity = RegisteredNodeTypeIdentity{
+                    .node_type_id = reader.string(),
+                    .provider_package_root = reader.string(),
+                };
+            }
             auto const ordinal = reader.size();
             if (ordinal >= node_configs.size()) throw std::runtime_error("configured graph config ordinal is out of range");
             auto const& config = node_configs[ordinal];

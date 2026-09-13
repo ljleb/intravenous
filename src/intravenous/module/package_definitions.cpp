@@ -1,6 +1,7 @@
 #include <intravenous/module/package_definitions.h>
 
 #include <intravenous/graph/builder.h>
+#include <intravenous/graph/builder/state.h>
 #include <intravenous/module/builder_session.h>
 
 #include <memory>
@@ -68,9 +69,18 @@ NodeRef configure_package_definition_impl(
     validate_registered_signature(registered_id, *signature, arguments);
     if (definition.kind == PackageDefinitionKind::node) {
         PackageSelection const package(builder._session, found.package_index);
-        return definition.node_build(
+        auto node = definition.node_build(
             builder, arguments,
             tiled_layout ? std::addressof(*tiled_layout) : nullptr);
+        auto const provider_package_root = std::string_view(
+            definition.package_root, definition.package_root_size);
+        builder_graph_state(builder).set_registered_node_type_identity(
+            node.node_bundle_handle(),
+            RegisteredNodeTypeIdentity{
+                .node_type_id = std::string(registered_id),
+                .provider_package_root = std::string(provider_package_root),
+            });
+        return node;
     }
 
     ModuleStackEntry const stack_entry(builder._session, registered_id);

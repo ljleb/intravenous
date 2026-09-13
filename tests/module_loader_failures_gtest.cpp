@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -392,6 +393,23 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
     ASSERT_EQ(loaded.size(), 1);
     EXPECT_EQ(loaded.front().module_id, "iv.test.registered_node_consumer");
     EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    ASSERT_NE(loaded.front().configured_graph, nullptr);
+
+    std::optional<iv::RegisteredNodeTypeIdentity> registered_identity;
+    loaded.front().configured_graph->node_bundles.for_each_configured_bundle(
+        [&](iv::ConfiguredNodeBundleView const& bundle) {
+            if (bundle.registered_node_type_identity) {
+                ASSERT_FALSE(registered_identity.has_value());
+                registered_identity = *bundle.registered_node_type_identity;
+            }
+        });
+    ASSERT_TRUE(registered_identity.has_value());
+    EXPECT_EQ(
+        registered_identity->node_type_id,
+        "iv.test.registered_package_node");
+    EXPECT_EQ(
+        std::filesystem::path(registered_identity->provider_package_root),
+        std::filesystem::weakly_canonical(node_package));
 
     // A source disappearing must stop being a provider for new configurations
     // immediately. Existing LoadedDefinition objects above still retain the

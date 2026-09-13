@@ -9,6 +9,7 @@
 #include <intravenous/node/build_request.h>
 #include <intravenous/node/config_relocations.h>
 #include <intravenous/node/config_storage.h>
+#include <intravenous/node/registered_type_identity.h>
 
 #include <memory>
 #include <optional>
@@ -23,6 +24,7 @@ struct ReflectedNodeDescription {
     std::shared_ptr<NodeStateStructure const> state_structure_storage {};
     NodeConfigRelocations config_relocations {};
     NodeCodeKey code_key {};
+    std::optional<RegisteredNodeTypeIdentity> registered_node_type_identity {};
     std::size_t node_size = 0;
     std::size_t node_alignment = 1;
     std::string_view type_name {};

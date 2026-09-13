@@ -47,6 +47,7 @@ class NodeBundle {
     std::shared_ptr<NodeStateStructure const> state_structure_storage{};
     NodeConfigRelocations config_relocations{};
     NodeCodeKey code_key{};
+    std::optional<RegisteredNodeTypeIdentity> registered_node_type_identity{};
     size_t node_size = 0;
     size_t node_alignment = 1;
     NodeLifetime lifetime{};
@@ -196,6 +197,7 @@ struct ConfiguredNodeBundleRecord {
   std::shared_ptr<void const> node_storage{};
   std::shared_ptr<NodeStateStructure const> state_structure_storage{};
   NodeCodeKey code_key{};
+  std::optional<RegisteredNodeTypeIdentity> registered_node_type_identity{};
   size_t node_size = 0;
   size_t node_alignment = 1;
   NodeLifetime lifetime{};
@@ -238,6 +240,7 @@ struct ConfiguredNodeBundleView {
   std::shared_ptr<NodeStateStructure const> const* state_structure_storage = nullptr;
   NodeConfigRelocations const* config_relocations = nullptr;
   NodeCodeKey const* code_key = nullptr;
+  RegisteredNodeTypeIdentity const* registered_node_type_identity = nullptr;
   size_t node_size = 0;
   size_t node_alignment = 1;
   NodeLifetime const* lifetime = nullptr;
@@ -324,6 +327,8 @@ public:
   constexpr NodeBundleHandle tiled_member(
       NodeBundleHandle, size_t channel) const;
   constexpr NodeLifetime const &concrete_lifetime(NodeBundleHandle) const;
+  constexpr void set_registered_node_type_identity(
+      NodeBundleHandle, RegisteredNodeTypeIdentity);
   constexpr ReflectedNodeDescription materialize_concrete_description(
       NodeBundleHandle) const;
   constexpr SemanticSubgraphInfo subgraph_info(NodeBundleHandle) const;
@@ -373,6 +378,7 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
       .state_structure_storage = std::move(description.state_structure_storage),
       .config_relocations = std::move(description.config_relocations),
       .code_key = description.code_key,
+      .registered_node_type_identity = std::move(description.registered_node_type_identity),
       .node_size = description.node_size,
       .node_alignment = description.node_alignment,
       .type_identity = NodeTypeIdentity{.value = std::string(description.type_name)},
@@ -401,6 +407,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
       .state_structure_storage = std::move(lowered.state_structure_storage),
       .config_relocations = std::move(lowered.config_relocations),
       .code_key = lowered.code_key,
+      .registered_node_type_identity = std::move(lowered.registered_node_type_identity),
       .node_size = lowered.node_size,
       .node_alignment = lowered.node_alignment,
       .lifetime = std::move(lowered.lifetime),
@@ -477,6 +484,8 @@ constexpr void GraphBuilderNodeBundles::materialize_deferred_detaches() {
     payload.node_size = materialized.node_size;
     payload.node_alignment = materialized.node_alignment;
     payload.code_key = materialized.code_key;
+    payload.registered_node_type_identity =
+        std::move(materialized.registered_node_type_identity);
     payload.lifetime = std::move(materialized.lifetime);
     payload.type_identity = std::move(materialized.type_identity);
     payload.reflected_type_name = materialized.reflected_type_name;
@@ -1214,6 +1223,26 @@ constexpr NodeLifetime const &GraphBuilderNodeBundles::concrete_lifetime(
   return payload->lifetime;
 }
 
+constexpr void GraphBuilderNodeBundles::set_registered_node_type_identity(
+    NodeBundleHandle handle, RegisteredNodeTypeIdentity identity) {
+  auto& target = bundle(handle);
+  if (auto* concrete = target._payload
+          ? std::get_if<NodeBundle::ConcreteNodeBundle>(&*target._payload)
+          : nullptr) {
+    concrete->registered_node_type_identity = std::move(identity);
+    return;
+  }
+  if (auto* tiled = target._payload
+          ? std::get_if<NodeBundle::TiledNodeBundle>(&*target._payload)
+          : nullptr) {
+    for (auto const member : tiled->member_bundles) {
+      set_registered_node_type_identity(member, identity);
+    }
+    return;
+  }
+  details::error("registered node type identity requires a concrete or tiled node");
+}
+
 constexpr ReflectedNodeDescription
 GraphBuilderNodeBundles::materialize_concrete_description(
     NodeBundleHandle handle) const {
@@ -1229,6 +1258,7 @@ GraphBuilderNodeBundles::materialize_concrete_description(
       .state_structure_storage = payload->state_structure_storage,
       .config_relocations = payload->config_relocations,
       .code_key = payload->code_key,
+      .registered_node_type_identity = payload->registered_node_type_identity,
       .node_size = payload->node_size,
       .node_alignment = payload->node_alignment,
       .type_name = payload->reflected_type_name,
@@ -1324,6 +1354,10 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
         view.state_structure_storage = &payload.state_structure_storage;
         view.config_relocations = &payload.config_relocations;
         view.code_key = &payload.code_key;
+        if (payload.registered_node_type_identity) {
+          view.registered_node_type_identity =
+              std::addressof(*payload.registered_node_type_identity);
+        }
         view.node_size = payload.node_size;
         view.node_alignment = payload.node_alignment;
         view.lifetime = &payload.lifetime;
@@ -1397,6 +1431,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
           .node_storage = record.node_storage,
           .state_structure_storage = record.state_structure_storage,
           .code_key = record.code_key,
+          .registered_node_type_identity = record.registered_node_type_identity,
           .node_size = record.node_size,
           .node_alignment = record.node_alignment,
           .lifetime = record.lifetime,

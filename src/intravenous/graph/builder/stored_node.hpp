@@ -4,6 +4,7 @@
 #include <intravenous/graph/generated_node_spec.hpp>
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/graph/types.h>
+#include <intravenous/node/registered_type_identity.h>
 
 #include <memory>
 #include <optional>
@@ -73,6 +74,7 @@ struct ConcreteNode {
   std::shared_ptr<NodeStateStructure const> state_structure_storage{};
   NodeConfigRelocations config_relocations{};
   NodeCodeKey code_key{};
+  std::optional<RegisteredNodeTypeIdentity> registered_node_type_identity{};
   size_t node_size = 0;
   size_t node_alignment = 1;
   NodeLifetime lifetime{};

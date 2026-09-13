@@ -141,7 +141,16 @@ struct NodeCompilerRecord {
 };
 ```
 
-`NodeCodeKey` is deliberately build-local. It is a compiler join between an configured node instance and LLVM functions in that build, not a persistent server identity.
+`NodeCodeKey` is deliberately build-local. It is a compiler join between a configured node instance and LLVM functions in that build, not a persistent server identity.
+
+Concrete nodes realized through a registered `IV_NODE` also retain explicit
+`RegisteredNodeTypeIdentity` provenance: the canonical stable node ID and the
+provider package root. `NodeCodeKey` remains alongside it as compiler-local
+plumbing. The configured definition's `ModuleRef`s retain the exact loaded
+provider revision, so the graph does not invent a second persistent generation
+token merely to duplicate package-code ownership. This gives future
+whole-project compilation a stable way to identify which registered primitive
+implementation a configured leaf came from.
 
 The current source plugin discovers node types through emitted `node_compiler_record<T>` specializations. This is a precise signal for the current migration, but it is not the desired long-term ownership model because using the same C++ node type in many IV packages can cause its compiler-facing implementation to be emitted repeatedly.
 
@@ -699,10 +708,11 @@ Registry validation includes:
 - duplicate stable IDs across IV packages;
 - duplicate IDs within one IV package.
 
-Missing `g.node<Id>` providers and iv-module dependency cycles are rejected
-while executing the shared configuration generation for the affected package.
-The failed package keeps its previous candidate/live generation; the registry
-does not publish a partial result.
+Missing `g.node<Id>` providers and any dependency cycle actually reached
+while configuring a candidate are rejected by the shared configuration
+generation. The failed package keeps its previous candidate/live generation;
+the registry does not publish a partial result. There is no separate static
+registry dependency graph whose completeness is required for publication.
 
 The live project/kernel should remain on the last valid generation while the candidate registry is invalid.
 
@@ -886,7 +896,7 @@ interpret.
 
 ### 10.3 Node types are leaves; iv modules recurse during configuration
 
-For dependency validation and finalization:
+During configuration:
 
 ```text
 registered node type
@@ -897,11 +907,14 @@ registered iv module
        -> executes and embeds child graph
 ```
 
-This gives a simple module-dependency graph.
+Dependencies are therefore observed from concrete configuration execution, not
+from a separately maintained complete static module-dependency graph.
 
-### 10.4 Dependency cycles are invalid
+### 10.4 Dependency cycles are rejected when realized
 
-Iv-module dependency cycles should fail candidate registry publication.
+The configuration generation keeps an execution stack. If an actual invocation
+recurses back into a module already on that stack, configuration fails before
+unbounded recursion occurs.
 
 Example:
 
@@ -911,11 +924,12 @@ B -> C
 C -> A
 ```
 
-The server reports the cycle and keeps the last valid registry/project generation active.
-
-The configuration generation also keeps an execution stack. That stack is the
-authoritative check for argument/control-flow-dependent realizations and
-reports the concrete `A -> B -> C -> A` request chain before recursion occurs.
+reports the concrete `A -> B -> C -> A` request chain. If this occurs while
+building a package's default candidate realization, that package candidate
+fails and its previous valid live generation remains active. A cycle that can
+only be reached through required arguments or runtime configuration choices is
+not required to be discovered merely to publish otherwise valid provider
+definitions; it is rejected when that realization is requested.
 
 ### 10.5 Conservative provider invalidation
 
@@ -988,9 +1002,19 @@ The representation may be rephrased/canonicalized later if profiling or implemen
 
 ### 11.3 Node implementation code is not owned by an `ConfiguredGraph`
 
-An `ConfiguredGraph` contains ordinary realized primitive node descriptions, but
+A `ConfiguredGraph` contains ordinary realized primitive node descriptions, but
 does not own or duplicate their implementation LLVM. Primitive code belongs
-to the node-type registry.
+to the node-type registry. Each registered primitive leaf records its canonical
+stable node ID and provider package root as `RegisteredNodeTypeIdentity`; its
+existing `NodeCodeKey` remains only the build-local compiler join. The loaded
+package revision itself stays alive through the definition's `ModuleRef`
+ownership.
+
+The current physical LLVM cache is still package-wide `.ivpkg.bc`; this identity
+does not require one disk artifact per node. Independent node ownership here
+means the future whole-project compiler can select/import one registered
+primitive implementation from its retained provider revision instead of
+treating each consuming iv module as the code owner.
 
 This changes the ownership model from today's per-TU `NodeCompilerRecord<T>` emission.
 
@@ -1865,12 +1889,13 @@ The server combines the candidate definitions from all IV packages and checks:
 
 ```text
 ID collisions
-missing dependencies
-iv-module dependency cycles
-public-interface validity
+local definition validity
+public-interface validity available without speculative invocation
 ```
 
-On success, publish a new registry generation.
+Candidate configuration separately rejects missing providers and any recursion
+cycle actually reached while producing a realization. On success, publish a
+new registry generation.
 
 On failure, retain the previous valid live generation.
 
@@ -2158,7 +2183,7 @@ The design is intentionally staged so the existing 443-test runtime can remain t
 3. Build the server registry with transactional source updates and collision checking.
 4. Preserve node implementation LLVM independently from iv-module definitions.
 5. Allow one IV package to register any number of nodes/modules, including node-only sources.
-6. Add cycle detection for iv-module ID dependencies.
+6. Add realization-time cycle detection to recursive iv-module configuration.
 
 ### Phase B — ID-based GraphBuilder API
 
@@ -2308,7 +2333,7 @@ The following are treated as strong architectural decisions unless implementatio
 11. **Project cross-module connections use stable virtual-node/direct-member port identity, not concrete configured node IDs.**
 12. **Project connections do not mutate cached `ConfiguredGraph`s.**
 13. **Iv-module references are greedily expanded during configuration.** A completed `ConfiguredGraph` contains realized ordinary graph structure and no fake registered-node boundary.
-14. **Iv-module dependency cycles are rejected transactionally.** Keep the previous valid live generation.
+14. **Realized iv-module recursion cycles are rejected by the configuration stack.** A default candidate that reaches one fails transactionally; latent required-argument/control-flow cycles fail when requested.
 15. **Module/UI boundaries are not optimizer boundaries.** Final execution decisions use the whole active project graph.
 16. **Block size `B` is a project-kernel specialization parameter.** It is not part of registered node identity or C++ source compilation.
 17. **Connection storage is not predetermined.** Logical connections are lowered to SSA/scratch/carry/ring/etc. after schedule/use analysis.

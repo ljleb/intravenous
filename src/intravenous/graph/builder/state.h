@@ -125,6 +125,8 @@ public:
       ReflectedNodeDescription const&, ChannelLayout);
   NodeBundleHandle append_tiled_node_bundles(
       std::span<NodeBundleHandle const>, ChannelLayout);
+  void set_registered_node_type_identity(
+      NodeBundleHandle, RegisteredNodeTypeIdentity);
   void validate_tiled_module_interfaces(
       std::span<GraphBuilderState* const>) const;
   PublicSampleInputRef input();

@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cmath>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -29,11 +30,19 @@ struct ArchiveFixture {
         auto const gain = graph.input<"gain">(0.25f);
         auto const source = iv::details::configure_concrete_node<iv::Constant>(
             graph, iv::Sample{0.75f});
+        auto const source_handle = source.node_bundle_handle();
         auto const pass = iv::details::configure_concrete_node<Pass>(graph);
         pass(gain);
         graph.outputs("gain_out"_P = pass, "main"_P = source);
 
-        archive = iv::serialize_configured_graph(std::move(graph).finish());
+        auto configured = std::move(graph).finish();
+        configured.node_bundles.set_registered_node_type_identity(
+            source_handle,
+            iv::RegisteredNodeTypeIdentity{
+                .node_type_id = "iv.test.archive.constant",
+                .provider_package_root = "/tmp/iv-test-provider",
+            });
+        archive = iv::serialize_configured_graph(std::move(configured));
     }
 
     iv::ConfiguredGraph decode(std::span<std::byte const> bytes) const
@@ -48,6 +57,20 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     ArchiveFixture fixture;
 
     auto decoded = fixture.decode(fixture.archive.bytes);
+    std::optional<iv::RegisteredNodeTypeIdentity> registered_identity;
+    decoded.node_bundles.for_each_configured_bundle(
+        [&](iv::ConfiguredNodeBundleView const& bundle) {
+            if (bundle.registered_node_type_identity) {
+                ASSERT_FALSE(registered_identity.has_value());
+                registered_identity = *bundle.registered_node_type_identity;
+            }
+        });
+    ASSERT_TRUE(registered_identity.has_value());
+    EXPECT_EQ(registered_identity->node_type_id, "iv.test.archive.constant");
+    EXPECT_EQ(
+        registered_identity->provider_package_root,
+        "/tmp/iv-test-provider");
+
     auto plan = iv::GraphCompiler::compile(
         iv::GraphLowerer::lower(std::move(decoded)));
     auto const inputs = plan.graph.inputs();
