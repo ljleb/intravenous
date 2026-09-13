@@ -63,7 +63,6 @@ public:
     outputs(...);
     event_outputs(...);
     subgraph(...);
-    module<M>();
     vacant_inputs() const;
     build_metadata(...) const;
     build_root_node(...) const;
@@ -486,9 +485,6 @@ public:
     template<class Fn>
     NodeRef subgraph(Fn&& fn, std::string_view kind = "Subgraph");
 
-    template<auto Module>
-    NodeRef module(std::string_view kind = "Module");
-
     VacantInputs vacant_inputs() const;
 
     void connect_sample_input(PortId target, SamplePortRef source);
@@ -511,15 +507,24 @@ SamplePortRef GraphBuilder::input(std::string_view name, Sample default_value)
 }
 ```
 
+There is no direct `GraphBuilder::module` operation. A reusable graph-producing
+function is registered with `IV_MODULE`, and every caller—whether the provider
+is a primitive node or an iv module—uses the same stable-ID operation:
+
 ```cpp
-template<auto Module>
-NodeRef GraphBuilder::module(std::string_view kind)
+void voice(GraphBuilder& g)
 {
-    auto child = derive_nested_builder();
-    std::invoke(Module, child);
-    return embed_subgraph(child, kind);
+    // ...
 }
+IV_MODULE("iv.example.voice", voice);
+
+// In another registered module:
+auto voice_node = g.node<"iv.example.voice">();
 ```
+
+That keeps package ownership, dependency recording, cycle checks, and provider
+resolution on one path. `subgraph` remains the explicit local structural
+boundary; it is not a reusable module definition.
 
 ```cpp
 GraphIntrospectionMetadata GraphBuilder::build_metadata(size_t detach_id_offset) const

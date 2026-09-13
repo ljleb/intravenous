@@ -10,6 +10,7 @@
 #include <chrono>
 #include <iterator>
 #include <ranges>
+#include <system_error>
 
 namespace iv {
 namespace {
@@ -33,6 +34,18 @@ std::string format_rebuild_duration(std::chrono::steady_clock::duration duration
     return std::to_string(
                std::chrono::duration_cast<std::chrono::milliseconds>(duration).count())
         + " ms";
+}
+
+std::string dependency_root_key(std::filesystem::path const& path)
+{
+    std::error_code error;
+    auto canonical = std::filesystem::weakly_canonical(path, error);
+    if (error) {
+        error.clear();
+        canonical = std::filesystem::absolute(path, error);
+    }
+    if (error) canonical = path;
+    return canonical.lexically_normal().generic_string();
 }
 
 IvModuleReloadResults coalesce_results_by_package(IvModuleReloadResults results)
@@ -224,10 +237,26 @@ IvModuleReloadResults IvModuleReload::reload_packages(
 
     IvModuleReloadResults results;
     auto& loader = ensure_loader();
+    std::vector<std::filesystem::path> package_paths;
+    package_paths.reserve(declarations.size());
+    for (auto const& declaration : declarations) {
+        package_paths.push_back(declaration.package_root);
+    }
+    auto batch = loader.load_packages(package_paths);
 
-    for (auto const &declaration : declarations) {
+    for (std::size_t index = 0; index < declarations.size(); ++index) {
+        auto const& declaration = declarations[index];
         try {
-            auto loaded_package = loader.load_package(declaration.package_root);
+            if (index >= batch.size()) {
+                throw std::logic_error("IV package reload batch omitted a requested package");
+            }
+            auto& result = batch[index];
+            if (!result) {
+                throw std::runtime_error(result.error.empty()
+                    ? "IV package reload failed without an error"
+                    : result.error);
+            }
+            auto loaded_package = std::move(*result.package);
             auto dependencies = std::move(loaded_package.dependencies);
             {
                 std::scoped_lock lock(mutex);
@@ -276,6 +305,8 @@ IvModuleReloadResults IvModuleReload::reload_packages(
 void IvModuleReload::handle_package_declarations_changed(
     IvPackageDeclarationsChanged const &diff)
 {
+    std::vector<std::filesystem::path> removed_package_roots;
+    ModuleLoader* loader = nullptr;
     {
         std::scoped_lock lock(mutex);
         for (auto const &declaration : diff.created) {
@@ -299,12 +330,25 @@ void IvModuleReload::handle_package_declarations_changed(
                 });
         }
         for (auto const &package_id : diff.deleted_package_ids) {
+            if (auto const declaration = package_declarations_by_id.find(package_id);
+                declaration != package_declarations_by_id.end()) {
+                removed_package_roots.push_back(declaration->second.package_root);
+            }
             package_declarations_by_id.erase(package_id);
             dependencies_by_package_id.erase(package_id);
             dirty_package_ids.erase(package_id);
             build_status_by_package_id.erase(package_id);
         }
         refresh_watched_dependencies_locked();
+        loader = loader_.get();
+    }
+    // Do not let a removed provider remain available just because an older
+    // graph still owns its LLVM revision. Old graphs retain that revision via
+    // ModuleRef, but a newly compiled caller must report the now-missing ID.
+    if (loader) {
+        for (auto const& package_root : removed_package_roots) {
+            loader->remove_package(package_root);
+        }
     }
 }
 
@@ -467,15 +511,26 @@ void IvModuleReload::reload_changed_packages()
 {
     {
         std::scoped_lock lock(mutex);
-        if (!watcher.has_changes()) {
+        auto const changed_dependencies = watcher.changed_dependencies();
+        if (changed_dependencies.empty()) {
             return;
         }
-        for (auto const &entry : package_declarations_by_id) {
-            dirty_package_ids.insert(entry.first);
+
+        std::unordered_set<std::string> changed_roots;
+        for (auto const& dependency : changed_dependencies) {
+            changed_roots.insert(dependency_root_key(dependency.module_dir));
+        }
+        for (auto const& [package_id, dependencies] : dependencies_by_package_id) {
+            auto const depends_on_changed_package = std::ranges::any_of(
+                dependencies, [&](ModuleDependency const& dependency) {
+                    return changed_roots.contains(dependency_root_key(dependency.module_dir));
+                });
+            if (!depends_on_changed_package) continue;
+            dirty_package_ids.insert(package_id);
             build_status_by_package_id.insert_or_assign(
-                entry.first,
+                package_id,
                 IvPackageBuildStatus{
-                    .package_id = entry.first,
+                    .package_id = package_id,
                     .state = IvPackageBuildState::queued,
                 });
         }

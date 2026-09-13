@@ -146,6 +146,8 @@ Examples:
 - default audio device selection
 - default execution settings
 - toolchain/build defaults if they remain installation-scoped
+- default IV-package search roots, including the application's shipped package
+  directory
 
 ### Project file
 

@@ -161,20 +161,21 @@ namespace iv {
 #endif
     }
 
-    bool DependencyWatcher::has_changes()
+    std::vector<ModuleDependency> DependencyWatcher::changed_dependencies()
     {
-        auto const stamps_changed = [&] {
+        auto changed = [&] {
+            std::vector<ModuleDependency> result;
             for (auto const& dependency : _dependencies) {
                 if (compute_directory_stamp(dependency.module_dir) != dependency.package_stamp) {
-                    return true;
+                    result.push_back(dependency);
                 }
             }
-            return false;
+            return result;
         };
 
 #if defined(__linux__)
         if (_fd == -1) {
-            return stamps_changed();
+            return changed();
         }
 
         pollfd fd { .fd = _fd, .events = POLLIN, .revents = 0 };
@@ -183,10 +184,15 @@ namespace iv {
             (void)read(_fd, buffer.data(), buffer.size());
         }
 
-        return stamps_changed();
+        return changed();
 #else
-        return stamps_changed();
+        return changed();
 #endif
+    }
+
+    bool DependencyWatcher::has_changes()
+    {
+        return !changed_dependencies().empty();
     }
 
     DependencyWatcher make_dependency_watcher()

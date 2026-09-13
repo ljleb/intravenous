@@ -31,6 +31,7 @@ namespace iv {
         DependencyWatcher& operator=(DependencyWatcher const&) = delete;
 
         void update(std::vector<ModuleDependency> dependencies);
+        [[nodiscard]] std::vector<ModuleDependency> changed_dependencies();
         bool has_changes();
     };
 

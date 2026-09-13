@@ -410,6 +410,14 @@ IV_NODE("iv.test.graph_input.saw", iv::SawOscillator);
     IntegrationReloadWitness reload_witness;
     auto reload_witness_scope =
         integration_reload_witness_bridge::bind(reload, reload_witness);
+    // The application catalog declares default package roots before loading
+    // project packages. This focused integration test drives the reloader
+    // directly, so supply that catalog entry explicitly.
+    auto const default_package_root = iv::test::repo_root()
+        / "src/intravenous/builtin_packages/builtin";
+    definitions.declare_package(
+        std::filesystem::weakly_canonical(default_package_root).generic_string(),
+        default_package_root);
     auto const created = instances.create_instance(
         "iv.test.graph_input_module",
         std::filesystem::weakly_canonical(workspace));

@@ -3,6 +3,7 @@
 #include <intravenous/module/loader.h>
 
 #include <filesystem>
+#include <vector>
 
 namespace iv {
     struct RuntimeExecutionConfig {
@@ -13,6 +14,9 @@ namespace iv {
 
     struct ProjectConfig {
         std::filesystem::path workspace_root {};
+        // Installation-provided package roots. These are ordinary discovery
+        // roots: the package catalog decides what they provide.
+        std::vector<std::filesystem::path> default_package_roots {};
         ModuleLoaderToolchainConfig toolchain {};
         RuntimeExecutionConfig execution {};
         std::optional<std::string> output_device_id {std::optional<std::string>("default")};

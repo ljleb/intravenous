@@ -61,6 +61,14 @@ iv::IvPackageDeclaration make_package_declaration(
     };
 }
 
+iv::IvPackageDeclaration test_default_package_declaration()
+{
+    auto const root = iv::test::repo_root()
+        / "src/intravenous/builtin_packages/builtin";
+    return make_package_declaration(
+        std::filesystem::weakly_canonical(root).generic_string(), root);
+}
+
 IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_reload_witness_bridge,
     iv_runtime_iv_module_reload_results_event,
@@ -93,7 +101,10 @@ TEST_F(IvModuleReloadTest, DirtyDeclarationCompilesAndPublishesLoadedDefinition)
 
     reload.handle_package_declarations_changed(
         iv::IvPackageDeclarationsChanged{
-            .created = {make_package_declaration("iv.test.local_cmake", workspace)},
+            .created = {
+                test_default_package_declaration(),
+                make_package_declaration("iv.test.local_cmake", workspace),
+            },
         });
 
     EXPECT_TRUE(reload.has_dirty_packages());
@@ -104,10 +115,12 @@ TEST_F(IvModuleReloadTest, DirtyDeclarationCompilesAndPublishesLoadedDefinition)
     EXPECT_FALSE(witness.results.has_value());
 
     auto const build_statuses = reload.package_build_statuses();
-    ASSERT_EQ(build_statuses.size(), 1u);
-    EXPECT_EQ(build_statuses.front().package_id, "iv.test.local_cmake");
-    EXPECT_EQ(build_statuses.front().state, iv::IvPackageBuildState::built);
-    EXPECT_TRUE(build_statuses.front().message.empty());
+    ASSERT_EQ(build_statuses.size(), 2u);
+    auto const local_status = std::ranges::find(
+        build_statuses, "iv.test.local_cmake", &iv::IvPackageBuildStatus::package_id);
+    ASSERT_NE(local_status, build_statuses.end());
+    EXPECT_EQ(local_status->state, iv::IvPackageBuildState::built);
+    EXPECT_TRUE(local_status->message.empty());
 
     reload.apply_pending_results();
 
@@ -163,7 +176,10 @@ TEST_F(IvModuleReloadTest, SuccessfulBuildStatusIncludesElapsedTime)
     iv::IvModuleReload reload(startup);
     reload.handle_package_declarations_changed(
         iv::IvPackageDeclarationsChanged{
-            .created = {make_package_declaration("iv.test.local_cmake", workspace)},
+            .created = {
+                test_default_package_declaration(),
+                make_package_declaration("iv.test.local_cmake", workspace),
+            },
         });
 
     reload.compile_dirty_packages();

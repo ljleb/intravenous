@@ -27,10 +27,12 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#include <exception>
 #include <fstream>
 #include <iterator>
 #include <mutex>
 #include <ranges>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
@@ -182,6 +184,44 @@ std::string read_text(std::filesystem::path const &path)
         throw std::runtime_error("failed to open '" + path.string() + "'");
     }
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+std::string describe_exception(std::exception_ptr exception)
+{
+    try {
+        if (exception) std::rethrow_exception(exception);
+    } catch (std::exception const& error) {
+        return error.what();
+    } catch (...) {
+        return "unknown exception";
+    }
+    return "unknown exception";
+}
+
+std::string editor_compile_database(std::string const& build_database)
+{
+    // The package build uses a Clang plugin to emit server metadata. clangd
+    // must parse the identical source/PCH command, but it must not execute a
+    // compiler plugin with filesystem side effects for every editor reparse.
+    // CMake emits these options as single `-fplugin=...` and
+    // `-fplugin-arg-iv_module_metadata-...=...` command-line words. Preserve
+    // every other flag, particularly `-std=c++23` and `-include-pch`.
+    static std::regex const metadata_plugin_option(
+        R"((?:^|\s)-fplugin(?:-arg-iv_module_metadata-[^=\s]+)?=(?:"[^"]*"|'[^']*'|[^\s]+))");
+    auto database = nlohmann::json::parse(build_database);
+    if (!database.is_array()) {
+        throw std::runtime_error("package compilation database is not an array");
+    }
+    for (auto& command : database) {
+        if (!command.is_object() || !command.contains("command")
+            || !command["command"].is_string()) {
+            throw std::runtime_error("package compilation database has an invalid command");
+        }
+        auto text = command["command"].get<std::string>();
+        command["command"] = std::regex_replace(
+            text, metadata_plugin_option, "");
+    }
+    return database.dump(2) + '\n';
 }
 
 std::vector<std::filesystem::path> package_dynamic_libraries(
@@ -579,10 +619,6 @@ class ModuleLoader::Impl {
 
     struct CompiledPackage {
         ResolvedPackage root;
-        // All independently discovered IV packages participate in the
-        // current graph configuration. Stable IDs are discovered from their
-        // compiler definitions after loading, never by parsing C++ text.
-        std::vector<ResolvedPackage> configuration_packages;
         std::filesystem::path artifact;
     };
 
@@ -632,76 +668,6 @@ class ModuleLoader::Impl {
             .global = global,
             .package_stamp = directory_stamp(dir),
         };
-    }
-
-    void scan_root(
-        std::filesystem::path const &root,
-        bool global,
-        std::vector<ResolvedPackage>& out) const
-    {
-        if (!std::filesystem::exists(root)) return;
-
-        std::error_code ec;
-        for (std::filesystem::recursive_directory_iterator it(
-                 root,
-                 std::filesystem::directory_options::skip_permission_denied,
-                 ec),
-             end;
-             it != end;
-             it.increment(ec)) {
-            if (ec) break;
-            if (it->is_directory()) {
-                auto const name = it->path().filename();
-                if (name == ".git" || name == "build") {
-                    it.disable_recursion_pending();
-                }
-                continue;
-            }
-            if (!it->is_regular_file()
-                || !is_iv_package_manifest_file(it->path().filename().string())) {
-                continue;
-            }
-
-            auto const package_dir = it->path().parent_path();
-            auto manifest = find_package_manifest(package_dir);
-            if (!manifest || normalize(it->path()) != normalize(*manifest)) {
-                continue;
-            }
-            out.push_back(resolve_dir(package_dir, global));
-            it.disable_recursion_pending();
-        }
-    }
-
-    std::vector<ResolvedPackage> packages_for_graph_configuration(
-        ResolvedPackage const &root,
-        std::filesystem::path const &project_root) const
-    {
-        std::vector<ResolvedPackage> discovered;
-        for (auto const &path : extra_search_roots) {
-            scan_root(path, true, discovered);
-        }
-        if (!root.global) {
-            scan_root(project_root, false, discovered);
-        }
-        // A project package shadows a global package at the same physical
-        // path, but stable-ID collisions between distinct sources are left to
-        // complete candidate-registry validation.
-        std::unordered_map<std::string, ResolvedPackage> by_manifest;
-        for (auto& source : discovered) {
-            auto const manifest = source.manifest_file.generic_string();
-            auto existing = by_manifest.find(manifest);
-            if (existing == by_manifest.end() || !source.global) {
-                by_manifest.insert_or_assign(manifest, std::move(source));
-            }
-        }
-        by_manifest.insert_or_assign(root.manifest_file.generic_string(), root);
-        std::vector<ResolvedPackage> result;
-        result.reserve(by_manifest.size());
-        for (auto& [_, source] : by_manifest) result.push_back(std::move(source));
-        std::ranges::sort(result, {}, [](ResolvedPackage const& source) {
-            return source.manifest_file.generic_string();
-        });
-        return result;
     }
 
     std::filesystem::path cmake_program() const
@@ -882,7 +848,7 @@ class ModuleLoader::Impl {
             try {
                 write_text_if_different(
                     root.module_dir / "compile_commands.json",
-                    database_text
+                    editor_compile_database(database_text)
                 );
             } catch (std::exception const& error) {
                 if (log_sink_) {
@@ -927,27 +893,6 @@ public:
     {
         apply_configured_dsl_pch(toolchain_);
         std::filesystem::create_directories(global_cache_root_);
-        // The executable contributes its copied built-in package directory
-        // through StartupConfig. Direct ModuleLoader users, including the
-        // test harness, have no startup layer at all, so add the source-tree
-        // built-ins alongside their other global roots. The configured
-        // executable root is the one exception: adding the source package
-        // beside its deployed copy would create two providers for every
-        // built-in stable ID.
-#if defined(IV_CONFIGURED_BUILTIN_PACKAGE_SOURCE_ROOT) \
-    && defined(IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT)
-        auto const configured_deployable_builtin_root = normalize(
-            std::filesystem::path(IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT));
-        auto const has_deployable_builtin_root = std::ranges::any_of(
-            roots,
-            [&](std::filesystem::path const& root) {
-                return normalize(root) == configured_deployable_builtin_root;
-            });
-        if (!has_deployable_builtin_root
-            && std::string_view(IV_CONFIGURED_BUILTIN_PACKAGE_SOURCE_ROOT).size() != 0) {
-            roots.emplace_back(IV_CONFIGURED_BUILTIN_PACKAGE_SOURCE_ROOT);
-        }
-#endif
         for (auto const &root : roots) {
             extra_search_roots.push_back(normalize(root));
         }
@@ -974,11 +919,9 @@ public:
         auto const project_root = root.global
             ? global_cache_root_
             : discover_project_root(root.module_dir);
-        auto configuration_packages = packages_for_graph_configuration(root, project_root);
         auto artifact = build(root, project_root);
         return {
             .root = std::move(root),
-            .configuration_packages = std::move(configuration_packages),
             .artifact = std::move(artifact),
         };
     }
@@ -1256,9 +1199,10 @@ public:
 
     ModuleLoader::LoadedPackage configure_iv_modules(
         CompiledPackage const& compiled,
-        ModuleLoader::LoadedPackage package_result,
+        ModuleLoader::LoadedPackage const& loaded_package,
         std::vector<std::shared_ptr<LoadedPackageCode>> const& loaded_packages) const
     {
+        auto package_result = loaded_package;
         auto const root_package = std::static_pointer_cast<LoadedPackageCode>(
             package_result.package_code);
         if (!root_package || !root_package->jit_dylib) {
@@ -1353,13 +1297,24 @@ public:
                     throw std::logic_error("configured graph references an invalid IV package");
                 }
                 // Runtime code/data ownership follows every package actually used
-                // while configuring this graph. Build/watch dependencies do not:
-                // each IV package is independently compiled and watched.
+                // while configuring this graph. The same package set is retained
+                // below as the graph's reload dependency set: providers compile
+                // independently, but a provider revision requires every caller
+                // that configured against it to be rebuilt.
                 refs.push_back(loaded_packages[package_index]);
             }
             refs.push_back(runtime_root);
 
-            auto dependencies = package_result.dependencies;
+            std::vector<ModuleDependency> dependencies;
+            dependencies.reserve(used_package_indexes.size());
+            std::unordered_set<std::string> dependency_roots;
+            for (auto const package_index : used_package_indexes) {
+                auto const& dependency = loaded_packages[package_index]->dependency;
+                auto const dependency_root = normalize(dependency.module_dir).generic_string();
+                if (dependency_roots.insert(dependency_root).second) {
+                    dependencies.push_back(dependency);
+                }
+            }
 
             definitions.emplace_back(
                 std::move(refs),
@@ -1377,66 +1332,140 @@ public:
                     std::chrono::steady_clock::now() - started_at).count()));
         }
         package_result.definitions = std::move(definitions);
+        // A node-only package has no configured module from which to infer its
+        // own watch root. Every successful package must at least watch itself.
+        if (package_result.dependencies.empty()) {
+            package_result.dependencies.push_back(root_package->dependency);
+        } else {
+            std::unordered_set<std::string> dependency_roots;
+            std::vector<ModuleDependency> dependencies;
+            for (auto const& definition : package_result.definitions) {
+                for (auto const& dependency : definition.dependencies) {
+                    auto const dependency_root = normalize(dependency.module_dir).generic_string();
+                    if (dependency_roots.insert(dependency_root).second) {
+                        dependencies.push_back(dependency);
+                    }
+                }
+            }
+            if (dependencies.empty()) dependencies.push_back(root_package->dependency);
+            package_result.dependencies = std::move(dependencies);
+        }
         return package_result;
     }
 
-    ModuleLoader::LoadedPackage load_package(
-        std::filesystem::path const& path) const
+    std::vector<ModuleLoader::PackageLoadResult> load_packages(
+        std::vector<std::filesystem::path> const& paths) const
     {
         std::lock_guard lock(mutex_);
-        auto root_compiled = compile_package_unlocked(path);
+        std::vector<ModuleLoader::PackageLoadResult> results(paths.size());
 
-        std::optional<ModuleLoader::LoadedPackage> root_package_result;
-        std::vector<std::shared_ptr<LoadedPackageCode>> loaded_packages;
-        loaded_packages.reserve(root_compiled.configuration_packages.size());
-        std::unordered_map<std::string, std::shared_ptr<LoadedPackageCode>> staged_packages;
+        struct Candidate {
+            std::size_t result_index = 0;
+            std::string root_key;
+            CompiledPackage compiled;
+            ModuleLoader::LoadedPackage loaded;
+            std::shared_ptr<LoadedPackageCode> code;
+            std::optional<ModuleLoader::LoadedPackage> configured;
+            bool surviving = true;
+        };
+        std::vector<Candidate> candidates;
+        candidates.reserve(paths.size());
+        std::unordered_set<std::string> requested_roots;
 
-        for (auto const& candidate : root_compiled.configuration_packages) {
-            auto const normalized_root = normalize(candidate.module_dir).generic_string();
-            auto const is_root = normalize(candidate.module_dir)
-                == normalize(root_compiled.root.module_dir);
+        for (std::size_t index = 0; index < paths.size(); ++index) {
+            results[index].package_path = paths[index];
             try {
-                auto compiled = is_root
-                    ? root_compiled
-                    : compile_package_unlocked(candidate.module_dir);
+                auto compiled = compile_package_unlocked(paths[index]);
+                auto const root_key = normalize(compiled.root.module_dir).generic_string();
+                results[index].package_path = compiled.root.module_dir;
+                if (!requested_roots.insert(root_key).second) {
+                    throw std::runtime_error(
+                        "IV package was requested more than once in one reload batch: '"
+                        + root_key + "'");
+                }
                 auto loaded = load_compiled_package(compiled);
                 auto code = std::static_pointer_cast<LoadedPackageCode>(loaded.package_code);
                 if (!code) {
                     throw std::logic_error("loaded IV package omitted its code ownership");
                 }
-                staged_packages.insert_or_assign(normalized_root, code);
-                loaded_packages.push_back(std::move(code));
-                if (is_root) root_package_result = std::move(loaded);
-            } catch (std::exception const& exception) {
-                if (is_root) throw;
-                if (auto current = current_packages_by_root_.find(normalized_root);
-                    current != current_packages_by_root_.end()) {
-                    loaded_packages.push_back(current->second);
-                    if (log_sink_) {
-                        log_sink_(
-                            "[graph-configuration-package-kept] root="
-                            + normalized_root + " error=" + exception.what());
-                    }
-                } else if (log_sink_) {
-                    log_sink_(
-                        "[graph-configuration-package-skipped] root="
-                        + normalized_root + " error=" + exception.what());
-                }
+                candidates.push_back({
+                    .result_index = index,
+                    .root_key = std::move(root_key),
+                    .compiled = std::move(compiled),
+                    .loaded = std::move(loaded),
+                    .code = std::move(code),
+                    .configured = {},
+                });
+            } catch (...) {
+                results[index].error = describe_exception(std::current_exception());
             }
         }
-        if (!root_package_result) {
-            throw std::logic_error("loaded IV packages omitted the requested package");
-        }
 
-        // Do not publish any replacement package code until the requested
-        // package has successfully configured all of its iv modules.
-        auto configured = configure_iv_modules(
-            root_compiled, std::move(*root_package_result), loaded_packages);
-        for (auto& [package_root, package] : staged_packages) {
-            current_packages_by_root_.insert_or_assign(
-                std::move(package_root), std::move(package));
+        // A configuration sees last-valid package code, shadowed by every
+        // candidate that is still viable in this transaction. Re-running after
+        // a rejected candidate prevents consumers from silently publishing a
+        // graph against code that cannot itself become the active revision.
+        auto available_packages = [&] {
+            std::unordered_map<std::string, std::shared_ptr<LoadedPackageCode>> by_root =
+                current_packages_by_root_;
+            for (auto const& candidate : candidates) {
+                if (candidate.surviving) {
+                    by_root.insert_or_assign(candidate.root_key, candidate.code);
+                }
+            }
+            std::vector<std::shared_ptr<LoadedPackageCode>> packages;
+            packages.reserve(by_root.size());
+            for (auto const& [_, package] : by_root) packages.push_back(package);
+            std::ranges::sort(packages, {}, [](auto const& package) {
+                return package->package_root;
+            });
+            return packages;
+        };
+
+        bool rejected_candidate = false;
+        do {
+            rejected_candidate = false;
+            auto const packages = available_packages();
+            for (auto& candidate : candidates) {
+                if (!candidate.surviving) continue;
+                try {
+                    candidate.configured = configure_iv_modules(
+                        candidate.compiled, candidate.loaded, packages);
+                } catch (...) {
+                    candidate.surviving = false;
+                    candidate.configured.reset();
+                    results[candidate.result_index].error =
+                        describe_exception(std::current_exception());
+                    rejected_candidate = true;
+                }
+            }
+        } while (rejected_candidate);
+
+        for (auto& candidate : candidates) {
+            if (!candidate.surviving) continue;
+            current_packages_by_root_.insert_or_assign(candidate.root_key, candidate.code);
+            results[candidate.result_index].package = std::move(candidate.configured);
         }
-        return configured;
+        return results;
+    }
+
+    ModuleLoader::LoadedPackage load_package(
+        std::filesystem::path const& path) const
+    {
+        auto results = load_packages({path});
+        if (results.empty() || !results.front()) {
+            throw std::runtime_error(
+                results.empty()
+                    ? "IV package load produced no result"
+                    : results.front().error);
+        }
+        return std::move(*results.front().package);
+    }
+
+    void remove_package(std::filesystem::path const& path) const
+    {
+        std::lock_guard lock(mutex_);
+        current_packages_by_root_.erase(normalize(path).generic_string());
     }
 };
 
@@ -1477,6 +1506,17 @@ ModuleLoader::LoadedPackage ModuleLoader::load_package(
     std::filesystem::path const &path) const
 {
     return _impl->load_package(path);
+}
+
+std::vector<ModuleLoader::PackageLoadResult> ModuleLoader::load_packages(
+    std::vector<std::filesystem::path> const& paths) const
+{
+    return _impl->load_packages(paths);
+}
+
+void ModuleLoader::remove_package(std::filesystem::path const& path) const
+{
+    _impl->remove_package(path);
 }
 
 std::vector<ModuleLoader::LoadedDefinition> ModuleLoader::load_package_definitions(

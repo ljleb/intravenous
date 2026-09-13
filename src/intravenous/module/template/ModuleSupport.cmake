@@ -329,9 +329,9 @@ function(iv_add_package target)
     add_library(${_iv_objects_target} OBJECT ${_iv_package_sources})
     set_property(TARGET ${_iv_objects_target} PROPERTY IV_PACKAGE_OBJECT_TARGET TRUE)
     set_target_properties(${_iv_objects_target} PROPERTIES
-        CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+        CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
         CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
-    target_compile_features(${_iv_objects_target} PRIVATE cxx_std_26)
+    target_compile_features(${_iv_objects_target} PRIVATE cxx_std_23)
     target_compile_options(${_iv_objects_target} PRIVATE -O0 -flto=full)
     if(IV_PACKAGE_CLANG_TIME_TRACE)
         target_compile_options(${_iv_objects_target} PRIVATE -ftime-trace)
@@ -348,6 +348,12 @@ function(iv_add_package target)
         "-fplugin-arg-iv_module_metadata-metadata-dir=${_iv_metadata_dir}"
         "-fplugin-arg-iv_module_metadata-source-introspection=${_iv_source_introspection}"
         -Wall -Wextra -Wpedantic)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # IV_MODULE/IV_NODE need a unique registration symbol per expansion.
+        # __COUNTER__ is intentional here; Clang merely classifies it as C2y
+        # while compiling packages in the C++23 DSL mode.
+        target_compile_options(${_iv_objects_target} PRIVATE -Wno-c2y-extensions)
+    endif()
 
     target_include_directories(${_iv_objects_target} PRIVATE
         ${IV_INCLUDE_DIR}

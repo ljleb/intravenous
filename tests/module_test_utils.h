@@ -23,6 +23,7 @@
 #include <regex>
 #include <source_location>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -57,6 +58,20 @@ namespace iv::test {
     inline std::filesystem::path duplicate_modules_root()
     {
         return repo_root() / "tests" / "test_modules_duplicate";
+    }
+
+    inline void load_test_default_package_catalog(iv::ModuleLoader& loader)
+    {
+        // Direct-loader tests have no IvPackageReloadService. Seed the same
+        // catalog state it would provide, using the source package available
+        // to the test build rather than a loader-internal fallback.
+        auto defaults = loader.load_packages({
+            repo_root() / "src/intravenous/builtin_packages/builtin"});
+        if (defaults.size() != 1 || !defaults.front()) {
+            throw std::runtime_error(
+                defaults.empty() ? "test default IV package load produced no result"
+                                 : defaults.front().error);
+        }
     }
 
     inline std::string test_process_namespace()
@@ -472,6 +487,7 @@ namespace iv::test {
         auto const load_lock = ScopedFileLock(
             runtime_module_cache_root() / ("load_" + stable_path_hash(normalized_package_root) + ".lock"));
         iv::ModuleLoader loader(config.discovery_start, config.search_roots, config.toolchain);
+        load_test_default_package_catalog(loader);
         auto loaded_graph = loader.load_package_definitions(package_root).front();
         return iv::IvModuleReloadedDefinition{
             .package_id = normalized_package_root.generic_string(),
@@ -590,9 +606,12 @@ namespace iv::test {
         std::vector<std::filesystem::path> extra_roots = {})
     {
         // ModuleLoader supplies the application-built shared DSL PCH when no
-        // explicit override is requested. Tests must exercise that same
-        // default, rather than manufacture package-private PCHs.
-        return iv::ModuleLoader(repo_root(), std::move(extra_roots));
+        // explicit override is requested. The production catalog explicitly
+        // declares its default package roots before module configuration; make
+        // that setup equally explicit in direct-loader tests.
+        iv::ModuleLoader loader(repo_root(), std::move(extra_roots));
+        load_test_default_package_catalog(loader);
+        return loader;
     }
 
     template<typename Device>

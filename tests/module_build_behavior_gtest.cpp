@@ -17,7 +17,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     iv::test::copy_directory(fixtures / "behavior_voice", voice_dst);
     iv::test::copy_directory(fixtures / "local_cmake", local_dst);
 
-    iv::ModuleLoader loader(iv::test::repo_root(), {});
+    auto loader = iv::test::make_loader();
 
     auto const module_pch = iv::test::read_text(
         iv::test::repo_root()
@@ -30,20 +30,29 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         std::string::npos);
 
     {
+        ASSERT_NO_THROW((void)loader.load_package_definitions(voice_dst));
         auto definitions = loader.load_package_definitions(project_dst);
         auto const definition = std::ranges::find(
             definitions,
             "iv.test.behavior_project",
             &iv::ModuleLoader::LoadedDefinition::module_id);
         ASSERT_NE(definition, definitions.end());
-        // Each IV package owns and watches only its implementation files.
-        // behavior_voice is an independently built provider selected through
-        // the package definition table, not a recursive C++ build dependency of
-        // behavior_project.
-        ASSERT_EQ(definition->dependencies.size(), 1u);
-        EXPECT_EQ(
-            definition->dependencies.front().module_dir,
-            std::filesystem::weakly_canonical(project_dst));
+        // Sources compile independently, but a configured module tracks every
+        // package used by its graph: itself, behavior_voice, and the shipped
+        // built-ins used by the fixture. An edit to behavior_voice therefore
+        // rebuilds the caller's configured graph without making it a C++ build
+        // input.
+        ASSERT_EQ(definition->dependencies.size(), 3u);
+        EXPECT_TRUE(std::ranges::any_of(
+            definition->dependencies,
+            [&](iv::ModuleDependency const& dependency) {
+                return dependency.module_dir == std::filesystem::weakly_canonical(project_dst);
+            }));
+        EXPECT_TRUE(std::ranges::any_of(
+            definition->dependencies,
+            [&](iv::ModuleDependency const& dependency) {
+                return dependency.module_dir == std::filesystem::weakly_canonical(voice_dst);
+            }));
 
         auto executor = iv::BlockNodeExecutor::create(
             iv::TypeErasedNode(definition->root), 8);
@@ -113,6 +122,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         voice_replacement);
     iv::test::write_text_advancing_timestamp(voice_dst / "module.cpp", voice_source);
 
+    (void)loader.load_package_definitions(voice_dst);
     (void)loader.load_package_definitions(project_dst);
 
     {
@@ -212,6 +222,10 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     iv::ModuleLoader time_trace_loader(
         iv::test::repo_root(), {},
         iv::ModuleLoaderToolchainConfig{.clang_time_trace = true});
+    // This secondary direct loader deliberately uses a different toolchain
+    // setting, so it also needs the explicit default catalog setup supplied by
+    // the primary test loader above.
+    iv::test::load_test_default_package_catalog(time_trace_loader);
     (void)time_trace_loader.load_package_definitions(local_dst);
 
     auto const traced_compile_database = iv::test::read_text(

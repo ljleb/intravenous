@@ -192,17 +192,9 @@ namespace iv {
             startup_log("parsing server options");
             auto const options = ServerOptions::parse(argc, argv);
             startup_log("initializing startup config");
-            std::vector<std::filesystem::path> builtin_package_roots;
-#if defined(IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT)
-            if (std::string_view(IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT).size()) {
-                builtin_package_roots.emplace_back(
-                    IV_CONFIGURED_BUILTIN_PACKAGE_SEARCH_ROOT);
-            }
-#endif
             StartupConfig startup_config(
                 options.workspace_root,
-                std::filesystem::current_path(),
-                std::move(builtin_package_roots));
+                std::filesystem::current_path());
             auto const startup = startup_config.initialize();
             startup_log("startup config initialized");
             IvModuleInstances iv_module_instances;

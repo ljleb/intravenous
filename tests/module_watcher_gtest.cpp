@@ -19,6 +19,7 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     iv::test::copy_directory(voice_src, voice_dst);
 
     auto loader = iv::test::make_loader({});
+    ASSERT_NO_THROW((void)loader.load_package_definitions(voice_dst));
     auto graph = loader.load_package_definitions(project_dst).front();
 
     auto watcher = iv::make_dependency_watcher();
@@ -28,9 +29,8 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
     EXPECT_FALSE(watcher.has_changes());
 
-    // A source watches its own implementation package. The voice provider is
-    // rebuilt independently and its implementation edits must not invalidate
-    // reload_project's cached ConfiguredGraph.
+    // The configured graph watches its own source and every provider it
+    // resolves through g.node<Id>().
     auto module_cpp = project_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
     auto needle = std::string("using namespace iv;");
@@ -67,6 +67,7 @@ TEST(ModuleWatcher, MissingDependencyDirectoryIsReportedAsChangeWithoutThrowing)
     iv::test::copy_directory(voice_src, voice_dst);
 
     auto loader = iv::test::make_loader({});
+    ASSERT_NO_THROW((void)loader.load_package_definitions(voice_dst));
     auto graph = loader.load_package_definitions(project_dst).front();
 
     auto watcher = iv::make_dependency_watcher();

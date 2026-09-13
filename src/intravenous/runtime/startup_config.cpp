@@ -22,6 +22,10 @@ StartupConfigState StartupConfig::initialize() const
         search_roots.end(),
         extra_search_roots.begin(),
         extra_search_roots.end());
+    search_roots.insert(
+        search_roots.end(),
+        project_config.default_package_roots.begin(),
+        project_config.default_package_roots.end());
 
     return StartupConfigState{
         .workspace_root = std::move(project_config.workspace_root),

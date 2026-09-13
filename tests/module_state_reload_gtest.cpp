@@ -84,7 +84,7 @@ namespace {
 IV_NODE("iv.test.state_reload.probe", ReloadProbe);
 )");
 
-    iv::ModuleLoader loader(iv::test::repo_root(), {});
+    auto loader = iv::test::make_loader();
     auto first = loader.load_package_definitions(workspace).front();
     // The executor holds raw callbacks into both generations while it retires
     // the old state. Keep the loaded module references alive past executor
@@ -213,7 +213,7 @@ namespace {
 IV_NODE("iv.test.node_definition.contract", ModuleNodeDefinitionContract);
 )");
 
-    iv::ModuleLoader loader(iv::test::repo_root(), {});
+    auto loader = iv::test::make_loader();
     auto definition = loader.load_package_definitions(workspace).front();
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(definition.root), 8);
@@ -283,7 +283,7 @@ namespace {
 IV_NODE("iv.test.c_string_capture.probe", CStringCaptureProbe);
 )");
 
-    iv::ModuleLoader loader(iv::test::repo_root(), {});
+    auto loader = iv::test::make_loader();
     auto definition = loader.load_package_definitions(workspace).front();
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(definition.root), 8);
@@ -363,7 +363,7 @@ namespace {
 IV_NODE("iv.test.implicit_constant.passthrough", ScalarPassthrough);
 )");
 
-    iv::ModuleLoader loader(iv::test::repo_root(), {});
+    auto loader = iv::test::make_loader();
     auto const definition = loader.load_package_definitions(workspace).front();
     EXPECT_EQ(definition.module_id, "iv.test.implicit_constant_configuration_module");
 }
@@ -422,7 +422,7 @@ namespace {
 IV_NODE("iv.test.metadata.used_node", UsedNode);
 )");
 
-    iv::ModuleLoader loader(iv::test::repo_root(), {});
+    auto loader = iv::test::make_loader();
     auto const definition = loader.load_package_definitions(workspace).front();
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(definition.root), 8);

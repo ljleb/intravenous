@@ -80,6 +80,20 @@ namespace iv {
             ModuleRef package_code{};
         };
 
+        // One requested package is one candidate in a reload transaction. A
+        // candidate can fail while unrelated candidates in the same batch are
+        // still configured and returned successfully.
+        struct PackageLoadResult {
+            std::filesystem::path package_path{};
+            std::optional<LoadedPackage> package{};
+            std::string error{};
+
+            [[nodiscard]] explicit operator bool() const noexcept
+            {
+                return package.has_value();
+            }
+        };
+
         explicit ModuleLoader(
             std::filesystem::path discovery_start = std::filesystem::current_path(),
             std::vector<std::filesystem::path> extra_search_roots = {},
@@ -94,11 +108,26 @@ namespace iv {
         ModuleLoader& operator=(ModuleLoader const&) = delete;
 
         // Compiles and loads one IV package, then configures its iv module definitions
-        // against all currently valid packages in the project/search roots. A valid
-        // package may publish no iv modules.
+        // against the last-valid package revisions already loaded into this
+        // loader. A valid package may publish no iv modules. Use load_packages()
+        // to establish a fresh multi-package candidate set, including every
+        // provider that is not already active.
         LoadedPackage load_package(
             std::filesystem::path const& package_path
         ) const;
+
+        // Compiles only `package_paths`, then configures each successful
+        // candidate against that batch and the last valid revisions of all
+        // other packages. It deliberately does not scan and rebuild every
+        // package discoverable from the project directory.
+        std::vector<PackageLoadResult> load_packages(
+            std::vector<std::filesystem::path> const& package_paths
+        ) const;
+
+        // Removes a package from the active definition/configuration set after
+        // package discovery says that its source disappeared. Existing graphs
+        // retain their ModuleRef-owned code revision until they are replaced.
+        void remove_package(std::filesystem::path const& package_path) const;
 
         std::vector<LoadedDefinition> load_package_definitions(
             std::filesystem::path const& package_path

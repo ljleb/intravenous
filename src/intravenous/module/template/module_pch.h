@@ -2,8 +2,9 @@
 
 #include <intravenous/dsl.h>
 
-// This is the complete module-facing graph API. Parse it once for every
-// module target so individual module sources only pay for their own code.
+// This is the complete module-facing graph API. The application builds this
+// DSL PCH once; every IV package consumes that one artifact so package sources
+// only pay to parse their own code.
 #include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/basic_nodes/debug_probe.h>
 #include <intravenous/basic_nodes/filters.h>

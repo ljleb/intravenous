@@ -197,15 +197,6 @@ public:
   void event_outputs(Refs&&... refs);
   void event_outputs(std::span<EventOutputRequest const>);
 
-  template<auto Module>
-  NodeRef module(std::string_view kind = "Module") {
-    static_assert(std::invocable<decltype(Module), GraphBuilder&>);
-    static_assert(std::same_as<std::invoke_result_t<decltype(Module), GraphBuilder&>, void>);
-    GraphBuilder child;
-    std::invoke(Module, child);
-    return embed_child(child, kind);
-  }
-
   template<class Fn>
   NodeRef subgraph(Fn&& fn, std::string_view kind = "Subgraph") {
     auto* scope = begin_subgraph();

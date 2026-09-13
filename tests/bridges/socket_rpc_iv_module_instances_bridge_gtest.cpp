@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -46,7 +47,7 @@ TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventLeavesResponseUnbuilt)
     EXPECT_THROW(static_cast<void>(builder.build(1)), std::runtime_error);
 }
 
-TEST(IvPackages, NewProjectPackagesReceiveTheSameTemplateCompileDatabase)
+TEST(IvPackages, NewProjectPackagesReceivePackageSpecificSharedPchCompileDatabase)
 {
     auto const project_root = std::filesystem::temp_directory_path()
         / "intravenous_iv_packages_compile_commands_test";
@@ -68,8 +69,34 @@ TEST(IvPackages, NewProjectPackagesReceiveTheSameTemplateCompileDatabase)
     auto const first_database = read(first.package_root / "compile_commands.json");
     auto const second_database = read(second.package_root / "compile_commands.json");
 
-    EXPECT_FALSE(first_database.empty());
-    EXPECT_EQ(second_database, first_database);
+    auto expect_compile_database = [](std::filesystem::path const& package_root,
+                                      std::string const& database_text) {
+        ASSERT_FALSE(database_text.empty());
+        auto const database = Json::parse(database_text);
+        ASSERT_TRUE(database.is_array());
+        ASSERT_EQ(database.size(), 1u);
+        auto const& command = database.front();
+        ASSERT_TRUE(command.contains("directory"));
+        ASSERT_TRUE(command.contains("file"));
+        ASSERT_TRUE(command.contains("command"));
+        EXPECT_EQ(
+            command.at("directory").get<std::string>(),
+            package_root.generic_string());
+        EXPECT_EQ(
+            command.at("file").get<std::string>(),
+            (package_root / "module.cpp").generic_string());
+
+        auto const command_line = command.at("command").get<std::string>();
+        EXPECT_NE(command_line.find("-std=c++23"), std::string::npos);
+        EXPECT_NE(command_line.find("-include-pch"), std::string::npos);
+        EXPECT_NE(command_line.find("iv_dsl.pch"), std::string::npos);
+        EXPECT_NE(command_line.find(package_root.generic_string()), std::string::npos);
+        // clangd must parse the same DSL/PCH command as package compilation,
+        // but must not execute the metadata-emitting compiler plugin.
+        EXPECT_EQ(command_line.find("-fplugin"), std::string::npos);
+    };
+    expect_compile_database(first.package_root, first_database);
+    expect_compile_database(second.package_root, second_database);
 
     auto const listed = packages.list_packages();
     ASSERT_EQ(listed.size(), 2u);

@@ -17,7 +17,7 @@ int main()
     iv::test::copy_directory(fixtures / "behavior_voice", voice_dst);
     iv::test::copy_directory(fixtures / "local_cmake", local_dst);
 
-    iv::ModuleLoader loader(iv::test::repo_root(), {});
+    auto loader = iv::test::make_loader();
 
     auto definitions = loader.load_package_definitions(project_dst);
     auto const definition = std::ranges::find(

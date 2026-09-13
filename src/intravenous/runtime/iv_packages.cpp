@@ -88,15 +88,54 @@ std::string package_template(std::string_view module_id)
         "IV_MODULE(\"" + std::string(module_id) + "\", module_main);\n";
 }
 
-void copy_initial_compile_commands(std::filesystem::path const& destination)
+std::string command_quote(std::string_view value)
 {
-#ifndef IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_COMPILE_DATABASE
-    throw std::runtime_error("no compile_commands.json template was configured");
+    std::string quoted{"\""};
+    for (auto const character : value) {
+        if (character == '\\' || character == '\"') quoted += '\\';
+        quoted += character;
+    }
+    return quoted + '\"';
+}
+
+void write_initial_compile_commands(
+    std::filesystem::path const& package_root,
+    std::filesystem::path const& destination)
+{
+#if !defined(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_CXX_COMPILER) \
+    || !defined(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_DSL_PCH) \
+    || !defined(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_INCLUDE_DIR) \
+    || !defined(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_THIRD_PARTY_INCLUDE_DIR)
+    throw std::runtime_error("no package source clangd command was configured");
 #else
-    std::error_code error;
-    std::filesystem::copy_file(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_COMPILE_DATABASE, destination,
-        std::filesystem::copy_options::none, error);
-    if (error) throw std::runtime_error("cannot copy compile_commands.json template: " + error.message());
+    auto const source = package_root / "module.cpp";
+    auto const command = command_quote(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_CXX_COMPILER)
+        + " -DIV_ENABLE_JUCE_VST=0"
+        + " -I" + command_quote(package_root.generic_string())
+        + " -isystem "
+            + command_quote(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_INCLUDE_DIR)
+        + " -isystem "
+            + command_quote(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_THIRD_PARTY_INCLUDE_DIR)
+        + " -O0 -flto=full -std=c++23 -fvisibility=hidden"
+          " -fvisibility-inlines-hidden -Wall -Wextra -Wpedantic"
+        + " -include-pch "
+            + command_quote(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_DSL_PCH)
+        + " -c " + command_quote(source.generic_string());
+    nlohmann::json database = nlohmann::json::array({{
+        {"directory", package_root.generic_string()},
+        {"command", command},
+        {"file", source.generic_string()},
+    }});
+    std::ofstream output(destination, std::ios::binary | std::ios::noreplace);
+    if (!output) {
+        throw std::runtime_error(
+            "cannot create compile_commands.json: " + destination.string());
+    }
+    output << database.dump(2) << '\n';
+    if (!output) {
+        throw std::runtime_error(
+            "cannot write compile_commands.json: " + destination.string());
+    }
 #endif
 }
 }
@@ -263,7 +302,7 @@ IvPackageInfo IvPackages::create_project_package(std::string const& name) const
         std::ofstream package(root / "module.cpp", std::ios::binary | std::ios::noreplace);
         package << package_template(id);
         if (!package) throw std::runtime_error("cannot write module.cpp");
-        copy_initial_compile_commands(root / "compile_commands.json");
+        write_initial_compile_commands(root, root / "compile_commands.json");
     } catch (...) {
         std::filesystem::remove_all(root, error);
         throw;

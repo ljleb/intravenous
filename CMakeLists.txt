@@ -11,7 +11,10 @@ if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_VERSION VERSI
         "(${CMAKE_CXX_COMPILER})")
 endif()
 
-set(CMAKE_CXX_STANDARD 26)
+# Intravenous's application and IV-package DSL baseline is C++23.  Keep this
+# explicit: package sources, the shared DSL PCH, and editor commands must use
+# the same language mode as the host that owns their runtime ABI.
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -60,18 +63,18 @@ target_compile_definitions(intravenous_module_loader PRIVATE
 add_subdirectory(tests)
 add_subdirectory(benchmark)
 
-function(iv_force_cxx26 directory)
+function(iv_force_cxx23 directory)
     get_property(_iv_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
     foreach(_iv_target IN LISTS _iv_targets)
         set_target_properties(${_iv_target} PROPERTIES
-            CXX_STANDARD 26
+            CXX_STANDARD 23
             CXX_STANDARD_REQUIRED ON
             CXX_EXTENSIONS OFF)
     endforeach()
 
     get_property(_iv_subdirectories DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
     foreach(_iv_subdirectory IN LISTS _iv_subdirectories)
-        iv_force_cxx26("${_iv_subdirectory}")
+        iv_force_cxx23("${_iv_subdirectory}")
     endforeach()
 endfunction()
-iv_force_cxx26("${CMAKE_SOURCE_DIR}")
+iv_force_cxx23("${CMAKE_SOURCE_DIR}")

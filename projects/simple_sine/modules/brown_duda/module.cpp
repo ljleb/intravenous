@@ -909,8 +909,8 @@ void module_main(iv::GraphBuilder& g)
     auto const center = g.input<"azimuth">(0,-90, 90);
     auto const spread = g.input<"spread">(30, 0, 180);
     auto const elevation = g.input<"elevation">(0, -90, 90);
-    auto const source_left = g.module<brown_duda_source>();
-    auto const source_right = g.module<brown_duda_source>();
+    auto const source_left = g.node<"iv.project.brown_duda.source">();
+    auto const source_right = g.node<"iv.project.brown_duda.source">();
 
     auto const azimuths = g.tile<stereo>(center - spread * 0.5, center + spread * 0.5);
 
@@ -933,4 +933,5 @@ IV_NODE("iv.project.brown_duda.parameters", BrownDudaParameters);
 IV_NODE("iv.project.brown_duda.one_pole_one_zero", OnePoleOneZero);
 IV_NODE("iv.project.brown_duda.sample_delay", SampleDelay);
 IV_NODE("iv.project.brown_duda.pinna", BrownDudaPinna);
+IV_MODULE("iv.project.brown_duda.source", brown_duda_source);
 IV_MODULE("iv.project.brown_duda", module_main);

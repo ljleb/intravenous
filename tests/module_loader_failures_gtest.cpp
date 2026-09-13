@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <string_view>
+#include <utility>
 
 namespace {
 template<typename Fn>
@@ -328,6 +329,10 @@ TEST(ModuleLoaderPackages, RootPackageDoesNotPublishOtherPackageDefinitions)
     auto loader = iv::test::make_loader(
         {fixtures / "nested_loader_project", fixtures / "nested_loader_voice"});
 
+    // Provider packages are independent compilation units. Make the active
+    // package set explicit instead of relying on loader-wide source scanning.
+    ASSERT_NO_THROW((void)loader.load_package_definitions(
+        fixtures / "nested_loader_voice"));
     auto loaded = loader.load_package_definitions(fixtures / "nested_loader_project");
 
     ASSERT_EQ(loaded.size(), 1u);
@@ -378,12 +383,24 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
         "IV_MODULE(\"iv.test.registered_node_consumer\", registered_node_consumer);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(consumer_package);
+    auto batch = loader.load_packages({node_package, consumer_package});
+    ASSERT_EQ(batch.size(), 2u);
+    ASSERT_TRUE(batch[0]) << batch[0].error;
+    ASSERT_TRUE(batch[1]) << batch[1].error;
+    auto loaded = std::move(batch[1].package->definitions);
 
     ASSERT_EQ(loaded.size(), 1);
     EXPECT_EQ(loaded.front().module_id, "iv.test.registered_node_consumer");
     EXPECT_TRUE(static_cast<bool>(loaded.front().root));
 
+    // A source disappearing must stop being a provider for new configurations
+    // immediately. Existing LoadedDefinition objects above still retain the
+    // old node package through ModuleRef, but rebuilding this consumer may not
+    // silently bind to a package that discovery has removed.
+    loader.remove_package(node_package);
+    expect_failure_contains(
+        [&] { (void)loader.load_package_definitions(consumer_package); },
+        "iv.test.registered_package_node");
 }
 
 TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArguments)
@@ -487,6 +504,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "default_configured_module_reference);\n");
 
     auto loader = iv::test::make_loader();
+    ASSERT_NO_THROW((void)loader.load_package_definitions(provider_package));
     auto loaded = loader.load_package_definitions(consumer_package);
 
     ASSERT_EQ(loaded.size(), 6u);
@@ -570,6 +588,7 @@ TEST(ModuleLoaderFailures, RegisteredConfigurationRejectsImplicitConversions)
         "IV_MODULE(\"iv.test.mismatched_configuration\", mismatched_configuration);\n");
 
     auto loader = iv::test::make_loader();
+    ASSERT_NO_THROW((void)loader.load_package_definitions(provider_package));
     expect_failure_contains(
         [&] { (void)loader.load_package_definitions(consumer_package); },
         "registered-ID argument conversion is not supported");
@@ -645,6 +664,8 @@ TEST(ModuleLoaderFailures, UnrelatedDuplicateDefinitionIdsDoNotBlockLoading)
         duplicates / "one",
         duplicates / "two",
     });
+    ASSERT_NO_THROW((void)loader.load_package_definitions(
+        fixtures / "nested_loader_voice"));
     auto const definitions = loader.load_package_definitions(
         fixtures / "nested_loader_project");
     EXPECT_EQ(definitions.size(), 1u);

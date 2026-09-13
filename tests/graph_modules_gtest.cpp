@@ -25,41 +25,6 @@
 namespace iv {
 namespace {
 
-void pass_module(GraphBuilder& g)
-{
-    auto input = g.input<"in">(0.0f);
-    auto pass = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(g);
-    pass(input);
-    g.outputs("out"_P = pass);
-}
-
-void nested_module(GraphBuilder& g)
-{
-    auto input = g.input<"in">(0.0f);
-    auto child = g.module<pass_module>();
-    child("in"_P = input);
-    g.outputs("out"_P = child);
-}
-
-void tiled_module(GraphBuilder& g)
-{
-    auto input = g.input<"in">(0.0f);
-    auto tiled = details::configure_concrete_tiled_node<
-        Sum<mono, SampleStreamLayout::planar, 1>, stereo>(g);
-    tiled(input);
-    g.outputs("out"_P = tiled);
-}
-
-void event_module(GraphBuilder& g)
-{
-    auto input = g.event_input<"event">(EventTypeId::empty);
-    auto relay = details::configure_concrete_node<EventConcatenation>(
-        g, 1, EventTypeId::empty);
-    relay.connect_event_input(0, input);
-    g.event_outputs("event"_P = relay.event_port());
-    g.outputs();
-}
-
 struct CStringConfigNode {
     char const* title = "title";
     char const* detail = "detail";
@@ -147,9 +112,6 @@ void configure_pointer_metadata_package(
     details::select_builder_package(session, 0);
 }
 
-static_assert(std::invocable<decltype(&pass_module), GraphBuilder&>);
-static_assert(std::same_as<std::invoke_result_t<decltype(&pass_module), GraphBuilder&>, void>);
-
 iv::RuntimeGraphPlan compile_graph(
     iv::ConfiguredGraphTestView view,
     bool execution_root = false)
@@ -158,220 +120,6 @@ iv::RuntimeGraphPlan compile_graph(
     auto executable = iv::GraphLowerer::lower(
         std::move(configured), {.execution_root = execution_root});
     return iv::GraphCompiler::compile(std::move(executable));
-}
-
-struct RootSignatureConfiguration {
-    ConfiguredGraphTestView root_view;
-    ConfiguredGraphTestView parent_view;
-    size_t child_sample_inputs;
-    size_t child_sample_outputs;
-};
-
-RootSignatureConfiguration configure_root_signature_graphs()
-{
-    GraphBuilder root;
-    pass_module(root);
-
-    GraphBuilder parent;
-    auto child = parent.module<pass_module>();
-    auto const child_sample_inputs = child.sample_input_count();
-    auto const child_sample_outputs = child.sample_output_count();
-    child("in"_P = 0.25f);
-    parent.outputs("main"_P = child["out"]);
-
-    return {
-        .root_view = freeze_configured_graph_for_test(std::move(root).finish()),
-        .parent_view = freeze_configured_graph_for_test(std::move(parent).finish()),
-        .child_sample_inputs = child_sample_inputs,
-        .child_sample_outputs = child_sample_outputs,
-    };
-}
-
-struct RootSignatureSnapshot {
-    bool root_output_named_out = false;
-    size_t child_sample_inputs = 0;
-    size_t child_sample_outputs = 0;
-    bool nested_output_named_main = false;
-};
-
-RootSignatureSnapshot root_signature_snapshot()
-{
-    auto const configuration = configure_root_signature_graphs();
-    auto const root_plan = compile_graph(configuration.root_view);
-    auto const parent_plan = compile_graph(configuration.parent_view);
-    return {
-        .root_output_named_out =
-            root_plan.graph.outputs().size() == 1
-            && root_plan.graph.outputs().front().name == "out",
-        .child_sample_inputs = configuration.child_sample_inputs,
-        .child_sample_outputs = configuration.child_sample_outputs,
-        .nested_output_named_main =
-            parent_plan.graph.outputs().size() == 1
-            && parent_plan.graph.outputs().front().name == "main",
-    };
-}
-
-struct RecursiveModuleConfiguration {
-    ConfiguredGraphTestView view;
-};
-
-RecursiveModuleConfiguration configure_recursive_module()
-{
-    GraphBuilder g;
-    auto child = g.module<nested_module>();
-    child("in"_P = 0.5f);
-    g.outputs("main"_P = child["out"]);
-    return {.view = freeze_configured_graph_for_test(std::move(g).finish())};
-}
-
-struct RecursiveModuleSnapshot {
-    size_t lowered_subgraph_count = 0;
-    size_t nested_scope_count = 0;
-    bool parent_scopes_valid = false;
-};
-
-RecursiveModuleSnapshot recursive_module_snapshot()
-{
-    auto const configured = configure_recursive_module();
-    auto const built = compile_graph(configured.view);
-    RecursiveModuleSnapshot result{
-        .lowered_subgraph_count = built.metadata.lowered_subgraphs.size(),
-        .parent_scopes_valid = true,
-    };
-    for (auto const& scope : built.metadata.lowered_subgraphs) {
-        if (scope.parent_scope == GRAPH_ID)
-            continue;
-        ++result.nested_scope_count;
-        result.parent_scopes_valid = result.parent_scopes_valid
-            && scope.parent_scope < built.metadata.lowered_subgraphs.size();
-    }
-    return result;
-}
-
-struct AnnotatedModuleConfiguration {
-    ConfiguredGraphTestView view;
-};
-
-AnnotatedModuleConfiguration configure_annotated_module()
-{
-    GraphBuilder g;
-    auto child = _annotate_node_source_info(
-        g.module<pass_module>(),
-        "module-call");
-    child("in"_P = 0.5f);
-    g.outputs("main"_P = child["out"]);
-    return {.view = freeze_configured_graph_for_test(std::move(g).finish())};
-}
-
-struct AnnotatedModuleSnapshot {
-    size_t matching_nodes = 0;
-    size_t virtual_nodes = 0;
-    bool id_has_expected_prefix = false;
-};
-
-AnnotatedModuleSnapshot annotated_module_snapshot()
-{
-    auto const configured = configure_annotated_module();
-    auto const metadata = compile_graph(configured.view).introspection;
-    auto const matching_nodes = std::ranges::count_if(
-        metadata.virtual_nodes,
-        [](auto const& node) {
-            return node.source_identity == "module-call";
-        });
-    return {
-        .matching_nodes = static_cast<size_t>(matching_nodes),
-        .virtual_nodes = metadata.virtual_nodes.size(),
-        .id_has_expected_prefix = !metadata.virtual_nodes.empty()
-            && metadata.virtual_nodes.front().id.starts_with("module-call#type:"),
-    };
-}
-
-struct TiledModuleConfiguration {
-    ConfiguredGraphTestView view;
-    size_t child_sample_inputs;
-    size_t child_sample_outputs;
-    ChannelTypeId output_channel_type;
-    size_t output_channel_count;
-};
-
-TiledModuleConfiguration configure_tiled_module()
-{
-    GraphBuilder g;
-    auto child = g.module<tiled_module>();
-    auto const child_sample_inputs = child.sample_input_count();
-    auto const child_sample_outputs = child.sample_output_count();
-    child("in"_P = 0.5f);
-    auto output = child["out"];
-    auto const output_channel_type = output.channel_type;
-    auto const output_channel_count = output.channels().size();
-    g.outputs("main"_P = output);
-    return {
-        .view = freeze_configured_graph_for_test(std::move(g).finish()),
-        .child_sample_inputs = child_sample_inputs,
-        .child_sample_outputs = child_sample_outputs,
-        .output_channel_type = output_channel_type,
-        .output_channel_count = output_channel_count,
-    };
-}
-
-struct TiledModuleSnapshot {
-    size_t child_sample_inputs = 0;
-    size_t child_sample_outputs = 0;
-    ChannelTypeId output_channel_type = ChannelTypeId::mono;
-    size_t output_channel_count = 0;
-    bool graph_output_is_stereo = false;
-    size_t lowered_subgraph_count = 0;
-    size_t scope_output_sources = 0;
-    size_t scope_member_nodes = 0;
-    bool output_source_is_member = false;
-};
-
-TiledModuleSnapshot tiled_module_snapshot()
-{
-    auto const configured = configure_tiled_module();
-    auto const built = compile_graph(configured.view);
-    TiledModuleSnapshot result;
-    result.child_sample_inputs = configured.child_sample_inputs;
-    result.child_sample_outputs = configured.child_sample_outputs;
-    result.output_channel_type = configured.output_channel_type;
-    result.output_channel_count = configured.output_channel_count;
-    result.graph_output_is_stereo =
-        built.graph.outputs().size() == 1
-        && built.graph.outputs().front().channel_layout.channel_type
-            == ChannelTypeId::stereo;
-    result.lowered_subgraph_count = built.metadata.lowered_subgraphs.size();
-    if (!built.metadata.lowered_subgraphs.empty()) {
-        auto const& scope = built.metadata.lowered_subgraphs.front();
-        result.scope_output_sources = scope.sample_output_sources.size();
-        result.scope_member_nodes = scope.member_nodes.size();
-        if (!scope.sample_output_sources.empty()) {
-            result.output_source_is_member =
-                std::ranges::find(
-                    scope.member_nodes,
-                    scope.sample_output_sources.front().node)
-                != scope.member_nodes.end();
-        }
-    }
-    return result;
-}
-
-ConfiguredGraphTestView configure_event_interfaces()
-{
-    GraphBuilder g;
-    auto child = g.module<event_module>();
-    auto source = details::configure_concrete_node<EventConcatenation>(
-        g, 0, EventTypeId::empty);
-    child.connect_event_input("event", source.event_port());
-    auto sink = details::configure_concrete_node<DummyEventSink>(g);
-    sink.connect_event_input(0, child.event_port("event"));
-    g.outputs();
-    return freeze_configured_graph_for_test(std::move(g).finish());
-}
-
-bool event_interfaces_compile()
-{
-    (void)compile_graph(configure_event_interfaces());
-    return true;
 }
 
 ConfiguredGraphTestView configure_functional_subgraph()
@@ -481,15 +229,6 @@ IntrospectionRegressionSnapshot introspection_regression_snapshot()
 
 } // namespace
 
-TEST(GraphModules, ModuleFunctionUsesTheRootGraphBuilderSignature)
-{
-    auto snapshot = root_signature_snapshot();
-    EXPECT_TRUE(snapshot.root_output_named_out);
-    EXPECT_EQ(snapshot.child_sample_inputs, 1u);
-    EXPECT_EQ(snapshot.child_sample_outputs, 1u);
-    EXPECT_TRUE(snapshot.nested_output_named_main);
-}
-
 TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
 {
     auto session = std::unique_ptr<
@@ -500,7 +239,11 @@ TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
     ASSERT_NE(session, nullptr);
 
     GraphBuilder builder(session.get());
-    pass_module(builder);
+    auto input = builder.input<"in">(0.0f);
+    auto pass = details::configure_concrete_node<
+        Sum<mono, SampleStreamLayout::planar, 1>>(builder);
+    pass(input);
+    builder.outputs("out"_P = pass);
 
     auto view = freeze_configured_graph_for_test(
         details::take_built_graph(session.get()));
@@ -782,74 +525,6 @@ TEST(GraphModules, RuntimeIntrospectionPreservesVirtualAndPublicPorts)
     EXPECT_TRUE(snapshot.sample_ports_are_preserved);
     EXPECT_TRUE(snapshot.event_ports_are_preserved);
     EXPECT_TRUE(snapshot.shared_lowering_matches_canonical_metadata);
-}
-
-TEST(GraphModules, ModulesComposeRecursivelyThroughConfiguredGraphSplicing)
-{
-    auto snapshot = recursive_module_snapshot();
-    EXPECT_EQ(snapshot.lowered_subgraph_count, 2u);
-    EXPECT_EQ(snapshot.nested_scope_count, 1u);
-    EXPECT_TRUE(snapshot.parent_scopes_valid);
-}
-
-TEST(GraphModules, AnnotatedModuleHasOneTypedVirtualNode)
-{
-    auto snapshot = annotated_module_snapshot();
-    EXPECT_EQ(snapshot.matching_nodes, 1u);
-    EXPECT_EQ(snapshot.virtual_nodes, 1u);
-    EXPECT_TRUE(snapshot.id_has_expected_prefix);
-}
-
-TEST(GraphModules, FirstClassTiledNodeBundlesSurviveModuleSplicing)
-{
-    auto snapshot = tiled_module_snapshot();
-    EXPECT_EQ(snapshot.child_sample_inputs, 1u);
-    EXPECT_EQ(snapshot.child_sample_outputs, 1u);
-    EXPECT_EQ(snapshot.output_channel_type, ChannelTypeId::stereo);
-    EXPECT_EQ(snapshot.output_channel_count, 2u);
-    EXPECT_TRUE(snapshot.graph_output_is_stereo);
-    EXPECT_EQ(snapshot.lowered_subgraph_count, 1u);
-    EXPECT_EQ(snapshot.scope_output_sources, 1u);
-    EXPECT_EQ(snapshot.scope_member_nodes, 3u);
-    EXPECT_TRUE(snapshot.output_source_is_member);
-}
-
-TEST(GraphModules, ErasedModuleOutputsSupportRuntimeCheckedChannelOperations)
-{
-    GraphBuilder graph;
-    auto left_module = graph.module<tiled_module>();
-    auto right_module = graph.module<tiled_module>();
-    left_module("in"_P = 0.25f);
-    right_module("in"_P = 0.5f);
-
-    auto const named_output = left_module["out"];
-    auto const named_left = named_output[stereo::left];
-    auto const default_right = right_module[stereo::right];
-    auto const sum = left_module + right_module;
-    auto const sum_port = static_cast<SamplePortRef>(sum);
-    auto const sum_left = sum[stereo::left];
-    graph.outputs("main"_P = sum);
-
-    EXPECT_EQ(static_cast<SamplePortRef>(named_left).channel_type,
-              ChannelTypeId::mono);
-    EXPECT_EQ(static_cast<SamplePortRef>(default_right).channel_type,
-              ChannelTypeId::mono);
-    EXPECT_EQ(sum_port.channel_type, ChannelTypeId::stereo);
-    EXPECT_EQ(sum_port.channels().size(), 2u);
-    EXPECT_EQ(static_cast<SamplePortRef>(sum_left).channel_type,
-              ChannelTypeId::mono);
-    EXPECT_THROW((void)named_output[mono::center], std::logic_error);
-
-    auto const plan = compile_graph(
-        freeze_configured_graph_for_test(std::move(graph).finish()));
-    ASSERT_EQ(plan.graph.outputs().size(), 1u);
-    EXPECT_EQ(plan.graph.outputs().front().channel_layout.channel_type,
-              ChannelTypeId::stereo);
-}
-
-TEST(GraphModules, EventInterfacesResolveThroughTheImportedBoundary)
-{
-    EXPECT_TRUE(event_interfaces_compile());
 }
 
 TEST(GraphModules, FunctionalSubgraphRemainsAnExplicitBoundaryFacade)
