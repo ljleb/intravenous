@@ -11,12 +11,16 @@
 
 #include <nlohmann/json.hpp>
 
+#include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
+#include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/GlobalAlias.h>
+#include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/Passes/OptimizationLevel.h>
@@ -543,19 +547,83 @@ std::shared_ptr<SharedPackageJit> create_shared_package_jit()
     return result;
 }
 
+void mark_runtime_reachable(
+    llvm::Value const* value,
+    llvm::SmallPtrSetImpl<llvm::GlobalValue const*>& reachable)
+{
+    if (!value) return;
+    if (auto const* global = llvm::dyn_cast<llvm::GlobalValue>(value)) {
+        if (!reachable.insert(global).second) return;
+        if (auto const* function = llvm::dyn_cast<llvm::Function>(global)) {
+            if (!function->isDeclaration()) {
+                for (auto const& block : *function) {
+                    for (auto const& instruction : block) {
+                        for (auto const& operand : instruction.operands()) {
+                            mark_runtime_reachable(operand.get(), reachable);
+                        }
+                    }
+                }
+            }
+        } else if (auto const* variable = llvm::dyn_cast<llvm::GlobalVariable>(global)) {
+            if (variable->hasInitializer()) {
+                mark_runtime_reachable(variable->getInitializer(), reachable);
+            }
+        } else if (auto const* alias = llvm::dyn_cast<llvm::GlobalAlias>(global)) {
+            mark_runtime_reachable(alias->getAliasee(), reachable);
+        }
+        return;
+    }
+    if (auto const* constant = llvm::dyn_cast<llvm::Constant>(value)) {
+        for (auto const& operand : constant->operands()) {
+            mark_runtime_reachable(operand.get(), reachable);
+        }
+    }
+}
+
+void collect_compatibility_runtime_code(
+    llvm::Module const& module,
+    llvm::SmallPtrSetImpl<llvm::GlobalValue const*>& reachable)
+{
+    for (auto const& global : module.globals()) {
+        auto const section = global.getSection();
+        if (section != "iv_node_types" && !section.ends_with("__iv_node_types")) {
+            continue;
+        }
+        auto const* record = llvm::dyn_cast_or_null<llvm::ConstantStruct>(
+            global.getInitializer());
+        if (!record || record->getNumOperands() != 6) continue;
+        auto const* operations = llvm::dyn_cast<llvm::ConstantStruct>(
+            record->getOperand(1));
+        if (!operations || operations->getNumOperands() != 3) continue;
+
+        // declare_node participates in graph construction and is intentionally
+        // left at package O0.  Package/provider configuration is allowed to
+        // throw across the JIT boundary, and optimizing that path caused those
+        // exceptions to terminate instead of reaching their existing handlers.
+        // Only tick/skip are realtime compatibility-runtime code.
+        mark_runtime_reachable(operations->getOperand(1), reachable);
+        mark_runtime_reachable(operations->getOperand(2), reachable);
+    }
+}
+
 void optimize_package_for_compatibility_runtime(llvm::Module& module)
 {
     // Package artifacts intentionally stop at Clang O0 so source rebuilds stay
     // cheap and the future whole-graph compiler receives the unoptimized IR.
-    // That O0 IR carries optnone/noinline attributes, though, and executing it
-    // directly through ORC makes the transitional reflected-node runtime
-    // catastrophically slow.  Strip only the O0-imposed optimization barrier
-    // on the in-memory JIT copy, then restore the old runtime-quality O3 pass.
-    // The .ivpkg.bc artifact on disk is never modified.
-    for (auto& function : module) {
-        if (!function.hasFnAttribute(llvm::Attribute::OptimizeNone)) continue;
-        function.removeFnAttr(llvm::Attribute::OptimizeNone);
-        function.removeFnAttr(llvm::Attribute::NoInline);
+    // The current reflected executor only needs native-quality node tick/skip
+    // callbacks. Keep package/module graph-construction code at its original O0
+    // semantics: it is allowed to throw through the JIT boundary and some
+    // providers deliberately catch configuration failures inside package code.
+    llvm::SmallPtrSet<llvm::GlobalValue const*, 32> runtime_code;
+    collect_compatibility_runtime_code(module, runtime_code);
+    for (auto const* value : runtime_code) {
+        auto* function = llvm::dyn_cast<llvm::Function>(
+            const_cast<llvm::GlobalValue*>(value));
+        if (!function || !function->hasFnAttribute(llvm::Attribute::OptimizeNone)) {
+            continue;
+        }
+        function->removeFnAttr(llvm::Attribute::OptimizeNone);
+        function->removeFnAttr(llvm::Attribute::NoInline);
     }
 
     llvm::PassBuilder pass_builder;
