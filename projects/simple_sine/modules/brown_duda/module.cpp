@@ -870,10 +870,12 @@ void brown_duda_source(iv::GraphBuilder& g)
     auto const azimuth = g.input<"azimuth">(0.0f);
     auto const elevation = g.input<"elevation">(0.0f);
 
-    auto const params = g.node<BrownDudaParameters>();
-    auto const shadow = g.node<OnePoleOneZero, stereo>();
-    auto const propagation = g.node<SampleDelay, stereo>();
-    auto const pinna = g.node<BrownDudaPinna, stereo>();
+    auto const params = g.node<"iv.project.brown_duda.parameters">();
+    // These channel-specialized instances are generated inside this package;
+    // the public builder surface has no g.node<NodeType> escape hatch.
+    auto const shadow = details::configure_concrete_tiled_node<OnePoleOneZero, stereo>(g);
+    auto const propagation = details::configure_concrete_tiled_node<SampleDelay, stereo>(g);
+    auto const pinna = details::configure_concrete_tiled_node<BrownDudaPinna, stereo>(g);
 
     params(
         "azimuth"_P = azimuth,
@@ -907,8 +909,8 @@ void module_main(iv::GraphBuilder& g)
     auto const center = g.input<"azimuth">(0,-90, 90);
     auto const spread = g.input<"spread">(30, 0, 180);
     auto const elevation = g.input<"elevation">(0, -90, 90);
-    auto const source_left = g.module<brown_duda_source>();
-    auto const source_right = g.module<brown_duda_source>();
+    auto const source_left = g.node<"iv.project.brown_duda.source">();
+    auto const source_right = g.node<"iv.project.brown_duda.source">();
 
     auto const azimuths = g.tile<stereo>(center - spread * 0.5, center + spread * 0.5);
 
@@ -926,3 +928,10 @@ void module_main(iv::GraphBuilder& g)
 
     g.outputs("main"_P = spatialized_left + spatialized_right);
 }
+
+IV_NODE("iv.project.brown_duda.parameters", BrownDudaParameters);
+IV_NODE("iv.project.brown_duda.one_pole_one_zero", OnePoleOneZero);
+IV_NODE("iv.project.brown_duda.sample_delay", SampleDelay);
+IV_NODE("iv.project.brown_duda.pinna", BrownDudaPinna);
+IV_MODULE("iv.project.brown_duda.source", brown_duda_source);
+IV_MODULE("iv.project.brown_duda", module_main);

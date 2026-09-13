@@ -343,13 +343,13 @@ void LanesVisualization::handle_task_runner_after_pass(
     struct SampleAddInfo {
         LaneId source_lane {};
         LaneId vis_lane {};
-        RealtimeSampleBlockQueue *queue_ptr = nullptr;
+        std::shared_ptr<RealtimeSampleBlockQueue> queue {};
         ChannelTypeId sample_channel_type = ChannelTypeId::stereo;
     };
     struct EventAddInfo {
         LaneId source_lane {};
         LaneId vis_lane {};
-        RealtimeEventBlockQueue *queue_ptr = nullptr;
+        std::shared_ptr<RealtimeEventBlockQueue> queue {};
     };
 
     std::vector<SampleAddInfo> sample_additions;
@@ -381,7 +381,7 @@ void LanesVisualization::handle_task_runner_after_pass(
                 sample_additions.push_back(SampleAddInfo{
                     .source_lane = source_lane,
                     .vis_lane = tracked.vis_lane,
-                    .queue_ptr = tracked.queue.get(),
+                    .queue = tracked.queue,
                     .sample_channel_type = tracked.sample_channel_type,
                 });
                 tracked.registered_in_timeline = true;
@@ -407,7 +407,7 @@ void LanesVisualization::handle_task_runner_after_pass(
                 event_additions.push_back(EventAddInfo{
                     .source_lane = source_lane,
                     .vis_lane = tracked.vis_lane,
-                    .queue_ptr = tracked.queue.get(),
+                    .queue = tracked.queue,
                 });
                 tracked.registered_in_timeline = true;
             } else if (tracked.registered_in_timeline && !in_use) {
@@ -424,18 +424,17 @@ void LanesVisualization::handle_task_runner_after_pass(
         }
     }
 
-    // Build batch entries (outside lock — queue raw ptrs are safe: queues kept
-    // alive by shared_ptr in tracked_sample_lanes_ which only grows via
-    // handle_lane_views_updated; we marked additions as registered under lock)
+    // Each Timeline sink captures queue ownership. It can safely outlive the
+    // view-model entry that requested it while a previous task graph drains.
     for (auto const &add : sample_additions) {
-        auto *queue_ptr = add.queue_ptr;
+        auto queue = add.queue;
         auto const vis_lane = add.vis_lane;
         auto const source_lane = add.source_lane;
         batch.upserts.push_back(TimelineLaneUpsert{
             .lane = vis_lane,
             .lifetime = TimelineLaneLifetime::ephemeral,
-            .make_node = [queue_ptr] {
-                return TypeErasedLaneNode(VisualizationRealtimeSampleLane{ .queue = queue_ptr });
+            .make_node = [queue = std::move(queue)] {
+                return TypeErasedLaneNode(VisualizationRealtimeSampleLane{ .queue = queue });
             },
             .sample_channel_type = add.sample_channel_type,
         });
@@ -446,14 +445,14 @@ void LanesVisualization::handle_task_runner_after_pass(
         });
     }
     for (auto const &add : event_additions) {
-        auto *queue_ptr = add.queue_ptr;
+        auto queue = add.queue;
         auto const vis_lane = add.vis_lane;
         auto const source_lane = add.source_lane;
         batch.upserts.push_back(TimelineLaneUpsert{
             .lane = vis_lane,
             .lifetime = TimelineLaneLifetime::ephemeral,
-            .make_node = [queue_ptr] {
-                return TypeErasedLaneNode(VisualizationRealtimeEventLane{ .queue = queue_ptr });
+            .make_node = [queue = std::move(queue)] {
+                return TypeErasedLaneNode(VisualizationRealtimeEventLane{ .queue = queue });
             },
         });
         batch.connections_to_add.push_back(LaneGraphConnection{

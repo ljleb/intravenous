@@ -1,13 +1,10 @@
 #include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/noise.h>
-#include <intravenous/basic_nodes/filters.h>
-#include <intravenous/basic_nodes/shaping.h>
-#include <intravenous/basic_nodes/buffers.h>
-#include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/juce/vst_wrapper.h>
 
 #include <array>
+#include <cstdint>
 #include <iostream>
+#include <optional>
 #include <string>
 
 void noisy_saw_project(iv::GraphBuilder& g)
@@ -26,13 +23,15 @@ void noisy_saw_project(iv::GraphBuilder& g)
     SamplePortRef left;
     SamplePortRef right;
     auto make_channel = [&]<auto Ch>() {
-        auto const saw = g.node<SawOscillator>();
-        auto const phi = g.node<PhaseIntegrator>();
-        auto const generator = g.node<DeterministicUniformAESNoise>(seed++);
-        auto const u_to_n = g.node<UniformToGaussian>(0.0, 0.5);
-        auto const lo_pass = g.node<SimpleIirLowPass>();
-        auto const hi_pass = g.node<SimpleIirHighPass>();
-        auto const lp = g.node<SimpleIirLowPass>();
+        auto const saw = g.node<"saw_oscillator">();
+        auto const phi = g.node<"phase_integrator">();
+        auto const generator = g.node<"deterministic_uniform_aes_noise">(
+            std::optional<std::uint64_t>{static_cast<std::uint64_t>(seed++)});
+        auto const u_to_n = g.node<"uniform_to_gaussian">(
+            Sample{0.0f}, Sample{0.5f});
+        auto const lo_pass = g.node<"simple_iir_low_pass">();
+        auto const hi_pass = g.node<"simple_iir_high_pass">();
+        auto const lp = g.node<"simple_iir_low_pass">();
 
         u_to_n(generator);
         lo_pass(u_to_n, 0.0);
@@ -55,3 +54,5 @@ void noisy_saw_project(iv::GraphBuilder& g)
 
     g.outputs("main"_P = g.tile<stereo>(left, right));
 }
+
+IV_MODULE("iv.test.noisy_saw", noisy_saw_project);

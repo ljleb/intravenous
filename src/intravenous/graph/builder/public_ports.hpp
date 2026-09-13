@@ -20,7 +20,7 @@
 namespace iv {
 class GraphBuilderState;
 
-struct AuthoredPublicPortsRecord {
+struct ConfiguredPublicPortsRecord {
   NodeBundleHandle boundary = 0;
   std::vector<std::vector<SourceInfo>> sample_input_source_infos{};
   std::vector<std::vector<SourceInfo>> event_input_source_infos{};
@@ -79,9 +79,9 @@ public:
   constexpr std::span<SourceInfo const> event_input_source_infos(size_t) const;
   constexpr void annotate_sample_output_source_info(size_t, SourceInfo);
   constexpr void annotate_event_output_source_info(size_t, SourceInfo);
-  constexpr AuthoredPublicPortsRecord authored_record() const;
-  static constexpr GraphBuilderPublicPorts from_authored_record(
-      AuthoredPublicPortsRecord const&);
+  constexpr ConfiguredPublicPortsRecord configured_record() const;
+  static constexpr GraphBuilderPublicPorts from_configured_record(
+      ConfiguredPublicPortsRecord const&);
 
 private:
   NodeBundleHandle _boundary = 0;
@@ -219,8 +219,8 @@ constexpr std::vector<GraphBuilderPublicEventOutput> GraphBuilderPublicPorts::co
 }
 constexpr void GraphBuilderPublicPorts::annotate_sample_output_source_info(size_t i, SourceInfo info) { if (i>=_last_sample_output_port_ordinals.size()) return; auto& v=_sample_output_source_infos[_last_sample_output_port_ordinals[i]]; if(!std::ranges::contains(v,info))v.push_back(std::move(info)); }
 constexpr void GraphBuilderPublicPorts::annotate_event_output_source_info(size_t i, SourceInfo info) { if(i>=_event_output_source_infos.size())return; auto&v=_event_output_source_infos[i]; if(!std::ranges::contains(v,info))v.push_back(std::move(info)); }
-constexpr AuthoredPublicPortsRecord
-GraphBuilderPublicPorts::authored_record() const {
+constexpr ConfiguredPublicPortsRecord
+GraphBuilderPublicPorts::configured_record() const {
   return {
       .boundary = _boundary,
       .sample_input_source_infos = _sample_input_source_infos,
@@ -233,8 +233,8 @@ GraphBuilderPublicPorts::authored_record() const {
   };
 }
 constexpr GraphBuilderPublicPorts
-GraphBuilderPublicPorts::from_authored_record(
-    AuthoredPublicPortsRecord const& record) {
+GraphBuilderPublicPorts::from_configured_record(
+    ConfiguredPublicPortsRecord const& record) {
   GraphBuilderPublicPorts result(record.boundary);
   result._sample_input_source_infos = record.sample_input_source_infos;
   result._event_input_source_infos = record.event_input_source_infos;

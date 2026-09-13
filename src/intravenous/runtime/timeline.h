@@ -208,7 +208,7 @@ namespace iv {
                 if (!graph.contains(lane)) {
                     return std::optional<std::string> {};
                 }
-                return graph.lane(lane).node.lane_model_type_id();
+                return graph.lane(lane).node->lane_model_type_id();
             });
         }
 
@@ -218,7 +218,7 @@ namespace iv {
                 if (!graph.contains(lane)) {
                     return std::optional<LaneUiStateSnapshot> {};
                 }
-                return graph.lane(lane).node.take_lane_ui_state_update();
+                return graph.lane(lane).node->take_lane_ui_state_update();
             });
         }
 
@@ -228,7 +228,7 @@ namespace iv {
                 if (!graph.contains(lane)) {
                     return std::optional<LaneUiStateSnapshot> {};
                 }
-                return graph.lane(lane).node.lane_ui_state_snapshot();
+                return graph.lane(lane).node->lane_ui_state_snapshot();
             });
         }
 
@@ -242,7 +242,7 @@ namespace iv {
                         .error_message = "timeline lane not found",
                     };
                 }
-                return graph.lane(lane).node.apply_lane_ui_state(write);
+                return graph.lane(lane).node->apply_lane_ui_state(write);
             });
         }
 
@@ -391,7 +391,7 @@ namespace iv {
             LaneId lane,
             bool changed_only,
             LanesVisualizationLaneUiStateBuilder &builder);
-        void handle_authored_lanes_timeline_batch(
+        void handle_configured_lanes_timeline_batch(
             TimelineLaneBatchUpdate const &batch);
         void handle_project_set_timeline_lane_sample_channel_type(
             ProjectSetTimelineLaneSampleChannelTypeRequest const &request,

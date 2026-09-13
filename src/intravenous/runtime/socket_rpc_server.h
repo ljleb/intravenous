@@ -24,6 +24,7 @@
 
 namespace iv {
     struct LaneQuerySchemaChanged;
+    struct IvPackageCatalogChanged;
 
     using SocketRpcGraphQueryResult = ProjectQueryResult;
     using SocketRpcRegionQueryResult = ProjectRegionQueryResult;
@@ -40,10 +41,10 @@ namespace iv {
         void (*)(GetVirtualNodesRequest const &, SocketRpcVirtualNodesResultBuilder &);
     using SocketRpcCreateIvModuleInstanceEvent =
         void (*)(CreateIvModuleInstanceRequest const &, SocketRpcCreateIvModuleInstanceResultBuilder &);
-    using SocketRpcGetIvModuleSourcesEvent =
-        void (*)(GetIvModuleSourcesRequest const &, SocketRpcIvModuleSourcesResultBuilder &);
-    using SocketRpcCreateIvModuleSourceEvent =
-        void (*)(CreateIvModuleSourceRequest const &, SocketRpcIvModuleSourceResultBuilder &);
+    using SocketRpcGetIvPackagesEvent =
+        void (*)(GetIvPackagesRequest const &, SocketRpcIvPackagesResultBuilder &);
+    using SocketRpcCreateIvPackageEvent =
+        void (*)(CreateIvPackageRequest const &, SocketRpcIvPackageResultBuilder &);
     using SocketRpcGetIvModuleInstancesEvent =
         void (*)(GetIvModuleInstancesRequest const &, SocketRpcIvModuleInstancesResultBuilder &);
     using SocketRpcDeleteIvModuleInstanceEvent =
@@ -110,8 +111,8 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodeEvent, iv_socket_rpc_get_virtual_node_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodesEvent, iv_socket_rpc_get_virtual_nodes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleInstanceEvent, iv_socket_rpc_create_iv_module_instance_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcGetIvModuleSourcesEvent, iv_socket_rpc_get_iv_module_sources_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleSourceEvent, iv_socket_rpc_create_iv_module_source_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetIvPackagesEvent, iv_socket_rpc_get_iv_packages_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvPackageEvent, iv_socket_rpc_create_iv_package_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetIvModuleInstancesEvent, iv_socket_rpc_get_iv_module_instances_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDeleteIvModuleInstanceEvent, iv_socket_rpc_delete_iv_module_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcUpdateIvModuleInstancesEvent, iv_socket_rpc_update_iv_module_instances_event);
@@ -189,11 +190,12 @@ namespace iv {
         void send_lane_query_schema_changed(query::LaneQuerySchemaChange const &notification);
         void send_iv_module_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
+        void send_iv_packages_updated();
         void send_virtual_nodes_updated(
             ProjectVirtualNodesNotification const &notification);
         void handle_project_notification(ProjectNotification const &notification);
-        void handle_iv_module_definitions_notification(
-            IvModuleDefinitionsNotification const &notification);
+        void handle_iv_package_catalog_changed(
+            IvPackageCatalogChanged const &changed);
         void handle_lane_views_updated(LaneViewResult const &lane_view);
         void handle_lane_view_content_updated(LaneViewContentUpdate const &update);
         void handle_lane_query_schema_changed(

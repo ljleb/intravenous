@@ -11,7 +11,7 @@ type LiveGraphProviderLike = {
     setNodes(nodes: unknown[]): void;
     upsertNodes(nodes: unknown[], replaceInstanceIds?: string[]): void;
     setSelectedInstanceId(instanceId: string | null): void;
-    setModuleSource(moduleRoot: string | null): void;
+    setPackageRoot(packageRoot: string | null): void;
 };
 
 type ModulesViewProviderLike = Pick<ModulesViewProvider, "setState">;

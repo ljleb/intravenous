@@ -36,8 +36,16 @@ ReflectedNodeDescription materialize_node_build_request(
         request.compiler_record->code_key,
         storage.get(),
         request.config_size);
-    return details::materialize_node_description(
+    auto description = details::materialize_node_description(
         request, std::move(storage), std::move(relocations));
+    description.state_structure_storage =
+        details::copy_builder_node_state_structure(
+            session, request.compiler_record->code_key);
+    description.operations.runtime.state_structure =
+        description.state_structure_storage
+            ? description.state_structure_storage.get()
+            : nullptr;
+    return description;
 }
 } // namespace
 
@@ -55,6 +63,31 @@ NodeBundleHandle iv_builder_append_tiled_node(
 {
     auto description = materialize_node_build_request(builder._session, request);
     return state(builder).append_tiled_node_description(description, layout);
+}
+
+NodeBundleHandle iv_builder_append_tiled_node_bundles(
+    GraphBuilder& builder,
+    std::span<NodeBundleHandle const> members,
+    ChannelLayout layout)
+{
+    return state(builder).append_tiled_node_bundles(members, layout);
+}
+
+void iv_builder_validate_tiled_module_interfaces(
+    std::span<GraphBuilder* const> children)
+{
+    std::vector<GraphBuilderState*> child_states;
+    child_states.reserve(children.size());
+    for (auto* child : children) {
+        if (!child) {
+            error("tiled IV module has a null child graph");
+        }
+        child_states.push_back(std::addressof(state(*child)));
+    }
+    if (child_states.empty()) {
+        error("tiled IV module requires child graphs");
+    }
+    child_states.front()->validate_tiled_module_interfaces(child_states);
 }
 
 bool iv_builder_connect_unary_sample(
@@ -183,7 +216,7 @@ void GraphBuilder::event_outputs(std::span<EventOutputRequest const> refs)
     state(*this).event_outputs(refs);
 }
 
-NodeRef GraphBuilder::author_runtime_binary_op(
+NodeRef GraphBuilder::configure_runtime_binary_op(
     SamplePortRef lhs,
     SamplePortRef rhs,
     std::string_view op_name,
@@ -303,6 +336,18 @@ size_t GraphBuilder::event_output_count(NodeBundleHandle handle) const
 {
     return state(*this).event_output_count(handle);
 }
+
+InputConfig GraphBuilder::sample_input_config(
+    NodeBundleHandle handle, size_t port) const
+{
+    return state(*this).sample_input_config(handle, port);
+}
+
+EventInputConfig GraphBuilder::event_input_config(
+    NodeBundleHandle handle, size_t port) const
+{
+    return state(*this).event_input_config(handle, port);
+}
 NodeBundleHandle GraphBuilder::tiled_member(
     NodeBundleHandle handle, size_t channel) const
 {
@@ -354,6 +399,14 @@ void GraphBuilder::annotate_node(
     uint32_t begin, uint32_t end)
 {
     state(*this).annotate_node(handle, id, file, begin, end);
+}
+void GraphBuilder::annotate_node_input_source_info(
+    NodeBundleHandle handle, PortKind port_kind,
+    std::string_view port_name, std::string_view id,
+    std::string_view file, uint32_t begin, uint32_t end)
+{
+    state(*this).annotate_node_input_source_info(
+        handle, port_kind, port_name, id, file, begin, end);
 }
 void GraphBuilder::annotate_public_sample_input_source_info(
     PublicSampleInputRef const& ref, std::string_view id,
@@ -473,11 +526,11 @@ void GraphBuilder::subgraph_event_outputs(
     state(*this).subgraph_event_outputs(*scope, refs);
 }
 
-AuthoredGraph GraphBuilder::finish() const &
+ConfiguredGraph GraphBuilder::finish() const &
 {
     return state(*this).finish();
 }
-AuthoredGraph GraphBuilder::finish() &&
+ConfiguredGraph GraphBuilder::finish() &&
 {
     if (!_session) throw std::logic_error("cannot finish an empty GraphBuilder");
     return details::take_built_graph(_session);

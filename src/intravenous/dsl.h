@@ -4,11 +4,12 @@
 #include "intravenous/basic_nodes/constant.h"
 #include "intravenous/basic_nodes/arithmetic.h"
 #ifdef IV_INTERNAL_TRANSLATION_UNIT
-#error "dsl.h is reserved for user-authored DSL code; include graph/builder.h or module/abi.h from internal code."
+#error "dsl.h is reserved for user-configured DSL code; include graph/builder.h or module/abi.h from internal code."
 #endif
 
 #include <intravenous/channel_ports.h>
 #include <intravenous/module/source_annotations.h>
+#include <intravenous/module/package_definitions.h>
 #include <intravenous/node/module_api.h>
 
 #include <cstddef>
@@ -141,6 +142,24 @@ namespace iv {
         }
     }
 
+    constexpr void _annotate_node_input_source_info_after_statement(
+        NodeRef const* ref,
+        bool event,
+        char const* port_name,
+        char const* declaration_identity,
+        char const* file_path,
+        uint32_t begin,
+        uint32_t end)
+    {
+        ref->_annotate_input_source_info(
+            event ? PortKind::event : PortKind::sample,
+            port_name,
+            declaration_identity,
+            file_path,
+            begin,
+            end);
+    }
+
     constexpr void _annotate_public_output_after_statement(
         GraphBuilder* builder,
         bool event,
@@ -170,7 +189,7 @@ namespace iv {
 
     constexpr SamplePortRef lift(GraphBuilder& g, Sample value)
     {
-        return g.node<Constant>(value);
+        return g.lift_to_sample_port(value);
     }
 
     constexpr SamplePortRef lift(SamplePortRef s)
@@ -290,7 +309,7 @@ namespace iv {
         if constexpr (SamplePortLike<T>) {
             return static_cast<SamplePortRef>(std::forward<T>(x));
         } else {
-            return g.node<Constant>(static_cast<Sample>(x))();
+            return g.lift_to_sample_port(static_cast<Sample>(x));
         }
     }
 
@@ -300,6 +319,12 @@ namespace iv {
         std::floating_point<std::remove_cvref_t<T>> ||
         std::is_same_v<std::remove_cvref_t<T>, Sample>;
 
+    // Binary operators synthesize connection-aware, runtime-tiled nodes. They
+    // are compiler/DSL internals rather than a second public node-creation
+    // API: the registered-ID API deliberately accepts construction arguments,
+    // while these operands are graph connections. Once package definitions can
+    // publish a connection-aware dynamic factory, this can move behind the
+    // builtin package too without changing the source DSL.
     template<class Node, class ChannelType = void, class L, class R>
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
     constexpr auto make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
@@ -326,14 +351,21 @@ namespace iv {
         SamplePortRef rhs_sample_port = lift_sample_operand(*g, std::forward<R>(rhs));
 
         if constexpr (std::same_as<ChannelType, void>) {
-            return g->author_runtime_binary_op<Node>(
+            return details::configure_runtime_binary_op<Node>(
+                *g,
                 std::move(lhs_sample_port),
                 std::move(rhs_sample_port),
                 op_name);
         } else if constexpr (std::same_as<ChannelType, mono>) {
-            return g->node<Node>()(lhs_sample_port, rhs_sample_port);
+            // These are graph connections, not constructor arguments. Keep
+            // the generated mono node concrete and wire its two inputs after
+            // construction, just as the former private g.node<Node>() path
+            // did.
+            return details::configure_concrete_node<Node>(*g)(
+                std::move(lhs_sample_port), std::move(rhs_sample_port));
         } else {
-            return g->node<Node, ChannelType>()(lhs_sample_port, rhs_sample_port);
+            return details::configure_concrete_tiled_node<Node, ChannelType>(
+                *g)(std::move(lhs_sample_port), std::move(rhs_sample_port));
         }
     }
 

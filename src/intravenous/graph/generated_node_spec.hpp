@@ -47,8 +47,8 @@ using GeneratedNodeSpec = std::variant<
 
 namespace details {
 // Compiler-owned nodes are materialized in host-owned storage rather than
-// through the authored reflection entry point. Lowering only asks for a
-// complete concrete-node description; it never reflects an authored value.
+// through the configured reflection entry point. Lowering only asks for a
+// complete concrete-node description; it never reflects an configured value.
 struct RuntimeGeneratedNode {
     ReflectedNodeDescription description {};
     std::shared_ptr<void const> storage {};

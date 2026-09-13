@@ -18,13 +18,9 @@ int main()
     iv::test::copy_directory(project_src, project_dst);
     iv::test::copy_directory(voice_src, voice_dst);
 
-    iv::test::FakeAudioDevice audio_device;
     auto loader = iv::test::make_loader({ runtime_root });
-    auto graph = loader.load_root_definition(
-        project_dst,
-        iv::test::module_executor_target(audio_device),
-        &audio_device.sample_period()
-    );
+    (void)loader.load_package_definitions(voice_dst);
+    auto graph = loader.load_package_definitions(project_dst).front();
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);
@@ -33,10 +29,15 @@ int main()
     iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
     iv::test::require(!watcher.has_changes(), "watcher should ignore generated compile databases");
 
+    auto const clangd_cache = project_dst / ".cache" / "clangd" / "index";
+    std::filesystem::create_directories(clangd_cache);
+    iv::test::write_text_advancing_timestamp(clangd_cache / "module.cpp.fake.idx", "index\n");
+    iv::test::require(!watcher.has_changes(), "watcher should ignore clangd cache writes");
+
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
-    auto needle = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);");
-    auto replacement = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);/* watcher marker*/");
+    auto needle = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);");
+    auto replacement = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);/* watcher marker*/");
     iv::test::require(source.contains(needle), "watch fixture did not contain expected marker");
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text_advancing_timestamp(module_cpp, source);

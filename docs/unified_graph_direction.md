@@ -40,7 +40,7 @@ old execution partition that happens to implement them.
 
 The project graph is the common representation for:
 
-- C++ graph authoring;
+- C++ graph configuration;
 - direct graph editing;
 - iv-module realization and reconciliation;
 - specialized webviews such as timelines and mixers;
@@ -54,7 +54,7 @@ A node instance is not defined by its presentation, origin, or optimizer
 boundary. A node may have been created directly by a user, by C++, by an iv
 module, or by a specialized UI and still participate in the same project graph.
 
-The graph is not required to be manually authored. High-level interfaces may
+The graph is not required to be manually configured. High-level interfaces may
 create and manage graph structure, but their realization is still ordinary
 project graph state.
 
@@ -82,11 +82,11 @@ graph-managing, and optionally UI-providing abstraction. It may:
 - query and navigate graph state; and
 - participate in reification or subsumption where appropriate.
 
-An iv module is therefore not an execution partition. It is an authoring,
+An iv module is therefore not an execution partition. It is an configuration,
 management, provenance, and presentation boundary.
 
 A **C++ iv module** is one implementation of an iv module. It is a reusable,
-hot-reloadable graph-producing definition authored in C++. An atomic custom
+hot-reloadable graph-producing definition configured in C++. An atomic custom
 node type is a primitive implementation/schema; it can be provided by an iv
 module but does not require a nested execution graph.
 
@@ -117,7 +117,7 @@ identity returns.
 ### C++ virtual nodes
 
 C++ iv modules already provide this model through virtual nodes. Every
-source-authored virtual node has stable identity. A virtual node may represent
+source-configured virtual node has stable identity. A virtual node may represent
 one or several concrete members, and the ordering of concrete members under a
 given virtual node is itself stable identity.
 
@@ -194,9 +194,9 @@ Eventually, C++ expressions or small fragments may also become an interactive
 UI building block. That is exploratory rather than a present architectural
 commitment.
 
-## C++ and graph authoring
+## C++ and graph configuration
 
-C++ iv-module authoring and project graph wiring are two representations of
+C++ iv-module configuration and project graph wiring are two representations of
 the same structure. The desired transformations are:
 
 ```text

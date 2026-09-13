@@ -59,7 +59,7 @@ TEST(StartupConfig, IntravenousDefaultsOverrideToolchain)
     auto const install_dir = workspace / "install";
     std::filesystem::create_directories(install_dir);
     std::filesystem::remove_all(
-        iv::test::runtime_module_workspace_root("iv.test.local_cmake", workspace));
+        iv::test::runtime_module_workspace_root(workspace));
 
     auto const c_compiler = configured_program_or_find("clang", IV_CONFIGURED_C_COMPILER);
     auto const cxx_compiler = configured_program_or_find("clang++", IV_CONFIGURED_CXX_COMPILER);
@@ -104,4 +104,28 @@ TEST(StartupConfig, IntravenousDefaultsOverrideExecutionConfig)
     EXPECT_EQ(initialized.execution.compiled_sample_cache_chunk_size_multiplier, 8u);
     EXPECT_EQ(initialized.output_device_id, std::optional<std::string>("out-1"));
     EXPECT_EQ(initialized.input_device_id, std::nullopt);
+}
+
+TEST(StartupConfig, IntravenousDefaultsAddOrdinaryPackageSearchRoots)
+{
+    auto const workspace = mutable_module_fixture_workspace(
+        "startup_config_default_package_roots", "local_cmake");
+    auto const install_dir = workspace / "install";
+    auto const first_package_root = install_dir / "packages-a";
+    auto const second_package_root = install_dir / "packages-b";
+    std::filesystem::create_directories(install_dir);
+
+    iv::test_support::write_text(
+        install_dir / ".intravenous_defaults",
+        "iv_package_search_root=packages-a\n"
+        "iv_package_search_root=" + second_package_root.string() + "\n");
+
+    ScopedEnvVar env("INTRAVENOUS_DIR", install_dir.string());
+    ScopedEnvVar module_search_path("IV_MODULE_SEARCH_PATH", "");
+    iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
+    auto const initialized = startup_config.initialize();
+
+    ASSERT_EQ(initialized.search_roots.size(), 2u);
+    EXPECT_EQ(initialized.search_roots[0], std::filesystem::weakly_canonical(first_package_root));
+    EXPECT_EQ(initialized.search_roots[1], std::filesystem::weakly_canonical(second_package_root));
 }

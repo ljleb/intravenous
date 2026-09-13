@@ -326,16 +326,16 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             },
         };
     }
-    if (method == "ivModuleSources.list") {
+    if (method == "ivPackages.list") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,
-            .payload = GetIvModuleSourcesRequest{},
+            .payload = GetIvPackagesRequest{},
         };
     }
-    if (method == "ivModuleSources.create") {
+    if (method == "ivPackages.create") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,
-            .payload = CreateIvModuleSourceRequest{
+            .payload = CreateIvPackageRequest{
                 .name = parse_string_param(params, "name"),
             },
         };

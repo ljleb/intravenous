@@ -32,6 +32,7 @@ namespace iv {
         size_t history = 0;
         size_t latency = 0;
         std::optional<ChannelTypeId> sample_channel_type {};
+        std::vector<SourceSpan> source_spans {};
 
         bool operator==(IntrospectionPortInfo const&) const = default;
     };
@@ -90,7 +91,7 @@ namespace iv {
         ChannelTypeId channel_type = ChannelTypeId::mono;
         std::vector<GraphBuilderPublicSamplePortChannel> channels {};
         std::vector<SourceInfo> source_infos {};
-        bool authored_connected = false;
+        bool configured_connected = false;
     };
 
     struct GraphBuilderPublicSamplePortFamilies {

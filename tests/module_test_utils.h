@@ -23,6 +23,7 @@
 #include <regex>
 #include <source_location>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -41,7 +42,7 @@ namespace iv::test {
 
     inline std::filesystem::path repo_root()
     {
-        return std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path();
+        return std::filesystem::path(IV_CONFIGURED_SOURCE_DIR);
     }
 
     inline std::filesystem::path test_modules_root()
@@ -57,6 +58,20 @@ namespace iv::test {
     inline std::filesystem::path duplicate_modules_root()
     {
         return repo_root() / "tests" / "test_modules_duplicate";
+    }
+
+    inline void load_test_default_package_catalog(iv::ModuleLoader& loader)
+    {
+        // Direct-loader tests have no IvPackageReloadService. Seed the same
+        // catalog state it would provide, using the source package available
+        // to the test build rather than a loader-internal fallback.
+        auto defaults = loader.load_packages({
+            repo_root() / "src/intravenous/builtin_packages/builtin"});
+        if (defaults.size() != 1 || !defaults.front()) {
+            throw std::runtime_error(
+                defaults.empty() ? "test default IV package load produced no result"
+                                 : defaults.front().error);
+        }
     }
 
     inline std::string test_process_namespace()
@@ -201,20 +216,36 @@ namespace iv::test {
         return module_dir;
     }
 
-    inline std::filesystem::path runtime_module_workspace_root(
-        std::string_view id,
-        std::filesystem::path const& module_dir)
+    inline std::string source_package_key(std::filesystem::path const& source_dir)
     {
-        auto const project_root = project_root_for_module(module_dir);
+        auto const normalized = std::filesystem::weakly_canonical(source_dir).lexically_normal();
+        auto modules = normalized.end();
+        for (auto it = normalized.begin(); it != normalized.end(); ++it) {
+            if (*it == "modules") modules = it;
+        }
+        if (modules != normalized.end()) {
+            auto relative = std::filesystem::path{};
+            for (auto it = std::next(modules); it != normalized.end(); ++it) {
+                relative /= *it;
+            }
+            if (!relative.empty()) return relative.generic_string();
+        }
+        return normalized.filename().generic_string();
+    }
+
+    inline std::filesystem::path runtime_module_workspace_root(
+        std::filesystem::path const& source_dir)
+    {
+        auto const project_root = project_root_for_module(source_dir);
         return project_root / "build" / "iv" / "build" /
-            (sanitize_module_id(id) + "_" + stable_path_hash(module_dir));
+            (sanitize_module_id(source_package_key(source_dir)) + "_"
+                + stable_path_hash(source_dir));
     }
 
     inline std::filesystem::path runtime_module_workspace(
-        std::string_view id,
-        std::filesystem::path const& module_dir)
+        std::filesystem::path const& source_dir)
     {
-        return runtime_module_workspace_root(id, module_dir) / active_build_config();
+        return runtime_module_workspace_root(source_dir) / active_build_config();
     }
 
     inline void require(bool condition, char const* message)
@@ -361,18 +392,21 @@ namespace iv::test {
     }
 
     inline void write_inline_module_manifest(
-        std::filesystem::path const& workspace,
+        std::filesystem::path const& workspace)
+    {
+        write_text(
+            workspace / "iv_package.json",
+            "{\n  \"schema\": 2,\n  \"entry\": \"module.cpp\"\n}\n");
+    }
+
+    inline std::string registered_inline_module_source(
+        std::string module_text,
         std::string const& id,
         std::string const& main)
     {
-        std::ostringstream manifest;
-        manifest << "{\n"
-                 << "  \"schema\": 1,\n"
-                 << "  \"id\": \"" << id << "\",\n"
-                 << "  \"entry\": \"module.cpp\",\n"
-                 << "  \"main\": \"" << main << "\"\n"
-                 << "}\n";
-        write_text(workspace / "iv_module.json", manifest.str());
+        if (module_text.contains("IV_MODULE(")) return module_text;
+        module_text += "\nIV_MODULE(\"" + id + "\", " + main + ");\n";
+        return module_text;
     }
 
     inline std::filesystem::path make_inline_module_workspace(
@@ -384,8 +418,10 @@ namespace iv::test {
         std::filesystem::create_directories(workspace);
         write_text(workspace / "iv_project.jsonl", "");
         auto const [id, main] = inline_module_metadata(module_text);
-        write_inline_module_manifest(workspace, id, main);
-        write_text(workspace / "module.cpp", module_text);
+        write_inline_module_manifest(workspace);
+        write_text(
+            workspace / "module.cpp",
+            registered_inline_module_source(module_text, id, main));
         return workspace;
     }
 
@@ -399,8 +435,10 @@ namespace iv::test {
         std::filesystem::create_directories(workspace);
         write_text(workspace / "iv_project.jsonl", "");
         auto const [id, main] = inline_module_metadata(module_text);
-        write_inline_module_manifest(workspace, id, main);
-        write_text(workspace / "module.cpp", module_text);
+        write_inline_module_manifest(workspace);
+        write_text(
+            workspace / "module.cpp",
+            registered_inline_module_source(module_text, id, main));
         return workspace;
     }
 
@@ -442,17 +480,24 @@ namespace iv::test {
 
     inline iv::IvModuleReloadedDefinition load_runtime_iv_module_definition(
         iv::StartupConfigState const& config,
-        std::filesystem::path module_root)
+        std::filesystem::path package_root)
     {
-        auto const normalized_module_root =
-            std::filesystem::weakly_canonical(module_root).lexically_normal();
+        auto const normalized_package_root =
+            std::filesystem::weakly_canonical(package_root).lexically_normal();
         auto const load_lock = ScopedFileLock(
-            runtime_module_cache_root() / ("load_" + stable_path_hash(normalized_module_root) + ".lock"));
-        iv::ModuleLoader loader(config.discovery_start, config.search_roots, config.toolchain);
-        auto loaded_graph = loader.load_root_definition(module_root);
+            runtime_module_cache_root() / ("load_" + stable_path_hash(normalized_package_root) + ".lock"));
+        iv::ModuleLoader loader(
+            config.discovery_start,
+            config.search_roots,
+            config.toolchain,
+            {},
+            iv::ModuleLoader::OptimizationLevel::O0);
+        load_test_default_package_catalog(loader);
+        auto loaded_graph = loader.load_package_definitions(package_root).front();
         return iv::IvModuleReloadedDefinition{
+            .package_id = normalized_package_root.generic_string(),
             .definition_id = loaded_graph.module_id,
-            .module_root = normalized_module_root,
+            .package_root = normalized_package_root,
             .module_id = loaded_graph.module_id,
             .introspection = loaded_graph.introspection,
             .dependencies = loaded_graph.dependencies,
@@ -461,22 +506,33 @@ namespace iv::test {
         };
     }
 
+    // Synthetic "loaded" definitions model a usable, zero-argument IV module
+    // unless a test explicitly asks for a rootless definition.  Production
+    // rootless definitions remain valid registry entries, but cannot realize a
+    // persisted project instance because there is no execution root to hand to
+    // the instance runtime.
+    struct LoadedDefinitionTestRoot {
+        void tick_block(auto const&) const {}
+    };
+    inline LoadedDefinitionTestRoot const loaded_definition_test_root{};
+
     inline iv::IvModuleReloadedDefinition make_loaded_definition(
-        std::filesystem::path module_root,
+        std::filesystem::path package_root,
         std::string module_id = "iv.test.module",
         iv::GraphIntrospectionMetadata introspection = {},
         std::vector<iv::ModuleDependency> dependencies = {})
     {
-        auto const normalized_module_root =
-            std::filesystem::weakly_canonical(module_root).lexically_normal();
+        auto const normalized_package_root =
+            std::filesystem::weakly_canonical(package_root).lexically_normal();
         return iv::IvModuleReloadedDefinition{
+            .package_id = normalized_package_root.generic_string(),
             .definition_id = module_id,
-            .module_root = normalized_module_root,
+            .package_root = normalized_package_root,
             .module_id = std::move(module_id),
             .introspection = std::move(introspection),
             .dependencies = std::move(dependencies),
             .module_refs = {},
-            .root = {},
+            .root = iv::WeakTypeErasedNode(loaded_definition_test_root),
         };
     }
 
@@ -552,9 +608,20 @@ namespace iv::test {
     }
 
     inline iv::ModuleLoader make_loader(
-        std::vector<std::filesystem::path> extra_roots = {test_modules_root()})
+        std::vector<std::filesystem::path> extra_roots = {})
     {
-        return iv::ModuleLoader(repo_root(), std::move(extra_roots));
+        // ModuleLoader supplies the application-built shared DSL PCH when no
+        // explicit override is requested. The production catalog explicitly
+        // declares its default package roots before module configuration; make
+        // that setup equally explicit in direct-loader tests.
+        iv::ModuleLoader loader(
+            repo_root(),
+            std::move(extra_roots),
+            {},
+            {},
+            iv::ModuleLoader::OptimizationLevel::O0);
+        load_test_default_package_catalog(loader);
+        return loader;
     }
 
     template<typename Device>

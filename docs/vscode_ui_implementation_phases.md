@@ -55,7 +55,7 @@ that responsibility cleanly before inventing a new one.
 - consume the lane-content notifications already present in the runtime
 - render lane content in the panel instead of only structural lane lists
 - introduce the first pass of real track-canvas behavior
-- surface authored per-lane color in the lane workspace
+- surface configured per-lane color in the lane workspace
 
 ## Phase 7. Lane query and visual-settings editing
 

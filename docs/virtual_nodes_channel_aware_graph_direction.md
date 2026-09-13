@@ -14,10 +14,20 @@ This is a design direction, not a compatibility plan. `multi_channel` and its
 generated-port-name protocol are to be removed after callers and tests have
 migrated.
 
+### Current source boundary
+
+The historical examples below use `g.node<T>()` and `g.node<T, C>()` to explain
+the concrete/tiled model. Those overloads are no longer public. Module source
+uses only `g.node<"stable.id">(...)`, which returns `NodeRef` and hides whether
+the provider is a primitive node or an iv module. Concrete typed and tiled
+construction remain provider/lowering internals. If a source-facing
+channel-specific provider is needed, it must have its own registered ID rather
+than restoring a type-template overload on `GraphBuilder`.
+
 ## Terminology
 
 "Logical node" is historical terminology for a different mechanism. This
-model instead distinguishes source-authored **virtual nodes** from their
+model instead distinguishes source-configured **virtual nodes** from their
 builder-visible **node bundles** and executable **concrete nodes**.
 
 | Term | Meaning |
@@ -25,7 +35,7 @@ builder-visible **node bundles** and executable **concrete nodes**.
 | **Concrete node** | One executable node instance run by the DSP graph. |
 | **Concrete port** | An input or output on a concrete node, with a declared channel type/layout. |
 | **Node bundle** | One builder-visible node implementation: either one concrete node, a tiled set of concrete nodes, or a subgraph node. It is the lowest graph-builder layer exposed to tooling. The UI calls this a **concrete member** to contrast it with a virtual node. |
-| **Virtual node** | The source-authored object associated with one named lvalue that receives a node-bundle reference. It owns explicit membership and virtual-port mappings to node bundles. |
+| **Virtual node** | The source-configured object associated with one named lvalue that receives a node-bundle reference. It owns explicit membership and virtual-port mappings to node bundles. |
 | **Virtual port** | One graph-facing and UI-facing port on a virtual node. It composes the corresponding port of each member node bundle. |
 | **Tiled node** | A node bundle whose fully-mono concrete node type is instantiated once for each member of a requested channel type. A tiled node is not itself a concrete node or a virtual node; source annotation may associate its bundle with one or more virtual nodes. |
 | **Tile** | One concrete-node member of a tiled node. For a mono node tiled to stereo, the left and right concrete instances are the two tiles. |
@@ -38,41 +48,58 @@ Source spans and source identities attach to virtual nodes. Introspection and
 the sidepanel project their member node bundles as UI “concrete” members, while
 keeping the concrete nodes and tiles inside a bundle as implementation detail.
 
-## Authored identity, references, and membership
+## Configured identity, references, and membership
 
-A bare `g.node<T>()` expression creates concrete-node implementation data and
-returns a node reference. It does not, by itself, create an authored virtual
+A bare `g.node<"registered.filter">()` expression resolves a provider and
+creates concrete-node implementation data internally, then
+returns a node reference. It does not, by itself, create an configured virtual
 node. The source rewriter establishes virtual-node identity when a named
-lvalue receives that reference. It gives an uninitialized node-reference
-lvalue its stable declaration identity and wraps its initializer or assignment
-right-hand side with the source-annotation operation for that identity.
+lvalue receives that reference. Source provenance is deliberately syntactic:
+the declarator identifier and later id-expression references to that lvalue
+are annotated, while its initializer, direct builder/node calls, arithmetic
+expressions, and other surrounding expression syntax are not. An
+uninitialized node-reference lvalue receives its declaration annotation once
+its first assignment has produced a valid reference.
+
+A named binding such as `"frequency"_P = value` or `"trigger"_F = value`
+also contributes the quoted name string as provenance for the corresponding
+virtual input port. The `_P`/`_F` suffix and the binding value expression are
+not part of that span. A source query that selects this span projects the
+virtual node down to that one port for the sidepanel instead of presenting all
+of the surrounding node's ports. Public outputs retain a narrow special case
+only to attach the same quoted-name span to the correct public-output ordinal;
+an unnamed `g.outputs(value)` / `g.event_outputs(value)` call contributes no
+source span. Runtime port editability is independent of this provenance: all
+ports of a node with a backing virtual node remain controllable even when a
+particular port has no named-binding source span.
 
 Conceptually:
 
 ```text
-auto filter = g.node<Filter>();
+auto filter = g.node<"registered.filter">();
 
-source-authored lvalue `filter`
+source-configured lvalue `filter`
   -> stable virtual-node identity
-  -> explicit membership/mapping to the Filter node bundle
+  -> explicit membership/mapping to the provider node bundle
 ```
 
 This source annotation is an explicit declaration of membership; it is not a
 later grouping heuristic. Source spans and type identities may be stored as
 metadata on the virtual node, but they must never be used to discover, split,
-or merge virtual nodes. Internal builder-generated nodes, unannotated
-temporaries, constants, sums, packs, and unpacks have no authored virtual-node
-identity unless an explicit source annotation associates them with one.
+or merge virtual nodes. Internal builder-generated nodes, direct node
+expressions, unannotated temporaries, constants, sums, packs, and unpacks have
+no configured virtual-node identity unless an annotated identifier associates
+them with one.
 
 Node-reference values remain move-only. That is a runtime-reference rule which
-keeps authored C++ assignment and aliasing behavior tractable; it is not an
+keeps configured C++ assignment and aliasing behavior tractable; it is not an
 exclusive-ownership rule for graph metadata. Moving a reference clears the
 moved-from runtime handle, but does not remove virtual-node/node-bundle memberships
 already recorded by source annotation.
 
 Virtual-node/node-bundle membership is explicitly many-to-many. One virtual
 node can have several node-bundle members, and one node bundle may be a member
-of more than one virtual node when separately annotated authored lvalues
+of more than one virtual node when separately annotated configured lvalues
 intentionally project it. A tiled bundle contains several concrete tile nodes.
 The builder stores both directions:
 
@@ -111,24 +138,26 @@ builder can plan the appropriate conversion.
 
 ## Node creation and tiling
 
-`g.node<Node>()` retains `Node`'s native concrete-port interface.
-`g.node<Node, RequestedChannelType>()` requests a channel-aware authored-node
+Concrete construction retains a node's native concrete-port interface.
+Internally, a tiled construction can request a channel-aware configured-node
 interface backed by one or more concrete instances. The channel type is
-explicit in the initial model; it is not an implicit graph-wide default.
+explicit in the initial model; it is not an implicit graph-wide default. These
+are implementation mechanics, not public `GraphBuilder::node` overloads.
 
 A virtual node is builder and graph metadata, not a distinct value returned to
-module authors. The expression still returns the familiar node-reference
-interface: it is called to connect named inputs and is used to obtain named
-output references. A source-authored binding such as
-`auto const filter = g.node<OnePoleFilter, stereo>();` has one corresponding
-virtual node, even when its implementation has several concrete members.
+module authors. A source-facing registered provider returns the familiar erased
+node-reference interface: it is called to connect named inputs and is used to
+obtain named output references. A source-configured binding such as
+`auto const filter = g.node<"registered.one_pole_filter">();` has one
+corresponding virtual node, even when its implementation has several concrete
+members.
 
 The returned reference does **not** expose or require indexing the concrete
 nodes. It presents the promoted channel type at every sample port. For a node
 whose native declarations are all mono:
 
 ```text
-native OnePoleFilter             g.node<OnePoleFilter, stereo>()
+native OnePoleFilter             internal tiled provider implementation
 
 input  "source": mono            input  "source": stereo
 input  "cutoff": mono            input  "cutoff": stereo
@@ -138,7 +167,7 @@ output "main":   mono            output "main":   stereo
 The normal node-call and output-reference DSL remains the interface:
 
 ```cpp
-auto const filter = g.node<OnePoleFilter, stereo>();
+auto const filter = g.node<"registered.one_pole_filter">();
 filter("source"_P = stereo_source, "cutoff"_P = stereo_cutoff);
 auto filtered = filter["main"_P];
 ```
@@ -148,8 +177,8 @@ auto filtered = filter["main"_P];
 the `"main"_P[stereo::left]` form); it does not select a concrete filter
 instance. Normal node-to-node wiring therefore does not expose tiling.
 
-The initial implementation permits `g.node<Node, RequestedChannelType>()`
-only when every sample input and output declared by `Node` is mono. It creates
+The initial implementation permits internal tiled construction only when every
+sample input and output declared by `Node` is mono. It creates
 one independent concrete `Node` instance for every member of the requested
 channel type. For each member `c`, every mono concrete input/output port maps
 to channel `c` of the corresponding promoted virtual port. A mono value may
@@ -157,8 +186,8 @@ broadcast into such a promoted port, and compatible channel representations
 convert at the consuming edge.
 
 This restriction deliberately rejects nodes with mixed mono and native
-multi-channel sample ports. For example,
-`g.node<MixedMonoStereoNode, surround_5_1>()` is invalid initially. Channel
+multi-channel sample ports. For example, an internal request to tile
+`MixedMonoStereoNode` to `surround_5_1` is invalid initially. Channel
 count divisibility does not say whether the mono port should broadcast, become
 5.1, or be shared, nor how a native stereo port partitions into 5.1. Those are
 future explicit per-port mapping rules, not defaults inferred from width.
@@ -229,7 +258,7 @@ same adapter semantics.
 
 These are builder-generated internal nodes. They participate in ordinary root
 graph compilation, scheduling, buffer lifetime, latency, and SCC handling,
-but do not appear as authored nodes, sidepanel entries, or lane endpoints.
+but do not appear as configured nodes, sidepanel entries, or lane endpoints.
 
 The producer retains its declared representation. A consumer receives the
 representation declared by its concrete port. This follows the existing lane
@@ -255,7 +284,8 @@ node's config array and port index/name. A change from mono to stereo then
 causes mono-only node code to fail locally at compile time, while genuinely
 generic traversal code remains valid.
 
-Every concrete DSP node inserted through `g.node<T>()` must satisfy this
+Every concrete DSP node inserted by a registered provider or internal builder
+operation must satisfy this
 constexpr sample-port contract. Runtime-shaped sample-port declarations are
 not a second concrete-node path. `TypeErasedNode` remains runtime storage and
 dispatch machinery for an already-built graph, but is not itself an insertable
@@ -287,8 +317,8 @@ other DSP node.
 ## Sidepanel and lane semantics
 
 The sidepanel displays virtual nodes, their virtual ports, and their member
-node bundles as UI “concrete” members. An authored
-`g.node<MonoFilter, stereo>()` binding therefore contributes one concrete
+node bundles as UI “concrete” members. A registered provider whose
+implementation tiles `MonoFilter` to stereo therefore contributes one concrete
 member with stereo ports, even though its implementation contains two mono
 filter tiles. Tile count, tile order, and concrete node IDs are implementation
 detail and must not appear in UI labels, persisted UI state, or lane identities.
@@ -372,7 +402,7 @@ during this work.
   execution contract on which all other channel work relies.
 - **Channel boundary adapters.** Add generic internal `ChannelPack<C>` and
   `ChannelUnpack<C>` concrete nodes, including their ordinary root-graph
-  execution and tests. They are independent of virtual nodes and the authored
+  execution and tests. They are independent of virtual nodes and the configured
   node-reference DSL.
 - **Native channel-aware node interface.** Make the existing node-reference,
   node-call, output-access, arithmetic, and public-port DSL carry a reference
@@ -380,21 +410,22 @@ during this work.
   wiring end-to-end.
 - **Virtual graph metadata.** Replace inferred logical grouping with explicit
   virtual-node identities, virtual ports, and initial virtual-to-execution-
-  node/port mappings. Source annotation on an authored lvalue records an
+  node/port mappings. Source annotation on an configured lvalue records an
   identity and explicit membership; insertion alone does not. Membership may
   be many-to-many, but it is never reconstructed from names, source spans,
   scopes, adjacency, or type matching.
-- **Tiled node insertion, values, lowering, and old-model removal.** Add
-  `g.node<T, C>()` through `TiledNode<T, C>` for constexpr fully-mono sample
+- **Tiled node insertion, values, lowering, and old-model removal.** Add an
+  internal `TiledNode<T, C>` implementation for constexpr fully-mono sample
   nodes, with one execution tile per member of `C` and a channel-aware form of
-  the existing node-reference interface. Its channel-aware port values map
-  members of `C` to separate mono execution ports; matching tiled endpoints
-  lower to direct mono edges, and native/tiled boundaries lower through
-  pack/unpack and conversion operations. These behaviors are one atomic item:
-  none is meaningful without the others. In the same migration, delete
-  `GraphBuilder::multi_channel`, callback-manufactured `ChannelRefs`, generated
-  `__mono_*`/`__stereo_*` names, their parser, and all fallback tests; migrate
-  every caller directly.
+  the existing node-reference interface. Source-facing providers expose that
+  behavior through stable IDs, not `g.node<T, C>()`. Its channel-aware port
+  values map members of `C` to separate mono execution ports; matching tiled
+  endpoints lower to direct mono edges, and native/tiled boundaries lower
+  through pack/unpack and conversion operations. These behaviors are one
+  atomic item: none is meaningful without the others. In the same migration,
+  delete `GraphBuilder::multi_channel`, callback-manufactured `ChannelRefs`,
+  generated `__mono_*`/`__stereo_*` names, their parser, and all fallback
+  tests; migrate every caller directly.
 - **Virtual-node projection.** Make source introspection and the sidepanel
   expose virtual nodes and virtual ports, hiding execution nodes and tiles.
 - **Virtual lane-state ownership.** Re-key `GraphInputLanes`, project

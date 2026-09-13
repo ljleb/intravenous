@@ -12,7 +12,7 @@
 namespace iv {
     // Graph port-data nodes are execution storage, not reflective ports.  By
     // the time a graph reaches this representation its input name, range, and
-    // other authoring-only attributes have already been consumed.  Keeping a
+    // other configuration-only attributes have already been consumed.  Keeping a
     // full StaticInputConfig here duplicated every private input in the
     // generated object and inflated constexpr static promotion substantially.
     struct GraphPortStorageConfig {

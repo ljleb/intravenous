@@ -234,7 +234,7 @@ TEST(NodeStorageMigration, SameNodeNameRefusesSameSizeChangedStateFieldType)
     auto new_storage = new_layout.create_storage(resources);
     EXPECT_TRUE(new_storage.can_move_from(old_storage, 0, 0));
 
-    // Hot-reload identity may legitimately retain the authored node name.
+    // Hot-reload identity may legitimately retain the configured node name.
     // A field-type change can retain the same ABI size/alignment, so comparing
     // only the node name or State byte size would permit an unsafe move.
     new_layout.nodes.front().node_state_structure->fields.front().type_name =

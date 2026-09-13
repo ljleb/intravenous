@@ -4,7 +4,7 @@
 
 `GraphInputLanes` should not think only in terms of vacant DSP graph inputs.
 
-Instead, it should own authored desired state for logical DSP-facing inputs and
+Instead, it should own configured desired state for logical DSP-facing inputs and
 outputs, plus their timeline-lane exposure policy, and it should re-complete
 realized DSP instance graphs when that desired state changes.
 
@@ -31,7 +31,7 @@ without racing the current execution pass.
 
 ## Input-state model
 
-There are two authored state layers.
+There are two configured state layers.
 
 ### Logical sample knob state
 
@@ -55,7 +55,7 @@ Defaults:
   - vacant controllable input port -> `logical_follow`
   - already-connected DSP input port -> `disconnected`
 - concrete sample inputs are initialized in `default` unless explicit state is
-  authored later
+  configured later
 
 `disconnected` is still meaningful for vacant inputs:
 
@@ -86,7 +86,7 @@ Unlike inputs, outputs do not need a separate `default` state because
 `disconnected` already expresses the intended initial behavior: nothing is
 exposed to the timeline unless the user explicitly asks for it.
 
-There are again two authored state layers.
+There are again two configured state layers.
 
 ### Logical DSP output port state
 
@@ -151,7 +151,7 @@ The same applies on the output side.
 - concrete outputs in `disconnected` feed neither
 
 For logical outputs in `timeline_lane`, the aggregation surface exists only if
-the authored logical state asks for it. `GraphInputLanes` does not need to keep
+the configured logical state asks for it. `GraphInputLanes` does not need to keep
 an aggregate node alive across rebuilds; rebuilding from the canonical builder
 and letting normal lowering recreate the fan-in is sufficient.
 
@@ -159,7 +159,7 @@ and letting normal lowering recreate the fan-in is sufficient.
 
 When desired I/O state changes:
 
-1. `GraphInputLanes` updates its authored desired-state structures immediately.
+1. `GraphInputLanes` updates its configured desired-state structures immediately.
 2. If the change requires structural repatching, it marks the affected instance
    as pending rebuild.
 3. On `TaskRunner` pass-finished, `GraphInputLanes` requests those instance
@@ -176,7 +176,7 @@ Timeline lane structural changes should follow the same boundary. Lane batches
 may be prepared eagerly inside `GraphInputLanes`, but they should only be
 applied to `Timeline` and `TimelineExecution` between two `TaskRunner` passes.
 
-For outputs, practically every authored state transition is structural:
+For outputs, practically every configured state transition is structural:
 
 - logical output `disconnected <-> timeline_lane`
 - concrete output `disconnected <-> logical`
@@ -190,7 +190,7 @@ Those transitions should therefore rebuild on the pass-finished boundary too.
 The useful remaining direction from this note is:
 
 - keep builder completion derived from fresh canonical builders
-- keep authored graph I/O state in `GraphInputLanes`
+- keep configured graph I/O state in `GraphInputLanes`
 - keep value-only updates out of the rebuild path
 - keep both DSP repatching and timeline lane structural updates on the
   pass-finished boundary

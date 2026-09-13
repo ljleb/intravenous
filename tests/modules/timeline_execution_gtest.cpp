@@ -444,6 +444,63 @@ TEST(TimelineExecution, SynchronizeDiffUpdatesRetainedLanesInsteadOfRecreatingTh
     EXPECT_NE(first_lane, second_lane);
 }
 
+TEST(TimelineExecution, RemovedLaneCallbackIsOwnedByTheOldTaskGraph)
+{
+    iv::Timeline timeline;
+    auto const lane = timeline.with_graph([&](iv::LaneGraph& graph) {
+        return graph.add_lane(
+            iv::TypeErasedLaneNode(iv::KnobLaneNode{.value = 1.0f}),
+            {},
+            iv::ChannelTypeId::mono);
+    });
+    iv::TimelineExecution execution(8);
+    auto const initial = timeline.with_graph([&](iv::LaneGraph const& graph) {
+        return execution.synchronize_from_graph(graph);
+    });
+    ASSERT_EQ(initial.update.to_create.size(), 1u);
+    auto const old_callback = initial.update.to_create.front().callback;
+    ASSERT_TRUE(old_callback.context_owner);
+
+    auto const removal = execution.handle_timeline_lanes_changed(
+        iv::TimelineLanesChanged{.removed_lanes = {lane}});
+    ASSERT_EQ(removal.update.to_delete.size(), 1u);
+
+    // This is the callback retained by the runner's old graph. It must remain
+    // valid through the pass even though the lane has already left the
+    // TimelineExecution model.
+    ASSERT_NE(old_callback.invoke, nullptr);
+    old_callback.invoke(old_callback.context);
+
+}
+
+TEST(TimelineExecution, RetainsReplacedTimelineNodeUntilTheExecutionModelRefreshes)
+{
+    iv::LaneGraph graph;
+    auto const lane = graph.add_lane(
+        iv::TypeErasedLaneNode(iv::KnobLaneNode{.value = 1.0f}),
+        {},
+        iv::ChannelTypeId::mono);
+    iv::TimelineExecution execution(8);
+    (void)execution.synchronize_from_graph(graph);
+
+    std::weak_ptr<iv::TypeErasedLaneNode> replaced_node = graph.lane(lane).node;
+    graph.upsert_lane(
+        lane,
+        iv::TypeErasedLaneNode(iv::KnobLaneNode{.value = 2.0f}),
+        {},
+        {},
+        iv::ChannelTypeId::mono);
+
+    // Timeline mutates its graph before it publishes the corresponding
+    // execution update. The previous execution snapshot must keep the old
+    // node alive throughout that handoff, rather than leaving a worker with a
+    // dangling raw pointer.
+    EXPECT_FALSE(replaced_node.expired());
+
+    (void)execution.synchronize_from_graph(graph);
+    EXPECT_TRUE(replaced_node.expired());
+}
+
 TEST(TimelineExecution, ExecutesRealtimeSampleKnobChainForward)
 {
     iv::Timeline timeline;

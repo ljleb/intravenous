@@ -19,34 +19,18 @@ IvModuleSourceIntrospectionLiveInputSnapshotsBuilder::build() const
     return *result;
 }
 
-void IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder::succeed(
-    IvModuleSourceIntrospectionAuthoredStateSnapshot value)
+void IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder::succeed(
+    IvModuleSourceIntrospectionConfiguredStateSnapshot value)
 {
     result = std::move(value);
 }
 
-IvModuleSourceIntrospectionAuthoredStateSnapshot
-IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder::build() const
+IvModuleSourceIntrospectionConfiguredStateSnapshot
+IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder::build() const
 {
     if (!result.has_value()) {
         throw std::runtime_error(
-            "runtime project introspection authored state snapshot request was not handled");
-    }
-    return *result;
-}
-
-void IvModuleSourceIntrospectionPublicPortsSnapshotBuilder::succeed(
-    IvModuleSourceIntrospectionPublicPortsSnapshot value)
-{
-    result = std::move(value);
-}
-
-IvModuleSourceIntrospectionPublicPortsSnapshot
-IvModuleSourceIntrospectionPublicPortsSnapshotBuilder::build() const
-{
-    if (!result.has_value()) {
-        throw std::runtime_error(
-            "runtime project introspection public ports snapshot request was not handled");
+            "runtime project introspection configured state snapshot request was not handled");
     }
     return *result;
 }

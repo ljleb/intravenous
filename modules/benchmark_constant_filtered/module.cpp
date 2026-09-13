@@ -1,16 +1,13 @@
 #include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
-#include <intravenous/basic_nodes/filters.h>
-#include <intravenous/basic_nodes/shaping.h>
 
 void benchmark_constant_filtered(iv::GraphBuilder& g)
 {
     using namespace iv;
 
-    auto const phase = g.node<PhaseIntegrator>();
-    auto const osc = g.node<SawOscillator>();
-    auto const low_pass = g.node<SimpleIirLowPass>();
-    auto const high_pass = g.node<SimpleIirHighPass>();
+    auto const phase = g.node<"phase_integrator">();
+    auto const osc = g.node<"saw_oscillator">();
+    auto const low_pass = g.node<"simple_iir_low_pass">();
+    auto const high_pass = g.node<"simple_iir_high_pass">();
 
     phase(0.0);
     osc(
@@ -23,3 +20,5 @@ void benchmark_constant_filtered(iv::GraphBuilder& g)
     auto const tone = high_pass * 0.12;
     g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
 }
+
+IV_MODULE("iv.test.benchmark_constant_filtered", benchmark_constant_filtered);

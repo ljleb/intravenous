@@ -1,11 +1,11 @@
 #include "../module_test_utils.h"
 
 #include <intravenous/basic_lane_nodes/controls.h>
-#include <intravenous/runtime/authored_lanes.h>
-#include <intravenous/runtime/authored_lanes_timeline_bridge.h>
+#include <intravenous/runtime/configured_lanes.h>
+#include <intravenous/runtime/configured_lanes_timeline_bridge.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
 #include <intravenous/runtime/project_persistence.h>
-#include <intravenous/runtime/project_persistence_authored_lanes_bridge.h>
+#include <intravenous/runtime/project_persistence_configured_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_bridge.h>
 #include <intravenous/runtime/project_persistence_timeline_execution_bridge.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
@@ -69,23 +69,23 @@ std::string settings_line(size_t multiplier)
 
 struct TimelineProjectBindings {
     iv::timeline_timeline_execution_bridge::scope timeline_execution;
-    iv::authored_lanes_timeline_bridge::scope authored_timeline;
+    iv::configured_lanes_timeline_bridge::scope configured_timeline;
     iv::project_persistence_timeline_execution_bridge::scope project_execution;
     iv::project_persistence_timeline_bridge::scope project_timeline;
-    iv::project_persistence_authored_lanes_bridge::scope project_authored;
+    iv::project_persistence_configured_lanes_bridge::scope project_configured;
 
     TimelineProjectBindings(
         iv::ProjectPersistence &persistence,
         iv::Timeline &timeline,
         iv::TimelineExecution &execution,
-        iv::AuthoredLanes &authored_lanes)
+        iv::ConfiguredLanes &configured_lanes)
         : timeline_execution(iv::timeline_timeline_execution_bridge::bind(timeline, execution))
-        , authored_timeline(iv::authored_lanes_timeline_bridge::bind(authored_lanes, timeline))
+        , configured_timeline(iv::configured_lanes_timeline_bridge::bind(configured_lanes, timeline))
         , project_execution(
             iv::project_persistence_timeline_execution_bridge::bind(persistence, execution))
         , project_timeline(iv::project_persistence_timeline_bridge::bind(persistence, timeline))
-        , project_authored(
-            iv::project_persistence_authored_lanes_bridge::bind(persistence, authored_lanes))
+        , project_configured(
+            iv::project_persistence_configured_lanes_bridge::bind(persistence, configured_lanes))
     {}
 };
 } // namespace
@@ -139,9 +139,9 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeUpdatesTimelineExecution
                 .compiled_sample_cache_chunk_size_multiplier = 16,
             },
         });
-    iv::AuthoredLanes authored_lanes({.sample_rate = 48000});
+    iv::ConfiguredLanes configured_lanes({.sample_rate = 48000});
     TimelineProjectBindings project_bindings(
-        persistence, timeline, execution, authored_lanes);
+        persistence, timeline, execution, configured_lanes);
     iv::SocketRpcServer server(workspace, -1);
     auto socket_project_scope =
         iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
@@ -181,9 +181,9 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeRejectsZeroMultiplier)
     iv::ProjectPersistence persistence(
         workspace,
         iv::StartupConfigState{.workspace_root = workspace});
-    iv::AuthoredLanes authored_lanes({.sample_rate = 48000});
+    iv::ConfiguredLanes configured_lanes({.sample_rate = 48000});
     TimelineProjectBindings project_bindings(
-        persistence, timeline, execution, authored_lanes);
+        persistence, timeline, execution, configured_lanes);
     iv::SocketRpcServer server(workspace, -1);
     auto socket_project_scope =
         iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
@@ -222,9 +222,9 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetLaneSampleChannelTypeUpdatesTimel
     iv::ProjectPersistence persistence(
         workspace,
         iv::StartupConfigState{.workspace_root = workspace});
-    iv::AuthoredLanes authored_lanes({.sample_rate = 48000});
+    iv::ConfiguredLanes configured_lanes({.sample_rate = 48000});
     TimelineProjectBindings project_bindings(
-        persistence, timeline, execution, authored_lanes);
+        persistence, timeline, execution, configured_lanes);
     iv::SocketRpcServer server(workspace, -1);
     auto socket_project_scope =
         iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
@@ -255,9 +255,9 @@ TEST(SocketRpcTimelineExecutionBridge, DirectOverrideSettingsEventUpdatesTimelin
     iv::ProjectPersistence persistence(
         workspace,
         iv::StartupConfigState{.workspace_root = workspace});
-    iv::AuthoredLanes authored_lanes({.sample_rate = 48000});
+    iv::ConfiguredLanes configured_lanes({.sample_rate = 48000});
     TimelineProjectBindings project_bindings(
-        persistence, timeline, execution, authored_lanes);
+        persistence, timeline, execution, configured_lanes);
 
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_project_override_settings_requested_event,
@@ -300,9 +300,9 @@ TEST(SocketRpcTimelineExecutionBridge, LoadAppliesRecognizedOverrideSettingsAndL
     auto notification_scope =
         project_notification_witness_bridge::bind(persistence, witness);
 
-    iv::AuthoredLanes authored_lanes({.sample_rate = 48000});
+    iv::ConfiguredLanes configured_lanes({.sample_rate = 48000});
     TimelineProjectBindings project_bindings(
-        persistence, timeline, execution, authored_lanes);
+        persistence, timeline, execution, configured_lanes);
     persistence.load();
 
     EXPECT_EQ(execution.compiled_sample_cache_chunk_size_multiplier(), 8u);

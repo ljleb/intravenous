@@ -25,7 +25,7 @@ namespace iv {
         auto operator<=>(ConcretePortId const&) const = default;
     };
 
-    // Stable authored identity. It is intentionally independent of a
+    // Stable configured identity. It is intentionally independent of a
     // NodeBundle or ConcreteNode so lane and persistence state survive rebuilds.
     struct VirtualPortId {
         std::string virtual_node_id {};

@@ -25,7 +25,7 @@ replace the intended direction in `vscode_ui_architecture_direction.md`.
 - A persistent live-graph sidebar is registered in the Intravenous activity
   container and receives incremental graph updates.
 - It shows logical nodes, merged-node members, port groups, current values,
-  defaults/ranges where applicable, authored/effective state summaries, and
+  defaults/ranges where applicable, configured/effective state summaries, and
   supported sample/event input/output state transitions.
 - It supports input value editing and reset/default actions, including the
   state mutations routed through the existing graph JSON-RPC methods.
@@ -62,7 +62,7 @@ replace the intended direction in `vscode_ui_architecture_direction.md`.
   suppression).
 - A defined default lane-header/track anatomy and the requested visual design
   specification.
-- Authored project lane colors and lane-view context actions to edit them.
+- Configured project lane colors and lane-view context actions to edit them.
 - Correct cross-view cable semantics: current panels serialize only endpoints
   among their local lanes, rather than rendering local fragments plus explicit
   off-view continuations.
@@ -99,7 +99,7 @@ chrome.
   until there is functional behavior to expose. Do not conflate it with the
   lane selection query.
 - Preserve the collapsed/expanded state per panel. It is presentation state,
-  rather than a new project-authored view property.
+  rather than a new project-configured view property.
 
 ### 2. Lane selection and inspection primitives
 
@@ -137,7 +137,7 @@ Start with a connection inspector/list rather than canvas cable editing:
 The current client only displays connections returned by a lane-view result;
 it has no connect/disconnect RPC wrapper or webview action. Runtime project
 persistence recognizes `timeline.connectLanes` and
-`timeline.connectAuthoredLanes`, but the current socket request dispatcher does
+`timeline.connectConfiguredLanes`, but the current socket request dispatcher does
 not expose corresponding JSON-RPC methods. Therefore this slice needs a small,
 typed mutation contract in addition to UI work. Define it with its response
 and validation data first; do not make the UI infer compatibility from display
@@ -182,7 +182,7 @@ metadata alone.
    graph/lane data first.
 4. Render cross-view cable fragments with clear off-view continuation markers.
    Honor cable-target/peer behavior once the visual-settings model exists.
-5. Add authored lane color and lane context actions, then surface the color
+5. Add configured lane color and lane context actions, then surface the color
    consistently but modestly across views.
 
 ### P2 — Make the implementation architecture match the direction

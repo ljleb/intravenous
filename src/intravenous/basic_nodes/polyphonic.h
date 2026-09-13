@@ -410,7 +410,8 @@ namespace iv {
         auto process_lane = [&]<size_t VoiceIndex>() {
             auto voice = g.subgraph([&](auto& s){
                 auto const voice_midi = s.template event_input<"midi">(EventTypeId::midi);
-                auto midi_driver = g.node<MidiVoiceAllocator<VoiceIndex, voice_count>>();
+                auto midi_driver = details::configure_concrete_node<
+                    MidiVoiceAllocator<VoiceIndex, voice_count>>(g);
                 midi_driver.connect_event_input("midi", voice_midi);
                 static_assert(requires {
                     make_voice.template operator()<VoiceIndex>(std::move(midi_driver));

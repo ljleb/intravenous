@@ -4,8 +4,18 @@
 
 #if IV_ENABLE_JUCE_VST
 
+// Keep Intravenous' warning policy enabled for this translation unit. JUCE 8
+// declares a few intentionally unused helper templates in public headers;
+// suppress only that Clang diagnostic while those external headers are parsed.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-template"
+#endif
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_processors/juce_audio_processors.h>
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 #include <algorithm>
 #include <cctype>

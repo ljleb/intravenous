@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -95,7 +96,10 @@ struct RealtimeEventBlockQueue {
 };
 
 struct VisualizationRealtimeSampleLane {
-    RealtimeSampleBlockQueue* queue = nullptr; // non-owning
+    // A Timeline task graph may retain this sink after the corresponding view
+    // has stopped tracking the source lane. Keep the queue alive with the
+    // sink, rather than borrowing it from LanesVisualization.
+    std::shared_ptr<RealtimeSampleBlockQueue> queue {};
 
     static std::array<RealtimeSampleLaneInputConfig, 1> realtime_sample_inputs()
     {
@@ -130,7 +134,7 @@ struct VisualizationRealtimeSampleLane {
 };
 
 struct VisualizationRealtimeEventLane {
-    RealtimeEventBlockQueue* queue = nullptr; // non-owning
+    std::shared_ptr<RealtimeEventBlockQueue> queue {};
 
     static std::array<RealtimeEventLaneInputConfig, 1> realtime_event_inputs()
     {

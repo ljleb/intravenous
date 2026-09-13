@@ -12,7 +12,7 @@
 
 namespace iv {
 
-// The complete static topology at the authored-to-executable bottleneck.
+// The complete static topology at the configured-to-executable bottleneck.
 // It is the only mutable graph-shaped data shared with GraphCompiler.
 struct ExecutableGraphData {
   std::vector<ReflectedNodeDescription> nodes;
@@ -33,7 +33,7 @@ struct ExecutableGraphData {
   std::flat_set<ConcretePortId> detached_reader_outputs;
 };
 
-// A closed executable graph. All semantic node/edge synthesis and authored
+// A closed executable graph. All semantic node/edge synthesis and configured
 // provenance transfer is complete before this value is constructed.
 struct ExecutableGraphIR {
   std::string graph_id{};

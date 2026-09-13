@@ -7,7 +7,7 @@ without relying on conversation context.
 ## Scope and invariants
 
 - Replace the deleted GCC reflection/`consteval` module pipeline with Clang 23,
-  LLVM bitcode, an ORC authoring phase, and the existing runtime graph compiler.
+  LLVM bitcode, an ORC configuration phase, and the existing runtime graph compiler.
 - Preserve the existing `GraphLowerer -> GraphCompiler -> RuntimeGraphRoot`
   execution route for this migration; specialized LLVM graph kernels are later
   work.
@@ -19,13 +19,13 @@ without relying on conversation context.
 - Node configuration validation belongs at the `GraphBuilder::node` boundary,
   not in unrelated compilation phases.
 - Variable-length node configuration needs explicit lifetime handling. A raw
-  pointer copied from the ORC authoring process into finalized config bytes is
+  pointer copied from the ORC configuration process into finalized config bytes is
   never valid at runtime.
 
 ## Starting point: `dcd38d0`
 
 The branch contains the source-level architecture: Clang-only top-level CMake,
-the Clang source plugin, `iv_module_finalize`, raw authored-config wire data,
+the Clang source plugin, `iv_module_finalize`, raw configured-config wire data,
 and loader reconstruction into the existing lowerer/compiler.
 
 Before this work, state metadata was collected with both a node USR and a
@@ -45,7 +45,7 @@ does not reintroduce the former frozen graph representation.
    state metadata directly; reject missing, duplicate, or inconsistent entries.
 3. Move configuration validation to `GraphBuilder::node`, implement the
    permitted configuration contract, and migrate `DebugProbe` safely.
-4. Replace frozen-graph test helpers with runtime-owned authored graphs.
+4. Replace frozen-graph test helpers with runtime-owned configured graphs.
 5. Verify a trivial module end-to-end, then run module reload, source
    introspection, and full test suites.
 
@@ -79,15 +79,15 @@ does not reintroduce the former frozen graph representation.
   (`MidiVoiceAllocator`). The plugin now skips dependent records; concrete
   specializations remain eligible for metadata. This changed the failing
   source-off compiler invocation from a stack overflow to success.
-- The end-to-end finalizer path now gets through ORC authoring, State metadata
+- The end-to-end finalizer path now gets through ORC configuration, State metadata
   binding, PIC native-object emission, and final shared-library linking for a
   focused module. LLVM target registration, the explicit `stdc++exp` archive,
   and PIC relocation were all required for that result.
 - The focused source-enabled loader test then failed after linking, while
-  decoding the published authored graph: `nlohmann::json` converted the
+  decoding the published configured graph: `nlohmann::json` converted the
   default infinite `InputConfig` bounds into JSON `null`, while the decoder
   expected floats. JSON has now been removed from this module boundary.
-  `authored_graph_binary_archive.hpp` writes a versioned native archive:
+  `configured_graph_binary_archive.hpp` writes a versioned native archive:
   scalar values retain their bytes (including infinities), and strings/ranges
   are sized values reconstructed into owning graph records at load time. The
   module ABI is version 8 to reject the old payload format and require the
@@ -96,13 +96,13 @@ does not reintroduce the former frozen graph representation.
   module through source/CMake edits and a local-CMake module.
 - Completed: `NodeConfigString` is a trivial
   `(char const*, size)` node-config field. `DebugProbe` uses it, preserving
-  embedded-NUL-safe length semantics. Authoring collects the offset of its
+  embedded-NUL-safe length semantics. Configuration collects the offset of its
   pointer field and its bytes. The finalizer emits immutable relocation records
   and string globals; the loader makes an aligned private copy of every node
   config, owns the string bytes, then patches pointers in that copy. This avoids
   both dangling ORC pointers and a writable relocation section in the module.
 - Correctness fix during that work: a first implementation attempted to call a
-  type-erased relocation collector while serializing after the ORC authoring
+  type-erased relocation collector while serializing after the ORC configuration
   JIT had been destroyed. GDB showed the callback target was therefore stale.
   Collection now happens in `reflect_node` while the typed node/JIT is alive;
   only owned `(offset, string)` relocation data passes through `NodeBundle` to
@@ -117,25 +117,25 @@ does not reintroduce the former frozen graph representation.
   `float` makes `can_move_from` return false. Preparing and committing that
   reload then initializes the new State and never calls its move callback.
 - Completed: the six old host test sources and the compiler graph tests no
-  longer depend on compile-time frozen graph values. `AuthoredGraphTestView`
-  lives under `tests/`, owns an `AuthoredGraph` at runtime, and gives each
+  longer depend on compile-time frozen graph values. `ConfiguredGraphTestView`
+  lives under `tests/`, owns an `ConfiguredGraph` at runtime, and gives each
   lowering pass an independent copy. The former `consteval` compiler checks
   are now ordinary runtime tests. This deliberately keeps the old transport
   out of the production API.
-- Completed: runtime reflection's `copy_authored_node_bytes` now belongs to
+- Completed: runtime reflection's `copy_configured_node_bytes` now belongs to
   the graph-builder object library, so both host tests and `iv_module_shared`
   resolve it. The module-execution benchmark now passes the native archive as
   `span<byte const>` rather than pretending it is a JSON string. The module
   behavior test accepts both CMake PCH file formats (`.pch` for Clang and
   `.gch` for GCC).
 - GDB investigation of a State-bearing module found a second real lifetime
-  issue. `deserialize_authored_graph` built a `NodeStateStructure` in a
+  issue. `deserialize_configured_graph` built a `NodeStateStructure` in a
   temporary record, and `ReflectedNodeRuntimeOperations::state_structure`
   still pointed at that record after `NodeBundle` took shared ownership. The
   callback therefore read freed vector metadata during `BlockNodeExecutor`
-  layout creation and threw `std::bad_alloc`. `from_authored_records` now
+  layout creation and threw `std::bad_alloc`. `from_configured_records` now
   rebinds that pointer to the bundle-owned structure. The compiled `Graph`
-  also retains all authored node configurations and State structures for the
+  also retains all configured node configurations and State structures for the
   lifetime of its raw callback pointers, not only compiler-generated nodes.
 - Verification: `ModuleBuildBehavior` now creates an executor from the
   finalized `behavior_project` module and requires the nested
@@ -158,12 +158,12 @@ does not reintroduce the former frozen graph representation.
   checks that the two record layouts and the scalar layout reach the live
   executor. This is an end-to-end check from Clang metadata through finalizing,
   archive loading, and layout creation.
-- Verification: `AuthoredGraphBinaryArchive.RoundTripsNativeScalarsAndRejectsCorruption`
+- Verification: `ConfiguredGraphBinaryArchive.RoundTripsNativeScalarsAndRejectsCorruption`
   covers an ordinary graph round trip (including infinite input bounds) and
   rejects bad magic, truncation, and trailing data.
 - Verification: `NodeConfigMaterialization.CopiesAlignedConfigAndOwnsEmptyAndEmbeddedNulStrings`
   checks an over-aligned config, an embedded-NUL string, an empty string, and
-  duplicate relocation rejection after the authoring storage has gone away.
+  duplicate relocation rejection after the configuration storage has gone away.
 - Verification: `ModuleStateReload.SameSizeStateFieldTypeChangeInitializesInsteadOfMigrating`
   compiles two module generations with the same node name/identity and an
   equal-size `int32_t`-to-`float` State change. It proves the reload path

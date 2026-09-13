@@ -9,6 +9,13 @@ namespace iv {
 struct Constant {
     Sample _value;
 
+    // A registered IV node has one explicit public construction interface.
+    // This replaces the aggregate-only spelling that was usable only through
+    // the deleted g.node<Constant>(...) direct-type API.
+    constexpr explicit Constant(Sample value = 0.0)
+        : _value(value)
+    {}
+
     static constexpr auto outputs()
     {
         return std::array<OutputConfig, 1>{};

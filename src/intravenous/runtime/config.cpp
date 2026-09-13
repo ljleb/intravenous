@@ -7,6 +7,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace iv {
 namespace {
@@ -109,6 +110,11 @@ ProjectConfig load_runtime_installation_config(std::filesystem::path const &work
             auto assign_path = [&](std::optional<std::filesystem::path> &target) {
                 target = parse_path_value(value, defaults_path.parent_path());
             };
+            auto append_package_root = [&] {
+                if (auto root = parse_path_value(value, defaults_path.parent_path())) {
+                    config.default_package_roots.push_back(std::move(*root));
+                }
+            };
             auto assign_size = [&](size_t &target) {
                 auto parsed = parse_size_t(value);
                 if (!parsed) {
@@ -131,6 +137,10 @@ ProjectConfig load_runtime_installation_config(std::filesystem::path const &work
                 assign_path(config.toolchain.make_program);
             } else if (key == "juce_dir") {
                 assign_path(config.toolchain.juce_dir);
+            } else if (key == "iv_package_pch") {
+                assign_path(config.toolchain.iv_package_pch);
+            } else if (key == "iv_package_search_root") {
+                append_package_root();
             } else if (key == "sample_rate") {
                 assign_size(config.execution.sample_rate);
             } else if (key == "block_size") {

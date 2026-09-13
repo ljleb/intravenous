@@ -21,10 +21,10 @@ build-release/benchmark/iv_module_build_benchmark \
 ```
 
 The comparable values are the hot-phase GCC `-ftime-report` entries. All
-listed runs used `pch=1`, `source_introspection=1`, and the benchmark-reported
-`constexpr_cache_depth=0`. Hot runs report `pch_ms=0`, so PCH is being reused;
-it is not the cause of the measured hot cost. `ggc` is GCC's reported `M`
-value, not peak RSS.
+listed runs used source introspection and the application-built shared DSL PCH.
+The PCH is outside each package build, so it is not a package-Ninja timing
+field and cannot account for the measured hot cost. `ggc` is GCC's reported
+`M` value, not peak RSS.
 
 The diagnostic stages stop at named construction cut points and emit a marker
 or profile. They do not instantiate the final static execution root, so they
@@ -37,12 +37,12 @@ representation.
 
 | Measure | Value |
 |---|---:|
-| authored bundles | 403 |
-| authored concrete / tiled / subgraph bundles | 336 / 66 / 0 |
-| authored sample connections / endpoints | 289 / 825 |
-| authored event connections / endpoints | 0 / 0 |
-| authored virtual nodes / members / port mappings | 3 / 35 / 9 |
-| authored public ports | 3 |
+| configured bundles | 403 |
+| configured concrete / tiled / subgraph bundles | 336 / 66 / 0 |
+| configured sample connections / endpoints | 289 / 825 |
+| configured event connections / endpoints | 0 / 0 |
+| configured virtual nodes / members / port mappings | 3 / 35 / 9 |
+| configured public ports | 3 |
 | lowered nodes | 410 |
 | lowered generated / `ConnectionNode` / runtime nodes | 74 / 71 / 3 |
 | lowered sample input / output ports / edges | 543 / 407 / 544 |
@@ -60,7 +60,7 @@ These same-snapshot measurements established where to investigate:
 
 | Cut point | GCC total | constexpr evaluation | GGC |
 |---|---:|---:|---:|
-| authoring | 9.55 s | 6.09 s | 1,471 M |
+| configuration | 9.55 s | 6.09 s | 1,471 M |
 | execution projection | 11.57 s | 7.90 s | 1,782 M |
 | execution sample lowering | 33.91 s | 30.36 s | 5,854 M |
 | execution lowering | 38.51 s | 34.82 s | 6,769 M |
@@ -155,10 +155,10 @@ The exact accounting profile for real connected-group control flow is:
 On average, each real lookup visits **147.5 bundles**, **148.4 output ports**,
 and constructs **125 temporary channel vectors**. All 191 lookups eventually
 succeed. This is the relevant scaling mechanism, rather than the raw number
-of authored connections alone.
+of configured connections alone.
 
 A deliberately non-semantic control performs this global lookup once for each
-of the 289 authored connections, after projection and grouping but without
+of the 289 configured connections, after projection and grouping but without
 normal connection-node construction:
 
 | Diagnostic | GCC total | constexpr evaluation | GGC |
@@ -172,8 +172,8 @@ whereas raw traversal does not.
 
 ## Supported conclusions
 
-- PCH is implemented and reused on hot builds in this setup (`pch=1`, hot
-  `pch_ms=0`).
+- The application-built DSL PCH is reused by every package build in this
+  setup; packages do not generate private PCHs.
 - `lower_connected_sample_groups()` is the first builder hotspot: about 20 s
   and 3,684 M reported GGC beyond grouping on this frozen graph.
 - The cost is not primarily `ConnectionNode` construction, appending, or edge

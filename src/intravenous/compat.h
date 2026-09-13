@@ -1,6 +1,14 @@
 #pragma once
 
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Weverything"
+#endif
 #include <exception>
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+
 #include <iosfwd>
 #include <string>
 #include <string_view>

@@ -6,6 +6,7 @@
 #include <intravenous/filesystem_paths.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
@@ -31,13 +32,10 @@ std::string public_output_node_id(Port const& output)
     return iv::public_output_node_id(output.instance_id, output.source_identity);
 }
 
-void refresh_public_ports(IvModuleSourceIntrospection &introspection)
+void apply_public_ports_snapshot(
+    IvModuleSourceIntrospection &introspection,
+    GraphInputPublicPortsSnapshot snapshot)
 {
-    IvModuleSourceIntrospectionPublicPortsSnapshotBuilder builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_source_introspection_public_ports_snapshot_requested_event,
-        builder);
-    auto snapshot = builder.build();
     introspection.set_public_sample_inputs(std::move(snapshot.sample_inputs));
     introspection.set_public_event_inputs(std::move(snapshot.event_inputs));
     introspection.set_public_sample_outputs(std::move(snapshot.sample_outputs));
@@ -51,14 +49,11 @@ void notify_updated_node_ids(
     if (node_ids.empty()) {
         return;
     }
-    try {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_source_introspection_nodes_updated_event,
-            ProjectVirtualNodesNotification{
-                .nodes = introspection.get_virtual_nodes(std::move(node_ids)),
-            });
-    } catch (...) {
-    }
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_source_introspection_nodes_updated_event,
+        ProjectVirtualNodesNotification{
+            .nodes = introspection.get_virtual_nodes(std::move(node_ids)),
+        });
 }
 
 ProjectSampleInputState parse_project_sample_input_state(std::string const &state)
@@ -284,7 +279,7 @@ std::string event_output_state_value(ProjectEventOutputState state)
 }
 
 LivePortStateMaps build_live_port_state_maps(
-    IvModuleSourceIntrospectionAuthoredStateSnapshot const &snapshot)
+    IvModuleSourceIntrospectionConfiguredStateSnapshot const &snapshot)
 {
     LivePortStateMaps maps;
 
@@ -377,13 +372,30 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
         }
     }
     for (auto &virtual_node : graph_index.virtual_nodes) {
+        std::erase_if(virtual_node.source_spans, [](SourceSpan const &span) {
+            return span.file_path.empty() || span.begin > span.end;
+        });
         for (auto &span : virtual_node.source_spans) {
-            if (!span.file_path.empty()) {
-                span.file_path = normalized_path_string(span.file_path);
-                graph_index.dependency_file_paths.insert(span.file_path);
-            }
+            span.file_path = normalized_path_string(span.file_path);
+            graph_index.dependency_file_paths.insert(span.file_path);
         }
         sort_and_deduplicate_spans(virtual_node.source_spans);
+        auto normalize_port_spans = [&](auto &ports) {
+            for (auto &port : ports) {
+                std::erase_if(port.source_spans, [](SourceSpan const &span) {
+                    return span.file_path.empty() || span.begin > span.end;
+                });
+                for (auto &span : port.source_spans) {
+                    span.file_path = normalized_path_string(span.file_path);
+                    graph_index.dependency_file_paths.insert(span.file_path);
+                }
+                sort_and_deduplicate_spans(port.source_spans);
+            }
+        };
+        normalize_port_spans(virtual_node.sample_inputs);
+        normalize_port_spans(virtual_node.sample_outputs);
+        normalize_port_spans(virtual_node.event_inputs);
+        normalize_port_spans(virtual_node.event_outputs);
     }
     for (size_t i = 0; i < graph_index.virtual_nodes.size(); ++i) {
         graph_index.virtual_node_index_by_id.emplace(graph_index.virtual_nodes[i].id, i);
@@ -514,11 +526,11 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
     std::string const &instance_id) const
 {
     auto const runtime_id = runtime_node_id(instance_id, node.id);
-    IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder authored_state_builder;
+    IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder configured_state_builder;
     IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_source_introspection_authored_state_snapshot_requested_event,
-        authored_state_builder);
-    auto const live_port_states = build_live_port_state_maps(authored_state_builder.build());
+        iv_runtime_iv_module_source_introspection_configured_state_snapshot_requested_event,
+        configured_state_builder);
+    auto const live_port_states = build_live_port_state_maps(configured_state_builder.build());
     std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> snapshot_requests;
     snapshot_requests.reserve(
         node.sample_inputs.size() +
@@ -837,99 +849,104 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_public_event_output(PublicEventO
     return node;
 }
 
-void IvModuleSourceIntrospection::handle_iv_module_definitions_changed(
-    IvModuleDefinitionsChanged const &diff)
-{
-    std::scoped_lock lock(mutex);
-    for (auto const &definition_id : diff.deleted_definition_ids) {
-        graph_indexes_by_definition_id.erase(definition_id);
-    }
-    for (auto const &definition : diff.created) {
-        invalidate_source_texts(definition.dependencies);
-        graph_indexes_by_definition_id[definition.definition_id] =
-            build_graph_introspection_index(
-                definition.definition_id,
-                definition.introspection,
-                definition.module_root,
-                definition.module_id,
-                definition.dependencies);
-    }
-    for (auto const &definition : diff.updated) {
-        invalidate_source_texts(definition.dependencies);
-        graph_indexes_by_definition_id[definition.definition_id] =
-            build_graph_introspection_index(
-                definition.definition_id,
-                definition.introspection,
-                definition.module_root,
-                definition.module_id,
-                definition.dependencies);
-    }
-}
-
-void IvModuleSourceIntrospection::handle_iv_module_instances_list_changed(
-    std::vector<IvModuleInstanceInfo> const &instances)
-{
-    std::scoped_lock lock(mutex);
-    realized_instances_by_id.clear();
-    for (auto const &instance : instances) {
-        if (!instance.realized || instance.instance_id.empty()) {
-            continue;
-        }
-        realized_instances_by_id.emplace(instance.instance_id, instance);
-    }
-}
-
-void IvModuleSourceIntrospection::handle_iv_module_instance_builders_completed(
-    IvModuleInstanceBuildersChanged const &diff)
+void IvModuleSourceIntrospection::handle_iv_module_instances_configured(
+    IvModuleInstancesConfigured const &configured)
 {
     std::vector<std::string> replace_instance_ids;
-    std::vector<IvModuleInstanceInfo> instances;
+    std::vector<IvModuleInstanceInfo> updated_instances;
 
-    auto append_instance = [&](IvModuleInstanceBuilderRef const &ref) {
-        auto const *instance = ref.instance;
-        if (instance == nullptr
-            || std::ranges::find(replace_instance_ids, instance->instance_id)
-                != replace_instance_ids.end()) {
-            return;
-        }
-        replace_instance_ids.push_back(instance->instance_id);
-        instances.push_back(IvModuleInstanceInfo{
-            .instance_id = instance->instance_id,
-            .definition_id = instance->definition_id,
-            .module_root = instance->module_root,
-            .default_silence_ttl_samples = instance->default_silence_ttl_samples,
-            .realized = true,
-            .module_id = instance->module_id,
-        });
-    };
+    {
+        std::scoped_lock lock(mutex);
 
-    for (auto const &created : diff.created) {
-        append_instance(created);
-    }
-    for (auto const &updated : diff.updated) {
-        append_instance(updated);
-    }
-    for (auto const &deleted_instance_id : diff.deleted_instance_ids) {
-        if (std::ranges::find(replace_instance_ids, deleted_instance_id)
-            == replace_instance_ids.end()) {
-            replace_instance_ids.push_back(deleted_instance_id);
+        if (configured.definitions != nullptr) {
+            auto const &diff = *configured.definitions;
+            for (auto const &definition_id : diff.deleted_definition_ids) {
+                graph_indexes_by_definition_id.erase(definition_id);
+            }
+            for (auto const &definition : diff.created) {
+                invalidate_source_texts(definition.dependencies);
+                graph_indexes_by_definition_id[definition.definition_id] =
+                    build_graph_introspection_index(
+                        definition.definition_id,
+                        definition.introspection,
+                        definition.package_root,
+                        definition.module_id,
+                        definition.dependencies);
+            }
+            for (auto const &definition : diff.updated) {
+                invalidate_source_texts(definition.dependencies);
+                graph_indexes_by_definition_id[definition.definition_id] =
+                    build_graph_introspection_index(
+                        definition.definition_id,
+                        definition.introspection,
+                        definition.package_root,
+                        definition.module_id,
+                        definition.dependencies);
+            }
+        }
+
+        if (configured.builders != nullptr) {
+            auto const &diff = *configured.builders;
+            auto apply_instance = [&](IvModuleInstanceBuilderRef const &ref) {
+                auto const *instance = ref.instance;
+                if (instance == nullptr) {
+                    return;
+                }
+                replace_instance_ids.push_back(instance->instance_id);
+                auto info = IvModuleInstanceInfo{
+                    .instance_id = instance->instance_id,
+                    .definition_id = instance->definition_id,
+                    .package_root = instance->package_root,
+                    .default_silence_ttl_samples = instance->default_silence_ttl_samples,
+                    .realized = true,
+                    .module_id = instance->module_id,
+                };
+                realized_instances_by_id[info.instance_id] = info;
+                updated_instances.push_back(std::move(info));
+            };
+
+            for (auto const &created : diff.created) {
+                apply_instance(created);
+            }
+            for (auto const &updated : diff.updated) {
+                apply_instance(updated);
+            }
+            for (auto const &instance_id : diff.deleted_instance_ids) {
+                realized_instances_by_id.erase(instance_id);
+                replace_instance_ids.push_back(instance_id);
+            }
+        }
+
+        if (configured.public_ports.has_value()) {
+            public_inputs_by_instance_id.clear();
+            public_event_inputs_by_instance_id.clear();
+            public_outputs_by_instance_id.clear();
+            public_event_outputs_by_instance_id.clear();
+            for (auto const &input : configured.public_ports->sample_inputs) {
+                public_inputs_by_instance_id[input.instance_id].push_back(input);
+            }
+            for (auto const &input : configured.public_ports->event_inputs) {
+                public_event_inputs_by_instance_id[input.instance_id].push_back(input);
+            }
+            for (auto const &output : configured.public_ports->sample_outputs) {
+                public_outputs_by_instance_id[output.instance_id].push_back(output);
+            }
+            for (auto const &output : configured.public_ports->event_outputs) {
+                public_event_outputs_by_instance_id[output.instance_id].push_back(output);
+            }
         }
     }
+
     if (replace_instance_ids.empty()) {
         return;
     }
 
-    try {
-        replace_public_input_instances(replace_instance_ids);
-        refresh_public_ports(*this);
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_source_introspection_nodes_updated_event,
-            ProjectVirtualNodesNotification{
-                .nodes = get_virtual_nodes_for_instances(instances),
-                .replace_instance_ids = std::move(replace_instance_ids),
-            });
-    } catch (...) {
-    }
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_source_introspection_nodes_updated_event,
+        ProjectVirtualNodesNotification{
+            .nodes = get_virtual_nodes_for_instances(updated_instances),
+            .replace_instance_ids = std::move(replace_instance_ids),
+        });
 }
 
 ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
@@ -952,24 +969,35 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
 
     ProjectQueryResult result;
 
-    auto span_touches_range =
-        [](SourceSpan const &span,
+    auto byte_span_touches_range =
+        [](uint32_t span_begin,
+           uint32_t span_end,
            std::pair<uint32_t, uint32_t> const &requested_range) {
+            if (span_begin > span_end) return false;
             auto const [begin, end] = requested_range;
+            // Query ranges are intentionally inclusive at both boundaries.
+            // In particular, a cursor positioned at span.end still selects
+            // the highlighted source span.
             if (begin == end) {
-                return span.begin <= begin && begin <= span.end;
+                return span_begin <= begin && begin <= span_end;
             }
-            return span.begin <= end && begin <= span.end;
+            return span_begin <= end && begin <= span_end;
+        };
+
+    auto span_touches_range =
+        [&](SourceSpan const &span,
+            std::pair<uint32_t, uint32_t> const &requested_range) {
+            return byte_span_touches_range(span.begin, span.end, requested_range);
         };
 
     auto span_distance_to_range =
-        [](SourceSpan const &span,
-           std::pair<uint32_t, uint32_t> const &requested_range) {
+        [&](SourceSpan const &span,
+            std::pair<uint32_t, uint32_t> const &requested_range) {
             auto const [begin, end] = requested_range;
-            if (span.begin <= end && begin <= span.end) {
+            if (byte_span_touches_range(span.begin, span.end, requested_range)) {
                 return 0u;
             }
-            if (span.end < begin) {
+            if (span.end <= begin) {
                 return begin - span.end;
             }
             return span.begin - end;
@@ -978,10 +1006,25 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
     struct RankedRuntimeVirtualNode {
         std::string definition_id;
         size_t virtual_index = 0;
+        bool full_node = false;
+        std::vector<size_t> sample_input_ordinals {};
+        std::vector<size_t> event_input_ordinals {};
+        std::vector<SourceSpan> selected_port_spans {};
         uint32_t best_span_size = std::numeric_limits<uint32_t>::max();
         uint32_t best_distance = std::numeric_limits<uint32_t>::max();
         uint32_t best_begin = std::numeric_limits<uint32_t>::max();
         uint32_t best_end = std::numeric_limits<uint32_t>::max();
+    };
+
+    auto record_rank = [&](RankedRuntimeVirtualNode &ranked,
+                           SourceSpan const &span,
+                           std::pair<uint32_t, uint32_t> const &requested_range) {
+        auto const span_size = span.end >= span.begin ? span.end - span.begin : 0u;
+        auto const distance = span_distance_to_range(span, requested_range);
+        ranked.best_span_size = std::min(ranked.best_span_size, span_size);
+        ranked.best_distance = std::min(ranked.best_distance, distance);
+        ranked.best_begin = std::min(ranked.best_begin, span.begin);
+        ranked.best_end = std::min(ranked.best_end, span.end);
     };
 
     std::vector<RankedRuntimeVirtualNode> ranked_nodes;
@@ -989,50 +1032,67 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
         for (size_t virtual_index = 0; virtual_index < graph_index.virtual_nodes.size();
              ++virtual_index) {
             auto const &node = graph_index.virtual_nodes[virtual_index];
-            bool matches = requested_ranges.empty();
             RankedRuntimeVirtualNode ranked{
                 .definition_id = definition_id,
                 .virtual_index = virtual_index,
             };
-            if (!requested_ranges.empty()) {
-                auto const node_matches_range =
-                    [&](std::pair<uint32_t, uint32_t> const &requested_range) {
-                        bool any = false;
-                        for (auto const &span : node.source_spans) {
-                            if (span.file_path != normalized_file_path ||
-                                !span_touches_range(span, requested_range)) {
-                                continue;
-                            }
-                            any = true;
-                            auto const span_size =
-                                span.end >= span.begin ? span.end - span.begin : 0u;
-                            auto const distance =
-                                span_distance_to_range(span, requested_range);
-                            ranked.best_span_size = std::min(ranked.best_span_size, span_size);
-                            ranked.best_distance = std::min(ranked.best_distance, distance);
-                            ranked.best_begin = std::min(ranked.best_begin, span.begin);
-                            ranked.best_end = std::min(ranked.best_end, span.end);
-                        }
-                        return any;
-                    };
-                if (match_mode == SourceRangeMatchMode::union_) {
-                    matches = std::ranges::any_of(requested_ranges, node_matches_range);
-                } else {
-                    matches = std::ranges::all_of(requested_ranges, node_matches_range);
+
+            if (requested_ranges.empty()) {
+                ranked.full_node = true;
+                if (!node.source_spans.empty()) {
+                    auto const &span = node.source_spans.front();
+                    ranked.best_span_size = span.end >= span.begin
+                        ? span.end - span.begin : 0u;
+                    ranked.best_distance = 0u;
+                    ranked.best_begin = span.begin;
+                    ranked.best_end = span.end;
                 }
-            } else if (!node.source_spans.empty()) {
-                ranked.best_span_size =
-                    node.source_spans.front().end >= node.source_spans.front().begin
-                        ? node.source_spans.front().end - node.source_spans.front().begin
-                        : 0u;
-                ranked.best_distance = 0u;
-                ranked.best_begin = node.source_spans.front().begin;
-                ranked.best_end = node.source_spans.front().end;
-            }
-            if (!matches) {
+                ranked_nodes.push_back(std::move(ranked));
                 continue;
             }
-            ranked_nodes.push_back(ranked);
+
+            std::vector<bool> matched_ranges(requested_ranges.size(), false);
+            auto inspect_spans = [&](std::span<SourceSpan const> spans,
+                                     auto &&on_match) {
+                for (auto const &span : spans) {
+                    if (span.file_path != normalized_file_path) continue;
+                    bool matched_span = false;
+                    for (size_t range_i = 0; range_i < requested_ranges.size(); ++range_i) {
+                        auto const &requested_range = requested_ranges[range_i];
+                        if (!span_touches_range(span, requested_range)) continue;
+                        matched_ranges[range_i] = true;
+                        matched_span = true;
+                        record_rank(ranked, span, requested_range);
+                    }
+                    if (matched_span) on_match(span);
+                }
+            };
+
+            inspect_spans(node.source_spans, [&](SourceSpan const &) {
+                ranked.full_node = true;
+            });
+
+            auto collect_port_matches = [&](auto const &ports, auto &ordinals) {
+                for (auto const &port : ports) {
+                    bool matched_port = false;
+                    inspect_spans(port.source_spans, [&](SourceSpan const &span) {
+                        matched_port = true;
+                        ranked.selected_port_spans.push_back(span);
+                    });
+                    if (matched_port) ordinals.push_back(port.ordinal);
+                }
+            };
+            collect_port_matches(node.sample_inputs, ranked.sample_input_ordinals);
+            collect_port_matches(node.event_inputs, ranked.event_input_ordinals);
+
+            auto const is_matched = [](bool value) { return value; };
+            auto const matches = match_mode == SourceRangeMatchMode::union_
+                ? std::ranges::any_of(matched_ranges, is_matched)
+                : std::ranges::all_of(matched_ranges, is_matched);
+            if (!matches) continue;
+
+            sort_and_deduplicate_spans(ranked.selected_port_spans);
+            ranked_nodes.push_back(std::move(ranked));
         }
     }
 
@@ -1086,7 +1146,36 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             if (!emitted.insert(emitted_id).second) {
                 continue;
             }
-            result.nodes.push_back(to_virtual_node(node, matching_instance_id));
+            auto live = to_virtual_node(node, matching_instance_id);
+            if (!ranked.full_node) {
+                auto keep_ordinal = [](auto const &ordinals, auto const &port) {
+                    return std::ranges::contains(ordinals, port.ordinal);
+                };
+                std::erase_if(live.sample_inputs, [&](auto const &port) {
+                    return !keep_ordinal(ranked.sample_input_ordinals, port);
+                });
+                std::erase_if(live.event_inputs, [&](auto const &port) {
+                    return !keep_ordinal(ranked.event_input_ordinals, port);
+                });
+                live.sample_outputs.clear();
+                live.event_outputs.clear();
+                for (auto &member : live.members) {
+                    std::erase_if(member.sample_inputs, [&](auto const &port) {
+                        return !keep_ordinal(ranked.sample_input_ordinals, port);
+                    });
+                    std::erase_if(member.event_inputs, [&](auto const &port) {
+                        return !keep_ordinal(ranked.event_input_ordinals, port);
+                    });
+                    member.sample_outputs.clear();
+                    member.event_outputs.clear();
+                }
+                live.source_spans.clear();
+                live.source_spans.reserve(ranked.selected_port_spans.size());
+                for (auto const &span : ranked.selected_port_spans) {
+                    live.source_spans.push_back(to_live_span(span));
+                }
+            }
+            result.nodes.push_back(std::move(live));
         }
     }
 
@@ -1100,7 +1189,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
                 auto touches = [&](auto const &range) {
                     return std::ranges::any_of(input.source_infos, [&](SourceInfo const &info) {
                         return normalized_path_string(info.span.file_path) == normalized_file_path
-                            && !(info.span.end < range.first || info.span.begin > range.second);
+                            && byte_span_touches_range(info.span.begin, info.span.end, range);
                     });
                 };
                 matches = match_mode == SourceRangeMatchMode::union_
@@ -1120,7 +1209,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
                 auto touches = [&](auto const &range) {
                     return std::ranges::any_of(input.source_infos, [&](SourceInfo const &info) {
                         return normalized_path_string(info.span.file_path) == normalized_file_path
-                            && !(info.span.end < range.first || info.span.begin > range.second);
+                            && byte_span_touches_range(info.span.begin, info.span.end, range);
                     });
                 };
                 matches = match_mode == SourceRangeMatchMode::union_
@@ -1136,7 +1225,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             auto const matches = requested_ranges.empty() || std::ranges::any_of(output.source_infos, [&](SourceInfo const& info) {
                 return std::ranges::any_of(requested_ranges, [&](auto const& range) {
                     return normalized_path_string(info.span.file_path) == normalized_file_path
-                        && !(info.span.end < range.first || info.span.begin > range.second);
+                        && byte_span_touches_range(info.span.begin, info.span.end, range);
                 });
             });
             if (matches) result.nodes.push_back(to_public_sample_output(output));
@@ -1148,7 +1237,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             auto const matches = requested_ranges.empty() || std::ranges::any_of(output.source_infos, [&](SourceInfo const& info) {
                 return std::ranges::any_of(requested_ranges, [&](auto const& range) {
                     return normalized_path_string(info.span.file_path) == normalized_file_path
-                        && !(info.span.end < range.first || info.span.begin > range.second);
+                        && byte_span_touches_range(info.span.begin, info.span.end, range);
                 });
             });
             if (matches) result.nodes.push_back(to_public_event_output(output));
@@ -1172,7 +1261,8 @@ ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
     std::unordered_set<std::string> emitted_spans;
     for (auto const &[_, graph_index] : graph_indexes_by_definition_id) {
         for (auto const &node : graph_index.virtual_nodes) {
-            for (auto const &span : node.source_spans) {
+            auto append_spans = [&](std::span<SourceSpan const> spans) {
+              for (auto const &span : spans) {
                 if (span.file_path != normalized_file_path) {
                     continue;
                 }
@@ -1185,6 +1275,14 @@ ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
                 if (emitted_spans.insert(key).second) {
                     result.source_spans.push_back(std::move(live_span));
                 }
+              }
+            };
+            append_spans(node.source_spans);
+            for (auto const &port : node.sample_inputs) {
+                append_spans(port.source_spans);
+            }
+            for (auto const &port : node.event_inputs) {
+                append_spans(port.source_spans);
             }
         }
     }
@@ -1481,17 +1579,15 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_value(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
+        ProjectGraphInputAckBuilder project_builder;
         if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
-            ProjectAckBuilder project_builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_project_set_public_sample_input_value_requested_event,
                 public_input->first,
                 public_input->second,
                 request.value,
                 project_builder);
-            project_builder.build();
         } else {
-            ProjectAckBuilder project_builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_project_set_sample_input_value_requested_event,
                 ProjectSetSampleInputValueRequest{
@@ -1501,10 +1597,10 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_value(
                     .value = request.value,
                 },
                 project_builder);
-            project_builder.build();
         }
-        refresh_public_ports(*this);
+        apply_public_ports_snapshot(*this, project_builder.build());
         notify_updated_node_ids(*this, {request.node_id});
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -1515,7 +1611,7 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_state(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
-        ProjectAckBuilder project_builder;
+        ProjectGraphInputAckBuilder project_builder;
         if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_project_set_public_sample_input_state_requested_event,
@@ -1537,9 +1633,9 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_state(
                 },
                 project_builder);
         }
-        project_builder.build();
-        refresh_public_ports(*this);
+        apply_public_ports_snapshot(*this, project_builder.build());
         notify_updated_node_ids(*this, {request.node_id});
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -1550,7 +1646,7 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_event_input_state(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
-        ProjectAckBuilder project_builder;
+        ProjectGraphInputAckBuilder project_builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_event_input_state_requested_event,
             ProjectSetEventInputStateRequest{
@@ -1560,9 +1656,9 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_event_input_state(
                 .state = parse_project_event_input_state(request.state),
             },
             project_builder);
-        project_builder.build();
-        refresh_public_ports(*this);
+        apply_public_ports_snapshot(*this, project_builder.build());
         notify_updated_node_ids(*this, {request.node_id});
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -1573,7 +1669,7 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_output_state(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
-        ProjectAckBuilder project_builder;
+        ProjectGraphInputAckBuilder project_builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_sample_output_state_requested_event,
             ProjectSetSampleOutputStateRequest{
@@ -1583,9 +1679,9 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_output_state(
                 .state = parse_project_sample_output_state(request.state),
             },
             project_builder);
-        project_builder.build();
-        refresh_public_ports(*this);
+        apply_public_ports_snapshot(*this, project_builder.build());
         notify_updated_node_ids(*this, {request.node_id});
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
@@ -1596,7 +1692,7 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_event_output_state(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
-        ProjectAckBuilder project_builder;
+        ProjectGraphInputAckBuilder project_builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_event_output_state_requested_event,
             ProjectSetEventOutputStateRequest{
@@ -1606,11 +1702,12 @@ void IvModuleSourceIntrospection::handle_socket_rpc_set_event_output_state(
                 .state = parse_project_event_output_state(request.state),
             },
             project_builder);
-        project_builder.build();
-        refresh_public_ports(*this);
+        apply_public_ports_snapshot(*this, project_builder.build());
         notify_updated_node_ids(*this, {request.node_id});
+        builder.succeed();
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
 }
+
 } // namespace iv

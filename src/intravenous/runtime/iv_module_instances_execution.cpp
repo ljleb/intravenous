@@ -1,5 +1,6 @@
 #include <intravenous/runtime/iv_module_instances_execution.h>
 
+#include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_instances_execution_events.h>
 #include <intravenous/runtime/task_runner_events.h>
 #include <intravenous/runtime/timeline_execution_events.h>
@@ -65,7 +66,7 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             block_size_,
             sample_rate_,
             created.default_silence_ttl_samples);
-        InstanceTaskContext* callback_ptr = nullptr;
+        std::shared_ptr<InstanceTaskContext> callback_context;
         {
             std::scoped_lock lock(mutex_);
             auto &state = instances_by_id_[created.instance->instance_id];
@@ -77,9 +78,9 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             state.runtime_bindings = created.instance->runtime_bindings;
             state.executor = std::move(executor);
             state.pending_delete = false;
-            state.active_context = std::make_unique<InstanceTaskContext>();
+            state.active_context = std::make_shared<InstanceTaskContext>();
             state.active_context->executor = state.executor;
-            callback_ptr = state.active_context.get();
+            callback_context = state.active_context;
         }
 
         std::vector<std::string> depends_on;
@@ -93,7 +94,8 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             .depends_on = std::move(depends_on),
             .callback = TaskCallback {
                 .invoke = &IvModuleInstancesExecution::invoke_instance_task,
-                .context = callback_ptr,
+                .context = callback_context.get(),
+                .context_owner = callback_context,
             },
         });
     }
@@ -128,11 +130,11 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
                     sample_rate_));
         }
 
-        auto pending_context = std::make_unique<InstanceTaskContext>();
+        auto pending_context = std::make_shared<InstanceTaskContext>();
         pending_context->executor = active_executor
             ? active_executor
             : replacement;
-        auto* callback_ptr = pending_context.get();
+        auto callback_context = pending_context;
         {
             std::scoped_lock lock(mutex_);
             auto &state = instances_by_id_[changed.instance->instance_id];
@@ -175,7 +177,8 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             .depends_on = std::move(depends_on),
             .callback = TaskCallback {
                 .invoke = &IvModuleInstancesExecution::invoke_instance_task,
-                .context = callback_ptr,
+                .context = callback_context.get(),
+                .context_owner = std::move(callback_context),
             },
         });
     }
@@ -315,10 +318,13 @@ void publish_tasks_changed(VersionedTaskGraphUpdate const &update)
 }
 } // namespace
 
-void IvModuleInstancesExecution::handle_iv_module_instance_builders_completed(
-    IvModuleInstanceBuildersChanged const &changed)
+void IvModuleInstancesExecution::handle_iv_module_instances_configured(
+    IvModuleInstancesConfigured const &configured)
 {
-    publish_tasks_changed(handle_instance_builders_changed(changed));
+    if (configured.builders == nullptr) {
+        return;
+    }
+    publish_tasks_changed(handle_instance_builders_changed(*configured.builders));
 }
 
 void IvModuleInstancesExecution::handle_graph_input_lanes_runtime_dependencies_changed(

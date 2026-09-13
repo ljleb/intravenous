@@ -1,5 +1,7 @@
 #include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/shaping.h>
+
+#include <cmath>
+#include <numbers>
 
 using namespace iv;
 
@@ -22,7 +24,7 @@ void module_main(iv::GraphBuilder& g)
     for (size_t i = 0; i < iters + 1; ++i)
     {
         auto const add_voice = [&] (auto&& gain) {
-            auto const osc = g.node<SineOscillator>();
+            auto const osc = g.node<"sine_oscillator">();
             auto const t = (static_cast<double>(i) - 0.5) * detune_pair - detune;
             osc("frequency"_P = f + t, "phase_offset"_P = 0.25); // cosine
             g.outputs(osc * gain * 0.1);
@@ -41,3 +43,5 @@ void module_main(iv::GraphBuilder& g)
         }
     }
 }
+
+IV_MODULE("iv.project.saw", module_main);

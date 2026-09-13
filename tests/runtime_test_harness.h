@@ -5,9 +5,7 @@
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_reload.h>
@@ -38,8 +36,6 @@ struct BoundIvModuleSourceIntrospection {
     iv::timeline_lane_filters_bridge::scope timeline_lane_filters_scope;
     iv::iv_module_definitions_iv_module_instances_bridge::scope
         iv_module_definitions_iv_module_instances_scope;
-    iv::iv_module_definitions_iv_module_source_introspection_bridge::scope
-        iv_module_definitions_iv_module_source_introspection_scope;
     iv::iv_module_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
     iv::iv_module_instances_graph_input_lanes_bridge::scope
@@ -73,9 +69,6 @@ struct BoundIvModuleSourceIntrospection {
           iv_module_definitions_iv_module_instances_scope(
                 iv_module_definitions,
                 iv_module_instances),
-          iv_module_definitions_iv_module_source_introspection_scope(
-              iv_module_definitions,
-              introspection),
           iv_module_instances_iv_module_source_introspection_scope(
               iv_module_instances,
               introspection),

@@ -21,7 +21,7 @@ namespace iv {
         std::vector<GraphSccWrapper> _scc_wrappers {};
         // Keeps every node callback's configuration and State metadata alive
         // for as long as wrappers can declare or execute. This includes both
-        // compiler-generated nodes and module-authored node configurations.
+        // compiler-generated nodes and module-configured node configurations.
         std::vector<std::shared_ptr<void const>> _generated_node_storage {};
         std::vector<GraphPortDataNode> _ingress_port_data_nodes {};
         std::vector<SampleOutputBinding> _ingress_targets {};
@@ -1165,7 +1165,7 @@ namespace iv {
 
     };
 
-    // The module loader owns the graph plan and pins the authoring DSO that
+    // The module loader owns the graph plan and pins the configuration DSO that
     // provides its opaque node_data pointers. There is deliberately no
     // graph-value-specialized root: all execution runs through this owning
     // runtime plan.

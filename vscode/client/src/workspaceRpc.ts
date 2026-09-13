@@ -41,12 +41,12 @@ export class WorkspaceRpc {
         return this.client.request("ivModuleInstances.update", { updates });
     }
 
-    getIvModuleSources(): Promise<{ sources?: Array<Record<string, unknown>> }> {
-        return this.client.request("ivModuleSources.list", {});
+    getIvPackages(): Promise<{ packages?: Array<Record<string, unknown>> }> {
+        return this.client.request("ivPackages.list", {});
     }
 
-    createIvModuleSource(name: string): Promise<{ source: Record<string, unknown> }> {
-        return this.client.request("ivModuleSources.create", { name });
+    createIvPackage(name: string): Promise<{ package: Record<string, unknown> }> {
+        return this.client.request("ivPackages.create", { name });
     }
 
     shutdown(): Promise<void> {

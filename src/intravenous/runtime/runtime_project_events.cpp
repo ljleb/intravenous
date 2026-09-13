@@ -26,6 +26,31 @@ void ProjectAckBuilder::build() const
     }
 }
 
+void ProjectGraphInputAckBuilder::succeed(GraphInputPublicPortsSnapshot value)
+{
+    handled = true;
+    error_message.reset();
+    public_ports = std::move(value);
+}
+
+void ProjectGraphInputAckBuilder::fail(std::string message)
+{
+    handled = false;
+    public_ports.reset();
+    error_message = std::move(message);
+}
+
+GraphInputPublicPortsSnapshot ProjectGraphInputAckBuilder::build() const
+{
+    if (error_message.has_value()) {
+        throw std::runtime_error(*error_message);
+    }
+    if (!handled || !public_ports.has_value()) {
+        throw std::runtime_error("graph input project event was not handled");
+    }
+    return *public_ports;
+}
+
 void ProjectStringBuilder::succeed(std::string value)
 {
     result = std::move(value);

@@ -1034,7 +1034,7 @@ namespace iv::details {
     )
     {
         // GraphNodeWrapper retains only raw callback pointers. Keep the
-        // authored configuration and compiler-supplied State metadata alive
+        // configured configuration and compiler-supplied State metadata alive
         // for as long as those wrappers may declare or execute. Generated
         // node storage already has this lifetime, so it is the owning graph
         // container for both categories.

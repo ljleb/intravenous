@@ -1,11 +1,11 @@
-#include "real_authored.hpp"
+#include "real_configured.hpp"
 
 #include <string_view>
 
 consteval auto real_graph_metadata()
 {
     iv::GraphBuilder builder;
-    real_authored_entry(builder);
+    real_configured_entry(builder);
     return builder.build_metadata();
 }
 
@@ -32,7 +32,7 @@ consteval bool real_graph_contains_plugin_source_info()
     auto const& span = metadata.virtual_nodes.front().source_spans.front();
     return metadata.virtual_nodes.front().source_identity
             == "gcc-plugin-real-node"
-        && std::string_view(span.file_path).ends_with("real_authored.hpp")
+        && std::string_view(span.file_path).ends_with("real_configured.hpp")
         && span.begin == 42
         && span.end == 42;
 }

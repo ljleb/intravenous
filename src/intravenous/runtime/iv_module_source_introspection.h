@@ -20,7 +20,7 @@ class SocketRpcGraphQueryResultBuilder;
 class SocketRpcRegionQueryResultBuilder;
 class SocketRpcVirtualNodeResultBuilder;
 class SocketRpcVirtualNodesResultBuilder;
-struct IvModuleInstanceBuildersChanged;
+struct IvModuleInstancesConfigured;
 struct GraphQueryBySpansRequest;
 struct GraphQueryActiveRegionsRequest;
 struct GetVirtualNodeRequest;
@@ -76,12 +76,8 @@ class IvModuleSourceIntrospection {
 public:
     IvModuleSourceIntrospection() = default;
 
-    void handle_iv_module_definitions_changed(
-        IvModuleDefinitionsChanged const &diff);
-    void handle_iv_module_instances_list_changed(
-        std::vector<IvModuleInstanceInfo> const &instances);
-    void handle_iv_module_instance_builders_completed(
-        IvModuleInstanceBuildersChanged const &diff);
+    void handle_iv_module_instances_configured(
+        IvModuleInstancesConfigured const &configured);
     void set_public_sample_inputs(std::vector<PublicSampleInputInfo> inputs);
     void set_public_event_inputs(std::vector<PublicEventInputInfo> inputs);
     void set_public_sample_outputs(std::vector<PublicSampleOutputInfo> outputs);

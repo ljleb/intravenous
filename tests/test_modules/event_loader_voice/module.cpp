@@ -7,3 +7,5 @@ void event_loader_voice(iv::GraphBuilder& g)
     g.event_outputs("trigger"_F = trigger);
     g.outputs();
 }
+
+IV_MODULE("iv.test.event_loader_voice", event_loader_voice);

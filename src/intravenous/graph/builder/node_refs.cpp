@@ -241,6 +241,9 @@ void NodeRef::apply_node_call(
     size_t positional_sample = 0;
     for (size_t i = 0; i < sample_inputs.size; ++i) {
         auto const& input = sample_inputs.data[i];
+        if (input.source.graph_builder != _graph_builder) {
+            details::error("sample source belongs to another builder");
+        }
         size_t input_port = 0;
         switch (input.target) {
         case details::NodeCallInputTarget::positional:
@@ -257,9 +260,6 @@ void NodeRef::apply_node_call(
         if (input_port >= sample_input_count()) {
             details::error("too many sample inputs");
         }
-        if (input.source.graph_builder != _graph_builder) {
-            details::error("sample source belongs to another builder");
-        }
         _graph_builder->connect_sample_input(
             {_index, PortKind::sample, input_port}, input.source);
     }
@@ -267,6 +267,9 @@ void NodeRef::apply_node_call(
     size_t positional_event = 0;
     for (size_t i = 0; i < event_inputs.size; ++i) {
         auto const& input = event_inputs.data[i];
+        if (input.source.graph_builder != _graph_builder) {
+            details::error("event source belongs to another builder");
+        }
         size_t input_port = 0;
         switch (input.target) {
         case details::NodeCallInputTarget::positional:
@@ -282,9 +285,6 @@ void NodeRef::apply_node_call(
         }
         if (input_port >= event_input_count()) {
             details::error("too many event inputs");
-        }
-        if (input.source.graph_builder != _graph_builder) {
-            details::error("event source belongs to another builder");
         }
         _graph_builder->connect_event_input(
             {_index, PortKind::event, input_port}, input.source);
@@ -392,6 +392,21 @@ void NodeRef::_annotate_source_info(
     _has_source_identity = _has_source_identity || !id.empty();
     if (_graph_builder) {
         _graph_builder->annotate_node(_index, id, file, begin, end);
+    }
+}
+
+void NodeRef::_annotate_input_source_info(
+    PortKind port_kind,
+    std::string_view port_name,
+    std::string_view id,
+    std::string_view file,
+    uint32_t begin,
+    uint32_t end) const
+{
+    _has_source_identity = _has_source_identity || !id.empty();
+    if (_graph_builder) {
+        _graph_builder->annotate_node_input_source_info(
+            _index, port_kind, port_name, id, file, begin, end);
     }
 }
 } // namespace iv

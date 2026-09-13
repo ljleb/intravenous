@@ -6,7 +6,6 @@ build_dir="${IV_BUILD_DIR:-$repo_root/build-release}"
 jobs="${IV_BUILD_JOBS:-16}"
 workspace="${IV_MODULE_BENCHMARK_WORKSPACE:-${TMPDIR:-/tmp}/intravenous-module-reload-profile}"
 module_paths=()
-optimization="O3"
 skip_build=0
 simple_sine_modules=0
 verbose=0
@@ -20,12 +19,11 @@ Measures a cold IV-module build followed by a source-only hot reload in an
 isolated retained workspace.
 
 Options:
-  --module PATH        Module directory or iv_module.json to snapshot.
+  --module PATH        Source directory or iv_package.json to snapshot.
                        May be specified more than once.
   --simple-sine-modules
                        Profile every module in projects/simple_sine/modules.
   --workspace PATH     Managed benchmark workspace.
-  --optimization O0|O3 Finalizer optimization level (default: O3).
   --skip-build         Reuse an already-built iv_module_build_benchmark.
   --no-clang-time-trace
                        Do not write Clang frontend time-trace JSON.
@@ -56,11 +54,6 @@ while (($#)); do
         workspace="$2"
         shift 2
         ;;
-    --optimization)
-        (($# >= 2)) || { printf '%s\n' '--optimization requires O0 or O3' >&2; exit 2; }
-        optimization="$2"
-        shift 2
-        ;;
     --skip-build)
         skip_build=1
         shift
@@ -86,7 +79,7 @@ while (($#)); do
 done
 
 if (( simple_sine_modules )); then
-    for manifest in "$repo_root"/projects/simple_sine/modules/*/iv_module.json; do
+    for manifest in "$repo_root"/projects/simple_sine/modules/*/iv_package.json; do
         [[ -f "$manifest" ]] || continue
         module_paths+=("${manifest#"$repo_root"/}")
     done
@@ -95,14 +88,6 @@ fi
 if (( ${#module_paths[@]} == 0 )); then
     module_paths=("projects/simple_sine/modules/saw")
 fi
-
-case "$optimization" in
-O0|O3) ;;
-*)
-    printf '%s\n' '--optimization must be O0 or O3' >&2
-    exit 2
-    ;;
-esac
 
 cd "$repo_root"
 
@@ -128,13 +113,16 @@ print_phase_summary() {
         }
         END {
             if (!("pipeline_ms" in values)) exit 1
-            printf "iv-module-build-profile module=%s phase=%s pipeline_ms=%s export_ms=%s link_ms=%s finalizer_ms=%.1f jit_ms=%.1f runtime_o3_ms=%.1f object_emit_ms=%.1f native_link_ms=%.1f\n", \
-                module, phase, values["pipeline_ms"], values["export_ms"], values["link_ms"], \
+            printf "iv-module-build-profile module=%s phase=%s pipeline_ms=%s configure_ms=%.1f build_ms=%.1f package_finalize_ms=%s finalizer_ms=%.1f bitcode_parse_link_ms=%.1f metadata_validate_ms=%.1f metadata_inject_ms=%.1f bitcode_write_ms=%.1f\n", \
+                module, phase, values["pipeline_ms"], \
+                values["configure_us"] / 1000, \
+                values["ninja_build_us"] / 1000, \
+                values["package_finalize_ms"], \
                 stages["finalizer_total_us"] / 1000, \
-                stages["finalizer_jit_materialize_us"] / 1000, \
-                stages["finalizer_runtime_optimize_us"] / 1000, \
-                stages["finalizer_native_object_emit_us"] / 1000, \
-                stages["finalizer_native_link_us"] / 1000
+                stages["finalizer_bitcode_parse_link_us"] / 1000, \
+                stages["finalizer_package_metadata_validate_us"] / 1000, \
+                stages["finalizer_package_metadata_inject_us"] / 1000, \
+                stages["finalizer_package_bitcode_write_us"] / 1000
         }
     ' "$log_file"
 }
@@ -154,7 +142,7 @@ fi
 for module_index in "${!module_paths[@]}"; do
     module_path="${module_paths[module_index]}"
     module_name="${module_path%/}"
-    if [[ "${module_name##*/}" == "iv_module.json" ]]; then
+    if [[ "${module_name##*/}" == "iv_package.json" ]]; then
         module_name="${module_name%/*}"
     fi
     module_name="${module_name##*/}"
@@ -170,7 +158,6 @@ for module_index in "${!module_paths[@]}"; do
         "$build_dir/benchmark/iv_module_build_benchmark"
         --module "$module_path"
         --workspace "$module_workspace"
-        --optimization "$optimization"
         --keep)
     if (( clang_time_trace )); then
         benchmark_command+=(--clang-time-trace)

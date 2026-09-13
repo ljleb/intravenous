@@ -1,13 +1,11 @@
 #include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
-#include <intravenous/basic_nodes/shaping.h>
 
 void benchmark_constant_saw(iv::GraphBuilder& g)
 {
     using namespace iv;
 
-    auto const phase = g.node<PhaseIntegrator>();
-    auto const osc = g.node<SawOscillator>();
+    auto const phase = g.node<"phase_integrator">();
+    auto const osc = g.node<"saw_oscillator">();
     phase(0.0);
     auto const tone = osc(
         "frequency"_P = 110.0,
@@ -16,3 +14,5 @@ void benchmark_constant_saw(iv::GraphBuilder& g)
 
     g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
 }
+
+IV_MODULE("iv.test.benchmark_constant_saw", benchmark_constant_saw);

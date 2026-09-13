@@ -59,7 +59,7 @@
               echo "CC=$CC"
               echo "CXX=$CXX"
               echo "JUCE_DIR=$JUCE_DIR"
-              echo "Configure with: cmake -S . -B build -G Ninja -DJUCE_DIR=$JUCE_DIR"
+              echo "Configure with: cmake -S . -B build -G Ninja -DJUCE_DIR=$JUCE_DIR && cmake -S . -B build-release -G Ninja -DJUCE_DIR=$JUCE_DIR -DCMAKE_BUILD_TYPE=Release"
             '';
           };
         in {

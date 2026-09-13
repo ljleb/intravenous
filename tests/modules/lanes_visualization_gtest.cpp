@@ -298,6 +298,12 @@ TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPa
     visualization.handle_task_runner_after_pass(TasksRunnerAfterPass{});
     ASSERT_EQ(state.last_batch.upserts.size(), 1u);
     auto const vis_lane = state.last_batch.upserts.front().lane;
+    auto retired_sink = state.last_batch.upserts.front().make_node();
+    auto const *retired_sample_sink =
+        retired_sink.try_as<VisualizationRealtimeSampleLane>();
+    ASSERT_NE(retired_sample_sink, nullptr);
+    std::weak_ptr<RealtimeSampleBlockQueue> retired_queue =
+        retired_sample_sink->queue;
 
     state.last_batch = {};
     visualization.handle_lane_view_closed(intern("view-rt"));
@@ -305,6 +311,14 @@ TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPa
 
     ASSERT_EQ(state.last_batch.removals.size(), 1u);
     EXPECT_EQ(state.last_batch.removals.front(), vis_lane);
+
+    // A task graph may still execute the removed sink. Its queue is owned by
+    // the node, not borrowed from the visualization view that has just gone
+    // away.
+    EXPECT_FALSE(retired_queue.expired());
+    retired_sink = TypeErasedLaneNode{};
+    visualization.publish_now();
+    EXPECT_TRUE(retired_queue.expired());
 
 }
 

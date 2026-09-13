@@ -649,7 +649,7 @@ void single_pan(GraphBuilder& g)
     auto const az = g.input<"azimuth">(0, -180, 180);
     auto const el = g.input<"elevation">(0, -180, 180);
 
-    auto const hrtf = g.node<LearnedHrtfSource>();
+    auto const hrtf = g.node<"iv.project.q24_pan.learned_hrtf">();
 
     hrtf(
         "in"_P = in,
@@ -659,6 +659,7 @@ void single_pan(GraphBuilder& g)
 
     g.outputs(hrtf);
 }
+IV_MODULE("iv.project.q24_pan.single_pan", single_pan);
 
 
 void module_main(GraphBuilder& g)
@@ -668,10 +669,10 @@ void module_main(GraphBuilder& g)
     auto const el = g.input<"elevation">(0, -180, 180);
     auto const spread = g.input<"spread">(30, 0, 180);
     auto const az = g.tile<stereo>(center - spread * 0.5, center + spread * 0.5);
-    auto const fir = g.node<BaselineFir256>();
+    auto const fir = g.node<"iv.project.q24_pan.baseline_fir_256">();
 
-    auto const v_l = g.module<single_pan>();
-    auto const v_r = g.module<single_pan>();
+    auto const v_l = g.node<"iv.project.q24_pan.single_pan">();
+    auto const v_r = g.node<"iv.project.q24_pan.single_pan">();
 
     auto const v_l_out = v_l(
         "in"_P = in[stereo::left],
@@ -688,3 +689,7 @@ void module_main(GraphBuilder& g)
 
     g.outputs("main"_P = fir);
 }
+
+IV_NODE("iv.project.q24_pan.learned_hrtf", LearnedHrtfSource);
+IV_NODE("iv.project.q24_pan.baseline_fir_256", BaselineFir256);
+IV_MODULE("iv.project.q24_pan", module_main);

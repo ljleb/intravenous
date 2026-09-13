@@ -30,7 +30,7 @@ template<class ChannelType>
 class TypedPublicSampleInputRef;
 
 // A sample expression is exactly the ordered semantic source channels that
-// participate in an authored connection. It has no execution/topology address.
+// participate in an configured connection. It has no execution/topology address.
 struct SamplePortRef {
   GraphBuilder* graph_builder{};
   ChannelTypeId channel_type = ChannelTypeId::mono;
@@ -264,7 +264,7 @@ requires requires {
 }
 
 // Event expressions mirror SamplePortRef: only semantic source ports survive
-// authoring. A tiled source is one TiledNodeBundle event port; lowering expands
+// configuration. A tiled source is one TiledNodeBundle event port; lowering expands
 // it to member execution ports when compiling the graph.
 struct EventPortRef {
   GraphBuilder* graph_builder{};

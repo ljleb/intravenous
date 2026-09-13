@@ -5,7 +5,7 @@
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/startup_config.h>
 #include <intravenous/runtime/timeline_events.h>
-#include <intravenous/runtime/authored_lane_api.h>
+#include <intravenous/runtime/configured_lane_api.h>
 
 #include <filesystem>
 #include <optional>
@@ -39,8 +39,8 @@ class ProjectPersistenceBuilder {
     std::vector<ProjectSetEventOutputStateRequest> event_output_states_ {};
     std::vector<ProjectSetTimelineLaneSampleChannelTypeRequest> lane_sample_channel_types_ {};
     std::vector<ProjectConnectTimelineLanesRequest> lane_connections_ {};
-    std::vector<AuthoredLaneConnection> authored_lane_connections_ {};
-    std::vector<AuthoredLaneRecord> authored_lanes_ {};
+    std::vector<ConfiguredLaneConnection> configured_lane_connections_ {};
+    std::vector<ConfiguredLaneRecord> configured_lanes_ {};
 
     [[nodiscard]] std::string relativize_path(std::filesystem::path const &path) const;
     [[nodiscard]] static char const *sample_input_state_name(ProjectSampleInputState state);
@@ -62,12 +62,12 @@ public:
         std::string output_lane_id,
         std::string input_lane_id);
     void add_iv_module_instances(std::vector<IvModuleInstanceInfo> instances);
-    void add_graph_input_authored_state(GraphInputLanes::AuthoredStateSnapshot const &state);
+    void add_graph_input_configured_state(GraphInputLanes::ConfiguredStateSnapshot const &state);
     void add_lane_sample_channel_types(
         std::vector<ProjectSetTimelineLaneSampleChannelTypeRequest> requests);
     void add_lane_connections(std::vector<ProjectConnectTimelineLanesRequest> connections);
-    void add_authored_lane_connections(std::vector<AuthoredLaneConnection> connections);
-    void add_authored_lanes(std::vector<AuthoredLaneRecord> lanes);
+    void add_configured_lane_connections(std::vector<ConfiguredLaneConnection> connections);
+    void add_configured_lanes(std::vector<ConfiguredLaneRecord> lanes);
 
     [[nodiscard]] std::vector<ProjectCommand> build() const;
 };

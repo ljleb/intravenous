@@ -47,7 +47,7 @@ export type VirtualNode = {
     id?: string;
     instanceId?: string;
     kind?: string;
-    sourceIdentity?: string;
+    packageIdentity?: string;
     typeIdentity?: string;
     sourceSpans?: SourceSpan[];
     sampleInputs?: VirtualPort[];

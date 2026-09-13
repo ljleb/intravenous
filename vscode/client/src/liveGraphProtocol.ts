@@ -59,7 +59,7 @@ export type SerializedLiveGraphInstance = {
     instanceId: string;
     definitionId: string;
     moduleId: string;
-    moduleRoot: string;
+    packageRoot: string;
     realized: boolean;
     label: string;
 };
@@ -74,9 +74,9 @@ export type LiveGraphSetSelectedInstanceMessage = {
     selectedInstanceId: string | null;
 };
 
-export type LiveGraphSetModuleSourceMessage = {
-    type: "setModuleSource";
-    moduleRoot: string | null;
+export type LiveGraphSetPackageRootMessage = {
+    type: "setPackageRoot";
+    packageRoot: string | null;
 };
 
 export type LiveGraphSetNodesMessage = {

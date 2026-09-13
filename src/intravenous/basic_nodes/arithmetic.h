@@ -110,6 +110,9 @@ namespace iv {
         }
     };
 
+    // A registered IV_NODE may name a fully instantiated node template. The
+    // registry binds its stable ID to this one specialization, not to the
+    // BinaryOpNode template family as a whole.
     using Subtract = BinaryOpNode<std::minus<Sample>>;
 
     template<size_t NumInputs>

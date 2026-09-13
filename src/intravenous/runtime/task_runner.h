@@ -16,6 +16,9 @@ namespace iv {
 struct TaskCallback {
     void (*invoke)(void *) = nullptr;
     void *context = nullptr;
+    // GraphVersion copies callbacks.  Keep any non-static context alive with
+    // the graph version that can invoke its raw pointer.
+    std::shared_ptr<void> context_owner {};
 };
 
 struct TaskRecord {
@@ -37,6 +40,9 @@ struct TaskGraphUpdate {
 };
 
 struct VersionedTaskGraphUpdate {
+    // Correlates updates within the producer that emitted this event. Several
+    // independent producers may validly patch one incomplete pending graph,
+    // so this is deliberately not a task-graph transaction identity.
     std::uint64_t version_index = 0;
     TaskGraphUpdate update {};
     bool activation_deferred = false;
@@ -58,7 +64,6 @@ private:
     std::shared_ptr<GraphVersion> active_graph_;
     std::shared_ptr<GraphVersion> pending_graph_;
     std::shared_ptr<PassState> current_pass_;
-    std::optional<std::uint64_t> pending_update_version_index_;
     bool pending_graph_is_complete_ = true;
     bool pending_graph_activation_deferred_ = false;
     std::uint64_t next_revision_ = 1;

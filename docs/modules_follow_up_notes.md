@@ -32,8 +32,9 @@
   - both bounds infinite: `x / (1 - x^2)`, centered by default;
   - only upper bound infinite: `x^2 / (1 - x)`;
   - only lower bound infinite: `x^2 / (1 + x)`.
-- Add source annotations for sample/event port refs, parallel to node-ref
-  annotations, so `g.input(...)` can be exposed as a sidepanel control.
+- Keep source provenance on named reference identifiers rather than direct
+  `g.input(...)`/node expressions; runtime sidepanel controls do not depend on
+  a port having its own source span.
 - Audit whether explicitly disconnecting a `g.input()` lane is already possible
   or needs a new port-state transition.
 
@@ -59,10 +60,12 @@
 - VST wrapper parameter inputs expose denormalized plugin default/min/max via
   `InputConfig`; runtime conversion back to JUCE normalized values uses the
   parameter's `RangedAudioParameter` conversion.
-- Do not generalize source annotations to arbitrary output port refs.
-  `g.input()` returns a dedicated `PublicSampleInputRef`, implicitly
-  convertible to `SamplePortRef`; only that type receives LLVM source
-  annotations.
+- Source annotations are attached to declarator identifiers and later
+  id-expression references for source-annotatable node/sample/event/public
+  input refs. A direct `g.input(...)` or node expression is not itself a
+  source-active region. Named `_P`/`_F` bindings contribute only their quoted
+  name string, and that span belongs to the corresponding virtual input port
+  rather than the enclosing virtual node.
 - Source identity groups repeated annotated `g.input()` calls, including calls
   made in loops, into one logical public input with concrete members. The
   default behavior is a shared logical lane for all members.

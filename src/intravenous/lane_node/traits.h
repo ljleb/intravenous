@@ -149,7 +149,7 @@ namespace iv {
             node.output();
         };
 
-        // An optional, presentation-independent authored model. A lane that
+        // An optional, presentation-independent configured model. A lane that
         // declares a model type id must provide the complete state contract
         // below; ordinary lanes do not opt in and retain no UI-model overhead.
         template<typename LaneNode>

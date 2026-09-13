@@ -4,6 +4,7 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/Mangle.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
@@ -23,11 +24,13 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <set>
 #include <string>
@@ -46,6 +49,12 @@ struct SourceSpanRecord {
     std::uint32_t end = 0;
 
     bool operator==(SourceSpanRecord const&) const = default;
+};
+
+struct NamedPortLiteralRecord {
+    SourceSpanRecord span;
+    std::string name;
+    bool event = false;
 };
 
 std::filesystem::path normalized_path(std::filesystem::path path)
@@ -124,6 +133,116 @@ std::string type_usr(ASTContext& context, QualType type)
     return buffer.str().str();
 }
 
+std::string hex_u64(std::uint64_t value);
+
+QualType transported_configuration_type(QualType type)
+{
+    return type.getNonReferenceType().getUnqualifiedType().getCanonicalType();
+}
+
+std::uint64_t fingerprint_hash(std::string_view value)
+{
+    std::uint64_t result = 14695981039346656037ull;
+    for (auto const character : value) {
+        result ^= static_cast<unsigned char>(character);
+        result *= 1099511628211ull;
+    }
+    return result;
+}
+
+void append_type_definition_fingerprint(
+    ASTContext& context,
+    QualType type,
+    std::set<Type const*>& visited,
+    std::string& material)
+{
+    type = transported_configuration_type(type);
+    auto const* raw = type.getTypePtrOrNull();
+    if (!raw || !visited.insert(raw).second) return;
+    material += type_usr(context, type);
+    material += ':';
+
+    // ODRHash walks every declaration currently attached to the record. That
+    // is not a stable package boundary identity: implicit specializations of
+    // a friend/template member appear only after a particular package happens
+    // to use them. Two packages can therefore see the same Sample declaration
+    // with different ODRHash values. Fingerprint the spelled definition
+    // instead. This is both compiler-produced and invariant under unrelated
+    // use-site instantiations; removing whitespace avoids formatting-only
+    // churn.
+    auto definition_text = [&](Decl const* declaration) {
+        if (!declaration) return std::string{};
+        bool invalid = false;
+        auto const text = Lexer::getSourceText(
+            CharSourceRange::getTokenRange(declaration->getSourceRange()),
+            context.getSourceManager(), context.getLangOpts(), &invalid);
+        if (invalid || text.empty()) return std::string{};
+        std::string normalized;
+        normalized.reserve(text.size());
+        for (unsigned char character : text.bytes()) {
+            if (!std::isspace(character))
+                normalized.push_back(static_cast<char>(character));
+        }
+        return normalized;
+    };
+    if (auto const* record = type->getAsCXXRecordDecl()) {
+        auto const* definition = record->getDefinition();
+        material += definition_text(definition);
+    } else if (auto const* enumeration = type->getAs<EnumType>()) {
+        if (auto const* definition = enumeration->getDecl()->getDefinition()) {
+            material += definition_text(definition);
+        }
+    } else {
+        material += type_string(context, type);
+    }
+    material += ';';
+
+    if (auto const* pointer = type->getAs<PointerType>()) {
+        append_type_definition_fingerprint(
+            context, pointer->getPointeeType(), visited, material);
+    } else if (auto const* reference = type->getAs<ReferenceType>()) {
+        append_type_definition_fingerprint(
+            context, reference->getPointeeType(), visited, material);
+    } else if (auto const* array = context.getAsArrayType(type)) {
+        append_type_definition_fingerprint(
+            context, array->getElementType(), visited, material);
+    } else if (auto const* function = type->getAs<FunctionProtoType>()) {
+        append_type_definition_fingerprint(
+            context, function->getReturnType(), visited, material);
+        for (auto parameter : function->param_types()) {
+            append_type_definition_fingerprint(
+                context, parameter, visited, material);
+        }
+    }
+}
+
+std::string type_definition_fingerprint(ASTContext& context, QualType type)
+{
+    std::set<Type const*> visited;
+    std::string material;
+    append_type_definition_fingerprint(context, type, visited, material);
+    return hex_u64(fingerprint_hash(material));
+}
+
+llvm::json::Object configuration_type_metadata(
+    ASTContext& context,
+    QualType type)
+{
+    type = transported_configuration_type(type);
+    return llvm::json::Object{
+        {"nominal_id", type_usr(context, type)},
+        {"definition_fingerprint", type_definition_fingerprint(context, type)},
+        {"display_name", type_string(context, type)},
+    };
+}
+
+std::string mangled_global_name(ASTContext& context, VarDecl const* declaration)
+{
+    if (!declaration) return {};
+    ASTNameGenerator names(context);
+    return names.getName(declaration);
+}
+
 std::uint64_t node_code_key_hash(
     std::string_view value,
     std::uint64_t seed)
@@ -187,7 +306,7 @@ AnnotatableRefKind annotatable_ref_kind(QualType type)
         || name == "TypedSamplePortTileChannelRef")
         return AnnotatableRefKind::sample_port;
     if (name == "EventPortRef") return AnnotatableRefKind::event_port;
-    if (name == "PublicSampleInputRef")
+    if (name == "PublicSampleInputRef" || name == "TypedPublicSampleInputRef")
         return AnnotatableRefKind::public_sample_input;
     if (name == "PublicEventInputRef")
         return AnnotatableRefKind::public_event_input;
@@ -264,6 +383,54 @@ public:
         };
     }
 
+    std::optional<NamedPortLiteralRecord> named_port_literal(
+        UserDefinedLiteral const* literal) const
+    {
+        if (!literal) return std::nullopt;
+        auto const begin = source_manager_.getSpellingLoc(literal->getBeginLoc());
+        auto const end = source_manager_.getSpellingLoc(literal->getEndLoc());
+        if (begin.isInvalid() || end.isInvalid()) return std::nullopt;
+        auto token_text = Lexer::getSourceText(
+            CharSourceRange::getTokenRange(begin, end),
+            source_manager_, context_.getLangOpts());
+        if (token_text.empty()) return std::nullopt;
+
+        std::string_view suffix;
+        bool event = false;
+        if (token_text.ends_with("_P"))
+            suffix = "_P";
+        else if (token_text.ends_with("_F")) {
+            suffix = "_F";
+            event = true;
+        } else
+            return std::nullopt;
+
+        auto span = source_span(literal->getSourceRange());
+        if (!span || span->end < span->begin + suffix.size())
+            return std::nullopt;
+        // Clang exposes a string UDL as one source token (for example
+        // `"frequency"_P`).  Tooling provenance should cover the name
+        // string only, not the literal-operator suffix.
+        span->end -= static_cast<std::uint32_t>(suffix.size());
+        token_text = token_text.drop_back(suffix.size());
+        auto const first_quote = token_text.find('"');
+        auto const last_quote = token_text.rfind('"');
+        if (first_quote == llvm::StringRef::npos || last_quote == llvm::StringRef::npos
+            || first_quote >= last_quote)
+            return std::nullopt;
+
+        // Port names are ordinary narrow string literal NTTPs. Preserve the
+        // semantic spelling used by the DSL for ordinary names; escaped names
+        // are intentionally uncommon and can be handled here if the DSL ever
+        // starts relying on them.
+        auto port_name = token_text.slice(first_quote + 1, last_quote).str();
+        return NamedPortLiteralRecord{
+            .span = *span,
+            .name = std::move(port_name),
+            .event = event,
+        };
+    }
+
 private:
     ASTContext& context_;
     SourceManager& source_manager_;
@@ -274,6 +441,16 @@ struct RefAnnotation {
     VarDecl* declaration = nullptr;
     std::string declaration_identity;
     SourceSpanRecord span;
+    bool refers_to_enclosing_variable_or_capture = false;
+};
+
+struct NodeInputPortAnnotation {
+    VarDecl* declaration = nullptr;
+    std::string declaration_identity;
+    std::string port_name;
+    bool event = false;
+    SourceSpanRecord span;
+    bool refers_to_enclosing_variable_or_capture = false;
 };
 
 struct PublicOutputAnnotation {
@@ -285,6 +462,7 @@ struct PublicOutputAnnotation {
 
 struct StatementAnalysis {
     std::vector<RefAnnotation> refs;
+    std::vector<NodeInputPortAnnotation> node_input_ports;
     std::vector<PublicOutputAnnotation> public_outputs;
 };
 
@@ -322,22 +500,35 @@ public:
             // A class-type declaration without source syntax for an
             // initializer (for example `NodeRef x;`) has an implicit
             // CXXConstructExpr in Clang's AST. It is still uninitialized in
-            // the authored-graph sense and must wait for its first assignment.
+            // the configured-graph sense and must wait for its first assignment.
             if (!has_explicit_initializer(variable)) continue;
+
+            // Source provenance is intentionally token-shaped: the declared
+            // identifier is active, but the initializer expression is not.
             append_ref({variable, identity, *span});
+            append_named_port_argument_spans(
+                variable, identity, variable->getInit(), false);
         }
         return true;
     }
 
-    bool VisitUnaryOperator(UnaryOperator* expression)
+    bool VisitDeclRefExpr(DeclRefExpr* reference)
     {
-        if (!expression || expression->getOpcode() != UO_AddrOf) return true;
-        auto* variable = referenced_variable(expression->getSubExpr());
-        if (!variable || !is_annotatable_ref(variable->getType())) return true;
-        auto const span = named_expression_span(expression->getSubExpr(), variable);
+        if (!reference || !sources_.is_user_source(reference->getExprLoc()))
+            return true;
+        auto* variable = dyn_cast<VarDecl>(reference->getDecl());
+        if (!variable || variable->isImplicit()
+            || !is_annotatable_ref(variable->getType()))
+            return true;
+        auto const span = sources_.source_span(reference->getSourceRange());
         auto const identity = declaration_identity(
             variable, sources_.declaration_span(variable));
-        if (span && !identity.empty()) append_ref({variable, identity, *span});
+        if (span && !identity.empty()) append_ref({
+            variable,
+            identity,
+            *span,
+            reference->refersToEnclosingVariableOrCapture(),
+        });
         return true;
     }
 
@@ -351,18 +542,21 @@ public:
                 && annotatable_ref_kind(variable->getType()) == AnnotatableRefKind::node
                 && !variable->getType()->isReferenceType()
                 && !has_explicit_initializer(variable)) {
-                auto const identity = declaration_identity(
-                    variable, sources_.declaration_span(variable));
                 auto const declaration_source = sources_.declaration_span(variable);
-                auto initialization_source = named_expression_span(call->getArg(0), variable);
-                if (!initialization_source)
-                    initialization_source = sources_.source_span(call->getSourceRange());
+                auto const identity = declaration_identity(
+                    variable, declaration_source);
                 if (!identity.empty() && declaration_source) {
                     validate_unique_graph_local(variable, *declaration_source);
+                    // The declaration could not be annotated while the ref was
+                    // empty. Once the assignment has completed, attach its
+                    // declaration identifier as provenance too. The LHS use is
+                    // picked up independently by VisitDeclRefExpr.
                     append_ref({variable, identity, *declaration_source});
                 }
-                if (!identity.empty() && initialization_source)
-                    append_ref({variable, identity, *initialization_source});
+                if (!identity.empty() && call->getNumArgs() > 1) {
+                    append_named_port_argument_spans(
+                        variable, identity, call->getArg(1), false);
+                }
             }
         }
 
@@ -370,10 +564,15 @@ public:
             auto* variable = referenced_variable(call->getArg(0));
             if (variable
                 && annotatable_ref_kind(variable->getType()) == AnnotatableRefKind::node) {
-                auto const span = named_expression_span(call, variable);
                 auto const identity = declaration_identity(
                     variable, sources_.declaration_span(variable));
-                if (span && !identity.empty()) append_ref({variable, identity, *span});
+                if (!identity.empty()) {
+                    auto const captured = expression_refers_to_capture(call->getArg(0));
+                    for (unsigned i = 1; i < call->getNumArgs(); ++i) {
+                        append_named_port_binding_annotation(
+                            variable, identity, call->getArg(i), captured);
+                    }
+                }
             }
         }
         return true;
@@ -391,13 +590,13 @@ public:
             && sources_.is_user_source(call->getExprLoc())) {
             auto* builder = call->getImplicitObjectArgument();
             for (unsigned i = 0; i < call->getNumArgs(); ++i) {
-                auto const span = sources_.source_span(call->getArg(i)->getSourceRange());
-                if (!span) continue;
+                auto const binding = named_port_binding(call->getArg(i));
+                if (!binding) continue;
                 result_.public_outputs.push_back({
                     .builder = builder,
                     .event = method_name == "event_outputs",
                     .ordinal = i,
-                    .span = *span,
+                    .span = binding->span,
                 });
             }
         }
@@ -450,34 +649,107 @@ private:
         // instantiation, but that USR embeds concrete template arguments
         // (for example the polyphonic voice index). Source annotations need
         // the lexical declaration identity instead so equivalent callback
-        // instances aggregate by their exact authored source span. This is
+        // instances aggregate by their exact configured source span. This is
         // only a source annotation key; NodeCodeKey remains the build-local
         // compiler-record join key.
         return "source-local:" + span->file + ':' + std::to_string(span->begin)
             + '@' + declaration->getNameAsString();
     }
 
-    std::optional<SourceSpanRecord> named_expression_span(
-        Expr* expression,
-        VarDecl* declaration) const
+    static Expr* peel_expression(Expr* expression)
     {
-        if (!expression || !declaration) return std::nullopt;
+        if (!expression) return nullptr;
+        for (;;) {
+            auto* next = expression->IgnoreParenImpCasts();
+            if (auto* cleanups = dyn_cast<ExprWithCleanups>(next))
+                next = cleanups->getSubExpr();
+            else if (auto* materialized = dyn_cast<MaterializeTemporaryExpr>(next))
+                next = materialized->getSubExpr();
+            else if (auto* bound = dyn_cast<CXXBindTemporaryExpr>(next))
+                next = bound->getSubExpr();
+            if (next == expression) return expression;
+            expression = next;
+        }
+    }
+
+    static bool expression_refers_to_capture(Expr* expression)
+    {
+        if (!expression) return false;
+        expression = expression->IgnoreParenImpCasts();
+        auto const* reference = dyn_cast<DeclRefExpr>(expression);
+        return reference && reference->refersToEnclosingVariableOrCapture();
+    }
+
+    UserDefinedLiteral* named_port_literal_expr(Expr* expression) const
+    {
+        expression = peel_expression(expression);
+        if (!expression) return nullptr;
+        if (auto* literal = dyn_cast<UserDefinedLiteral>(expression)) {
+            return sources_.named_port_literal(literal) ? literal : nullptr;
+        }
         class Finder final : public RecursiveASTVisitor<Finder> {
         public:
-            explicit Finder(VarDecl* target) : target_(target) {}
-            bool VisitDeclRefExpr(DeclRefExpr* ref)
+            explicit Finder(SourceModel const& sources) : sources_(sources) {}
+            bool VisitUserDefinedLiteral(UserDefinedLiteral* literal)
             {
-                if (!found_ && ref->getDecl() == target_) found_ = ref;
+                if (!found_ && sources_.named_port_literal(literal))
+                    found_ = literal;
                 return true;
             }
-            DeclRefExpr* found() const { return found_; }
+            UserDefinedLiteral* found() const { return found_; }
         private:
-            VarDecl* target_;
-            DeclRefExpr* found_ = nullptr;
-        } finder(declaration);
+            SourceModel const& sources_;
+            UserDefinedLiteral* found_ = nullptr;
+        } finder(sources_);
         finder.TraverseStmt(expression);
-        if (!finder.found()) return std::nullopt;
-        return sources_.source_span(finder.found()->getSourceRange());
+        return finder.found();
+    }
+
+    std::optional<NamedPortLiteralRecord> named_port_binding(Expr* expression) const
+    {
+        expression = peel_expression(expression);
+        auto* assignment = dyn_cast_or_null<CXXOperatorCallExpr>(expression);
+        if (!assignment || assignment->getOperator() != OO_Equal
+            || assignment->getNumArgs() < 2)
+            return std::nullopt;
+        auto* literal = named_port_literal_expr(assignment->getArg(0));
+        return literal ? sources_.named_port_literal(literal) : std::nullopt;
+    }
+
+    void append_named_port_binding_annotation(
+        VarDecl* variable,
+        std::string const& identity,
+        Expr* expression,
+        bool captured)
+    {
+        if (auto const binding = named_port_binding(expression)) {
+            append_node_input_port({
+                .declaration = variable,
+                .declaration_identity = identity,
+                .port_name = binding->name,
+                .event = binding->event,
+                .span = binding->span,
+                .refers_to_enclosing_variable_or_capture = captured,
+            });
+        }
+    }
+
+    void append_named_port_argument_spans(
+        VarDecl* variable,
+        std::string const& identity,
+        Expr* expression,
+        bool captured)
+    {
+        expression = peel_expression(expression);
+        auto* call = dyn_cast_or_null<CallExpr>(expression);
+        if (!call) return;
+        unsigned begin = 0;
+        if (auto* operator_call = dyn_cast<CXXOperatorCallExpr>(call)) {
+            if (operator_call->getOperator() == OO_Call) begin = 1;
+        }
+        for (unsigned i = begin; i < call->getNumArgs(); ++i)
+            append_named_port_binding_annotation(
+                variable, identity, call->getArg(i), captured);
     }
 
     void append_ref(RefAnnotation annotation)
@@ -490,6 +762,20 @@ private:
             });
         if (duplicate == result_.refs.end())
             result_.refs.push_back(std::move(annotation));
+    }
+
+    void append_node_input_port(NodeInputPortAnnotation annotation)
+    {
+        auto const duplicate = std::find_if(
+            result_.node_input_ports.begin(), result_.node_input_ports.end(),
+            [&](auto const& existing) {
+                return existing.declaration == annotation.declaration
+                    && existing.port_name == annotation.port_name
+                    && existing.event == annotation.event
+                    && existing.span == annotation.span;
+            });
+        if (duplicate == result_.node_input_ports.end())
+            result_.node_input_ports.push_back(std::move(annotation));
     }
 
     static FunctionDecl const* enclosing_function(VarDecl const* declaration)
@@ -536,12 +822,17 @@ public:
 
     bool VisitFunctionDecl(FunctionDecl* declaration)
     {
-        if (declaration && declaration->getNameAsString() == "_annotate_public_output_after_statement")
+        if (!declaration) return true;
+        auto const name = declaration->getNameAsString();
+        if (name == "_annotate_public_output_after_statement")
             public_output_annotation = declaration;
+        else if (name == "_annotate_node_input_source_info_after_statement")
+            node_input_annotation = declaration;
         return true;
     }
 
     FunctionTemplateDecl* source_annotation = nullptr;
+    FunctionDecl* node_input_annotation = nullptr;
     FunctionDecl* public_output_annotation = nullptr;
 };
 
@@ -561,10 +852,11 @@ public:
             || !sources_.is_user_source(function->getLocation()))
             return;
         ensure_helpers();
-        if (!source_annotation_template_ || !public_output_annotation_function_) {
+        if (!source_annotation_template_ || !node_input_annotation_function_
+            || !public_output_annotation_function_) {
             auto id = compiler_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
-                "IV source annotation helpers were not found; include <intravenous/dsl.h> before authored module code");
+                "IV package annotation helpers were not found; include <intravenous/dsl.h> before configured module code");
             compiler_.getDiagnostics().Report(function->getLocation(), id);
             return;
         }
@@ -583,6 +875,7 @@ private:
     SourceModel const& sources_;
     llvm::DenseSet<FunctionDecl*> instrumented_;
     FunctionTemplateDecl* source_annotation_template_ = nullptr;
+    FunctionDecl* node_input_annotation_function_ = nullptr;
     FunctionDecl* public_output_annotation_function_ = nullptr;
     bool helpers_searched_ = false;
     std::unordered_map<FunctionDecl const*,
@@ -597,6 +890,7 @@ private:
         HelperFinder finder;
         finder.TraverseDecl(context_.getTranslationUnitDecl());
         source_annotation_template_ = finder.source_annotation;
+        node_input_annotation_function_ = finder.node_input_annotation;
         public_output_annotation_function_ = finder.public_output_annotation;
     }
 
@@ -631,6 +925,10 @@ private:
                 if (auto* annotation = build_ref_annotation(ref))
                     body.push_back(annotation);
             }
+            for (auto const& port : analysis.node_input_ports) {
+                if (auto* annotation = build_node_input_annotation(port))
+                    body.push_back(annotation);
+            }
             for (auto const& output : analysis.public_outputs) {
                 if (auto* annotation = build_public_output_annotation(output))
                     body.push_back(annotation);
@@ -649,6 +947,20 @@ private:
             declaration->getType().getNonReferenceType(),
             VK_LValue,
             location);
+    }
+
+    Expr* make_variable_ref(
+        VarDecl* declaration,
+        SourceLocation location,
+        bool refers_to_enclosing_variable_or_capture)
+    {
+        if (!declaration) return nullptr;
+        return DeclRefExpr::Create(
+            context_, NestedNameSpecifierLoc{}, SourceLocation{}, declaration,
+            refers_to_enclosing_variable_or_capture,
+            location,
+            declaration->getType().getNonReferenceType(),
+            VK_LValue);
     }
 
     Expr* make_address(Expr* expression, SourceLocation location)
@@ -694,7 +1006,7 @@ private:
         if (result != TemplateDeductionResult::Success || !specialization) {
             auto id = compiler_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
-                "cannot instantiate IV source annotation helper for type '%0'");
+                "cannot instantiate IV package annotation helper for type '%0'");
             compiler_.getDiagnostics().Report(location, id)
                 << type_string(context_, ref_type);
             return nullptr;
@@ -705,7 +1017,10 @@ private:
     Stmt* build_ref_annotation(RefAnnotation const& annotation)
     {
         auto const location = annotation.declaration->getLocation();
-        auto* reference = make_decl_ref(annotation.declaration, location);
+        auto* reference = make_variable_ref(
+            annotation.declaration,
+            location,
+            annotation.refers_to_enclosing_variable_or_capture);
         auto* pointer = make_address(reference, location);
         if (!pointer) return nullptr;
         auto* specialization = source_annotation_specialization(
@@ -725,21 +1040,50 @@ private:
         return result.isInvalid() ? nullptr : result.get();
     }
 
+    Stmt* build_node_input_annotation(NodeInputPortAnnotation const& annotation)
+    {
+        auto const location = annotation.declaration->getLocation();
+        auto* reference = make_variable_ref(
+            annotation.declaration,
+            location,
+            annotation.refers_to_enclosing_variable_or_capture);
+        auto* pointer = make_address(reference, location);
+        if (!pointer) return nullptr;
+        auto* callee = make_decl_ref(node_input_annotation_function_, location);
+        if (!callee) return nullptr;
+        llvm::SmallVector<Expr*, 8> arguments{
+            pointer,
+            new (context_) CXXBoolLiteralExpr(
+                annotation.event, context_.BoolTy, location),
+            make_string(annotation.port_name, location),
+            make_string(annotation.declaration_identity, location),
+            make_string(annotation.span.file, location),
+            make_u32(annotation.span.begin, location),
+            make_u32(annotation.span.end, location),
+        };
+        auto result = sema().BuildCallExpr(
+            nullptr, callee, location, arguments, location);
+        return result.isInvalid() ? nullptr : result.get();
+    }
+
     Expr* builder_pointer(Expr* builder, SourceLocation location)
     {
         if (!builder) return nullptr;
         builder = builder->IgnoreParenImpCasts();
         if (auto* ref = dyn_cast<DeclRefExpr>(builder)) {
-            // Rebuilding an annotation for an enclosing GraphBuilder inside
-            // a lambda would require Sema to recreate its capture after the
-            // lambda has been parsed. The original outputs call remains
-            // valid; lambda-local node mapping does not need this synthetic
-            // public-output annotation.
-            if (ref->refersToEnclosingVariableOrCapture()) return nullptr;
-            auto* fresh = make_decl_ref(ref->getDecl(), location);
+            // The annotation is a separate statement, so it needs its own
+            // expression tree. Preserve Clang's capture bit when cloning a
+            // reference from a lambda body: a plain BuildDeclRefExpr here
+            // would refer to the enclosing GraphBuilder directly instead of
+            // the already-declared closure capture, and the output span would
+            // silently disappear from the configured graph.
+            auto* fresh = DeclRefExpr::Create(
+                context_, NestedNameSpecifierLoc{}, SourceLocation{},
+                ref->getDecl(), ref->refersToEnclosingVariableOrCapture(),
+                location, ref->getType(), ref->getValueKind());
             return make_address(fresh, location);
         }
-        // GraphBuilder's public API is unchanged; ordinary authored code uses
+        // GraphBuilder's public API is unchanged; ordinary configured code uses
         // a builder lvalue. Do not re-evaluate arbitrary object expressions
         // after the statement merely to obtain an annotation target.
         auto id = compiler_.getDiagnostics().getCustomDiagID(
@@ -1052,6 +1396,293 @@ private:
     std::vector<CXXRecordDecl const*> nodes_;
 };
 
+class ConfigurationTypeIdentityCollector final
+    : public RecursiveASTVisitor<ConfigurationTypeIdentityCollector> {
+public:
+    explicit ConfigurationTypeIdentityCollector(ASTContext& context)
+        : context_(context)
+    {}
+
+    bool VisitVarTemplateSpecializationDecl(
+        VarTemplateSpecializationDecl* specialization)
+    {
+        if (!specialization) return true;
+        auto const* variable_template = specialization->getSpecializedTemplate();
+        if (!variable_template
+            || variable_template->getCanonicalDecl()->getQualifiedNameAsString()
+                != "iv::details::configuration_type_identity_storage") {
+            return true;
+        }
+        auto const arguments = specialization->getTemplateArgs().asArray();
+        if (arguments.size() != 1 || arguments.front().getKind() != TemplateArgument::Type) {
+            return true;
+        }
+        auto const symbol = mangled_global_name(context_, specialization);
+        if (symbol.empty() || !seen_.insert(symbol).second) return true;
+        auto metadata = configuration_type_metadata(context_, arguments.front().getAsType());
+        metadata["symbol"] = symbol;
+        identities_.push_back(std::move(metadata));
+        return true;
+    }
+
+    llvm::json::Array take_identities() &&
+    {
+        std::ranges::sort(identities_, [](llvm::json::Value const& lhs,
+                                          llvm::json::Value const& rhs) {
+            return lhs.getAsObject()->getString("symbol")->str()
+                < rhs.getAsObject()->getString("symbol")->str();
+        });
+        return std::move(identities_);
+    }
+
+private:
+    ASTContext& context_;
+    llvm::json::Array identities_;
+    std::set<std::string> seen_;
+};
+
+class RegisteredNodeAdapterFinder final
+    : public RecursiveASTVisitor<RegisteredNodeAdapterFinder> {
+public:
+    bool VisitFunctionTemplateDecl(FunctionTemplateDecl* declaration)
+    {
+        if (!declaration) return true;
+        auto const name = declaration->getQualifiedNameAsString();
+        if (name == "iv::details::configure_node_constructor") {
+            configure = declaration;
+        } else if (name == "iv::details::node_constructor_signature") {
+            signature = declaration;
+        }
+        return true;
+    }
+
+    FunctionTemplateDecl* configure = nullptr;
+    FunctionTemplateDecl* signature = nullptr;
+};
+
+class PackageDefinitionCollector final
+    : public RecursiveASTVisitor<PackageDefinitionCollector> {
+public:
+    explicit PackageDefinitionCollector(CompilerInstance& compiler)
+        : compiler_(compiler), context_(compiler.getASTContext())
+    {}
+
+    bool VisitVarDecl(VarDecl* declaration)
+    {
+        if (!declaration || !declaration->hasInit()) return true;
+        auto const* record = declaration->getType()->getAsCXXRecordDecl();
+        if (!record
+            || record->getQualifiedNameAsString()
+                != "iv::details::PackageDefinition") {
+            return true;
+        }
+
+        auto const variable_name = declaration->getName();
+        bool const is_module = variable_name.starts_with("iv_package_module_definition_");
+        bool const is_node = variable_name.starts_with("iv_package_node_definition_");
+        if (!is_module && !is_node) return true;
+
+        auto* initializer = dyn_cast<InitListExpr>(
+            declaration->getInit()->IgnoreParenImpCasts());
+        if (!initializer || initializer->getNumInits() < 11) return true;
+
+        auto expression = [&](unsigned index) -> Expr* {
+            return initializer->getInit(index)->IgnoreParenImpCasts();
+        };
+        auto const* literal = dyn_cast<StringLiteral>(expression(1));
+        if (!literal || literal->getString().empty()) return true;
+
+        auto id = literal->getString().str();
+        if (!seen_.insert(id).second) {
+            auto diagnostic = compiler_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error,
+                "IV package defines stable ID '%0' more than once");
+            compiler_.getDiagnostics().Report(declaration->getLocation(), diagnostic)
+                << id;
+            return true;
+        }
+        llvm::json::Object metadata{
+            {"id", std::move(id)},
+            {"kind", is_module ? "module" : "node"},
+            {"declaration_usr", declaration_usr(context_, declaration)},
+        };
+        if (auto const* source_file = dyn_cast<StringLiteral>(expression(3))) {
+            metadata["source_file"] = source_file->getString();
+        }
+
+        if (is_module) {
+            Expr const* implementation = expression(7);
+            if (auto const* address = dyn_cast<UnaryOperator>(implementation)) {
+                implementation = address->getSubExpr()->IgnoreParenImpCasts();
+            }
+            if (auto const* reference = dyn_cast<DeclRefExpr>(implementation)) {
+                metadata["implementation_usr"] = declaration_usr(
+                    context_, reference->getDecl());
+            }
+        } else {
+            Expr const* compiler_record = expression(9);
+            if (auto const* address = dyn_cast<UnaryOperator>(compiler_record)) {
+                compiler_record = address->getSubExpr()->IgnoreParenImpCasts();
+            }
+            if (auto const* reference = dyn_cast<DeclRefExpr>(compiler_record)) {
+                auto const* specialization = dyn_cast<VarTemplateSpecializationDecl>(
+                    reference->getDecl());
+                if (auto const* node = node_type_from_compiler_record_specialization(
+                        specialization)) {
+                    auto const type = context_.getCanonicalTagType(node);
+                    metadata["node_type_usr"] = declaration_usr(context_, node);
+                    metadata["node_code_key"] = node_code_key(context_, type);
+                    install_node_adapter(initializer, declaration, node);
+                }
+            }
+        }
+        definitions_.push_back(std::move(metadata));
+        return true;
+    }
+
+    llvm::json::Array take_definitions() &&
+    {
+        std::ranges::sort(definitions_, [](llvm::json::Value const& lhs,
+                                           llvm::json::Value const& rhs) {
+            return lhs.getAsObject()->getString("id")->str()
+                < rhs.getAsObject()->getString("id")->str();
+        });
+        return std::move(definitions_);
+    }
+
+private:
+    CompilerInstance& compiler_;
+    ASTContext& context_;
+    llvm::json::Array definitions_;
+    std::set<std::string> seen_;
+
+    Sema& sema() { return compiler_.getSema(); }
+
+    void ensure_node_adapter_templates()
+    {
+        if (helpers_searched_) return;
+        helpers_searched_ = true;
+        RegisteredNodeAdapterFinder finder;
+        finder.TraverseDecl(context_.getTranslationUnitDecl());
+        node_configure_template_ = finder.configure;
+        node_signature_template_ = finder.signature;
+    }
+
+    FunctionDecl* specialize(
+        FunctionTemplateDecl* function_template,
+        std::span<QualType const> arguments,
+        SourceLocation location)
+    {
+        if (!function_template) return nullptr;
+        TemplateArgumentListInfo explicit_arguments(location, location);
+        for (auto type : arguments) {
+            explicit_arguments.addArgument(sema().getTrivialTemplateArgumentLoc(
+                TemplateArgument(type), QualType{}, location));
+        }
+        sema::TemplateDeductionInfo deduction(location);
+        FunctionDecl* specialization = nullptr;
+        auto const result = sema().DeduceTemplateArguments(
+            function_template, &explicit_arguments, specialization, deduction, false);
+        if (result == TemplateDeductionResult::Success && specialization) {
+            return specialization;
+        }
+        auto id = compiler_.getDiagnostics().getCustomDiagID(
+            DiagnosticsEngine::Error,
+            "cannot synthesize IV_NODE constructor adapter");
+        compiler_.getDiagnostics().Report(location, id);
+        return nullptr;
+    }
+
+    Expr* function_pointer(FunctionDecl* function, SourceLocation location)
+    {
+        if (!function) return nullptr;
+        auto reference = sema().BuildDeclRefExpr(
+            function, function->getType(), VK_LValue, location);
+        auto address = sema().BuildUnaryOp(
+            nullptr, location, UO_AddrOf, reference);
+        return address.isInvalid() ? nullptr : address.get();
+    }
+
+    std::optional<std::vector<QualType>> visible_node_constructor_parameters(
+        CXXRecordDecl const* node,
+        SourceLocation location)
+    {
+        std::vector<CXXConstructorDecl*> constructors;
+        for (auto* constructor : node->ctors()) {
+            if (!constructor || constructor->isCopyOrMoveConstructor()) continue;
+            if (constructor->isDeleted()) continue;
+            constructors.push_back(constructor);
+        }
+        // An aggregate/default-only node has no CXXConstructorDecl until Sema
+        // materializes one lazily.  Do not ask Sema to materialize or inspect
+        // that special member while the parser is delivering the IV_NODE's
+        // top-level declaration: Clang 23 can crash in that re-entrant state.
+        // An empty explicit-constructor list is the zero-argument adapter;
+        // constructing it remains the normal C++ compiler's responsibility,
+        // so a deleted/inaccessible implicit default constructor still yields
+        // an ordinary provider-package diagnostic.
+        if (constructors.empty()) return std::vector<QualType>{};
+        if (constructors.size() != 1) {
+            auto id = compiler_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error,
+                "IV_NODE requires exactly one non-copy, non-move constructor");
+            compiler_.getDiagnostics().Report(location, id);
+            return std::nullopt;
+        }
+        auto* constructor = constructors.front();
+        if (constructor->getDescribedFunctionTemplate()
+            || constructor->getAccess() != AS_public) {
+            auto id = compiler_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error,
+                "IV_NODE constructor must be a public non-template constructor");
+            compiler_.getDiagnostics().Report(location, id);
+            return std::nullopt;
+        }
+        std::vector<QualType> parameters;
+        parameters.reserve(constructor->getNumParams());
+        for (auto const* parameter : constructor->parameters()) {
+            parameters.push_back(parameter->getType());
+        }
+        return parameters;
+    }
+
+    void install_node_adapter(
+        InitListExpr* initializer,
+        VarDecl* declaration,
+        CXXRecordDecl const* node)
+    {
+        ensure_node_adapter_templates();
+        auto const location = declaration->getLocation();
+        if (!node_configure_template_ || !node_signature_template_) {
+            auto id = compiler_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error,
+                "IV_NODE adapter templates were not found; include <intravenous/dsl.h>");
+            compiler_.getDiagnostics().Report(location, id);
+            return;
+        }
+        auto parameters = visible_node_constructor_parameters(node, location);
+        if (!parameters) return;
+
+        std::vector<QualType> arguments;
+        arguments.reserve(1 + parameters->size());
+        arguments.push_back(context_.getCanonicalTagType(node));
+        arguments.insert(arguments.end(), parameters->begin(), parameters->end());
+        auto* configure = specialize(
+            node_configure_template_, arguments, location);
+        auto* signature = specialize(
+            node_signature_template_, arguments, location);
+        auto* configure_pointer = function_pointer(configure, location);
+        auto* signature_pointer = function_pointer(signature, location);
+        if (!configure_pointer || !signature_pointer) return;
+        initializer->setInit(8, configure_pointer);
+        initializer->setInit(10, signature_pointer);
+    }
+
+    bool helpers_searched_ = false;
+    FunctionTemplateDecl* node_configure_template_ = nullptr;
+    FunctionTemplateDecl* node_signature_template_ = nullptr;
+};
+
 std::filesystem::path metadata_path(
     CompilerInstance& compiler,
     std::filesystem::path const& directory)
@@ -1073,6 +1704,15 @@ void write_state_metadata(
     StateMetadataCollector state_collector(context);
     NodeConfigMetadataCollector node_config_collector(context);
     ReflectedNodeDiscovery reflected_node_discovery(context);
+    ConfigurationTypeIdentityCollector configuration_type_collector(context);
+    PackageDefinitionCollector package_definition_collector(compiler);
+    // IV_NODE rewrites materialize the constructor-adapter specializations
+    // that reference configuration_type_identity_storage<T>. Discover those
+    // first so the same snapshot sees eagerly materialized identities; the
+    // mutation listener below still refreshes the sidecar for CodeGen-lazy
+    // specializations.
+    package_definition_collector.TraverseDecl(context.getTranslationUnitDecl());
+    configuration_type_collector.TraverseDecl(context.getTranslationUnitDecl());
     // A compiler record is emitted only for a type passed to GraphBuilder.
     // Calls at HandleTranslationUnit see ordinary records; the exact
     // variable-template listener re-runs this small collection when CodeGen
@@ -1103,9 +1743,11 @@ void write_state_metadata(
     }
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
-            {"version", 6},
+            {"version", 8},
             {"states", std::move(state_collector).take_states()},
             {"config_pointers", std::move(node_config_collector).take_fields()},
+            {"configuration_types", std::move(configuration_type_collector).take_identities()},
+            {"package_definitions", std::move(package_definition_collector).take_definitions()},
         }));
     stream << '\n';
 }
@@ -1154,8 +1796,17 @@ public:
         // after HandleTranslationUnit has written the initial sidecar. Refresh
         // only for that event; unrelated completed AST records must neither
         // trigger a snapshot nor become node metadata.
+        auto const is_configuration_identity = [&] {
+            auto const* variable_template = specialization
+                ? specialization->getSpecializedTemplate()
+                : nullptr;
+            return variable_template
+                && variable_template->getCanonicalDecl()->getQualifiedNameAsString()
+                    == "iv::details::configuration_type_identity_storage";
+        };
         if (initial_snapshot_written_
-            && node_type_from_compiler_record_specialization(specialization)) {
+            && (node_type_from_compiler_record_specialization(specialization)
+                || is_configuration_identity())) {
             write_snapshot();
         }
     }
@@ -1195,15 +1846,25 @@ public:
               compiler,
               std::move(metadata_dir),
               source_introspection ? &instrumenter_ : nullptr),
+          package_definition_rewriter_(compiler),
           source_introspection_(source_introspection)
     {}
 
     bool HandleTopLevelDecl(DeclGroupRef declarations) override
     {
+        // AddBeforeMainAction invokes this before the normal CodeGen consumer
+        // receives a top-level declaration.  IV_NODE records are const data,
+        // so their placeholder callbacks must be replaced here rather than
+        // during HandleTranslationUnit, after CodeGen has emitted the record.
+        for (auto* declaration : declarations) {
+            package_definition_rewriter_.TraverseDecl(declaration);
+        }
+
         if (!source_introspection_) return true;
         FunctionDiscovery discovery(instrumenter_);
-        for (auto* declaration : declarations)
+        for (auto* declaration : declarations) {
             discovery.TraverseDecl(declaration);
+        }
         return true;
     }
 
@@ -1223,7 +1884,7 @@ public:
         if (source_introspection_) {
             // Template instantiations can be materialized after their owning
             // top-level declaration was first seen. Catch any remaining
-            // authored function bodies before the frontend finishes.
+            // configured function bodies before the frontend finishes.
             FunctionDiscovery discovery(instrumenter_);
             discovery.TraverseDecl(context.getTranslationUnitDecl());
         }
@@ -1237,6 +1898,7 @@ private:
     SourceModel sources_;
     FunctionInstrumenter instrumenter_;
     ModuleMutationListener mutation_listener_;
+    PackageDefinitionCollector package_definition_rewriter_;
     bool source_introspection_ = true;
 };
 

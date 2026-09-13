@@ -19,7 +19,8 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     iv::test::copy_directory(voice_src, voice_dst);
 
     auto loader = iv::test::make_loader({});
-    auto graph = loader.load_root_definition(project_dst);
+    ASSERT_NO_THROW((void)loader.load_package_definitions(voice_dst));
+    auto graph = loader.load_package_definitions(project_dst).front();
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);
@@ -28,10 +29,20 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
     EXPECT_FALSE(watcher.has_changes());
 
-    auto module_cpp = voice_dst / "module.cpp";
+    // Opening a package source in clangd can populate a persistent background
+    // index below .cache without modifying package source. That editor cache
+    // must not make the package dirty.
+    auto const clangd_cache = project_dst / ".cache" / "clangd" / "index";
+    std::filesystem::create_directories(clangd_cache);
+    iv::test::write_text_advancing_timestamp(clangd_cache / "module.cpp.fake.idx", "index\n");
+    EXPECT_FALSE(watcher.has_changes());
+
+    // The configured graph watches its own source and every provider it
+    // resolves through g.node<Id>().
+    auto module_cpp = project_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
-    auto needle = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);");
-    auto replacement = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);/* watcher marker*/");
+    auto needle = std::string("using namespace iv;");
+    auto replacement = std::string("using namespace iv; /* watcher marker */");
     ASSERT_NE(source.find(needle), std::string::npos);
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text_advancing_timestamp(module_cpp, source);
@@ -64,13 +75,14 @@ TEST(ModuleWatcher, MissingDependencyDirectoryIsReportedAsChangeWithoutThrowing)
     iv::test::copy_directory(voice_src, voice_dst);
 
     auto loader = iv::test::make_loader({});
-    auto graph = loader.load_root_definition(project_dst);
+    ASSERT_NO_THROW((void)loader.load_package_definitions(voice_dst));
+    auto graph = loader.load_package_definitions(project_dst).front();
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);
     EXPECT_FALSE(watcher.has_changes());
 
-    std::filesystem::rename(voice_dst, runtime_root / "watch_voice_renamed");
+    std::filesystem::rename(project_dst, runtime_root / "watch_target_renamed");
 
     EXPECT_TRUE(watcher.has_changes());
 }

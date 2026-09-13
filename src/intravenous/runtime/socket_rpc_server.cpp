@@ -1,6 +1,5 @@
 #include <intravenous/runtime/socket_rpc_server.h>
 
-#include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/socket_rpc_json_serialization.h>
 
@@ -155,8 +154,8 @@ Json server_message_json(SocketRpcServerMessage const &notification) {
         {"level", notification.level},
         {"message", notification.message},
     };
-    if (!notification.module_root.empty()) {
-        json["moduleRoot"] = notification.module_root.generic_string();
+    if (!notification.package_root.empty()) {
+        json["packageRoot"] = notification.package_root.generic_string();
     }
     return json;
 }
@@ -169,8 +168,8 @@ Json server_status_json(SocketRpcServerStatus const &notification) {
     if (!notification.code.empty()) {
         json["code"] = notification.code;
     }
-    if (!notification.module_root.empty()) {
-        json["moduleRoot"] = notification.module_root.generic_string();
+    if (!notification.package_root.empty()) {
+        json["packageRoot"] = notification.package_root.generic_string();
     }
     if (!notification.created_node_ids.empty()) {
         json["createdNodeIds"] = string_array_json(notification.created_node_ids);
@@ -308,18 +307,18 @@ void SocketRpcServer::handle_client(int fd) {
                             builder.fail("iv module instance service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, GetIvModuleSourcesRequest>) {
-                        SocketRpcIvModuleSourcesResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_module_sources_event, event_request, builder);
+                    } else if constexpr (std::same_as<Request, GetIvPackagesRequest>) {
+                        SocketRpcIvPackagesResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_packages_event, event_request, builder);
                         if (!builder.has_response()) {
-                            builder.fail("iv module source service is unavailable");
+                            builder.fail("IV package service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, CreateIvModuleSourceRequest>) {
-                        SocketRpcIvModuleSourceResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_iv_module_source_event, event_request, builder);
+                    } else if constexpr (std::same_as<Request, CreateIvPackageRequest>) {
+                        SocketRpcIvPackageResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_iv_package_event, event_request, builder);
                         if (!builder.has_response()) {
-                            builder.fail("iv module source service is unavailable");
+                            builder.fail("IV package service is unavailable");
                         }
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, GetIvModuleInstancesRequest>) {
@@ -813,6 +812,34 @@ void SocketRpcServer::send_iv_module_instances_updated(
     }
 }
 
+void SocketRpcServer::send_iv_packages_updated()
+{
+    int fd = -1;
+    {
+        std::scoped_lock client_lock(client_mutex);
+        fd = client_fd;
+    }
+    if (fd < 0) {
+        return;
+    }
+
+    auto const message = jsonrpc_notification("ivPackages.updated", Json::object());
+    {
+        std::scoped_lock deferred_lock(deferred_notification_mutex);
+        if (defer_current_request_notifications
+            && deferred_notification_thread == std::this_thread::get_id()) {
+            deferred_notifications.push_back(message);
+            return;
+        }
+    }
+    if (!send_message(fd, message)) {
+        std::scoped_lock client_lock(client_mutex);
+        if (client_fd == fd) {
+            client_fd = -1;
+        }
+    }
+}
+
 void SocketRpcServer::send_virtual_nodes_updated(
     ProjectVirtualNodesNotification const &notification) {
     int fd = -1;
@@ -862,14 +889,10 @@ void SocketRpcServer::handle_project_notification(
     }, notification);
 }
 
-void SocketRpcServer::handle_iv_module_definitions_notification(
-    IvModuleDefinitionsNotification const &notification)
+void SocketRpcServer::handle_iv_package_catalog_changed(
+    IvPackageCatalogChanged const &)
 {
-    send_server_message(ProjectMessageNotification{
-        .level = notification.level,
-        .message = notification.message,
-        .module_root = notification.module_root,
-    });
+    send_iv_packages_updated();
 }
 
 void SocketRpcServer::handle_lane_views_updated(LaneViewResult const &lane_view)

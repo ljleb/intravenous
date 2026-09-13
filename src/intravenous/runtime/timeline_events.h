@@ -16,7 +16,7 @@
 namespace iv {
     using TimelineLaneVisitFn = std::function<void(
         LaneId,
-        TypeErasedLaneNode const&,
+        std::shared_ptr<TypeErasedLaneNode const> const&,
         LaneOutputConfig const&,
         std::optional<ChannelTypeId>,
         std::vector<LaneInputConnection> const&,
