@@ -288,6 +288,7 @@ llvm_map_components_to_libnames(IV_PACKAGE_LOADER_LLVM_LIBS
     native
     nativecodegen
     orcjit
+    passes
     support
     target)
 target_link_libraries(intravenous_module_loader PRIVATE

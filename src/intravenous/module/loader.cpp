@@ -16,7 +16,11 @@
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
+#include <llvm/IR/Function.h>
 #include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/PassManager.h>
+#include <llvm/Passes/OptimizationLevel.h>
+#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
@@ -529,7 +533,7 @@ std::shared_ptr<SharedPackageJit> create_shared_package_jit()
     auto target = take_llvm_expected(
         llvm::orc::JITTargetMachineBuilder::detectHost(),
         "detect package ORC target");
-    target.setCodeGenOptLevel(llvm::CodeGenOptLevel::None);
+    target.setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
     auto jit = take_llvm_expected(
         llvm::orc::LLJITBuilder()
             .setJITTargetMachineBuilder(std::move(target))
@@ -538,6 +542,36 @@ std::shared_ptr<SharedPackageJit> create_shared_package_jit()
     auto result = std::make_shared<SharedPackageJit>();
     result->jit = std::move(jit);
     return result;
+}
+
+void optimize_package_for_compatibility_runtime(llvm::Module& module)
+{
+    // Package artifacts intentionally stop at Clang O0 so source rebuilds stay
+    // cheap and the future whole-graph compiler receives the unoptimized IR.
+    // That O0 IR carries optnone/noinline attributes, though, and executing it
+    // directly through ORC makes the transitional reflected-node runtime
+    // catastrophically slow.  Strip only the O0-imposed optimization barrier
+    // on the in-memory JIT copy, then restore the old runtime-quality O3 pass.
+    // The .ivpkg.bc artifact on disk is never modified.
+    for (auto& function : module) {
+        if (!function.hasFnAttribute(llvm::Attribute::OptimizeNone)) continue;
+        function.removeFnAttr(llvm::Attribute::OptimizeNone);
+        function.removeFnAttr(llvm::Attribute::NoInline);
+    }
+
+    llvm::PassBuilder pass_builder;
+    llvm::LoopAnalysisManager loops;
+    llvm::FunctionAnalysisManager functions;
+    llvm::CGSCCAnalysisManager cgscc;
+    llvm::ModuleAnalysisManager modules;
+    pass_builder.registerModuleAnalyses(modules);
+    pass_builder.registerCGSCCAnalyses(cgscc);
+    pass_builder.registerFunctionAnalyses(functions);
+    pass_builder.registerLoopAnalyses(loops);
+    pass_builder.crossRegisterProxies(loops, functions, cgscc, modules);
+    auto pipeline = pass_builder.buildPerModuleDefaultPipeline(
+        llvm::OptimizationLevel::O3);
+    pipeline.run(module, modules);
 }
 
 void apply_configured_dsl_pch(ModuleLoaderToolchainConfig& toolchain)
@@ -988,6 +1022,14 @@ public:
                             (*buffer)->getMemBufferRef(), *context),
                         "parse finalized IV package LLVM");
                 });
+            auto const optimize_started_at = std::chrono::steady_clock::now();
+            optimize_package_for_compatibility_runtime(*module);
+            if (log_sink_) {
+                log_sink_(
+                    "[package-orc-optimize] elapsed_us="
+                    + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - optimize_started_at).count()));
+            }
 
             auto const suffix = package_jit_->next_package.fetch_add(
                 1, std::memory_order_relaxed);

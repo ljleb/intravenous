@@ -99,9 +99,23 @@ double percentile(std::vector<double> values, double percentile)
     return values[index];
 }
 
+void load_builtin_package(iv::ModuleLoader& loader)
+{
+    auto const builtin_package = std::filesystem::path(IV_CONFIGURED_SOURCE_DIR)
+        / "src/intravenous/builtin_packages/builtin";
+    auto results = loader.load_packages({builtin_package});
+    if (results.size() != 1 || !results.front()) {
+        throw std::runtime_error(
+            results.empty()
+                ? "builtin IV package load produced no result"
+                : "failed to load builtin IV package: " + results.front().error);
+    }
+}
+
 void benchmark_module(std::filesystem::path const& path, Options const& options)
 {
     iv::ModuleLoader loader(std::filesystem::current_path(), {});
+    load_builtin_package(loader);
     auto definitions = loader.load_package_definitions(path);
     if (definitions.empty()) {
         throw std::runtime_error("IV package '" + path.string() + "' has no iv modules");

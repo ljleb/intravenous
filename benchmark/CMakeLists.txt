@@ -14,6 +14,9 @@ add_executable(iv_module_execution_benchmark
     iv_module_execution_benchmark.cpp
 )
 iv_configure_intravenous_target(iv_module_execution_benchmark PRIVATE)
+target_compile_definitions(iv_module_execution_benchmark PRIVATE
+    IV_CONFIGURED_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
 target_link_libraries(iv_module_execution_benchmark PRIVATE
     iv_builder
     intravenous_module_loader

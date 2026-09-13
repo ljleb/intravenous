@@ -372,9 +372,11 @@ Even if the eventual realtime executor becomes a generated project kernel, the g
 - state migration;
 - avoiding mutation of a live generation in place.
 
-### 4.6 Current final native optimization
+### 4.6 Compatibility-runtime optimization
 
-The current finalizer runs a default LLVM optimization pipeline, including O3 for runtime mode, then emits a native object and resumes the original link.
+Package builds intentionally publish finalized O0 LLVM. The on-disk `.ivpkg.bc` therefore stays cheap to rebuild and remains an unoptimized compiler input for the future whole-project execution path. The current reflected-node compatibility executor must not execute that O0 code directly, however: package-defined node callbacks are realtime DSP code.
+
+Until the whole-project kernel replaces the compatibility executor, `ModuleLoader` optimizes only the in-memory package copy that it hands to the shared ORC JIT. It removes Clang's O0 optimization barrier, runs the default O3 module pipeline, and uses aggressive native code generation. This does not rewrite the package artifact and does not reintroduce a per-package native-library boundary.
 
 The future whole-project finalizer should not assume that blindly running the full default O3 pipeline over all retained code is always the fastest reload path. Node implementations can be cached/preoptimized independently, and graph-specific optimization can later be narrowed to the reachable kernel closure. This is a profiling decision, not an up-front requirement.
 
