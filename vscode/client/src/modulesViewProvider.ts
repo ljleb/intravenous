@@ -1,12 +1,7 @@
 import * as vscode from "vscode";
 
-export type IvPackageInfo = {
-    packageId: string;
-    moduleIds: string[];
-    nodeTypeIds: string[];
-    buildState: "queued" | "building" | "built" | "failed";
-    buildMessage: string;
-    publicationMessage: string;
+export type IvModuleInfo = {
+    moduleId: string;
     packageRoot: string;
     projectLocal: boolean;
 };
@@ -34,7 +29,7 @@ export type ModulesControlHandler = (message: ModulesControlMessage) => Promise<
 
 export class ModulesViewProvider {
     private panel: vscode.WebviewPanel | null = null;
-    private packages: IvPackageInfo[] = [];
+    private modules: IvModuleInfo[] = [];
     private instances: ModuleInstanceInfo[] = [];
     private selectedInstanceId: string | null = null;
     private controlHandler: ModulesControlHandler | null = null;
@@ -74,11 +69,11 @@ export class ModulesViewProvider {
     }
 
     setState(
-        packages: IvPackageInfo[],
+        modules: IvModuleInfo[],
         instances: ModuleInstanceInfo[],
         selectedInstanceId: string | null,
     ): void {
-        this.packages = packages;
+        this.modules = modules;
         this.instances = instances;
         this.selectedInstanceId = selectedInstanceId;
         this.postState();
@@ -87,7 +82,7 @@ export class ModulesViewProvider {
     private postState(): void {
         void this.panel?.webview.postMessage({
             type: "setState",
-            packages: this.packages,
+            modules: this.modules,
             instances: this.instances,
             selectedInstanceId: this.selectedInstanceId,
         });
@@ -122,18 +117,18 @@ button.icon-button{width:28px;height:28px;padding:4px;display:inline-flex;align-
 .card{border:1px solid var(--vscode-widget-border);padding:8px 10px;margin:5px 0;overflow:hidden}.card.selected{border-color:var(--vscode-focusBorder);box-shadow:inset 2px 0 var(--vscode-focusBorder)}.rowhead{justify-content:space-between;min-width:0}.title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.title.editable{cursor:text}.title-input{flex:1;min-width:0;font-weight:600;padding:2px 6px;border:1px solid var(--vscode-focusBorder);background:var(--vscode-input-background);color:var(--vscode-input-foreground)}.subtle{color:var(--vscode-descriptionForeground);font-size:.9em;white-space:nowrap}.rowmeta{justify-content:space-between;min-width:0;margin-top:3px}.meta{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--vscode-descriptionForeground);font-family:var(--vscode-editor-font-family);font-size:.85em}.actions{margin-top:6px;flex-wrap:wrap}.status{min-width:0;flex:0 0 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--vscode-descriptionForeground);font-size:.9em}.empty{color:var(--vscode-descriptionForeground);padding:12px 0}
 </style></head><body><main>
 <div class="top"><h1>Modules</h1><span id="summary" class="status"></span></div>
-<section class="section"><h2>Packages</h2><div class="new-package"><input id="package-name" placeholder="new package name" autocomplete="off"><button class="primary icon-button" id="create-package" title="Create local IV package" aria-label="Create local IV package"><svg viewBox="0 0 18 18"><path d="M9 2v14M2 9h14M4 4l10 10M14 4 4 14"/></svg></button></div><div id="packages"></div></section>
+<section class="section"><h2>Available modules</h2><div class="new-package"><input id="package-name" placeholder="new package name" autocomplete="off"><button class="primary icon-button" id="create-package" title="Create local IV package" aria-label="Create local IV package"><svg viewBox="0 0 18 18"><path d="M9 2v14M2 9h14M4 4l10 10M14 4 4 14"/></svg></button></div><div id="modules"></div></section>
 <section class="section"><h2>Project instances</h2><div id="instances"></div></section>
 </main><script nonce="${nonce}">
-const vscode=acquireVsCodeApi();let state={packages:[],instances:[],selectedInstanceId:null};let renamingInstanceId=null;let renamingDraft='';
+const vscode=acquireVsCodeApi();let state={modules:[],instances:[],selectedInstanceId:null};let renamingInstanceId=null;let renamingDraft='';
 const byId=id=>document.getElementById(id);
 const icons={add:'<svg viewBox="0 0 18 18"><path d="M9 3v12M3 9h12"/></svg>',code:'<svg viewBox="0 0 18 18"><path d="m6.5 3-5 6 5 6M11.5 3l5 6-5 6"/></svg>',copy:'<svg viewBox="0 0 18 18"><rect x="6" y="6" width="8" height="9" rx="1"/><path d="M12 6V4a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h1"/></svg>',trash:'<svg viewBox="0 0 18 18"><path d="M3 5h12M7 2h4M5 5l.7 10h6.6L13 5M7.5 8v4M10.5 8v4"/></svg>',reveal:'<svg viewBox="0 0 18 18"><path d="M3 3h5l2 2h5v10H3zM3 7h12"/></svg>'};
 const button=(icon,label,cls,fn)=>{const b=document.createElement('button');b.className='icon-button'+(cls?' '+cls:'');b.innerHTML=icons[icon];b.title=label;b.setAttribute('aria-label',label);b.onclick=event=>{event.stopPropagation();fn()};return b};
 const action=(type,fields)=>vscode.postMessage({type,...fields});const displayNameFor=instance=>instance.displayName||instance.moduleId||instance.definitionId;
 const beginRename=instance=>{renamingInstanceId=instance.instanceId;renamingDraft=displayNameFor(instance);render()};const cancelRename=instanceId=>{if(renamingInstanceId!==instanceId)return;renamingInstanceId=null;renamingDraft='';render()};const commitRename=instance=>{if(renamingInstanceId!==instance.instanceId)return;const next=renamingDraft.trim();renamingInstanceId=null;renamingDraft='';render();action('rename',{instanceId:instance.instanceId,displayName:next})};
-const packageCard=packageInfo=>{const card=document.createElement('div');card.className='card';const head=document.createElement('div');head.className='rowhead';const title=document.createElement('div');title.className='title';title.textContent=packageInfo.packageId;const kind=document.createElement('div');kind.className='subtle';kind.textContent=packageInfo.projectLocal?'Local':'Shared';head.append(title,kind);const meta=document.createElement('div');meta.className='meta';meta.textContent=packageInfo.packageRoot;const actions=document.createElement('div');actions.className='actions';for(const moduleId of packageInfo.moduleIds){actions.append(button('add','Instantiate '+moduleId,'primary',()=>action('instantiate',{moduleId})))}const packageStatus=()=>{if(packageInfo.buildState==='failed')return ['Build failed',packageInfo.buildMessage];if(packageInfo.buildState==='queued')return ['Queued for build',''];if(packageInfo.buildState==='building')return ['Building definitions',''];if(packageInfo.publicationMessage)return ['Definitions not published',packageInfo.publicationMessage];if(!packageInfo.moduleIds.length&&!packageInfo.nodeTypeIds.length)return ['No IV_MODULE or IV_NODE registrations',''];return null};const status=packageStatus();if(status){const pending=document.createElement('span');pending.className='subtle';pending.textContent=status[0];pending.title=status[1]||status[0];actions.append(pending)}if(packageInfo.nodeTypeIds.length){const nodes=document.createElement('span');nodes.className='subtle';nodes.textContent='Node types: '+packageInfo.nodeTypeIds.join(', ');actions.append(nodes)}actions.append(button('code','Open module source','',()=>action('reveal',{packageRoot:packageInfo.packageRoot})));card.append(head,meta,actions);return card};
+const moduleCard=moduleInfo=>{const card=document.createElement('div');card.className='card';const head=document.createElement('div');head.className='rowhead';const title=document.createElement('div');title.className='title';title.textContent=moduleInfo.moduleId;const kind=document.createElement('div');kind.className='subtle';kind.textContent=moduleInfo.projectLocal?'Local':'Shared';head.append(title,kind);const meta=document.createElement('div');meta.className='meta';meta.textContent=moduleInfo.packageRoot;const actions=document.createElement('div');actions.className='actions';actions.append(button('add','Instantiate '+moduleInfo.moduleId,'primary',()=>action('instantiate',{moduleId:moduleInfo.moduleId})),button('code','Open module source','',()=>action('reveal',{packageRoot:moduleInfo.packageRoot})));card.append(head,meta,actions);return card};
 const instanceCard=instance=>{const card=document.createElement('div');card.className='card'+(instance.instanceId===state.selectedInstanceId?' selected':'');card.title='Select module instance';card.onclick=()=>action('select',{instanceId:instance.instanceId});const head=document.createElement('div');head.className='rowhead';if(renamingInstanceId===instance.instanceId){const title=document.createElement('input');title.className='title-input';title.value=renamingDraft;title.setAttribute('aria-label','Display name');title.oninput=()=>{renamingDraft=title.value};title.onblur=()=>commitRename(instance);title.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();commitRename(instance)}else if(event.key==='Escape'){event.preventDefault();cancelRename(instance.instanceId)}};title.onclick=event=>event.stopPropagation();head.append(title);setTimeout(()=>{title.focus();title.select()},0)}else{const title=document.createElement('div');title.className='title editable';title.textContent=displayNameFor(instance);title.title='Click to rename';title.onclick=event=>{event.stopPropagation();beginRename(instance)};head.append(title)}const status=document.createElement('span');status.className='status';status.textContent=instance.realized?'Realized':'Waiting';head.append(status);const metaRow=document.createElement('div');metaRow.className='rowmeta';const meta=document.createElement('div');meta.className='meta';meta.textContent=(instance.moduleId||instance.definitionId)+' · '+instance.instanceId;const packageInfo=document.createElement('div');packageInfo.className='meta';packageInfo.textContent=instance.packageRoot;metaRow.append(meta,packageInfo);const actions=document.createElement('div');actions.className='actions';actions.append(button('code','Open module source','primary',()=>action('open',{instanceId:instance.instanceId,packageRoot:instance.packageRoot})),button('copy','Duplicate module','',()=>action('duplicate',{moduleId:instance.moduleId||instance.definitionId})),button('trash','Delete module instance','danger',()=>action('delete',{instanceId:instance.instanceId})));card.append(head,metaRow,actions);return card};
-const render=()=>{byId('summary').textContent=state.packages.length+' packages · '+state.instances.length+' instances';const packages=byId('packages');packages.replaceChildren(...(state.packages.length?state.packages.map(packageCard):[Object.assign(document.createElement('div'),{className:'empty',textContent:'No IV packages discovered.'})]));const instances=byId('instances');instances.replaceChildren(...(state.instances.length?state.instances.map(instanceCard):[Object.assign(document.createElement('div'),{className:'empty',textContent:'No project instances yet.'})]));};
+const render=()=>{byId('summary').textContent=state.modules.length+' modules · '+state.instances.length+' instances';const modules=byId('modules');modules.replaceChildren(...(state.modules.length?state.modules.map(moduleCard):[Object.assign(document.createElement('div'),{className:'empty',textContent:'No IV modules discovered.'})]));const instances=byId('instances');instances.replaceChildren(...(state.instances.length?state.instances.map(instanceCard):[Object.assign(document.createElement('div'),{className:'empty',textContent:'No project instances yet.'})]));};
 byId('create-package').onclick=()=>{const input=byId('package-name');const name=input.value.trim();if(!name)return;action('createPackage',{name});input.value=''};window.addEventListener('message',event=>{if(event.data?.type==='setState'){state=event.data;if(renamingInstanceId&&!state.instances.some(instance=>instance.instanceId===renamingInstanceId)){renamingInstanceId=null;renamingDraft=''}render()}});render();
 </script></body></html>`;
     }

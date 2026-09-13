@@ -13,7 +13,7 @@ import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { autoDetectedServerDirectoriesForWorkspaceRoot } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc } from "./workspaceRpc";
-import { ModuleInstanceInfo, IvPackageInfo, ModulesControlMessage } from "./modulesViewProvider";
+import { IvModuleInfo, ModuleInstanceInfo, ModulesControlMessage } from "./modulesViewProvider";
 
 declare const __INTRAVENOUS_DEFAULT_DIR__: string;
 
@@ -71,7 +71,18 @@ type LaneQuerySchemaChangeNotification = {
 };
 
 type ModulesProviderLike = {
-    setState(packages: IvPackageInfo[], instances: ModuleInstanceInfo[], selectedInstanceId: string | null): void;
+    setState(modules: IvModuleInfo[], instances: ModuleInstanceInfo[], selectedInstanceId: string | null): void;
+};
+
+type IvPackageInfo = {
+    packageId: string;
+    moduleIds: string[];
+    nodeTypeIds: string[];
+    buildState: "queued" | "building" | "built" | "failed";
+    buildMessage: string;
+    publicationMessage: string;
+    packageRoot: string;
+    projectLocal: boolean;
 };
 
 type ServerStatusNotification = {
@@ -426,8 +437,16 @@ export class WorkspaceSession {
         });
     }
 
+    private modulePanelModules(): IvModuleInfo[] {
+        return this.ivPackages.flatMap((packageInfo) => packageInfo.moduleIds.map((moduleId) => ({
+            moduleId,
+            packageRoot: packageInfo.packageRoot,
+            projectLocal: packageInfo.projectLocal,
+        })));
+    }
+
     private refreshModulesPanelState(): void {
-        this.modulesProvider.setState(this.ivPackages, this.modulePanelInstances(), this.selectedInstanceId);
+        this.modulesProvider.setState(this.modulePanelModules(), this.modulePanelInstances(), this.selectedInstanceId);
     }
 
     private refreshLaneInstanceNames(): void {
