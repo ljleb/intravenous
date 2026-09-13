@@ -1,5 +1,12 @@
 # Modular builder-lowering pipeline
 
+> Runtime migration note: this document still contains historical `consteval` /
+> compile-time wording from the former Phase 4 implementation. Graph
+> configuration, lowering, and compilation now execute at runtime;
+> constexpr-friendly intermediate storage is no longer a current requirement.
+> See `docs/runtime_graph_container_cleanup.md` for an audit of container and
+> helper choices that remain from that constraint.
+
 ## Purpose
 
 Make builder lowering a sequence of ordinary, independently callable
