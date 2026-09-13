@@ -137,8 +137,8 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 
     auto const local_compile_database =
         iv::test::read_text(local_workspace / "cmake-build" / "compile_commands.json");
-    EXPECT_NE(local_compile_database.find("-include "), std::string::npos);
-    EXPECT_NE(local_compile_database.find("cmake_pch.hxx"), std::string::npos);
+    EXPECT_NE(local_compile_database.find("-include-pch"), std::string::npos);
+    EXPECT_EQ(local_compile_database.find("cmake_pch.hxx"), std::string::npos);
 
     auto const finalizer_timings =
         local_workspace / "cmake-build" / "iv-package-finalizer-timings.txt";
@@ -159,18 +159,18 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         std::string::npos);
     EXPECT_EQ(finalizer_timings_text.find("native_link_us="), std::string::npos);
 
-    bool has_precompiled_header = false;
+    bool has_package_private_pch = false;
     for (std::filesystem::recursive_directory_iterator it(local_workspace / "cmake-build"), end;
          it != end;
          ++it) {
         auto const filename = it->path().filename();
         if (it->is_regular_file()
             && (filename == "cmake_pch.hxx.gch" || filename == "cmake_pch.hxx.pch")) {
-            has_precompiled_header = true;
+            has_package_private_pch = true;
             break;
         }
     }
-    EXPECT_TRUE(has_precompiled_header);
+    EXPECT_FALSE(has_package_private_pch);
 
     auto const expected_generator = iv::test::configured_build_generator();
     if (expected_generator == "Ninja") {

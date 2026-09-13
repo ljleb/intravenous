@@ -126,7 +126,6 @@ function(iv_add_host_runtime_objects target)
         JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
         JUCE_USE_CURL=${JUCE_USE_CURL}
         IV_CONFIGURED_IV_BUILDER_LIBRARY="$<TARGET_FILE:iv_builder>"
-        IV_CONFIGURED_IV_DSL_PCH="${IV_DSL_PCH}"
         IV_CONFIGURED_JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
         IV_CONFIGURED_JUCE_USE_CURL=${JUCE_USE_CURL}
         IV_CONFIGURED_CMAKE_COMMAND="${CMAKE_COMMAND}"
@@ -274,8 +273,15 @@ add_library(intravenous_module_loader OBJECT
     module/loader.cpp
 )
 iv_configure_intravenous_target(intravenous_module_loader PUBLIC)
+add_dependencies(intravenous_module_loader intravenous_dsl_pch)
 target_include_directories(intravenous_module_loader PRIVATE ${LLVM_INCLUDE_DIRS})
-target_compile_definitions(intravenous_module_loader PRIVATE ${LLVM_DEFINITIONS})
+target_compile_definitions(intravenous_module_loader PRIVATE
+    ${LLVM_DEFINITIONS}
+    # ModuleLoader owns the default package toolchain.  Keeping the path on
+    # this target means every direct loader user—tests and tools included—gets
+    # the one application-built DSL PCH rather than inventing a per-package
+    # fallback.
+    IV_CONFIGURED_IV_DSL_PCH="${IV_DSL_PCH}")
 llvm_map_components_to_libnames(IV_PACKAGE_LOADER_LLVM_LIBS
     bitreader
     core

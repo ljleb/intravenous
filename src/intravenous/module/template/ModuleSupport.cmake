@@ -268,12 +268,7 @@ function(_iv_package_define_finalizer target)
             "--metadata-dir=${_iv_metadata_dir}"
             "--timings-file=${_iv_timings_file}"
             "--output=${_iv_output}"
-            # CMake exposes its precompiled-header artifact through
-            # TARGET_OBJECTS for an OBJECT library.  It is a compiler input,
-            # not package LLVM, and must not be parsed/linked by the
-            # finalizer.  Keep ${target} in DEPENDS below so the PCH is still
-            # built before its real object files.
-            -- $<FILTER:$<TARGET_OBJECTS:${target}>,EXCLUDE,.*\\.pch$> ${_iv_llvm_inputs}
+            -- $<TARGET_OBJECTS:${target}> ${_iv_llvm_inputs}
         DEPENDS
             ${target}
             ${_iv_dependencies}
@@ -380,18 +375,21 @@ function(iv_add_package target)
         target_link_libraries(${_iv_objects_target} PRIVATE iv_builder)
     endif()
 
-    if(DEFINED IV_DSL_PCH AND NOT IV_DSL_PCH STREQUAL "")
-        if(NOT EXISTS "${IV_DSL_PCH}")
-            message(FATAL_ERROR "IV_DSL_PCH does not exist: ${IV_DSL_PCH}")
-        endif()
-        target_compile_options(${_iv_objects_target} PRIVATE
-            "-include-pch" "${IV_DSL_PCH}")
-    elseif(NOT DEFINED IV_PACKAGE_PCH_HEADER)
-        set(IV_PACKAGE_PCH_HEADER "${IV_SOURCE_DIR}/module/template/module_pch.h")
-        target_precompile_headers(${_iv_objects_target} PRIVATE "${IV_PACKAGE_PCH_HEADER}")
-    elseif(NOT IV_PACKAGE_PCH_HEADER STREQUAL "")
-        target_precompile_headers(${_iv_objects_target} PRIVATE "${IV_PACKAGE_PCH_HEADER}")
+    # A package consumes the application-built DSL PCH as an ordinary required
+    # input. Packages never create a private PCH: that would make package build
+    # cost scale with the number of test/package workspaces.
+    if(NOT DEFINED IV_DSL_PCH OR IV_DSL_PCH STREQUAL "")
+        message(FATAL_ERROR
+            "IV_DSL_PCH is required: build the application DSL PCH and pass its path "
+            "when configuring an IV package")
     endif()
+    if(NOT EXISTS "${IV_DSL_PCH}")
+        message(FATAL_ERROR "IV_DSL_PCH does not exist: ${IV_DSL_PCH}")
+    endif()
+    target_compile_options(${_iv_objects_target} PRIVATE
+        "-include-pch" "${IV_DSL_PCH}")
+    set_property(SOURCE ${_iv_package_sources} APPEND PROPERTY OBJECT_DEPENDS
+        "${IV_DSL_PCH}")
 
     set_property(SOURCE ${_iv_package_sources} APPEND PROPERTY OBJECT_DEPENDS
         "${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}")

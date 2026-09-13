@@ -500,6 +500,33 @@ std::shared_ptr<SharedPackageJit> create_shared_package_jit()
     return result;
 }
 
+void apply_configured_dsl_pch(ModuleLoaderToolchainConfig& toolchain)
+{
+    // The PCH is an application build product, not something an individual IV
+    // package is permitted to generate. An explicit toolchain path takes
+    // precedence; otherwise every direct ModuleLoader user receives this
+    // build's fixed DSL PCH.
+    if (!toolchain.iv_package_pch.has_value()
+        || toolchain.iv_package_pch->empty()) {
+        toolchain.iv_package_pch.reset();
+#if defined(IV_CONFIGURED_IV_DSL_PCH)
+        auto const configured_path = std::string_view(IV_CONFIGURED_IV_DSL_PCH);
+        if (!configured_path.empty()) {
+            toolchain.iv_package_pch = std::filesystem::path(configured_path);
+        }
+#endif
+    }
+    if (!toolchain.iv_package_pch.has_value()) {
+        throw std::runtime_error(
+            "IV package compilation requires an application-built DSL PCH");
+    }
+    if (!std::filesystem::is_regular_file(*toolchain.iv_package_pch)) {
+        throw std::runtime_error(
+            "configured IV DSL PCH does not exist: '"
+            + toolchain.iv_package_pch->string() + "'");
+    }
+}
+
 void run(
     std::string const &command,
     ModuleLoader::LogSink const &sink,
@@ -756,8 +783,11 @@ class ModuleLoader::Impl {
                   << "generator=" << generator << '\n'
                   << "source-introspection="
                   << toolchain_.source_introspection << '\n'
-                  << "precompiled-header="
-                  << toolchain_.precompiled_header << '\n'
+                  << "dsl-pch="
+                  << toolchain_.iv_package_pch->generic_string() << '\n'
+                  << "dsl-pch-stamp="
+                  << std::filesystem::last_write_time(*toolchain_.iv_package_pch)
+                         .time_since_epoch().count() << '\n'
                   << "clang-time-trace="
                   << toolchain_.clang_time_trace << '\n'
                   << "core-source-stamp="
@@ -828,12 +858,8 @@ class ModuleLoader::Impl {
         if (!toolchain_.source_introspection) {
             configure << " -DIV_PACKAGE_SOURCE_INTROSPECTION=OFF";
         }
-        if (!toolchain_.precompiled_header) {
-            configure << " -DIV_PACKAGE_PCH_HEADER=";
-        } else if (toolchain_.iv_package_pch.has_value()) {
-            configure << " -DIV_DSL_PCH="
-                      << quote(*toolchain_.iv_package_pch);
-        }
+        configure << " -DIV_DSL_PCH="
+                  << quote(*toolchain_.iv_package_pch);
         if (toolchain_.clang_time_trace) {
             configure << " -DIV_PACKAGE_CLANG_TIME_TRACE=ON";
         }
@@ -899,6 +925,7 @@ public:
           log_sink_(std::move(sink)),
           package_jit_(create_shared_package_jit())
     {
+        apply_configured_dsl_pch(toolchain_);
         std::filesystem::create_directories(global_cache_root_);
         // The executable contributes its copied built-in package directory
         // through StartupConfig. Direct ModuleLoader users, including the
@@ -966,6 +993,7 @@ public:
     void set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
     {
         std::lock_guard lock(mutex_);
+        apply_configured_dsl_pch(toolchain);
         toolchain_ = std::move(toolchain);
     }
 

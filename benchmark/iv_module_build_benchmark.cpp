@@ -28,7 +28,6 @@ struct NinjaEdge {
 
 struct PhaseResult {
     std::int64_t pipeline_ms = 0;
-    std::int64_t pch_ms = 0;
     std::int64_t export_ms = 0;
     std::int64_t link_ms = 0;
     std::int64_t configure_us = 0;
@@ -53,7 +52,6 @@ struct Options {
     size_t voices = 1;
     bool keep_workspace = false;
     bool source_introspection = true;
-    bool precompiled_header = true;
     bool clang_time_trace = false;
     SourceShape source_shape = SourceShape::full;
     std::optional<std::filesystem::path> source_module;
@@ -171,8 +169,6 @@ Options parse_options(int argc, char** argv)
             options.keep_workspace = true;
         } else if (arg == "--no-source-introspection") {
             options.source_introspection = false;
-        } else if (arg == "--no-pch") {
-            options.precompiled_header = false;
         } else if (arg == "--clang-time-trace") {
             options.clang_time_trace = true;
         } else if (arg == "--source-shape") {
@@ -189,7 +185,7 @@ Options parse_options(int argc, char** argv)
                 << " [--source-shape empty|input|nodes|connected|full]"
                 << " [--module PATH]"
                 << " [--c-compiler PATH] [--cxx-compiler PATH]"
-                << " [--no-source-introspection] [--no-pch] [--clang-time-trace]"
+                << " [--no-source-introspection] [--clang-time-trace]"
                 << " [--keep]\n";
             std::exit(0);
         } else {
@@ -435,7 +431,6 @@ PhaseResult summarize(
     }
     if (edges) {
         for (auto const& edge : *edges) {
-            if (edge.output.ends_with("cmake_pch.hxx.gch")) result.pch_ms += edge.duration_ms;
             if (edge.output.ends_with(".ivpkg.bc")) result.link_ms += edge.duration_ms;
         }
     }
@@ -447,7 +442,6 @@ void print(
     std::string_view workload,
     SourceShape shape,
     bool source_introspection,
-    bool precompiled_header,
     PhaseResult const& result)
 {
     std::cout << "iv-module-build-benchmark"
@@ -456,9 +450,7 @@ void print(
               << " package_llvm=O0"
               << " source_shape=" << source_shape_name(shape)
               << " source_introspection=" << source_introspection
-              << " pch=" << precompiled_header
               << " pipeline_ms=" << result.pipeline_ms
-              << " pch_ms=" << result.pch_ms
               << " package_finalize_ms=" << result.link_ms
               << " configure_us=" << result.configure_us
               << " ninja_build_us=" << result.ninja_build_us
@@ -517,7 +509,6 @@ void run(Options const& options)
                 .c_compiler = options.c_compiler,
                 .cxx_compiler = options.cxx_compiler,
                 .source_introspection = options.source_introspection,
-                .precompiled_header = options.precompiled_header,
                 .clang_time_trace = options.clang_time_trace,
             },
             [&](std::string const& entry) { loader_log.push_back(entry); });
@@ -539,7 +530,7 @@ void run(Options const& options)
         print(
             "cold", workload,
             options.source_shape,
-            options.source_introspection, options.precompiled_header,
+            options.source_introspection,
             summarize(
                 cold_elapsed,
                 ninja_edges(cold_log),
@@ -563,7 +554,7 @@ void run(Options const& options)
         print(
             "hot", workload,
             options.source_shape,
-            options.source_introspection, options.precompiled_header,
+            options.source_introspection,
             summarize(
                 hot_elapsed,
                 appended_ninja_edges(cold_log, hot_log),

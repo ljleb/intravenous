@@ -589,11 +589,10 @@ namespace iv::test {
     inline iv::ModuleLoader make_loader(
         std::vector<std::filesystem::path> extra_roots = {})
     {
-        iv::ModuleLoaderToolchainConfig toolchain;
-#if defined(IV_CONFIGURED_IV_DSL_PCH)
-        toolchain.iv_package_pch = IV_CONFIGURED_IV_DSL_PCH;
-#endif
-        return iv::ModuleLoader(repo_root(), std::move(extra_roots), std::move(toolchain));
+        // ModuleLoader supplies the application-built shared DSL PCH when no
+        // explicit override is requested. Tests must exercise that same
+        // default, rather than manufacture package-private PCHs.
+        return iv::ModuleLoader(repo_root(), std::move(extra_roots));
     }
 
     template<typename Device>

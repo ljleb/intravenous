@@ -7,6 +7,7 @@ target_link_libraries(iv_module_build_benchmark PRIVATE
     intravenous_module_loader
 )
 add_dependencies(iv_module_build_benchmark iv_builder)
+add_dependencies(iv_module_build_benchmark intravenous_dsl_pch)
 iv_link_stacktrace_support(iv_module_build_benchmark)
 
 add_executable(iv_module_execution_benchmark
@@ -18,3 +19,4 @@ target_link_libraries(iv_module_execution_benchmark PRIVATE
     intravenous_module_loader
 )
 iv_link_stacktrace_support(iv_module_execution_benchmark)
+add_dependencies(iv_module_execution_benchmark intravenous_dsl_pch)
