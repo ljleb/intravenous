@@ -51,6 +51,12 @@ struct SourceSpanRecord {
     bool operator==(SourceSpanRecord const&) const = default;
 };
 
+struct NamedPortLiteralRecord {
+    SourceSpanRecord span;
+    std::string name;
+    bool event = false;
+};
+
 std::filesystem::path normalized_path(std::filesystem::path path)
 {
     std::error_code error;
@@ -377,6 +383,54 @@ public:
         };
     }
 
+    std::optional<NamedPortLiteralRecord> named_port_literal(
+        UserDefinedLiteral const* literal) const
+    {
+        if (!literal) return std::nullopt;
+        auto const begin = source_manager_.getSpellingLoc(literal->getBeginLoc());
+        auto const end = source_manager_.getSpellingLoc(literal->getEndLoc());
+        if (begin.isInvalid() || end.isInvalid()) return std::nullopt;
+        auto token_text = Lexer::getSourceText(
+            CharSourceRange::getTokenRange(begin, end),
+            source_manager_, context_.getLangOpts());
+        if (token_text.empty()) return std::nullopt;
+
+        std::string_view suffix;
+        bool event = false;
+        if (token_text.ends_with("_P"))
+            suffix = "_P";
+        else if (token_text.ends_with("_F")) {
+            suffix = "_F";
+            event = true;
+        } else
+            return std::nullopt;
+
+        auto span = source_span(literal->getSourceRange());
+        if (!span || span->end < span->begin + suffix.size())
+            return std::nullopt;
+        // Clang exposes a string UDL as one source token (for example
+        // `"frequency"_P`).  Tooling provenance should cover the name
+        // string only, not the literal-operator suffix.
+        span->end -= static_cast<std::uint32_t>(suffix.size());
+        token_text = token_text.drop_back(suffix.size());
+        auto const first_quote = token_text.find('"');
+        auto const last_quote = token_text.rfind('"');
+        if (first_quote == llvm::StringRef::npos || last_quote == llvm::StringRef::npos
+            || first_quote >= last_quote)
+            return std::nullopt;
+
+        // Port names are ordinary narrow string literal NTTPs. Preserve the
+        // semantic spelling used by the DSL for ordinary names; escaped names
+        // are intentionally uncommon and can be handled here if the DSL ever
+        // starts relying on them.
+        auto port_name = token_text.slice(first_quote + 1, last_quote).str();
+        return NamedPortLiteralRecord{
+            .span = *span,
+            .name = std::move(port_name),
+            .event = event,
+        };
+    }
+
 private:
     ASTContext& context_;
     SourceManager& source_manager_;
@@ -387,6 +441,16 @@ struct RefAnnotation {
     VarDecl* declaration = nullptr;
     std::string declaration_identity;
     SourceSpanRecord span;
+    bool refers_to_enclosing_variable_or_capture = false;
+};
+
+struct NodeInputPortAnnotation {
+    VarDecl* declaration = nullptr;
+    std::string declaration_identity;
+    std::string port_name;
+    bool event = false;
+    SourceSpanRecord span;
+    bool refers_to_enclosing_variable_or_capture = false;
 };
 
 struct PublicOutputAnnotation {
@@ -398,6 +462,7 @@ struct PublicOutputAnnotation {
 
 struct StatementAnalysis {
     std::vector<RefAnnotation> refs;
+    std::vector<NodeInputPortAnnotation> node_input_ports;
     std::vector<PublicOutputAnnotation> public_outputs;
 };
 
@@ -437,38 +502,33 @@ public:
             // CXXConstructExpr in Clang's AST. It is still uninitialized in
             // the configured-graph sense and must wait for its first assignment.
             if (!has_explicit_initializer(variable)) continue;
-            append_ref({variable, identity, *span});
 
-            // Keep the narrow declaration-name annotation for stable local
-            // identity and precise selection, but also publish the expression
-            // that configured the ref. In particular, a multiline generic
-            // node construction may spell its node type on a later line:
-            //
-            //   auto const node = details::configure_concrete_node<
-            //       Sum<stereo>>(g);
-            //
-            // The configured node must be discoverable from either the local
-            // name or that type/call syntax. Both annotations have the same
-            // declaration identity, so they enrich one virtual node rather
-            // than creating two nodes or changing its stable ID.
-            if (auto const expression_span =
-                    sources_.source_span(variable->getInit()->getSourceRange());
-                expression_span && *expression_span != *span) {
-                append_ref({variable, identity, *expression_span});
-            }
+            // Source provenance is intentionally token-shaped: the declared
+            // identifier is active, but the initializer expression is not.
+            append_ref({variable, identity, *span});
+            append_named_port_argument_spans(
+                variable, identity, variable->getInit(), false);
         }
         return true;
     }
 
-    bool VisitUnaryOperator(UnaryOperator* expression)
+    bool VisitDeclRefExpr(DeclRefExpr* reference)
     {
-        if (!expression || expression->getOpcode() != UO_AddrOf) return true;
-        auto* variable = referenced_variable(expression->getSubExpr());
-        if (!variable || !is_annotatable_ref(variable->getType())) return true;
-        auto const span = named_expression_span(expression->getSubExpr(), variable);
+        if (!reference || !sources_.is_user_source(reference->getExprLoc()))
+            return true;
+        auto* variable = dyn_cast<VarDecl>(reference->getDecl());
+        if (!variable || variable->isImplicit()
+            || !is_annotatable_ref(variable->getType()))
+            return true;
+        auto const span = sources_.source_span(reference->getSourceRange());
         auto const identity = declaration_identity(
             variable, sources_.declaration_span(variable));
-        if (span && !identity.empty()) append_ref({variable, identity, *span});
+        if (span && !identity.empty()) append_ref({
+            variable,
+            identity,
+            *span,
+            reference->refersToEnclosingVariableOrCapture(),
+        });
         return true;
     }
 
@@ -482,18 +542,21 @@ public:
                 && annotatable_ref_kind(variable->getType()) == AnnotatableRefKind::node
                 && !variable->getType()->isReferenceType()
                 && !has_explicit_initializer(variable)) {
-                auto const identity = declaration_identity(
-                    variable, sources_.declaration_span(variable));
                 auto const declaration_source = sources_.declaration_span(variable);
-                auto initialization_source = named_expression_span(call->getArg(0), variable);
-                if (!initialization_source)
-                    initialization_source = sources_.source_span(call->getSourceRange());
+                auto const identity = declaration_identity(
+                    variable, declaration_source);
                 if (!identity.empty() && declaration_source) {
                     validate_unique_graph_local(variable, *declaration_source);
+                    // The declaration could not be annotated while the ref was
+                    // empty. Once the assignment has completed, attach its
+                    // declaration identifier as provenance too. The LHS use is
+                    // picked up independently by VisitDeclRefExpr.
                     append_ref({variable, identity, *declaration_source});
                 }
-                if (!identity.empty() && initialization_source)
-                    append_ref({variable, identity, *initialization_source});
+                if (!identity.empty() && call->getNumArgs() > 1) {
+                    append_named_port_argument_spans(
+                        variable, identity, call->getArg(1), false);
+                }
             }
         }
 
@@ -501,10 +564,15 @@ public:
             auto* variable = referenced_variable(call->getArg(0));
             if (variable
                 && annotatable_ref_kind(variable->getType()) == AnnotatableRefKind::node) {
-                auto const span = named_expression_span(call, variable);
                 auto const identity = declaration_identity(
                     variable, sources_.declaration_span(variable));
-                if (span && !identity.empty()) append_ref({variable, identity, *span});
+                if (!identity.empty()) {
+                    auto const captured = expression_refers_to_capture(call->getArg(0));
+                    for (unsigned i = 1; i < call->getNumArgs(); ++i) {
+                        append_named_port_binding_annotation(
+                            variable, identity, call->getArg(i), captured);
+                    }
+                }
             }
         }
         return true;
@@ -522,13 +590,13 @@ public:
             && sources_.is_user_source(call->getExprLoc())) {
             auto* builder = call->getImplicitObjectArgument();
             for (unsigned i = 0; i < call->getNumArgs(); ++i) {
-                auto const span = sources_.source_span(call->getArg(i)->getSourceRange());
-                if (!span) continue;
+                auto const binding = named_port_binding(call->getArg(i));
+                if (!binding) continue;
                 result_.public_outputs.push_back({
                     .builder = builder,
                     .event = method_name == "event_outputs",
                     .ordinal = i,
-                    .span = *span,
+                    .span = binding->span,
                 });
             }
         }
@@ -588,27 +656,100 @@ private:
             + '@' + declaration->getNameAsString();
     }
 
-    std::optional<SourceSpanRecord> named_expression_span(
-        Expr* expression,
-        VarDecl* declaration) const
+    static Expr* peel_expression(Expr* expression)
     {
-        if (!expression || !declaration) return std::nullopt;
+        if (!expression) return nullptr;
+        for (;;) {
+            auto* next = expression->IgnoreParenImpCasts();
+            if (auto* cleanups = dyn_cast<ExprWithCleanups>(next))
+                next = cleanups->getSubExpr();
+            else if (auto* materialized = dyn_cast<MaterializeTemporaryExpr>(next))
+                next = materialized->getSubExpr();
+            else if (auto* bound = dyn_cast<CXXBindTemporaryExpr>(next))
+                next = bound->getSubExpr();
+            if (next == expression) return expression;
+            expression = next;
+        }
+    }
+
+    static bool expression_refers_to_capture(Expr* expression)
+    {
+        if (!expression) return false;
+        expression = expression->IgnoreParenImpCasts();
+        auto const* reference = dyn_cast<DeclRefExpr>(expression);
+        return reference && reference->refersToEnclosingVariableOrCapture();
+    }
+
+    UserDefinedLiteral* named_port_literal_expr(Expr* expression) const
+    {
+        expression = peel_expression(expression);
+        if (!expression) return nullptr;
+        if (auto* literal = dyn_cast<UserDefinedLiteral>(expression)) {
+            return sources_.named_port_literal(literal) ? literal : nullptr;
+        }
         class Finder final : public RecursiveASTVisitor<Finder> {
         public:
-            explicit Finder(VarDecl* target) : target_(target) {}
-            bool VisitDeclRefExpr(DeclRefExpr* ref)
+            explicit Finder(SourceModel const& sources) : sources_(sources) {}
+            bool VisitUserDefinedLiteral(UserDefinedLiteral* literal)
             {
-                if (!found_ && ref->getDecl() == target_) found_ = ref;
+                if (!found_ && sources_.named_port_literal(literal))
+                    found_ = literal;
                 return true;
             }
-            DeclRefExpr* found() const { return found_; }
+            UserDefinedLiteral* found() const { return found_; }
         private:
-            VarDecl* target_;
-            DeclRefExpr* found_ = nullptr;
-        } finder(declaration);
+            SourceModel const& sources_;
+            UserDefinedLiteral* found_ = nullptr;
+        } finder(sources_);
         finder.TraverseStmt(expression);
-        if (!finder.found()) return std::nullopt;
-        return sources_.source_span(finder.found()->getSourceRange());
+        return finder.found();
+    }
+
+    std::optional<NamedPortLiteralRecord> named_port_binding(Expr* expression) const
+    {
+        expression = peel_expression(expression);
+        auto* assignment = dyn_cast_or_null<CXXOperatorCallExpr>(expression);
+        if (!assignment || assignment->getOperator() != OO_Equal
+            || assignment->getNumArgs() < 2)
+            return std::nullopt;
+        auto* literal = named_port_literal_expr(assignment->getArg(0));
+        return literal ? sources_.named_port_literal(literal) : std::nullopt;
+    }
+
+    void append_named_port_binding_annotation(
+        VarDecl* variable,
+        std::string const& identity,
+        Expr* expression,
+        bool captured)
+    {
+        if (auto const binding = named_port_binding(expression)) {
+            append_node_input_port({
+                .declaration = variable,
+                .declaration_identity = identity,
+                .port_name = binding->name,
+                .event = binding->event,
+                .span = binding->span,
+                .refers_to_enclosing_variable_or_capture = captured,
+            });
+        }
+    }
+
+    void append_named_port_argument_spans(
+        VarDecl* variable,
+        std::string const& identity,
+        Expr* expression,
+        bool captured)
+    {
+        expression = peel_expression(expression);
+        auto* call = dyn_cast_or_null<CallExpr>(expression);
+        if (!call) return;
+        unsigned begin = 0;
+        if (auto* operator_call = dyn_cast<CXXOperatorCallExpr>(call)) {
+            if (operator_call->getOperator() == OO_Call) begin = 1;
+        }
+        for (unsigned i = begin; i < call->getNumArgs(); ++i)
+            append_named_port_binding_annotation(
+                variable, identity, call->getArg(i), captured);
     }
 
     void append_ref(RefAnnotation annotation)
@@ -621,6 +762,20 @@ private:
             });
         if (duplicate == result_.refs.end())
             result_.refs.push_back(std::move(annotation));
+    }
+
+    void append_node_input_port(NodeInputPortAnnotation annotation)
+    {
+        auto const duplicate = std::find_if(
+            result_.node_input_ports.begin(), result_.node_input_ports.end(),
+            [&](auto const& existing) {
+                return existing.declaration == annotation.declaration
+                    && existing.port_name == annotation.port_name
+                    && existing.event == annotation.event
+                    && existing.span == annotation.span;
+            });
+        if (duplicate == result_.node_input_ports.end())
+            result_.node_input_ports.push_back(std::move(annotation));
     }
 
     static FunctionDecl const* enclosing_function(VarDecl const* declaration)
@@ -667,12 +822,17 @@ public:
 
     bool VisitFunctionDecl(FunctionDecl* declaration)
     {
-        if (declaration && declaration->getNameAsString() == "_annotate_public_output_after_statement")
+        if (!declaration) return true;
+        auto const name = declaration->getNameAsString();
+        if (name == "_annotate_public_output_after_statement")
             public_output_annotation = declaration;
+        else if (name == "_annotate_node_input_source_info_after_statement")
+            node_input_annotation = declaration;
         return true;
     }
 
     FunctionTemplateDecl* source_annotation = nullptr;
+    FunctionDecl* node_input_annotation = nullptr;
     FunctionDecl* public_output_annotation = nullptr;
 };
 
@@ -692,7 +852,8 @@ public:
             || !sources_.is_user_source(function->getLocation()))
             return;
         ensure_helpers();
-        if (!source_annotation_template_ || !public_output_annotation_function_) {
+        if (!source_annotation_template_ || !node_input_annotation_function_
+            || !public_output_annotation_function_) {
             auto id = compiler_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
                 "IV package annotation helpers were not found; include <intravenous/dsl.h> before configured module code");
@@ -714,6 +875,7 @@ private:
     SourceModel const& sources_;
     llvm::DenseSet<FunctionDecl*> instrumented_;
     FunctionTemplateDecl* source_annotation_template_ = nullptr;
+    FunctionDecl* node_input_annotation_function_ = nullptr;
     FunctionDecl* public_output_annotation_function_ = nullptr;
     bool helpers_searched_ = false;
     std::unordered_map<FunctionDecl const*,
@@ -728,6 +890,7 @@ private:
         HelperFinder finder;
         finder.TraverseDecl(context_.getTranslationUnitDecl());
         source_annotation_template_ = finder.source_annotation;
+        node_input_annotation_function_ = finder.node_input_annotation;
         public_output_annotation_function_ = finder.public_output_annotation;
     }
 
@@ -762,6 +925,10 @@ private:
                 if (auto* annotation = build_ref_annotation(ref))
                     body.push_back(annotation);
             }
+            for (auto const& port : analysis.node_input_ports) {
+                if (auto* annotation = build_node_input_annotation(port))
+                    body.push_back(annotation);
+            }
             for (auto const& output : analysis.public_outputs) {
                 if (auto* annotation = build_public_output_annotation(output))
                     body.push_back(annotation);
@@ -780,6 +947,20 @@ private:
             declaration->getType().getNonReferenceType(),
             VK_LValue,
             location);
+    }
+
+    Expr* make_variable_ref(
+        VarDecl* declaration,
+        SourceLocation location,
+        bool refers_to_enclosing_variable_or_capture)
+    {
+        if (!declaration) return nullptr;
+        return DeclRefExpr::Create(
+            context_, NestedNameSpecifierLoc{}, SourceLocation{}, declaration,
+            refers_to_enclosing_variable_or_capture,
+            location,
+            declaration->getType().getNonReferenceType(),
+            VK_LValue);
     }
 
     Expr* make_address(Expr* expression, SourceLocation location)
@@ -836,7 +1017,10 @@ private:
     Stmt* build_ref_annotation(RefAnnotation const& annotation)
     {
         auto const location = annotation.declaration->getLocation();
-        auto* reference = make_decl_ref(annotation.declaration, location);
+        auto* reference = make_variable_ref(
+            annotation.declaration,
+            location,
+            annotation.refers_to_enclosing_variable_or_capture);
         auto* pointer = make_address(reference, location);
         if (!pointer) return nullptr;
         auto* specialization = source_annotation_specialization(
@@ -846,6 +1030,32 @@ private:
         if (!callee) return nullptr;
         llvm::SmallVector<Expr*, 5> arguments{
             pointer,
+            make_string(annotation.declaration_identity, location),
+            make_string(annotation.span.file, location),
+            make_u32(annotation.span.begin, location),
+            make_u32(annotation.span.end, location),
+        };
+        auto result = sema().BuildCallExpr(
+            nullptr, callee, location, arguments, location);
+        return result.isInvalid() ? nullptr : result.get();
+    }
+
+    Stmt* build_node_input_annotation(NodeInputPortAnnotation const& annotation)
+    {
+        auto const location = annotation.declaration->getLocation();
+        auto* reference = make_variable_ref(
+            annotation.declaration,
+            location,
+            annotation.refers_to_enclosing_variable_or_capture);
+        auto* pointer = make_address(reference, location);
+        if (!pointer) return nullptr;
+        auto* callee = make_decl_ref(node_input_annotation_function_, location);
+        if (!callee) return nullptr;
+        llvm::SmallVector<Expr*, 8> arguments{
+            pointer,
+            new (context_) CXXBoolLiteralExpr(
+                annotation.event, context_.BoolTy, location),
+            make_string(annotation.port_name, location),
             make_string(annotation.declaration_identity, location),
             make_string(annotation.span.file, location),
             make_u32(annotation.span.begin, location),

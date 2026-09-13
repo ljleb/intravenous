@@ -54,9 +54,24 @@ A bare `g.node<"registered.filter">()` expression resolves a provider and
 creates concrete-node implementation data internally, then
 returns a node reference. It does not, by itself, create an configured virtual
 node. The source rewriter establishes virtual-node identity when a named
-lvalue receives that reference. It gives an uninitialized node-reference
-lvalue its stable declaration identity and wraps its initializer or assignment
-right-hand side with the source-annotation operation for that identity.
+lvalue receives that reference. Source provenance is deliberately syntactic:
+the declarator identifier and later id-expression references to that lvalue
+are annotated, while its initializer, direct builder/node calls, arithmetic
+expressions, and other surrounding expression syntax are not. An
+uninitialized node-reference lvalue receives its declaration annotation once
+its first assignment has produced a valid reference.
+
+A named binding such as `"frequency"_P = value` or `"trigger"_F = value`
+also contributes the quoted name string as provenance for the corresponding
+virtual input port. The `_P`/`_F` suffix and the binding value expression are
+not part of that span. A source query that selects this span projects the
+virtual node down to that one port for the sidepanel instead of presenting all
+of the surrounding node's ports. Public outputs retain a narrow special case
+only to attach the same quoted-name span to the correct public-output ordinal;
+an unnamed `g.outputs(value)` / `g.event_outputs(value)` call contributes no
+source span. Runtime port editability is independent of this provenance: all
+ports of a node with a backing virtual node remain controllable even when a
+particular port has no named-binding source span.
 
 Conceptually:
 
@@ -71,9 +86,10 @@ source-configured lvalue `filter`
 This source annotation is an explicit declaration of membership; it is not a
 later grouping heuristic. Source spans and type identities may be stored as
 metadata on the virtual node, but they must never be used to discover, split,
-or merge virtual nodes. Internal builder-generated nodes, unannotated
-temporaries, constants, sums, packs, and unpacks have no configured virtual-node
-identity unless an explicit source annotation associates them with one.
+or merge virtual nodes. Internal builder-generated nodes, direct node
+expressions, unannotated temporaries, constants, sums, packs, and unpacks have
+no configured virtual-node identity unless an annotated identifier associates
+them with one.
 
 Node-reference values remain move-only. That is a runtime-reference rule which
 keeps configured C++ assignment and aliasing behavior tractable; it is not an

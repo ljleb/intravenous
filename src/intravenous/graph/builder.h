@@ -295,6 +295,8 @@ public:
   void apply_ttl(NodeBundleHandle, size_t);
   void annotate_node(NodeBundleHandle, std::string_view, std::string_view,
       uint32_t, uint32_t);
+  void annotate_node_input_source_info(NodeBundleHandle, PortKind,
+      std::string_view, std::string_view, std::string_view, uint32_t, uint32_t);
   void annotate_public_sample_input_source_info(PublicSampleInputRef const&,
       std::string_view, std::string_view, uint32_t, uint32_t);
   void annotate_public_event_input_source_info(PublicEventInputRef const&,

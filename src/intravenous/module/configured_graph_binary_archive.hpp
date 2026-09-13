@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 2;
+inline constexpr std::uint32_t archive_version = 3;
 
 class Writer {
 public:
@@ -353,6 +353,7 @@ inline NodeStateStructure read_state(Reader& r)
 template<class Channel, class Fn> void write_virtual_sample(Writer& w, VirtualSamplePortMapping<Channel> const& value, Fn&& write_channel)
 {
     w.string(value.name); w.size(value.ordinal); write_layout(w, value.channel_layout);
+    write_source_infos(w, value.source_infos);
     write_values<Channel>(w, value.channels, write_channel);
     w.list(value.member_channels, [&](auto const& members) { write_values<Channel>(w, members, write_channel); });
 }
@@ -360,6 +361,7 @@ template<class Channel, class Fn> void write_virtual_sample(Writer& w, VirtualSa
 template<class Channel, class Fn> VirtualSamplePortMapping<Channel> read_virtual_sample(Reader& r, Fn&& read_channel)
 {
     VirtualSamplePortMapping<Channel> result{.name = r.string(), .ordinal = r.size(), .channel_layout = read_layout(r),
+        .source_infos = read_source_infos(r),
         .channels = read_values<Channel>(r, read_channel)};
     result.member_channels = read_list<std::vector<Channel>>(r, [&] { return read_values<Channel>(r, read_channel); });
     return result;
@@ -368,11 +370,13 @@ template<class Channel, class Fn> VirtualSamplePortMapping<Channel> read_virtual
 inline void write_virtual_event(Writer& w, VirtualEventPortMapping const& value)
 {
     w.string(value.name); w.size(value.ordinal); write_enum(w, value.type);
+    write_source_infos(w, value.source_infos);
     write_values<NodeBundlePortId>(w, value.node_bundle_ports, write_bundle_port);
 }
 inline VirtualEventPortMapping read_virtual_event(Reader& r)
 {
     return {.name = r.string(), .ordinal = r.size(), .type = read_enum<EventTypeId>(r),
+        .source_infos = read_source_infos(r),
         .node_bundle_ports = read_values<NodeBundlePortId>(r, read_bundle_port)};
 }
 

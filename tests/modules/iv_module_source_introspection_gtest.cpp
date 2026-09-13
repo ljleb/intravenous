@@ -30,6 +30,14 @@ using iv::test_support::make_inline_module_workspace;
 using iv::test_support::read_only_module_fixture_workspace;
 using iv::test_support::shared_inline_module_workspace;
 
+std::string source_text(iv::LiveSourceSpan const& span)
+{
+    auto const map = iv::SourceTextLineMap::from_file(span.file_path);
+    auto const begin = map.offset_for(span.range.start);
+    auto const end = map.offset_for(span.range.end);
+    return map.text.substr(begin, end - begin);
+}
+
 struct SeededIvModuleSourceIntrospectionApp {
     iv::Timeline timeline;
     iv::IvModuleInstances instances;
@@ -410,6 +418,212 @@ namespace {
     EXPECT_EQ(public_outputs, 1u);
 }
 
+TEST(IvModuleSourceIntrospection, EmbeddedModulePublicInputIdentifiersRemainPortAnnotated)
+{
+    auto const workspace = make_inline_module_workspace(
+        "iv_module_source_introspection_embedded_public_input_identifiers",
+        R"(#include <intravenous/dsl.h>
+
+namespace {
+    void child_module(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto const in = g.input<"in">();
+        auto const az = g.input<"azimuth">(0, -180, 180);
+        g.outputs("main"_P = in + az);
+    }
+    IV_MODULE("iv.test.source_provenance.child", child_module);
+
+    void module_main(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto const child = g.node<"iv.test.source_provenance.child">();
+        g.outputs("main"_P = child);
+    }
+    IV_MODULE("iv.test.source_provenance.main", module_main);
+}
+)");
+
+    auto loader = iv::test::make_loader();
+    auto definitions = loader.load_package_definitions(workspace);
+    auto const definition = std::ranges::find_if(definitions, [](auto const& candidate) {
+        return candidate.module_id == "iv.test.source_provenance.main";
+    });
+    ASSERT_NE(definition, definitions.end());
+
+    auto const span_text = [](iv::SourceSpan const& span) {
+        auto const text = iv::test::read_text(span.file_path);
+        return text.substr(span.begin, span.end - span.begin);
+    };
+    auto has_port_identifier = [&](std::string_view port_name,
+                                   std::string_view identifier) {
+        return std::ranges::any_of(
+            definition->introspection.virtual_nodes,
+            [&](auto const& node) {
+                return std::ranges::any_of(
+                    node.sample_inputs,
+                    [&](auto const& port) {
+                        return port.name == port_name
+                            && std::ranges::any_of(
+                                port.source_spans,
+                                [&](auto const& span) {
+                                    return span_text(span) == identifier;
+                                });
+                    });
+            });
+    };
+
+    EXPECT_TRUE(has_port_identifier("in", "in"));
+    EXPECT_TRUE(has_port_identifier("azimuth", "az"));
+}
+
+TEST(IvModuleSourceIntrospection, SourceProvenanceUsesOnlyIdentifiersAndNamedBindingStrings)
+{
+    auto const workspace = make_inline_module_workspace(
+        "iv_module_source_introspection_token_provenance",
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/shaping.h>
+
+namespace {
+    struct TriggerSource {
+        static constexpr auto event_outputs()
+        {
+            return std::array<iv::EventOutputConfig, 1>{{{
+                .name = "trigger", .type = iv::EventTypeId::trigger}}};
+        }
+        void tick(iv::TickSampleContext<TriggerSource> const&) const {}
+    };
+
+    struct TriggerSink {
+        static constexpr auto event_inputs()
+        {
+            return std::array<iv::EventInputConfig, 1>{{{
+                .name = "gate", .type = iv::EventTypeId::trigger}}};
+        }
+        void tick(iv::TickSampleContext<TriggerSink> const&) const {}
+    };
+
+    void token_provenance_module(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto frequency = g.input(440.0);
+        auto saw = details::configure_concrete_node<SawOscillator>(g);
+        saw("frequency"_P = frequency);
+        auto out = saw * 0.5f;
+        auto trigger = details::configure_concrete_node<TriggerSource>(g).event_port();
+        auto event_sink = details::configure_concrete_node<TriggerSink>(g);
+        event_sink("gate"_F = trigger);
+        g.outputs("main"_P = out);
+        g.event_outputs("trigger"_F = trigger);
+    }
+}
+)");
+
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    app.initialize();
+    app.introspection.set_public_sample_outputs(app.graph_input_lanes.public_sample_outputs());
+    app.introspection.set_public_event_outputs(app.graph_input_lanes.public_event_outputs());
+
+    auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
+    auto const all = app.query_by_spans(
+        module_cpp,
+        {{.start = {.line = 1, .column = 1}, .end = {.line = 100, .column = 1}}});
+
+    auto const saw = std::ranges::find_if(all.nodes, [](auto const& node) {
+        return node.kind.contains("SawOscillator")
+            && node.type_identity != "sample-port";
+    });
+    ASSERT_NE(saw, all.nodes.end());
+    ASSERT_FALSE(saw->source_spans.empty());
+    for (auto const& span : saw->source_spans) {
+        auto const text = source_text(span);
+        EXPECT_EQ(text, "saw");
+    }
+    EXPECT_TRUE(std::ranges::any_of(saw->source_spans, [](auto const& span) {
+        return source_text(span) == "saw";
+    }));
+
+    auto const public_input = std::ranges::find_if(all.nodes, [](auto const& node) {
+        return node.kind == "Public input";
+    });
+    ASSERT_NE(public_input, all.nodes.end());
+    ASSERT_FALSE(public_input->source_spans.empty());
+    for (auto const& span : public_input->source_spans)
+        EXPECT_EQ(source_text(span), "frequency");
+
+    auto const sample_output = std::ranges::find_if(all.nodes, [](auto const& node) {
+        return node.kind == "Public output" && !node.sample_outputs.empty();
+    });
+    ASSERT_NE(sample_output, all.nodes.end());
+    ASSERT_EQ(sample_output->source_spans.size(), 1u);
+    EXPECT_EQ(source_text(sample_output->source_spans.front()), "\"main\"");
+
+    auto const event_output = std::ranges::find_if(all.nodes, [](auto const& node) {
+        return node.kind == "Public event output" && !node.event_outputs.empty();
+    });
+    ASSERT_NE(event_output, all.nodes.end());
+    ASSERT_EQ(event_output->source_spans.size(), 1u);
+    EXPECT_EQ(source_text(event_output->source_spans.front()), "\"trigger\"");
+
+    auto const source_map = iv::SourceTextLineMap::from_file(module_cpp);
+    auto query_at = [&](std::string_view needle, size_t inside = 0) {
+        auto const offset = source_map.text.find(needle);
+        EXPECT_NE(offset, std::string::npos) << needle;
+        auto const position = source_map.position_for(offset + inside);
+        return app.query_by_spans(
+            module_cpp,
+            {{.start = position, .end = position}},
+            iv::SourceRangeMatchMode::intersection);
+    };
+    auto has_kind = [](iv::ProjectQueryResult const& result, std::string_view kind) {
+        return std::ranges::any_of(result.nodes, [&](auto const& node) {
+            return node.kind.contains(kind);
+        });
+    };
+
+    // Direct builder/node expressions are not source-active anymore.
+    EXPECT_TRUE(query_at("g.input", 2).nodes.empty());
+    EXPECT_TRUE(query_at("configure_concrete_node<SawOscillator>", 5).nodes.empty());
+    EXPECT_TRUE(query_at("g.outputs", 2).nodes.empty());
+
+    // The name string is active, but the UDL suffix is not.
+    auto const frequency_port = query_at("\"frequency\"_P", 2);
+    auto const frequency_node = std::ranges::find_if(
+        frequency_port.nodes,
+        [](auto const& node) { return node.kind.contains("SawOscillator"); });
+    ASSERT_NE(frequency_node, frequency_port.nodes.end());
+    ASSERT_EQ(frequency_node->sample_inputs.size(), 1u);
+    EXPECT_EQ(frequency_node->sample_inputs.front().name, "frequency");
+    EXPECT_TRUE(frequency_node->sample_outputs.empty());
+    EXPECT_TRUE(frequency_node->event_inputs.empty());
+    EXPECT_TRUE(frequency_node->event_outputs.empty());
+    ASSERT_EQ(frequency_node->source_spans.size(), 1u);
+    EXPECT_EQ(source_text(frequency_node->source_spans.front()), "\"frequency\"");
+    EXPECT_TRUE(has_kind(query_at("\"frequency\"_P", std::string_view("\"frequency\"").size()), "SawOscillator"));
+    auto const gate_port = query_at("\"gate\"_F", 2);
+    auto const gate_node = std::ranges::find_if(
+        gate_port.nodes,
+        [](auto const& node) { return node.kind.contains("TriggerSink"); });
+    ASSERT_NE(gate_node, gate_port.nodes.end());
+    ASSERT_EQ(gate_node->event_inputs.size(), 1u);
+    EXPECT_EQ(gate_node->event_inputs.front().name, "gate");
+    EXPECT_TRUE(gate_node->sample_inputs.empty());
+    EXPECT_TRUE(gate_node->sample_outputs.empty());
+    EXPECT_TRUE(gate_node->event_outputs.empty());
+    ASSERT_EQ(gate_node->source_spans.size(), 1u);
+    EXPECT_EQ(source_text(gate_node->source_spans.front()), "\"gate\"");
+    EXPECT_TRUE(has_kind(
+        query_at("\"gate\"_F", std::string_view("\"gate\"").size()),
+        "TriggerSink"));
+    EXPECT_TRUE(has_kind(query_at("frequency);", 2), "Public input"));
+    EXPECT_TRUE(std::ranges::any_of(query_at("\"main\"_P", 2).nodes, [](auto const& node) {
+        return node.kind == "Public output";
+    }));
+    EXPECT_TRUE(std::ranges::any_of(query_at("\"trigger\"_F", 2).nodes, [](auto const& node) {
+        return node.kind == "Public event output";
+    }));
+}
+
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableAcrossReload)
 {
     auto const workspace = make_inline_module_workspace(
@@ -563,10 +777,21 @@ namespace {
     ASSERT_EQ(event_port->members.size(), 1u);
     EXPECT_EQ(event_port->members.front().event_outputs.size(), 1u);
 
-    auto const node_call = app.query_by_spans(
+    auto const direct_initializer = app.query_by_spans(
         module_cpp,
         {{.start = {.line = 22, .column = 1},
           .end = {.line = 22, .column = 40}}});
+    EXPECT_FALSE(std::ranges::any_of(
+        direct_initializer.nodes,
+        [](auto const& node) {
+            return node.kind.contains("Sum")
+                && node.type_identity != "sample-port";
+        }));
+
+    auto const node_call = app.query_by_spans(
+        module_cpp,
+        {{.start = {.line = 23, .column = 1},
+          .end = {.line = 23, .column = 40}}});
     auto const sink = std::find_if(
         node_call.nodes.begin(), node_call.nodes.end(),
         [](auto const& node) {
@@ -891,8 +1116,15 @@ TEST(IvModuleSourceIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
     }
 
     std::set<std::string> actual_spans;
-    for (auto const &span : active_regions.source_spans) actual_spans.insert(span_key(span));
-    EXPECT_EQ(actual_spans, expected_spans);
+    for (auto const &span : active_regions.source_spans) {
+        actual_spans.insert(span_key(span));
+        auto const query = app.query_by_spans(
+            module_cpp, {span.range}, iv::SourceRangeMatchMode::intersection);
+        EXPECT_FALSE(query.nodes.empty()) << span_key(span);
+    }
+    for (auto const& expected : expected_spans) {
+        EXPECT_TRUE(actual_spans.contains(expected)) << expected;
+    }
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExactSourceSpan)

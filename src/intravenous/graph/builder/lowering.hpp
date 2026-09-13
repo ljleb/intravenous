@@ -180,6 +180,18 @@ source_spans_for(std::span<VirtualConcreteNode const* const> nodes) {
   return spans;
 }
 
+constexpr std::vector<SourceSpan>
+source_spans_for(std::span<SourceInfo const> infos) {
+  std::vector<SourceSpan> spans;
+  spans.reserve(infos.size());
+  for (auto const& info : infos) {
+    if (info.span.file_path.empty() || info.span.begin > info.span.end) continue;
+    spans.push_back(info.span);
+  }
+  sort_and_deduplicate_spans(spans);
+  return spans;
+}
+
 constexpr std::vector<IntrospectionPortInfo> aggregate_ports(
     std::span<VirtualConcreteNode const* const> nodes,
     auto VirtualConcreteNode::* member) {
@@ -559,6 +571,7 @@ constexpr std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
         .history = history,
         .latency = latency,
         .sample_channel_type = mapping.channel_layout.channel_type,
+        .source_spans = source_spans_for(mapping.source_infos),
     });
   }
   return result;
@@ -606,7 +619,8 @@ constexpr std::vector<IntrospectionPortInfo> project_virtual_event_ports(
         .type = event_type_name(mapping.type),
         .connectivity = connected ? VirtualPortConnectivity::connected
                                   : VirtualPortConnectivity::disconnected,
-        .ordinal = mapping.ordinal});
+        .ordinal = mapping.ordinal,
+        .source_spans = source_spans_for(mapping.source_infos)});
   }
   return result;
 }

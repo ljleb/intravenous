@@ -168,6 +168,14 @@ namespace iv {
             uint32_t begin,
             uint32_t end
         ) const;
+        void _annotate_input_source_info(
+            PortKind,
+            std::string_view port_name,
+            std::string_view declaration_identity,
+            std::string_view file_path,
+            uint32_t begin,
+            uint32_t end
+        ) const;
     };
 
     // Internal only: it supplies covariant fluent returns for the two typed

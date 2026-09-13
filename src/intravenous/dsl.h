@@ -142,6 +142,24 @@ namespace iv {
         }
     }
 
+    constexpr void _annotate_node_input_source_info_after_statement(
+        NodeRef const* ref,
+        bool event,
+        char const* port_name,
+        char const* declaration_identity,
+        char const* file_path,
+        uint32_t begin,
+        uint32_t end)
+    {
+        ref->_annotate_input_source_info(
+            event ? PortKind::event : PortKind::sample,
+            port_name,
+            declaration_identity,
+            file_path,
+            begin,
+            end);
+    }
+
     constexpr void _annotate_public_output_after_statement(
         GraphBuilder* builder,
         bool event,

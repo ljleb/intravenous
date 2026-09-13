@@ -435,8 +435,35 @@ NodeRef GraphBuilderState::embed_subgraph(
   IV_ASSERT(offset == begin, "embedded child bundle offset changed unexpectedly");
   auto const boundary = offset + child._public_ports.boundary_handle();
   auto const count = child._node_bundles.size();
-  return NodeRef(
-      facade(), _node_bundles.append_subgraph(boundary, begin, count, kind));
+  auto const subgraph = _node_bundles.append_subgraph(
+      boundary, begin, count, kind);
+
+  // Once a child module is embedded, its public inputs become input ports of
+  // the surrounding subgraph. Keep the child declaration/reference source
+  // identities on those virtual ports so source introspection does not lose
+  // `auto x = g.input<...>()` provenance at the module boundary.
+  auto const sample_inputs =
+      child._public_ports.sample_inputs(child._node_bundles);
+  for (size_t ordinal = 0; ordinal < sample_inputs.size(); ++ordinal) {
+    for (auto const& info :
+         child._public_ports.sample_input_source_infos(ordinal)) {
+      _virtual_nodes.annotate_input_source_info(
+          _node_bundles, subgraph, info.declaration_identity,
+          PortKind::sample, sample_inputs[ordinal].name, info);
+    }
+  }
+  auto const event_inputs =
+      child._public_ports.event_inputs(child._node_bundles);
+  for (size_t ordinal = 0; ordinal < event_inputs.size(); ++ordinal) {
+    for (auto const& info :
+         child._public_ports.event_input_source_infos(ordinal)) {
+      _virtual_nodes.annotate_input_source_info(
+          _node_bundles, subgraph, info.declaration_identity,
+          PortKind::event, event_inputs[ordinal].name, info);
+    }
+  }
+
+  return NodeRef(facade(), subgraph);
 }
 
 void GraphBuilderState::event_outputs(
@@ -671,6 +698,15 @@ void GraphBuilderState::annotate_node(
     uint32_t begin, uint32_t end) {
   _annotations.annotate_node_source_info(
       _node_bundles, _virtual_nodes, _identity, handle, id, file, begin, end);
+}
+
+void GraphBuilderState::annotate_node_input_source_info(
+    NodeBundleHandle handle, PortKind port_kind,
+    std::string_view port_name, std::string_view id,
+    std::string_view file, uint32_t begin, uint32_t end) {
+  _annotations.annotate_node_input_source_info(
+      _node_bundles, _virtual_nodes, _identity, handle, id,
+      port_kind, port_name, file, begin, end);
 }
 
 EventPortRef GraphBuilderState::event_output(

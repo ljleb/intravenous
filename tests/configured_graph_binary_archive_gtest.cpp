@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <optional>
@@ -33,6 +34,8 @@ struct ArchiveFixture {
         auto const source_handle = source.node_bundle_handle();
         auto const pass = iv::details::configure_concrete_node<Pass>(graph);
         pass(gain);
+        pass._annotate_input_source_info(
+            PortKind::sample, "", "archive-pass", "/tmp/archive-module.cpp", 10, 18);
         graph.outputs("gain_out"_P = pass, "main"_P = source);
 
         auto configured = std::move(graph).finish();
@@ -70,6 +73,20 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_EQ(
         registered_identity->provider_package_root,
         "/tmp/iv-test-provider");
+
+    auto const virtual_record = std::ranges::find_if(
+        decoded.virtual_nodes.records(),
+        [](auto const& record) { return record.source_identity == "archive-pass"; });
+    ASSERT_NE(virtual_record, decoded.virtual_nodes.records().end());
+    ASSERT_EQ(virtual_record->sample_inputs.size(), 1u);
+    ASSERT_EQ(virtual_record->sample_inputs.front().source_infos.size(), 1u);
+    EXPECT_EQ(
+        virtual_record->sample_inputs.front().source_infos.front().span.file_path,
+        "/tmp/archive-module.cpp");
+    EXPECT_EQ(
+        virtual_record->sample_inputs.front().source_infos.front().span.begin, 10u);
+    EXPECT_EQ(
+        virtual_record->sample_inputs.front().source_infos.front().span.end, 18u);
 
     auto plan = iv::GraphCompiler::compile(
         iv::GraphLowerer::lower(std::move(decoded)));

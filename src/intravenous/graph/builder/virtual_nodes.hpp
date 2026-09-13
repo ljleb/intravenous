@@ -20,6 +20,7 @@ struct VirtualSamplePortMapping {
   std::string name{};
   size_t ordinal = 0;
   ChannelLayout channel_layout{};
+  std::vector<SourceInfo> source_infos{};
   std::vector<ChannelId> channels{};
   std::vector<std::vector<ChannelId>> member_channels{};
   bool operator==(VirtualSamplePortMapping const&) const = default;
@@ -31,6 +32,7 @@ struct VirtualEventPortMapping {
   std::string name{};
   size_t ordinal = 0;
   EventTypeId type = EventTypeId::empty;
+  std::vector<SourceInfo> source_infos{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
   bool operator==(VirtualEventPortMapping const&) const = default;
 };
@@ -91,6 +93,10 @@ public:
       GraphBuilderNodeBundles&, EventTypeId,
       std::span<EventOutputPortId const>,
       std::string_view virtual_node_id, SourceInfo const&);
+  constexpr void annotate_input_source_info(
+      GraphBuilderNodeBundles&, NodeBundleHandle,
+      std::string_view virtual_node_id,
+      PortKind, std::string_view port_name, SourceInfo const&);
   constexpr void import_child(
       GraphBuilderNodeBundles&, GraphBuilderVirtualNodes const&,
       size_t node_bundle_offset);
@@ -291,6 +297,43 @@ constexpr void GraphBuilderVirtualNodes::attach_event_output(
   }
 }
 
+constexpr void GraphBuilderVirtualNodes::annotate_input_source_info(
+    GraphBuilderNodeBundles& bundles,
+    NodeBundleHandle bundle_handle,
+    std::string_view source_identity,
+    PortKind port_kind,
+    std::string_view port_name,
+    SourceInfo const& source_info) {
+  if (source_identity.empty()) return;
+  auto const handle = get_or_create(
+      source_identity, bundles.bundle(bundle_handle).type_identity());
+  attach_member(bundles, handle, bundle_handle, nullptr);
+  auto& record = _records[handle];
+
+  if (port_kind == PortKind::sample) {
+    auto const mapping = std::ranges::find_if(
+        record.sample_inputs,
+        [&](auto const& candidate) { return candidate.name == port_name; });
+    if (mapping == record.sample_inputs.end())
+      details::error(
+          "cannot annotate unknown sample input '" + std::string(port_name)
+          + "' on virtual node");
+    if (!std::ranges::contains(mapping->source_infos, source_info))
+      mapping->source_infos.push_back(source_info);
+    return;
+  }
+
+  auto const mapping = std::ranges::find_if(
+      record.event_inputs,
+      [&](auto const& candidate) { return candidate.name == port_name; });
+  if (mapping == record.event_inputs.end())
+    details::error(
+        "cannot annotate unknown event input '" + std::string(port_name)
+        + "' on virtual node");
+  if (!std::ranges::contains(mapping->source_infos, source_info))
+    mapping->source_infos.push_back(source_info);
+}
+
 constexpr void GraphBuilderVirtualNodes::import_child(
     GraphBuilderNodeBundles& bundles, GraphBuilderVirtualNodes const& child,
     size_t bundle_offset) {
@@ -304,6 +347,19 @@ constexpr void GraphBuilderVirtualNodes::import_child(
       for (auto const& info : child_record.source_infos)
           if (!std::ranges::contains(record.source_infos, info))
               record.source_infos.push_back(info);
+      auto merge_port_source_infos = [](auto& destination, auto const& source) {
+        auto const count = std::min(destination.size(), source.size());
+        for (size_t i = 0; i < count; ++i) {
+          for (auto const& info : source[i].source_infos) {
+            if (!std::ranges::contains(destination[i].source_infos, info))
+              destination[i].source_infos.push_back(info);
+          }
+        }
+      };
+      merge_port_source_infos(record.sample_inputs, child_record.sample_inputs);
+      merge_port_source_infos(record.sample_outputs, child_record.sample_outputs);
+      merge_port_source_infos(record.event_inputs, child_record.event_inputs);
+      merge_port_source_infos(record.event_outputs, child_record.event_outputs);
   }
 }
 

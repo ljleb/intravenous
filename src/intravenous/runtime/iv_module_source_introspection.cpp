@@ -380,6 +380,22 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
             graph_index.dependency_file_paths.insert(span.file_path);
         }
         sort_and_deduplicate_spans(virtual_node.source_spans);
+        auto normalize_port_spans = [&](auto &ports) {
+            for (auto &port : ports) {
+                std::erase_if(port.source_spans, [](SourceSpan const &span) {
+                    return span.file_path.empty() || span.begin > span.end;
+                });
+                for (auto &span : port.source_spans) {
+                    span.file_path = normalized_path_string(span.file_path);
+                    graph_index.dependency_file_paths.insert(span.file_path);
+                }
+                sort_and_deduplicate_spans(port.source_spans);
+            }
+        };
+        normalize_port_spans(virtual_node.sample_inputs);
+        normalize_port_spans(virtual_node.sample_outputs);
+        normalize_port_spans(virtual_node.event_inputs);
+        normalize_port_spans(virtual_node.event_outputs);
     }
     for (size_t i = 0; i < graph_index.virtual_nodes.size(); ++i) {
         graph_index.virtual_node_index_by_id.emplace(graph_index.virtual_nodes[i].id, i);
@@ -953,24 +969,35 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
 
     ProjectQueryResult result;
 
-    auto span_touches_range =
-        [](SourceSpan const &span,
+    auto byte_span_touches_range =
+        [](uint32_t span_begin,
+           uint32_t span_end,
            std::pair<uint32_t, uint32_t> const &requested_range) {
+            if (span_begin > span_end) return false;
             auto const [begin, end] = requested_range;
+            // Query ranges are intentionally inclusive at both boundaries.
+            // In particular, a cursor positioned at span.end still selects
+            // the highlighted source span.
             if (begin == end) {
-                return span.begin <= begin && begin <= span.end;
+                return span_begin <= begin && begin <= span_end;
             }
-            return span.begin <= end && begin <= span.end;
+            return span_begin <= end && begin <= span_end;
+        };
+
+    auto span_touches_range =
+        [&](SourceSpan const &span,
+            std::pair<uint32_t, uint32_t> const &requested_range) {
+            return byte_span_touches_range(span.begin, span.end, requested_range);
         };
 
     auto span_distance_to_range =
-        [](SourceSpan const &span,
-           std::pair<uint32_t, uint32_t> const &requested_range) {
+        [&](SourceSpan const &span,
+            std::pair<uint32_t, uint32_t> const &requested_range) {
             auto const [begin, end] = requested_range;
-            if (span.begin <= end && begin <= span.end) {
+            if (byte_span_touches_range(span.begin, span.end, requested_range)) {
                 return 0u;
             }
-            if (span.end < begin) {
+            if (span.end <= begin) {
                 return begin - span.end;
             }
             return span.begin - end;
@@ -979,10 +1006,25 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
     struct RankedRuntimeVirtualNode {
         std::string definition_id;
         size_t virtual_index = 0;
+        bool full_node = false;
+        std::vector<size_t> sample_input_ordinals {};
+        std::vector<size_t> event_input_ordinals {};
+        std::vector<SourceSpan> selected_port_spans {};
         uint32_t best_span_size = std::numeric_limits<uint32_t>::max();
         uint32_t best_distance = std::numeric_limits<uint32_t>::max();
         uint32_t best_begin = std::numeric_limits<uint32_t>::max();
         uint32_t best_end = std::numeric_limits<uint32_t>::max();
+    };
+
+    auto record_rank = [&](RankedRuntimeVirtualNode &ranked,
+                           SourceSpan const &span,
+                           std::pair<uint32_t, uint32_t> const &requested_range) {
+        auto const span_size = span.end >= span.begin ? span.end - span.begin : 0u;
+        auto const distance = span_distance_to_range(span, requested_range);
+        ranked.best_span_size = std::min(ranked.best_span_size, span_size);
+        ranked.best_distance = std::min(ranked.best_distance, distance);
+        ranked.best_begin = std::min(ranked.best_begin, span.begin);
+        ranked.best_end = std::min(ranked.best_end, span.end);
     };
 
     std::vector<RankedRuntimeVirtualNode> ranked_nodes;
@@ -990,50 +1032,67 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
         for (size_t virtual_index = 0; virtual_index < graph_index.virtual_nodes.size();
              ++virtual_index) {
             auto const &node = graph_index.virtual_nodes[virtual_index];
-            bool matches = requested_ranges.empty();
             RankedRuntimeVirtualNode ranked{
                 .definition_id = definition_id,
                 .virtual_index = virtual_index,
             };
-            if (!requested_ranges.empty()) {
-                auto const node_matches_range =
-                    [&](std::pair<uint32_t, uint32_t> const &requested_range) {
-                        bool any = false;
-                        for (auto const &span : node.source_spans) {
-                            if (span.file_path != normalized_file_path ||
-                                !span_touches_range(span, requested_range)) {
-                                continue;
-                            }
-                            any = true;
-                            auto const span_size =
-                                span.end >= span.begin ? span.end - span.begin : 0u;
-                            auto const distance =
-                                span_distance_to_range(span, requested_range);
-                            ranked.best_span_size = std::min(ranked.best_span_size, span_size);
-                            ranked.best_distance = std::min(ranked.best_distance, distance);
-                            ranked.best_begin = std::min(ranked.best_begin, span.begin);
-                            ranked.best_end = std::min(ranked.best_end, span.end);
-                        }
-                        return any;
-                    };
-                if (match_mode == SourceRangeMatchMode::union_) {
-                    matches = std::ranges::any_of(requested_ranges, node_matches_range);
-                } else {
-                    matches = std::ranges::all_of(requested_ranges, node_matches_range);
+
+            if (requested_ranges.empty()) {
+                ranked.full_node = true;
+                if (!node.source_spans.empty()) {
+                    auto const &span = node.source_spans.front();
+                    ranked.best_span_size = span.end >= span.begin
+                        ? span.end - span.begin : 0u;
+                    ranked.best_distance = 0u;
+                    ranked.best_begin = span.begin;
+                    ranked.best_end = span.end;
                 }
-            } else if (!node.source_spans.empty()) {
-                ranked.best_span_size =
-                    node.source_spans.front().end >= node.source_spans.front().begin
-                        ? node.source_spans.front().end - node.source_spans.front().begin
-                        : 0u;
-                ranked.best_distance = 0u;
-                ranked.best_begin = node.source_spans.front().begin;
-                ranked.best_end = node.source_spans.front().end;
-            }
-            if (!matches) {
+                ranked_nodes.push_back(std::move(ranked));
                 continue;
             }
-            ranked_nodes.push_back(ranked);
+
+            std::vector<bool> matched_ranges(requested_ranges.size(), false);
+            auto inspect_spans = [&](std::span<SourceSpan const> spans,
+                                     auto &&on_match) {
+                for (auto const &span : spans) {
+                    if (span.file_path != normalized_file_path) continue;
+                    bool matched_span = false;
+                    for (size_t range_i = 0; range_i < requested_ranges.size(); ++range_i) {
+                        auto const &requested_range = requested_ranges[range_i];
+                        if (!span_touches_range(span, requested_range)) continue;
+                        matched_ranges[range_i] = true;
+                        matched_span = true;
+                        record_rank(ranked, span, requested_range);
+                    }
+                    if (matched_span) on_match(span);
+                }
+            };
+
+            inspect_spans(node.source_spans, [&](SourceSpan const &) {
+                ranked.full_node = true;
+            });
+
+            auto collect_port_matches = [&](auto const &ports, auto &ordinals) {
+                for (auto const &port : ports) {
+                    bool matched_port = false;
+                    inspect_spans(port.source_spans, [&](SourceSpan const &span) {
+                        matched_port = true;
+                        ranked.selected_port_spans.push_back(span);
+                    });
+                    if (matched_port) ordinals.push_back(port.ordinal);
+                }
+            };
+            collect_port_matches(node.sample_inputs, ranked.sample_input_ordinals);
+            collect_port_matches(node.event_inputs, ranked.event_input_ordinals);
+
+            auto const is_matched = [](bool value) { return value; };
+            auto const matches = match_mode == SourceRangeMatchMode::union_
+                ? std::ranges::any_of(matched_ranges, is_matched)
+                : std::ranges::all_of(matched_ranges, is_matched);
+            if (!matches) continue;
+
+            sort_and_deduplicate_spans(ranked.selected_port_spans);
+            ranked_nodes.push_back(std::move(ranked));
         }
     }
 
@@ -1087,7 +1146,36 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             if (!emitted.insert(emitted_id).second) {
                 continue;
             }
-            result.nodes.push_back(to_virtual_node(node, matching_instance_id));
+            auto live = to_virtual_node(node, matching_instance_id);
+            if (!ranked.full_node) {
+                auto keep_ordinal = [](auto const &ordinals, auto const &port) {
+                    return std::ranges::contains(ordinals, port.ordinal);
+                };
+                std::erase_if(live.sample_inputs, [&](auto const &port) {
+                    return !keep_ordinal(ranked.sample_input_ordinals, port);
+                });
+                std::erase_if(live.event_inputs, [&](auto const &port) {
+                    return !keep_ordinal(ranked.event_input_ordinals, port);
+                });
+                live.sample_outputs.clear();
+                live.event_outputs.clear();
+                for (auto &member : live.members) {
+                    std::erase_if(member.sample_inputs, [&](auto const &port) {
+                        return !keep_ordinal(ranked.sample_input_ordinals, port);
+                    });
+                    std::erase_if(member.event_inputs, [&](auto const &port) {
+                        return !keep_ordinal(ranked.event_input_ordinals, port);
+                    });
+                    member.sample_outputs.clear();
+                    member.event_outputs.clear();
+                }
+                live.source_spans.clear();
+                live.source_spans.reserve(ranked.selected_port_spans.size());
+                for (auto const &span : ranked.selected_port_spans) {
+                    live.source_spans.push_back(to_live_span(span));
+                }
+            }
+            result.nodes.push_back(std::move(live));
         }
     }
 
@@ -1101,7 +1189,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
                 auto touches = [&](auto const &range) {
                     return std::ranges::any_of(input.source_infos, [&](SourceInfo const &info) {
                         return normalized_path_string(info.span.file_path) == normalized_file_path
-                            && !(info.span.end < range.first || info.span.begin > range.second);
+                            && byte_span_touches_range(info.span.begin, info.span.end, range);
                     });
                 };
                 matches = match_mode == SourceRangeMatchMode::union_
@@ -1121,7 +1209,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
                 auto touches = [&](auto const &range) {
                     return std::ranges::any_of(input.source_infos, [&](SourceInfo const &info) {
                         return normalized_path_string(info.span.file_path) == normalized_file_path
-                            && !(info.span.end < range.first || info.span.begin > range.second);
+                            && byte_span_touches_range(info.span.begin, info.span.end, range);
                     });
                 };
                 matches = match_mode == SourceRangeMatchMode::union_
@@ -1137,7 +1225,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             auto const matches = requested_ranges.empty() || std::ranges::any_of(output.source_infos, [&](SourceInfo const& info) {
                 return std::ranges::any_of(requested_ranges, [&](auto const& range) {
                     return normalized_path_string(info.span.file_path) == normalized_file_path
-                        && !(info.span.end < range.first || info.span.begin > range.second);
+                        && byte_span_touches_range(info.span.begin, info.span.end, range);
                 });
             });
             if (matches) result.nodes.push_back(to_public_sample_output(output));
@@ -1149,7 +1237,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             auto const matches = requested_ranges.empty() || std::ranges::any_of(output.source_infos, [&](SourceInfo const& info) {
                 return std::ranges::any_of(requested_ranges, [&](auto const& range) {
                     return normalized_path_string(info.span.file_path) == normalized_file_path
-                        && !(info.span.end < range.first || info.span.begin > range.second);
+                        && byte_span_touches_range(info.span.begin, info.span.end, range);
                 });
             });
             if (matches) result.nodes.push_back(to_public_event_output(output));
@@ -1173,7 +1261,8 @@ ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
     std::unordered_set<std::string> emitted_spans;
     for (auto const &[_, graph_index] : graph_indexes_by_definition_id) {
         for (auto const &node : graph_index.virtual_nodes) {
-            for (auto const &span : node.source_spans) {
+            auto append_spans = [&](std::span<SourceSpan const> spans) {
+              for (auto const &span : spans) {
                 if (span.file_path != normalized_file_path) {
                     continue;
                 }
@@ -1186,6 +1275,14 @@ ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
                 if (emitted_spans.insert(key).second) {
                     result.source_spans.push_back(std::move(live_span));
                 }
+              }
+            };
+            append_spans(node.source_spans);
+            for (auto const &port : node.sample_inputs) {
+                append_spans(port.source_spans);
+            }
+            for (auto const &port : node.event_inputs) {
+                append_spans(port.source_spans);
             }
         }
     }

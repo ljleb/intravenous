@@ -400,6 +400,14 @@ void GraphBuilder::annotate_node(
 {
     state(*this).annotate_node(handle, id, file, begin, end);
 }
+void GraphBuilder::annotate_node_input_source_info(
+    NodeBundleHandle handle, PortKind port_kind,
+    std::string_view port_name, std::string_view id,
+    std::string_view file, uint32_t begin, uint32_t end)
+{
+    state(*this).annotate_node_input_source_info(
+        handle, port_kind, port_name, id, file, begin, end);
+}
 void GraphBuilder::annotate_public_sample_input_source_info(
     PublicSampleInputRef const& ref, std::string_view id,
     std::string_view file, uint32_t begin, uint32_t end)
