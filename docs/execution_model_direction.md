@@ -1,5 +1,14 @@
 # Execution Model Direction
 
+_Status: historical migration inventory. `Timeline` ownership and lane/DSP
+execution-partition decisions are superseded by
+[unified_graph_direction.md](./unified_graph_direction.md). Compiled-data
+execution semantics are superseded by
+[compiled_dsp_nodes.md](./compiled_dsp_nodes.md). Preserve useful product,
+transport, and device behavior described here; do not preserve the requirement
+that `Timeline` remain a long-lived runtime substrate or the old compiled-lane
+execution/storage model._
+
 This note is partially superseded by
 [task_runner_execution_direction.md](./task_runner_execution_direction.md) for
 task ordering, task graph updates, and execution-plan compilation. This
@@ -65,6 +74,12 @@ Other output devices consume streams resampled to the master device rate.
 
 ## Global indexing direction
 
+> Historical note: the compiled-lane indexing model in this section is not the
+> current compiled DSP-port design. Current compiled ports use arbitrary global
+> sample positions and globally batched sampling requests as specified in
+> [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). The realtime frontier ideas
+> below remain useful only as historical transport/runtime context.
+
 We do not want to globally index every produced sample block.
 
 The preferred direction is to treat the global index as the current realtime
@@ -106,6 +121,11 @@ The API shape should leave room for timeline-owned scheduling, rate conversion,
 and block-size adaptation rather than assuming one global realtime lane format.
 
 ## Paused / playing behavior
+
+> Historical note: pinning a "compiled stream" to a timeline playback cursor is
+> not part of the compiled DSP-port execution contract. A future UI or transport
+> may still choose equivalent product behavior by deciding which global sample
+> ranges to query.
 
 Desired behavior:
 

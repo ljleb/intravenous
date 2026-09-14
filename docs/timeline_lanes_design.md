@@ -1,6 +1,17 @@
 # Timeline Lanes Design Notes
 
-This document captures the current working design for Intravenous timeline
+_Status: behavioral and product-semantics inventory. The canonical ownership and
+execution model in this document is superseded by
+[unified_graph_direction.md](./unified_graph_direction.md). Compiled DSP-port
+semantics are superseded more specifically by
+[compiled_dsp_nodes.md](./compiled_dsp_nodes.md). In particular, `Timeline`,
+`LaneGraph`, lane execution, timeline-owned compiled resources/caches,
+invalidation-driven compiled regeneration, and explicit lane-domain bridge nodes
+are not requirements to preserve. UI state, persistence, queries, transport, and
+specialized product behavior should be treated as migration requirements only
+where the product still needs them._
+
+This document captures the historical working design for Intravenous timeline
 lanes. It is intentionally a design checkpoint, not a final specification.
 
 For current runtime execution ownership and playback-direction decisions, also
@@ -9,9 +20,12 @@ see [execution_model_direction.md](./execution_model_direction.md).
 For current task-runner, task-graph update, and execution-plan decisions, see
 [task_runner_execution_direction.md](./task_runner_execution_direction.md).
 
-Some older execution wording in this document is superseded by that newer note.
-This document should remain the primary place for lane kinds, lane semantics,
-and lane-model structure.
+Some older execution wording in this document is superseded by those newer
+notes. This document should be used as an inventory of historical lane kinds,
+product behavior, and migration cases, not as a specification for the replacement
+DSP/project model. In particular, the `Lane Domains`, `DSP Nodes And Compiled
+Data`, `Crossing Domains`, and compiled portions of `Lane Types` below are
+historical descriptions rather than implementation requirements.
 
 ## Core Model
 
