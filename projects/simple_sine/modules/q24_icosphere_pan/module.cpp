@@ -23,7 +23,7 @@ struct LearnedHrtfSourceIcosphere
     static constexpr float speed_of_sound = 343.0f;
     static constexpr float head_radius = 0.0875f;
 
-    static constexpr char coefficient_path[] = "/home/ljleb/Downloads/P0014_icosphere_frequency_local_runtime.bin";
+    static constexpr char coefficient_path[] = "modules/q24_icosphere_pan/P0014_icosphere_frequency_local_runtime.bin";
 
     // The learned hierarchy contains detail coefficients through Loop level 4.
     // Runtime evaluation then performs four additional *local* Loop refinements
