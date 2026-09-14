@@ -39,8 +39,8 @@ struct ExecutableGraphIR {
   std::string graph_id{};
   ExecutableGraphData graph{};
   std::vector<LoweredSubgraphSpec> scopes{};
-  std::vector<InputConfig> public_inputs{};
-  std::vector<OutputConfig> public_outputs{};
+  std::vector<SampleInputConfig> public_inputs{};
+  std::vector<SampleOutputConfig> public_outputs{};
   std::vector<EventInputConfig> public_event_inputs{};
   std::vector<EventOutputConfig> public_event_outputs{};
   // Lowering has already grouped virtual metadata by backing runtime node.

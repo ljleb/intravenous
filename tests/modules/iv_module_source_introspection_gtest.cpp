@@ -486,19 +486,19 @@ TEST(IvModuleSourceIntrospection, SourceProvenanceUsesOnlyIdentifiersAndNamedBin
 
 namespace {
     struct TriggerSource {
-        static constexpr auto event_outputs()
+        static constexpr auto outputs()
         {
-            return std::array<iv::EventOutputConfig, 1>{{{
-                .name = "trigger", .type = iv::EventTypeId::trigger}}};
+            return std::array<iv::OutputConfig, 1>{
+                iv::event_output("trigger", iv::EventTypeId::trigger)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };
 
     struct TriggerSink {
-        static constexpr auto event_inputs()
+        static constexpr auto inputs()
         {
-            return std::array<iv::EventInputConfig, 1>{{{
-                .name = "gate", .type = iv::EventTypeId::trigger}}};
+            return std::array<iv::InputConfig, 1>{
+                iv::event_input("gate", iv::EventTypeId::trigger)};
         }
         void tick(iv::TickSampleContext<TriggerSink> const&) const {}
     };
@@ -719,10 +719,10 @@ TEST(IvModuleSourceIntrospection, AnnotatesTiledSampleValueAndAggregateNodeCall)
 namespace {
     struct TriggerSource
     {
-        static constexpr auto event_outputs()
+        static constexpr auto outputs()
         {
-            return std::array<iv::EventOutputConfig, 1>{{{
-                .name = "trigger", .type = iv::EventTypeId::trigger}}};
+            return std::array<iv::OutputConfig, 1>{
+                iv::event_output("trigger", iv::EventTypeId::trigger)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };

@@ -12,13 +12,17 @@
 
 namespace iv {
 struct RuntimeSampleInputNodeSpec {
-    OutputConfig output {};
+    SampleOutputConfig output {};
     Sample default_value = 0.0f;
     std::string binding_id {};
 
     constexpr auto outputs() const
     {
-        return std::array<OutputConfig, 1>{ output };
+        return std::array<OutputConfig, 1>{sample_output(output.name, {
+            .channel_layout = output.channel_layout,
+            .latency = output.latency,
+            .history = output.history,
+        }, output.compiled)};
     }
 };
 
@@ -26,19 +30,26 @@ struct RuntimeEventInputNodeSpec {
     EventTypeId type = EventTypeId::empty;
     std::string binding_id {};
 
-    constexpr auto event_outputs() const
+    constexpr auto outputs() const
     {
-        return std::array<EventOutputConfig, 1>{{ { .type = type } }};
+        return std::array { event_output({}, type) };
     }
 };
 
 struct RuntimeSampleOutputNodeSpec {
-    InputConfig input {};
+    SampleInputConfig input {};
     std::string binding_id {};
 
     constexpr auto inputs() const
     {
-        return std::array<InputConfig, 1>{ input };
+        return std::array<InputConfig, 1>{sample_input(input.name, {
+            .channel_layout = input.channel_layout,
+            .history = input.history,
+            .neutral_value = input.neutral_value,
+            .default_value = input.default_value,
+            .min = input.min,
+            .max = input.max,
+        }, input.compiled)};
     }
 };
 
@@ -46,20 +57,32 @@ struct RuntimeEventOutputNodeSpec {
     EventTypeId type = EventTypeId::empty;
     std::string binding_id {};
 
-    constexpr auto event_inputs() const
+    constexpr auto inputs() const
     {
-        return std::array<EventInputConfig, 1>{{ { .type = type } }};
+        return std::array { event_input({}, type) };
     }
 };
 
 struct RuntimeSampleOutputFamilyNodeSpec {
-    std::vector<InputConfig> input_configs {};
+    std::vector<SampleInputConfig> input_configs {};
     std::vector<std::string> member_binding_ids {};
     std::string aggregate_binding_id {};
 
-    constexpr std::vector<InputConfig> const& inputs() const
+    constexpr std::vector<InputConfig> inputs() const
     {
-        return input_configs;
+        std::vector<InputConfig> result;
+        result.reserve(input_configs.size());
+        for (SampleInputConfig const& input : input_configs) {
+            result.emplace_back(input.name, SampleInputProperties{
+                .channel_layout = input.channel_layout,
+                .history = input.history,
+                .neutral_value = input.neutral_value,
+                .default_value = input.default_value,
+                .min = input.min,
+                .max = input.max,
+            }, input.compiled);
+        }
+        return result;
     }
 };
 
@@ -69,16 +92,14 @@ struct RuntimeEventOutputFamilyNodeSpec {
     std::vector<std::string> member_binding_ids {};
     std::string aggregate_binding_id {};
 
-    constexpr std::vector<EventInputConfig> event_inputs() const
+    constexpr std::vector<InputConfig> inputs() const
     {
-        return std::vector<EventInputConfig>(
-            member_count,
-            EventInputConfig{ .type = type });
+        return std::vector<InputConfig>(member_count, event_input({}, type));
     }
 };
 
 struct RuntimeSampleInputNode {
-    OutputConfig output {};
+    SampleOutputConfig output {};
     Sample default_value = 0.0f;
     std::string binding_id {};
 
@@ -89,7 +110,11 @@ struct RuntimeSampleInputNode {
 
     constexpr auto outputs() const
     {
-        return std::array<OutputConfig, 1>{ output };
+        return std::array<OutputConfig, 1>{sample_output(output.name, {
+            .channel_layout = output.channel_layout,
+            .latency = output.latency,
+            .history = output.history,
+        }, output.compiled)};
     }
 
     void declare(DeclarationContext<RuntimeSampleInputNode> const& ctx) const
@@ -146,9 +171,9 @@ struct RuntimeEventInputNode {
         std::span<RuntimeEventInputBinding const*> binding {};
     };
 
-    constexpr auto event_outputs() const
+    constexpr auto outputs() const
     {
-        return std::array<EventOutputConfig, 1>{{ { .type = type } }};
+        return std::array { event_output({}, type) };
     }
 
     void declare(DeclarationContext<RuntimeEventInputNode> const& ctx) const
@@ -176,7 +201,7 @@ struct RuntimeEventInputNode {
 };
 
 struct RuntimeSampleOutputNode {
-    InputConfig input {};
+    SampleInputConfig input {};
     std::string binding_id {};
 
     struct State {
@@ -186,7 +211,14 @@ struct RuntimeSampleOutputNode {
 
     constexpr auto inputs() const
     {
-        return std::array<InputConfig, 1>{ input };
+        return std::array<InputConfig, 1>{sample_input(input.name, {
+            .channel_layout = input.channel_layout,
+            .history = input.history,
+            .neutral_value = input.neutral_value,
+            .default_value = input.default_value,
+            .min = input.min,
+            .max = input.max,
+        }, input.compiled)};
     }
 
     void declare(DeclarationContext<RuntimeSampleOutputNode> const& ctx) const
@@ -235,9 +267,9 @@ struct RuntimeEventOutputNode {
         std::span<RuntimeOutputBinding const*> binding {};
     };
 
-    constexpr auto event_inputs() const
+    constexpr auto inputs() const
     {
-        return std::array<EventInputConfig, 1>{{ { .type = type } }};
+        return std::array { event_input({}, type) };
     }
 
     void declare(DeclarationContext<RuntimeEventOutputNode> const& ctx) const
@@ -273,7 +305,7 @@ struct RuntimeEventOutputNode {
 };
 
 struct RuntimeSampleOutputFamilyNode {
-    std::vector<InputConfig> input_configs {};
+    std::vector<SampleInputConfig> input_configs {};
     std::vector<std::string> member_binding_ids {};
     std::string aggregate_binding_id {};
     ChannelLayout layout {};
@@ -289,8 +321,16 @@ struct RuntimeSampleOutputFamilyNode {
     {
         std::vector<InputConfig> result;
         result.reserve(input_configs.size());
-        for (auto const& input : input_configs)
-            result.push_back(input);
+        for (SampleInputConfig const& input : input_configs) {
+            result.emplace_back(input.name, SampleInputProperties{
+                .channel_layout = input.channel_layout,
+                .history = input.history,
+                .neutral_value = input.neutral_value,
+                .default_value = input.default_value,
+                .min = input.min,
+                .max = input.max,
+            }, input.compiled);
+        }
         return result;
     }
 
@@ -386,11 +426,9 @@ struct RuntimeEventOutputFamilyNode {
         std::span<RuntimeOutputBinding const*> aggregate_binding {};
     };
 
-    constexpr std::vector<EventInputConfig> event_inputs() const
+    constexpr std::vector<InputConfig> inputs() const
     {
-        return std::vector<EventInputConfig>(
-            member_count,
-            EventInputConfig{ .type = type });
+        return std::vector<InputConfig>(member_count, event_input({}, type));
     }
 
     void declare(

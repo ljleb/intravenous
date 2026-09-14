@@ -286,9 +286,9 @@ contract is in [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). In summary:
 - a compiled query is planned globally: demands propagate in reverse topological
   order, request sets are unioned/coalesced, and evaluation then runs forward;
 - temporary representation/materialization is chosen only after planning; and
-- realtime output connected to compiled input records observed realtime samples at
-  their global indices, without making that recording policy a general computed-
-  output cache.
+- the initial graph has no implicit realtime-to-compiled edge; any recording is
+  an explicit node with a realtime input and compiled output, rather than a
+  general computed-output cache policy.
 
 The initial compiled-data implementation deliberately has no persistent cache of
 deterministic computed outputs. `CompiledState` is node-managed arbitrary-access
@@ -327,8 +327,9 @@ implementation are:
 1. **Compiled DSP ports.** Implement the semantics in
    [compiled_dsp_nodes.md](./compiled_dsp_nodes.md): ordinary DSP ports with
    random-access capability, global batched demand planning, cacheless computed
-   access initially, and realtime-to-compiled recording semantics. Do not migrate
-   `TimelineExecution` compiled caches or invalidation machinery into this model.
+   access initially, and explicit realtime-to-compiled recording nodes where a
+   graph needs that transition. Do not migrate `TimelineExecution` compiled
+   caches or invalidation machinery into this model.
 2. **General iv modules.** Complete the separately planned abstraction by which an
    iv module need not be backed by a C++ IV package, may own/manage a project
    subgraph, and may provide a custom UI. The exact API remains follow-up design
@@ -439,5 +440,5 @@ this direction.
 15. Arbitrary compiled access is globally demand-planned before execution, with
     reverse requirement propagation followed by forward evaluation.
 16. The initial framework does not persistently cache deterministic compiled
-    outputs. Realtime-to-compiled recording is retained source data and is a
-    separate concept from such a cache.
+    outputs. Explicit realtime-to-compiled nodes may own retained source data;
+    that is a separate concept from such a cache.

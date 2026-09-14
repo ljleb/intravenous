@@ -31,8 +31,8 @@ namespace iv {
         std::vector<GraphEventPortDataNode> _egress_event_port_data_nodes {};
         std::vector<GraphEdge> _edges {};
         std::vector<GraphEventEdge> _event_edges {};
-        std::vector<InputConfig> _public_inputs {};
-        std::vector<OutputConfig> _public_outputs {};
+        std::vector<SampleInputConfig> _public_inputs {};
+        std::vector<SampleOutputConfig> _public_outputs {};
         std::vector<EventInputConfig> _public_event_inputs {};
         std::vector<EventOutputConfig> _public_event_outputs {};
         size_t _internal_latency = 0;
@@ -240,7 +240,7 @@ namespace iv {
 
         static constexpr std::vector<GraphPortDataNode> make_egress_port_data_nodes(
             std::string const& graph_id,
-            std::span<OutputConfig const> outputs,
+            std::span<SampleOutputConfig const> outputs,
             std::span<InputPortPlan const> output_plans,
             std::span<SampleInputBinding const> output_bindings
         )
@@ -294,58 +294,42 @@ namespace iv {
         constexpr auto inputs() const
         {
             std::vector<InputConfig> result;
-            result.reserve(_public_inputs.size());
-            for (auto const& input : _public_inputs)
-                result.push_back(input);
+            result.reserve(_public_inputs.size() + _public_event_inputs.size());
+            for (SampleInputConfig const& input : _public_inputs) {
+                result.emplace_back(input.name, SampleInputProperties{
+                    .channel_layout = input.channel_layout,
+                    .history = input.history,
+                    .neutral_value = input.neutral_value,
+                    .default_value = input.default_value,
+                    .min = input.min,
+                    .max = input.max,
+                }, input.compiled);
+            }
+            for (EventInputConfig const& input : _public_event_inputs) {
+                result.emplace_back(
+                    input.name, EventInputProperties{.type = input.type}, input.compiled);
+            }
             return result;
         }
 
         constexpr auto outputs() const
         {
             std::vector<OutputConfig> result;
-            result.reserve(_public_outputs.size());
-            for (auto const& output : _public_outputs)
-                result.push_back(output);
+            result.reserve(_public_outputs.size() + _public_event_outputs.size());
+            for (SampleOutputConfig const& output : _public_outputs) {
+                result.emplace_back(output.name, SampleOutputProperties{
+                    .channel_layout = output.channel_layout,
+                    .latency = output.latency,
+                    .history = output.history,
+                }, output.compiled);
+            }
+            for (EventOutputConfig const& output : _public_event_outputs) {
+                result.emplace_back(
+                    output.name, EventOutputProperties{.type = output.type}, output.compiled);
+            }
             return result;
         }
 
-        constexpr auto event_inputs() const
-        {
-            std::vector<EventInputConfig> result;
-            result.reserve(_public_event_inputs.size());
-            for (auto const& input : _public_event_inputs)
-                result.push_back(input);
-            return result;
-        }
-
-        constexpr auto event_outputs() const
-        {
-            std::vector<EventOutputConfig> result;
-            result.reserve(_public_event_outputs.size());
-            for (auto const& output : _public_event_outputs)
-                result.push_back(output);
-            return result;
-        }
-
-        auto num_inputs() const
-        {
-            return _public_inputs.size();
-        }
-
-        auto num_outputs() const
-        {
-            return _public_outputs.size();
-        }
-
-        auto num_event_inputs() const
-        {
-            return _public_event_inputs.size();
-        }
-
-        auto num_event_outputs() const
-        {
-            return _public_event_outputs.size();
-        }
 
         size_t internal_latency() const
         {
@@ -366,10 +350,10 @@ namespace iv {
         void declare(DeclarationContext<RootNode> const& ctx) const
         {
             auto const& state = ctx.state();
-            ctx.local_array(state.ingress_outputs, num_inputs());
+            ctx.local_array(state.ingress_outputs, _public_inputs.size());
             ctx.local_array(
                 state.ingress_fanout_outputs, _ingress_fanout_targets.size());
-            ctx.local_array(state.ingress_event_outputs, num_event_inputs());
+            ctx.local_array(state.ingress_event_outputs, _public_event_inputs.size());
             if (has_group_dormancy()) {
                 ctx.local_array(state.dormancy_group_dormant, _dormancy_groups.size());
                 ctx.local_array(state.dormancy_group_blocked_by_ancestors, _dormancy_groups.size());
@@ -396,14 +380,14 @@ namespace iv {
             for (auto const& port_data_node : _egress_event_port_data_nodes) {
                 do_declare(port_data_node, ctx);
             }
-            ctx.local_array(state.egress_inputs, num_outputs());
-            ctx.local_array(state.egress_event_inputs, num_event_outputs());
-            for (size_t output_i = 0; output_i < num_outputs(); ++output_i) {
+            ctx.local_array(state.egress_inputs, _public_outputs.size());
+            ctx.local_array(state.egress_event_inputs, _public_event_outputs.size());
+            for (size_t output_i = 0; output_i < _public_outputs.size(); ++output_i) {
                 ctx.template require_export_array<SharedPortData>(
                     graph_port_data_export_id(_graph_id, output_i)
                 );
             }
-            for (size_t output_i = 0; output_i < num_event_outputs(); ++output_i) {
+            for (size_t output_i = 0; output_i < _public_event_outputs.size(); ++output_i) {
                 ctx.template require_export_array<EventSharedPortData>(
                     graph_event_port_data_export_id(_graph_id, output_i)
                 );
@@ -451,7 +435,7 @@ namespace iv {
                 }
             }
 
-            for (size_t output_i = 0; output_i < num_outputs(); ++output_i) {
+            for (size_t output_i = 0; output_i < _public_outputs.size(); ++output_i) {
                 auto egress_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
                     graph_port_data_export_id(_graph_id, output_i)
                 );
@@ -462,7 +446,7 @@ namespace iv {
                     0,
                     _egress_port_data_nodes[output_i]._input_plan.read_latency);
             }
-            for (size_t output_i = 0; output_i < num_event_outputs(); ++output_i) {
+            for (size_t output_i = 0; output_i < _public_event_outputs.size(); ++output_i) {
                 auto egress_port_data = ctx.template resolve_exported_array_storage<EventSharedPortData>(
                     graph_event_port_data_export_id(_graph_id, output_i)
                 );
@@ -470,7 +454,7 @@ namespace iv {
                 std::construct_at(&state.egress_event_inputs[output_i], const_cast<EventSharedPortData&>(egress_port_data[0]));
             }
 
-            for (size_t input_i = 0; input_i < num_inputs(); ++input_i) {
+            for (size_t input_i = 0; input_i < _public_inputs.size(); ++input_i) {
                 for (size_t fanout_i = _ingress_fanout_offsets[input_i];
                      fanout_i < _ingress_fanout_offsets[input_i + 1];
                      ++fanout_i) {
@@ -1178,8 +1162,6 @@ namespace iv {
 
         constexpr auto inputs() const { return _graph.inputs(); }
         constexpr auto outputs() const { return _graph.outputs(); }
-        constexpr auto event_inputs() const { return _graph.event_inputs(); }
-        constexpr auto event_outputs() const { return _graph.event_outputs(); }
         constexpr size_t internal_latency() const
         {
             return _graph.internal_latency();

@@ -143,7 +143,7 @@ namespace iv {
         }
 
         static constexpr std::vector<GraphOutputPortConfig>
-        make_output_port_configs(std::span<OutputConfig const> outputs)
+        make_output_port_configs(std::span<SampleOutputConfig const> outputs)
         {
             std::vector<GraphOutputPortConfig> result;
             result.reserve(outputs.size());
@@ -209,7 +209,7 @@ namespace iv {
 
         static constexpr std::vector<GraphPortDataNode> make_input_port_data_nodes(
             std::string const& node_id,
-            std::span<InputConfig const> inputs,
+            std::span<SampleInputConfig const> inputs,
             std::span<InputPortPlan const> input_plans,
             std::span<SampleInputBinding const> input_bindings
         )

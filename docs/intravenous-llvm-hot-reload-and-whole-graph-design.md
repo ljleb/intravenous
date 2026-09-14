@@ -1458,9 +1458,9 @@ runtime must preserve these integration rules:
 
 The first implementation deliberately does not persistently cache deterministic
 computed compiled outputs. This does not prevent per-query coalescing, temporary
-materialization, or node-owned `CompiledState`. A realtime output feeding a
-compiled input is different again: observed realtime samples become recorded
-source data at their global indices.
+materialization, or node-owned `CompiledState`. It also has no implicit
+realtime-to-compiled edge: a graph that needs recording must use an explicit
+node with a realtime input and compiled output.
 
 The planner should expose enough information to the later whole-graph compiler to
 fuse, forward directly, allocate dense or sparse temporaries, or otherwise avoid
@@ -2415,7 +2415,7 @@ Important coverage includes:
 - converging compiled-demand paths coalesced before producer execution;
 - multi-output/global compiled query batching;
 - compiled-access request-order independence; and
-- realtime-to-compiled recording followed by random access.
+- explicit realtime-to-compiled recording nodes followed by random access.
 
 The existing test suite is a behavioral specification. The new kernel does not need to preserve obsolete runtime structures, but it must preserve relevant product semantics.
 
@@ -2469,9 +2469,10 @@ The following are treated as strong architectural decisions unless implementatio
 30. **Compiled capability does not imply materialization or persistent computed
     caching.** The initial implementation chooses temporary representations after
     planning and discards computed results after the query.
-31. **Realtime-to-compiled records source data.** Incoming realtime samples
-    overwrite the compiled recording at their global indices; recording storage is
-    an implementation choice and is distinct from a deterministic-output cache.
+31. **Realtime-to-compiled is explicit.** The initial graph has no implicit
+    recording edge. A node with a realtime input and compiled output owns any
+    recording/source-data semantics; this remains distinct from a
+    deterministic-output cache.
 
 ---
 

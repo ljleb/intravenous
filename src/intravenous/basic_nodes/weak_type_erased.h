@@ -11,8 +11,8 @@
 namespace iv {
     class WeakTypeErasedNode {
         void const* _node = nullptr;
-        std::vector<InputConfig> (*_inputs_fn)(void const*) = nullptr;
-        std::vector<OutputConfig> (*_outputs_fn)(void const*) = nullptr;
+        std::vector<SampleInputConfig> (*_inputs_fn)(void const*) = nullptr;
+        std::vector<SampleOutputConfig> (*_outputs_fn)(void const*) = nullptr;
         std::vector<EventInputConfig> (*_event_inputs_fn)(void const*) = nullptr;
         std::vector<EventOutputConfig> (*_event_outputs_fn)(void const*) = nullptr;
         size_t (*_internal_latency_fn)(void const*) = nullptr;
@@ -45,20 +45,16 @@ namespace iv {
             : _node(&node)
         {
             _inputs_fn = [](void const* node_ptr) {
-                return copy_configs<InputConfig>(
-                    get_inputs(*static_cast<Node const*>(node_ptr)));
+                return get_inputs(*static_cast<Node const*>(node_ptr));
             };
             _outputs_fn = [](void const* node_ptr) {
-                return copy_configs<OutputConfig>(
-                    get_outputs(*static_cast<Node const*>(node_ptr)));
+                return get_outputs(*static_cast<Node const*>(node_ptr));
             };
             _event_inputs_fn = [](void const* node_ptr) {
-                return copy_configs<EventInputConfig>(
-                    get_event_inputs(*static_cast<Node const*>(node_ptr)));
+                return get_event_inputs(*static_cast<Node const*>(node_ptr));
             };
             _event_outputs_fn = [](void const* node_ptr) {
-                return copy_configs<EventOutputConfig>(
-                    get_event_outputs(*static_cast<Node const*>(node_ptr)));
+                return get_event_outputs(*static_cast<Node const*>(node_ptr));
             };
             _internal_latency_fn = [](void const* node_ptr) {
                 return get_internal_latency(*static_cast<Node const*>(node_ptr));
@@ -133,10 +129,48 @@ namespace iv {
 
         explicit operator bool() const { return _node != nullptr; }
 
-        std::vector<InputConfig> inputs() const { return _inputs_fn(_node); }
-        std::vector<OutputConfig> outputs() const { return _outputs_fn(_node); }
-        std::vector<EventInputConfig> event_inputs() const { return _event_inputs_fn(_node); }
-        std::vector<EventOutputConfig> event_outputs() const { return _event_outputs_fn(_node); }
+        std::vector<InputConfig> inputs() const
+        {
+            auto const sample_inputs = _inputs_fn(_node);
+            auto const event_inputs = _event_inputs_fn(_node);
+            std::vector<InputConfig> result;
+            result.reserve(sample_inputs.size() + event_inputs.size());
+            for (SampleInputConfig const& input : sample_inputs) {
+                result.emplace_back(input.name, SampleInputProperties{
+                    .channel_layout = input.channel_layout,
+                    .history = input.history,
+                    .neutral_value = input.neutral_value,
+                    .default_value = input.default_value,
+                    .min = input.min,
+                    .max = input.max,
+                }, input.compiled);
+            }
+            for (EventInputConfig const& input : event_inputs) {
+                result.emplace_back(
+                    input.name, EventInputProperties{.type = input.type}, input.compiled);
+            }
+            return result;
+        }
+
+        std::vector<OutputConfig> outputs() const
+        {
+            auto const sample_outputs = _outputs_fn(_node);
+            auto const event_outputs = _event_outputs_fn(_node);
+            std::vector<OutputConfig> result;
+            result.reserve(sample_outputs.size() + event_outputs.size());
+            for (SampleOutputConfig const& output : sample_outputs) {
+                result.emplace_back(output.name, SampleOutputProperties{
+                    .channel_layout = output.channel_layout,
+                    .latency = output.latency,
+                    .history = output.history,
+                }, output.compiled);
+            }
+            for (EventOutputConfig const& output : event_outputs) {
+                result.emplace_back(
+                    output.name, EventOutputProperties{.type = output.type}, output.compiled);
+            }
+            return result;
+        }
         size_t internal_latency() const { return _internal_latency_fn(_node); }
         size_t max_block_size() const { return _max_block_size_fn(_node); }
         char const* type_name() const { return _type_name; }

@@ -134,7 +134,7 @@ constexpr NodePorts generated_node_ports(BroadcastEventNodeSpec const& spec)
 
 constexpr NodePorts generated_node_ports(DummySinkNodeSpec const&)
 {
-    return {.sample_inputs = {InputConfig{}}};
+    return {.sample_inputs = {SampleInputConfig{}}};
 }
 
 constexpr NodePorts generated_node_ports(DummyEventSinkNodeSpec const&)
@@ -144,7 +144,7 @@ constexpr NodePorts generated_node_ports(DummyEventSinkNodeSpec const&)
 
 constexpr NodePorts generated_node_ports(ConstantNodeSpec const&)
 {
-    return {.sample_outputs = {OutputConfig{}}};
+    return {.sample_outputs = {SampleOutputConfig{}}};
 }
 
 inline EventConcatenation make_generated_node(

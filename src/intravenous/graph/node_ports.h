@@ -11,17 +11,17 @@
 namespace iv {
 
 struct NodePorts {
-    std::vector<InputConfig> sample_inputs {};
-    std::vector<OutputConfig> sample_outputs {};
+    std::vector<SampleInputConfig> sample_inputs {};
+    std::vector<SampleOutputConfig> sample_outputs {};
     std::vector<EventInputConfig> event_input_configs {};
     std::vector<EventOutputConfig> event_output_configs {};
 
-    constexpr std::vector<InputConfig> const& inputs() const
+    constexpr std::vector<SampleInputConfig> const& inputs() const
     {
         return sample_inputs;
     }
 
-    constexpr std::vector<OutputConfig> const& outputs() const
+    constexpr std::vector<SampleOutputConfig> const& outputs() const
     {
         return sample_outputs;
     }

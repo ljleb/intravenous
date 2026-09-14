@@ -10,6 +10,7 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/module/configuration_argument.h>
 #include <intravenous/node/code_key.h>
+#include <intravenous/node/traits.h>
 
 #include <array>
 #include <concepts>
@@ -502,8 +503,29 @@ RegisteredSignature const* node_constructor_signature()
 
 #define IV_NODE(Id, Node) \
     IV_NODE_IMPL(Id, Node, __COUNTER__)
+
+#define IV_NODE_VALIDATE_DECLARATION(Node) \
+    static_assert(::iv::details::has_constexpr_port_configs<Node>, \
+        "IV_NODE requires inputs() and outputs() to return static constexpr arrays of InputConfig and OutputConfig. " \
+        "Each array carries both sample and event ports through its config variant. " \
+        "Dynamic-arity or configuration-dependent nodes must remain internal lowering nodes."); \
+    static_assert(::iv::details::access_block_callback_kind_v<Node> \
+            != ::iv::CompiledPortCallbackKind::conflicting, \
+        "IV_NODE node type must define only one compiled-access callback: access_block(...) or access_block_batch(...)."); \
+    static_assert(!::iv::details::declares_compiled_sample_ports_v<Node> \
+            || ::iv::details::has_valid_access_block_callback_v<Node>, \
+        "IV_NODE node type declares a compiled sample port; define exactly one of access_block(...) or access_block_batch(...)."); \
+    static_assert(::iv::details::propagate_block_access_callback_kind_v<Node> \
+            != ::iv::CompiledPortCallbackKind::conflicting, \
+        "IV_NODE node type must define only one compiled block-access propagation callback: propagate_block_access(...) or propagate_block_access_batch(...)."); \
+    static_assert(!(::iv::details::declares_compiled_sample_inputs_v<Node> \
+                && ::iv::details::declares_compiled_sample_outputs_v<Node>) \
+            || ::iv::details::has_valid_propagate_block_access_callback_v<Node>, \
+        "IV_NODE node type declares compiled inputs and outputs; define exactly one of propagate_block_access(...) or propagate_block_access_batch(...).")
+
 #define IV_NODE_IMPL(Id, Node, Unique) \
     namespace { \
+    IV_NODE_VALIDATE_DECLARATION(Node); \
     ::iv::NodeRef IV_PACKAGE_CONCAT(iv_package_node_configuration_pending_, Unique)( \
         ::iv::GraphBuilder&, std::span<::iv::details::ConfigurationArgument>, \
         ::iv::ChannelLayout const*) { \

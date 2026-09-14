@@ -79,9 +79,11 @@ namespace iv {
         {
             auto configs = std::array<InputConfig, NumInputs>{};
             for (auto& config : configs) {
-                config.channel_layout = ChannelLayout{
+                config.kind = SampleInputProperties{
+                    .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = Layout,
+                    },
                 };
             }
             return configs;
@@ -89,13 +91,12 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{OutputConfig{
-                .name = "out",
+            return std::array<OutputConfig, 1>{sample_output("out", {
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = Layout,
                 },
-            }};
+            })};
         }
 
         void tick(TickSampleContext<Sum> const& ctx) const

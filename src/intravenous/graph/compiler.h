@@ -889,11 +889,11 @@ namespace iv::details {
     constexpr auto make_node_configs(
         auto const& node,
         size_t node_i,
-        std::span<InputConfig const> graph_private_inputs
+        std::span<SampleInputConfig const> graph_private_inputs
     )
     {
-        std::vector<InputConfig> input_configs;
-        std::vector<OutputConfig> output_configs;
+        std::vector<SampleInputConfig> input_configs;
+        std::vector<SampleOutputConfig> output_configs;
 
         if (node_i == GRAPH_ID) {
             input_configs.assign(graph_private_inputs.begin(), graph_private_inputs.end());
@@ -1020,8 +1020,8 @@ namespace iv::details {
         std::vector<DetachedInfo> detached,
         GraphExecutionPlan execution_plan,
         CompilerConnectivity const& connectivity,
-        std::vector<InputConfig> public_inputs,
-        std::vector<OutputConfig> public_outputs,
+        std::vector<SampleInputConfig> public_inputs,
+        std::vector<SampleOutputConfig> public_outputs,
         std::vector<EventInputConfig> public_event_inputs,
         std::vector<EventOutputConfig> public_event_outputs,
         std::vector<DormancyGroupPlan> dormancy_group_plans,
@@ -1057,10 +1057,10 @@ namespace iv::details {
         auto const& source_of = connectivity.sample_source;
         auto const& targets_of = connectivity.sample_targets;
 
-        std::vector<InputConfig> private_input_configs;
+        std::vector<SampleInputConfig> private_input_configs;
         private_input_configs.reserve(public_outputs.size());
         for (auto const& output : public_outputs) {
-            private_input_configs.push_back(InputConfig{
+            private_input_configs.push_back(SampleInputConfig{
                 .name = output.name,
                 .channel_layout = output.channel_layout,
             });
@@ -1068,8 +1068,8 @@ namespace iv::details {
         InputPortLatencyTable input_port_global_latencies(
             nodes, private_input_configs.size());
         auto align_latencies = [&](auto const& node, size_t node_i,
-                                   std::span<InputConfig const> input_configs,
-                                   std::span<OutputConfig const> output_configs) {
+                                   std::span<SampleInputConfig const> input_configs,
+                                   std::span<SampleOutputConfig const> output_configs) {
             size_t node_global_latency = 0;
             for (size_t input = 0; input < input_configs.size(); ++input)
                 node_global_latency = std::max(
@@ -1103,8 +1103,8 @@ namespace iv::details {
                     if (auto it = source_of.find(this_input)) {
                         size_t const output_node_i = it->node;
                         size_t const output_port_i = it->port;
-                        OutputConfig const output_config = (output_node_i == GRAPH_ID)
-                            ? OutputConfig{
+                        SampleOutputConfig const output_config = (output_node_i == GRAPH_ID)
+                            ? SampleOutputConfig{
                                 .name = public_inputs[output_port_i].name,
                                 .channel_layout = public_inputs[output_port_i].channel_layout,
                             }
@@ -1132,15 +1132,15 @@ namespace iv::details {
                     }
                 }
             } else {
-                std::vector<InputConfig> input_configs = private_input_configs;
+                std::vector<SampleInputConfig> input_configs = private_input_configs;
 
                 for (size_t input_i = 0; input_i < input_configs.size(); ++input_i) {
                     ConcretePortId const this_input { GRAPH_ID, input_i };
                     if (auto it = source_of.find(this_input)) {
                         size_t const output_node_i = it->node;
                         size_t const output_port_i = it->port;
-                        OutputConfig const output_config = (output_node_i == GRAPH_ID)
-                            ? OutputConfig{
+                        SampleOutputConfig const output_config = (output_node_i == GRAPH_ID)
+                            ? SampleOutputConfig{
                                 .name = public_inputs[output_port_i].name,
                                 .channel_layout = public_inputs[output_port_i].channel_layout,
                             }
@@ -1248,7 +1248,7 @@ namespace iv::details {
                 return artifact.public_inputs[source.port];
             }
             auto const output = nodes[source.node].outputs()[source.port];
-            return InputConfig{
+            return SampleInputConfig{
                 .name = output.name,
                 .channel_layout = output.channel_layout,
             };

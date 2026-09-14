@@ -337,7 +337,7 @@ size_t GraphBuilder::event_output_count(NodeBundleHandle handle) const
     return state(*this).event_output_count(handle);
 }
 
-InputConfig GraphBuilder::sample_input_config(
+SampleInputConfig GraphBuilder::sample_input_config(
     NodeBundleHandle handle, size_t port) const
 {
     return state(*this).sample_input_config(handle, port);

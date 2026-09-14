@@ -34,12 +34,12 @@ struct ReflectedNodeDescription {
     bool block_skippable = false;
     std::optional<Sample> static_sample_value {};
 
-    constexpr std::vector<InputConfig> const& inputs() const
+    constexpr std::vector<SampleInputConfig> const& inputs() const
     {
         return ports.sample_inputs;
     }
 
-    constexpr std::vector<OutputConfig> const& outputs() const
+    constexpr std::vector<SampleOutputConfig> const& outputs() const
     {
         return ports.sample_outputs;
     }

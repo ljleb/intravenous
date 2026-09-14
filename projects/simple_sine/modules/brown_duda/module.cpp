@@ -88,25 +88,18 @@ struct StereoSourceGeometry
 {
     static constexpr auto inputs()
     {
-        std::array<InputConfig, 3> result {};
-
-        result[0].name = "center_azimuth";
-        result[1].name = "width";
-
-        result[2].name = "distance";
-        result[2].channel_layout = stereo_planar;
-
-        return result;
+        return std::array<InputConfig, 3>{
+            sample_input("center_azimuth"),
+            sample_input("width"),
+            sample_input("distance", {.channel_layout = stereo_planar}),
+        };
     }
 
     static constexpr auto outputs()
     {
-        std::array<OutputConfig, 1> result {};
-
-        result[0].name = "azimuth";
-        result[0].channel_layout = stereo_planar;
-
-        return result;
+        return std::array<OutputConfig, 1>{
+            sample_output("azimuth", {.channel_layout = stereo_planar}),
+        };
     }
 
     void tick_block(
@@ -224,54 +217,25 @@ struct BrownDudaParameters
 
     static constexpr auto inputs()
     {
-        std::array<InputConfig, 2> result {};
-
-        result[0].name = "azimuth";
-        result[1].name = "elevation";
-
-        return result;
+        return std::array<InputConfig, 2>{
+            sample_input("azimuth"),
+            sample_input("elevation"),
+        };
     }
 
     static constexpr auto outputs()
     {
-        std::array<OutputConfig, 9> result {};
-
-        result[0].name = "head_b0";
-        result[0].channel_layout =
-            stereo_planar;
-
-        result[1].name = "head_b1";
-        result[1].channel_layout =
-            stereo_planar;
-
-        result[2].name = "head_feedback";
-        // mono: broadcasts into the tiled head filter
-
-        result[3].name = "head_delay";
-        result[3].channel_layout =
-            stereo_planar;
-
-        result[4].name = "d2";
-        result[4].channel_layout =
-            stereo_planar;
-
-        result[5].name = "d3";
-        result[5].channel_layout =
-            stereo_planar;
-
-        result[6].name = "d4";
-        result[6].channel_layout =
-            stereo_planar;
-
-        result[7].name = "d5";
-        result[7].channel_layout =
-            stereo_planar;
-
-        result[8].name = "d6";
-        result[8].channel_layout =
-            stereo_planar;
-
-        return result;
+        return std::array<OutputConfig, 9>{
+            sample_output("head_b0", {.channel_layout = stereo_planar}),
+            sample_output("head_b1", {.channel_layout = stereo_planar}),
+            sample_output("head_feedback"),
+            sample_output("head_delay", {.channel_layout = stereo_planar}),
+            sample_output("d2", {.channel_layout = stereo_planar}),
+            sample_output("d3", {.channel_layout = stereo_planar}),
+            sample_output("d4", {.channel_layout = stereo_planar}),
+            sample_output("d5", {.channel_layout = stereo_planar}),
+            sample_output("d6", {.channel_layout = stereo_planar}),
+        };
     }
 
 private:
@@ -631,23 +595,17 @@ struct OnePoleOneZero
 {
     static constexpr auto inputs()
     {
-        std::array<InputConfig, 4> result {};
-
-        result[0].name = "in";
-        result[0].history = 1;
-
-        result[1].name = "b0";
-        result[2].name = "b1";
-        result[3].name = "feedback";
-
-        return result;
+        return std::array<InputConfig, 4>{
+            sample_input("in", {.history = 1}),
+            sample_input("b0"),
+            sample_input("b1"),
+            sample_input("feedback"),
+        };
     }
 
     static constexpr auto outputs()
     {
-        std::array<OutputConfig, 1> result {};
-        result[0].name = "out";
-        return result;
+        return std::array<OutputConfig, 1>{sample_output("out")};
     }
 
     void tick_block(
@@ -711,21 +669,15 @@ struct SampleDelay
 
     static constexpr auto inputs()
     {
-        std::array<InputConfig, 2> result {};
-
-        result[0].name = "in";
-        result[0].history = max_delay_samples;
-
-        result[1].name = "delay_samples";
-
-        return result;
+        return std::array<InputConfig, 2>{
+            sample_input("in", {.history = max_delay_samples}),
+            sample_input("delay_samples"),
+        };
     }
 
     static constexpr auto outputs()
     {
-        std::array<OutputConfig, 1> result {};
-        result[0].name = "out";
-        return result;
+        return std::array<OutputConfig, 1>{sample_output("out")};
     }
 
     void tick_block(
@@ -785,25 +737,19 @@ struct BrownDudaPinna
 
     static constexpr auto inputs()
     {
-        std::array<InputConfig, 6> result {};
-
-        result[0].name = "in";
-        result[0].history = max_delay_samples;
-
-        result[1].name = "d2";
-        result[2].name = "d3";
-        result[3].name = "d4";
-        result[4].name = "d5";
-        result[5].name = "d6";
-
-        return result;
+        return std::array<InputConfig, 6>{
+            sample_input("in", {.history = max_delay_samples}),
+            sample_input("d2"),
+            sample_input("d3"),
+            sample_input("d4"),
+            sample_input("d5"),
+            sample_input("d6"),
+        };
     }
 
     static constexpr auto outputs()
     {
-        std::array<OutputConfig, 1> result {};
-        result[0].name = "out";
-        return result;
+        return std::array<OutputConfig, 1>{sample_output("out")};
     }
 
     void tick_block(

@@ -9,8 +9,7 @@ namespace iv::details {
     template<typename Node>
     consteval size_t static_output_count()
     {
-        static constexpr auto configs = Node::outputs();
-        return configs.size();
+        return count_sample_ports(Node::outputs());
     }
 
     template<typename Node>
@@ -20,61 +19,170 @@ namespace iv::details {
     consteval size_t static_input_port_index()
     {
         static constexpr auto configs = Node::inputs();
-        size_t found = configs.size();
+        size_t found = static_cast<size_t>(-1);
+        size_t sample_index = 0;
         for (size_t i = 0; i < configs.size(); ++i) {
-            if (configs[i].name == Name.view()) {
-                if (found != configs.size()) {
-                    throw "duplicate static input port name";
+            if (is_sample(configs[i])) {
+                if (configs[i].name == Name.view()) {
+                    if (found != static_cast<size_t>(-1)) {
+                        throw "duplicate static input port name";
+                    }
+                    found = sample_index;
                 }
-                found = i;
+                ++sample_index;
             }
         }
-        if (found == configs.size()) {
-            throw "unknown static input port name";
+        if (found == static_cast<size_t>(-1)) {
+            throw "unknown static sample input port name";
         }
         return found;
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval SampleInputProperties static_input_port_properties()
+    {
+        static constexpr auto configs = Node::inputs();
+        for (InputConfig const& config : configs) {
+            if (auto const* properties =
+                    std::get_if<SampleInputProperties>(&config.kind);
+                properties != nullptr && config.name == Name.view()) {
+                return *properties;
+            }
+        }
+        throw "unknown static sample input port name";
     }
 
     template<typename Node, fixed_string Name>
     consteval size_t static_output_port_index()
     {
         static constexpr auto configs = Node::outputs();
-        size_t found = configs.size();
+        size_t found = static_cast<size_t>(-1);
+        size_t sample_index = 0;
         for (size_t i = 0; i < configs.size(); ++i) {
-            if (configs[i].name == Name.view()) {
-                if (found != configs.size()) {
-                    throw "duplicate static output port name";
+            if (is_sample(configs[i])) {
+                if (configs[i].name == Name.view()) {
+                    if (found != static_cast<size_t>(-1)) {
+                        throw "duplicate static output port name";
+                    }
+                    found = sample_index;
                 }
-                found = i;
+                ++sample_index;
             }
         }
-        if (found == configs.size()) {
-            throw "unknown static output port name";
+        if (found == static_cast<size_t>(-1)) {
+            throw "unknown static sample output port name";
         }
         return found;
     }
 
     template<typename Node, fixed_string Name>
+    consteval SampleOutputProperties static_output_port_properties()
+    {
+        static constexpr auto configs = Node::outputs();
+        for (OutputConfig const& config : configs) {
+            if (auto const* properties =
+                    std::get_if<SampleOutputProperties>(&config.kind);
+                properties != nullptr && config.name == Name.view()) {
+                return *properties;
+            }
+        }
+        throw "unknown static sample output port name";
+    }
+
+    template<typename Node, fixed_string Name>
     consteval ChannelLayout static_input_port_layout()
     {
+        return effective_channel_layout(static_input_port_properties<Node, Name>());
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval bool static_input_port_is_compiled()
+    {
         static constexpr auto configs = Node::inputs();
-        return effective_channel_layout(configs[static_input_port_index<Node, Name>()]);
+        for (InputConfig const& config : configs) {
+            if (is_sample(config) && config.name == Name.view()) return config.compiled;
+        }
+        throw "unknown static sample input port name";
+    }
+
+    // Access contexts contain only compiled ports. Convert a declaration's
+    // physical sample-port ordinal to its compact compiled-port ordinal so
+    // access callbacks never receive fake realtime placeholders.
+    template<typename Node, fixed_string Name>
+    consteval size_t static_compiled_input_port_index()
+    {
+        static constexpr auto configs = Node::inputs();
+        constexpr size_t port_index = static_input_port_index<Node, Name>();
+        static_assert(static_input_port_is_compiled<Node, Name>(),
+            "requested static input is not declared compiled");
+        size_t compiled_index = 0;
+        size_t sample_index = 0;
+        for (InputConfig const& config : configs) {
+            if (!is_sample(config)) continue;
+            if (sample_index == port_index) return compiled_index;
+            if (config.compiled) ++compiled_index;
+            ++sample_index;
+        }
+        throw "unknown static sample input port name";
     }
 
     template<typename Node, fixed_string Name>
     consteval ChannelLayout static_output_port_layout()
     {
+        return effective_channel_layout(static_output_port_properties<Node, Name>());
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval bool static_output_port_is_compiled()
+    {
         static constexpr auto configs = Node::outputs();
-        return effective_channel_layout(configs[static_output_port_index<Node, Name>()]);
+        for (OutputConfig const& config : configs) {
+            if (is_sample(config) && config.name == Name.view()) return config.compiled;
+        }
+        throw "unknown static sample output port name";
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval size_t static_compiled_output_port_index()
+    {
+        static constexpr auto configs = Node::outputs();
+        constexpr size_t port_index = static_output_port_index<Node, Name>();
+        static_assert(static_output_port_is_compiled<Node, Name>(),
+            "requested static output is not declared compiled");
+        size_t compiled_index = 0;
+        size_t sample_index = 0;
+        for (OutputConfig const& config : configs) {
+            if (!is_sample(config)) continue;
+            if (sample_index == port_index) return compiled_index;
+            if (config.compiled) ++compiled_index;
+            ++sample_index;
+        }
+        throw "unknown static sample output port name";
     }
 
     template<typename Node, size_t Index>
     consteval ChannelLayout static_output_port_layout_at()
     {
         static constexpr auto configs = Node::outputs();
-        static_assert(Index < configs.size(), "static output port index is out of bounds");
-        return effective_channel_layout(configs[Index]);
+        size_t sample_index = 0;
+        for (OutputConfig const& config : configs) {
+            if (auto const* properties =
+                    std::get_if<SampleOutputProperties>(&config.kind);
+                properties != nullptr) {
+                if (sample_index == Index) {
+                    return effective_channel_layout(*properties);
+                }
+                ++sample_index;
+            }
+        }
+        throw "static output port index is out of bounds";
     }
+
+/*
+ * The access wrappers below operate on the graph's physical sample-port
+ * ordinals. Event entries live in the same authored config array, but never
+ * acquire a sample-buffer accessor.
+ */
     template<class Channel>
     constexpr size_t channel_ordinal(Channel)
     {

@@ -90,6 +90,15 @@ add_iv_gtest(
 add_iv_gtest(
     intravenous_node_build_request_tests
     node_build_request_gtest.cpp)
+
+add_test(
+    NAME intravenous_iv_node_static_validation
+    COMMAND ${CMAKE_COMMAND}
+        "-DIV_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DIV_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/iv_node_static_validation.cmake")
+set_tests_properties(intravenous_iv_node_static_validation PROPERTIES LABELS "light")
+
 add_iv_gtest(intravenous_module_test_utils_tests module_test_utils_gtest.cpp)
 add_iv_gtest(
     intravenous_module_watcher_tests

@@ -281,7 +281,7 @@ public:
   size_t sample_output_count(NodeBundleHandle) const;
   size_t event_input_count(NodeBundleHandle) const;
   size_t event_output_count(NodeBundleHandle) const;
-  InputConfig sample_input_config(NodeBundleHandle, size_t) const;
+  SampleInputConfig sample_input_config(NodeBundleHandle, size_t) const;
   EventInputConfig event_input_config(NodeBundleHandle, size_t) const;
   NodeBundleHandle tiled_member(NodeBundleHandle, size_t) const;
   NodePorts const& typed_ports(NodeBundleHandle) const;

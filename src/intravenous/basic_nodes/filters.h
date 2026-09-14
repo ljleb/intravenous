@@ -41,8 +41,8 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                InputConfig { .name = "in", .history = 1 },
-                InputConfig { .name = "cutoff" },
+                sample_input("in", {.history = 1}),
+                sample_input("cutoff"),
             };
         }
 
@@ -79,14 +79,14 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                InputConfig { .name = "in", .history = 1 },
-                InputConfig { .name = "cutoff" },
+                sample_input("in", {.history = 1}),
+                sample_input("cutoff"),
             };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { OutputConfig { "out" } };
+            return std::array { sample_output("out") };
         }
 
         void tick(TickSampleContext<SimpleIirLowPass> const& ctx) const

@@ -36,8 +36,8 @@ class NodeDescriptionSink {
     friend class NodeDescriptionBuilder;
 
 public:
-    void add_sample_input(InputConfig const&) const;
-    void add_sample_output(OutputConfig const&) const;
+    void add_sample_input(SampleInputConfig const&) const;
+    void add_sample_output(SampleOutputConfig const&) const;
     void add_event_input(EventInputConfig const&) const;
     void add_event_output(EventOutputConfig const&) const;
     void set_internal_latency(std::size_t) const;
@@ -91,7 +91,7 @@ IV_FORCEINLINE void tick_node_block(
             .scc_feedback_latency = ctx.scc_feedback_latency,
             .buffer = ctx.state,
         },
-        index,
+        static_cast<SampleIndex>(index),
         block_size,
     });
 }
@@ -114,7 +114,7 @@ IV_FORCEINLINE void skip_node_block(
             .scc_feedback_latency = ctx.scc_feedback_latency,
             .buffer = ctx.state,
         },
-        index,
+        static_cast<SampleIndex>(index),
         block_size,
     });
 }
@@ -176,17 +176,19 @@ template<class Node>
 void describe_node(void const* node_data, NodeDescriptionSink& sink)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    for (auto const& input : get_inputs(node)) {
-        sink.add_sample_input(input);
+    for (InputConfig const& input : get_declared_inputs(node)) {
+        if (is_sample(input)) {
+            sink.add_sample_input(materialize_sample_config(input));
+        } else {
+            sink.add_event_input(materialize_event_config(input));
+        }
     }
-    for (auto const& output : get_outputs(node)) {
-        sink.add_sample_output(output);
-    }
-    for (auto const& input : get_event_inputs(node)) {
-        sink.add_event_input(input);
-    }
-    for (auto const& output : get_event_outputs(node)) {
-        sink.add_event_output(output);
+    for (OutputConfig const& output : get_declared_outputs(node)) {
+        if (is_sample(output)) {
+            sink.add_sample_output(materialize_sample_config(output));
+        } else {
+            sink.add_event_output(materialize_event_config(output));
+        }
     }
     sink.set_internal_latency(get_internal_latency(node));
     sink.set_maximum_block_size(get_max_block_size(node));

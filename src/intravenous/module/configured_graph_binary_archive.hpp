@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 3;
+inline constexpr std::uint32_t archive_version = 4;
 
 class Writer {
 public:
@@ -217,47 +217,49 @@ inline ChannelLayout read_layout(Reader& r)
     return {.channel_type = read_enum<ChannelTypeId>(r), .sample_layout = read_enum<SampleStreamLayout>(r)};
 }
 
-inline void write_input(Writer& w, InputConfig const& value)
+inline void write_input(Writer& w, SampleInputConfig const& value)
 {
-    w.string(value.name); write_layout(w, value.channel_layout); w.size(value.history);
-    w.pod(value.default_value.value); w.pod(value.min.value); w.pod(value.max.value);
+    w.string(value.name); write_layout(w, value.channel_layout); w.flag(value.compiled); w.size(value.history);
+    w.pod(value.neutral_value.value); w.pod(value.default_value.value);
+    w.pod(value.min.value); w.pod(value.max.value);
 }
 
-inline InputConfig read_input(Reader& r)
+inline SampleInputConfig read_input(Reader& r)
 {
-    return {.name = r.string(), .channel_layout = read_layout(r), .history = r.size(),
-        .default_value = Sample{r.pod<Sample::storage>()}, .min = Sample{r.pod<Sample::storage>()},
-        .max = Sample{r.pod<Sample::storage>()}};
+    return {.name = r.string(), .channel_layout = read_layout(r), .compiled = r.flag(), .history = r.size(),
+        .neutral_value = Sample{r.pod<Sample::storage>()},
+        .default_value = Sample{r.pod<Sample::storage>()},
+        .min = Sample{r.pod<Sample::storage>()}, .max = Sample{r.pod<Sample::storage>()}};
 }
 
-inline void write_output(Writer& w, OutputConfig const& value)
+inline void write_output(Writer& w, SampleOutputConfig const& value)
 {
-    w.string(value.name); write_layout(w, value.channel_layout); w.size(value.latency); w.size(value.history);
+    w.string(value.name); write_layout(w, value.channel_layout); w.flag(value.compiled); w.size(value.latency); w.size(value.history);
 }
 
-inline OutputConfig read_output(Reader& r)
+inline SampleOutputConfig read_output(Reader& r)
 {
-    return {.name = r.string(), .channel_layout = read_layout(r), .latency = r.size(), .history = r.size()};
+    return {.name = r.string(), .channel_layout = read_layout(r), .compiled = r.flag(), .latency = r.size(), .history = r.size()};
 }
 
 inline void write_event_input(Writer& w, EventInputConfig const& value)
 {
-    w.string(value.name); write_enum(w, value.type);
+    w.string(value.name); write_enum(w, value.type); w.flag(value.compiled);
 }
 
 inline EventInputConfig read_event_input(Reader& r)
 {
-    return {.name = r.string(), .type = read_enum<EventTypeId>(r)};
+    return {.name = r.string(), .type = read_enum<EventTypeId>(r), .compiled = r.flag()};
 }
 
 inline void write_event_output(Writer& w, EventOutputConfig const& value)
 {
-    w.string(value.name); write_enum(w, value.type);
+    w.string(value.name); write_enum(w, value.type); w.flag(value.compiled);
 }
 
 inline EventOutputConfig read_event_output(Reader& r)
 {
-    return {.name = r.string(), .type = read_enum<EventTypeId>(r)};
+    return {.name = r.string(), .type = read_enum<EventTypeId>(r), .compiled = r.flag()};
 }
 
 template<class T, class Fn> void write_configs(Writer& w, std::span<T const> values, Fn&& write)
@@ -272,16 +274,16 @@ template<class T, class Fn> std::vector<T> read_configs(Reader& r, Fn&& read)
 
 inline void write_ports(Writer& w, NodePorts const& value)
 {
-    write_configs<InputConfig>(w, value.sample_inputs, write_input);
-    write_configs<OutputConfig>(w, value.sample_outputs, write_output);
+    write_configs<SampleInputConfig>(w, value.sample_inputs, write_input);
+    write_configs<SampleOutputConfig>(w, value.sample_outputs, write_output);
     write_configs<EventInputConfig>(w, value.event_input_configs, write_event_input);
     write_configs<EventOutputConfig>(w, value.event_output_configs, write_event_output);
 }
 
 inline NodePorts read_ports(Reader& r)
 {
-    return {.sample_inputs = read_configs<InputConfig>(r, read_input),
-        .sample_outputs = read_configs<OutputConfig>(r, read_output),
+    return {.sample_inputs = read_configs<SampleInputConfig>(r, read_input),
+        .sample_outputs = read_configs<SampleOutputConfig>(r, read_output),
         .event_input_configs = read_configs<EventInputConfig>(r, read_event_input),
         .event_output_configs = read_configs<EventOutputConfig>(r, read_event_output)};
 }
@@ -485,13 +487,13 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
         } else if (view.kind == ConfiguredNodeBundleKind::tiled) {
             bundles.list(view.tiled_members, [&](std::size_t value) { bundles.size(value); });
             bundles.string(view.type_identity ? *view.type_identity : std::string{});
-            write_configs<InputConfig>(bundles, view.sample_input_configs, write_input);
-            write_configs<OutputConfig>(bundles, view.sample_output_configs, write_output);
+            write_configs<SampleInputConfig>(bundles, view.sample_input_configs, write_input);
+            write_configs<SampleOutputConfig>(bundles, view.sample_output_configs, write_output);
             write_configs<EventInputConfig>(bundles, view.event_input_configs, write_event_input);
             write_configs<EventOutputConfig>(bundles, view.event_output_configs, write_event_output);
         } else if (view.kind == ConfiguredNodeBundleKind::boundary) {
-            write_configs<InputConfig>(bundles, view.sample_input_configs, write_input);
-            write_configs<OutputConfig>(bundles, view.sample_output_configs, write_output);
+            write_configs<SampleInputConfig>(bundles, view.sample_input_configs, write_input);
+            write_configs<SampleOutputConfig>(bundles, view.sample_output_configs, write_output);
             write_configs<EventInputConfig>(bundles, view.event_input_configs, write_event_input);
             write_configs<EventOutputConfig>(bundles, view.event_output_configs, write_event_output);
         } else if (view.kind == ConfiguredNodeBundleKind::subgraph) {
@@ -654,13 +656,13 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
         } else if (record.kind == ConfiguredNodeBundleKind::tiled) {
             record.tiled_members = read_list<NodeBundleHandle>(reader, [&] { return reader.size(); });
             record.type_identity = reader.string();
-            record.sample_input_configs = read_configs<InputConfig>(reader, read_input);
-            record.sample_output_configs = read_configs<OutputConfig>(reader, read_output);
+            record.sample_input_configs = read_configs<SampleInputConfig>(reader, read_input);
+            record.sample_output_configs = read_configs<SampleOutputConfig>(reader, read_output);
             record.event_input_configs = read_configs<EventInputConfig>(reader, read_event_input);
             record.event_output_configs = read_configs<EventOutputConfig>(reader, read_event_output);
         } else if (record.kind == ConfiguredNodeBundleKind::boundary) {
-            record.sample_input_configs = read_configs<InputConfig>(reader, read_input);
-            record.sample_output_configs = read_configs<OutputConfig>(reader, read_output);
+            record.sample_input_configs = read_configs<SampleInputConfig>(reader, read_input);
+            record.sample_output_configs = read_configs<SampleOutputConfig>(reader, read_output);
             record.event_input_configs = read_configs<EventInputConfig>(reader, read_event_input);
             record.event_output_configs = read_configs<EventOutputConfig>(reader, read_event_output);
         } else if (record.kind == ConfiguredNodeBundleKind::subgraph) {

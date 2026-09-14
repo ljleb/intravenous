@@ -424,8 +424,8 @@ TEST(IvModuleInstancesExecution, FamilyBindingsResolveDistinctAbiResources)
         .channel_type = iv::ChannelTypeId::mono,
         .sample_layout = iv::SampleStreamLayout::planar,
     };
-    const std::vector<iv::InputConfig> sample_inputs(2, iv::InputConfig{
-        .channel_layout = mono_planar});
+    const std::vector<iv::SampleInputConfig> sample_inputs(
+        2, iv::SampleInputConfig{.channel_layout = mono_planar});
     const std::vector<std::string> sample_member_ids{
         "sample-member-0", "sample-member-1"};
     const std::vector<std::string> event_member_ids{

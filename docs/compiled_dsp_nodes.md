@@ -1,5 +1,29 @@
 Below is the design we converged on for **compiled DSP ports and compiled-data execution**. This is intended to be concrete enough to implement from, while leaving storage/layout decisions to the compiler/runtime rather than baking them into the node API.
 
+## Implementation staging
+
+The first implementation is deliberately limited to the node-facing contract:
+
+* `InputConfig::compiled` / `OutputConfig::compiled` and the sample-input
+  `neutral_value` used by total arbitrary reads;
+* compiled-port callback traits and static-declaration validation traits;
+* `AccessRequest`, request-set, access, and block-access propagation context
+  types.
+
+It does not yet add graph lowering, query planning, materialization, or state
+lifecycle storage. `IV_NODE` validates the declaration-level contract now so a
+malformed compiled node fails where it is registered. Access and block-access
+propagation contexts contain compact lists of **compiled ports only**; they never contain
+placeholder realtime ports. Those layers will consume the contract after the
+API has settled.
+
+`InputConfig` and `OutputConfig` are sample-port descriptions. Event ports use
+their separate `EventInputConfig` and `EventOutputConfig` alternatives; code
+which needs one heterogeneous port description uses the tagged
+`InputPortConfig` or `OutputPortConfig` variant. An event port therefore cannot
+accidentally acquire sample-only settings such as a numeric range or compiled
+access capability.
+
 ## 1. Meaning of a compiled port
 
 A compiled port is not a separate kind of node and does not imply a particular buffer/cache implementation.
@@ -42,7 +66,7 @@ Compiled values have a finite logical sample extent. Consumers need this so, for
 
 Reads should be total: requesting a sample outside the logical extent, in a disconnected region, or otherwise unsupported still returns a value.
 
-The default should be a neutral value, initially `0`, with room for an explicit per-port neutral-element configuration later.
+The default is the input port's explicit `neutral_value`, initially `0`.
 
 This is distinct conceptually from the port's disconnected/default value even if both initially default to zero.
 
@@ -72,7 +96,10 @@ This avoids arbitrary fractional sample positions and improves the chance that i
 
 A dense block is just a request whose requested sample count corresponds to every integer sample in the interval. Sparse UI sampling uses a much smaller count.
 
-The exact inclusive/exclusive convention for `begin/end` must be fixed explicitly in the ABI. The important requirement is deterministic integer positions.
+The API uses a half-open interval: `[begin, end)`. `SampleIndex` is an unsigned
+64-bit global sample position. The planner owns the exact nearest-integer grid
+mapping, so the node-facing request representation does not prematurely choose
+an expansion or storage strategy.
 
 ---
 
@@ -131,6 +158,19 @@ but provides neither access_block(...) nor access_block_batch(...)
 
 The same principle should apply to all static node constraints.
 
+In particular, every port-config function a registered node declares
+(`inputs`, `outputs`, `event_inputs`, or `event_outputs`) must be `static
+constexpr`. This gives a registered ID one immutable public port interface and
+leaves configuration-dependent or variable-arity helpers as internal lowering
+nodes. The compiler-inserted event fan-in/fan-out helpers follow that latter
+rule and intentionally have no `IV_NODE` registration.
+
+The corresponding legacy `num_inputs` / `num_outputs` /
+`num_event_inputs` / `num_event_outputs` methods, if present, must themselves
+be `static constexpr` and exactly agree with the corresponding static array.
+That preserves already-fixed template instantiations while rejecting genuine
+dynamic arity on `IV_NODE` types.
+
 ---
 
 ## 6. Unbatched and batched access callbacks
@@ -151,11 +191,12 @@ access_block_batch(...)
 
 but normally not both.
 
-Internally, the traits layer always exposes a batched operation.
+Internally, the traits layer identifies one unambiguous callback form and will
+expose a batched operation to the execution layer.
 
 If only `access_block()` exists, `access_block_batch()` is synthesized by invoking the unbatched implementation for every request in the batch.
 
-So framework/compiler code has one normalized entry point:
+So framework/compiler code will have one normalized entry point:
 
 ```text
 traits::access_block_batch(...)
@@ -249,7 +290,7 @@ Request coalescing and caching are distinct concepts.
 
 ---
 
-## 9. Requirements callback
+## 9. Block-access propagation callback
 
 A node therefore needs a way to describe:
 
@@ -258,8 +299,8 @@ A node therefore needs a way to describe:
 There should be unbatched/batched trait handling analogous to `access_block`:
 
 ```cpp
-access_requirements(...)
-access_requirements_batch(...)
+propagate_block_access(...)
+propagate_block_access_batch(...)
 ```
 
 with framework code always calling the normalized batched trait.
@@ -269,7 +310,7 @@ However, the context API should be extremely terse because dependency propagatio
 The desired form is approximately:
 
 ```cpp
-void access_requirements_batch(auto& ctx)
+void propagate_block_access_batch(auto& ctx)
 {
     ctx.input<"x">(ctx.output<"y">());
 }
@@ -368,21 +409,18 @@ Avoid the historical failure mode:
 
 ---
 
-## 12. Realtime → compiled connections
+## 12. Realtime → compiled connections are not implicit
 
-A realtime output connected to a compiled input implies recording/materialization of the realtime stream so it can later be randomly accessed.
+The first compiled-port implementation does **not** support a realtime output
+connected directly to a compiled input. There is no implicit recorder or
+materialization edge.
 
-The semantic rule should be simple:
+If a graph needs that transition, it must use an explicit node with one
+realtime input and one compiled output. That node owns recording semantics,
+including how incoming samples are associated with global sample positions.
 
-> incoming samples overwrite the compiled recording at their global sample indices.
-
-This naturally supports seeking/replaying previously recorded regions.
-
-The implicit recorder should initially be simple and generic. Its semantics must not require file backing. The runtime may eventually choose memory, chunked storage, mmap/temp files, etc., as implementation details.
-
-More specialized recording behavior belongs in explicit nodes with a realtime input and compiled output.
-
-The recording itself is source data, not a cache of deterministic compiled evaluation, so its persistence does not imply a general compiled-output invalidation framework.
+This keeps the initial graph semantics small and avoids committing the general
+compiled-port model to a particular persistent recording implementation.
 
 ---
 
@@ -529,7 +567,7 @@ At minimum, validate:
 * callback signatures are valid;
 * `tick_block_batch` / `tick_block` combinations are valid;
 * `access_block_batch` / `access_block` combinations are valid;
-* requirements callback combinations are valid;
+* block-access propagation callback combinations are valid;
 * `State`/`CompiledState` lifecycle functions are usable;
 * port declarations are structurally valid;
 * any other static node constraints already enforced elsewhere.
@@ -563,7 +601,10 @@ The node computes exactly the deterministic integer sample positions needed to d
 
 No full-resolution curve buffer is required.
 
-If a downstream compiled transform consumes that curve, its requirements callback transforms/forwards its own output requests upstream. The global planner sees all consumers and merges their demands before executing the automation node once.
+If a downstream compiled transform consumes that curve, its block-access
+propagation callback transforms/forwards its own output requests upstream. The
+global planner sees all consumers and merges their demands before executing the
+automation node once.
 
 Editing a control point requires no invalidation machinery in the initial cacheless implementation. The next query simply recomputes its requested samples from the new control-point data.
 
@@ -573,7 +614,8 @@ Editing a control point requires no invalidation machinery in the initial cachel
 
 A convolution node demonstrates why requirements planning is necessary.
 
-If its output receives a request for samples around some region, its requirements callback can state that it needs:
+If its output receives a request for samples around some region, its
+block-access propagation callback can state that it needs:
 
 * an expanded region of the audio input;
 * some finite extent of the IR compiled input.

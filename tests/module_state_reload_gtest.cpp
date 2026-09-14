@@ -153,30 +153,18 @@ namespace {
 
         static constexpr auto inputs()
         {
-            return std::array<iv::InputConfig, 1>{{{
-                .name = "signal",
-            }}};
+            return std::array<iv::InputConfig, 2>{
+                iv::sample_input("signal"),
+                iv::event_input("reset", iv::EventTypeId::trigger),
+            };
         }
 
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{{{
-                .name = "out",
-            }}};
-        }
-
-        static constexpr auto event_inputs()
-        {
-            return std::array<iv::EventInputConfig, 1>{{{
-                .name = "reset", .type = iv::EventTypeId::trigger,
-            }}};
-        }
-
-        static constexpr auto event_outputs()
-        {
-            return std::array<iv::EventOutputConfig, 1>{{{
-                .name = "changed", .type = iv::EventTypeId::trigger,
-            }}};
+            return std::array<iv::OutputConfig, 2>{
+                iv::sample_output("out"),
+                iv::event_output("changed", iv::EventTypeId::trigger),
+            };
         }
 
         void declare(iv::DeclarationContext<ModuleNodeDefinitionContract> const&) const {}
@@ -330,17 +318,17 @@ namespace {
     struct ScalarPassthrough {
         static constexpr auto inputs()
         {
-            return std::array<iv::InputConfig, 2>{{
-                {.name = "input"},
-                {.name = "modulation"},
-            }};
+            return std::array<iv::InputConfig, 2>{
+                iv::sample_input("input"),
+                iv::sample_input("modulation"),
+            };
         }
 
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{{{
-                .name = "out",
-            }}};
+            return std::array<iv::OutputConfig, 1>{
+                iv::sample_output("out"),
+            };
         }
 
         void tick(iv::TickSampleContext<ScalarPassthrough> const& ctx) const
@@ -395,9 +383,9 @@ namespace {
 
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{{{
-                .name = "out",
-            }}};
+            return std::array<iv::OutputConfig, 1>{
+                iv::sample_output("out"),
+            };
         }
 
         void initialize(iv::InitializationContext<UsedNode> const& ctx) const

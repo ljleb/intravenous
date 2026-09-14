@@ -51,13 +51,13 @@ struct VirtualNodeRecord {
 
 struct GraphBuilderVirtualSampleInputPort {
   VirtualPortId id{};
-  InputConfig config{};
+  SampleInputConfig config{};
   std::vector<SampleInputChannelId> channels{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
 };
 struct GraphBuilderVirtualSampleOutputPort {
   VirtualPortId id{};
-  OutputConfig config{};
+  SampleOutputConfig config{};
   std::vector<SampleOutputChannelId> channels{};
   std::vector<std::vector<SampleOutputChannelId>> member_channels{};
   std::vector<NodeBundlePortId> node_bundle_ports{};

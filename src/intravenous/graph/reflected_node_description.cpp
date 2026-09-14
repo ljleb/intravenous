@@ -26,12 +26,12 @@ ReflectedNodeDescription& NodeDescriptionSink::description() const
     return *static_cast<ReflectedNodeDescription*>(_description);
 }
 
-void NodeDescriptionSink::add_sample_input(InputConfig const& input) const
+void NodeDescriptionSink::add_sample_input(SampleInputConfig const& input) const
 {
     description().ports.sample_inputs.push_back(input);
 }
 
-void NodeDescriptionSink::add_sample_output(OutputConfig const& output) const
+void NodeDescriptionSink::add_sample_output(SampleOutputConfig const& output) const
 {
     description().ports.sample_outputs.push_back(output);
 }

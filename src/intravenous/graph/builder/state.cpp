@@ -61,12 +61,12 @@ NodeBundleHandle GraphBuilderState::append_tiled_node_description(
     ReflectedNodeDescription const& description, ChannelLayout layout)
 {
   auto concrete = GraphBuilderNodeBundles::make_concrete_node(description);
-  for (auto const& config : concrete.inputs()) {
+  for (auto const& config : concrete.ports.sample_inputs) {
     if (config.channel_layout.channel_type != ChannelTypeId::mono)
       details::error(
           "the tiled-node model requires fully mono concrete sample nodes");
   }
-  for (auto const& config : concrete.outputs()) {
+  for (auto const& config : concrete.ports.sample_outputs) {
     if (config.channel_layout.channel_type != ChannelTypeId::mono)
       details::error(
           "the tiled-node model requires fully mono concrete sample nodes");
@@ -97,14 +97,17 @@ void GraphBuilderState::validate_tiled_module_interfaces(
   if (members.empty()) {
     details::error("tiled IV module requires child graphs");
   }
-  auto same_sample_input = [](InputConfig const& lhs, InputConfig const& rhs) {
+  auto same_sample_input = [](SampleInputConfig const& lhs, SampleInputConfig const& rhs) {
     return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
+        && lhs.compiled == rhs.compiled
         && lhs.history == rhs.history
+        && lhs.neutral_value.value == rhs.neutral_value.value
         && lhs.default_value.value == rhs.default_value.value
         && lhs.min.value == rhs.min.value && lhs.max.value == rhs.max.value;
   };
-  auto same_sample_output = [](OutputConfig const& lhs, OutputConfig const& rhs) {
+  auto same_sample_output = [](SampleOutputConfig const& lhs, SampleOutputConfig const& rhs) {
     return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
+        && lhs.compiled == rhs.compiled
         && lhs.latency == rhs.latency && lhs.history == rhs.history;
   };
   auto same_event_port = [](auto const& lhs, auto const& rhs) {
@@ -652,7 +655,7 @@ size_t GraphBuilderState::event_output_count(NodeBundleHandle handle) const {
   return _node_bundles.bundle(handle).event_output_count();
 }
 
-InputConfig GraphBuilderState::sample_input_config(
+SampleInputConfig GraphBuilderState::sample_input_config(
     NodeBundleHandle handle, size_t port) const {
   return _node_bundles.bundle(handle).sample_input_config(port);
 }
