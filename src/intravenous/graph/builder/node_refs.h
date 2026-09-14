@@ -72,11 +72,9 @@ namespace iv {
             std::array<NodeCallEventInput, EventCount> event_inputs {};
         };
 
-        template<class Node, class... Args>
-        NodeCallRequests<
-            tiled_sample_input_arg_count_v<Args...>,
-            tiled_event_input_arg_count_v<Args...>>
-        make_tiled_node_call_requests(GraphBuilder&, Args&&...);
+        template<class... Args>
+        auto make_node_call_requests(GraphBuilder&, Args&&...);
+
     }
 
     // The untyped handle is the public base for every node-bundle case.
@@ -458,7 +456,7 @@ namespace iv {
             if (!this->_graph_builder) {
                 details::error("attempted to use a null tiled TypedNodeRef");
             }
-            auto requests = details::make_tiled_node_call_requests<NodeType>(
+            auto requests = details::make_node_call_requests(
                 *this->_graph_builder, std::forward<Args>(args)...);
             this->apply_node_call(
                 {.data = requests.sample_inputs.data(),

@@ -254,6 +254,26 @@ struct EventfulMonoPass {
     }
 };
 
+struct EventBeforeSamplePass {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 2>{
+            iv::event_input("trigger", iv::EventTypeId::trigger),
+            iv::sample_input("in"),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 1>{iv::sample_output("out")};
+    }
+
+    void tick(iv::TickSampleContext<EventBeforeSamplePass> const& ctx) const
+    {
+        ctx.outputs[0].push(ctx.inputs[0].get());
+    }
+};
+
 struct ScheduledTriggerSource {
     size_t sample_offset = 0;
 
@@ -673,6 +693,22 @@ ChannelTopologySnapshot tiled_event_snapshot()
             && configured.virtual_event_output_ok
             && merge_count == 3,
     };
+}
+
+TEST(Channels, TiledNodePositionalArgumentsFollowMixedDeclarationOrder)
+{
+    iv::GraphBuilder g;
+    auto node = iv::details::configure_concrete_tiled_node<
+        EventBeforeSamplePass, iv::stereo>(g);
+    auto event_source = iv::details::configure_concrete_node<
+        iv::EventConcatenation>(g, 0, iv::EventTypeId::trigger);
+    auto sample_source = iv::details::configure_concrete_node<iv::Constant>(
+        g, iv::Sample{0.25f});
+
+    node(event_source.event_port(), sample_source);
+
+    EXPECT_TRUE(node.event_input_is_connected(0));
+    EXPECT_TRUE(node.input_is_connected(0));
 }
 
 ChannelTopologySnapshot annotation_snapshot()

@@ -29,6 +29,7 @@ ReflectedNodeDescription& NodeDescriptionSink::description() const
 void NodeDescriptionSink::add_sample_input(SampleInputConfig const& input) const
 {
     description().ports.sample_inputs.push_back(input);
+    description().ports.input_port_order.push_back(PortKind::sample);
 }
 
 void NodeDescriptionSink::add_sample_output(SampleOutputConfig const& output) const
@@ -39,6 +40,7 @@ void NodeDescriptionSink::add_sample_output(SampleOutputConfig const& output) co
 void NodeDescriptionSink::add_event_input(EventInputConfig const& input) const
 {
     description().ports.event_input_configs.push_back(input);
+    description().ports.input_port_order.push_back(PortKind::event);
 }
 
 void NodeDescriptionSink::add_event_output(EventOutputConfig const& output) const

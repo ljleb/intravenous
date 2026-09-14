@@ -238,7 +238,6 @@ void NodeRef::apply_node_call(
 {
     if (!_graph_builder) details::error("attempted to use a null NodeRef");
 
-    size_t positional_sample = 0;
     for (size_t i = 0; i < sample_inputs.size; ++i) {
         auto const& input = sample_inputs.data[i];
         if (input.source.graph_builder != _graph_builder) {
@@ -247,7 +246,15 @@ void NodeRef::apply_node_call(
         size_t input_port = 0;
         switch (input.target) {
         case details::NodeCallInputTarget::positional:
-            input_port = positional_sample++;
+            {
+                auto const port = _graph_builder->input_port_at(
+                    _index, input.input_ordinal);
+                if (port.port_kind != PortKind::sample) {
+                    details::error(
+                        "positional sample argument does not match the declared input order");
+                }
+                input_port = port.port_ordinal;
+            }
             break;
         case details::NodeCallInputTarget::named:
             input_port = _graph_builder->sample_port_index(
@@ -264,7 +271,6 @@ void NodeRef::apply_node_call(
             {_index, PortKind::sample, input_port}, input.source);
     }
 
-    size_t positional_event = 0;
     for (size_t i = 0; i < event_inputs.size; ++i) {
         auto const& input = event_inputs.data[i];
         if (input.source.graph_builder != _graph_builder) {
@@ -273,7 +279,15 @@ void NodeRef::apply_node_call(
         size_t input_port = 0;
         switch (input.target) {
         case details::NodeCallInputTarget::positional:
-            input_port = positional_event++;
+            {
+                auto const port = _graph_builder->input_port_at(
+                    _index, input.input_ordinal);
+                if (port.port_kind != PortKind::event) {
+                    details::error(
+                        "positional event argument does not match the declared input order");
+                }
+                input_port = port.port_ordinal;
+            }
             break;
         case details::NodeCallInputTarget::named:
             input_port = _graph_builder->event_port_index(

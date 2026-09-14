@@ -124,27 +124,6 @@ namespace iv::details {
     inline constexpr size_t event_input_arg_count_v =
         (0 + ... + (arg_targets_event_input_v<std::remove_cvref_t<Args>> ? 1u : 0u));
 
-    // Tiled refs retain compile-time lookup for named sample ports. Their
-    // positional arguments have historically all been sample inputs, while
-    // only named event arguments target event ports.
-    template<class T>
-    inline constexpr bool tiled_arg_targets_sample_input_v =
-        !is_named_arg_v<std::remove_cvref_t<T>>
-        || arg_targets_sample_input_v<std::remove_cvref_t<T>>;
-
-    template<class T>
-    inline constexpr bool tiled_arg_targets_event_input_v =
-        is_named_arg_v<std::remove_cvref_t<T>>
-        && arg_targets_event_input_v<std::remove_cvref_t<T>>;
-
-    template<class... Args>
-    inline constexpr size_t tiled_sample_input_arg_count_v =
-        (0 + ... + (tiled_arg_targets_sample_input_v<Args> ? 1u : 0u));
-
-    template<class... Args>
-    inline constexpr size_t tiled_event_input_arg_count_v =
-        (0 + ... + (tiled_arg_targets_event_input_v<Args> ? 1u : 0u));
-
     template<class... Args>
     inline constexpr bool valid_node_call_args_v =
         named_args_follow_positionals_only_v<Args...>
