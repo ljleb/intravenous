@@ -1,7 +1,7 @@
 # Audio Device Lanes Direction
 
 > **Status:** superseded for current device architecture. See
-> [system_audio_devices_direction.md](./system_audio_devices_direction.md).
+> [system_audio_devices_direction.md](../system_audio_devices_direction.md).
 > `SystemAudioDevices` now owns stable logical device bindings and physical-device
 > lifetime only; system audio nodes are ordinary manually instantiated project
 > nodes. The backend/synchronization observations below remain historical input

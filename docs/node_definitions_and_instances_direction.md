@@ -6,8 +6,8 @@ configuration evaluation, and reusable node-instance caching._
 This document specializes the responsibilities described in
 [project_graph_application_architecture.md](./project_graph_application_architecture.md).
 It supersedes iv-module-only instance-management assumptions in
-[iv_module_instance_management_direction.md](./iv_module_instance_management_direction.md)
-and [iv_module_instances_graph_input_direction.md](./iv_module_instances_graph_input_direction.md).
+[iv_module_instance_management_direction.md](./historical/iv_module_instance_management_direction.md)
+and [iv_module_instances_graph_input_direction.md](./historical/iv_module_instances_graph_input_direction.md).
 
 ## Definitions are providers, not configured instances
 

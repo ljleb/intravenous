@@ -17,7 +17,7 @@ It does not yet extend DSP nodes or DSP graph ports. Those remain mono for now.
 
 The channel/type conversion vocabulary should live in a dedicated sibling header:
 
-- [channel_layout.h](../src/intravenous/channel_layout.h)
+- [channel_layout.h](../../src/intravenous/channel_layout.h)
 
 This header should own:
 

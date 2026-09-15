@@ -10,7 +10,7 @@ takes precedence._
 
 The immediate application-module cleanup that precedes the replacement executor
 is recorded in
-[application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+[application_module_cleanup_direction.md](./historical/application_module_cleanup_direction.md).
 That cleanup deliberately deletes the old lane/task execution modules before
 choosing the new isolated execution-module decomposition.
 

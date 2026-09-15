@@ -2,9 +2,9 @@
 
 _Status: behavioral and product-semantics inventory. The canonical ownership and
 execution model in this document is superseded by
-[unified_graph_direction.md](./unified_graph_direction.md). Compiled DSP-port
+[unified_graph_direction.md](../unified_graph_direction.md). Compiled DSP-port
 semantics are superseded more specifically by
-[compiled_dsp_nodes.md](./compiled_dsp_nodes.md). In particular, `Timeline`,
+[compiled_dsp_nodes.md](../compiled_dsp_nodes.md). In particular, `Timeline`,
 `LaneGraph`, lane execution, timeline-owned compiled resources/caches,
 invalidation-driven compiled regeneration, and explicit lane-domain bridge nodes
 are not requirements to preserve. UI state, persistence, queries, transport, and
@@ -15,7 +15,7 @@ _Current replacement-model rule: sample/event kind and realtime/compiled
 capability are orthogonal. Compiled sample ports and compiled event ports are both
 planned ordinary DSP-port capabilities; compiled events are not realtime events
 and are not a sample-only resource mechanism. See
-[compiled_dsp_nodes.md](./compiled_dsp_nodes.md) for the current contract._
+[compiled_dsp_nodes.md](../compiled_dsp_nodes.md) for the current contract._
 
 This document captures the historical working design for Intravenous timeline
 lanes. It is intentionally a design checkpoint, not a final specification.

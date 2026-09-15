@@ -1,7 +1,7 @@
 # Iv-Module Instance Management Direction
 
 > **Status note:** superseded for generalized instance ownership by
-> [node_definitions_and_instances_direction.md](./node_definitions_and_instances_direction.md).
+> [node_definitions_and_instances_direction.md](../node_definitions_and_instances_direction.md).
 > `IvModuleInstances` is becoming `NodeInstances`: it configures both leaf and
 > module node definitions in one batch against one immutable definition snapshot
 > and owns reusable configured node-instance caches. The older lane-specific and

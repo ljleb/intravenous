@@ -5,9 +5,9 @@
 > and repatching requirements should be carried forward through the unified
 > project graph instead of a replacement proxy-lane module. See
 > [application_module_cleanup_direction.md](./application_module_cleanup_direction.md)
-> and [unified_graph_direction.md](./unified_graph_direction.md). Current stable
+> and [unified_graph_direction.md](../unified_graph_direction.md). Current stable
 project connection identity and recursive matching are specified in
-[graph_builder_embedding_and_matchers.md](./graph_builder_embedding_and_matchers.md).
+[graph_builder_embedding_and_matchers.md](../graph_builder_embedding_and_matchers.md).
 
 
 ## Goal

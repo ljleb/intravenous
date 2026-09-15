@@ -1,7 +1,7 @@
 # Iv-Module Instances And Graph-Input Direction
 
 > **Status note:** superseded for current definition/instance ownership by
-> [node_definitions_and_instances_direction.md](./node_definitions_and_instances_direction.md).
+> [node_definitions_and_instances_direction.md](../node_definitions_and_instances_direction.md).
 > `NodeDefinitions` now supplies one immutable versioned provider snapshot and
 > `NodeInstances` performs one complete recursive batched configuration against
 > that snapshot. `GraphInputLanes` and the canonical-builder-copy model below are

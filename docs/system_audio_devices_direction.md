@@ -4,7 +4,7 @@ _Status: current device-domain design after deletion of audio-device lane
 integration._
 
 This document supersedes the lane/task-runner integration in
-[audio_device_lanes_direction.md](./audio_device_lanes_direction.md).
+[audio_device_lanes_direction.md](./historical/audio_device_lanes_direction.md).
 
 ## Responsibility
 

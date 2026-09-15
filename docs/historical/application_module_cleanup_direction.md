@@ -3,7 +3,7 @@
 > **Status:** completed cleanup checkpoint. The lane/timeline/task-runner deletion
 > described here has landed. The authoritative replacement project-graph module
 > design is now
-> [project_graph_application_architecture.md](./project_graph_application_architecture.md).
+> [project_graph_application_architecture.md](../project_graph_application_architecture.md).
 > Generalized future names drop the redundant `Iv` prefix: `NodeDefinitions`,
 > `NodeInstances`, `PackageReload`, and `PackageDefinitions`.
 
@@ -208,7 +208,7 @@ purpose is to emulate the modules being deleted.
 ## Decisions made after this checkpoint
 
 The previously deferred execution-side decisions are now specified in
-[project_graph_application_architecture.md](./project_graph_application_architecture.md).
+[project_graph_application_architecture.md](../project_graph_application_architecture.md).
 In particular:
 
 - `ProjectGraph` owns durable user graph intent **and** orchestrates complete root
@@ -224,7 +224,7 @@ In particular:
 - `SystemAudioDevices` supplies stable logical bindings for requested ids and no
   longer creates project graph structure as part of its core responsibility.
 - tree-shaped event procedures are documented under
-  [event_flows/](./event_flows/README.md).
+  [event_flows/](../event_flows/README.md).
 
 Lane filter/view/query and visualization source redesign remains separate work.
 

@@ -15,7 +15,7 @@ package reload/configuration workloads before being kept.
 
 ## Historical reason these structures exist
 
-`docs/phase4_constexpr_migration_scope.md` explicitly required the existing
+`docs/historical/phase4_constexpr_migration_scope.md` explicitly required the existing
 builder, lowering, and compiler to execute during constant evaluation. The
 migration therefore made the live call chain `constexpr` and kept all transient
 storage usable in constant evaluation.
@@ -32,7 +32,7 @@ The history makes the motivation particularly explicit:
 constexpr open-addressing containers and specifically contrasts them with the
 repeated element shifting of `flat_map`/`flat_set` during constant evaluation.
 
-That constraint was later removed. `docs/llvm_module_reload_migration.md`
+That constraint was later removed. `docs/historical/llvm_module_reload_migration.md`
 records that the former `consteval` compiler checks became ordinary runtime
 tests and that each lowering pass now owns a runtime `ConfiguredGraph` copy.
 The graph implementation nevertheless still contains the constexpr-specific
@@ -397,7 +397,7 @@ Related stale names/text also remain:
   tests/profiling, and says intermediate artifacts should remain
   constexpr-friendly.
 
-`docs/phase4_constexpr_migration_scope.md` is already clearly marked historical
+`docs/historical/phase4_constexpr_migration_scope.md` is already clearly marked historical
 and can remain as archaeology. The builder/lowering design document should
 instead be updated when this cleanup is undertaken so it does not continue to
 impose a superseded implementation constraint.
