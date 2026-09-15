@@ -2,34 +2,37 @@ Below is the design we converged on for **compiled DSP ports and compiled-data e
 
 ## Implementation staging
 
-The first implementation is deliberately limited to the node-facing contract:
+The current port-configuration refactor does **not** implement compiled DSP-port
+access. It only makes port kind explicit inside the authored `InputConfig` and
+`OutputConfig` variants: each declaration is either a sample port or an event
+port, and sample-only fields remain nested in the sample alternative.
 
-* `InputConfig::compiled` / `OutputConfig::compiled`;
-* compiled-port callback traits and static-declaration validation traits;
-* `AccessRequest`, request-set, access, and block-access propagation context
-  types.
+Compiled capability is a planned, orthogonal axis. The ordinary DSP-node model
+must eventually support all four combinations:
 
-It does not yet add graph lowering, query planning, materialization, or state
-lifecycle storage. `IV_NODE` validates the declaration-level contract now so a
-malformed compiled node fails where it is registered. Access and block-access
-propagation contexts contain compact lists of **compiled ports only**; they never contain
-placeholder realtime ports. Those layers will consume the contract after the
-API has settled.
+| Port kind | Realtime access | Compiled-capable access |
+| --- | --- | --- |
+| sample | sequential/current-block samples | arbitrary global sample access |
+| event | sequential/current-block events | arbitrary global event-range access |
 
-`InputConfig` and `OutputConfig` are sample-port descriptions. Event ports use
-their separate `EventInputConfig` and `EventOutputConfig` alternatives; code
-which needs one heterogeneous port description uses the tagged
-`InputPortConfig` or `OutputPortConfig` variant. An event port therefore cannot
-accidentally acquire sample-only settings such as a numeric range or compiled
-access capability.
+Legacy lane nodes already support both compiled sample and compiled event data.
+As lane nodes are phased out, the ordinary DSP-node compiled-port design must
+preserve that capability rather than accidentally making `compiled`
+sample-specific.
+
+The compiled-port follow-up may add declaration flags, access callbacks, request
+sets, planning, and compiled state. Those APIs are intentionally not part of the
+port-kind refactor. In particular, sample and event compiled access need
+different request/value interfaces even though they share the same high-level
+compiled capability.
 
 ## 1. Meaning of a compiled port
 
 A compiled port is not a separate kind of node and does not imply a particular buffer/cache implementation.
 
-A **compiled output** is an output whose data can be requested at arbitrary global sample positions.
+A **compiled output** is an output whose data can be requested independently of sequential realtime advancement. For a sample port, that means arbitrary global sample positions. For an event port, that means arbitrary global time/sample-index intervals containing timestamped events.
 
-A **compiled input** extends the normal realtime input API with random access to its source. In `tick()` / `tick_block()`, the author should not need to remember whether an input is compiled merely to use it:
+A **compiled input** extends the corresponding normal realtime input API with random access to its source. In `tick()` / `tick_block()`, the author should not need to remember whether an input is compiled merely to use its current-block data:
 
 ```cpp
 auto in = ctx.input<"in">();
@@ -37,9 +40,9 @@ auto in = ctx.input<"in">();
 
 The statically known port declaration determines the C++ type returned by `input<>()`.
 
-For a compiled input, that returned type supports everything the ordinary realtime input supports for the current block, plus operations for accessing other global sample positions/ranges.
+For a compiled input, that returned type supports everything the corresponding ordinary realtime input supports for the current block, plus kind-appropriate arbitrary access. A compiled sample input adds global sample-position/range access; a compiled event input adds global event-range access.
 
-Conceptually:
+For a sample input, conceptually:
 
 ```cpp
 auto x = ctx.input<"ir">();
@@ -59,11 +62,11 @@ If a compiled-capable output is only consumed sequentially, the compiler should 
 
 ---
 
-## 2. Finite extent and out-of-range reads
+## 2. Compiled sample extent and out-of-range reads
 
-Compiled values have a finite logical sample extent. Consumers need this so, for example, a convolution node can determine the length of an impulse response without guessing where it ends.
+Compiled sample values have a finite logical sample extent. Consumers need this so, for example, a convolution node can determine the length of an impulse response without guessing where it ends.
 
-Reads should be total: requesting a sample outside the logical extent, in a disconnected region, or otherwise unsupported still returns a value.
+Sample reads should be total: requesting a sample outside the logical extent, in a disconnected region, or otherwise unsupported still returns a value.
 
 The default is `0`.
 
@@ -71,9 +74,9 @@ The ordinary DSP implementation therefore does not need pervasive availability c
 
 ---
 
-## 3. Random-access requests are sampling requests
+## 3. Compiled sample random-access requests are sampling requests
 
-Compiled access is not limited to dense contiguous ranges.
+This section is specifically about **sample ports**. Compiled sample access is not limited to dense contiguous ranges.
 
 The UI is an important consumer: it may display many compiled lanes over a very large time interval but need only one sample or aggregate display point per pixel. It must not have to request megabytes of dense audio merely to discard 99% of it.
 
@@ -97,6 +100,30 @@ The API uses a half-open interval: `[begin, end)`. `SampleIndex` is an unsigned
 64-bit global sample position. The planner owns the exact nearest-integer grid
 mapping, so the node-facing request representation does not prematurely choose
 an expansion or storage strategy.
+
+### Compiled event requests are range queries, not sampling requests
+
+Compiled event ports need a distinct request contract. Event data is sparse and
+discrete; satisfying a `sample_count` by dropping events would change the
+meaning of the stream. A compiled event query therefore requests a half-open
+global interval and returns the events in that interval with their timestamps and
+event values intact.
+
+The required semantics are:
+
+* querying `[begin, end)` returns every event in that interval;
+* disconnected or out-of-extent regions return an empty event sequence rather
+  than a fabricated event;
+* event ordering is deterministic, including when multiple events share a
+  timestamp;
+* a compiled event input still behaves as an ordinary realtime event input for
+  the current block, while additionally allowing range queries outside the
+  current block; and
+* any future UI aggregation/downsampling API is separate from compiled event
+  port semantics and must not silently discard events.
+
+The planner may still batch and union event intervals globally, but it must keep
+event-range demand distinct from sampled scalar demand.
 
 ---
 
@@ -123,7 +150,7 @@ Arbitrary compiled-data evaluation.
 It:
 
 * sees only compiled inputs and compiled outputs;
-* operates on arbitrary requested global sample positions/ranges;
+* operates on arbitrary requested global sample positions/ranges for sample ports and global event intervals for event ports;
 * cannot access realtime-only inputs or outputs;
 * cannot access the sequential `State`;
 * may access `CompiledState`;
@@ -155,18 +182,13 @@ but provides neither access_block(...) nor access_block_batch(...)
 
 The same principle should apply to all static node constraints.
 
-In particular, every port-config function a registered node declares
-(`inputs`, `outputs`, `event_inputs`, or `event_outputs`) must be `static
-constexpr`. This gives a registered ID one immutable public port interface and
-leaves configuration-dependent or variable-arity helpers as internal lowering
-nodes. The compiler-inserted event fan-in/fan-out helpers follow that latter
-rule and intentionally have no `IV_NODE` registration.
-
-The corresponding legacy `num_inputs` / `num_outputs` /
-`num_event_inputs` / `num_event_outputs` methods, if present, must themselves
-be `static constexpr` and exactly agree with the corresponding static array.
-That preserves already-fixed template instantiations while rejecting genuine
-dynamic arity on `IV_NODE` types.
+In particular, a registered node's unified `inputs()` and `outputs()`
+declarations must be `static constexpr`. Their `InputConfig` / `OutputConfig`
+variants carry both sample and event ports in authored order. This gives a
+registered ID one immutable public port interface and leaves
+configuration-dependent or variable-arity helpers as internal lowering nodes.
+The compiler-inserted event fan-in/fan-out helpers follow that latter rule and
+intentionally have no `IV_NODE` registration.
 
 ---
 
@@ -342,19 +364,21 @@ For multiple outputs, the callback receives all of their already-unioned request
 
 ## 10. Request sets and unioning
 
-Internally, each compiled port has a request set for the current global query.
+Internally, each compiled port has a request set for the current global query,
+but the request-set vocabulary depends on port kind.
 
-It must efficiently represent unions of dense and sparse sampling requirements without eagerly expanding a sparse UI request into millions of individual sample indices.
+A compiled **sample** request set must efficiently represent unions of dense and
+sparse sampling requirements without eagerly expanding a sparse UI request into
+millions of individual sample indices. It needs to support deterministic sampled
+grids `(begin, end, count)`, dense ranges, unions, and overlap/coalescing while
+retaining sparsity where useful.
 
-The exact representation is intentionally an implementation detail.
+A compiled **event** request set instead represents unions of event intervals.
+Coalescing overlapping intervals is valid, but converting an event interval to a
+sampled grid is not: the result still has to contain every event in the requested
+interval.
 
-It needs to support at least:
-
-* deterministic sampled grids `(begin, end, count)`;
-* dense ranges;
-* unions of several requests;
-* overlap/coalescing where useful;
-* retaining sparsity where expanding to a dense interval would be wasteful.
+The exact representations are intentionally implementation details.
 
 For example, overlapping dense requirements may collapse:
 
@@ -555,9 +579,16 @@ There is no general rule that an arbitrary mixed node can get a synthesized `tic
 
 ## 18. Static validation belongs at `IV_NODE`
 
-`IV_NODE` should perform the complete static structural validation of the node type and emit focused diagnostics.
+The `InputConfig` / `OutputConfig` declaration model requires a registered
+node's `inputs()` and `outputs()` to be `static constexpr`. That is part of the
+port-declaration contract itself: a registered node ID has one immutable,
+compile-time-visible ordered port interface, regardless of whether any future
+port is realtime-only or compiled-capable.
 
-At minimum, validate:
+When compiled declarations are introduced, `IV_NODE` should add the
+compiled-specific validation needed by that capability on top of the existing
+static declaration validation. For nodes whose compiled port contract is
+statically described, validate at minimum:
 
 * compiled ports require a valid access implementation;
 * only one of unbatched/batched variants is user-defined for a given operation;
@@ -565,17 +596,11 @@ At minimum, validate:
 * `tick_block_batch` / `tick_block` combinations are valid;
 * `access_block_batch` / `access_block` combinations are valid;
 * block-access propagation callback combinations are valid;
-* `State`/`CompiledState` lifecycle functions are usable;
-* port declarations are structurally valid;
-* any other static node constraints already enforced elsewhere.
+* `State`/`CompiledState` lifecycle functions are usable; and
+* the compiled sample/event declarations are structurally valid.
 
-Also validate:
-
-> `inputs()` and `outputs()` are either absent or `static constexpr`.
-
-They should not silently depend on per-instance runtime state if they participate in static node-type description.
-
-The diagnostics should explicitly name the node type, offending callback/port, and expected alternative whenever practical.
+The diagnostics should explicitly name the node type, offending callback/port,
+and expected alternative whenever practical.
 
 ---
 
@@ -629,7 +654,7 @@ An FFT implementation can use `CompiledState` for plans/workspaces without makin
 
 The implementation should keep these principles explicit:
 
-> **Compiled extends ordinary DSP ports with random-access capability; it does not create a parallel node graph.**
+> **Sample/event kind and realtime/compiled capability are orthogonal. Compiled sample and compiled event ports are both first-class ordinary DSP ports; neither creates a parallel node graph.**
 
 > **Compiled capability does not imply materialization.**
 

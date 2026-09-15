@@ -276,9 +276,13 @@ Compiled and realtime are capabilities of ordinary DSP ports in the same graph,
 not indicators of different node families or graph executors. The normative
 contract is in [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). In summary:
 
-- a compiled output can be requested at arbitrary global sample positions;
-- a compiled input extends ordinary realtime input access with random access to
-  its source rather than replacing it with a separate resource API;
+- sample/event kind and realtime/compiled capability are orthogonal;
+- a compiled sample output can be requested at arbitrary global sample positions,
+  while a compiled event output can be queried over arbitrary global intervals;
+- a compiled input extends the corresponding ordinary realtime sample/event
+  access rather than replacing it with a separate resource API;
+- compiled sample requests may use sparse sampled grids, while compiled event
+  requests preserve every event in the requested interval;
 - compiled capability does not imply persistent materialization, buffering, or
   caching;
 - sequential `tick_block()` and arbitrary `access_block()` are distinct execution
@@ -325,11 +329,13 @@ The capabilities that must be designed independently of the old lane
 implementation are:
 
 1. **Compiled DSP ports.** Implement the semantics in
-   [compiled_dsp_nodes.md](./compiled_dsp_nodes.md): ordinary DSP ports with
-   random-access capability, global batched demand planning, cacheless computed
-   access initially, and explicit realtime-to-compiled recording nodes where a
-   graph needs that transition. Do not migrate `TimelineExecution` compiled
-   caches or invalidation machinery into this model.
+   [compiled_dsp_nodes.md](./compiled_dsp_nodes.md): compiled capability is
+   orthogonal to sample/event kind, so both compiled sample and compiled event
+   ports remain first-class. Use global batched demand planning, cacheless
+   computed access initially, kind-appropriate sample/event request semantics,
+   and explicit realtime-to-compiled recording nodes where a graph needs that
+   transition. Do not migrate `TimelineExecution` compiled caches or invalidation
+   machinery into this model.
 2. **General iv modules.** Complete the separately planned abstraction by which an
    iv module need not be backed by a C++ IV package, may own/manage a project
    subgraph, and may provide a custom UI. The exact API remains follow-up design
@@ -399,9 +405,9 @@ The following are intentionally unresolved:
 - interactions between user-created and iv-module-managed hierarchy;
 - C++ expression support in ordinary webviews;
 - low-level compiled-port API/ABI choices intentionally left open by
-  `compiled_dsp_nodes.md` (including exact `AccessRequest` endpoint/index mapping,
-  request-set representation/coalescing, and concrete planner/runtime data
-  structures);
+  `compiled_dsp_nodes.md` (including exact sample-request endpoint/index mapping,
+  compiled-event range APIs and ordering, request-set representation/coalescing,
+  and concrete planner/runtime data structures);
 - kernel invalidation, caching, inlining, and state layout; and
 - the most useful generic and specialized graph-editing surfaces.
 

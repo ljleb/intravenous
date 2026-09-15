@@ -75,10 +75,10 @@ The preferred words are:
 - **execution plan**: the finalizer's derived schedule/state/storage description before or alongside LLVM generation;
 - **finalizer**: the build/compiler stage that has the complete graph and emits the finalized native artifact/kernel;
 - **cache**: persisted reusable results whose invalidation is explicit;
-- **compiled port**: an ordinary DSP port with random-access capability at
-  arbitrary global sample positions, as specified by
-  [compiled_dsp_nodes.md](./compiled_dsp_nodes.md); `compiled` is a capability,
-  not a storage class.
+- **compiled port**: an ordinary DSP sample or event port with kind-appropriate
+  arbitrary access, as specified by [compiled_dsp_nodes.md](./compiled_dsp_nodes.md);
+  compiled samples are addressable at global sample positions, compiled events by
+  global event ranges, and `compiled` is a capability rather than a storage class.
 
 A useful invariant is:
 
@@ -1443,12 +1443,14 @@ The normative compiled-port design is
 [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). The whole-project compiler and
 runtime must preserve these integration rules:
 
-- compiled extends ordinary DSP ports with random access; it does not introduce a
-  parallel graph or a prepared-resource input vocabulary;
+- sample/event kind and realtime/compiled capability are orthogonal; compiled
+  extends ordinary DSP ports rather than introducing a parallel graph or a
+  prepared-resource input vocabulary;
 - `tick_block()` is sequential realtime execution, while `access_block()` is
   arbitrary compiled evaluation over compiled ports and `CompiledState`;
-- compiled queries may request sparse deterministic integer sample positions as
-  well as dense ranges;
+- compiled sample queries may request sparse deterministic integer sample
+  positions as well as dense ranges, while compiled event queries request event
+  intervals and preserve all events in those intervals;
 - the caller submits one global batch of sink-output requests;
 - requirements propagate in reverse topological order and are unioned/coalesced
   per compiled port before an upstream node is visited;
@@ -2457,8 +2459,10 @@ The following are treated as strong architectural decisions unless implementatio
     basic node types are registered there; template families stay internal
     until a concrete specialization receives an explicit stable ID.
 27. **Compiled is a DSP-port capability, not a storage class or parallel graph.**
-    A compiled input extends ordinary realtime access and a compiled output may be
-    queried at arbitrary global sample positions.
+    Sample/event kind is orthogonal to realtime/compiled capability. A compiled
+    input extends the corresponding realtime access; compiled sample outputs are
+    queryable at arbitrary global sample positions and compiled event outputs over
+    arbitrary global event intervals.
 28. **Compiled queries are globally demand-planned.** Reverse requirement
     propagation/union precedes forward evaluation; upstream work is not greedily
     executed once per downstream path.

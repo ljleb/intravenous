@@ -75,9 +75,10 @@ Other output devices consume streams resampled to the master device rate.
 ## Global indexing direction
 
 > Historical note: the compiled-lane indexing model in this section is not the
-> current compiled DSP-port design. Current compiled ports use arbitrary global
-> sample positions and globally batched sampling requests as specified in
-> [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). The realtime frontier ideas
+> current compiled DSP-port design. Compiled sample ports use arbitrary global
+> sample positions and globally batched sampling requests; compiled event ports
+> are a distinct planned capability using global event-range queries, as specified
+> in [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). The realtime frontier ideas
 > below remain useful only as historical transport/runtime context.
 
 We do not want to globally index every produced sample block.
