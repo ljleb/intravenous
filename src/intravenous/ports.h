@@ -1078,10 +1078,6 @@ namespace iv {
             .sample_layout = SampleStreamLayout::planar,
         };
         size_t history = 0;
-        // The total-read value for an unavailable or out-of-range compiled
-        // input. This is deliberately separate from default_value, which is
-        // the value used for an ordinary disconnected sequential input.
-        Sample neutral_value = 0.0;
         Sample default_value = 0.0;
         Sample min = -std::numeric_limits<Sample::storage>::infinity();
         Sample max = std::numeric_limits<Sample::storage>::infinity();
@@ -1109,13 +1105,11 @@ namespace iv {
     struct EventInputConfig {
         std::string name {};
         EventTypeId type {};
-        bool compiled = false;
     };
 
     struct EventOutputConfig {
         std::string name {};
         EventTypeId type {};
-        bool compiled = false;
     };
 
     struct EventInputProperties {
@@ -1132,80 +1126,62 @@ namespace iv {
     // these alternatives into its separate sample/event execution collections.
     struct InputConfig {
         std::string name {};
-        // Compiled is a property of the logical port, independent of whether
-        // its payload is a sample stream or an event stream.
-        bool compiled = false;
         std::variant<SampleInputProperties, EventInputProperties> kind {};
 
         constexpr InputConfig() = default;
         constexpr explicit InputConfig(std::string name)
             : name(std::move(name))
         {}
-        constexpr InputConfig(
-            std::string name, SampleInputProperties config, bool compiled = false)
+        constexpr InputConfig(std::string name, SampleInputProperties config)
             : name(std::move(name))
-            , compiled(compiled)
             , kind(std::move(config))
         {}
-        constexpr InputConfig(
-            std::string name, EventInputProperties config, bool compiled = false)
+        constexpr InputConfig(std::string name, EventInputProperties config)
             : name(std::move(name))
-            , compiled(compiled)
             , kind(std::move(config))
         {}
     };
 
     struct OutputConfig {
         std::string name {};
-        // See InputConfig::compiled. This stays outside the payload variant
-        // because compilation is independent of port kind.
-        bool compiled = false;
         std::variant<SampleOutputProperties, EventOutputProperties> kind {};
 
         constexpr OutputConfig() = default;
         constexpr explicit OutputConfig(std::string name)
             : name(std::move(name))
         {}
-        constexpr OutputConfig(
-            std::string name, SampleOutputProperties config, bool compiled = false)
+        constexpr OutputConfig(std::string name, SampleOutputProperties config)
             : name(std::move(name))
-            , compiled(compiled)
             , kind(std::move(config))
         {}
-        constexpr OutputConfig(
-            std::string name, EventOutputProperties config, bool compiled = false)
+        constexpr OutputConfig(std::string name, EventOutputProperties config)
             : name(std::move(name))
-            , compiled(compiled)
             , kind(std::move(config))
         {}
     };
 
     [[nodiscard]] constexpr InputConfig sample_input(
-        std::string name = {}, SampleInputProperties properties = {},
-        bool compiled = false)
+        std::string name = {}, SampleInputProperties properties = {})
     {
-        return InputConfig{std::move(name), std::move(properties), compiled};
+        return InputConfig{std::move(name), std::move(properties)};
     }
 
     [[nodiscard]] constexpr OutputConfig sample_output(
-        std::string name = {}, SampleOutputProperties properties = {},
-        bool compiled = false)
+        std::string name = {}, SampleOutputProperties properties = {})
     {
-        return OutputConfig{std::move(name), std::move(properties), compiled};
+        return OutputConfig{std::move(name), std::move(properties)};
     }
 
     [[nodiscard]] constexpr InputConfig event_input(
-        std::string name, EventTypeId type, bool compiled = false)
+        std::string name, EventTypeId type)
     {
-        return InputConfig{
-            std::move(name), EventInputProperties{.type = type}, compiled};
+        return InputConfig{std::move(name), EventInputProperties{.type = type}};
     }
 
     [[nodiscard]] constexpr OutputConfig event_output(
-        std::string name, EventTypeId type, bool compiled = false)
+        std::string name, EventTypeId type)
     {
-        return OutputConfig{
-            std::move(name), EventOutputProperties{.type = type}, compiled};
+        return OutputConfig{std::move(name), EventOutputProperties{.type = type}};
     }
 
     // The graph retains physical sample/event lists because its execution
@@ -1217,9 +1193,7 @@ namespace iv {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        bool compiled = false;
         size_t history = 0;
-        Sample neutral_value = 0.0;
         Sample default_value = 0.0;
         Sample min = -std::numeric_limits<Sample::storage>::infinity();
         Sample max = std::numeric_limits<Sample::storage>::infinity();
@@ -1231,7 +1205,6 @@ namespace iv {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        bool compiled = false;
         size_t latency = 0;
         size_t history = 0;
     };
@@ -1253,9 +1226,7 @@ namespace iv {
         return {
             .name = config.name,
             .channel_layout = properties.channel_layout,
-            .compiled = config.compiled,
             .history = properties.history,
-            .neutral_value = properties.neutral_value,
             .default_value = properties.default_value,
             .min = properties.min,
             .max = properties.max,
@@ -1269,7 +1240,6 @@ namespace iv {
         return {
             .name = config.name,
             .channel_layout = properties.channel_layout,
-            .compiled = config.compiled,
             .latency = properties.latency,
             .history = properties.history,
         };
@@ -1279,16 +1249,14 @@ namespace iv {
         InputConfig const& config)
     {
         return {.name = config.name,
-                .type = std::get<EventInputProperties>(config.kind).type,
-                .compiled = config.compiled};
+                .type = std::get<EventInputProperties>(config.kind).type};
     }
 
     [[nodiscard]] constexpr EventOutputConfig materialize_event_config(
         OutputConfig const& config)
     {
         return {.name = config.name,
-                .type = std::get<EventOutputProperties>(config.kind).type,
-                .compiled = config.compiled};
+                .type = std::get<EventOutputProperties>(config.kind).type};
     }
 
     [[nodiscard]] constexpr bool is_sample(InputConfig const& config)

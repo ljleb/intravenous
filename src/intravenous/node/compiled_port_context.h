@@ -70,13 +70,12 @@ namespace iv {
 
     // Query-local, type-erased read access. A missing callback, an index
     // outside the logical extent, and a disconnected compiled input all read
-    // as this port's configured neutral value. This makes reads total without
-    // committing to a buffer layout or persistent cache.
+    // as zero. This makes reads total without committing to a buffer layout or
+    // persistent cache.
     struct CompiledInputPort {
         void const* data = nullptr;
         CompiledSampleExtent (*extent_fn)(void const*) = nullptr;
         Sample (*read_sample_fn)(void const*, SampleIndex, std::size_t) = nullptr;
-        Sample neutral_value {};
 
         [[nodiscard]] constexpr CompiledSampleExtent extent() const noexcept
         {
@@ -93,7 +92,7 @@ namespace iv {
         {
             return read_sample_fn && extent().contains(index)
                 ? read_sample_fn(data, index, channel)
-                : neutral_value;
+                : Sample {};
         }
     };
 

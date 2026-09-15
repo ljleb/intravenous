@@ -97,12 +97,11 @@ struct ConcreteNode {
     result.reserve(ports.sample_inputs.size() + ports.event_input_configs.size());
     for (SampleInputConfig const& input : ports.sample_inputs) {
       result.emplace_back(input.name, SampleInputProperties{
-          .channel_layout = input.channel_layout, .history = input.history,
-          .neutral_value = input.neutral_value, .default_value = input.default_value,
-          .min = input.min, .max = input.max}, input.compiled);
+          .channel_layout = input.channel_layout, .history = input.history, .default_value = input.default_value,
+          .min = input.min, .max = input.max});
     }
     for (EventInputConfig const& input : ports.event_input_configs)
-      result.emplace_back(input.name, EventInputProperties{.type = input.type}, input.compiled);
+      result.emplace_back(input.name, EventInputProperties{.type = input.type});
     return result;
   }
   std::vector<OutputConfig> outputs() const {
@@ -111,10 +110,10 @@ struct ConcreteNode {
     for (SampleOutputConfig const& output : ports.sample_outputs) {
       result.emplace_back(output.name, SampleOutputProperties{
           .channel_layout = output.channel_layout, .latency = output.latency,
-          .history = output.history}, output.compiled);
+          .history = output.history});
     }
     for (EventOutputConfig const& output : ports.event_output_configs)
-      result.emplace_back(output.name, EventOutputProperties{.type = output.type}, output.compiled);
+      result.emplace_back(output.name, EventOutputProperties{.type = output.type});
     return result;
   }
   constexpr std::vector<EventInputConfig> const& event_inputs() const {
@@ -136,12 +135,11 @@ struct SubgraphNode {
     result.reserve(ports.sample_inputs.size() + ports.event_input_configs.size());
     for (SampleInputConfig const& input : ports.sample_inputs) {
       result.emplace_back(input.name, SampleInputProperties{
-          .channel_layout = input.channel_layout, .history = input.history,
-          .neutral_value = input.neutral_value, .default_value = input.default_value,
-          .min = input.min, .max = input.max}, input.compiled);
+          .channel_layout = input.channel_layout, .history = input.history, .default_value = input.default_value,
+          .min = input.min, .max = input.max});
     }
     for (EventInputConfig const& input : ports.event_input_configs)
-      result.emplace_back(input.name, EventInputProperties{.type = input.type}, input.compiled);
+      result.emplace_back(input.name, EventInputProperties{.type = input.type});
     return result;
   }
   std::vector<OutputConfig> outputs() const {
@@ -150,10 +148,10 @@ struct SubgraphNode {
     for (SampleOutputConfig const& output : ports.sample_outputs) {
       result.emplace_back(output.name, SampleOutputProperties{
           .channel_layout = output.channel_layout, .latency = output.latency,
-          .history = output.history}, output.compiled);
+          .history = output.history});
     }
     for (EventOutputConfig const& output : ports.event_output_configs)
-      result.emplace_back(output.name, EventOutputProperties{.type = output.type}, output.compiled);
+      result.emplace_back(output.name, EventOutputProperties{.type = output.type});
     return result;
   }
   constexpr std::vector<EventInputConfig> const& event_inputs() const {

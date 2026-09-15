@@ -305,51 +305,6 @@ namespace iv {
             fixed_num_event_outputs_v<Node> != std::dynamic_extent;
 
         template<typename Node>
-        consteval bool declares_compiled_sample_inputs()
-        {
-            if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
-                return false;
-            } else {
-                static constexpr auto configs = Node::inputs();
-                for (auto const& config : configs) {
-                    if (is_sample(config) && config.compiled) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-        }
-
-        template<typename Node>
-        consteval bool declares_compiled_sample_outputs()
-        {
-            if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
-                return false;
-            } else {
-                static constexpr auto configs = Node::outputs();
-                for (auto const& config : configs) {
-                    if (is_sample(config) && config.compiled) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-        }
-
-        template<typename Node>
-        inline constexpr bool declares_compiled_sample_inputs_v =
-            declares_compiled_sample_inputs<Node>();
-
-        template<typename Node>
-        inline constexpr bool declares_compiled_sample_outputs_v =
-            declares_compiled_sample_outputs<Node>();
-
-        template<typename Node>
-        inline constexpr bool declares_compiled_sample_ports_v =
-            declares_compiled_sample_inputs_v<Node>
-            || declares_compiled_sample_outputs_v<Node>;
-
-        template<typename Node>
         concept has_access_block = requires(Node const& node) {
             { node.access_block(std::declval<AccessBlockContext<Node>&>()) }
                 -> std::same_as<void>;
@@ -423,19 +378,6 @@ namespace iv {
                 == CompiledPortCallbackKind::unbatched
             || propagate_block_access_callback_kind_v<Node>
                 == CompiledPortCallbackKind::batch;
-
-        // This trait stays usable for direct/internal nodes. IV_NODE makes the
-        // registration boundary enforce its component constraints separately
-        // so diagnostics explain exactly what must be fixed.
-        template<typename Node>
-        inline constexpr bool compiled_dsp_node_declaration_is_valid_v =
-            (!has_constexpr_port_configs<Node>
-                || (
-                    (!declares_compiled_sample_ports_v<Node>
-                        || has_valid_access_block_callback_v<Node>)
-                    && (!(declares_compiled_sample_inputs_v<Node>
-                            && declares_compiled_sample_outputs_v<Node>)
-                        || has_valid_propagate_block_access_callback_v<Node>)));
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)

@@ -99,15 +99,12 @@ void GraphBuilderState::validate_tiled_module_interfaces(
   }
   auto same_sample_input = [](SampleInputConfig const& lhs, SampleInputConfig const& rhs) {
     return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
-        && lhs.compiled == rhs.compiled
         && lhs.history == rhs.history
-        && lhs.neutral_value.value == rhs.neutral_value.value
         && lhs.default_value.value == rhs.default_value.value
         && lhs.min.value == rhs.min.value && lhs.max.value == rhs.max.value;
   };
   auto same_sample_output = [](SampleOutputConfig const& lhs, SampleOutputConfig const& rhs) {
     return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
-        && lhs.compiled == rhs.compiled
         && lhs.latency == rhs.latency && lhs.history == rhs.history;
   };
   auto same_event_port = [](auto const& lhs, auto const& rhs) {

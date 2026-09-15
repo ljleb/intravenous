@@ -22,7 +22,7 @@ struct RuntimeSampleInputNodeSpec {
             .channel_layout = output.channel_layout,
             .latency = output.latency,
             .history = output.history,
-        }, output.compiled)};
+        })};
     }
 };
 
@@ -45,11 +45,10 @@ struct RuntimeSampleOutputNodeSpec {
         return std::array<InputConfig, 1>{sample_input(input.name, {
             .channel_layout = input.channel_layout,
             .history = input.history,
-            .neutral_value = input.neutral_value,
             .default_value = input.default_value,
             .min = input.min,
             .max = input.max,
-        }, input.compiled)};
+        })};
     }
 };
 
@@ -76,11 +75,10 @@ struct RuntimeSampleOutputFamilyNodeSpec {
             result.emplace_back(input.name, SampleInputProperties{
                 .channel_layout = input.channel_layout,
                 .history = input.history,
-                .neutral_value = input.neutral_value,
                 .default_value = input.default_value,
                 .min = input.min,
                 .max = input.max,
-            }, input.compiled);
+            });
         }
         return result;
     }
@@ -114,7 +112,7 @@ struct RuntimeSampleInputNode {
             .channel_layout = output.channel_layout,
             .latency = output.latency,
             .history = output.history,
-        }, output.compiled)};
+        })};
     }
 
     void declare(DeclarationContext<RuntimeSampleInputNode> const& ctx) const
@@ -214,11 +212,10 @@ struct RuntimeSampleOutputNode {
         return std::array<InputConfig, 1>{sample_input(input.name, {
             .channel_layout = input.channel_layout,
             .history = input.history,
-            .neutral_value = input.neutral_value,
             .default_value = input.default_value,
             .min = input.min,
             .max = input.max,
-        }, input.compiled)};
+        })};
     }
 
     void declare(DeclarationContext<RuntimeSampleOutputNode> const& ctx) const
@@ -325,11 +322,10 @@ struct RuntimeSampleOutputFamilyNode {
             result.emplace_back(input.name, SampleInputProperties{
                 .channel_layout = input.channel_layout,
                 .history = input.history,
-                .neutral_value = input.neutral_value,
                 .default_value = input.default_value,
                 .min = input.min,
                 .max = input.max,
-            }, input.compiled);
+            });
         }
         return result;
     }

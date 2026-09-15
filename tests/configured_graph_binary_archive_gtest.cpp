@@ -117,46 +117,4 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_THROW(fixture.decode(trailing), std::runtime_error);
 }
 
-TEST(ConfiguredGraphBinaryArchive, RoundTripsCompiledSamplePortCapabilities)
-{
-    iv::SampleInputConfig const input {
-        .name = "compiled-input",
-        .channel_layout = {
-            .channel_type = iv::ChannelTypeId::stereo,
-            .sample_layout = iv::SampleStreamLayout::interleaved,
-        },
-        .compiled = true,
-        .history = 7,
-        .neutral_value = -0.125f,
-        .default_value = 0.25f,
-    };
-    iv::SampleOutputConfig const output {
-        .name = "compiled-output",
-        .compiled = true,
-        .latency = 3,
-        .history = 11,
-    };
-
-    iv::binary_wire_details::Writer writer;
-    iv::binary_wire_details::write_input(writer, input);
-    iv::binary_wire_details::write_output(writer, output);
-    auto const bytes = std::move(writer).take();
-
-    iv::binary_wire_details::Reader reader(bytes);
-    auto const decoded_input = iv::binary_wire_details::read_input(reader);
-    auto const decoded_output = iv::binary_wire_details::read_output(reader);
-    reader.finish();
-
-    EXPECT_EQ(decoded_input.name, input.name);
-    EXPECT_EQ(decoded_input.channel_layout, input.channel_layout);
-    EXPECT_TRUE(decoded_input.compiled);
-    EXPECT_EQ(decoded_input.history, 7u);
-    EXPECT_FLOAT_EQ(static_cast<float>(decoded_input.neutral_value), -0.125f);
-    EXPECT_FLOAT_EQ(static_cast<float>(decoded_input.default_value), 0.25f);
-    EXPECT_EQ(decoded_output.name, output.name);
-    EXPECT_TRUE(decoded_output.compiled);
-    EXPECT_EQ(decoded_output.latency, 3u);
-    EXPECT_EQ(decoded_output.history, 11u);
-}
-
 } // namespace

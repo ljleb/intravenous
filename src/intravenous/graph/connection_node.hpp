@@ -79,11 +79,10 @@ public:
             result.emplace_back(input.input.name, SampleInputProperties{
                 .channel_layout = input.input.channel_layout,
                 .history = input.input.history,
-                .neutral_value = input.input.neutral_value,
                 .default_value = input.input.default_value,
                 .min = input.input.min,
                 .max = input.input.max,
-            }, input.input.compiled);
+            });
         return result;
     }
 
@@ -94,7 +93,7 @@ public:
                 .channel_layout = output_config.channel_layout,
                 .latency = output_config.latency,
                 .history = output_config.history,
-            }, output_config.compiled}};
+            }}};
     }
 
     void declare(DeclarationContext<ConnectionNode> const& ctx) const

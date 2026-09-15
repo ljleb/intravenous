@@ -139,15 +139,14 @@ namespace iv {
                 result.emplace_back(input.name, SampleInputProperties{
                     .channel_layout = input.channel_layout,
                     .history = input.history,
-                    .neutral_value = input.neutral_value,
                     .default_value = input.default_value,
                     .min = input.min,
                     .max = input.max,
-                }, input.compiled);
+                });
             }
             for (EventInputConfig const& input : event_inputs) {
                 result.emplace_back(
-                    input.name, EventInputProperties{.type = input.type}, input.compiled);
+                    input.name, EventInputProperties{.type = input.type});
             }
             return result;
         }
@@ -163,11 +162,11 @@ namespace iv {
                     .channel_layout = output.channel_layout,
                     .latency = output.latency,
                     .history = output.history,
-                }, output.compiled);
+                });
             }
             for (EventOutputConfig const& output : event_outputs) {
                 result.emplace_back(
-                    output.name, EventOutputProperties{.type = output.type}, output.compiled);
+                    output.name, EventOutputProperties{.type = output.type});
             }
             return result;
         }

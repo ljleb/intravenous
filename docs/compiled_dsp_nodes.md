@@ -4,8 +4,7 @@ Below is the design we converged on for **compiled DSP ports and compiled-data e
 
 The first implementation is deliberately limited to the node-facing contract:
 
-* `InputConfig::compiled` / `OutputConfig::compiled` and the sample-input
-  `neutral_value` used by total arbitrary reads;
+* `InputConfig::compiled` / `OutputConfig::compiled`;
 * compiled-port callback traits and static-declaration validation traits;
 * `AccessRequest`, request-set, access, and block-access propagation context
   types.
@@ -66,9 +65,7 @@ Compiled values have a finite logical sample extent. Consumers need this so, for
 
 Reads should be total: requesting a sample outside the logical extent, in a disconnected region, or otherwise unsupported still returns a value.
 
-The default is the input port's explicit `neutral_value`, initially `0`.
-
-This is distinct conceptually from the port's disconnected/default value even if both initially default to zero.
+The default is `0`.
 
 The ordinary DSP implementation therefore does not need pervasive availability checks.
 
