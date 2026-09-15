@@ -18,7 +18,7 @@ namespace {
 using iv::test_support::fresh_module_fixture_workspace;
 using iv::test_support::make_loaded_definition;
 
-iv::IvModuleReloadedDefinition source_definition(
+iv::IvPackageReloadedDefinition source_definition(
     std::filesystem::path const& package_root,
     std::string package_id,
     std::string module_id)
@@ -114,7 +114,7 @@ TEST(IvModuleDefinitions, PackageReloadReplacesItsCompleteModuleSet)
     definitions.declare_package(std::string(package_id), source_root);
     definitions.declare_package(std::string(other_package_id), other_source_root);
 
-    iv::IvModuleReloadResults initial;
+    iv::IvPackageReloadResults initial;
     initial.packages.push_back({
         .package_id = std::string(package_id),
         .package_root = source_root,
@@ -135,7 +135,7 @@ TEST(IvModuleDefinitions, PackageReloadReplacesItsCompleteModuleSet)
     EXPECT_EQ(loaded[1].module_id, "iv.test.b");
     EXPECT_EQ(loaded[2].module_id, "iv.test.c");
 
-    iv::IvModuleReloadResults replacement;
+    iv::IvPackageReloadResults replacement;
     replacement.packages.push_back({
         .package_id = std::string(package_id),
         .package_root = source_root,
@@ -165,7 +165,7 @@ TEST(IvModuleDefinitions, RequiredDefinitionSourceFirstMovePublishesRemovalUntil
     iv_module_definitions_witness_bridge::scope witness_scope{definitions, witness};
     definitions.declare_package(source_package_id, source_root);
     definitions.declare_package(destination_package_id, destination_root);
-    definitions.handle_reload_results(iv::IvModuleReloadResults{
+    definitions.handle_reload_results(iv::IvPackageReloadResults{
         .packages = {{
             .package_id = source_package_id,
             .package_root = source_root,
@@ -185,7 +185,7 @@ TEST(IvModuleDefinitions, RequiredDefinitionSourceFirstMovePublishesRemovalUntil
     // Desired project instances do not make a missing definition a registry
     // conflict. Publish the successful empty source candidate; the instance
     // becomes unrealized but remains available for the user to delete.
-    definitions.handle_reload_results(iv::IvModuleReloadResults{
+    definitions.handle_reload_results(iv::IvPackageReloadResults{
         .packages = {{
             .package_id = source_package_id,
             .package_root = source_root,
@@ -200,7 +200,7 @@ TEST(IvModuleDefinitions, RequiredDefinitionSourceFirstMovePublishesRemovalUntil
 
     // The destination can later recreate the ID from its own complete
     // candidate without any third save or retained stale provider.
-    definitions.handle_reload_results(iv::IvModuleReloadResults{
+    definitions.handle_reload_results(iv::IvPackageReloadResults{
         .packages = {{
             .package_id = destination_package_id,
             .package_root = destination_root,
@@ -227,7 +227,7 @@ TEST(IvModuleDefinitions, RequiredDefinitionDestinationFirstMoveHoldsCollisionUn
     iv::IvModuleDefinitions definitions;
     definitions.declare_package(source_package_id, source_root);
     definitions.declare_package(destination_package_id, destination_root);
-    definitions.handle_reload_results(iv::IvModuleReloadResults{
+    definitions.handle_reload_results(iv::IvPackageReloadResults{
         .packages = {{
             .package_id = source_package_id,
             .package_root = source_root,
@@ -245,7 +245,7 @@ TEST(IvModuleDefinitions, RequiredDefinitionDestinationFirstMoveHoldsCollisionUn
 
     // Saving the destination first creates a duplicate candidate ID. Preserve
     // the prior live provider until the source candidate is complete too.
-    definitions.handle_reload_results(iv::IvModuleReloadResults{
+    definitions.handle_reload_results(iv::IvPackageReloadResults{
         .packages = {{
             .package_id = destination_package_id,
             .package_root = destination_root,
@@ -257,7 +257,7 @@ TEST(IvModuleDefinitions, RequiredDefinitionDestinationFirstMoveHoldsCollisionUn
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().package_id, source_package_id);
 
-    definitions.handle_reload_results(iv::IvModuleReloadResults{
+    definitions.handle_reload_results(iv::IvPackageReloadResults{
         .packages = {{
             .package_id = source_package_id,
             .package_root = source_root,

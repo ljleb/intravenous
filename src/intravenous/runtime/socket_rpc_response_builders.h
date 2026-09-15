@@ -1,10 +1,9 @@
 #pragma once
 
-#include <intravenous/runtime/configured_lane_api.h>
 
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_packages.h>
+#include <intravenous/runtime/iv_package_definitions.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/query/lane_query_schema.h>
 #include <intravenous/query/lane_query_completion.h>
@@ -120,7 +119,7 @@ namespace iv {
         [[nodiscard]] std::string build(int request_id) const;
     };
 
-    class SocketRpcIvPackagesResultBuilder {
+    class SocketRpcIvPackageDefinitionsResultBuilder {
         int error_code = -32000;
         std::string error_message;
         std::optional<std::vector<IvPackageInfo>> result;
@@ -247,17 +246,4 @@ namespace iv {
         [[nodiscard]] std::string build(int request_id) const;
     };
 
-    class SocketRpcLaneTypesResultBuilder {
-        int error_code = -32000;
-        std::string error_message;
-        std::optional<std::vector<CreatableLaneDescriptor>> result;
-    public:
-        void succeed(std::vector<CreatableLaneDescriptor> value) { result = std::move(value); }
-        void fail(std::string message) { error_code = -32000; error_message = std::move(message); }
-        [[nodiscard]] bool has_response() const noexcept
-        {
-            return result.has_value() || !error_message.empty();
-        }
-        [[nodiscard]] std::string build(int request_id) const;
-    };
 } // namespace iv

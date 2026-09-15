@@ -5,7 +5,6 @@
 #include <mutex>
 
 namespace iv {
-struct TimelineLanesChanged;
 struct CompleteLaneQueryRequest;
 struct GetLaneQuerySchemaRequest;
 class SocketRpcLaneQueryCompletionResultBuilder;
@@ -17,7 +16,6 @@ class LaneQuerySchemaService {
 
 public:
     void initialize(query::LaneQuerySchema schema);
-    void handle_timeline_lanes_changed(TimelineLanesChanged const &change);
     void handle_socket_rpc_get_lane_query_schema(
         GetLaneQuerySchemaRequest const &request,
         SocketRpcLaneQuerySchemaResultBuilder &builder) const;

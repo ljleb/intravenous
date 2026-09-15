@@ -1,15 +1,31 @@
 #pragma once
 
 #include <intravenous/linker_event.h>
-#include <intravenous/runtime/timeline_events.h>
+#include <intravenous/basic_lane_nodes/type_erased.h>
+#include <intravenous/lane_node/graph.h>
 #include <intravenous/runtime/uuid.h>
 #include <intravenous/query/lane_query_schema.h>
 
 #include <functional>
+#include <memory>
 #include <variant>
 #include <vector>
 
 namespace iv {
+
+using LaneFilterLaneVisitFn = std::function<void(
+    LaneId,
+    std::shared_ptr<TypeErasedLaneNode const> const&,
+    LaneOutputConfig const&,
+    std::optional<ChannelTypeId>,
+    std::vector<LaneInputConnection> const&,
+    std::vector<std::string> const&)>;
+
+struct LaneFilterLaneOutputs {
+    LaneId lane{};
+    std::vector<LaneOutputConnection> outputs{};
+};
+
 struct FilteredLanesSnapshot {
     std::string filter_name {};
     std::string query_source {};
@@ -18,8 +34,8 @@ struct FilteredLanesSnapshot {
     std::function<LaneMetadata(LaneId)> metadata_for_lane {};
     std::function<std::optional<std::string>(LaneId)> model_type_id_for_lane {};
     std::function<InternedString(LaneId)> public_id_for_lane {};
-    std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> outputs_for_lanes {};
-    std::function<void(std::vector<LaneId> const &, TimelineLaneVisitFn const &)> visit_lanes {};
+    std::function<std::vector<LaneFilterLaneOutputs>(std::vector<LaneId> const &)> outputs_for_lanes {};
+    std::function<void(std::vector<LaneId> const &, LaneFilterLaneVisitFn const &)> visit_lanes {};
 };
 
 struct LaneFilterError {

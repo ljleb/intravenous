@@ -6,9 +6,8 @@
 #include <intravenous/node/block_executor.h>
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_reload.h>
+#include <intravenous/runtime/iv_package_reload.h>
 #include <intravenous/runtime/startup_config.h>
-#include <intravenous/runtime/timeline.h>
 #include <intravenous/juce/vst_runtime.h>
 
 #include <algorithm>
@@ -478,7 +477,7 @@ namespace iv::test {
         }
     };
 
-    inline iv::IvModuleReloadedDefinition load_runtime_iv_module_definition(
+    inline iv::IvPackageReloadedDefinition load_runtime_iv_module_definition(
         iv::StartupConfigState const& config,
         std::filesystem::path package_root)
     {
@@ -494,7 +493,7 @@ namespace iv::test {
             iv::ModuleLoader::OptimizationLevel::O0);
         load_test_default_package_catalog(loader);
         auto loaded_graph = loader.load_package_definitions(package_root).front();
-        return iv::IvModuleReloadedDefinition{
+        return iv::IvPackageReloadedDefinition{
             .package_id = normalized_package_root.generic_string(),
             .definition_id = loaded_graph.module_id,
             .package_root = normalized_package_root,
@@ -516,7 +515,7 @@ namespace iv::test {
     };
     inline LoadedDefinitionTestRoot const loaded_definition_test_root{};
 
-    inline iv::IvModuleReloadedDefinition make_loaded_definition(
+    inline iv::IvPackageReloadedDefinition make_loaded_definition(
         std::filesystem::path package_root,
         std::string module_id = "iv.test.module",
         iv::GraphIntrospectionMetadata introspection = {},
@@ -524,7 +523,7 @@ namespace iv::test {
     {
         auto const normalized_package_root =
             std::filesystem::weakly_canonical(package_root).lexically_normal();
-        return iv::IvModuleReloadedDefinition{
+        return iv::IvPackageReloadedDefinition{
             .package_id = normalized_package_root.generic_string(),
             .definition_id = module_id,
             .package_root = normalized_package_root,

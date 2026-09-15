@@ -15,21 +15,14 @@
 
 namespace iv {
 class IvModuleInstancesSourceFileFilterBuilder;
-class SocketRpcAckResponseBuilder;
 class SocketRpcGraphQueryResultBuilder;
 class SocketRpcRegionQueryResultBuilder;
 class SocketRpcVirtualNodeResultBuilder;
 class SocketRpcVirtualNodesResultBuilder;
-struct IvModuleInstancesConfigured;
 struct GraphQueryBySpansRequest;
 struct GraphQueryActiveRegionsRequest;
 struct GetVirtualNodeRequest;
 struct GetVirtualNodesRequest;
-struct SetSampleInputValueRequest;
-struct SetSampleInputStateRequest;
-struct SetEventInputStateRequest;
-struct SetSampleOutputStateRequest;
-struct SetEventOutputStateRequest;
 
 struct SourceTextLineMap {
     std::string text;
@@ -53,11 +46,7 @@ class IvModuleSourceIntrospection {
     mutable std::mutex mutex;
     mutable std::unordered_map<std::string, SourceTextLineMap> source_text_cache;
     std::unordered_map<std::string, LoadedGraphIntrospectionIndex> graph_indexes_by_definition_id;
-    std::unordered_map<std::string, IvModuleInstanceInfo> realized_instances_by_id;
-    std::unordered_map<std::string, std::vector<PublicSampleInputInfo>> public_inputs_by_instance_id;
-    std::unordered_map<std::string, std::vector<PublicEventInputInfo>> public_event_inputs_by_instance_id;
-    std::unordered_map<std::string, std::vector<PublicSampleOutputInfo>> public_outputs_by_instance_id;
-    std::unordered_map<std::string, std::vector<PublicEventOutputInfo>> public_event_outputs_by_instance_id;
+    std::unordered_map<std::string, IvModuleInstanceInfo> instances_by_id;
 
     SourceTextLineMap const &source_text_for(std::string const &normalized_path) const;
     void invalidate_source_text(std::string const &normalized_path);
@@ -68,21 +57,14 @@ class IvModuleSourceIntrospection {
     VirtualNodeInfo to_virtual_node(
         IntrospectionVirtualNode const &node,
         std::string const &instance_id) const;
-    VirtualNodeInfo to_public_sample_input(PublicSampleInputInfo const &input) const;
-    VirtualNodeInfo to_public_event_input(PublicEventInputInfo const &input) const;
-    VirtualNodeInfo to_public_sample_output(PublicSampleOutputInfo const &output) const;
-    VirtualNodeInfo to_public_event_output(PublicEventOutputInfo const &output) const;
 
 public:
     IvModuleSourceIntrospection() = default;
 
-    void handle_iv_module_instances_configured(
-        IvModuleInstancesConfigured const &configured);
-    void set_public_sample_inputs(std::vector<PublicSampleInputInfo> inputs);
-    void set_public_event_inputs(std::vector<PublicEventInputInfo> inputs);
-    void set_public_sample_outputs(std::vector<PublicSampleOutputInfo> outputs);
-    void set_public_event_outputs(std::vector<PublicEventOutputInfo> outputs);
-    void replace_public_input_instances(std::span<std::string const> instance_ids);
+    void handle_iv_package_definitions_changed(
+        IvPackageDefinitionsChanged const &diff);
+    void handle_iv_module_instance_declarations_changed(
+        std::vector<IvModuleInstanceInfo> const &instances);
     ProjectQueryResult
     query_by_spans(
         std::filesystem::path const &file_path,
@@ -99,10 +81,6 @@ public:
     get_virtual_nodes(std::vector<std::string> const &node_ids) const;
     std::vector<VirtualNodeInfo>
     get_virtual_nodes_for_instances(std::vector<IvModuleInstanceInfo> const &instances) const;
-    GraphInputPortDescriptor sample_graph_input_port_for_node(
-        std::string const &node_id,
-        std::optional<size_t> concrete_member_ordinal,
-        size_t input_ordinal) const;
     void handle_iv_module_instances_source_file_filter(
         std::filesystem::path const &source_file_path,
         std::vector<IvModuleInstanceInfo> const &instances,
@@ -119,20 +97,5 @@ public:
     void handle_socket_rpc_get_virtual_nodes(
         GetVirtualNodesRequest const &request,
         SocketRpcVirtualNodesResultBuilder &builder) const;
-    void handle_socket_rpc_set_sample_input_value(
-        SetSampleInputValueRequest const &request,
-        SocketRpcAckResponseBuilder &builder);
-    void handle_socket_rpc_set_sample_input_state(
-        SetSampleInputStateRequest const &request,
-        SocketRpcAckResponseBuilder &builder);
-    void handle_socket_rpc_set_event_input_state(
-        SetEventInputStateRequest const &request,
-        SocketRpcAckResponseBuilder &builder);
-    void handle_socket_rpc_set_sample_output_state(
-        SetSampleOutputStateRequest const &request,
-        SocketRpcAckResponseBuilder &builder);
-    void handle_socket_rpc_set_event_output_state(
-        SetEventOutputStateRequest const &request,
-        SocketRpcAckResponseBuilder &builder);
 };
 } // namespace iv

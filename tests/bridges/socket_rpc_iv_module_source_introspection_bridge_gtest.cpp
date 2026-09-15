@@ -1,13 +1,12 @@
 #include "../module_test_utils.h"
 
-#include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
-#include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/startup_config.h>
@@ -37,15 +36,14 @@ Json parse_json_line(std::string_view line)
 struct SeededIvModuleSourceIntrospectionOwner {
     IvModuleInstances instances;
     IvModuleDefinitions definitions;
-    GraphInputLanes graph_input_lanes;
     IvModuleSourceIntrospection introspection;
     StartupConfig startup_config;
     iv_module_definitions_iv_module_instances_bridge::scope
         iv_module_definitions_iv_module_instances_scope;
+    iv_module_definitions_iv_module_source_introspection_bridge::scope
+        iv_module_definitions_iv_module_source_introspection_scope;
     iv_module_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
-    iv_module_source_introspection_graph_input_lanes_bridge::scope
-        iv_module_source_introspection_graph_input_lanes_scope;
 
     SeededIvModuleSourceIntrospectionOwner(
         std::filesystem::path workspace_root,
@@ -56,12 +54,12 @@ struct SeededIvModuleSourceIntrospectionOwner {
               std::move(discovery_start),
               std::move(extra_search_roots)),
           iv_module_definitions_iv_module_instances_scope(definitions, instances),
+          iv_module_definitions_iv_module_source_introspection_scope(
+              definitions,
+              introspection),
           iv_module_instances_iv_module_source_introspection_scope(
               instances,
-              introspection),
-          iv_module_source_introspection_graph_input_lanes_scope(
-              introspection,
-              graph_input_lanes)
+              introspection)
     {
     }
 

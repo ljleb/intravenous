@@ -124,39 +124,6 @@ size_t parse_optional_size_param(Json const &params, std::string const &key, siz
     return static_cast<size_t>(value);
 }
 
-double parse_number_param(Json const &params, std::string const &key) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || !value_it->is_number()) {
-        throw std::runtime_error("JSON-RPC request is missing numeric param '" + key + "'");
-    }
-    return value_it->get<double>();
-}
-
-ChannelTypeId parse_channel_type_param(Json const& params, std::string const& key) {
-    auto const value = parse_string_param(params, key);
-    if (value == "mono") {
-        return ChannelTypeId::mono;
-    }
-    if (value == "stereo") {
-        return ChannelTypeId::stereo;
-    }
-    throw std::runtime_error("JSON-RPC request param '" + key + "' must be 'mono' or 'stereo'");
-}
-
-LanePortDomain parse_lane_port_domain_param(Json const& params, std::string const& key) {
-    auto const value = parse_string_param(params, key);
-    if (value == "realtime") return LanePortDomain::realtime;
-    if (value == "compiled") return LanePortDomain::compiled;
-    throw std::runtime_error("JSON-RPC request param '" + key + "' must be 'realtime' or 'compiled'");
-}
-
-PortKind parse_port_kind_param(Json const& params, std::string const& key) {
-    auto const value = parse_string_param(params, key);
-    if (value == "sample") return PortKind::sample;
-    if (value == "event") return PortKind::event;
-    throw std::runtime_error("JSON-RPC request param '" + key + "' must be 'sample' or 'event'");
-}
-
 uint32_t parse_uint32_value(Json const &value, std::string const &context) {
     if (!value.is_number_integer()) {
         throw std::runtime_error(context);
@@ -276,88 +243,54 @@ LaneViewRequest parse_lane_view_request(Json const &params) {
 }
 } // namespace
 
-ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
+ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
+{
     auto const request = parse_request_json(line);
     auto const request_id = parse_request_id(request);
     auto const method = parse_request_method(request);
     auto const &params = parse_request_params(request);
 
     if (method == "graph.queryBySpans") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GraphQueryBySpansRequest{
-                .file_path = parse_string_param(params, "filePath"),
-                .ranges = parse_ranges(params),
-                .match_mode = parse_match_mode(params),
-                .instance_id = parse_optional_nullable_string_param(params, "instanceId"),
-            },
-        };
+        return {.request_id = request_id, .payload = GraphQueryBySpansRequest{
+            .file_path = parse_string_param(params, "filePath"),
+            .ranges = parse_ranges(params),
+            .match_mode = parse_match_mode(params),
+            .instance_id = parse_optional_nullable_string_param(params, "instanceId")}};
     }
     if (method == "graph.queryActiveRegions") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GraphQueryActiveRegionsRequest{
-                .file_path = parse_string_param(params, "filePath"),
-            },
-        };
+        return {.request_id = request_id, .payload = GraphQueryActiveRegionsRequest{
+            .file_path = parse_string_param(params, "filePath")}};
     }
     if (method == "graph.getVirtualNode") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetVirtualNodeRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-            },
-        };
+        return {.request_id = request_id, .payload = GetVirtualNodeRequest{
+            .node_id = parse_string_param(params, "nodeId")}};
     }
     if (method == "graph.getVirtualNodes") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetVirtualNodesRequest{
-                .node_ids = parse_string_array_param(params, "nodeIds"),
-            },
-        };
+        return {.request_id = request_id, .payload = GetVirtualNodesRequest{
+            .node_ids = parse_string_array_param(params, "nodeIds")}};
     }
     if (method == "ivModuleInstances.create") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = CreateIvModuleInstanceRequest{
-                .module_id = parse_string_param(params, "moduleId"),
-                .display_name = parse_optional_nullable_string_param(params, "displayName"),
-            },
-        };
+        return {.request_id = request_id, .payload = CreateIvModuleInstanceRequest{
+            .module_id = parse_string_param(params, "moduleId"),
+            .display_name = parse_optional_nullable_string_param(params, "displayName")}};
     }
     if (method == "ivPackages.list") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetIvPackagesRequest{},
-        };
+        return {.request_id = request_id, .payload = GetIvPackageDefinitionsRequest{}};
     }
     if (method == "ivPackages.create") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = CreateIvPackageRequest{
-                .name = parse_string_param(params, "name"),
-            },
-        };
+        return {.request_id = request_id, .payload = CreateIvPackageRequest{
+            .name = parse_string_param(params, "name")}};
     }
     if (method == "ivModuleInstances.get") {
         auto const source_file_path = parse_optional_nullable_string_param(params, "sourceFilePath");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetIvModuleInstancesRequest{
-                .source_file_path = source_file_path.has_value()
-                    ? std::optional<std::filesystem::path>{*source_file_path}
-                    : std::nullopt,
-            },
-        };
+        return {.request_id = request_id, .payload = GetIvModuleInstancesRequest{
+            .source_file_path = source_file_path.has_value()
+                ? std::optional<std::filesystem::path>{*source_file_path}
+                : std::nullopt}};
     }
     if (method == "ivModuleInstances.delete") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = DeleteIvModuleInstanceRequest{
-                .instance_id = parse_string_param(params, "instanceId"),
-            },
-        };
+        return {.request_id = request_id, .payload = DeleteIvModuleInstanceRequest{
+            .instance_id = parse_string_param(params, "instanceId")}};
     }
     if (method == "ivModuleInstances.update") {
         auto const updates_it = params.find("updates");
@@ -372,267 +305,54 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             }
             updates.push_back(UpdateIvModuleInstance{
                 .instance_id = parse_string_param(update, "instanceId"),
-                .display_name = parse_optional_nullable_string_param(update, "displayName"),
-                .default_silence_ttl_samples = update.contains("defaultSilenceTtlSamples")
-                    ? std::optional<size_t>{static_cast<size_t>(parse_uint64_param(
-                        update,
-                        "defaultSilenceTtlSamples"))}
-                    : std::nullopt,
-            });
+                .display_name = parse_optional_nullable_string_param(update, "displayName")});
         }
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = UpdateIvModuleInstancesRequest{
-                .updates = std::move(updates),
-            },
-        };
-    }
-    if (method == "timeline.setCompiledSampleCacheChunkSizeMultiplier") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest{
-                .compiled_sample_cache_chunk_size_multiplier =
-                    static_cast<size_t>(parse_uint64_param(
-                        params,
-                        "compiledSampleCacheChunkSizeMultiplier")),
-            },
-        };
-    }
-    if (method == "timeline.setLaneSampleChannelType") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetTimelineLaneSampleChannelTypeRequest{
-                .lane_id = InternedString::from_string(parse_string_param(params, "laneId")),
-                .sample_channel_type = parse_channel_type_param(params, "sampleChannelType"),
-            },
-        };
-    }
-    if (method == "timeline.setLaneUiState") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetTimelineLaneUiStateRequest{
-                .lane_id = InternedString::from_string(parse_string_param(params, "laneId")),
-                .expected_revision = params.contains("expectedRevision")
-                    ? std::optional<std::uint64_t>{parse_uint64_param(params, "expectedRevision")}
-                    : std::nullopt,
-                .serialized_state = params.contains("serializedState")
-                    ? std::optional<std::string>{parse_string_param(params, "serializedState")}
-                    : std::nullopt,
-                .name = params.contains("name")
-                    ? std::optional<std::string>{parse_string_param(params, "name")}
-                    : std::nullopt,
-            },
-        };
-    }
-    if (method == "timeline.connectLanes") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = ConnectTimelineLanesRequest{
-                .source_lane_id = InternedString::from_string(parse_string_param(params, "sourceLaneId")),
-                .target_lane_id = InternedString::from_string(parse_string_param(params, "targetLaneId")),
-                .port_domain = parse_lane_port_domain_param(params, "portDomain"),
-                .port_kind = parse_port_kind_param(params, "portKind"),
-                .port_ordinal = static_cast<size_t>(parse_uint64_param(params, "portOrdinal")),
-            },
-        };
-    }
-    if (method == "timeline.disconnectLanes") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = DisconnectTimelineLanesRequest{
-                .source_lane_id = InternedString::from_string(parse_string_param(params, "sourceLaneId")),
-                .target_lane_id = InternedString::from_string(parse_string_param(params, "targetLaneId")),
-                .port_domain = parse_lane_port_domain_param(params, "portDomain"),
-                .port_kind = parse_port_kind_param(params, "portKind"),
-                .port_ordinal = static_cast<size_t>(parse_uint64_param(params, "portOrdinal")),
-            },
-        };
-    }
-    if (method == "timeline.laneTypes") {
-        return ParsedSocketRpcRequest{.request_id = request_id, .payload = GetTimelineLaneTypesRequest{}};
-    }
-    if (method == "timeline.createLane") {
-        return ParsedSocketRpcRequest{.request_id = request_id,
-            .payload = CreateTimelineLaneRequest{.type_id = parse_string_param(params, "typeId")}};
-    }
-    if (method == "timeline.deleteLane") {
-        return ParsedSocketRpcRequest{.request_id = request_id,
-            .payload = DeleteTimelineLaneRequest{.lane_id = InternedString::from_string(parse_string_param(params, "laneId"))}};
-    }
-    if (method == "timeline.duplicateLane") {
-        return ParsedSocketRpcRequest{.request_id = request_id,
-            .payload = DuplicateTimelineLaneRequest{.lane_id = InternedString::from_string(parse_string_param(params, "laneId"))}};
+        return {.request_id = request_id, .payload = UpdateIvModuleInstancesRequest{
+            .updates = std::move(updates)}};
     }
     if (method == "audioDevices.get") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetAudioDevicesRequest{},
-        };
+        return {.request_id = request_id, .payload = GetAudioDevicesRequest{}};
     }
     if (method == "audioDevices.set") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetAudioDevicesRequest{
-                .output_device_id = parse_optional_nullable_string_param(params, "outputDeviceId"),
-                .input_device_id = parse_optional_nullable_string_param(params, "inputDeviceId"),
-            },
-        };
+        return {.request_id = request_id, .payload = SetAudioDevicesRequest{
+            .output_device_id = parse_optional_nullable_string_param(params, "outputDeviceId"),
+            .input_device_id = parse_optional_nullable_string_param(params, "inputDeviceId")}};
     }
     if (method == "project.save") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SaveProjectRequest{},
-        };
+        return {.request_id = request_id, .payload = SaveProjectRequest{}};
     }
     if (method == "project.enableAutosave") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = EnableProjectAutosaveRequest{},
-        };
+        return {.request_id = request_id, .payload = EnableProjectAutosaveRequest{}};
     }
     if (method == "project.disableAutosave") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = DisableProjectAutosaveRequest{},
-        };
-    }
-    if (method == "playback.pause") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = PauseRequest{},
-        };
-    }
-    if (method == "playback.resume") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = ResumeRequest{
-                .start_index = static_cast<size_t>(
-                    parse_uint64_param(params, "startIndex")),
-            },
-        };
-    }
-    if (method == "playback.seek") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SeekRequest{.sample_index = static_cast<size_t>(parse_uint64_param(params, "sampleIndex"))},
-        };
+        return {.request_id = request_id, .payload = DisableProjectAutosaveRequest{}};
     }
     if (method == "timeline.openLaneView" || method == "timeline.updateLaneView") {
-        auto const request_payload = parse_lane_view_request(params);
+        auto request_payload = parse_lane_view_request(params);
         if (method == "timeline.openLaneView") {
-            return ParsedSocketRpcRequest{
-                .request_id = request_id,
-                .payload = OpenLaneViewRpcRequest{
-                    .request = std::move(request_payload),
-                },
-            };
+            return {.request_id = request_id, .payload = OpenLaneViewRpcRequest{
+                .request = std::move(request_payload)}};
         }
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = UpdateLaneViewRpcRequest{
-                .request = std::move(request_payload),
-            },
-        };
+        return {.request_id = request_id, .payload = UpdateLaneViewRpcRequest{
+            .request = std::move(request_payload)}};
     }
     if (method == "timeline.getLaneQuerySchema") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetLaneQuerySchemaRequest{},
-        };
+        return {.request_id = request_id, .payload = GetLaneQuerySchemaRequest{}};
     }
     if (method == "timeline.completeLaneQuery") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = CompleteLaneQueryRequest{
-                .source = parse_string_param(params, "source"),
-                .cursor_offset = static_cast<size_t>(parse_uint64_param(params, "cursorOffset")),
-                .schema_revision = parse_optional_uint64_param(params, "schemaRevision"),
-            },
-        };
+        return {.request_id = request_id, .payload = CompleteLaneQueryRequest{
+            .source = parse_string_param(params, "source"),
+            .cursor_offset = static_cast<size_t>(parse_uint64_param(params, "cursorOffset")),
+            .schema_revision = parse_optional_uint64_param(params, "schemaRevision")}};
     }
     if (method == "timeline.closeLaneView") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = parse_string_param(params, "viewId"),
-        };
-    }
-    if (method == "graph.setSampleInputValue") {
-        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetSampleInputValueRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-                .input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal")),
-                .value = static_cast<Sample>(parse_number_param(params, "value")),
-                .member_ordinal = member_ordinal.has_value()
-                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
-                    : std::nullopt,
-                },
-        };
-    }
-    if (method == "graph.setSampleInputState") {
-        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetSampleInputStateRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-                .input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal")),
-                .member_ordinal = member_ordinal.has_value()
-                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
-                    : std::nullopt,
-                .state = parse_string_param(params, "state"),
-            },
-        };
-    }
-    if (method == "graph.setEventInputState") {
-        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetEventInputStateRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-                .input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal")),
-                .member_ordinal = member_ordinal.has_value()
-                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
-                    : std::nullopt,
-                .state = parse_string_param(params, "state"),
-            },
-        };
-    }
-    if (method == "graph.setSampleOutputState") {
-        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetSampleOutputStateRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-                .output_ordinal = static_cast<size_t>(parse_uint64_param(params, "outputOrdinal")),
-                .member_ordinal = member_ordinal.has_value()
-                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
-                    : std::nullopt,
-                .state = parse_string_param(params, "state"),
-            },
-        };
-    }
-    if (method == "graph.setEventOutputState") {
-        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetEventOutputStateRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-                .output_ordinal = static_cast<size_t>(parse_uint64_param(params, "outputOrdinal")),
-                .member_ordinal = member_ordinal.has_value()
-                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
-                    : std::nullopt,
-                .state = parse_string_param(params, "state"),
-            },
-        };
+        return {.request_id = request_id, .payload = parse_string_param(params, "viewId")};
     }
     if (method == "server.shutdown") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = ServerShutdownRequest{},
-        };
+        return {.request_id = request_id, .payload = ServerShutdownRequest{}};
     }
 
-    throw std::runtime_error("unsupported JSON-RPC method: " + method);
+    return {.request_id = request_id, .payload = UnsupportedSocketRpcRequest{
+        .method = method}};
 }
 } // namespace iv

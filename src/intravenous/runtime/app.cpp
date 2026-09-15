@@ -3,475 +3,263 @@
 #include <intravenous/compat.h>
 #include <intravenous/devices/miniaudio_device.h>
 #include <intravenous/juce/vst_runtime.h>
-#include <intravenous/runtime/audio_device_lanes.h>
-#include <intravenous/runtime/audio_device_lanes_iv_module_instances_execution_bridge.h>
-#include <intravenous/runtime/configured_lanes.h>
-#include <intravenous/runtime/configured_lanes_timeline_bridge.h>
-#include <intravenous/runtime/audio_device_lanes_timeline_bridge.h>
-#include <intravenous/runtime/audio_device_lanes_timeline_execution_bridge.h>
-#include <intravenous/runtime/graph_input_lanes.h>
-#include <intravenous/runtime/graph_input_lanes_iv_module_instances_execution_bridge.h>
-#include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_package_reload_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_instances_execution.h>
-#include <intravenous/runtime/iv_module_instances_execution_task_runner_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_instances_execution_bridge.h>
-#include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
-#include <intravenous/runtime/iv_module_reload.h>
-#include <intravenous/runtime/iv_package_reload_service.h>
-#include <intravenous/runtime/lane_filters.h>
-#include <intravenous/runtime/lane_filters_lane_views_bridge.h>
-#include <intravenous/runtime/lane_query_schema_service.h>
-#include <intravenous/runtime/lane_views.h>
-#include <intravenous/runtime/lane_views_lanes_visualization_bridge.h>
-#include <intravenous/runtime/lanes_visualization.h>
-#include <intravenous/runtime/lanes_visualization_timeline_bridge.h>
-#include <intravenous/runtime/task_runner_lanes_visualization_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
-#include <intravenous/runtime/iv_packages.h>
-#include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
-#include <intravenous/runtime/project_persistence.h>
-#include <intravenous/runtime/project_autosave.h>
-#include <intravenous/runtime/project_persistence_project_autosave_bridge.h>
-#include <intravenous/runtime/project_persistence_audio_device_lanes_bridge.h>
-#include <intravenous/runtime/project_persistence_graph_input_lanes_bridge.h>
-#include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
-#include <intravenous/runtime/project_persistence_iv_module_reload_bridge.h>
-#include <intravenous/runtime/project_persistence_configured_lanes_bridge.h>
-#include <intravenous/runtime/project_persistence_timeline_bridge.h>
-#include <intravenous/runtime/project_persistence_timeline_execution_bridge.h>
-#include <intravenous/runtime/server_options.h>
-#include <intravenous/runtime/socket_rpc_lane_views_bridge.h>
-#include <intravenous/runtime/socket_rpc_lane_query_schema_bridge.h>
-#include <intravenous/runtime/socket_rpc_lane_query_completion_bridge.h>
-#include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
-#include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
-#include <intravenous/runtime/socket_rpc_iv_packages_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_socket_rpc_packages_bridge.h>
+#include <intravenous/runtime/iv_package_definitions.h>
+#include <intravenous/runtime/iv_package_reload.h>
+#include <intravenous/runtime/iv_package_reload_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/iv_package_reload_service.h>
+#include <intravenous/runtime/lanes_visualization.h>
 #include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
-#include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
-#include <intravenous/runtime/socket_rpc_project_autosave_bridge.h>
-#include <intravenous/runtime/socket_rpc_timeline_execution_bridge.h>
+#include <intravenous/runtime/project_autosave.h>
+#include <intravenous/runtime/project_persistence.h>
+#include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
+#include <intravenous/runtime/project_persistence_iv_package_reload_bridge.h>
+#include <intravenous/runtime/project_persistence_project_autosave_bridge.h>
+#include <intravenous/runtime/project_persistence_system_audio_devices_bridge.h>
+#include <intravenous/runtime/server_options.h>
+#include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
-#include <intravenous/runtime/startup_config.h>
+#include <intravenous/runtime/socket_rpc_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/socket_rpc_project_autosave_bridge.h>
+#include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
-#include <intravenous/runtime/task_runner.h>
-#include <intravenous/runtime/task_runner_audio_device_lanes_bridge.h>
-#include <intravenous/runtime/task_runner_graph_input_lanes_bridge.h>
-#include <intravenous/runtime/timeline.h>
-#include <intravenous/runtime/timeline_execution.h>
-#include <intravenous/runtime/timeline_execution_iv_module_instances_execution_bridge.h>
-#include <intravenous/runtime/timeline_execution_lanes_visualization_bridge.h>
-#include <intravenous/runtime/timeline_execution_task_runner_bridge.h>
-#include <intravenous/runtime/timeline_lane_filters_bridge.h>
-#include <intravenous/runtime/timeline_lane_query_schema_bridge.h>
-#include <intravenous/runtime/timeline_timeline_execution_bridge.h>
+#include <intravenous/runtime/socket_rpc_system_audio_devices_bridge.h>
+#include <intravenous/runtime/startup_config.h>
+#include <intravenous/runtime/system_audio_devices.h>
 
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <iostream>
 #include <optional>
-#include <algorithm>
-#include <chrono>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
-#include <vector>
+#include <utility>
 
 namespace iv {
-    namespace {
-        std::function<void()>* shutdown_callback = nullptr;
+namespace {
+std::function<void()>* shutdown_callback = nullptr;
 
-        class ScopedShutdownCallback {
-            std::function<void()>* previous_ = nullptr;
+class ScopedShutdownCallback {
+    std::function<void()>* previous_ = nullptr;
 
-        public:
-            explicit ScopedShutdownCallback(std::function<void()>& callback)
-                : previous_(std::exchange(shutdown_callback, &callback))
-            {
-            }
+public:
+    explicit ScopedShutdownCallback(std::function<void()>& callback)
+        : previous_(std::exchange(shutdown_callback, &callback))
+    {}
 
-            ~ScopedShutdownCallback()
-            {
-                shutdown_callback = previous_;
-            }
+    ~ScopedShutdownCallback() { shutdown_callback = previous_; }
 
-            ScopedShutdownCallback(ScopedShutdownCallback const&) = delete;
-            ScopedShutdownCallback& operator=(ScopedShutdownCallback const&) = delete;
-        };
+    ScopedShutdownCallback(ScopedShutdownCallback const&) = delete;
+    ScopedShutdownCallback& operator=(ScopedShutdownCallback const&) = delete;
+};
 
-        class ProjectAutosaveService {
-            ProjectAutosave* autosave_ = nullptr;
-            ProjectPersistence* persistence_ = nullptr;
-            std::optional<std::jthread> thread_ {};
+class ProjectAutosaveService {
+    ProjectAutosave* autosave_ = nullptr;
+    ProjectPersistence* persistence_ = nullptr;
+    std::optional<std::jthread> thread_ {};
 
-        public:
-            ProjectAutosaveService(
-                ProjectAutosave& autosave,
-                ProjectPersistence& persistence)
-                : autosave_(&autosave)
-                , persistence_(&persistence)
-            {
-            }
+public:
+    ProjectAutosaveService(ProjectAutosave& autosave, ProjectPersistence& persistence)
+        : autosave_(&autosave)
+        , persistence_(&persistence)
+    {}
 
-            void start()
-            {
-                if (thread_.has_value()) {
-                    return;
-                }
-
-                thread_.emplace([this](std::stop_token stop_token) {
-                    while (!stop_token.stop_requested()) {
-                        if (autosave_->take_due_save()) {
-                            try {
-                                persistence_->save();
-                                autosave_->save_succeeded();
-                            } catch (std::exception const& exception) {
-                                autosave_->save_failed();
-                                persistence_->report_autosave_failure(exception.what());
-                            } catch (...) {
-                                autosave_->save_failed();
-                                persistence_->report_autosave_failure("unknown failure");
-                            }
-                        }
-                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    }
-                });
-            }
-
-            void request_shutdown()
-            {
-                if (thread_.has_value()) {
-                    thread_->request_stop();
-                }
-            }
-
-            void stop()
-            {
-                request_shutdown();
-                thread_.reset();
-                // Joining first lets an already-started write complete. Then
-                // synchronously drain any debounced revision so a server
-                // shutdown cannot discard the last user action.
-                while (autosave_->take_pending_save()) {
+    void start()
+    {
+        if (thread_.has_value()) return;
+        thread_.emplace([this](std::stop_token stop_token) {
+            while (!stop_token.stop_requested()) {
+                if (autosave_->take_due_save()) {
                     try {
                         persistence_->save();
                         autosave_->save_succeeded();
                     } catch (std::exception const& exception) {
                         autosave_->save_failed();
                         persistence_->report_autosave_failure(exception.what());
-                        break;
                     } catch (...) {
                         autosave_->save_failed();
                         persistence_->report_autosave_failure("unknown failure");
-                        break;
                     }
                 }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-        };
-
-        void startup_log(std::string const &message)
-        {
-            std::cerr << "[intravenous startup] " << message << '\n';
-        }
-
-        void request_shutdown()
-        {
-            if (shutdown_callback) {
-                (*shutdown_callback)();
-            }
-        }
-
-        int run_server_mode(Timeline& timeline, int argc, char** argv)
-        {
-            startup_log("parsing server options");
-            auto const options = ServerOptions::parse(argc, argv);
-            startup_log("initializing startup config");
-            StartupConfig startup_config(
-                options.workspace_root,
-                std::filesystem::current_path());
-            auto const startup = startup_config.initialize();
-            startup_log("startup config initialized");
-            IvModuleInstances iv_module_instances;
-            IvModuleDefinitions iv_module_definitions;
-            IvModuleReload iv_module_reload(startup);
-            GraphInputLanes graph_input_lanes;
-            ConfiguredLanes configured_lanes(LaneCreationContext{.sample_rate = startup.execution.sample_rate});
-            startup_log("constructing runtime modules");
-            // TasksRunner owns worker threads whose task callbacks target the
-            // execution services below. Construct all of those targets first:
-            // reverse destruction then stops and joins the runner before any
-            // callback target is destroyed.
-            TimelineExecution timeline_execution(
-                startup.execution.block_size,
-                startup.execution.compiled_sample_cache_chunk_size_multiplier,
-                true);
-            IvModuleInstancesExecution iv_module_instances_execution(
-                startup.execution.block_size,
-                false,
-                startup.execution.sample_rate);
-            TasksRunner task_runner;
-            AudioDeviceLanes audio_device_lanes(
-                startup.execution.sample_rate,
-                startup.execution.block_size,
-                AudioDeviceLanesBackend{
-                    .list_output_devices = [] {
-                        return list_miniaudio_output_devices();
-                    },
-                    .list_input_devices = [] {
-                        return list_miniaudio_input_devices();
-                    },
-                    .make_output_device = [](
-                        std::string const &device_id,
-                        RenderConfig const &config) {
-                        return make_miniaudio_output_device(config, device_id);
-                    },
-                    .make_input_device = [](
-                        std::string const &device_id,
-                        RenderConfig const &config) {
-                        return make_miniaudio_input_device(config, device_id);
-                    },
-                },
-                startup.output_device_id,
-                startup.input_device_id);
-            LaneFilters lane_filters;
-            LaneQuerySchemaService lane_query_schema;
-            LaneViews lane_views;
-            LanesVisualization lanes_visualization(
-                std::chrono::milliseconds(33),
-                startup.execution.block_size);
-            IvModuleSourceIntrospection introspection;
-            IvPackages iv_packages(
-                startup.workspace_root,
-                iv_module_definitions,
-                iv_module_reload);
-
-            // Construct the complete runtime first.  Binding is a separate
-            // phase: constructors must not observe a partially connected
-            // process graph.
-            ProjectPersistence project_persistence(
-                startup.workspace_root,
-                startup);
-            ProjectAutosave project_autosave;
-            ProjectAutosaveService project_autosave_service(
-                project_autosave,
-                project_persistence);
-            startup_log("constructing socket rpc server");
-            SocketRpcServer server(options.workspace_root, options.rpc_fd);
-            IvPackageReloadService iv_package_reload_service(
-                iv_module_reload,
-                iv_module_definitions,
-                startup.workspace_root,
-                startup.search_roots);
-            std::function<void()> shutdown = [&]() {
-                iv_package_reload_service.request_shutdown();
-                project_autosave_service.request_shutdown();
-                server.request_shutdown();
-            };
-            ScopedShutdownCallback shutdown_callback_scope(shutdown);
-            install_shutdown_handlers(request_shutdown);
-
-            startup_log("binding runtime bridges");
-            auto audio_device_lanes_timeline_scope =
-                audio_device_lanes_timeline_bridge::bind(
-                    audio_device_lanes,
-                    timeline);
-            auto audio_device_lanes_timeline_execution_scope =
-                audio_device_lanes_timeline_execution_bridge::bind(
-                    audio_device_lanes,
-                    timeline_execution);
-            auto task_runner_audio_device_lanes_scope =
-                task_runner_audio_device_lanes_bridge::bind(
-                    task_runner,
-                    audio_device_lanes);
-            auto graph_input_lanes_timeline_scope =
-                graph_input_lanes_timeline_bridge::bind(
-                    graph_input_lanes,
-                    timeline);
-            auto task_runner_graph_input_lanes_scope =
-                task_runner_graph_input_lanes_bridge::bind(
-                    task_runner,
-                    graph_input_lanes);
-            auto timeline_execution_task_runner_scope =
-                timeline_execution_task_runner_bridge::bind(timeline_execution, task_runner);
-            auto timeline_timeline_execution_scope =
-                timeline_timeline_execution_bridge::bind(timeline, timeline_execution);
-            auto configured_lanes_timeline_scope =
-                configured_lanes_timeline_bridge::bind(configured_lanes, timeline);
-            auto iv_module_definitions_iv_module_instances_scope =
-                iv_module_definitions_iv_module_instances_bridge::bind(
-                    iv_module_definitions,
-                    iv_module_instances);
-            auto iv_module_instances_execution_task_runner_scope =
-                iv_module_instances_execution_task_runner_bridge::bind(
-                    iv_module_instances_execution,
-                    task_runner);
-            auto iv_module_instances_iv_module_instances_execution_scope =
-                iv_module_instances_iv_module_instances_execution_bridge::bind(
-                    iv_module_instances,
-                    iv_module_instances_execution);
-            auto graph_input_lanes_iv_module_instances_execution_scope =
-                graph_input_lanes_iv_module_instances_execution_bridge::bind(
-                    graph_input_lanes,
-                    iv_module_instances_execution);
-            auto audio_device_lanes_iv_module_instances_execution_scope =
-                audio_device_lanes_iv_module_instances_execution_bridge::bind(
-                    audio_device_lanes,
-                    iv_module_instances_execution);
-            auto timeline_execution_iv_module_instances_execution_scope =
-                timeline_execution_iv_module_instances_execution_bridge::bind(
-                    timeline_execution,
-                    iv_module_instances_execution);
-            auto iv_module_definitions_iv_module_reload_scope =
-                iv_module_definitions_iv_module_reload_bridge::bind(
-                    iv_module_definitions,
-                    iv_module_reload);
-            auto iv_module_instances_iv_module_source_introspection_scope =
-                iv_module_instances_iv_module_source_introspection_bridge::bind(
-                    iv_module_instances,
-                    introspection);
-            auto iv_module_instances_graph_input_lanes_scope =
-                iv_module_instances_graph_input_lanes_bridge::bind(
-                    iv_module_instances,
-                    graph_input_lanes);
-            auto iv_module_source_introspection_graph_input_lanes_scope =
-                iv_module_source_introspection_graph_input_lanes_bridge::bind(
-                    introspection,
-                    graph_input_lanes);
-            auto timeline_lane_filters_scope =
-                timeline_lane_filters_bridge::bind(timeline, lane_filters);
-            auto timeline_lane_query_schema_scope =
-                timeline_lane_query_schema_bridge::bind(timeline, lane_query_schema);
-            auto lane_filters_lane_views_scope =
-                lane_filters_lane_views_bridge::bind(&lane_filters, &lane_views);
-            auto lane_views_lanes_visualization_scope =
-                lane_views_lanes_visualization_bridge::bind(lane_views, lanes_visualization);
-            auto lanes_visualization_timeline_scope =
-                lanes_visualization_timeline_bridge::bind(
-                    lanes_visualization,
-                    timeline);
-            auto task_runner_lanes_visualization_scope =
-                task_runner_lanes_visualization_bridge::bind(
-                    task_runner,
-                    lanes_visualization);
-            auto timeline_execution_lanes_visualization_scope =
-                timeline_execution_lanes_visualization_bridge::bind(
-                    timeline_execution,
-                    lanes_visualization);
-            auto project_persistence_timeline_execution_scope =
-                project_persistence_timeline_execution_bridge::bind(
-                    project_persistence,
-                    timeline_execution);
-            auto project_persistence_timeline_scope =
-                project_persistence_timeline_bridge::bind(
-                    project_persistence,
-                    timeline);
-            auto project_persistence_configured_lanes_scope =
-                project_persistence_configured_lanes_bridge::bind(
-                    project_persistence,
-                    configured_lanes);
-            auto project_persistence_iv_module_instances_scope =
-                project_persistence_iv_module_instances_bridge::bind(
-                    project_persistence,
-                    iv_module_instances);
-            auto project_persistence_iv_module_reload_scope =
-                project_persistence_iv_module_reload_bridge::bind(
-                    project_persistence,
-                    iv_module_reload);
-            auto project_persistence_audio_device_lanes_scope =
-                project_persistence_audio_device_lanes_bridge::bind(
-                    project_persistence,
-                    audio_device_lanes);
-            auto project_persistence_graph_input_lanes_scope =
-                project_persistence_graph_input_lanes_bridge::bind(
-                    project_persistence,
-                    graph_input_lanes);
-            auto project_persistence_project_autosave_scope =
-                project_persistence_project_autosave_bridge::bind(
-                    project_persistence,
-                    project_autosave);
-            startup_log("binding socket rpc bridges");
-            auto socket_rpc_lane_views_scope =
-                socket_rpc_lane_views_bridge::bind(server, lane_views);
-            auto socket_rpc_lane_query_schema_scope =
-                socket_rpc_lane_query_schema_bridge::bind(server, lane_query_schema);
-            auto socket_rpc_lane_query_completion_scope =
-                socket_rpc_lane_query_completion_bridge::bind(server, lane_query_schema);
-            auto socket_rpc_audio_device_lanes_scope =
-                socket_rpc_audio_device_lanes_bridge::bind(server, audio_device_lanes);
-            auto socket_rpc_iv_module_instances_scope =
-                socket_rpc_iv_module_instances_bridge::bind(
-                    server,
-                    iv_module_instances);
-            auto socket_rpc_iv_packages_scope =
-                socket_rpc_iv_packages_bridge::bind(
-                    server,
-                    iv_packages);
-            auto socket_rpc_timeline_execution_scope =
-                socket_rpc_timeline_execution_bridge::bind(server, timeline_execution);
-            auto socket_rpc_iv_module_source_introspection_scope =
-                socket_rpc_iv_module_source_introspection_bridge::bind(
-                    server,
-                    introspection);
-            auto iv_module_definitions_socket_rpc_packages_scope =
-                iv_module_definitions_socket_rpc_packages_bridge::bind(
-                    iv_module_definitions,
-                    server);
-            auto lanes_visualization_socket_rpc_notification_scope =
-                lanes_visualization_socket_rpc_notification_bridge::bind(
-                    lanes_visualization,
-                    server);
-            auto socket_rpc_project_persistence_scope =
-                socket_rpc_project_persistence_bridge::bind(server, project_persistence);
-            auto socket_rpc_project_autosave_scope =
-                socket_rpc_project_autosave_bridge::bind(server, project_autosave);
-
-            startup_log("initializing execution state");
-            timeline_execution.publish_task_graph_update(
-                timeline.with_graph([&](LaneGraph const &graph) {
-                    return timeline_execution.synchronize_from_graph(graph);
-                }));
-            lane_query_schema.initialize(timeline.lane_query_schema(0));
-            startup_log("binding audio device lanes");
-            audio_device_lanes.bind();
-            startup_log("loading project persistence");
-            project_persistence.load();
-            startup_log("project persistence loaded");
-            project_autosave_service.start();
-            startup_log("starting socket rpc server");
-            server.start();
-            startup_log("socket rpc server started");
-            if (!server.wait_until_ready(std::chrono::seconds(10))) {
-                throw std::runtime_error("socket rpc server did not deliver server.ready");
-            }
-            startup_log("starting iv module reload watcher");
-            iv_package_reload_service.start();
-            std::cout << "Intravenous server connected on rpc fd " << options.rpc_fd << '\n';
-            server.wait();
-            startup_log("socket rpc server stopped");
-            iv_package_reload_service.request_shutdown();
-            project_autosave_service.stop();
-            audio_device_lanes.request_shutdown();
-            return 0;
-        }
+        });
     }
 
-    int run_intravenous_cli(int argc, char** argv)
+    void request_shutdown()
     {
-        install_crash_handlers();
-#if IV_ENABLE_JUCE_VST
-        warmup_juce_vst_scan_cache();
-#endif
-        Timeline timeline;
-
-        if (argc >= 2 && std::string_view(argv[1]) == "--server") {
-            return run_server_mode(timeline, argc, argv);
-        }
-        throw std::runtime_error("intravenous runs as a server; use --server --workspace-root <path>");
+        if (thread_.has_value()) thread_->request_stop();
     }
+
+    void stop()
+    {
+        request_shutdown();
+        thread_.reset();
+        while (autosave_->take_pending_save()) {
+            try {
+                persistence_->save();
+                autosave_->save_succeeded();
+            } catch (std::exception const& exception) {
+                autosave_->save_failed();
+                persistence_->report_autosave_failure(exception.what());
+                break;
+            } catch (...) {
+                autosave_->save_failed();
+                persistence_->report_autosave_failure("unknown failure");
+                break;
+            }
+        }
+    }
+};
+
+void startup_log(std::string const& message)
+{
+    std::cerr << "[intravenous startup] " << message << '\n';
 }
+
+void request_shutdown()
+{
+    if (shutdown_callback) (*shutdown_callback)();
+}
+
+int run_server_mode(int argc, char** argv)
+{
+    startup_log("parsing server options");
+    auto const options = ServerOptions::parse(argc, argv);
+    StartupConfig startup_config(options.workspace_root, std::filesystem::current_path());
+    auto const startup = startup_config.initialize();
+
+    // App modules are constructed independently. Cross-module behavior is
+    // expressed only by explicit bridges below; none of these constructors
+    // retains another app module.
+    IvModuleInstances iv_module_instances;
+    IvModuleDefinitions iv_module_definitions;
+    IvPackageReload iv_package_reload(startup);
+    IvModuleSourceIntrospection introspection;
+    IvPackageDefinitions iv_package_definitions(startup.workspace_root);
+    SystemAudioDevices system_audio_devices(
+        startup.execution.sample_rate,
+        startup.execution.block_size,
+        SystemAudioDevicesBackend{
+            .list_output_devices = [] { return list_miniaudio_output_devices(); },
+            .list_input_devices = [] { return list_miniaudio_input_devices(); },
+            .make_output_device = [](std::string const& device_id, RenderConfig const& config) {
+                return make_miniaudio_output_device(config, device_id);
+            },
+            .make_input_device = [](std::string const& device_id, RenderConfig const& config) {
+                return make_miniaudio_input_device(config, device_id);
+            },
+        },
+        startup.output_device_id,
+        startup.input_device_id);
+    LanesVisualization lanes_visualization(
+        std::chrono::milliseconds(33),
+        startup.execution.block_size);
+    ProjectPersistence project_persistence(startup.workspace_root, startup);
+    ProjectAutosave project_autosave;
+    SocketRpcServer server(options.workspace_root, options.rpc_fd);
+
+    // Services own process-level loops only; durable domain state remains in
+    // their corresponding app modules.
+    ProjectAutosaveService project_autosave_service(project_autosave, project_persistence);
+    IvPackageReloadService iv_package_reload_service(
+        iv_package_reload,
+        iv_module_definitions,
+        startup.workspace_root,
+        startup.search_roots);
+
+    std::function<void()> shutdown = [&] {
+        iv_package_reload_service.request_shutdown();
+        project_autosave_service.request_shutdown();
+        system_audio_devices.request_shutdown();
+        server.request_shutdown();
+    };
+    ScopedShutdownCallback shutdown_callback_scope(shutdown);
+    install_shutdown_handlers(request_shutdown);
+
+    // Runtime bridges.
+    auto definitions_instances_scope =
+        iv_module_definitions_iv_module_instances_bridge::bind(iv_module_definitions, iv_module_instances);
+    auto definitions_introspection_scope =
+        iv_module_definitions_iv_module_source_introspection_bridge::bind(
+            iv_module_definitions, introspection);
+    auto definitions_reload_scope =
+        iv_module_definitions_iv_package_reload_bridge::bind(iv_module_definitions, iv_package_reload);
+    auto definitions_packages_scope =
+        iv_module_definitions_iv_package_definitions_bridge::bind(iv_module_definitions, iv_package_definitions);
+    auto reload_packages_scope =
+        iv_package_reload_iv_package_definitions_bridge::bind(iv_package_reload, iv_package_definitions);
+    auto instances_introspection_scope =
+        iv_module_instances_iv_module_source_introspection_bridge::bind(iv_module_instances, introspection);
+
+    // Persistence bridges.
+    auto persistence_instances_scope =
+        project_persistence_iv_module_instances_bridge::bind(project_persistence, iv_module_instances);
+    auto persistence_reload_scope =
+        project_persistence_iv_package_reload_bridge::bind(project_persistence, iv_package_reload);
+    auto persistence_audio_scope =
+        project_persistence_system_audio_devices_bridge::bind(project_persistence, system_audio_devices);
+    auto persistence_autosave_scope =
+        project_persistence_project_autosave_bridge::bind(project_persistence, project_autosave);
+
+    // RPC bridges. Lane filters/query/views remain compiled but intentionally
+    // disconnected until a replacement canonical project graph supplies them.
+    auto rpc_audio_scope =
+        socket_rpc_system_audio_devices_bridge::bind(server, system_audio_devices);
+    auto rpc_instances_scope =
+        socket_rpc_iv_module_instances_bridge::bind(server, iv_module_instances);
+    auto rpc_packages_scope =
+        socket_rpc_iv_package_definitions_bridge::bind(server, iv_package_definitions);
+    auto rpc_introspection_scope =
+        socket_rpc_iv_module_source_introspection_bridge::bind(server, introspection);
+    auto visualization_rpc_scope =
+        lanes_visualization_socket_rpc_notification_bridge::bind(lanes_visualization, server);
+    auto rpc_persistence_scope =
+        socket_rpc_project_persistence_bridge::bind(server, project_persistence);
+    auto rpc_autosave_scope =
+        socket_rpc_project_autosave_bridge::bind(server, project_autosave);
+
+    startup_log("loading project persistence");
+    project_persistence.load();
+    project_autosave_service.start();
+
+    startup_log("starting socket rpc server");
+    server.start();
+    if (!server.wait_until_ready(std::chrono::seconds(10))) {
+        throw std::runtime_error("socket rpc server did not deliver server.ready");
+    }
+
+    startup_log("starting iv package reload watcher");
+    iv_package_reload_service.start();
+    std::cout << "Intravenous server connected on rpc fd " << options.rpc_fd << '\n';
+    server.wait();
+
+    iv_package_reload_service.request_shutdown();
+    project_autosave_service.stop();
+    system_audio_devices.request_shutdown();
+    return 0;
+}
+} // namespace
+
+int run_intravenous_cli(int argc, char** argv)
+{
+    install_crash_handlers();
+#if IV_ENABLE_JUCE_VST
+    warmup_juce_vst_scan_cache();
+#endif
+    if (argc >= 2 && std::string_view(argv[1]) == "--server") {
+        return run_server_mode(argc, argv);
+    }
+    throw std::runtime_error("intravenous runs as a server; use --server --workspace-root <path>");
+}
+} // namespace iv

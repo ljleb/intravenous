@@ -365,11 +365,9 @@ function serializePort(
     const stateValue = typeof port.stateValue === "string" && port.stateValue.length > 0
         ? port.stateValue
         : connectivity;
-    const tweakable = (forceTweakable || direction === "input")
-        && direction === "input"
-        && portKind === "sample"
-        && stateValue !== "timelineLane"
-        && stateValue !== "disconnected";
+    // Port state remains useful introspection metadata, but the old graph-input
+    // mutation surface was owned by the deleted lane execution subsystem.
+    // Keep this view read-only until canonical project-graph mutations exist.
     const state = describePortState(port, stateFamily, memberOrdinal, context);
 
     return {
@@ -382,11 +380,11 @@ function serializePort(
         currentValue: typeof port.currentValue === "number" ? port.currentValue : 0,
         hasConcreteOverride: Boolean(port.hasConcreteOverride),
         stateValue,
-        tweakable,
+        tweakable: false,
         stateFamily,
         stateSummary: state.summary,
-        stateActions: state.actions,
-        resetState: state.resetState,
+        stateActions: [],
+        resetState: null,
     };
 }
 

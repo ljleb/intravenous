@@ -9,13 +9,13 @@
 
 namespace iv {
 class IvModuleDefinitions;
-class IvModuleReload;
+class IvPackageReload;
 
 // Owns the server-lifetime control loop for package discovery, compilation,
 // and publication. The registry and reloader retain their respective state;
 // this service owns only polling state and its worker lifetime.
 class IvPackageReloadService {
-    IvModuleReload* reload_ = nullptr;
+    IvPackageReload* reload_ = nullptr;
     IvModuleDefinitions* definitions_ = nullptr;
     std::filesystem::path project_root_;
     std::vector<std::filesystem::path> shared_roots_;
@@ -29,7 +29,7 @@ class IvPackageReloadService {
 
 public:
     IvPackageReloadService(
-        IvModuleReload& reload,
+        IvPackageReload& reload,
         IvModuleDefinitions& definitions,
         std::filesystem::path project_root,
         std::vector<std::filesystem::path> shared_roots);

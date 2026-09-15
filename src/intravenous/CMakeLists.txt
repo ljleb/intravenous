@@ -156,21 +156,14 @@ function(iv_add_host_runtime_objects target)
         intravenous_module_watcher
         intravenous_runtime_iv_module_instances_events
         intravenous_runtime_iv_module_definitions_events
-        intravenous_runtime_iv_module_reload_events
+        intravenous_runtime_iv_package_reload_events
         intravenous_runtime_iv_module_source_introspection_events
-        intravenous_runtime_graph_input_lanes_events
-        intravenous_runtime_audio_device_lanes_events
         intravenous_runtime_lane_filters_events
         intravenous_runtime_lane_views_events
         intravenous_runtime_lanes_visualization_events
         intravenous_runtime_runtime_project_events
         intravenous_runtime_project_persistence_events
         intravenous_runtime_socket_rpc_events
-        intravenous_runtime_task_runner_events
-        intravenous_runtime_timeline_events
-        intravenous_runtime_configured_lanes_events
-        intravenous_runtime_timeline_execution_events
-        intravenous_runtime_iv_module_instances_execution_events
         intravenous_tooling_runtime_objects
         nlohmann_json::nlohmann_json
     )
@@ -310,20 +303,12 @@ iv_add_linker_event_object(
     runtime/iv_module_definitions_events.cpp
 )
 iv_add_linker_event_object(
-    intravenous_runtime_iv_module_reload_events
-    runtime/iv_module_reload_events.cpp
+    intravenous_runtime_iv_package_reload_events
+    runtime/iv_package_reload_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_iv_module_source_introspection_events
     runtime/iv_module_source_introspection_linker_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_graph_input_lanes_events
-    runtime/graph_input_lanes_linker_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_audio_device_lanes_events
-    runtime/audio_device_lanes_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_lane_filters_events
@@ -352,97 +337,52 @@ iv_add_linker_event_object(
     intravenous_runtime_socket_rpc_events
     runtime/socket_rpc_linker_events.cpp
 )
-iv_add_linker_event_object(
-    intravenous_runtime_task_runner_events
-    runtime/task_runner_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_timeline_events
-    runtime/timeline_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_configured_lanes_events
-    runtime/configured_lanes_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_timeline_execution_events
-    runtime/timeline_execution_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_iv_module_instances_execution_events
-    runtime/iv_module_instances_execution_events.cpp
-)
 target_link_libraries(intravenous_runtime_runtime_project_events PRIVATE
     nlohmann_json::nlohmann_json
 )
 
 add_library(intravenous_tooling_runtime_objects OBJECT
-    runtime/configured_lanes.cpp
-    runtime/configured_lanes_timeline_bridge.cpp
-    runtime/audio_device_lanes.cpp
-    runtime/audio_device_lanes_iv_module_instances_execution_bridge.cpp
-    runtime/audio_device_lanes_timeline_bridge.cpp
-    runtime/audio_device_lanes_timeline_execution_bridge.cpp
+    runtime/system_audio_devices.cpp
     runtime/audio_input_synchronizer.cpp
     runtime/config.cpp
-    runtime/graph_input_lanes.cpp
-    runtime/graph_input_lanes/block_store.cpp
-    runtime/graph_input_lanes/configured_state.cpp
-    runtime/graph_input_lanes/builder_completion.cpp
-    runtime/graph_input_lanes/lane_reconciler.cpp
-    runtime/graph_input_lanes/port_catalog.cpp
-    runtime/graph_input_lanes_events.cpp
-    runtime/graph_input_lanes_iv_module_instances_execution_bridge.cpp
-    runtime/graph_input_lanes_timeline_bridge.cpp
     runtime/iv_module_definitions.cpp
     runtime/iv_module_definitions_iv_module_instances_bridge.cpp
-    runtime/iv_module_definitions_iv_module_reload_bridge.cpp
+    runtime/iv_module_definitions_iv_module_source_introspection_bridge.cpp
+    runtime/iv_module_definitions_iv_package_definitions_bridge.cpp
+    runtime/iv_package_reload_iv_package_definitions_bridge.cpp
+    runtime/iv_module_definitions_iv_package_reload_bridge.cpp
     runtime/iv_module_instances.cpp
-    runtime/iv_module_instances_execution.cpp
-    runtime/iv_module_instances_execution_task_runner_bridge.cpp
-    runtime/iv_module_instances_iv_module_instances_execution_bridge.cpp
-    runtime/iv_module_instances_graph_input_lanes_bridge.cpp
     runtime/iv_module_instances_iv_module_source_introspection_bridge.cpp
-    runtime/iv_module_reload.cpp
+    runtime/iv_package_reload.cpp
     runtime/iv_package_reload_service.cpp
     runtime/lane_filters.cpp
     runtime/lane_filters_lane_views_bridge.cpp
     runtime/lane_views_lanes_visualization_bridge.cpp
     runtime/lane_views.cpp
     runtime/lanes_visualization.cpp
-    runtime/lanes_visualization_timeline_bridge.cpp
-    runtime/task_runner_lanes_visualization_bridge.cpp
     runtime/lane_view_service.cpp
     runtime/lane_query_schema_service.cpp
     runtime/lane_query_schema_events.cpp
     runtime/iv_module_source_introspection.cpp
-    runtime/iv_packages.cpp
+    runtime/iv_package_definitions.cpp
     runtime/iv_module_source_introspection_events.cpp
-    runtime/iv_module_source_introspection_graph_input_lanes_bridge.cpp
     runtime/project_persistence.cpp
     runtime/project_persistence_builder.cpp
-    runtime/runtime_graph_bindings.cpp
     runtime/project_autosave.cpp
     runtime/runtime_project_events.cpp
-    runtime/project_persistence_audio_device_lanes_bridge.cpp
+    runtime/project_persistence_system_audio_devices_bridge.cpp
     runtime/project_persistence_project_autosave_bridge.cpp
-    runtime/project_persistence_graph_input_lanes_bridge.cpp
     runtime/project_persistence_iv_module_instances_bridge.cpp
-    runtime/project_persistence_iv_module_reload_bridge.cpp
-    runtime/project_persistence_configured_lanes_bridge.cpp
-    runtime/project_persistence_timeline_bridge.cpp
-    runtime/project_persistence_timeline_execution_bridge.cpp
+    runtime/project_persistence_iv_package_reload_bridge.cpp
     runtime/socket_rpc_lane_views_bridge.cpp
     runtime/socket_rpc_lane_query_schema_bridge.cpp
     runtime/socket_rpc_lane_query_completion_bridge.cpp
-    runtime/socket_rpc_audio_device_lanes_bridge.cpp
+    runtime/socket_rpc_system_audio_devices_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
     runtime/socket_rpc_iv_module_instances_bridge.cpp
-    runtime/socket_rpc_iv_packages_bridge.cpp
+    runtime/socket_rpc_iv_package_definitions_bridge.cpp
     runtime/socket_rpc_project_autosave_bridge.cpp
     runtime/socket_rpc_project_persistence_bridge.cpp
-    runtime/socket_rpc_timeline_execution_bridge.cpp
-    runtime/iv_module_definitions_socket_rpc_packages_bridge.cpp
     runtime/lanes_visualization_socket_rpc_notification_bridge.cpp
     runtime/socket_rpc_json_serialization.cpp
     runtime/socket_rpc_requests.cpp
@@ -450,17 +390,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_server.cpp
     runtime/startup_config.cpp
     runtime/uuid.cpp
-    runtime/task_runner.cpp
-    runtime/task_runner_audio_device_lanes_bridge.cpp
-    runtime/task_runner_graph_input_lanes_bridge.cpp
-    runtime/timeline_execution.cpp
-    runtime/timeline_execution_iv_module_instances_execution_bridge.cpp
-    runtime/timeline_execution_lanes_visualization_bridge.cpp
-    runtime/timeline_execution_task_runner_bridge.cpp
-    runtime/timeline_lane_filters_bridge.cpp
-    runtime/timeline.cpp
-    runtime/timeline_lane_query_schema_bridge.cpp
-    runtime/timeline_timeline_execution_bridge.cpp
     query/lane_query_engine.cpp
     query/lane_query_completion.cpp
     query/lane_query_parser.cpp
@@ -575,5 +504,4 @@ iv_package_pch=${IV_DSL_PCH}
 iv_package_search_root=${IV_BUILTIN_PACKAGE_SEARCH_ROOT}
 sample_rate=48000
 block_size=256
-compiled_sample_cache_chunk_size_multiplier=16
 ")

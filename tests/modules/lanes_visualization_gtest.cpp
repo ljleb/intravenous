@@ -3,7 +3,6 @@
 
 #include <intravenous/runtime/lanes_visualization_events.h>
 #include <intravenous/runtime/sample_stream_blocks.h>
-#include <intravenous/runtime/task_runner_events.h>
 
 #include <gtest/gtest.h>
 
@@ -23,7 +22,6 @@ struct VisualizationTestState {
     std::unordered_map<std::uint64_t, iv::OwnedSampleBlock> compiled_samples {};
     std::unordered_map<std::uint64_t, std::vector<iv::TimedEvent>> compiled_events {};
     std::vector<iv::LaneViewContentUpdate> updates {};
-    iv::TimelineLaneBatchUpdate last_batch {};
     void handle_lane_output_query(
         iv::LaneId lane,
         iv::LanesVisualizationLaneOutputQueryBuilder &builder) const
@@ -61,10 +59,6 @@ struct VisualizationTestState {
             builder.succeed(it->second);
         }
     }
-    void handle_timeline_batch(iv::TimelineLaneBatchUpdate const &batch)
-    {
-        last_batch = batch;
-    }
     void handle_lane_view_content_updated(iv::LaneViewContentUpdate const &update)
     {
         updates.push_back(update);
@@ -92,11 +86,6 @@ IV_SUBSCRIBE_LINKER_EVENT(
     visualization_test_state_bridge,
     iv_runtime_lanes_visualization_compiled_event_window_requested_event,
     &VisualizationTestState::handle_compiled_event_window)
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    visualization_test_state_bridge,
-    iv_runtime_lanes_visualization_timeline_batch_requested_event,
-    &VisualizationTestState::handle_timeline_batch)
 
 IV_SUBSCRIBE_LINKER_EVENT(
     visualization_test_state_bridge,
@@ -241,156 +230,6 @@ TEST(LanesVisualizationTest, ClosedViewStopsPublishingUpdates)
     visualization.handle_lane_view_closed(intern("view-1"));
     visualization.publish_now();
     EXPECT_TRUE(state.updates.empty());
-
-}
-
-TEST(LanesVisualizationTest, RealtimeSampleLaneQueuesTimelineBatchOnPassFinished)
-{
-    VisualizationTestState state;
-    VisualizationTestBindings bindings(state);
-
-    state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
-        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
-        .sample_channel_type = ChannelTypeId::mono,
-    };
-
-    LanesVisualization visualization(std::nullopt, 8);
-    visualization.handle_lane_views_updated(LaneViewResult{
-        .view_id = intern("view-rt"),
-        .lanes = LaneQueryResult{
-            .lanes = { LaneInfo{
-                .lane_id = intern("lane-10"),
-                .runtime_lane = LaneId{10},
-            } },
-        },
-    });
-
-    // Pass finished should trigger timeline batch with one upsert and one connection
-    visualization.handle_task_runner_after_pass(TasksRunnerAfterPass{});
-
-    ASSERT_EQ(state.last_batch.upserts.size(), 1u);
-    ASSERT_EQ(state.last_batch.connections_to_add.size(), 1u);
-    EXPECT_EQ(state.last_batch.connections_to_add.front().source.value, 10u);
-
-}
-
-TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPass)
-{
-    VisualizationTestState state;
-    VisualizationTestBindings bindings(state);
-
-    state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
-        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
-        .sample_channel_type = ChannelTypeId::mono,
-    };
-
-    LanesVisualization visualization(std::nullopt, 8);
-    visualization.handle_lane_views_updated(LaneViewResult{
-        .view_id = intern("view-rt"),
-        .lanes = LaneQueryResult{
-            .lanes = { LaneInfo{
-                .lane_id = intern("lane-10"),
-                .runtime_lane = LaneId{10},
-            } },
-        },
-    });
-
-    visualization.handle_task_runner_after_pass(TasksRunnerAfterPass{});
-    ASSERT_EQ(state.last_batch.upserts.size(), 1u);
-    auto const vis_lane = state.last_batch.upserts.front().lane;
-    auto retired_sink = state.last_batch.upserts.front().make_node();
-    auto const *retired_sample_sink =
-        retired_sink.try_as<VisualizationRealtimeSampleLane>();
-    ASSERT_NE(retired_sample_sink, nullptr);
-    std::weak_ptr<RealtimeSampleBlockQueue> retired_queue =
-        retired_sample_sink->queue;
-
-    state.last_batch = {};
-    visualization.handle_lane_view_closed(intern("view-rt"));
-    visualization.handle_task_runner_after_pass(TasksRunnerAfterPass{});
-
-    ASSERT_EQ(state.last_batch.removals.size(), 1u);
-    EXPECT_EQ(state.last_batch.removals.front(), vis_lane);
-
-    // A task graph may still execute the removed sink. Its queue is owned by
-    // the node, not borrowed from the visualization view that has just gone
-    // away.
-    EXPECT_FALSE(retired_queue.expired());
-    retired_sink = TypeErasedLaneNode{};
-    visualization.publish_now();
-    EXPECT_TRUE(retired_queue.expired());
-
-}
-
-TEST(LanesVisualizationTest, RepeatedIdenticalRealtimeViewUpdatesDoNotDuplicateTimelineUpserts)
-{
-    VisualizationTestState state;
-    VisualizationTestBindings bindings(state);
-
-    state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
-        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
-        .sample_channel_type = ChannelTypeId::mono,
-    };
-
-    LanesVisualization visualization(std::nullopt, 8);
-    LaneViewResult view{
-        .view_id = intern("view-rt"),
-        .lanes = LaneQueryResult{
-            .lanes = { LaneInfo{
-                .lane_id = intern("lane-10"),
-                .runtime_lane = LaneId{10},
-            } },
-        },
-    };
-    visualization.handle_lane_views_updated(view);
-    visualization.handle_task_runner_after_pass(TasksRunnerAfterPass{});
-    ASSERT_EQ(state.last_batch.upserts.size(), 1u);
-
-    state.last_batch = {};
-    visualization.handle_lane_views_updated(view);
-    visualization.handle_task_runner_after_pass(TasksRunnerAfterPass{});
-    EXPECT_TRUE(state.last_batch.upserts.empty());
-    EXPECT_TRUE(state.last_batch.connections_to_add.empty());
-
-}
-
-TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
-{
-    VisualizationTestState state;
-    VisualizationTestBindings bindings(state);
-
-    state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
-        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
-        .sample_channel_type = ChannelTypeId::mono,
-    };
-
-    LanesVisualization visualization(std::nullopt, 8);
-    LaneViewResult view{
-        .view_id = intern("view-rt"),
-        .lanes = LaneQueryResult{
-            .lanes = { LaneInfo{
-                .lane_id = intern("lane-10"),
-                .runtime_lane = LaneId{10},
-            } },
-        },
-    };
-    visualization.handle_lane_views_updated(view);
-    visualization.handle_task_runner_after_pass(TasksRunnerAfterPass{});
-    ASSERT_EQ(state.last_batch.upserts.size(), 1u);
-    auto const old_vis_lane = state.last_batch.upserts.front().lane;
-    EXPECT_EQ(state.last_batch.connections_to_add.front().input.kind, PortKind::sample);
-
-    state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
-        .config = RealtimeEventLaneOutputConfig{ .name = "test" },
-    };
-    state.last_batch = {};
-    visualization.handle_lane_views_updated(view);
-    visualization.handle_task_runner_after_pass(TasksRunnerAfterPass{});
-
-    ASSERT_EQ(state.last_batch.removals.size(), 1u);
-    EXPECT_EQ(state.last_batch.removals.front(), old_vis_lane);
-    ASSERT_EQ(state.last_batch.upserts.size(), 1u);
-    EXPECT_EQ(state.last_batch.connections_to_add.front().input.kind, PortKind::event);
 
 }
 

@@ -4,8 +4,8 @@
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_reload.h>
-#include <intravenous/runtime/iv_packages.h>
+#include <intravenous/runtime/iv_module_definitions_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/iv_package_definitions.h>
 
 #include <gtest/gtest.h>
 
@@ -20,28 +20,15 @@
 namespace {
 constexpr std::string_view module_id = "iv.test.module";
 
-// Normal instance-lifecycle tests need a usable execution root.  Keep this
-// separate from the deliberately rootless definition helper below: a
-// rootless module is valid in the package registry when it requires
-// construction arguments, but it cannot be realized as a project instance
-// until project persistence has an argument payload for it.
-struct TestModuleRoot {
-    void tick_block(auto const&) const {}
-};
-
-TestModuleRoot const test_module_root{};
-
 struct IvModuleInstancesWitness {
     std::optional<iv::IvModuleRequiredDefinitionsChanged> required_diff {};
     std::optional<iv::IvModuleInstancesChanged> instances_diff {};
-    std::optional<iv::IvModuleInstanceBuildersChanged> configured_builders {};
     std::optional<std::vector<iv::IvModuleInstanceInfo>> listed_instances {};
 
     void reset()
     {
         required_diff.reset();
         instances_diff.reset();
-        configured_builders.reset();
         listed_instances.reset();
     }
     void handle_required_definitions_changed(
@@ -58,12 +45,6 @@ struct IvModuleInstancesWitness {
     {
         listed_instances = instances;
     }
-    void handle_instances_configured(iv::IvModuleInstancesConfigured const &configured)
-    {
-        if (configured.builders != nullptr) {
-            configured_builders = *configured.builders;
-        }
-    }
 };
 
 using namespace iv;
@@ -74,17 +55,6 @@ IV_DECLARE_BRIDGE(
 IV_DEFINE_BRIDGE(iv_module_instances_witness_bridge)
 
 iv::IvModuleDefinition make_definition(std::filesystem::path module_root)
-{
-    auto const normalized = std::filesystem::weakly_canonical(module_root).lexically_normal();
-    return iv::IvModuleDefinition{
-        .definition_id = std::string(module_id),
-        .package_root = normalized,
-        .module_id = "iv.test.module",
-        .root = iv::WeakTypeErasedNode(test_module_root),
-    };
-}
-
-iv::IvModuleDefinition make_rootless_definition(std::filesystem::path module_root)
 {
     auto const normalized = std::filesystem::weakly_canonical(module_root).lexically_normal();
     return iv::IvModuleDefinition{
@@ -115,10 +85,6 @@ IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_instances_witness_bridge,
     iv_runtime_iv_module_instances_list_changed_event,
     &IvModuleInstancesWitness::handle_instances_list_changed)
-IV_SUBSCRIBE_LINKER_EVENT(
-    iv_module_instances_witness_bridge,
-    iv_runtime_iv_module_instances_configured_event,
-    &IvModuleInstancesWitness::handle_instances_configured)
 
 class IvModuleInstancesTest : public ::testing::Test {
 protected:
@@ -150,7 +116,7 @@ TEST_F(IvModuleInstancesTest, CreateInstancePublishesRequiredDefinitionAndListCh
     EXPECT_FALSE(witness.listed_instances->front().realized);
 }
 
-TEST_F(IvModuleInstancesTest, CreateSecondInstanceForSameDefinitionRepublishesLoadedDefinition)
+TEST_F(IvModuleInstancesTest, CreateSecondInstanceForSameDefinitionDoesNotRepublishRequirement)
 {
     auto const workspace =
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_dedup_required");
@@ -163,10 +129,7 @@ TEST_F(IvModuleInstancesTest, CreateSecondInstanceForSameDefinitionRepublishesLo
     auto const second_instance_id = instances.create_instance(module_id, module_root);
 
     EXPECT_FALSE(second_instance_id.empty());
-    ASSERT_TRUE(witness.required_diff.has_value());
-    ASSERT_EQ(witness.required_diff->updated.size(), 1u);
-    EXPECT_EQ(witness.required_diff->updated.front().definition_id, module_id);
-    EXPECT_EQ(witness.required_diff->updated.front().package_root, module_root);
+    EXPECT_FALSE(witness.required_diff.has_value());
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 2u);
 }
@@ -241,10 +204,11 @@ TEST_F(IvModuleInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirst
         "IV_MODULE(\"iv.test.module.secondary\", secondary);\n");
 
     iv::IvModuleDefinitions definitions;
-    iv::IvModuleReload reload({});
+    iv::IvPackageDefinitions sources(workspace);
+    auto package_definitions_scope =
+        iv::iv_module_definitions_iv_package_definitions_bridge::bind(definitions, sources);
     definitions.sync_package_declarations(
         iv::discover_iv_package_declarations(workspace, {}));
-    iv::IvPackages sources(workspace, definitions, reload);
     auto const discovered = sources.list_packages();
 
     ASSERT_EQ(discovered.size(), 1u);
@@ -279,8 +243,6 @@ TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPubl
     ASSERT_EQ(witness.listed_instances->size(), 1u);
     EXPECT_TRUE(witness.listed_instances->front().realized);
     EXPECT_EQ(witness.listed_instances->front().module_id, "iv.test.module");
-    EXPECT_FALSE(
-        witness.listed_instances->front().default_silence_ttl_samples.has_value());
 }
 
 TEST_F(IvModuleInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnrealized)
@@ -297,8 +259,8 @@ TEST_F(IvModuleInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnre
     witness.reset();
 
     // A successful package revision may intentionally remove a definition even
-    // while the project still desires an instance of it. Drop only the realized
-    // execution root; preserve the desired instance so the UI can show it as
+    // while the project still desires an instance of it. Drop the published
+    // snapshot but preserve durable instance metadata so the UI can show it as
     // unresolved and offer deletion instead of hiding orphaned project state.
     apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
         .deleted_definition_ids = {std::string(module_id)},
@@ -314,124 +276,7 @@ TEST_F(IvModuleInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnre
     EXPECT_FALSE(witness.listed_instances->front().realized);
 }
 
-TEST_F(IvModuleInstancesTest, RootlessDefinitionKeepsDesiredInstanceVisibleAsUnrealized)
-{
-    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
-        "iv_module_instances_rootless_definition");
-    auto const module_root = std::filesystem::weakly_canonical(workspace);
-    iv::IvModuleInstances instances;
-
-    auto const instance_id = instances.create_instance(module_id, module_root);
-    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
-        .created = {make_rootless_definition(module_root)},
-    });
-
-    // A module with required g.node<Id>(...) arguments is a valid registered
-    // definition even though a persisted project instance has no arguments to
-    // supply to it yet.  It remains addressable so the UI can explain the
-    // problem and the user can delete it.
-    EXPECT_FALSE(witness.instances_diff.has_value());
-    auto const listed = instances.list_instances();
-    ASSERT_EQ(listed.size(), 1u);
-    EXPECT_EQ(listed.front().instance_id, instance_id);
-    EXPECT_EQ(listed.front().definition_id, module_id);
-    EXPECT_FALSE(listed.front().realized);
-}
-
-TEST_F(IvModuleInstancesTest, RootlessRevisionUnrealizesButDoesNotDeleteDesiredInstance)
-{
-    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
-        "iv_module_instances_rootless_revision");
-    auto const module_root = std::filesystem::weakly_canonical(workspace);
-    iv::IvModuleInstances instances;
-
-    auto const instance_id = instances.create_instance(module_id, module_root);
-    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
-        .created = {make_definition(module_root)},
-    });
-    witness.reset();
-
-    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
-        .updated = {make_rootless_definition(module_root)},
-    });
-
-    ASSERT_TRUE(witness.instances_diff.has_value());
-    ASSERT_EQ(witness.instances_diff->deleted_instance_ids.size(), 1u);
-    EXPECT_EQ(witness.instances_diff->deleted_instance_ids.front(), instance_id);
-    ASSERT_TRUE(witness.configured_builders.has_value());
-    ASSERT_EQ(witness.configured_builders->deleted_instance_ids.size(), 1u);
-    EXPECT_EQ(witness.configured_builders->deleted_instance_ids.front(), instance_id);
-
-    auto const listed = instances.list_instances();
-    ASSERT_EQ(listed.size(), 1u);
-    EXPECT_EQ(listed.front().instance_id, instance_id);
-    EXPECT_FALSE(listed.front().realized);
-}
-
-TEST_F(IvModuleInstancesTest, DefinitionReloadCreatesNewRuntimeBindingGeneration)
-{
-    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
-        "iv_module_instances_binding_generation");
-    auto const module_root = std::filesystem::weakly_canonical(workspace);
-    iv::IvModuleInstances instances;
-
-    (void)instances.create_instance(module_id, module_root);
-    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
-        .created = {make_definition(module_root)},
-    });
-    ASSERT_TRUE(witness.instances_diff.has_value());
-    ASSERT_EQ(witness.instances_diff->created.size(), 1u);
-    auto const original_bindings =
-        witness.instances_diff->created.front().runtime_bindings;
-    ASSERT_NE(original_bindings, nullptr);
-    witness.reset();
-
-    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
-        .updated = {make_definition(module_root)},
-    });
-
-    ASSERT_TRUE(witness.instances_diff.has_value());
-    ASSERT_EQ(witness.instances_diff->updated.size(), 1u);
-    auto const replacement_bindings =
-        witness.instances_diff->updated.front().runtime_bindings;
-    ASSERT_NE(replacement_bindings, nullptr);
-    EXPECT_NE(replacement_bindings, original_bindings);
-}
-
-TEST_F(IvModuleInstancesTest, SettingPerInstanceDefaultSilenceTtlRepublishesRealizedBuilder)
-{
-    auto const workspace =
-        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_set_ttl");
-    auto const module_root = std::filesystem::weakly_canonical(workspace);
-    iv::IvModuleInstances instances;
-
-    auto const instance_id = instances.create_instance(module_id, module_root);
-    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
-        .created = {make_definition(module_root)},
-    });
-    witness.reset();
-
-    instances.set_default_silence_ttl_samples(instance_id, 8192);
-
-    ASSERT_TRUE(witness.configured_builders.has_value());
-    ASSERT_EQ(witness.configured_builders->updated.size(), 1u);
-    ASSERT_NE(witness.configured_builders->updated.front().instance, nullptr);
-    EXPECT_EQ(
-        witness.configured_builders->updated.front().instance->instance_id,
-        instance_id);
-    ASSERT_TRUE(
-        witness.configured_builders->updated.front().default_silence_ttl_samples.has_value());
-    EXPECT_EQ(
-        *witness.configured_builders->updated.front().default_silence_ttl_samples,
-        8192u);
-
-    auto const listed = instances.list_instances();
-    ASSERT_EQ(listed.size(), 1u);
-    ASSERT_TRUE(listed.front().default_silence_ttl_samples.has_value());
-    EXPECT_EQ(*listed.front().default_silence_ttl_samples, 8192u);
-}
-
-TEST_F(IvModuleInstancesTest, RemoveLastRealizedInstancePublishesDeleteAndDropsRequirement)
+TEST_F(IvModuleInstancesTest, RemoveLastPublishedInstancePublishesDeleteAndDropsRequirement)
 {
     auto const workspace =
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_remove");
