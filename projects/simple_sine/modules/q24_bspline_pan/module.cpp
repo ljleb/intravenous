@@ -509,7 +509,7 @@ struct BaselineFir256
     static constexpr size_t input_history = tap_count - 1;
 
     static constexpr char coefficient_path[] =
-        "/home/ljleb/Downloads/P0014_v2_runtime_baseline_ir_256.csv";
+        "modules/q24_bspline_pan/P0014_v2_runtime_baseline_ir_256.csv";
 
     static constexpr auto inputs()
     {

@@ -23,7 +23,7 @@ struct LearnedHrtfSource
     static constexpr float speed_of_sound = 343.0f;
     static constexpr float head_radius = 0.0875f;
 
-    static constexpr char coefficient_path[] = "/home/ljleb/Downloads/P0014_v2_runtime_360param_coefficients.csv";
+    static constexpr char coefficient_path[] = "modules/P0014_v2_runtime_360param_coefficients.csv";
 
     static constexpr auto inputs()
     {
