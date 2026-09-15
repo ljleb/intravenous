@@ -307,9 +307,9 @@ void SocketRpcServer::handle_client(int fd) {
                             builder.fail("iv module instance service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, GetIvPackagesRequest>) {
-                        SocketRpcIvPackagesResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_packages_event, event_request, builder);
+                    } else if constexpr (std::same_as<Request, GetIvPackageDefinitionsRequest>) {
+                        SocketRpcIvPackageDefinitionsResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_package_definitions_event, event_request, builder);
                         if (!builder.has_response()) {
                             builder.fail("IV package service is unavailable");
                         }
@@ -343,84 +343,6 @@ void SocketRpcServer::handle_client(int fd) {
                             builder);
                         if (!builder.has_response()) {
                             builder.fail("iv module instance service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_set_timeline_compiled_sample_cache_chunk_size_multiplier_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetTimelineLaneSampleChannelTypeRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_set_timeline_lane_sample_channel_type_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetTimelineLaneUiStateRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_set_timeline_lane_ui_state_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, ConnectTimelineLanesRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_connect_timeline_lanes_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, DisconnectTimelineLanesRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_disconnect_timeline_lanes_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, GetTimelineLaneTypesRequest>) {
-                        SocketRpcLaneTypesResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_timeline_lane_types_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, CreateTimelineLaneRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_timeline_lane_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, DeleteTimelineLaneRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_delete_timeline_lane_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, DuplicateTimelineLaneRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_duplicate_timeline_lane_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
                         }
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, GetAudioDevicesRequest>) {
@@ -484,62 +406,6 @@ void SocketRpcServer::handle_client(int fd) {
                             builder.fail("lane view service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetSampleInputValueRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_sample_input_value_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("iv module source introspection service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetSampleInputStateRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_sample_input_state_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("iv module source introspection service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetEventInputStateRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_event_input_state_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("iv module source introspection service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetSampleOutputStateRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_sample_output_state_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("iv module source introspection service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetEventOutputStateRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_event_output_state_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("iv module source introspection service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, PauseRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_pause_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("timeline execution service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, ResumeRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_resume_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("timeline execution service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SeekRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_seek_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("timeline execution service is unavailable");
-                        }
-                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, SaveProjectRequest>) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_save_project_event, event_request, builder);
@@ -566,6 +432,11 @@ void SocketRpcServer::handle_client(int fd) {
                         builder.succeed();
                         response = builder.build(request_id);
                         shutdown_after_response = true;
+                    } else if constexpr (std::same_as<Request, UnsupportedSocketRpcRequest>) {
+                        response = jsonrpc_error(
+                            request_id,
+                            -32601,
+                            "unsupported JSON-RPC method: " + event_request.method);
                     }
                 }, request.payload);
             } catch (std::exception const &e) {
@@ -812,7 +683,7 @@ void SocketRpcServer::send_iv_module_instances_updated(
     }
 }
 
-void SocketRpcServer::send_iv_packages_updated()
+void SocketRpcServer::send_iv_package_definitions_updated()
 {
     int fd = -1;
     {
@@ -892,7 +763,7 @@ void SocketRpcServer::handle_project_notification(
 void SocketRpcServer::handle_iv_package_catalog_changed(
     IvPackageCatalogChanged const &)
 {
-    send_iv_packages_updated();
+    send_iv_package_definitions_updated();
 }
 
 void SocketRpcServer::handle_lane_views_updated(LaneViewResult const &lane_view)

@@ -1,22 +1,12 @@
 #include <intravenous/bridge.h>
-#include <intravenous/linker_event.h>
-#include <intravenous/query/lane_query_dataset.h>
-#include <intravenous/query/lane_query_schema.h>
 #include <intravenous/runtime/lane_filters.h>
 #include <intravenous/runtime/lane_filters_events.h>
 #include <intravenous/runtime/lane_filters_lane_views_bridge.h>
 #include <intravenous/runtime/lane_views.h>
 #include <intravenous/runtime/lane_views_events.h>
-#include <intravenous/runtime/timeline_events.h>
-#include <intravenous/runtime/timeline.h>
-#include <intravenous/runtime/timeline_lane_filters_bridge.h>
 
 #include <gtest/gtest.h>
 
-#include <cstdint>
-#include <memory>
-#include <optional>
-#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -32,48 +22,9 @@ iv::InternedString intern(std::string_view value)
     return iv::InternedString::from_view(value);
 }
 
-struct FakeLaneRecord {
-    std::uint64_t lane_id = 0;
-    std::unordered_map<std::string, bool> unit_values {};
-};
-
-class FakeLaneQueryDataset final : public iv::query::LaneQueryDataset {
-    iv::query::LaneQuerySchema schema_;
-    std::vector<FakeLaneRecord> lanes_;
-
-public:
-    FakeLaneQueryDataset(
-        iv::query::LaneQuerySchema schema,
-        std::vector<FakeLaneRecord> lanes)
-        : schema_(std::move(schema))
-        , lanes_(std::move(lanes))
-    {}
-
-    [[nodiscard]] iv::query::LaneQuerySchema const &schema() const override { return schema_; }
-    [[nodiscard]] size_t lane_count() const override { return lanes_.size(); }
-    [[nodiscard]] std::uint64_t lane_id_at(size_t lane_index) const override { return lanes_.at(lane_index).lane_id; }
-    [[nodiscard]] bool in_filter(size_t, std::string_view) const override { return false; }
-    [[nodiscard]] bool has_unit(size_t lane_index, iv::query::LaneQueryPropertyId property) const override
-    {
-        return lanes_.at(lane_index).unit_values.contains(schema_.key_of(property));
-    }
-    [[nodiscard]] std::optional<int> int_value(size_t, iv::query::LaneQueryPropertyId) const override
-    {
-        return std::nullopt;
-    }
-    [[nodiscard]] std::optional<float> float_value(size_t, iv::query::LaneQueryPropertyId) const override
-    {
-        return std::nullopt;
-    }
-};
-
 struct BridgeWitness {
-    std::vector<iv::LaneFiltersChanged> filter_changes {};
     std::vector<iv::LaneViewResult> view_updates {};
-    void handle_lane_filters_changed(iv::LaneFiltersChanged const &change)
-    {
-        filter_changes.push_back(change);
-    }
+
     void handle_lane_views_updated(iv::LaneViewResult const &update)
     {
         view_updates.push_back(update);
@@ -81,33 +32,9 @@ struct BridgeWitness {
 };
 
 using namespace iv;
-IV_DECLARE_BRIDGE(lane_filters_witness_bridge, iv::LaneFilters, BridgeWitness);
 IV_DECLARE_BRIDGE(lane_views_witness_bridge, iv::LaneViews, BridgeWitness);
-IV_DEFINE_BRIDGE(lane_filters_witness_bridge)
 IV_DEFINE_BRIDGE(lane_views_witness_bridge)
 
-iv::LaneMetadata metadata_for_lane(iv::LaneId)
-{
-    return {};
-}
-
-std::vector<iv::TimelineLaneOutputs> no_outputs(std::vector<iv::LaneId> const &lanes)
-{
-    std::vector<iv::TimelineLaneOutputs> outputs;
-    outputs.reserve(lanes.size());
-    for (auto lane : lanes) {
-        outputs.push_back(iv::TimelineLaneOutputs{
-            .lane = lane,
-            .outputs = {},
-        });
-    }
-    return outputs;
-}
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    lane_filters_witness_bridge,
-    iv_runtime_lane_filters_changed_event,
-    &BridgeWitness::handle_lane_filters_changed)
 IV_SUBSCRIBE_LINKER_EVENT(
     lane_views_witness_bridge,
     iv_runtime_lane_views_updated_event,
@@ -117,15 +44,10 @@ class LaneFilterBridgesTest : public ::testing::Test {
 protected:
     iv::LaneFilters filters;
     iv::LaneViews views;
-    iv::Timeline timeline;
     iv::lane_filters_lane_views_bridge::scope lane_filters_lane_views_scope {
         &filters, &views
     };
-    iv::timeline_lane_filters_bridge::scope timeline_lane_filters_scope {
-        &timeline, &filters
-    };
     BridgeWitness witness {};
-    lane_filters_witness_bridge::scope lane_filters_witness_scope {filters, witness};
     lane_views_witness_bridge::scope lane_views_witness_scope {views, witness};
 };
 } // namespace
@@ -157,90 +79,8 @@ TEST(LinkerBridgeScopeTest, RejectsSecondBindingAndTransfersOwnershipOnMove)
         &right);
 }
 
-TEST_F(LaneFilterBridgesTest, TimelineLaneFiltersBridgeForwardsTimelineChanges)
-{
-    auto const schema = iv::query::LaneQuerySchema::from_entries({
-        {"graph_input", iv::query::LaneQueryValueType::unit},
-    }, 1);
-    auto dataset = std::make_shared<FakeLaneQueryDataset>(
-        schema,
-        std::vector<FakeLaneRecord>{{.lane_id = 41, .unit_values = {{"graph_input", true}}}});
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_lane_filter_stored_event,
-        iv::LaneFilterStoredRequest{
-            .filter_name = "graph_input.default",
-            .query_source = "graph_input",
-        });
-    witness.filter_changes.clear();
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_timeline_lanes_changed_event,
-        iv::TimelineLanesChanged{
-            .lane_set_changed = true,
-            .dataset = dataset,
-            .metadata_for_lane = metadata_for_lane,
-            .outputs_for_lanes = no_outputs,
-        });
-
-    ASSERT_EQ(witness.filter_changes.size(), 1u);
-    ASSERT_EQ(witness.filter_changes.front().results.size(), 1u);
-    auto const *snapshot =
-        std::get_if<iv::FilteredLanesSnapshot>(&witness.filter_changes.front().results.front().outcome);
-    ASSERT_NE(snapshot, nullptr);
-    EXPECT_EQ(snapshot->filter_name, "graph_input.default");
-}
-
-TEST_F(LaneFilterBridgesTest, LaneFiltersLaneViewsBridgeForwardsStoredFilterEvents)
-{
-    auto const schema = iv::query::LaneQuerySchema::from_entries({
-        {"graph_input", iv::query::LaneQueryValueType::unit},
-    }, 1);
-    auto dataset = std::make_shared<FakeLaneQueryDataset>(
-        schema,
-        std::vector<FakeLaneRecord>{{.lane_id = 41, .unit_values = {{"graph_input", true}}}});
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_timeline_lanes_changed_event,
-        iv::TimelineLanesChanged{
-            .lane_set_changed = true,
-            .dataset = dataset,
-            .metadata_for_lane = metadata_for_lane,
-            .outputs_for_lanes = no_outputs,
-        });
-    witness.filter_changes.clear();
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_lane_filter_stored_event,
-        iv::LaneFilterStoredRequest{
-            .filter_name = "graph_input.default",
-            .query_source = "graph_input",
-        });
-
-    ASSERT_EQ(witness.filter_changes.size(), 1u);
-    ASSERT_EQ(witness.filter_changes.front().results.size(), 1u);
-    auto const *snapshot =
-        std::get_if<iv::FilteredLanesSnapshot>(&witness.filter_changes.front().results.front().outcome);
-    ASSERT_NE(snapshot, nullptr);
-    EXPECT_EQ(snapshot->filter_name, "graph_input.default");
-}
-
 TEST_F(LaneFilterBridgesTest, LaneFiltersLaneViewsBridgeForwardsFilterResultsToViews)
 {
-    auto const schema = iv::query::LaneQuerySchema::from_entries({
-        {"graph_input", iv::query::LaneQueryValueType::unit},
-    }, 1);
-    auto dataset = std::make_shared<FakeLaneQueryDataset>(
-        schema,
-        std::vector<FakeLaneRecord>{{.lane_id = 41, .unit_values = {{"graph_input", true}}}});
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_timeline_lanes_changed_event,
-        iv::TimelineLanesChanged{
-            .lane_set_changed = true,
-            .dataset = dataset,
-            .metadata_for_lane = metadata_for_lane,
-            .outputs_for_lanes = no_outputs,
-        });
-
     (void)views.open_view(iv::LaneViewRequest{
         .view_id = intern("abc"),
         .query = iv::LaneQuery{

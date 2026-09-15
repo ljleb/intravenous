@@ -71,6 +71,10 @@ struct IvNodeTypeDefinitionsChanged {
 struct IvPackageDefinitionsChanged {
     IvModuleDefinitionsChanged modules{};
     IvNodeTypeDefinitionsChanged node_types{};
+    // Package-level publication diagnostics are registry state, not reload
+    // state. Publish them with the definition diff so package tooling does
+    // not need a direct reference back to IvModuleDefinitions.
+    std::unordered_map<std::string, std::string> publication_messages_by_package_id{};
 };
 
 // One coherent read of the package registry. Published IDs are the only IDs
@@ -86,7 +90,7 @@ struct IvPackageDefinitionSnapshot {
 
 // A successful package build contributes this complete candidate definition set.
 // It remains stored while another package temporarily conflicts with one of its IDs.
-struct IvModuleReloadedDefinition {
+struct IvPackageReloadedDefinition {
     std::string package_id{};
     std::string definition_id{};
     std::filesystem::path package_root{};
@@ -98,7 +102,7 @@ struct IvModuleReloadedDefinition {
     std::shared_ptr<ConfiguredGraph const> configured_graph{};
 };
 
-struct IvModuleReloadedNodeType {
+struct IvPackageReloadedNodeType {
     std::string package_id{};
     std::string node_type_id{};
     std::filesystem::path package_root{};
@@ -107,7 +111,7 @@ struct IvModuleReloadedNodeType {
 };
 
 struct IvModuleRequiredDefinitionsChanged;
-struct IvModuleReloadResults;
+struct IvPackageReloadResults;
 
 class IvModuleDefinitions {
 public:
@@ -122,8 +126,8 @@ public:
 
 private:
     struct PackageCandidate {
-        std::vector<IvModuleReloadedDefinition> modules{};
-        std::vector<IvModuleReloadedNodeType> node_types{};
+        std::vector<IvPackageReloadedDefinition> modules{};
+        std::vector<IvPackageReloadedNodeType> node_types{};
     };
 
     mutable std::mutex mutex;
@@ -163,7 +167,8 @@ private:
         std::unordered_set<std::string> const& changed_package_ids);
     void publish_package_definitions_changed(
         IvModuleDefinitionsChanged modules,
-        IvNodeTypeDefinitionsChanged node_types) const;
+        IvNodeTypeDefinitionsChanged node_types,
+        bool force = false) const;
 public:
     IvModuleDefinitions() = default;
     ~IvModuleDefinitions();
@@ -179,9 +184,9 @@ public:
 
     void handle_required_definitions_changed(
         IvModuleRequiredDefinitionsChanged const &diff);
-    void handle_reload_results(IvModuleReloadResults const &results);
+    void handle_reload_results(IvPackageReloadResults const &results);
 
-    void seed_loaded_definition(IvModuleReloadedDefinition loaded_definition);
+    void seed_loaded_definition(IvPackageReloadedDefinition loaded_definition);
 
     // The declaration registry is the authoritative package catalog. UI and
     // project services must query this coherent snapshot rather than scanning

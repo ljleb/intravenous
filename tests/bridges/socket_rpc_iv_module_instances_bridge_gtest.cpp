@@ -3,15 +3,11 @@
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_reload.h>
-#include <intravenous/runtime/iv_packages.h>
+#include <intravenous/runtime/iv_module_definitions_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/iv_package_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
-#include <intravenous/runtime/project_persistence.h>
-#include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
-#include <intravenous/runtime/socket_rpc_iv_packages_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
-#include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
@@ -47,15 +43,13 @@ TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventLeavesResponseUnbuilt)
     EXPECT_THROW(static_cast<void>(builder.build(1)), std::runtime_error);
 }
 
-TEST(IvPackages, NewProjectPackagesReceivePackageSpecificSharedPchCompileDatabase)
+TEST(IvPackageDefinitions, NewProjectPackagesReceivePackageSpecificSharedPchCompileDatabase)
 {
     auto const project_root = std::filesystem::temp_directory_path()
-        / "intravenous_iv_packages_compile_commands_test";
+        / "intravenous_iv_package_definitions_compile_commands_test";
     std::filesystem::remove_all(project_root);
 
-    iv::IvModuleDefinitions definitions;
-    iv::IvModuleReload reload({});
-    iv::IvPackages packages(project_root, definitions, reload);
+    iv::IvPackageDefinitions packages(project_root);
     auto const first = packages.create_project_package("first");
     auto const second = packages.create_project_package("second");
 
@@ -98,6 +92,16 @@ TEST(IvPackages, NewProjectPackagesReceivePackageSpecificSharedPchCompileDatabas
     expect_compile_database(first.package_root, first_database);
     expect_compile_database(second.package_root, second_database);
 
+    // File creation and catalog publication are separate responsibilities.
+    // The package catalog only changes when the definition pipeline publishes
+    // package declarations.
+    packages.handle_package_declarations_changed(iv::IvPackageDeclarationsChanged{
+        .created = {
+            {.package_id = first.package_id, .package_root = first.package_root},
+            {.package_id = second.package_id, .package_root = second.package_root},
+        },
+    });
+
     auto const listed = packages.list_packages();
     ASSERT_EQ(listed.size(), 2u);
     EXPECT_EQ(listed[0].package_id, first.package_id);
@@ -108,13 +112,14 @@ TEST(IvPackages, NewProjectPackagesReceivePackageSpecificSharedPchCompileDatabas
     std::filesystem::remove_all(project_root);
 }
 
-TEST(IvPackages, ListsPublishedDefinitionsFromTheRegistrySnapshot)
+TEST(IvPackageDefinitions, ListsPublishedDefinitionsFromTheRegistrySnapshot)
 {
     auto const package_root = iv::test::test_modules_root() / "local_cmake";
     auto const normalized_root = std::filesystem::weakly_canonical(package_root);
     iv::IvModuleDefinitions definitions;
-    iv::IvModuleReload reload({});
-    iv::IvPackages packages("/tmp", definitions, reload);
+    iv::IvPackageDefinitions packages("/tmp");
+    auto definitions_scope = iv::iv_module_definitions_iv_package_definitions_bridge::bind(
+        definitions, packages);
 
     auto definition = iv::test_support::make_loaded_definition(
         package_root, "iv.test.local_cmake");
@@ -129,25 +134,26 @@ TEST(IvPackages, ListsPublishedDefinitionsFromTheRegistrySnapshot)
     EXPECT_TRUE(listed.front().publication_message.empty());
 }
 
-TEST(IvPackages, RegistryConflictIsNotReportedAsAnEmptyPackage)
+TEST(IvPackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
 {
     auto const workspace = iv::test::fresh_module_fixture_workspace(
-        "iv_packages_registry_conflict");
+        "iv_package_definitions_registry_conflict");
     auto const first_root = workspace / "first";
     auto const second_root = workspace / "second";
     std::filesystem::create_directories(first_root);
     std::filesystem::create_directories(second_root);
 
     iv::IvModuleDefinitions definitions;
-    iv::IvModuleReload reload({});
-    iv::IvPackages packages(workspace, definitions, reload);
-    definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
+    iv::IvPackageDefinitions packages(workspace);
+    auto definitions_scope = iv::iv_module_definitions_iv_package_definitions_bridge::bind(
+        definitions, packages);
+    definitions.seed_loaded_definition(iv::IvPackageReloadedDefinition{
         .package_id = "iv.test.first",
         .definition_id = "iv.test.shared",
         .package_root = first_root,
         .module_id = "iv.test.shared",
     });
-    definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
+    definitions.seed_loaded_definition(iv::IvPackageReloadedDefinition{
         .package_id = "iv.test.second",
         .definition_id = "iv.test.shared",
         .package_root = second_root,
@@ -174,9 +180,6 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
     iv::IvModuleDefinitions definitions;
-    iv::IvModuleReload reload({});
-    iv::IvPackages sources("/tmp", definitions, reload);
-    iv::ProjectPersistence persistence("/tmp", {});
     iv::SocketRpcServer server("/tmp", -1);
     auto iv_module_definitions_iv_module_instances_scope =
         iv::iv_module_definitions_iv_module_instances_bridge::bind(
@@ -185,20 +188,12 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
     definitions.seed_loaded_definition(std::move(definition));
-    auto project_persistence_iv_module_instances_scope =
-        iv::project_persistence_iv_module_instances_bridge::bind(
-            persistence,
-            instances);
     auto iv_module_instances_iv_module_source_introspection_scope =
         iv::iv_module_instances_iv_module_source_introspection_bridge::bind(
             instances,
             introspection);
     auto socket_rpc_iv_module_instances_scope =
         iv::socket_rpc_iv_module_instances_bridge::bind(server, instances);
-    auto socket_rpc_iv_packages_scope =
-        iv::socket_rpc_iv_packages_bridge::bind(server, sources);
-    auto socket_rpc_project_persistence_scope =
-        iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
 
     iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;
     IV_INVOKE_LINKER_EVENT(
@@ -224,15 +219,12 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
 
 }
 
-TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
+TEST(SocketRpcIvModuleInstancesBridge, BoundUpdateRenamesInstance)
 {
     iv::IvModuleInstances instances;
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
     iv::IvModuleDefinitions definitions;
-    iv::IvModuleReload reload({});
-    iv::IvPackages sources("/tmp", definitions, reload);
-    iv::ProjectPersistence persistence("/tmp", {});
     iv::SocketRpcServer server("/tmp", -1);
     auto iv_module_definitions_iv_module_instances_scope =
         iv::iv_module_definitions_iv_module_instances_bridge::bind(
@@ -241,20 +233,12 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
     definitions.seed_loaded_definition(std::move(definition));
-    auto project_persistence_iv_module_instances_scope =
-        iv::project_persistence_iv_module_instances_bridge::bind(
-            persistence,
-            instances);
     auto iv_module_instances_iv_module_source_introspection_scope =
         iv::iv_module_instances_iv_module_source_introspection_bridge::bind(
             instances,
             introspection);
     auto socket_rpc_iv_module_instances_scope =
         iv::socket_rpc_iv_module_instances_bridge::bind(server, instances);
-    auto socket_rpc_iv_packages_scope =
-        iv::socket_rpc_iv_packages_bridge::bind(server, sources);
-    auto socket_rpc_project_persistence_scope =
-        iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
 
     iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;
     IV_INVOKE_LINKER_EVENT(
@@ -267,22 +251,21 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
     auto const created_instance_id =
         create_response["result"]["instanceId"].get<std::string>();
 
-    iv::SocketRpcAckResponseBuilder ttl_builder;
+    iv::SocketRpcAckResponseBuilder update_builder;
     IV_INVOKE_LINKER_EVENT(
         iv::iv_socket_rpc_update_iv_module_instances_event,
         iv::UpdateIvModuleInstancesRequest{
             .updates = {iv::UpdateIvModuleInstance{
                 .instance_id = created_instance_id,
-                .default_silence_ttl_samples = 1234,
+                .display_name = "Lead",
             }},
         },
-        ttl_builder);
-    auto const ttl_response = parse_json_line(ttl_builder.build(4));
-    EXPECT_EQ(ttl_response["result"]["ok"], true);
+        update_builder);
+    auto const update_response = parse_json_line(update_builder.build(4));
+    EXPECT_EQ(update_response["result"]["ok"], true);
 
     auto const listed = instances.list_instances();
     ASSERT_EQ(listed.size(), 1u);
-    ASSERT_TRUE(listed.front().default_silence_ttl_samples.has_value());
-    EXPECT_EQ(*listed.front().default_silence_ttl_samples, 1234u);
+    EXPECT_EQ(listed.front().display_name, "Lead");
 
 }

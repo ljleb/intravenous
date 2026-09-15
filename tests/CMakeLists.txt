@@ -125,40 +125,29 @@ add_iv_gtest(intravenous_graph_modules_tests graph_modules_gtest.cpp)
 add_iv_gtest(intravenous_predictors_tests predictors_gtest.cpp)
 add_iv_gtest(intravenous_detach_regression_tests detach_regression_gtest.cpp)
 add_iv_gtest(intravenous_block_node_executor_tests node_block_executor_gtest.cpp)
-add_iv_gtest(intravenous_timeline_lanes_tests modules/timeline_lanes_gtest.cpp)
-add_iv_gtest(intravenous_timeline_execution_tests modules/timeline_execution_gtest.cpp)
 add_iv_gtest(intravenous_lane_filters_tests modules/lane_filters_gtest.cpp)
 add_iv_gtest(intravenous_lane_views_tests modules/lane_views_gtest.cpp)
 add_iv_gtest(intravenous_lanes_visualization_tests modules/lanes_visualization_gtest.cpp)
-add_iv_gtest(intravenous_audio_device_lanes_tests modules/audio_device_lanes_gtest.cpp)
+add_iv_gtest(intravenous_system_audio_devices_tests modules/system_audio_devices_gtest.cpp)
 add_iv_gtest(intravenous_lane_query_tests query/lane_query_gtest.cpp)
 add_iv_gtest(intravenous_startup_config_tests modules/startup_config_gtest.cpp)
 add_iv_gtest(intravenous_iv_module_definitions_tests modules/iv_module_definitions_gtest.cpp)
 add_iv_gtest(intravenous_iv_module_instances_tests modules/iv_module_instances_gtest.cpp)
 add_iv_gtest(
-    intravenous_iv_module_instances_execution_tests
-    modules/iv_module_instances_execution_gtest.cpp)
-add_iv_gtest(
-    intravenous_iv_module_reload_tests
-    modules/iv_module_reload_gtest.cpp
+    intravenous_iv_package_reload_tests
+    modules/iv_package_reload_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
     intravenous_iv_module_source_introspection_tests
     modules/iv_module_source_introspection_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
-add_iv_gtest(intravenous_graph_input_lanes_tests modules/graph_input_lanes_gtest.cpp)
 add_iv_gtest(intravenous_project_persistence_tests project_persistence_gtest.cpp)
 add_iv_gtest(
     intravenous_project_autosave_tests
     modules/project_autosave_gtest.cpp)
 add_iv_gtest(intravenous_graph_virtual_outputs_tests graph_virtual_outputs_gtest.cpp)
-add_iv_gtest(intravenous_task_runner_tests modules/task_runner_gtest.cpp)
 add_iv_gtest(intravenous_lane_filters_bridges_tests bridges/lane_filters_bridges_gtest.cpp)
 add_iv_gtest(intravenous_runtime_module_bridges_tests bridges/runtime_module_bridges_gtest.cpp)
-add_iv_gtest(
-    intravenous_runtime_integration_tests
-    integration_gtest.cpp
-    ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(intravenous_socket_rpc_server_tests socket_rpc_server_gtest.cpp)
 add_iv_gtest(intravenous_socket_rpc_support_tests socket_rpc_support_gtest.cpp)
 add_iv_gtest(
@@ -169,9 +158,6 @@ add_iv_gtest(
 add_iv_gtest(
     intravenous_socket_rpc_iv_module_instances_bridge_tests
     bridges/socket_rpc_iv_module_instances_bridge_gtest.cpp)
-add_iv_gtest(
-    intravenous_socket_rpc_timeline_execution_bridge_tests
-    bridges/socket_rpc_timeline_execution_bridge_gtest.cpp)
 add_iv_gtest(
     intravenous_socket_rpc_notification_bridge_tests
     bridges/socket_rpc_notification_bridge_gtest.cpp)

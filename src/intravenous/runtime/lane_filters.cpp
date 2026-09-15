@@ -63,8 +63,8 @@ LaneFilterResult filter_result_from(
     std::function<LaneMetadata(LaneId)> const &metadata_for_lane,
     std::function<std::optional<std::string>(LaneId)> const &model_type_id_for_lane,
     std::function<InternedString(LaneId)> const &public_id_for_lane,
-    std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> const &outputs_for_lanes,
-    std::function<void(std::vector<LaneId> const &, TimelineLaneVisitFn const &)> const &visit_lanes)
+    std::function<std::vector<LaneFilterLaneOutputs>(std::vector<LaneId> const &)> const &outputs_for_lanes,
+    std::function<void(std::vector<LaneId> const &, LaneFilterLaneVisitFn const &)> const &visit_lanes)
 {
     if (filter.error_message.has_value()) {
         return LaneFilterResult{
@@ -382,39 +382,4 @@ void LaneFilters::remove_filter(std::string const &filter_name)
     }
 }
 
-void LaneFilters::handle_timeline_lanes_changed(TimelineLanesChanged const &change)
-{
-    LaneFiltersChanged notification;
-    {
-        std::scoped_lock lock(mutex);
-        // Some structural notifications (notably visualization-sink churn)
-        // describe a delta but do not carry a replacement query dataset.  A
-        // null dataset means "keep the current snapshot", never "there are
-        // no timeline lanes".
-        if (change.dataset) {
-            dataset = change.dataset;
-            last_schema_change = change.schema_change;
-        }
-        if (change.metadata_for_lane) metadata_for_lane = change.metadata_for_lane;
-        if (change.model_type_id_for_lane) model_type_id_for_lane = change.model_type_id_for_lane;
-        if (change.public_id_for_lane) public_id_for_lane = change.public_id_for_lane;
-        if (change.outputs_for_lanes) outputs_for_lanes = change.outputs_for_lanes;
-        if (change.visit_lanes) visit_lanes = change.visit_lanes;
-
-        for (auto &[_, filter] : filters_by_name) {
-            if (change.schema_change.changed) {
-                filter.bound_ast = {};
-                filter.dependencies.clear();
-            }
-            filter.dirty = true;
-        }
-        notification.results = refresh_all_filters_locked();
-        notification = LaneFiltersChanged{
-            .all_filters_changed = true,
-            .schema_change = last_schema_change,
-            .results = std::move(notification.results),
-        };
-    }
-    IV_INVOKE_LINKER_EVENT(iv_runtime_lane_filters_changed_event, notification);
-}
 } // namespace iv

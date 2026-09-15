@@ -1,3 +1,4 @@
+import type * as vscode from "vscode";
 import { injectable } from "tsyringe";
 
 import { LiveGraphControlHandler } from "./liveGraphProtocol";

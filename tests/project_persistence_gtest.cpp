@@ -1,166 +1,77 @@
 #include "module_test_utils.h"
-#include "fake_audio_device.h"
 
-#include <intravenous/basic_lane_nodes/controls.h>
-#include <intravenous/bridge.h>
-#include <intravenous/dsl.h>
-#include <intravenous/linker_event.h>
-#include <intravenous/runtime/audio_device_lanes.h>
+#include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/project_persistence_events.h>
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/graph_input_lanes_events.h>
-#include <intravenous/runtime/project_persistence_audio_device_lanes_bridge.h>
-#include <intravenous/runtime/project_persistence_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
-#include <intravenous/runtime/project_persistence_iv_module_reload_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/project_persistence_timeline_bridge.h>
-#include <intravenous/runtime/project_persistence_timeline_execution_bridge.h>
-#include <intravenous/runtime/socket_rpc_server.h>
-#include <intravenous/runtime/socket_rpc_requests.h>
-#include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
-#include <intravenous/runtime/timeline.h>
-#include <intravenous/runtime/timeline_execution.h>
-#include <intravenous/runtime/timeline_timeline_execution_bridge.h>
+#include <intravenous/runtime/runtime_project_events.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <array>
 #include <filesystem>
-#include <optional>
-#include <regex>
+#include <fstream>
 #include <sstream>
-#include <set>
-#include <string_view>
+#include <stdexcept>
+#include <string>
+#include <variant>
 #include <vector>
 
 namespace {
 using Json = nlohmann::ordered_json;
-using iv::test_support::mutable_module_fixture_workspace;
-using iv::test_support::read_text;
-using iv::test_support::write_text;
 
-iv::InternedString intern(std::string_view value)
+std::filesystem::path fresh_workspace(std::string_view name)
 {
-    return iv::InternedString::from_view(value);
+    return iv::test::fresh_module_fixture_workspace(name);
 }
 
-std::string runtime_node_id(std::string_view instance_id, std::string_view virtual_node_id)
+void write_text(std::filesystem::path const &path, std::string_view text)
 {
-    return std::string(instance_id) + "\x1fvirtual:" + std::string(virtual_node_id);
+    std::ofstream out(path, std::ios::trunc);
+    ASSERT_TRUE(out);
+    out << text;
 }
 
-struct ProjectTimelineBindings {
-    iv::timeline_timeline_execution_bridge::scope timeline_execution_scope;
-    iv::project_persistence_timeline_execution_bridge::scope persistence_execution_scope;
-    iv::project_persistence_timeline_bridge::scope persistence_timeline_scope;
-
-    ProjectTimelineBindings(
-        iv::ProjectPersistence &persistence,
-        iv::Timeline &timeline,
-        iv::TimelineExecution &execution)
-        : timeline_execution_scope(
-            iv::timeline_timeline_execution_bridge::bind(timeline, execution))
-        , persistence_execution_scope(
-            iv::project_persistence_timeline_execution_bridge::bind(
-                persistence,
-                execution))
-        , persistence_timeline_scope(
-            iv::project_persistence_timeline_bridge::bind(persistence, timeline))
-    {}
-};
-
-struct TestEventLaneNode {
-    static auto output()
-    {
-        return iv::RealtimeEventLaneOutputConfig{
-            .name = "events",
-            .event_type = iv::EventTypeId::trigger,
-        };
-    }
-
-    void tick_block_realtime(iv::RealtimeLaneTickContext<TestEventLaneNode> &) {}
-};
-
-struct IdleFakeAudioInputDevice {
-    iv::RenderConfig config_;
-
-    explicit IdleFakeAudioInputDevice(iv::RenderConfig config)
-        : config_(std::move(config))
-    {
-        iv::validate_render_config(config_);
-    }
-
-    iv::RenderConfig const &config() const
-    {
-        return config_;
-    }
-
-    iv::AudioInputBlock wait_for_captured_block()
-    {
-        throw std::logic_error("idle fake input device has no captured blocks");
-    }
-
-    void release_captured_block() {}
-    void request_shutdown() {}
-};
-
-iv::AudioDeviceLanesBackend make_audio_backend()
+std::vector<Json> parse_project_file(std::filesystem::path const &path)
 {
-    return iv::AudioDeviceLanesBackend{
-        .list_output_devices = [] {
-            return std::vector<iv::AudioDeviceDescriptor>{
-                {.device_id = "default", .name = "System Default"},
-                {.device_id = "out-1", .name = "Output 1"},
-            };
-        },
-        .list_input_devices = [] {
-            return std::vector<iv::AudioDeviceDescriptor>{
-                {.device_id = "default", .name = "System Default"},
-                {.device_id = "in-1", .name = "Input 1"},
-            };
-        },
-        .make_output_device = [](std::string const &, iv::RenderConfig const &config) {
-            return iv::AudioOutputDevice(std::in_place_type<iv::test::FakeAudioDevice>, config);
-        },
-        .make_input_device = [](std::string const &, iv::RenderConfig const &config) {
-            return iv::AudioInputDevice(std::in_place_type<IdleFakeAudioInputDevice>, config);
-        },
-    };
+    std::ifstream in(path);
+    EXPECT_TRUE(in);
+    std::vector<Json> commands;
+    for (std::string line; std::getline(in, line);) {
+        if (!line.empty()) commands.push_back(Json::parse(line));
+    }
+    return commands;
+}
+
+iv::StartupConfigState startup_for(std::filesystem::path const &workspace)
+{
+    iv::StartupConfigState startup;
+    startup.workspace_root = workspace;
+    startup.discovery_start = workspace;
+    startup.output_device_id = "default";
+    startup.input_device_id = "default";
+    return startup;
 }
 
 struct ProjectNotificationWitness {
     std::vector<iv::ProjectMessageNotification> messages {};
+
     void handle_notification(iv::ProjectNotification const &notification)
     {
-        if (auto const *message =
-                std::get_if<iv::ProjectMessageNotification>(&notification)) {
+        if (auto const *message = std::get_if<iv::ProjectMessageNotification>(&notification)) {
             messages.push_back(*message);
         }
     }
 };
 
-struct ProjectCollectStateTestContributor {
-    bool throw_on_collect_state = false;
+struct ProjectCollectStateContributor {
+    bool fail = false;
 
     void handle_collect_state(iv::ProjectPersistenceBuilder &)
     {
-        if (throw_on_collect_state) {
-            throw std::runtime_error("test contributor failure");
-        }
-    }
-};
-
-struct GraphInputLanesBatchAck {
-    void handle_batch(
-        iv::TimelineLaneBatchUpdate const &,
-        iv::GraphInputLanesAckBuilder &builder)
-    {
-        builder.succeed();
+        if (fail) throw std::runtime_error("collect-state failure");
     }
 };
 
@@ -172,1675 +83,166 @@ IV_DECLARE_BRIDGE(
 IV_DECLARE_BRIDGE(
     project_collect_state_contributor_bridge,
     iv::ProjectPersistence,
-    ProjectCollectStateTestContributor);
-IV_DECLARE_BRIDGE(
-    graph_input_lanes_batch_ack_bridge,
-    iv::GraphInputLanes,
-    GraphInputLanesBatchAck);
+    ProjectCollectStateContributor);
 IV_DEFINE_BRIDGE(project_notification_witness_bridge)
 IV_DEFINE_BRIDGE(project_collect_state_contributor_bridge)
-IV_DEFINE_BRIDGE(graph_input_lanes_batch_ack_bridge)
 
 IV_SUBSCRIBE_LINKER_EVENT(
     project_notification_witness_bridge,
     iv_runtime_project_notification_event,
     &ProjectNotificationWitness::handle_notification)
-
 IV_SUBSCRIBE_LINKER_EVENT(
     project_collect_state_contributor_bridge,
     iv_runtime_project_persistence_collect_state_event,
-    &ProjectCollectStateTestContributor::handle_collect_state)
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    graph_input_lanes_batch_ack_bridge,
-    iv_runtime_graph_input_lanes_timeline_batch_requested_event,
-    &GraphInputLanesBatchAck::handle_batch)
-
-Json parse_json_line(std::string_view line)
-{
-    return Json::parse(line);
-}
-
-std::vector<Json> parse_project_file(std::filesystem::path const &path)
-{
-    std::vector<Json> commands;
-    std::istringstream in(read_text(path));
-    for (std::string line; std::getline(in, line);) {
-        if (line.empty()) {
-            continue;
-        }
-        commands.push_back(Json::parse(line));
-    }
-    return commands;
-}
-
-iv::StartupConfigState make_startup(std::filesystem::path const &workspace)
-{
-    return iv::StartupConfigState{
-        .workspace_root = workspace,
-        .execution = iv::RuntimeExecutionConfig{
-            .sample_rate = 48000,
-            .block_size = 8,
-            .compiled_sample_cache_chunk_size_multiplier = 16,
-        },
-        .output_device_id = std::optional<std::string>("default"),
-        .input_device_id = std::optional<std::string>("default"),
-    };
-}
-
-constexpr std::string_view local_cmake_module_id = "iv.test.local_cmake";
-
-struct LocalCmakeDefinitions {
-    iv::IvModuleDefinitions definitions{};
-    std::filesystem::path root;
-    bool seeded = false;
-
-    explicit LocalCmakeDefinitions(std::filesystem::path const& workspace)
-        : root(std::filesystem::weakly_canonical(workspace))
-    {}
-
-    void seed()
-    {
-        if (seeded) {
-            return;
-        }
-        seeded = true;
-        definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
-            .package_id = root.generic_string(),
-            .definition_id = std::string(local_cmake_module_id),
-            .package_root = root,
-            .module_id = std::string(local_cmake_module_id),
-            .root = iv::WeakTypeErasedNode(iv::test::loaded_definition_test_root),
-        });
-    }
-};
-
-LocalCmakeDefinitions local_cmake_definitions(std::filesystem::path const& workspace)
-{
-    return LocalCmakeDefinitions(workspace);
-}
-
-struct ProjectIvModuleInstancesBindings {
-    iv::iv_module_definitions_iv_module_instances_bridge::scope definitions_instances_scope;
-    iv::project_persistence_iv_module_instances_bridge::scope persistence_scope;
-
-    ProjectIvModuleInstancesBindings(
-        iv::ProjectPersistence &persistence,
-        iv::IvModuleInstances &instances,
-        LocalCmakeDefinitions &definitions,
-        bool publish_initial_definitions = true)
-        : definitions_instances_scope(
-              iv::iv_module_definitions_iv_module_instances_bridge::bind(
-                  definitions.definitions,
-                  instances))
-        , persistence_scope(
-              iv::project_persistence_iv_module_instances_bridge::bind(
-                  persistence,
-                  instances))
-    {
-        if (publish_initial_definitions) {
-            // Most persistence tests need an already-published definition. The
-            // explicit deferred-replay test below exercises the production
-            // startup ordering where this happens later.
-            definitions.seed();
-        }
-    }
-};
-
-iv::TimelineLaneBatchUpdate timeline_batch_with_two_lanes()
-{
-    return iv::TimelineLaneBatchUpdate{
-        .version_index = 1,
-        .upserts = {
-            iv::TimelineLaneUpsert{
-                .lane = iv::LaneId{1},
-                .external_id = intern("lane-a"),
-                .make_node = [] { return iv::TypeErasedLaneNode(iv::KnobLaneNode{.value = 1.0f}); },
-                .sample_channel_type = iv::ChannelTypeId::mono,
-            },
-            iv::TimelineLaneUpsert{
-                .lane = iv::LaneId{2},
-                .external_id = intern("lane-b"),
-                .make_node = [] { return iv::TypeErasedLaneNode(iv::KnobLaneNode{.value = 2.0f}); },
-                .sample_channel_type = iv::ChannelTypeId::mono,
-            },
-        },
-    };
-}
-
-iv::IvModuleInstance make_instance_with_ports()
-{
-    iv::IvModuleInstance instance {};
-    instance.instance_id = "instance:graph";
-    instance.definition_id = "definition:graph";
-    instance.package_root = std::filesystem::path("/tmp/module");
-    instance.module_id = "iv.test.module";
-
-    iv::IntrospectionVirtualNode node {};
-    node.id = "node-1";
-    node.kind = "TestNode";
-    node.sample_inputs.push_back(iv::IntrospectionPortInfo{
-        .name = "frequency",
-        .type = "sample",
-        .connectivity = iv::VirtualPortConnectivity::disconnected,
-        .ordinal = 0,
-        .default_value = 440.0f,
-        .sample_channel_type = iv::ChannelTypeId::mono,
-    });
-    node.event_inputs.push_back(iv::IntrospectionPortInfo{
-        .name = "trigger",
-        .type = "event",
-        .connectivity = iv::VirtualPortConnectivity::disconnected,
-        .ordinal = 0,
-    });
-    instance.introspection.virtual_nodes.push_back(std::move(node));
-    return instance;
-}
-
-iv::IvModuleInstance make_instance_with_member_ports()
-{
-    auto instance = make_instance_with_ports();
-    iv::IntrospectionVirtualNode::Member member {};
-    member.ordinal = 0;
-    member.backing_node_id = "node-1";
-    member.kind = "TestNode";
-    member.sample_inputs.push_back(iv::IntrospectionPortInfo{
-        .name = "frequency",
-        .type = "sample",
-        .connectivity = iv::VirtualPortConnectivity::disconnected,
-        .ordinal = 0,
-        .default_value = 440.0f,
-        .sample_channel_type = iv::ChannelTypeId::mono,
-    });
-    member.event_inputs.push_back(iv::IntrospectionPortInfo{
-        .name = "trigger",
-        .type = "event",
-        .connectivity = iv::VirtualPortConnectivity::disconnected,
-        .ordinal = 0,
-    });
-    instance.introspection.virtual_nodes.front().members.push_back(std::move(member));
-    return instance;
-}
-
-void initialize_two_timeline_lanes(iv::Timeline &timeline)
-{
-    timeline.apply_lane_batch(timeline_batch_with_two_lanes());
-}
-
-iv::TimelineLaneBatchUpdate timeline_batch_with_event_lane()
-{
-    return iv::TimelineLaneBatchUpdate{
-        .version_index = 1,
-        .upserts = {
-            iv::TimelineLaneUpsert{
-                .lane = iv::LaneId{1},
-                .external_id = intern("event-lane"),
-                .make_node = [] { return iv::TypeErasedLaneNode(TestEventLaneNode{}); },
-            },
-        },
-    };
-}
-
-size_t count_messages_with_level(
-    std::vector<iv::ProjectMessageNotification> const &messages,
-    std::string_view level)
-{
-    return static_cast<size_t>(std::count_if(
-        messages.begin(),
-        messages.end(),
-        [&](auto const &message) {
-            return message.level == level;
-        }));
-}
-
-class ProjectPersistenceTest : public ::testing::Test {
-protected:
-    iv::ProjectPersistence bridge_persistence {
-        std::filesystem::current_path(),
-        {}
-    };
-    iv::GraphInputLanes bridge_graph_input_lanes {};
-    ProjectNotificationWitness witness {};
-    ProjectCollectStateTestContributor collect_state_contributor {};
-    GraphInputLanesBatchAck graph_input_lanes_batch_ack {};
-    project_notification_witness_bridge::scope project_notification_witness_scope {
-        bridge_persistence,
-        witness
-    };
-    project_collect_state_contributor_bridge::scope project_collect_state_scope {
-        bridge_persistence,
-        collect_state_contributor
-    };
-    graph_input_lanes_batch_ack_bridge::scope graph_input_lanes_batch_ack_scope {
-        bridge_graph_input_lanes,
-        graph_input_lanes_batch_ack
-    };
-
-    void SetUp() override
-    {
-        collect_state_contributor.throw_on_collect_state = false;
-    }
-
-    void TearDown() override
-    {
-        collect_state_contributor.throw_on_collect_state = false;
-    }
-};
+    &ProjectCollectStateContributor::handle_collect_state)
 } // namespace
 
-TEST_F(ProjectPersistenceTest, OverrideParsingAppliesTypedOverridesAcrossOwnersAndWarnsUnknownKeys)
+TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrder)
 {
-    auto const workspace = mutable_module_fixture_workspace("project_override_matrix", "local_cmake");
-    auto const toolchain_dir = workspace / "toolchain";
-    std::filesystem::create_directories(toolchain_dir);
-    write_text(toolchain_dir / "clang", "");
-    write_text(toolchain_dir / "clangxx", "");
-    write_text(toolchain_dir / "cmake", "");
-    write_text(toolchain_dir / "make", "");
-    write_text(toolchain_dir / "juce", "");
-    write_text(
-        workspace / "iv_project.jsonl",
-        Json{
-            {"command", "project.overrideSettings"},
-            {"args", Json{
-                {"c_compiler", "toolchain/clang"},
-                {"cxx_compiler", "toolchain/clangxx"},
-                {"cmake_program", "toolchain/cmake"},
-                {"cmake_generator", "Ninja"},
-                {"make_program", "toolchain/make"},
-                {"juce_dir", "toolchain/juce"},
-                {"compiled_sample_cache_chunk_size_multiplier", 8},
-                {"output_device_id", "out-1"},
-                {"input_device_id", "in-1"},
-                {"unknown_key", "mystery"},
-            }},
-        }.dump() + "\n");
+    auto const workspace = fresh_workspace("project_persistence_builder_durable_state");
+    auto startup = startup_for(workspace);
+    startup.toolchain.cmake_generator = "Ninja";
 
-    auto const startup = make_startup(workspace);
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
-    iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
-    iv::IvModuleReload reload(
-        startup, iv::ModuleLoader::OptimizationLevel::O0);
-    iv::ProjectPersistence persistence(workspace, startup);
+    iv::ProjectPersistenceBuilder builder(workspace, startup);
+    auto toolchain = startup.toolchain;
+    toolchain.cmake_generator = "Unix Makefiles";
+    toolchain.c_compiler = workspace / "toolchain" / "clang";
+    builder.add_project_toolchain_config(toolchain);
+    builder.add_project_audio_device_selection("out-1", std::nullopt);
+    builder.add_iv_module_instances({
+        iv::IvModuleInstanceInfo{
+            .instance_id = "instance:b",
+            .definition_id = "iv.test.b",
+            .display_name = "B",
+            .package_root = workspace / "modules" / "b",
+        },
+        iv::IvModuleInstanceInfo{
+            .instance_id = "instance:a",
+            .definition_id = "iv.test.a",
+            .display_name = "iv.test.a",
+            .package_root = workspace / "modules" / "a",
+        },
+    });
 
-    ProjectTimelineBindings project_timeline_bindings(
-        persistence, timeline, execution);
-    auto project_persistence_audio_device_lanes_scope =
-        iv::project_persistence_audio_device_lanes_bridge::bind(
-            persistence,
-            audio_device_lanes);
-    auto project_persistence_reload_scope =
-        iv::project_persistence_iv_module_reload_bridge::bind(persistence, reload);
+    auto const commands = builder.build();
+    ASSERT_EQ(commands.size(), 3u);
+    EXPECT_EQ(commands[0].command, "project.overrideSettings");
+    EXPECT_EQ(commands[0].args["cmake_generator"], "Unix Makefiles");
+    EXPECT_EQ(commands[0].args["c_compiler"], "toolchain/clang");
+    EXPECT_EQ(commands[0].args["output_device_id"], "out-1");
+    EXPECT_TRUE(commands[0].args["input_device_id"].is_null());
 
-    persistence.load();
+    EXPECT_EQ(commands[1].command, "ivModuleInstances.create");
+    EXPECT_EQ(commands[1].args["instance_id"], "instance:a");
+    EXPECT_EQ(commands[1].args["module_id"], "iv.test.a");
+    EXPECT_EQ(commands[1].args["package_root"], "modules/a");
+    EXPECT_TRUE(commands[1].args["display_name"].is_null());
 
-    EXPECT_EQ(execution.compiled_sample_cache_chunk_size_multiplier(), 8u);
-    auto const snapshot = audio_device_lanes.audio_devices_snapshot();
-    EXPECT_EQ(snapshot.selected_output.device_id, std::optional<std::string>("out-1"));
-    EXPECT_EQ(snapshot.selected_input.device_id, std::optional<std::string>("in-1"));
-    auto const toolchain = reload.toolchain_config();
-    ASSERT_TRUE(toolchain.c_compiler.has_value());
-    ASSERT_TRUE(toolchain.cxx_compiler.has_value());
-    ASSERT_TRUE(toolchain.cmake_program.has_value());
-    ASSERT_TRUE(toolchain.make_program.has_value());
-    ASSERT_TRUE(toolchain.juce_dir.has_value());
-    EXPECT_EQ(toolchain.cmake_generator, std::optional<std::string>("Ninja"));
-    EXPECT_TRUE(toolchain.c_compiler->string().ends_with("toolchain/clang"));
-    ASSERT_EQ(witness.messages.size(), 1u);
-    EXPECT_EQ(witness.messages.front().level, "warning");
-    EXPECT_TRUE(witness.messages.front().message.contains("unknown_key"));
+    EXPECT_EQ(commands[2].command, "ivModuleInstances.create");
+    EXPECT_EQ(commands[2].args["instance_id"], "instance:b");
+    EXPECT_EQ(commands[2].args["display_name"], "B");
 
+    for (auto const &command : commands) {
+        EXPECT_FALSE(command.args.contains("lane_id"));
+        EXPECT_FALSE(command.args.contains("graph_input"));
+        EXPECT_FALSE(command.args.contains("compiled_sample_cache_chunk_size_multiplier"));
+    }
 }
 
-TEST_F(ProjectPersistenceTest, OverrideParsingDefaultAndUnknownOnlyDoNotMutateState)
+TEST(ProjectPersistenceBuilder, OmitsSettingsThatMatchStartupDefaults)
 {
-    auto const workspace = mutable_module_fixture_workspace("project_override_defaults", "local_cmake");
-    write_text(
-        workspace / "iv_project.jsonl",
-        Json{
-            {"command", "project.overrideSettings"},
-            {"args", Json{
-                {"compiled_sample_cache_chunk_size_multiplier", "default"},
-                {"c_compiler", "default"},
-                {"unknown_key", "mystery"},
-            }},
-        }.dump() + "\n");
+    auto const workspace = fresh_workspace("project_persistence_builder_defaults");
+    auto startup = startup_for(workspace);
+    startup.toolchain.cmake_generator = "Ninja";
 
-    auto const startup = make_startup(workspace);
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
-    iv::IvModuleReload reload(
-        startup, iv::ModuleLoader::OptimizationLevel::O0);
-    iv::ProjectPersistence persistence(workspace, startup);
+    iv::ProjectPersistenceBuilder builder(workspace, startup);
+    builder.add_project_toolchain_config(startup.toolchain);
+    builder.add_project_audio_device_selection(startup.output_device_id, startup.input_device_id);
 
-    ProjectTimelineBindings project_timeline_bindings(
-        persistence, timeline, execution);
-    auto project_persistence_reload_scope =
-        iv::project_persistence_iv_module_reload_bridge::bind(persistence, reload);
-
-    persistence.load();
-
-    EXPECT_EQ(execution.compiled_sample_cache_chunk_size_multiplier(), 16u);
-    EXPECT_FALSE(reload.toolchain_config().c_compiler.has_value());
-    ASSERT_EQ(witness.messages.size(), 1u);
-    EXPECT_EQ(witness.messages.front().level, "warning");
-
+    EXPECT_TRUE(builder.build().empty());
 }
 
-TEST_F(ProjectPersistenceTest, OverrideParsingInvalidRecognizedKeyLogsErrorAndLaterCreateSucceeds)
+TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
 {
-    auto const workspace = mutable_module_fixture_workspace("project_override_invalid_then_create", "local_cmake");
+    auto const workspace = fresh_workspace("project_persistence_best_effort_replay");
+    auto startup = startup_for(workspace);
     write_text(
         workspace / "iv_project.jsonl",
-        Json{
-            {"command", "project.overrideSettings"},
-            {"args", Json{{"compiled_sample_cache_chunk_size_multiplier", -1}}},
-        }.dump() + "\n" +
-        Json{
-            {"command", "ivModuleInstances.create"},
-            {"args", Json{
-                {"instance_id", "instance-z"},
-                {"module_id", local_cmake_module_id},
-                {"package_root", "."},
-            }},
-        }.dump() + "\n");
+        R"({"command":"removed.timelineCommand","args":{}})" "\n"
+        R"({"command":"ivModuleInstances.create","args":{"instance_id":"instance:1","module_id":"iv.test.replayed","package_root":"modules/replayed","display_name":"Replayed"}})" "\n");
 
-    auto const startup = make_startup(workspace);
+    iv::ProjectPersistence persistence(workspace, startup);
     iv::IvModuleInstances instances;
-    auto sources = local_cmake_definitions(workspace);
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    auto module_instance_bindings = ProjectIvModuleInstancesBindings(
-        persistence,
-        instances,
-        sources);
+    ProjectNotificationWitness witness;
+    auto instances_scope =
+        iv::project_persistence_iv_module_instances_bridge::bind(persistence, instances);
+    auto witness_scope = project_notification_witness_bridge::bind(persistence, witness);
 
     persistence.load();
 
     auto const listed = instances.list_instances();
     ASSERT_EQ(listed.size(), 1u);
-    EXPECT_EQ(listed.front().instance_id, "instance-z");
-    ASSERT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
-    auto const error = std::ranges::find_if(witness.messages, [](auto const &message) {
-        return message.level == "error";
-    });
-    ASSERT_NE(error, witness.messages.end());
-    EXPECT_TRUE(error->message.contains("compiled_sample_cache_chunk_size_multiplier"));
-
-}
-
-TEST_F(ProjectPersistenceTest, ReplayRetainsInstanceUntilItsPackageIsPublished)
-{
-    auto const workspace = mutable_module_fixture_workspace(
-        "project_replay_before_package_publication", "local_cmake");
-    write_text(
-        workspace / "iv_project.jsonl",
-        Json{
-            {"command", "ivModuleInstances.create"},
-            {"args", Json{
-                {"instance_id", "instance-waiting"},
-                {"module_id", local_cmake_module_id},
-                {"package_root", "."},
-                {"display_name", nullptr},
-            }},
-        }.dump() + "\n");
-
-    auto const startup = make_startup(workspace);
-    iv::IvModuleInstances instances;
-    auto sources = local_cmake_definitions(workspace);
-    iv::ProjectPersistence persistence(workspace, startup);
-    auto module_instance_bindings = ProjectIvModuleInstancesBindings(
-        persistence,
-        instances,
-        sources,
-        false);
-
-    persistence.load();
-
-    auto const waiting = instances.list_instances();
-    ASSERT_EQ(waiting.size(), 1u);
-    EXPECT_EQ(waiting.front().instance_id, "instance-waiting");
-    EXPECT_EQ(waiting.front().package_root, std::filesystem::weakly_canonical(workspace));
-    EXPECT_FALSE(waiting.front().realized);
-    EXPECT_EQ(count_messages_with_level(witness.messages, "error"), 0u);
-
-    sources.seed();
-
-    auto const realized = instances.list_instances();
-    ASSERT_EQ(realized.size(), 1u);
-    EXPECT_TRUE(realized.front().realized);
-}
-
-TEST_F(ProjectPersistenceTest, OverrideParsingInvalidSupportedFieldTypesLogErrorsAndReplayContinues)
-{
-    struct Case {
-        std::string name;
-        Json args;
-        std::string expected_message_fragment;
-    };
-
-    std::vector<Case> cases{
-        {
-            .name = "bad_path_type",
-            .args = Json{{"c_compiler", 42}},
-            .expected_message_fragment = "toolchain settings must be strings or null",
-        },
-        {
-            .name = "bad_generator_type",
-            .args = Json{{"cmake_generator", true}},
-            .expected_message_fragment = "toolchain settings must be strings or null",
-        },
-        {
-            .name = "bad_cxx_compiler_type",
-            .args = Json{{"cxx_compiler", Json::array({1})}},
-            .expected_message_fragment = "toolchain settings must be strings or null",
-        },
-        {
-            .name = "bad_cmake_program_type",
-            .args = Json{{"cmake_program", false}},
-            .expected_message_fragment = "toolchain settings must be strings or null",
-        },
-        {
-            .name = "bad_make_program_type",
-            .args = Json{{"make_program", 3.14}},
-            .expected_message_fragment = "toolchain settings must be strings or null",
-        },
-        {
-            .name = "bad_juce_dir_type",
-            .args = Json{{"juce_dir", Json::object({{"bad", "value"}})}},
-            .expected_message_fragment = "toolchain settings must be strings or null",
-        },
-        {
-            .name = "bad_device_id_type",
-            .args = Json{{"output_device_id", Json::array({1, 2, 3})}},
-            .expected_message_fragment = "audio device id override settings must be strings or null",
-        },
-        {
-            .name = "bad_input_device_id_type",
-            .args = Json{{"input_device_id", 9}},
-            .expected_message_fragment = "audio device id override settings must be strings or null",
-        },
-        {
-            .name = "bad_chunk_size_string",
-            .args = Json{{"compiled_sample_cache_chunk_size_multiplier", "bogus"}},
-            .expected_message_fragment = "compiled_sample_cache_chunk_size_multiplier",
-        },
-        {
-            .name = "bad_chunk_size_negative",
-            .args = Json{{"compiled_sample_cache_chunk_size_multiplier", -1}},
-            .expected_message_fragment = "compiled_sample_cache_chunk_size_multiplier",
-        },
-    };
-
-    for (size_t i = 0; i < cases.size(); ++i) {
-        auto const workspace = mutable_module_fixture_workspace(
-            "project_override_invalid_field_" + std::to_string(i),
-            "local_cmake");
-        write_text(
-            workspace / "iv_project.jsonl",
-            Json{
-                {"command", "project.overrideSettings"},
-                {"args", cases[i].args},
-            }.dump() + "\n" +
-            Json{
-                {"command", "ivModuleInstances.create"},
-                {"args", Json{
-                    {"instance_id", "instance-ok"},
-                    {"module_id", local_cmake_module_id},
-                    {"package_root", "."},
-                }},
-            }.dump() + "\n");
-
-        auto const startup = make_startup(workspace);
-        iv::IvModuleInstances instances;
-        auto sources = local_cmake_definitions(workspace);
-        iv::ProjectPersistence persistence(workspace, startup);
-        witness.messages.clear();
-
-        auto module_instance_bindings = ProjectIvModuleInstancesBindings(
-            persistence,
-            instances,
-            sources);
-
-        persistence.load();
-
-        auto const listed = instances.list_instances();
-        ASSERT_EQ(listed.size(), 1u) << cases[i].name;
-        EXPECT_EQ(listed.front().instance_id, "instance-ok");
-        ASSERT_EQ(count_messages_with_level(witness.messages, "error"), 1u) << cases[i].name;
-        EXPECT_TRUE(witness.messages.front().message.contains(cases[i].expected_message_fragment))
-            << cases[i].name;
-
-    }
-}
-
-TEST_F(ProjectPersistenceTest, DirectTypedOverrideRequestsMutateRelevantOwnersOnly)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_override_direct_subscribers", "local_cmake");
-    auto const startup = make_startup(workspace);
-    auto const toolchain_dir = workspace / "toolchain";
-    std::filesystem::create_directories(toolchain_dir);
-    write_text(toolchain_dir / "clang", "");
-
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
-    iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
-    iv::IvModuleReload reload(
-        startup, iv::ModuleLoader::OptimizationLevel::O0);
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    ProjectTimelineBindings project_timeline_bindings(
-        persistence, timeline, execution);
-    auto project_persistence_audio_device_lanes_scope =
-        iv::project_persistence_audio_device_lanes_bridge::bind(
-            persistence,
-            audio_device_lanes);
-    auto project_persistence_reload_scope =
-        iv::project_persistence_iv_module_reload_bridge::bind(persistence, reload);
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_project_override_settings_requested_event,
-        iv::ProjectOverrideSettingsRequest{
-            .c_compiler = std::filesystem::weakly_canonical(toolchain_dir / "clang").lexically_normal(),
-            .compiled_sample_cache_chunk_size_multiplier = 8,
-            .output_device_id = std::string("out-1"),
-        });
-
-    EXPECT_EQ(execution.compiled_sample_cache_chunk_size_multiplier(), 8u);
-    EXPECT_EQ(
-        audio_device_lanes.audio_devices_snapshot().selected_output.device_id,
-        std::optional<std::string>("out-1"));
-    ASSERT_TRUE(reload.toolchain_config().c_compiler.has_value());
-    EXPECT_TRUE(reload.toolchain_config().c_compiler->string().ends_with("toolchain/clang"));
-    EXPECT_EQ(
-        audio_device_lanes.audio_devices_snapshot().selected_input.device_id,
-        std::optional<std::string>("default"));
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_project_override_settings_requested_event,
-        iv::ProjectOverrideSettingsRequest{});
-
-    EXPECT_EQ(execution.compiled_sample_cache_chunk_size_multiplier(), 8u);
-
-}
-
-TEST_F(ProjectPersistenceTest, DirectTypedOverrideRequestsIgnoreIrrelevantFieldsPerSubscriber)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_override_irrelevant_fields", "local_cmake");
-    auto const startup = make_startup(workspace);
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
-    iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
-    iv::IvModuleReload reload(
-        startup, iv::ModuleLoader::OptimizationLevel::O0);
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    ProjectTimelineBindings project_timeline_bindings(
-        persistence, timeline, execution);
-    auto project_persistence_audio_device_lanes_scope =
-        iv::project_persistence_audio_device_lanes_bridge::bind(
-            persistence,
-            audio_device_lanes);
-    auto project_persistence_reload_scope =
-        iv::project_persistence_iv_module_reload_bridge::bind(persistence, reload);
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_project_override_settings_requested_event,
-        iv::ProjectOverrideSettingsRequest{
-            .cmake_generator = std::string("Ninja"),
-            .input_device_id = std::string("in-1"),
-        });
-
-    EXPECT_EQ(execution.compiled_sample_cache_chunk_size_multiplier(), 16u);
-    EXPECT_EQ(
-        audio_device_lanes.audio_devices_snapshot().selected_output.device_id,
-        std::optional<std::string>("default"));
-    EXPECT_EQ(
-        audio_device_lanes.audio_devices_snapshot().selected_input.device_id,
-        std::optional<std::string>("in-1"));
-    EXPECT_EQ(reload.toolchain_config().cmake_generator, std::optional<std::string>("Ninja"));
-    EXPECT_FALSE(reload.toolchain_config().c_compiler.has_value());
-
-}
-
-TEST_F(ProjectPersistenceTest, DirectTypedOverrideRequestUpdatesOnlyAudioDeviceSubscriber)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_override_audio_only", "local_cmake");
-    auto const startup = make_startup(workspace);
-    iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    auto project_persistence_audio_device_lanes_scope =
-        iv::project_persistence_audio_device_lanes_bridge::bind(
-            persistence,
-            audio_device_lanes);
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_project_override_settings_requested_event,
-        iv::ProjectOverrideSettingsRequest{
-            .output_device_id = std::string("out-1"),
-            .input_device_id = std::string("in-1"),
-        });
-
-    auto const snapshot = audio_device_lanes.audio_devices_snapshot();
-    EXPECT_EQ(snapshot.selected_output.device_id, std::optional<std::string>("out-1"));
-    EXPECT_EQ(snapshot.selected_input.device_id, std::optional<std::string>("in-1"));
-
-}
-
-TEST_F(ProjectPersistenceTest, DirectTypedOverrideRequestUpdatesOnlyReloadSubscriber)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_override_reload_only", "local_cmake");
-    auto const startup = make_startup(workspace);
-    auto const toolchain_dir = workspace / "toolchain";
-    std::filesystem::create_directories(toolchain_dir);
-    write_text(toolchain_dir / "clang", "");
-    write_text(toolchain_dir / "clangxx", "");
-
-    iv::IvModuleReload reload(
-        startup, iv::ModuleLoader::OptimizationLevel::O0);
-    iv::ProjectPersistence persistence(workspace, startup);
-    auto project_persistence_reload_scope =
-        iv::project_persistence_iv_module_reload_bridge::bind(persistence, reload);
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_project_override_settings_requested_event,
-        iv::ProjectOverrideSettingsRequest{
-            .c_compiler = std::filesystem::weakly_canonical(toolchain_dir / "clang").lexically_normal(),
-            .cxx_compiler = std::filesystem::weakly_canonical(toolchain_dir / "clangxx").lexically_normal(),
-            .cmake_generator = std::string("Ninja"),
-        });
-
-    auto const toolchain = reload.toolchain_config();
-    ASSERT_TRUE(toolchain.c_compiler.has_value());
-    ASSERT_TRUE(toolchain.cxx_compiler.has_value());
-    EXPECT_EQ(toolchain.cmake_generator, std::optional<std::string>("Ninja"));
-
-}
-
-TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMissingInstanceMutationAndRestoresView)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_replay_partial_failure", "local_cmake");
-    write_text(
-        workspace / "iv_project.jsonl",
-        Json{
-            {"command", "ivModuleInstances.update"},
-            {"args", Json{
-                {"updates", Json::array({
-                    Json{
-                        {"instance_id", "missing"},
-                        {"display_name", nullptr},
-                        {"default_silence_ttl_samples", 32},
-                    },
-                })},
-            }},
-        }.dump() + "\n" +
-        Json{
-            {"command", "timeline.openLaneView"},
-            {"args", Json{
-                {"view_id", "view-a"},
-                {"query_source", "graph_input"},
-                {"start_index", 4},
-                {"visible_lane_count", 8},
-                {"first_sample_index", 10},
-                {"last_sample_index", 20},
-                {"display_sample_count", 10},
-            }},
-        }.dump() + "\n");
-
-    auto const startup = make_startup(workspace);
-    iv::IvModuleInstances instances;
-    auto sources = local_cmake_definitions(workspace);
-    iv::LaneViews lane_views;
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    auto module_instance_bindings = ProjectIvModuleInstancesBindings(
-        persistence,
-        instances,
-        sources);
-
-    persistence.load();
-
-    EXPECT_TRUE(lane_views.active_view_requests().empty());
-    ASSERT_EQ(witness.messages.size(), 1u);
-    EXPECT_EQ(witness.messages.front().level, "error");
-    EXPECT_TRUE(witness.messages.front().message.contains("missing"));
-
-}
-
-TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_replay_middle_failure", "local_cmake");
-    write_text(
-        workspace / "iv_project.jsonl",
-        Json{
-            {"command", "ivModuleInstances.create"},
-            {"args", Json{
-                {"instance_id", "instance-a"},
-                {"module_id", local_cmake_module_id},
-                {"package_root", "."},
-            }},
-        }.dump() + "\n" +
-        Json{
-            {"command", "ivModuleInstances.update"},
-            {"args", Json{
-                {"updates", Json::array({
-                    Json{
-                        {"instance_id", "missing"},
-                        {"display_name", nullptr},
-                        {"default_silence_ttl_samples", 32},
-                    },
-                })},
-            }},
-        }.dump() + "\n" +
-        Json{
-            {"command", "timeline.openLaneView"},
-            {"args", Json{
-                {"view_id", "view-b"},
-                {"query_source", "graph_input"},
-                {"start_index", 2},
-                {"visible_lane_count", 4},
-                {"first_sample_index", 0},
-                {"last_sample_index", 8},
-                {"display_sample_count", 8},
-            }},
-        }.dump() + "\n");
-
-    auto const startup = make_startup(workspace);
-    iv::IvModuleInstances instances;
-    auto sources = local_cmake_definitions(workspace);
-    iv::LaneViews lane_views;
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    auto module_instance_bindings = ProjectIvModuleInstancesBindings(
-        persistence,
-        instances,
-        sources);
-
-    persistence.load();
-
-    ASSERT_EQ(instances.list_instances().size(), 1u);
-    EXPECT_EQ(instances.list_instances().front().instance_id, "instance-a");
-    EXPECT_TRUE(lane_views.active_view_requests().empty());
-    EXPECT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
-    auto const error = std::ranges::find_if(witness.messages, [](auto const &message) {
-        return message.level == "error";
-    });
-    ASSERT_NE(error, witness.messages.end());
-    EXPECT_TRUE(error->message.contains("missing"));
-
-}
-
-TEST_F(ProjectPersistenceTest, UnknownOverrideKeysWarnAndDoNotBlockLaterCommands)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_override_unknown_then_continue", "local_cmake");
-    write_text(
-        workspace / "iv_project.jsonl",
-        Json{
-            {"command", "project.overrideSettings"},
-            {"args", Json{
-                {"unknown_a", "value-a"},
-                {"unknown_b", "value-b"},
-            }},
-        }.dump() + "\n" +
-        Json{
-            {"command", "ivModuleInstances.create"},
-            {"args", Json{
-                {"instance_id", "instance-after-warning"},
-                {"module_id", local_cmake_module_id},
-                {"package_root", "."},
-            }},
-        }.dump() + "\n");
-
-    auto const startup = make_startup(workspace);
-    iv::IvModuleInstances instances;
-    auto sources = local_cmake_definitions(workspace);
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    auto module_instance_bindings = ProjectIvModuleInstancesBindings(
-        persistence,
-        instances,
-        sources);
-
-    persistence.load();
-
-    ASSERT_EQ(instances.list_instances().size(), 1u);
-    EXPECT_EQ(instances.list_instances().front().instance_id, "instance-after-warning");
-    EXPECT_EQ(count_messages_with_level(witness.messages, "warning"), 2u);
-    EXPECT_EQ(count_messages_with_level(witness.messages, "error"), 0u);
-
-}
-
-TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_round_trip_core", "local_cmake");
-    auto const startup = make_startup(workspace);
-    auto const toolchain_dir = workspace / "toolchain";
-    std::filesystem::create_directories(toolchain_dir);
-    write_text(toolchain_dir / "clang", "");
-
-    iv::IvModuleInstances instances;
-    auto sources = local_cmake_definitions(workspace);
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
-    iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
-    iv::LaneViews lane_views;
-    iv::IvModuleReload reload(
-        startup, iv::ModuleLoader::OptimizationLevel::O0);
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    initialize_two_timeline_lanes(timeline);
-    // This models a lane-visualization sink: it exists only while a view is
-    // open and therefore has no producer-supplied public id to restore.
-    timeline.apply_lane_batch(iv::TimelineLaneBatchUpdate{
-        .upserts = {iv::TimelineLaneUpsert{
-            .lane = iv::LaneId{3},
-            .lifetime = iv::TimelineLaneLifetime::ephemeral,
-            .make_node = [] { return iv::TypeErasedLaneNode(iv::KnobLaneNode{.value = 3.0f}); },
-            .sample_channel_type = iv::ChannelTypeId::stereo,
-        }},
-    });
-    auto const transient_lane_id = timeline.lane_public_id(iv::LaneId{3});
-    EXPECT_FALSE(timeline.lane_is_persistent(iv::LaneId{3}));
-    instances.create_instance(local_cmake_module_id, workspace, "instance-a");
-    instances.set_default_silence_ttl_samples("instance-a", 123);
-    execution.set_compiled_sample_cache_chunk_size_multiplier(8);
-    (void)audio_device_lanes.set_selected_devices("out-1", "in-1");
-    audio_device_lanes.set_lane_external_ids(intern("audio-out"), intern("audio-in"));
-    reload.set_toolchain_config(iv::ModuleLoaderToolchainConfig{
-        .c_compiler = std::filesystem::weakly_canonical(toolchain_dir / "clang").lexically_normal(),
-        .cxx_compiler = std::nullopt,
-    });
-    (void)lane_views.open_view(iv::LaneViewRequest{
-        .view_id = intern("view-a"),
-        .query = iv::LaneQuery{.filter = iv::LaneQueryFilter{.source = "graph_input"}},
-        .start_index = 1,
-        .visible_lane_count = 3,
-        .first_sample_index = 10,
-        .last_sample_index = 20,
-        .display_sample_count = 10,
-    });
-    iv::ProjectAckBuilder connection_builder;
-    std::optional<ProjectTimelineBindings> project_timeline_bindings(
-        std::in_place,
-        persistence,
-        timeline,
-        execution);
-    iv::ProjectAckBuilder channel_type_builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_project_set_timeline_lane_sample_channel_type_requested_event,
-        iv::ProjectSetTimelineLaneSampleChannelTypeRequest{
-            .lane_id = intern("lane-b"),
-            .sample_channel_type = iv::ChannelTypeId::stereo,
-        },
-        channel_type_builder);
-    channel_type_builder.build();
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_project_connect_timeline_lanes_requested_event,
-        iv::ProjectConnectTimelineLanesRequest{
-            .source_lane_id = intern("lane-a"),
-            .target_lane_id = intern("lane-b"),
-            .port_domain = iv::LanePortDomain::realtime,
-            .port_kind = iv::PortKind::sample,
-            .port_ordinal = 0,
-        },
-        connection_builder);
-    connection_builder.build();
-
-    std::optional<ProjectIvModuleInstancesBindings> module_instance_bindings(
-        std::in_place,
-        persistence,
-        instances,
-        sources);
-    std::optional<iv::project_persistence_audio_device_lanes_bridge::scope>
-        project_persistence_audio_device_lanes_scope(
-            iv::project_persistence_audio_device_lanes_bridge::bind(
-                persistence,
-                audio_device_lanes));
-    std::optional<iv::project_persistence_iv_module_reload_bridge::scope>
-        project_persistence_reload_scope(
-            iv::project_persistence_iv_module_reload_bridge::bind(
-                persistence,
-                reload));
-
-    persistence.save();
-    auto const original = read_text(workspace / "iv_project.jsonl");
-    auto const original_commands = parse_project_file(workspace / "iv_project.jsonl");
-    EXPECT_TRUE(std::ranges::any_of(original_commands, [](auto const &command) {
-        return command["command"] == "timeline.setLaneSampleChannelType"
-            && command["args"]["lane_id"] == "lane-b"
-            && command["args"]["sample_channel_type"] == "stereo";
+    EXPECT_EQ(listed.front().instance_id, "instance:1");
+    EXPECT_EQ(listed.front().definition_id, "iv.test.replayed");
+    EXPECT_EQ(listed.front().display_name, "Replayed");
+    EXPECT_TRUE(std::ranges::any_of(witness.messages, [](auto const &message) {
+        return message.level == "error"
+            && message.message.contains("unknown project command: removed.timelineCommand");
     }));
-    EXPECT_FALSE(std::ranges::any_of(original_commands, [&](auto const &command) {
-        return command["command"] == "timeline.setLaneSampleChannelType"
-            && command["args"]["lane_id"] == transient_lane_id.str();
-    }));
-
-    project_persistence_audio_device_lanes_scope.reset();
-    project_persistence_reload_scope.reset();
-    module_instance_bindings.reset();
-    project_timeline_bindings.reset();
-
-    iv::IvModuleInstances fresh_instances;
-    auto fresh_sources = local_cmake_definitions(workspace);
-    iv::Timeline fresh_timeline;
-    iv::TimelineExecution fresh_execution(8, 16);
-    iv::AudioDeviceLanes fresh_audio_device_lanes(48000, 8, make_audio_backend());
-    iv::LaneViews fresh_lane_views;
-    iv::IvModuleReload fresh_reload(
-        startup, iv::ModuleLoader::OptimizationLevel::O0);
-    iv::ProjectPersistence fresh_persistence(workspace, startup);
-
-    initialize_two_timeline_lanes(fresh_timeline);
-    auto fresh_project_timeline_bindings = ProjectTimelineBindings(
-        fresh_persistence,
-        fresh_timeline,
-        fresh_execution);
-    auto fresh_module_instance_bindings = ProjectIvModuleInstancesBindings(
-        fresh_persistence,
-        fresh_instances,
-        fresh_sources);
-    auto fresh_project_persistence_audio_device_lanes_scope =
-        iv::project_persistence_audio_device_lanes_bridge::bind(
-            fresh_persistence,
-            fresh_audio_device_lanes);
-    auto fresh_project_persistence_reload_scope =
-        iv::project_persistence_iv_module_reload_bridge::bind(
-            fresh_persistence,
-            fresh_reload);
-
-    fresh_persistence.load();
-    fresh_persistence.save();
-
-    EXPECT_EQ(read_text(workspace / "iv_project.jsonl"), original);
-    ASSERT_EQ(fresh_instances.list_instances().size(), 1u);
-    EXPECT_EQ(fresh_instances.list_instances().front().instance_id, "instance-a");
-    EXPECT_EQ(fresh_execution.compiled_sample_cache_chunk_size_multiplier(), 8u);
-    EXPECT_EQ(
-        fresh_audio_device_lanes.output_lane_external_id().str(),
-        "audio-out");
-    EXPECT_TRUE(fresh_lane_views.active_view_requests().empty());
-    ASSERT_TRUE(fresh_reload.toolchain_config().c_compiler.has_value());
-    EXPECT_EQ(fresh_timeline.lane_connections().size(), 1u);
-    ASSERT_TRUE(fresh_timeline.resolve_public_lane_id(intern("lane-b")).has_value());
-    EXPECT_EQ(
-        fresh_timeline.lane_sample_channel_type(*fresh_timeline.resolve_public_lane_id(intern("lane-b"))),
-        std::optional<iv::ChannelTypeId>(iv::ChannelTypeId::stereo));
-
 }
 
-TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
+TEST(ProjectPersistence, SaveCollectsInstanceMetadataWithoutExecutionState)
 {
-    auto const workspace = mutable_module_fixture_workspace("project_builder_normalization", "local_cmake");
-    auto const startup = make_startup(workspace);
-    auto const inside = workspace / "toolchain" / "clang";
-    auto const outside = std::filesystem::path("/tmp/project_builder_make");
-    std::filesystem::create_directories(inside.parent_path());
-    write_text(inside, "");
-    write_text(outside, "");
-
-    iv::ProjectPersistenceBuilder builder(workspace, startup);
-    builder.add_project_toolchain_config(iv::ModuleLoaderToolchainConfig{
-        .c_compiler = std::filesystem::weakly_canonical(inside).lexically_normal(),
-        .cxx_compiler = std::nullopt,
-        .make_program = std::filesystem::weakly_canonical(outside).lexically_normal(),
-    });
-    builder.add_project_compiled_sample_cache_chunk_size_multiplier(16);
-    builder.add_project_audio_device_selection(
-        std::optional<std::string>("default"),
-        std::optional<std::string>("default"));
-    builder.add_iv_module_instances({
-        iv::IvModuleInstanceInfo{
-            .instance_id = "b",
-            .package_root = workspace,
-        },
-        iv::IvModuleInstanceInfo{
-            .instance_id = "a",
-            .package_root = workspace,
-        },
-    });
-    builder.add_configured_lane_connections({
-        iv::ConfiguredLaneConnection{
-            .source_lane_id = intern("lane-z"),
-            .target_lane_id = intern("lane-a"),
-            .input = iv::LanePortId{.domain = iv::LanePortDomain::compiled, .kind = iv::PortKind::event, .ordinal = 2},
-        },
-        iv::ConfiguredLaneConnection{
-            .source_lane_id = intern("lane-a"),
-            .target_lane_id = intern("lane-z"),
-            .input = iv::LanePortId{.domain = iv::LanePortDomain::realtime, .kind = iv::PortKind::sample, .ordinal = 0},
-        },
-    });
-
-    auto const commands = builder.build();
-    ASSERT_FALSE(commands.empty());
-    EXPECT_EQ(commands.front().command, "project.overrideSettings");
-    EXPECT_EQ(commands.front().args["c_compiler"], "toolchain/clang");
-    auto const make_program_path = std::filesystem::path(
-        commands.front().args["make_program"].get<std::string>());
-    EXPECT_FALSE(make_program_path.is_absolute());
-    EXPECT_TRUE(commands.front().args["make_program"].get<std::string>().ends_with("project_builder_make"));
-    EXPECT_FALSE(commands.front().args.contains("compiled_sample_cache_chunk_size_multiplier"));
-    EXPECT_FALSE(commands.front().args.contains("output_device_id"));
-
-    std::vector<std::string> created_instance_ids;
-    std::vector<std::pair<std::string, std::string>> connection_order;
-    for (auto const &command : commands) {
-        if (command.command == "ivModuleInstances.create") {
-            created_instance_ids.push_back(command.args["instance_id"].get<std::string>());
-            EXPECT_EQ(command.args["package_root"].get<std::string>(), ".");
-        } else if (command.command == "timeline.connectConfiguredLanes") {
-            connection_order.emplace_back(
-                command.args["source_lane_id"].get<std::string>(),
-                command.args["port_domain"].get<std::string>());
-        }
-    }
-
-    EXPECT_EQ(created_instance_ids, (std::vector<std::string>{"a", "b"}));
-    EXPECT_FALSE(std::ranges::any_of(commands, [](auto const &command) {
-        return command.command == "timeline.openLaneView";
-    }));
-    EXPECT_EQ(
-        connection_order,
-        (std::vector<std::pair<std::string, std::string>>{
-            {"lane-a", "realtime"},
-            {"lane-z", "compiled"},
-        }));
-}
-
-TEST_F(ProjectPersistenceTest, GraphInputConfiguredStateCoversAllMutationKinds)
-{
-    iv::GraphInputLanes::ConfiguredStateSnapshot snapshot;
-    snapshot.sample_input_values.push_back(iv::ProjectSetSampleInputValueRequest{
-        .node_id = "node-1",
-        .member_ordinal = std::nullopt,
-        .input_ordinal = 0,
-        .value = iv::Sample{0.5f},
-    });
-    snapshot.sample_input_states.push_back(iv::ProjectSetSampleInputStateRequest{
-        .node_id = "node-1",
-        .member_ordinal = 0,
-        .input_ordinal = 0,
-        .state = iv::ProjectSampleInputState::timeline_lane,
-        .lane_id = intern("sample-lane"),
-    });
-    snapshot.event_input_states.push_back(iv::ProjectSetEventInputStateRequest{
-        .node_id = "node-1",
-        .member_ordinal = 0,
-        .input_ordinal = 0,
-        .state = iv::ProjectEventInputState::timeline_lane,
-        .lane_id = intern("event-lane"),
-    });
-    snapshot.sample_output_states.push_back(iv::ProjectSetSampleOutputStateRequest{
-        .node_id = "node-1",
-        .member_ordinal = std::nullopt,
-        .output_ordinal = 0,
-        .state = iv::ProjectSampleOutputState::timeline_lane,
-        .lane_id = intern("sample-out"),
-    });
-    snapshot.event_output_states.push_back(iv::ProjectSetEventOutputStateRequest{
-        .node_id = "node-1",
-        .member_ordinal = 0,
-        .output_ordinal = 0,
-        .state = iv::ProjectEventOutputState::timeline_lane,
-        .lane_id = intern("event-out"),
-    });
-
-    iv::ProjectPersistenceBuilder builder(std::filesystem::current_path(), make_startup(std::filesystem::current_path()));
-    builder.add_graph_input_configured_state(snapshot);
-    auto const commands = builder.build();
-    std::multiset<std::string> names;
-    for (auto const &command : commands) {
-        names.insert(command.command);
-    }
-    EXPECT_TRUE(names.contains("graph.setSampleInputValue"));
-    EXPECT_TRUE(names.contains("graph.setSampleInputState"));
-    EXPECT_TRUE(names.contains("graph.setEventInputState"));
-    EXPECT_TRUE(names.contains("graph.setSampleOutputState"));
-    EXPECT_TRUE(names.contains("graph.setEventOutputState"));
-}
-
-TEST(ProjectPersistenceBuilder, GraphInputConfiguredStateSerializesStateVariantsForMemberAndVirtualPorts)
-{
-    auto const virtual_sample_input_node_id = runtime_node_id("instance:a", "node-virtual");
-    auto const member_sample_input_node_id = runtime_node_id("instance:a", "node-member");
-    auto const virtual_event_input_node_id = runtime_node_id("instance:b", "event-virtual");
-    auto const member_event_input_node_id = runtime_node_id("instance:b", "event-member");
-    auto const virtual_sample_output_node_id = runtime_node_id("instance:c", "sample-out");
-    auto const member_event_output_node_id = runtime_node_id("instance:c", "event-out");
-    iv::GraphInputLanes::ConfiguredStateSnapshot snapshot;
-    snapshot.sample_input_states.push_back(iv::ProjectSetSampleInputStateRequest{
-        .node_id = virtual_sample_input_node_id,
-        .member_ordinal = std::nullopt,
-        .input_ordinal = 0,
-        .state = iv::ProjectSampleInputState::disconnected,
-        .lane_id = std::nullopt,
-    });
-    snapshot.sample_input_states.push_back(iv::ProjectSetSampleInputStateRequest{
-        .node_id = member_sample_input_node_id,
-        .member_ordinal = 1,
-        .input_ordinal = 2,
-        .state = iv::ProjectSampleInputState::virtual_follow,
-        .lane_id = std::nullopt,
-    });
-    snapshot.event_input_states.push_back(iv::ProjectSetEventInputStateRequest{
-        .node_id = virtual_event_input_node_id,
-        .member_ordinal = std::nullopt,
-        .input_ordinal = 0,
-        .state = iv::ProjectEventInputState::default_,
-        .lane_id = std::nullopt,
-    });
-    snapshot.event_input_states.push_back(iv::ProjectSetEventInputStateRequest{
-        .node_id = member_event_input_node_id,
-        .member_ordinal = 3,
-        .input_ordinal = 1,
-        .state = iv::ProjectEventInputState::disconnected,
-        .lane_id = std::nullopt,
-    });
-    snapshot.sample_output_states.push_back(iv::ProjectSetSampleOutputStateRequest{
-        .node_id = virtual_sample_output_node_id,
-        .member_ordinal = std::nullopt,
-        .output_ordinal = 0,
-        .state = iv::ProjectSampleOutputState::virtual_port,
-        .lane_id = std::nullopt,
-    });
-    snapshot.event_output_states.push_back(iv::ProjectSetEventOutputStateRequest{
-        .node_id = member_event_output_node_id,
-        .member_ordinal = 4,
-        .output_ordinal = 1,
-        .state = iv::ProjectEventOutputState::disconnected,
-        .lane_id = std::nullopt,
-    });
-
-    iv::ProjectPersistenceBuilder builder(
-        std::filesystem::current_path(),
-        make_startup(std::filesystem::current_path()));
-    builder.add_graph_input_configured_state(snapshot);
-    auto const commands = builder.build();
-
-    auto const find_command = [&](std::string_view name, std::string_view node_id) -> Json {
-        for (auto const &command : commands) {
-            if (command.command == name && command.args["node_id"] == node_id) {
-                return command.args;
-            }
-        }
-        throw std::runtime_error("command not found");
-    };
-
-    EXPECT_EQ(find_command("graph.setSampleInputState", virtual_sample_input_node_id)["state"], "disconnected");
-    EXPECT_TRUE(find_command("graph.setSampleInputState", virtual_sample_input_node_id)["member_ordinal"].is_null());
-    EXPECT_EQ(find_command("graph.setSampleInputState", member_sample_input_node_id)["state"], "virtualFollow");
-    EXPECT_EQ(find_command("graph.setSampleInputState", member_sample_input_node_id)["member_ordinal"], 1);
-    EXPECT_EQ(find_command("graph.setEventInputState", virtual_event_input_node_id)["state"], "default");
-    EXPECT_EQ(find_command("graph.setEventInputState", member_event_input_node_id)["state"], "disconnected");
-    EXPECT_EQ(find_command("graph.setSampleOutputState", virtual_sample_output_node_id)["state"], "virtual");
-    EXPECT_EQ(find_command("graph.setEventOutputState", member_event_output_node_id)["state"], "disconnected");
-}
-
-TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersConnectionUntilLanesExist)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_timeline_connectivity_replay", "local_cmake");
-    write_text(
-        workspace / "iv_project.jsonl",
-        Json{
-            {"command", "timeline.connectLanes"},
-            {"args", Json{
-                {"source_lane_id", "lane-a"},
-                {"target_lane_id", "lane-b"},
-                {"port_domain", "realtime"},
-                {"port_kind", "sample"},
-                {"port_ordinal", 0},
-            }},
-        }.dump() + "\n");
-
-    auto const startup = make_startup(workspace);
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
+    auto const workspace = fresh_workspace("project_persistence_instance_save");
+    auto startup = startup_for(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
+    iv::IvModuleInstances instances;
+    auto instances_scope =
+        iv::project_persistence_iv_module_instances_bridge::bind(persistence, instances);
 
-    ProjectTimelineBindings project_timeline_bindings(
-        persistence, timeline, execution);
+    (void)instances.create_instance(
+        "iv.test.persisted",
+        workspace / "modules" / "persisted",
+        "instance:stable",
+        "Persisted");
 
-    persistence.load();
-
-    EXPECT_TRUE(timeline.lane_connections().empty());
-    ASSERT_EQ(timeline.pending_public_connections().size(), 1u);
-    // Deferred replay is expected to be silent at the user-facing project
-    // notification level. Connection-topology tracing is intentionally debug
-    // output and is routed to the dedicated diagnostics channel.
-    EXPECT_TRUE(std::ranges::all_of(witness.messages, [](auto const &message) {
-        return message.level == "debug";
-    }));
-
-    initialize_two_timeline_lanes(timeline);
-
-    auto const connections = timeline.lane_connections();
-    ASSERT_EQ(connections.size(), 1u);
-    EXPECT_EQ(timeline.lane_public_id(connections.front().source).str(), "lane-a");
-    EXPECT_EQ(timeline.lane_public_id(connections.front().target).str(), "lane-b");
-    EXPECT_TRUE(timeline.pending_public_connections().empty());
-
-}
-
-TEST_F(ProjectPersistenceTest, SavingKeepsPendingTimelineConnections)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_pending_timeline_connection_save", "local_cmake");
-    auto const startup = make_startup(workspace);
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    timeline.connect_public_lanes_or_defer(
-        intern("future-source"), intern("future-target"),
-        {.domain = iv::LanePortDomain::realtime, .kind = iv::PortKind::sample, .ordinal = 0});
-    ASSERT_EQ(timeline.pending_public_connections().size(), 1u);
-
-    ProjectTimelineBindings project_timeline_bindings(
-        persistence, timeline, execution);
     persistence.save();
 
     auto const commands = parse_project_file(workspace / "iv_project.jsonl");
-    EXPECT_TRUE(std::ranges::any_of(commands, [](auto const& command) {
-        return command["command"] == "timeline.connectLanes"
-            && command["args"]["source_lane_id"] == "future-source"
-            && command["args"]["target_lane_id"] == "future-target";
-    }));
-
+    ASSERT_EQ(commands.size(), 1u);
+    EXPECT_EQ(commands[0]["command"], "ivModuleInstances.create");
+    EXPECT_EQ(commands[0]["args"]["instance_id"], "instance:stable");
+    EXPECT_EQ(commands[0]["args"]["module_id"], "iv.test.persisted");
+    EXPECT_EQ(commands[0]["args"]["package_root"], "modules/persisted");
+    EXPECT_EQ(commands[0]["args"]["display_name"], "Persisted");
+    EXPECT_EQ(commands[0]["args"].size(), 4u);
 }
 
-TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersUntilTargetExistsAndStillRestoresView)
+TEST(ProjectPersistence, SaveWithNoContributorsWritesEmptyProjectFile)
 {
-    auto const workspace = mutable_module_fixture_workspace("project_timeline_missing_target", "local_cmake");
-    write_text(
-        workspace / "iv_project.jsonl",
-        Json{
-            {"command", "timeline.connectLanes"},
-            {"args", Json{
-                {"source_lane_id", "lane-a"},
-                {"target_lane_id", "lane-b"},
-                {"port_domain", "realtime"},
-                {"port_kind", "sample"},
-                {"port_ordinal", 0},
-            }},
-        }.dump() + "\n" +
-        Json{
-            {"command", "timeline.openLaneView"},
-            {"args", Json{
-                {"view_id", "view-after-target-failure"},
-                {"query_source", "graph_input"},
-                {"start_index", 3},
-                {"visible_lane_count", 5},
-                {"first_sample_index", 0},
-                {"last_sample_index", 16},
-                {"display_sample_count", 16},
-            }},
-        }.dump() + "\n");
+    auto const workspace = fresh_workspace("project_persistence_empty_save");
+    iv::ProjectPersistence persistence(workspace, startup_for(workspace));
 
-    auto const startup = make_startup(workspace);
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
-    iv::LaneViews lane_views;
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    ProjectTimelineBindings project_timeline_bindings(
-        persistence, timeline, execution);
-
-    persistence.load();
-
-    EXPECT_TRUE(timeline.lane_connections().empty());
-    ASSERT_EQ(timeline.pending_public_connections().size(), 1u);
-    EXPECT_TRUE(lane_views.active_view_requests().empty());
-    EXPECT_TRUE(std::ranges::all_of(witness.messages, [](auto const &message) {
-        return message.level == "debug";
-    }));
-
-    initialize_two_timeline_lanes(timeline);
-    ASSERT_EQ(timeline.lane_connections().size(), 1u);
-    EXPECT_TRUE(timeline.pending_public_connections().empty());
-
-}
-
-TEST_F(ProjectPersistenceTest, TimelineLaneSampleChannelTypeFailureDoesNotStopLaterCommands)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_timeline_bad_channel_target", "local_cmake");
-    write_text(
-        workspace / "iv_project.jsonl",
-        Json{
-            {"command", "timeline.setLaneSampleChannelType"},
-            {"args", Json{
-                {"lane_id", "event-lane"},
-                {"sample_channel_type", "stereo"},
-            }},
-        }.dump() + "\n" +
-        Json{
-            {"command", "timeline.openLaneView"},
-            {"args", Json{
-                {"view_id", "view-after-channel-failure"},
-                {"query_source", "graph_input"},
-                {"start_index", 0},
-                {"visible_lane_count", 2},
-                {"first_sample_index", 0},
-                {"last_sample_index", 4},
-                {"display_sample_count", 4},
-            }},
-        }.dump() + "\n");
-
-    auto const startup = make_startup(workspace);
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
-    iv::LaneViews lane_views;
-    iv::ProjectPersistence persistence(workspace, startup);
-    timeline.apply_lane_batch(timeline_batch_with_event_lane());
-
-    ProjectTimelineBindings project_timeline_bindings(
-        persistence, timeline, execution);
-
-    persistence.load();
-
-    EXPECT_TRUE(lane_views.active_view_requests().empty());
-    ASSERT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
-    EXPECT_TRUE(witness.messages.front().message.contains("does not produce samples"));
-
-}
-
-TEST_F(ProjectPersistenceTest, ProjectSaveUnboundLeavesResponseUnchanged)
-{
-    iv::SocketRpcAckResponseBuilder builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_socket_rpc_save_project_event,
-        iv::SaveProjectRequest{},
-        builder);
-
-    EXPECT_FALSE(builder.has_response());
-}
-
-TEST_F(ProjectPersistenceTest, TimelineConnectionSocketRpcAcknowledgesSuccessfulMutations)
-{
-    auto const workspace = mutable_module_fixture_workspace(
-        "project_timeline_connection_socket_ack",
-        "local_cmake");
-    auto const startup = make_startup(workspace);
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
-    iv::ProjectPersistence persistence(workspace, startup);
-    initialize_two_timeline_lanes(timeline);
-    ProjectTimelineBindings bindings(persistence, timeline, execution);
-    iv::SocketRpcServer server(workspace, -1);
-    auto socket_persistence_scope =
-        iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
-
-    iv::SocketRpcAckResponseBuilder connect_builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_socket_rpc_connect_timeline_lanes_event,
-        iv::ConnectTimelineLanesRequest{
-            .source_lane_id = intern("lane-a"),
-            .target_lane_id = intern("lane-b"),
-            .port_domain = iv::LanePortDomain::realtime,
-            .port_kind = iv::PortKind::sample,
-            .port_ordinal = 0,
-        },
-        connect_builder);
-
-    EXPECT_TRUE(connect_builder.has_response());
-    EXPECT_EQ(
-        parse_json_line(connect_builder.build(1))["result"]["ok"],
-        true);
-    ASSERT_EQ(timeline.lane_connections().size(), 1u);
-
-    iv::SocketRpcAckResponseBuilder disconnect_builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_socket_rpc_disconnect_timeline_lanes_event,
-        iv::DisconnectTimelineLanesRequest{
-            .source_lane_id = intern("lane-a"),
-            .target_lane_id = intern("lane-b"),
-            .port_domain = iv::LanePortDomain::realtime,
-            .port_kind = iv::PortKind::sample,
-            .port_ordinal = 0,
-        },
-        disconnect_builder);
-
-    EXPECT_TRUE(disconnect_builder.has_response());
-    EXPECT_EQ(
-        parse_json_line(disconnect_builder.build(2))["result"]["ok"],
-        true);
-    EXPECT_TRUE(timeline.lane_connections().empty());
-}
-
-TEST_F(ProjectPersistenceTest, ProjectSaveWithNoContributorsWritesEmptyFile)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_save_empty", "local_cmake");
-    auto const startup = make_startup(workspace);
-    iv::ProjectPersistence persistence(workspace, startup);
-    iv::SocketRpcServer server(workspace, -1);
-    auto bridge_scope =
-        iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
-
-    iv::SocketRpcAckResponseBuilder builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_socket_rpc_save_project_event,
-        iv::SaveProjectRequest{},
-        builder);
-
-    auto const response = parse_json_line(builder.build(1));
-    EXPECT_EQ(response["result"]["ok"], true);
-    EXPECT_EQ(read_text(workspace / "iv_project.jsonl"), "");
-
-}
-
-TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_save_current_runtime_state", "local_cmake");
-    auto const startup = make_startup(workspace);
-    iv::IvModuleInstances instances;
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
-    iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
-    iv::LaneViews lane_views;
-    iv::GraphInputLanes graph_input_lanes;
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    initialize_two_timeline_lanes(timeline);
-    instances.create_instance(local_cmake_module_id, workspace, "instance-save");
-    execution.set_compiled_sample_cache_chunk_size_multiplier(8);
-    (void)audio_device_lanes.set_selected_devices("out-1", "in-1");
-    audio_device_lanes.set_lane_external_ids(intern("audio-out-save"), intern("audio-in-save"));
-    (void)lane_views.open_view(iv::LaneViewRequest{
-        .view_id = intern("view-save"),
-        .query = iv::LaneQuery{.filter = iv::LaneQueryFilter{.source = "graph_input"}},
-        .start_index = 5,
-        .visible_lane_count = 7,
-        .first_sample_index = 10,
-        .last_sample_index = 30,
-        .display_sample_count = 20,
-    });
-    auto graph_instance = make_instance_with_member_ports();
-    auto const graph_runtime_node_id = runtime_node_id(graph_instance.instance_id, "node-1");
-    graph_input_lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
-        .created = {iv::IvModuleInstanceBuilderRef{.instance = &graph_instance}},
-    });
-    graph_input_lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
-    graph_input_lanes.set_sample_input_value(iv::ProjectSetSampleInputValueRequest{
-        .node_id = graph_runtime_node_id,
-        .member_ordinal = std::nullopt,
-        .input_ordinal = 0,
-        .value = iv::Sample{0.25f},
-    });
-
-    ProjectTimelineBindings project_timeline_bindings(
-        persistence, timeline, execution);
-    auto sources = local_cmake_definitions(workspace);
-    auto module_instance_bindings = ProjectIvModuleInstancesBindings(
-        persistence,
-        instances,
-        sources);
-    auto project_persistence_audio_device_lanes_scope =
-        iv::project_persistence_audio_device_lanes_bridge::bind(
-            persistence,
-            audio_device_lanes);
-    auto project_persistence_graph_input_lanes_scope =
-        iv::project_persistence_graph_input_lanes_bridge::bind(
-            persistence,
-            graph_input_lanes);
-
-    iv::SocketRpcAckResponseBuilder builder;
-    persistence.handle_socket_rpc_save_project({}, builder);
-
-    auto const response = parse_json_line(builder.build(1));
-    EXPECT_EQ(response["result"]["ok"], true);
-    auto const commands = parse_project_file(workspace / "iv_project.jsonl");
-
-    auto contains_command = [&](std::string_view command_name) {
-        return std::ranges::any_of(commands, [&](auto const &command) {
-            return command["command"] == command_name;
-        });
-    };
-
-    EXPECT_TRUE(contains_command("project.overrideSettings"));
-    EXPECT_TRUE(contains_command("audioDevices.setLaneIds"));
-    EXPECT_TRUE(contains_command("ivModuleInstances.create"));
-    EXPECT_TRUE(contains_command("graph.setSampleInputValue"));
-    EXPECT_FALSE(contains_command("timeline.openLaneView"));
-    EXPECT_TRUE(std::ranges::any_of(commands, [&](auto const &command) {
-        return command["command"] == "graph.setSampleInputValue"
-            && command["args"]["node_id"] == graph_runtime_node_id;
-    }));
-
-}
-
-TEST_F(ProjectPersistenceTest, ProjectSaveContributorExceptionReturnsError)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_save_contributor_failure", "local_cmake");
-    auto const startup = make_startup(workspace);
-    iv::ProjectPersistence persistence(workspace, startup);
-    collect_state_contributor.throw_on_collect_state = true;
-
-    iv::SocketRpcAckResponseBuilder builder;
-    persistence.handle_socket_rpc_save_project({}, builder);
-
-    auto const response = parse_json_line(builder.build(1));
-    EXPECT_EQ(response["error"]["message"], "test contributor failure");
-
-}
-
-TEST_F(ProjectPersistenceTest, ProjectSaveWriteFailureReturnsError)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_save_write_failure", "local_cmake");
-    std::filesystem::remove(workspace / "iv_project.jsonl");
-    std::filesystem::create_directory(workspace / "iv_project.jsonl");
-    auto const startup = make_startup(workspace);
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    iv::SocketRpcAckResponseBuilder builder;
-    persistence.handle_socket_rpc_save_project({}, builder);
-
-    auto const response = parse_json_line(builder.build(1));
-    EXPECT_TRUE(
-        response["error"]["message"].get<std::string>().contains("failed to replace"));
-
-}
-
-TEST_F(ProjectPersistenceTest, RepeatedProjectSaveIsIdempotent)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_save_idempotent", "local_cmake");
-    auto const startup = make_startup(workspace);
-    iv::IvModuleInstances instances;
-    auto sources = local_cmake_definitions(workspace);
-    instances.create_instance(local_cmake_module_id, workspace, "instance-a");
-    iv::ProjectPersistence persistence(workspace, startup);
-
-    auto module_instance_bindings = ProjectIvModuleInstancesBindings(
-        persistence,
-        instances,
-        sources);
-
-    iv::SocketRpcAckResponseBuilder builder1;
-    persistence.handle_socket_rpc_save_project({}, builder1);
-    auto const first = read_text(workspace / "iv_project.jsonl");
-
-    iv::SocketRpcAckResponseBuilder builder2;
-    persistence.handle_socket_rpc_save_project({}, builder2);
-    EXPECT_EQ(read_text(workspace / "iv_project.jsonl"), first);
-
-}
-
-TEST(Uuid, InterningAndUuidGenerationBehavior)
-{
-    auto const a = iv::InternedString::from_view("alpha");
-    auto const a2 = iv::InternedString::from_string("alpha");
-    auto const b = iv::InternedString::from_view("beta");
-    EXPECT_EQ(a, a2);
-    EXPECT_EQ(a.c_str(), a2.c_str());
-    EXPECT_NE(a, b);
-
-    std::regex uuid_re(
-        "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
-    std::set<std::string> values;
-    for (size_t i = 0; i < 256; ++i) {
-        auto const uuid = iv::generate_uuid_v4().str();
-        EXPECT_TRUE(std::regex_match(uuid, uuid_re));
-        values.insert(uuid);
-    }
-    EXPECT_EQ(values.size(), 256u);
-}
-
-TEST_F(ProjectPersistenceTest, SavedIdsAreReusedAcrossLoadAndResave)
-{
-    auto const workspace = mutable_module_fixture_workspace("project_saved_ids_reused", "local_cmake");
-    write_text(
-        workspace / "iv_project.jsonl",
-        Json{
-            {"command", "audioDevices.setLaneIds"},
-            {"args", Json{
-                {"output_lane_id", "audio-out-fixed"},
-                {"input_lane_id", "audio-in-fixed"},
-            }},
-        }.dump() + "\n" +
-        Json{
-            {"command", "timeline.openLaneView"},
-            {"args", Json{
-                {"view_id", "view-fixed"},
-                {"query_source", "graph_input"},
-                {"start_index", 1},
-                {"visible_lane_count", 2},
-                {"first_sample_index", 0},
-                {"last_sample_index", 8},
-                {"display_sample_count", 8},
-            }},
-        }.dump() + "\n");
-
-    auto const startup = make_startup(workspace);
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
-    iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
-    iv::LaneViews lane_views;
-    iv::ProjectPersistence persistence(workspace, startup);
-    initialize_two_timeline_lanes(timeline);
-
-    ProjectTimelineBindings project_timeline_bindings(
-        persistence, timeline, execution);
-    auto project_persistence_audio_device_lanes_scope =
-        iv::project_persistence_audio_device_lanes_bridge::bind(
-            persistence,
-            audio_device_lanes);
-
-    persistence.load();
     persistence.save();
 
-    auto const commands = parse_project_file(workspace / "iv_project.jsonl");
-    auto const lane_id_command = std::ranges::find_if(commands, [](auto const &command) {
-        return command["command"] == "audioDevices.setLaneIds";
-    });
-    ASSERT_NE(lane_id_command, commands.end());
-    EXPECT_EQ((*lane_id_command)["args"]["output_lane_id"], "audio-out-fixed");
-    EXPECT_EQ((*lane_id_command)["args"]["input_lane_id"], "audio-in-fixed");
+    EXPECT_TRUE(parse_project_file(workspace / "iv_project.jsonl").empty());
+}
 
-    EXPECT_FALSE(std::ranges::any_of(commands, [](auto const &command) {
-        return command["command"] == "timeline.openLaneView";
-    }));
+TEST(ProjectPersistence, CollectStateFailureDoesNotReplaceExistingProjectFile)
+{
+    auto const workspace = fresh_workspace("project_persistence_atomic_failure");
+    auto const project_file = workspace / "iv_project.jsonl";
+    write_text(project_file, "sentinel\n");
 
-    EXPECT_EQ(audio_device_lanes.output_lane_external_id().str(), "audio-out-fixed");
-    EXPECT_EQ(audio_device_lanes.input_lane_external_id().str(), "audio-in-fixed");
-    EXPECT_TRUE(lane_views.active_view_requests().empty());
+    iv::ProjectPersistence persistence(workspace, startup_for(workspace));
+    ProjectCollectStateContributor contributor{.fail = true};
+    auto contributor_scope =
+        project_collect_state_contributor_bridge::bind(persistence, contributor);
 
+    EXPECT_THROW(persistence.save(), std::runtime_error);
+
+    std::ifstream in(project_file);
+    ASSERT_TRUE(in);
+    std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(contents, "sentinel\n");
 }

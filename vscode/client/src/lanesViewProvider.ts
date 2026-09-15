@@ -2636,10 +2636,10 @@ export class LaneViewProvider {
     }
 }
 
-// GraphInputLanes stores an instance's trailing numeric id when available;
-// UUID instance ids use libstdc++'s std::hash<string> narrowed to int.
-// Mirror that identity here so lane metadata can be joined with the instance
-// list already supplied by the workspace RPC.
+// The retained lane view joins legacy lane metadata to module instances by the
+// instance's historical numeric identity. UUID instance ids use libstdc++'s
+// std::hash<string> narrowed to int. This code stays dormant while the lane
+// product is disconnected from application composition.
 function moduleInstanceNumericId(instanceId) {
     const suffix = instanceId.lastIndexOf(":") >= 0 ? instanceId.slice(instanceId.lastIndexOf(":") + 1) : "";
     if (/^-?\d+$/.test(suffix)) {

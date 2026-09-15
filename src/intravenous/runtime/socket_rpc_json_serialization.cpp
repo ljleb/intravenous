@@ -196,7 +196,7 @@ SocketRpcJson iv_package_json(IvPackageInfo const &package)
     };
 }
 
-SocketRpcJson iv_packages_json(std::vector<IvPackageInfo> const &packages)
+SocketRpcJson iv_package_definitions_json(std::vector<IvPackageInfo> const &packages)
 {
     SocketRpcJson json = SocketRpcJson::array();
     for (auto const &package : packages) {

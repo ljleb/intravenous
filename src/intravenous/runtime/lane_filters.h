@@ -5,7 +5,6 @@
 #include <intravenous/query/lane_query_program.h>
 #include <intravenous/runtime/lane_filters_events.h>
 #include <intravenous/runtime/lane_view_service.h>
-#include <intravenous/runtime/timeline_events.h>
 
 #include <cstdint>
 #include <functional>
@@ -39,8 +38,8 @@ private:
     std::function<LaneMetadata(LaneId)> metadata_for_lane;
     std::function<std::optional<std::string>(LaneId)> model_type_id_for_lane;
     std::function<InternedString(LaneId)> public_id_for_lane;
-    std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> outputs_for_lanes;
-    std::function<void(std::vector<LaneId> const &, TimelineLaneVisitFn const &)> visit_lanes;
+    std::function<std::vector<LaneFilterLaneOutputs>(std::vector<LaneId> const &)> outputs_for_lanes;
+    std::function<void(std::vector<LaneId> const &, LaneFilterLaneVisitFn const &)> visit_lanes;
     std::unordered_map<std::string, RegisteredLaneFilter> filters_by_name;
     query::LaneQueryParser parser;
 
@@ -56,6 +55,5 @@ public:
 
     void store_filter(LaneFilterStoredRequest const &request);
     void remove_filter(std::string const &filter_name);
-    void handle_timeline_lanes_changed(TimelineLanesChanged const &change);
 };
 } // namespace iv

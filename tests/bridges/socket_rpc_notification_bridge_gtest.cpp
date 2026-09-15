@@ -4,7 +4,9 @@
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_events.h>
-#include <intravenous/runtime/iv_module_definitions_socket_rpc_packages_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/iv_package_definitions.h>
+#include <intravenous/runtime/socket_rpc_iv_package_definitions_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/lane_query_schema_service.h>
@@ -313,12 +315,15 @@ TEST(SocketRpcNotificationBridge, PublishedPackageDefinitionsRefreshThePackageCa
         "socket_rpc_package_catalog_notification_server");
     auto harness = NotificationServerHarness(workspace);
     IvModuleDefinitions definitions;
-    auto package_catalog_scope =
-        iv_module_definitions_socket_rpc_packages_bridge::bind(
-            definitions,
-            harness.server);
+    IvPackageDefinitions package_definitions(workspace);
+    auto definitions_scope = iv_module_definitions_iv_package_definitions_bridge::bind(
+        definitions,
+        package_definitions);
+    auto package_catalog_scope = socket_rpc_iv_package_definitions_bridge::bind(
+        harness.server,
+        package_definitions);
 
-    definitions.seed_loaded_definition(IvModuleReloadedDefinition{
+    definitions.seed_loaded_definition(IvPackageReloadedDefinition{
         .package_id = "iv.test.catalog",
         .definition_id = "iv.test.catalog.module",
         .package_root = workspace,

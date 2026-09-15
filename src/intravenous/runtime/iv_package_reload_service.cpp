@@ -2,8 +2,8 @@
 
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_events.h>
-#include <intravenous/runtime/iv_module_reload.h>
-#include <intravenous/runtime/iv_packages.h>
+#include <intravenous/runtime/iv_package_reload.h>
+#include <intravenous/runtime/iv_package_definitions.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
 #include <chrono>
@@ -25,7 +25,7 @@ void publish_package_catalog_changed()
 } // namespace
 
 IvPackageReloadService::IvPackageReloadService(
-    IvModuleReload& reload,
+    IvPackageReload& reload,
     IvModuleDefinitions& definitions,
     std::filesystem::path project_root,
     std::vector<std::filesystem::path> shared_roots)

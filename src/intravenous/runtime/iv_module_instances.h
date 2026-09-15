@@ -1,14 +1,9 @@
 #pragma once
 
-#include <intravenous/basic_nodes/weak_type_erased.h>
-#include <intravenous/graph/build_types.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/lane_graph.h>
-#include <intravenous/runtime/runtime_graph_bindings.h>
 
 #include <filesystem>
-#include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -20,11 +15,16 @@ namespace iv {
 class ProjectAckBuilder;
 class ProjectPersistenceBuilder;
 class ProjectStringBuilder;
+class SocketRpcAckResponseBuilder;
+class SocketRpcCreateIvModuleInstanceResultBuilder;
 class SocketRpcIvModuleInstancesResultBuilder;
 struct ProjectCreateIvModuleInstanceRequest;
 struct ProjectDeleteIvModuleInstanceRequest;
 struct ProjectUpdateIvModuleInstancesRequest;
+struct CreateIvModuleInstanceRequest;
+struct DeleteIvModuleInstanceRequest;
 struct GetIvModuleInstancesRequest;
+struct UpdateIvModuleInstancesRequest;
 
 struct IvModuleRequiredDefinition {
     std::string definition_id{};
@@ -37,16 +37,14 @@ struct IvModuleRequiredDefinitionsChanged {
     std::vector<std::string> deleted_definition_ids{};
 };
 
+// Durable instance metadata only. Executable roots, runtime bindings, scheduling
+// state and lane prerequisites belong to the future project graph executor.
 struct IvModuleInstance {
     std::string instance_id{};
     std::string definition_id{};
     std::string display_name{};
     std::filesystem::path package_root{};
     std::string module_id{};
-    GraphIntrospectionMetadata introspection{};
-    std::shared_ptr<GraphRuntimeBindings> runtime_bindings =
-        make_graph_runtime_bindings();
-    std::optional<size_t> default_silence_ttl_samples{};
 };
 
 struct IvModuleInstancesChanged {
@@ -55,29 +53,11 @@ struct IvModuleInstancesChanged {
     std::vector<std::string> deleted_instance_ids{};
 };
 
-struct IvModuleInstanceBuilderRef {
-    IvModuleInstance const *instance = nullptr;
-    WeakTypeErasedNode root{};
-    // Keeps the package revision owning the root graph and callbacks live until
-    // consumers have replaced and released their previous execution graph.
-    std::vector<ModuleRef> module_refs {};
-    std::vector<LaneId> prerequisite_lanes {};
-    std::optional<size_t> default_silence_ttl_samples {};
-};
-
-struct IvModuleInstanceBuildersChanged {
-    std::uint64_t version_index = 0;
-    std::vector<IvModuleInstanceBuilderRef> created {};
-    std::vector<IvModuleInstanceBuilderRef> updated {};
-    std::vector<std::string> deleted_instance_ids {};
-};
-
 class IvModuleInstances {
 public:
     struct Update {
         std::string instance_id{};
         std::optional<std::string> display_name{};
-        std::optional<size_t> default_silence_ttl_samples{};
     };
 
 private:
@@ -86,31 +66,20 @@ private:
         std::string definition_id{};
         std::string display_name{};
         std::filesystem::path package_root{};
-        std::optional<size_t> default_silence_ttl_samples{};
     };
 
-    mutable std::mutex mutex;
-    std::unordered_map<std::string, DesiredInstance> desired_instances_by_id;
-    std::unordered_map<std::string, IvModuleRequiredDefinition> required_definitions_by_id;
-    // Local snapshot of published definitions. This is updated only by the
-    // definitions-changed event, so instance creation never synchronously queries
-    // another app module or creates a return edge in the same event propagation.
-    std::unordered_map<std::string, IvModuleDefinition> definitions_by_id;
-    std::unordered_map<std::string, IvModuleInstance> realized_instances_by_id;
-    std::unordered_map<std::string, std::vector<ModuleRef>> realized_module_refs_by_id;
-    std::unordered_map<std::string, WeakTypeErasedNode> realized_roots_by_id;
+    mutable std::mutex mutex_;
+    std::unordered_map<std::string, DesiredInstance> desired_instances_by_id_;
+    std::unordered_map<std::string, IvModuleRequiredDefinition> required_definitions_by_id_;
+    std::unordered_map<std::string, IvModuleDefinition> definitions_by_id_;
+    std::unordered_map<std::string, IvModuleInstance> published_instances_by_id_;
 
-    bool realize_instance_locked(
-        std::string const& instance_id,
-        IvModuleDefinition const& definition,
-        bool update_existing,
-        IvModuleInstancesChanged& instance_diff,
-        IvModuleInstanceBuildersChanged& builders_diff);
-    void publish_instance_changes(
-        IvModuleInstancesChanged instance_diff,
-        IvModuleInstanceBuildersChanged builders_diff,
-        bool list_changed,
-        IvModuleDefinitionsChanged const* definitions = nullptr);
+    bool publish_instance_locked(
+        std::string const &instance_id,
+        IvModuleDefinition const &definition,
+        IvModuleInstancesChanged &diff);
+    void publish_instance_changes(IvModuleInstancesChanged diff, bool list_changed) const;
+    void publish_instance_declarations_changed() const;
 
 public:
     IvModuleInstances() = default;
@@ -121,14 +90,10 @@ public:
         std::optional<std::string> instance_id = std::nullopt,
         std::optional<std::string> display_name = std::nullopt);
     void remove_instance(std::string const &instance_id);
-    void set_default_silence_ttl_samples(
-        std::string const &instance_id,
-        size_t default_silence_ttl_samples);
     void update_instances(std::vector<Update> updates);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
 
-    void handle_iv_package_definitions_changed(
-        IvPackageDefinitionsChanged const &diff);
+    void handle_iv_package_definitions_changed(IvPackageDefinitionsChanged const &diff);
     void handle_project_create_iv_module_instance(
         ProjectCreateIvModuleInstanceRequest const &request,
         ProjectStringBuilder &builder);
@@ -138,8 +103,16 @@ public:
     void handle_project_update_iv_module_instances(
         ProjectUpdateIvModuleInstancesRequest const &request,
         ProjectAckBuilder &builder);
-    void handle_project_persistence_collect_state(
-        ProjectPersistenceBuilder &builder) const;
+    void handle_project_persistence_collect_state(ProjectPersistenceBuilder &builder) const;
+    void handle_socket_rpc_create_iv_module_instance(
+        CreateIvModuleInstanceRequest const &request,
+        SocketRpcCreateIvModuleInstanceResultBuilder &builder);
+    void handle_socket_rpc_delete_iv_module_instance(
+        DeleteIvModuleInstanceRequest const &request,
+        SocketRpcAckResponseBuilder &builder);
+    void handle_socket_rpc_update_iv_module_instances(
+        UpdateIvModuleInstancesRequest const &request,
+        SocketRpcAckResponseBuilder &builder);
     void handle_socket_rpc_get_iv_module_instances(
         GetIvModuleInstancesRequest const &request,
         SocketRpcIvModuleInstancesResultBuilder &builder) const;

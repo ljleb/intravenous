@@ -1,7 +1,6 @@
 #include <intravenous/runtime/lanes_visualization.h>
 
 #include <intravenous/runtime/lanes_visualization_events.h>
-#include <intravenous/runtime/task_runner_events.h>
 
 #include <algorithm>
 #include <thread>
@@ -141,20 +140,16 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
                         .channel_type = descriptor.sample_channel_type.value_or(ChannelTypeId::stereo),
                         .sample_layout = SampleStreamLayout::planar,
                     });
-            auto vis_lane = lane_id_allocator_.next();
             auto queue = std::make_shared<RealtimeSampleBlockQueue>(channel_layout, block_size_);
             new_sample_lanes.emplace(lane.value, TrackedRealtimeSampleLane{
                 .source_lane = lane,
-                .vis_lane = vis_lane,
                 .queue = std::move(queue),
                 .sample_channel_type = descriptor.sample_channel_type.value_or(ChannelTypeId::stereo),
             });
         } else if (desired_kind == TrackedLaneKind::realtime_event) {
-            auto vis_lane = lane_id_allocator_.next();
             auto queue = std::make_shared<RealtimeEventBlockQueue>();
             new_event_lanes.emplace(lane.value, TrackedRealtimeEventLane{
                 .source_lane = lane,
-                .vis_lane = vis_lane,
                 .queue = std::move(queue),
             });
         } else if (desired_kind == TrackedLaneKind::compiled_sample) {
@@ -204,19 +199,13 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
             if (current_kind == TrackedLaneKind::realtime_sample
                 && desired_kind != TrackedLaneKind::realtime_sample) {
                 if (auto it = tracked_sample_lanes_.find(lane); it != tracked_sample_lanes_.end()) {
-                    if (it->second.registered_in_timeline) {
-                        pending_timeline_lane_removals_.push_back(it->second.vis_lane);
-                        draining_sample_queues_.push_back(it->second.queue);
-                    }
+                    draining_sample_queues_.push_back(it->second.queue);
                     tracked_sample_lanes_.erase(it);
                 }
             } else if (current_kind == TrackedLaneKind::realtime_event
                 && desired_kind != TrackedLaneKind::realtime_event) {
                 if (auto it = tracked_event_lanes_.find(lane); it != tracked_event_lanes_.end()) {
-                    if (it->second.registered_in_timeline) {
-                        pending_timeline_lane_removals_.push_back(it->second.vis_lane);
-                        draining_event_queues_.push_back(it->second.queue);
-                    }
+                    draining_event_queues_.push_back(it->second.queue);
                     tracked_event_lanes_.erase(it);
                 }
             }
@@ -236,10 +225,7 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
             if (tracked_it->second.sample_channel_type == desired_channel_type) {
                 continue;
             }
-            if (tracked_it->second.registered_in_timeline) {
-                pending_timeline_lane_removals_.push_back(tracked_it->second.vis_lane);
-                draining_sample_queues_.push_back(tracked_it->second.queue);
-            }
+            draining_sample_queues_.push_back(tracked_it->second.queue);
             tracked_sample_lanes_.erase(tracked_it);
             auto const channel_layout =
                 sample_channel_layout_for(descriptor.config, descriptor.sample_channel_type)
@@ -250,7 +236,6 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
             auto queue = std::make_shared<RealtimeSampleBlockQueue>(channel_layout, block_size_);
             tracked_sample_lanes_.emplace(lane, TrackedRealtimeSampleLane{
                 .source_lane = lane,
-                .vis_lane = lane_id_allocator_.next(),
                 .queue = std::move(queue),
                 .sample_channel_type = desired_channel_type,
             });
@@ -331,144 +316,6 @@ void LanesVisualization::handle_lane_view_closed(InternedString view_id)
 void LanesVisualization::handle_lane_view_closed(std::string const &view_id)
 {
     handle_lane_view_closed(InternedString::from_string(view_id));
-}
-
-void LanesVisualization::handle_task_runner_after_pass(
-    TasksRunnerAfterPass const &)
-{
-    // Compute which source lanes are currently in use by any active view
-    std::unordered_set<uint64_t> used_sample_sources;
-    std::unordered_set<uint64_t> used_event_sources;
-
-    struct SampleAddInfo {
-        LaneId source_lane {};
-        LaneId vis_lane {};
-        std::shared_ptr<RealtimeSampleBlockQueue> queue {};
-        ChannelTypeId sample_channel_type = ChannelTypeId::stereo;
-    };
-    struct EventAddInfo {
-        LaneId source_lane {};
-        LaneId vis_lane {};
-        std::shared_ptr<RealtimeEventBlockQueue> queue {};
-    };
-
-    std::vector<SampleAddInfo> sample_additions;
-    std::vector<EventAddInfo> event_additions;
-    TimelineLaneBatchUpdate batch;
-
-    {
-        std::scoped_lock lock(mutex_);
-        batch.removals.insert(
-            batch.removals.end(),
-            pending_timeline_lane_removals_.begin(),
-            pending_timeline_lane_removals_.end());
-        pending_timeline_lane_removals_.clear();
-
-        for (auto const &[_, view] : active_views_) {
-            for (auto const lane : view.realtime_sample_lanes) {
-                used_sample_sources.insert(lane.value);
-            }
-            for (auto const lane : view.realtime_event_lanes) {
-                used_event_sources.insert(lane.value);
-            }
-        }
-
-        // Process tracked sample lanes
-        std::vector<LaneId> sample_to_erase;
-        for (auto &[source_lane, tracked] : tracked_sample_lanes_) {
-            bool const in_use = used_sample_sources.contains(source_lane.value);
-            if (!tracked.registered_in_timeline && in_use) {
-                sample_additions.push_back(SampleAddInfo{
-                    .source_lane = source_lane,
-                    .vis_lane = tracked.vis_lane,
-                    .queue = tracked.queue,
-                    .sample_channel_type = tracked.sample_channel_type,
-                });
-                tracked.registered_in_timeline = true;
-            } else if (tracked.registered_in_timeline && !in_use) {
-                batch.removals.push_back(tracked.vis_lane);
-                draining_sample_queues_.push_back(tracked.queue);
-                sample_to_erase.push_back(source_lane);
-            } else if (!tracked.registered_in_timeline && !in_use) {
-                // Never added to Timeline, just cleanup
-                draining_sample_queues_.push_back(tracked.queue);
-                sample_to_erase.push_back(source_lane);
-            }
-        }
-        for (auto const lane : sample_to_erase) {
-            tracked_sample_lanes_.erase(lane);
-        }
-
-        // Process tracked event lanes
-        std::vector<LaneId> event_to_erase;
-        for (auto &[source_lane, tracked] : tracked_event_lanes_) {
-            bool const in_use = used_event_sources.contains(source_lane.value);
-            if (!tracked.registered_in_timeline && in_use) {
-                event_additions.push_back(EventAddInfo{
-                    .source_lane = source_lane,
-                    .vis_lane = tracked.vis_lane,
-                    .queue = tracked.queue,
-                });
-                tracked.registered_in_timeline = true;
-            } else if (tracked.registered_in_timeline && !in_use) {
-                batch.removals.push_back(tracked.vis_lane);
-                draining_event_queues_.push_back(tracked.queue);
-                event_to_erase.push_back(source_lane);
-            } else if (!tracked.registered_in_timeline && !in_use) {
-                draining_event_queues_.push_back(tracked.queue);
-                event_to_erase.push_back(source_lane);
-            }
-        }
-        for (auto const lane : event_to_erase) {
-            tracked_event_lanes_.erase(lane);
-        }
-    }
-
-    // Each Timeline sink captures queue ownership. It can safely outlive the
-    // view-model entry that requested it while a previous task graph drains.
-    for (auto const &add : sample_additions) {
-        auto queue = add.queue;
-        auto const vis_lane = add.vis_lane;
-        auto const source_lane = add.source_lane;
-        batch.upserts.push_back(TimelineLaneUpsert{
-            .lane = vis_lane,
-            .lifetime = TimelineLaneLifetime::ephemeral,
-            .make_node = [queue = std::move(queue)] {
-                return TypeErasedLaneNode(VisualizationRealtimeSampleLane{ .queue = queue });
-            },
-            .sample_channel_type = add.sample_channel_type,
-        });
-        batch.connections_to_add.push_back(LaneGraphConnection{
-            .source = source_lane,
-            .target = vis_lane,
-            .input = realtime_sample_input(0),
-        });
-    }
-    for (auto const &add : event_additions) {
-        auto queue = add.queue;
-        auto const vis_lane = add.vis_lane;
-        auto const source_lane = add.source_lane;
-        batch.upserts.push_back(TimelineLaneUpsert{
-            .lane = vis_lane,
-            .lifetime = TimelineLaneLifetime::ephemeral,
-            .make_node = [queue = std::move(queue)] {
-                return TypeErasedLaneNode(VisualizationRealtimeEventLane{ .queue = queue });
-            },
-        });
-        batch.connections_to_add.push_back(LaneGraphConnection{
-            .source = source_lane,
-            .target = vis_lane,
-            .input = realtime_event_input(0),
-        });
-    }
-
-    bool const batch_has_changes =
-        !batch.upserts.empty() || !batch.removals.empty() || !batch.connections_to_add.empty();
-    if (batch_has_changes) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_lanes_visualization_timeline_batch_requested_event,
-            batch);
-    }
 }
 
 void LanesVisualization::publish_now()

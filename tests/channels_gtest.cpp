@@ -9,9 +9,7 @@
 #include <intravenous/graph/connection_node.hpp>
 #include <intravenous/graph/runtime_bindings.h>
 #include <intravenous/node/tick.h>
-#include <intravenous/runtime/runtime_graph_bindings.h>
 #include <intravenous/runtime/sample_stream_blocks.h>
-#include <intravenous/runtime/timeline_execution_events.h>
 
 #include <gtest/gtest.h>
 
@@ -31,16 +29,8 @@ namespace {
 using iv::operator""_F;
 using iv::operator""_P;
 
-iv::BorrowedSampleBlock runtime_timeline_sample_block {};
 size_t connection_conversion_call_count = 0;
 size_t connection_conversion_frame_count = 0;
-
-void provide_runtime_timeline_sample_block(
-    iv::LaneId,
-    iv::TimelineExecutionRealtimeSampleBlockBuilder& builder)
-{
-    builder.succeed(runtime_timeline_sample_block);
-}
 
 void tracked_mono_block_copy(
     iv::Sample const* source,
@@ -1272,38 +1262,6 @@ TEST(Channels, OutputPortAppliesStereoToMonoConversionAtItsWriteBoundary)
     output.push_frame(std::array<iv::Sample, 2>{
         iv::Sample{2.0f}, iv::Sample{6.0f}});
     EXPECT_EQ(samples[data.sample_index(0, 0)], iv::Sample{4.0f});
-}
-
-TEST(Channels, RuntimeTimelineSampleReaderWritesRequestedInterleavedLayout)
-{
-    constexpr auto planar = iv::ChannelLayout{
-        .channel_type = iv::ChannelTypeId::stereo,
-        .sample_layout = iv::SampleStreamLayout::planar,
-    };
-    constexpr auto interleaved = iv::ChannelLayout{
-        .channel_type = iv::ChannelTypeId::stereo,
-        .sample_layout = iv::SampleStreamLayout::interleaved,
-    };
-    std::array<iv::Sample, 6> source{
-        iv::Sample{1}, iv::Sample{2}, iv::Sample{3},
-        iv::Sample{10}, iv::Sample{20}, iv::Sample{30},
-    };
-    std::array<iv::Sample, 6> target{};
-    runtime_timeline_sample_block = borrowed_block(source, planar, 3);
-    auto const previous_subscriber =
-        iv::iv_runtime_timeline_execution_realtime_sample_block_requested_event;
-    iv::iv_runtime_timeline_execution_realtime_sample_block_requested_event =
-        &provide_runtime_timeline_sample_block;
-    auto bindings = iv::make_graph_runtime_bindings();
-    auto binding = bindings->sample_input("interleaved-reader-regression");
-    binding->read_timeline_block(
-        iv::LaneId{1}, 0, 0, 0, 3, interleaved, target);
-    iv::iv_runtime_timeline_execution_realtime_sample_block_requested_event =
-        previous_subscriber;
-    EXPECT_EQ(target, (std::array<iv::Sample, 6>{
-        iv::Sample{1}, iv::Sample{10}, iv::Sample{2},
-        iv::Sample{20}, iv::Sample{3}, iv::Sample{30},
-    }));
 }
 
 TEST(Channels, ConnectionNodeConvertsEachEphemeralExpressionAsOneBlock)
