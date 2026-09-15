@@ -98,12 +98,6 @@ struct ConcreteNode {
   constexpr std::vector<OutputConfig> const& outputs() const {
     return ports.outputs();
   }
-  constexpr std::vector<EventInputConfig> const& event_inputs() const {
-    return ports.event_inputs();
-  }
-  constexpr std::vector<EventOutputConfig> const& event_outputs() const {
-    return ports.event_outputs();
-  }
 };
 
 struct SubgraphNode {
@@ -117,12 +111,6 @@ struct SubgraphNode {
   }
   constexpr std::vector<OutputConfig> const& outputs() const {
     return ports.outputs();
-  }
-  constexpr std::vector<EventInputConfig> const& event_inputs() const {
-    return ports.event_inputs();
-  }
-  constexpr std::vector<EventOutputConfig> const& event_outputs() const {
-    return ports.event_outputs();
   }
 };
 

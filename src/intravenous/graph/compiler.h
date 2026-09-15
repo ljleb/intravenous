@@ -75,7 +75,7 @@ namespace iv::details {
             node_offsets_.push_back(0);
             for (auto const& node : nodes) {
                 node_offsets_.push_back(
-                    node_offsets_.back() + node.inputs().size());
+                    node_offsets_.back() + node.sample_inputs().size());
             }
             node_sources_.resize(node_offsets_.back());
         }
@@ -204,7 +204,7 @@ namespace iv::details {
             ConstexprHashSet<ConcretePortId, ConcretePortIdHash> seen_sample_outputs;
 
             for (size_t node : groups[group_i].member_nodes) {
-                auto const inputs = g.nodes[node].inputs();
+                auto const inputs = g.nodes[node].sample_inputs();
                 for (size_t input = 0; input < inputs.size(); ++input) {
                     ConcretePortId const target{node, input};
                     auto const source = connectivity.sample_source.find(target);
@@ -226,7 +226,7 @@ namespace iv::details {
                     }
                 }
 
-                auto const outputs = g.nodes[node].outputs();
+                auto const outputs = g.nodes[node].sample_outputs();
                 for (size_t output = 0; output < outputs.size(); ++output) {
                     auto const* targets = connectivity.sample_targets.find({node, output});
                     if (!targets) {
@@ -240,7 +240,7 @@ namespace iv::details {
                         size_t history = 0;
                         if (edge.target.node != GRAPH_ID) {
                             history = g.nodes[edge.target.node]
-                                          .inputs()[edge.target.port]
+                                          .sample_inputs()[edge.target.port]
                                           .history;
                         }
                         if (seen_sample_outputs.insert(edge.target)) {
@@ -889,11 +889,11 @@ namespace iv::details {
     constexpr auto make_node_configs(
         auto const& node,
         size_t node_i,
-        std::span<InputConfig const> graph_private_inputs
+        std::span<SampleInputConfig const> graph_private_inputs
     )
     {
-        std::vector<InputConfig> input_configs;
-        std::vector<OutputConfig> output_configs;
+        std::vector<SampleInputConfig> input_configs;
+        std::vector<SampleOutputConfig> output_configs;
 
         if (node_i == GRAPH_ID) {
             input_configs.assign(graph_private_inputs.begin(), graph_private_inputs.end());
@@ -924,7 +924,7 @@ namespace iv::details {
             node_offsets_.push_back(0);
             for (auto const& node : nodes) {
                 node_offsets_.push_back(
-                    node_offsets_.back() + node.inputs().size());
+                    node_offsets_.back() + node.sample_inputs().size());
             }
             node_latencies_.resize(node_offsets_.back());
             graph_latencies_.resize(graph_input_count);
@@ -966,7 +966,7 @@ namespace iv::details {
             auto const& node = nodes[region.nodes.front()];
             size_t const node_latency = node.internal_latency();
             size_t max_latency = node_latency;
-            for (auto const& output : node.outputs()) {
+            for (auto const& output : node.sample_outputs()) {
                 max_latency = std::max(
                     max_latency, node_latency + output.latency);
             }
@@ -978,7 +978,7 @@ namespace iv::details {
         size_t const region_index = node_to_region[region.nodes.front()];
         for (size_t const node_i : region.execution_order) {
             size_t node_latency = 0;
-            auto const inputs = nodes[node_i].inputs();
+            auto const inputs = nodes[node_i].sample_inputs();
             for (size_t input_port = 0; input_port < inputs.size(); ++input_port) {
                 node_latency = std::max(node_latency, input_latencies[{ node_i, input_port }]);
             }
@@ -986,7 +986,7 @@ namespace iv::details {
             node_latency += nodes[node_i].internal_latency();
             max_latency = std::max(max_latency, node_latency);
 
-            auto const outputs = nodes[node_i].outputs();
+            auto const outputs = nodes[node_i].sample_outputs();
             for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
                 size_t const output_latency = node_latency + outputs[output_port].latency;
                 max_latency = std::max(max_latency, output_latency);
@@ -1020,10 +1020,12 @@ namespace iv::details {
         std::vector<DetachedInfo> detached,
         GraphExecutionPlan execution_plan,
         CompilerConnectivity const& connectivity,
-        std::vector<InputConfig> public_inputs,
-        std::vector<OutputConfig> public_outputs,
+        std::vector<SampleInputConfig> public_inputs,
+        std::vector<SampleOutputConfig> public_outputs,
         std::vector<EventInputConfig> public_event_inputs,
         std::vector<EventOutputConfig> public_event_outputs,
+        std::vector<InputConfig> declared_inputs,
+        std::vector<OutputConfig> declared_outputs,
         std::vector<DormancyGroupPlan> dormancy_group_plans,
         // Diagnostic callers can isolate edge/buffer/latency preparation,
         // node wrapper construction, and SCC wrapper construction.
@@ -1052,15 +1054,15 @@ namespace iv::details {
         auto output_layout_for = [&](ConcretePortId port) {
             return port.node == GRAPH_ID
                 ? effective_channel_layout(public_inputs[port.port])
-                : effective_channel_layout(nodes[port.node].outputs()[port.port]);
+                : effective_channel_layout(nodes[port.node].sample_outputs()[port.port]);
         };
         auto const& source_of = connectivity.sample_source;
         auto const& targets_of = connectivity.sample_targets;
 
-        std::vector<InputConfig> private_input_configs;
+        std::vector<SampleInputConfig> private_input_configs;
         private_input_configs.reserve(public_outputs.size());
         for (auto const& output : public_outputs) {
-            private_input_configs.push_back(InputConfig{
+            private_input_configs.push_back(SampleInputConfig{
                 .name = output.name,
                 .channel_layout = output.channel_layout,
             });
@@ -1068,8 +1070,8 @@ namespace iv::details {
         InputPortLatencyTable input_port_global_latencies(
             nodes, private_input_configs.size());
         auto align_latencies = [&](auto const& node, size_t node_i,
-                                   std::span<InputConfig const> input_configs,
-                                   std::span<OutputConfig const> output_configs) {
+                                   std::span<SampleInputConfig const> input_configs,
+                                   std::span<SampleOutputConfig const> output_configs) {
             size_t node_global_latency = 0;
             for (size_t input = 0; input < input_configs.size(); ++input)
                 node_global_latency = std::max(
@@ -1103,12 +1105,12 @@ namespace iv::details {
                     if (auto it = source_of.find(this_input)) {
                         size_t const output_node_i = it->node;
                         size_t const output_port_i = it->port;
-                        OutputConfig const output_config = (output_node_i == GRAPH_ID)
-                            ? OutputConfig{
+                        SampleOutputConfig const output_config = (output_node_i == GRAPH_ID)
+                            ? SampleOutputConfig{
                                 .name = public_inputs[output_port_i].name,
                                 .channel_layout = public_inputs[output_port_i].channel_layout,
                             }
-                            : nodes[output_node_i].outputs()[output_port_i];
+                            : nodes[output_node_i].sample_outputs()[output_port_i];
                         size_t const corrected_latency = delay_input(this_input, output_config.latency);
                         node_input_plans[node_i].push_back({
                             .storage = {
@@ -1132,19 +1134,19 @@ namespace iv::details {
                     }
                 }
             } else {
-                std::vector<InputConfig> input_configs = private_input_configs;
+                std::vector<SampleInputConfig> input_configs = private_input_configs;
 
                 for (size_t input_i = 0; input_i < input_configs.size(); ++input_i) {
                     ConcretePortId const this_input { GRAPH_ID, input_i };
                     if (auto it = source_of.find(this_input)) {
                         size_t const output_node_i = it->node;
                         size_t const output_port_i = it->port;
-                        OutputConfig const output_config = (output_node_i == GRAPH_ID)
-                            ? OutputConfig{
+                        SampleOutputConfig const output_config = (output_node_i == GRAPH_ID)
+                            ? SampleOutputConfig{
                                 .name = public_inputs[output_port_i].name,
                                 .channel_layout = public_inputs[output_port_i].channel_layout,
                             }
-                            : nodes[output_node_i].outputs()[output_port_i];
+                            : nodes[output_node_i].sample_outputs()[output_port_i];
                         size_t const corrected_latency = delay_input(this_input, output_config.latency);
                         public_output_plans[input_i] = {
                             .storage = {
@@ -1182,6 +1184,8 @@ namespace iv::details {
             .public_outputs = std::move(public_outputs),
             .public_event_inputs = std::move(public_event_inputs),
             .public_event_outputs = std::move(public_event_outputs),
+            .declared_inputs = std::move(declared_inputs),
+            .declared_outputs = std::move(declared_outputs),
             .public_output_buffer_plans = std::move(public_output_plans),
             .public_output_bindings = {},
             .public_input_fanout_storage = {},
@@ -1203,7 +1207,7 @@ namespace iv::details {
         for (size_t node_i = 0; node_i < nodes.size(); ++node_i) {
             node_input_bindings[node_i].resize(
                 node_input_plans[node_i].size());
-            node_output_targets[node_i].resize(nodes[node_i].outputs().size());
+            node_output_targets[node_i].resize(nodes[node_i].sample_outputs().size());
         }
         artifact.public_output_bindings.resize(
             artifact.public_output_buffer_plans.size());
@@ -1219,7 +1223,7 @@ namespace iv::details {
                 ConcretePortId const target{node_i, input_i};
                 if (connectivity.sample_source.find(target) == nullptr) {
                     node_input_bindings[node_i][input_i].static_value =
-                        nodes[node_i].inputs()[input_i].default_value;
+                        nodes[node_i].sample_inputs()[input_i].default_value;
                 }
             }
         }
@@ -1247,8 +1251,8 @@ namespace iv::details {
             if (source.node == GRAPH_ID) {
                 return artifact.public_inputs[source.port];
             }
-            auto const output = nodes[source.node].outputs()[source.port];
-            return InputConfig{
+            auto const output = nodes[source.node].sample_outputs()[source.port];
+            return SampleInputConfig{
                 .name = output.name,
                 .channel_layout = output.channel_layout,
             };
@@ -1400,13 +1404,13 @@ namespace iv::details {
             auto process_node = [&](
                 ReflectedNodeDescription const& node, size_t node_i) {
                 size_t node_global_latency = 0;
-                auto node_inputs = node.inputs();
+                auto node_inputs = node.sample_inputs();
                 for (size_t input_port = 0; input_port < node_inputs.size(); ++input_port) {
                     node_global_latency = std::max(node_global_latency, input_global_latencies[{ node_i, input_port }]);
                 }
 
                 node_global_latency += node.internal_latency();
-                auto node_outputs = node.outputs();
+                auto node_outputs = node.sample_outputs();
                 for (size_t output_port = 0; output_port < node_outputs.size(); ++output_port) {
                     if (auto const* it = connectivity.sample_targets.find({ node_i, output_port })) {
                         size_t const new_latency = node_global_latency + node_outputs[output_port].latency;
@@ -1571,6 +1575,8 @@ public:
                 std::move(executable.public_outputs),
                 std::move(executable.public_event_inputs),
                 std::move(executable.public_event_outputs),
+                std::move(executable.declared_inputs),
+                std::move(executable.declared_outputs),
                 std::move(dormancy_group_plans))),
             .metadata = {
                 .lowered_subgraphs = std::move(lowered_subgraphs),

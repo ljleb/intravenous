@@ -54,13 +54,17 @@ public:
   constexpr void define_sample_outputs_from_named_refs(GraphBuilderState&, GraphBuilderNodeBundles&,
       GraphBuilderIdentity const&, LiftSample&&, std::span<NamedRef const>);
 
-  constexpr std::span<InputConfig const> sample_inputs(
+  constexpr std::vector<SampleInputConfig> sample_inputs(
       GraphBuilderNodeBundles const&) const;
-  constexpr std::span<EventInputConfig const> event_inputs(
+  constexpr std::vector<EventInputConfig> event_inputs(
       GraphBuilderNodeBundles const&) const;
-  constexpr std::span<OutputConfig const> sample_outputs(
+  constexpr std::vector<SampleOutputConfig> sample_outputs(
       GraphBuilderNodeBundles const&) const;
-  constexpr std::span<EventOutputConfig const> event_outputs(
+  constexpr std::vector<EventOutputConfig> event_outputs(
+      GraphBuilderNodeBundles const&) const;
+  constexpr std::vector<InputConfig> const& inputs(
+      GraphBuilderNodeBundles const&) const;
+  constexpr std::vector<OutputConfig> const& outputs(
       GraphBuilderNodeBundles const&) const;
   constexpr GraphBuilderPublicSamplePortFamilies sample_input_families(
       GraphBuilderNodeBundles const&) const;
@@ -106,7 +110,7 @@ constexpr void GraphBuilderPublicPorts::define_sample_outputs_from_named_refs(
     auto logical = bundles.sample_output_port_for_channels(
         source.channel_type, source.channels());
     auto config = logical ? bundles.resolve_sample_output(*logical).config
-                          : OutputConfig{.channel_layout = {.channel_type = source.channel_type,
+                          : SampleOutputConfig{.channel_layout = {.channel_type = source.channel_type,
                                                            .sample_layout = SampleStreamLayout::planar}};
     config.name = std::string(ref.name); config.channel_layout.sample_layout = SampleStreamLayout::planar;
     out.push_back({
@@ -141,7 +145,7 @@ constexpr GraphBuilderPublicSamplePortFamilies collect_sample_port_families(
           .family_name = member.family_name.empty() ? config.name : member.family_name,
           .channel_type = member.channel_type,
           .channels = std::vector<GraphBuilderPublicSamplePortChannel>(channel_count(member.channel_type))};
-      if constexpr (std::is_same_v<Config, InputConfig>) f.input_config = config;
+      if constexpr (std::is_same_v<Config, SampleInputConfig>) f.input_config = config;
       else f.output_config = config;
       result.families.push_back(std::move(f)); family = std::prev(result.families.end());
     }
@@ -163,10 +167,12 @@ constexpr bool GraphBuilderPublicPorts::sample_outputs_defined() const {
   return _sample_outputs_defined;
 }
 
-constexpr std::span<InputConfig const> GraphBuilderPublicPorts::sample_inputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_sample_inputs(); }
-constexpr std::span<EventInputConfig const> GraphBuilderPublicPorts::event_inputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_event_inputs(); }
-constexpr std::span<OutputConfig const> GraphBuilderPublicPorts::sample_outputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_sample_outputs(); }
-constexpr std::span<EventOutputConfig const> GraphBuilderPublicPorts::event_outputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_event_outputs(); }
+constexpr std::vector<SampleInputConfig> GraphBuilderPublicPorts::sample_inputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_sample_inputs(); }
+constexpr std::vector<EventInputConfig> GraphBuilderPublicPorts::event_inputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_event_inputs(); }
+constexpr std::vector<SampleOutputConfig> GraphBuilderPublicPorts::sample_outputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_sample_outputs(); }
+constexpr std::vector<EventOutputConfig> GraphBuilderPublicPorts::event_outputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_event_outputs(); }
+constexpr std::vector<InputConfig> const& GraphBuilderPublicPorts::inputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_ports().inputs(); }
+constexpr std::vector<OutputConfig> const& GraphBuilderPublicPorts::outputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_ports().outputs(); }
 
 constexpr void GraphBuilderPublicPorts::annotate_sample_input_source_info(size_t i, std::string_view id, std::string_view file, uint32_t begin, uint32_t end) {
   if (i >= _sample_input_source_infos.size() || id.empty()) return;
@@ -190,13 +196,18 @@ constexpr GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_i
         .whole_stream = true,
     });
   }
-  auto result = collect_sample_port_families(configs, members, true);
+  auto result = collect_sample_port_families(
+      std::span<SampleInputConfig const>{configs},
+      std::span<PublicSamplePortMember const>{members}, true);
   for (auto& family : result.families) for (auto& channel : family.channels) for (auto ordinal : channel.port_ordinals)
     for (auto const& info : sample_input_source_infos(ordinal)) if (!std::ranges::contains(family.source_infos, info)) family.source_infos.push_back(info);
   return result;
 }
 constexpr GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_output_families(GraphBuilderNodeBundles const& b) const {
-  auto result = collect_sample_port_families(sample_outputs(b), _sample_output_members, false);
+  auto configs = sample_outputs(b);
+  auto result = collect_sample_port_families(
+      std::span<SampleOutputConfig const>{configs},
+      std::span<PublicSamplePortMember const>{_sample_output_members}, false);
   for (auto& family : result.families) for (auto& channel : family.channels) for (auto ordinal : channel.port_ordinals)
     for (auto const& info : _sample_output_source_infos[ordinal]) { if (!std::ranges::contains(channel.source_infos, info)) channel.source_infos.push_back(info); if (!std::ranges::contains(family.source_infos, info)) family.source_infos.push_back(info); }
   return result;

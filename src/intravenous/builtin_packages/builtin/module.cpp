@@ -34,8 +34,6 @@ IV_NODE("iv.builtin.uniform_to_power", iv::UniformToPower);
 IV_NODE("iv.builtin.uniform_to_gaussian", iv::UniformToGaussian);
 IV_NODE("iv.builtin.deterministic_gaussian_aes_noise", iv::DeterministicGaussianAESNoise);
 
-IV_NODE("iv.builtin.broadcast_event", iv::BroadcastEvent);
-IV_NODE("iv.builtin.event_concatenation", iv::EventConcatenation);
 IV_NODE("iv.builtin.detach_writer", iv::DetachWriterNode);
 IV_NODE("iv.builtin.detach_reader", iv::DetachReaderNode);
 IV_NODE("iv.builtin.dummy_sink", iv::DummySink);
@@ -52,6 +50,7 @@ IV_NODE("iv.builtin.latency", iv::Latency);
 IV_NODE("iv.builtin.midi_pitch", iv::MidiPitch);
 IV_NODE("iv.builtin.midi_gate", iv::MidiGate);
 
-// Generic node families deliberately have no catch-all registered ID.  Their
-// concrete specializations are internal lowering/compiler implementation
-// details; a future source-facing specialization gets its own explicit ID.
+// Generic node families and compiler-inserted dynamic-arity helpers deliberately
+// have no registered ID. Their concrete specializations are internal
+// lowering/compiler implementation details; a future source-facing
+// specialization gets its own explicit ID.

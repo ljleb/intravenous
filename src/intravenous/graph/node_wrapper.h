@@ -69,7 +69,7 @@ namespace iv {
         )
         : _operations(node.operations.runtime)
         , _outputs(build_mode == GraphNodeWrapperBuildMode::full
-              ? make_output_port_configs(node.outputs())
+              ? make_output_port_configs(node.sample_outputs())
               : std::vector<GraphOutputPortConfig>{})
         , _event_output_types(build_mode == GraphNodeWrapperBuildMode::full
               ? make_event_output_types(node.event_outputs())
@@ -98,7 +98,7 @@ namespace iv {
               : std::vector<EventOutputBinding>{})
         , _input_port_data_nodes(build_mode == GraphNodeWrapperBuildMode::full
               ? make_input_port_data_nodes(
-                    node_id, node.inputs(), input_plans, input_bindings)
+                    node_id, node.sample_inputs(), input_plans, input_bindings)
               : std::vector<GraphPortDataNode>{})
         , _output_port_data_nodes(build_mode == GraphNodeWrapperBuildMode::full
               ? make_output_port_data_nodes(output_fanout_storage)
@@ -122,7 +122,7 @@ namespace iv {
                 node,
                 std::nullopt,
                 std::move(input_plans),
-                std::vector<SampleInputBinding>(node.inputs().size()),
+                std::vector<SampleInputBinding>(node.sample_inputs().size()),
                 {},
                 std::move(node_id),
                 wrap_primary_output_targets(output_targets),
@@ -143,7 +143,7 @@ namespace iv {
         }
 
         static constexpr std::vector<GraphOutputPortConfig>
-        make_output_port_configs(std::span<OutputConfig const> outputs)
+        make_output_port_configs(std::span<SampleOutputConfig const> outputs)
         {
             std::vector<GraphOutputPortConfig> result;
             result.reserve(outputs.size());
@@ -209,7 +209,7 @@ namespace iv {
 
         static constexpr std::vector<GraphPortDataNode> make_input_port_data_nodes(
             std::string const& node_id,
-            std::span<InputConfig const> inputs,
+            std::span<SampleInputConfig const> inputs,
             std::span<InputPortPlan const> input_plans,
             std::span<SampleInputBinding const> input_bindings
         )

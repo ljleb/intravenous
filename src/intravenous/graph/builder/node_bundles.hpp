@@ -34,8 +34,8 @@ struct EventPortDescriptor {
   Config config{};
 };
 
-using SampleInputPortDescriptor = SamplePortDescriptor<InputConfig>;
-using SampleOutputPortDescriptor = SamplePortDescriptor<OutputConfig>;
+using SampleInputPortDescriptor = SamplePortDescriptor<SampleInputConfig>;
+using SampleOutputPortDescriptor = SamplePortDescriptor<SampleOutputConfig>;
 using EventInputPortDescriptor = EventPortDescriptor<EventInputConfig>;
 using EventOutputPortDescriptor = EventPortDescriptor<EventOutputConfig>;
 
@@ -64,17 +64,11 @@ class NodeBundle {
   struct TiledNodeBundle {
     std::vector<NodeBundleHandle> member_bundles{};
     NodeTypeIdentity type_identity{};
-    std::vector<InputConfig> sample_input_configs{};
-    std::vector<OutputConfig> sample_output_configs{};
-    std::vector<EventInputConfig> event_input_configs{};
-    std::vector<EventOutputConfig> event_output_configs{};
+    NodePorts ports{};
   };
 
   struct BoundaryNodeBundle {
-    std::vector<InputConfig> sample_inputs{};
-    std::vector<OutputConfig> sample_outputs{};
-    std::vector<EventInputConfig> event_inputs{};
-    std::vector<EventOutputConfig> event_outputs{};
+    NodePorts ports{};
   };
 
   // A subgraph owns hierarchy/lifetime identity, but its interface is owned by
@@ -120,20 +114,21 @@ public:
   constexpr size_t subgraph_child_count() const;
   constexpr std::string_view subgraph_kind() const;
 
-  constexpr std::span<InputConfig const> boundary_sample_inputs() const;
-  constexpr std::span<OutputConfig const> boundary_sample_outputs() const;
-  constexpr std::span<EventInputConfig const> boundary_event_inputs() const;
-  constexpr std::span<EventOutputConfig const> boundary_event_outputs() const;
-  constexpr size_t append_boundary_sample_input(InputConfig);
-  constexpr size_t append_boundary_sample_output(OutputConfig);
+  constexpr NodePorts const& boundary_ports() const;
+  constexpr std::vector<SampleInputConfig> boundary_sample_inputs() const;
+  constexpr std::vector<SampleOutputConfig> boundary_sample_outputs() const;
+  constexpr std::vector<EventInputConfig> boundary_event_inputs() const;
+  constexpr std::vector<EventOutputConfig> boundary_event_outputs() const;
+  constexpr size_t append_boundary_sample_input(SampleInputConfig);
+  constexpr size_t append_boundary_sample_output(SampleOutputConfig);
   constexpr size_t append_boundary_event_input(EventInputConfig);
   constexpr size_t append_boundary_event_output(EventOutputConfig);
   constexpr void clear_boundary_event_outputs();
 
   constexpr ChannelLayout sample_input_layout(size_t) const;
   constexpr ChannelLayout sample_output_layout(size_t) const;
-  constexpr InputConfig sample_input_config(size_t) const;
-  constexpr OutputConfig sample_output_config(size_t) const;
+  constexpr SampleInputConfig sample_input_config(size_t) const;
+  constexpr SampleOutputConfig sample_output_config(size_t) const;
   constexpr EventInputConfig event_input_config(size_t) const;
   constexpr EventOutputConfig event_output_config(size_t) const;
   constexpr std::string_view type_identity() const;
@@ -146,6 +141,8 @@ public:
   constexpr size_t sample_output_index(std::string_view) const;
   constexpr size_t event_input_index(std::string_view) const;
   constexpr size_t event_output_index(std::string_view) const;
+  constexpr NodeBundlePortId input_port_at(
+      NodeBundleHandle, size_t) const;
   constexpr void import_into(
       size_t node_bundle_offset, size_t detach_id_offset);
 
@@ -211,10 +208,6 @@ struct ConfiguredNodeBundleRecord {
   std::optional<DeferredDetachNode> deferred_detach{};
 
   std::vector<NodeBundleHandle> tiled_members{};
-  std::vector<InputConfig> sample_input_configs{};
-  std::vector<OutputConfig> sample_output_configs{};
-  std::vector<EventInputConfig> event_input_configs{};
-  std::vector<EventOutputConfig> event_output_configs{};
 
   NodeBundleHandle subgraph_boundary = 0;
   size_t subgraph_child_begin = 0;
@@ -254,10 +247,6 @@ struct ConfiguredNodeBundleView {
   std::optional<DeferredDetachNode> const* deferred_detach = nullptr;
 
   std::span<NodeBundleHandle const> tiled_members{};
-  std::span<InputConfig const> sample_input_configs{};
-  std::span<OutputConfig const> sample_output_configs{};
-  std::span<EventInputConfig const> event_input_configs{};
-  std::span<EventOutputConfig const> event_output_configs{};
 
   NodeBundleHandle subgraph_boundary = 0;
   size_t subgraph_child_begin = 0;
@@ -323,6 +312,7 @@ public:
   constexpr std::vector<EventOutputPortId> event_output_ports(
       NodeBundlePortId) const;
 
+  constexpr NodeBundlePortId input_port_at(NodeBundleHandle, size_t) const;
   constexpr NodePorts const &typed_ports(NodeBundleHandle) const;
   constexpr NodeBundleHandle tiled_member(
       NodeBundleHandle, size_t channel) const;
@@ -362,12 +352,14 @@ constexpr void GraphBuilderNodeBundles::validate_output_port_configs(
 
 constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
     ReflectedNodeDescription description) {
+  auto const sample_outputs = description.ports.sample_outputs();
+  auto const event_outputs = description.ports.event_outputs();
   validate_output_port_configs(
-      std::span<OutputConfig const>(description.ports.outputs()),
+      std::span<SampleOutputConfig const>(sample_outputs),
       description.type_name,
       "sample");
   validate_output_port_configs(
-      std::span<EventOutputConfig const>(description.ports.event_outputs()),
+      std::span<EventOutputConfig const>(event_outputs),
       description.type_name,
       "event");
 
@@ -429,7 +421,7 @@ constexpr NodeBundleHandle
 GraphBuilderNodeBundles::append_deferred_detach_writer(
     size_t detach_id, size_t loop_extra_latency) {
   ConcreteNode node;
-  node.ports.sample_inputs = {InputConfig{}};
+  node.ports.input_configs = {sample_input()};
   node.type_identity = {.value = std::string(
       details::clang_type_name<DetachWriterNode>())};
   node.deferred_detach = DeferredDetachNode{
@@ -444,7 +436,7 @@ constexpr NodeBundleHandle
 GraphBuilderNodeBundles::append_deferred_detach_reader(
     size_t detach_id, size_t loop_extra_latency) {
   ConcreteNode node;
-  node.ports.sample_outputs = {OutputConfig{}};
+  node.ports.output_configs = {sample_output()};
   node.type_identity = {.value = std::string(
       details::clang_type_name<DetachReaderNode>())};
   node.deferred_detach = DeferredDetachNode{
@@ -521,11 +513,10 @@ constexpr size_t NodeBundle::sample_output_count() const {
   return std::visit([](auto const &payload) {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
     if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
-      return payload.sample_inputs.size();
-    else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>)
-      return payload.ports.sample_outputs.size();
-    else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>)
-      return payload.sample_output_configs.size();
+      return payload.ports.sample_input_count();
+    else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>
+                       || std::is_same_v<Bundle, TiledNodeBundle>)
+      return payload.ports.sample_output_count();
     else
       return payload.sample_output_count;
   }, *_payload);
@@ -574,6 +565,16 @@ constexpr NodePorts const &GraphBuilderNodeBundles::typed_ports(
       "typed NodeRef does not refer to a concrete or tiled bundle");
 }
 
+constexpr NodeBundlePortId GraphBuilderNodeBundles::input_port_at(
+    NodeBundleHandle handle, size_t position) const {
+  auto const& candidate = bundle(handle);
+  if (auto const boundary = candidate.subgraph_boundary_handle()) {
+    auto const resolved = input_port_at(*boundary, position);
+    return {handle, resolved.port_kind, resolved.port_ordinal};
+  }
+  return candidate.input_port_at(handle, position);
+}
+
 constexpr std::optional<NodeBundleHandle>
 NodeBundle::subgraph_boundary_handle() const {
   if (!_payload) details::error("empty NodeBundle");
@@ -583,33 +584,41 @@ NodeBundle::subgraph_boundary_handle() const {
       : std::nullopt;
 }
 
-constexpr std::span<OutputConfig const>
+constexpr NodePorts const& NodeBundle::boundary_ports() const {
+  auto const *boundary = _payload
+      ? std::get_if<BoundaryNodeBundle>(&*_payload)
+      : nullptr;
+  if (!boundary) details::error("NodeBundle is not a boundary");
+  return boundary->ports;
+}
+
+constexpr std::vector<SampleOutputConfig>
 NodeBundle::boundary_sample_outputs() const {
   auto const *boundary = _payload
       ? std::get_if<BoundaryNodeBundle>(&*_payload)
       : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  return boundary->sample_outputs;
+  return boundary->ports.sample_outputs();
 }
 
 constexpr size_t NodeBundle::append_boundary_sample_output(
-    OutputConfig config) {
+    SampleOutputConfig config) {
   auto *boundary = _payload
       ? std::get_if<BoundaryNodeBundle>(&*_payload)
       : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  auto const ordinal = boundary->sample_outputs.size();
-  boundary->sample_outputs.push_back(std::move(config));
+  auto const ordinal = boundary->ports.sample_output_count();
+  boundary->ports.output_configs.push_back(make_output_config(config));
   return ordinal;
 }
 
-constexpr std::span<InputConfig const>
+constexpr std::vector<SampleInputConfig>
 NodeBundle::boundary_sample_inputs() const {
   auto const *boundary = _payload
       ? std::get_if<BoundaryNodeBundle>(&*_payload)
       : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  return boundary->sample_inputs;
+  return boundary->ports.sample_inputs();
 }
 
 constexpr SampleInputPortDescriptor
@@ -619,22 +628,16 @@ NodeBundle::sample_input_descriptor(size_t ordinal) const {
       [&](auto const &payload) -> SampleInputPortDescriptor {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) {
-          if (ordinal >= payload.sample_outputs.size())
-            details::error("NodeBundle port ordinal is out of bounds");
-          auto const &output = payload.sample_outputs[ordinal];
-          return {.config = InputConfig{
+          auto const output = payload.ports.sample_output(ordinal);
+          return {.config = SampleInputConfig{
               .name = output.name,
               .channel_layout = output.channel_layout,
               .history = output.history,
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
-          if (ordinal >= payload.ports.sample_inputs.size())
-            details::error("NodeBundle port ordinal is out of bounds");
-          return {.config = payload.ports.sample_inputs[ordinal]};
+          return {.config = payload.ports.sample_input(ordinal)};
         } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
-          if (ordinal >= payload.sample_input_configs.size())
-            details::error("NodeBundle port ordinal is out of bounds");
-          return {.config = payload.sample_input_configs[ordinal]};
+          return {.config = payload.ports.sample_input(ordinal)};
         } else {
           details::error(
               "SubgraphNodeBundle port configs must be resolved through its boundary");
@@ -650,22 +653,16 @@ NodeBundle::sample_output_descriptor(size_t ordinal) const {
       [&](auto const &payload) -> SampleOutputPortDescriptor {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) {
-          if (ordinal >= payload.sample_inputs.size())
-            details::error("NodeBundle port ordinal is out of bounds");
-          auto const &input = payload.sample_inputs[ordinal];
-          return {.config = OutputConfig{
+          auto const input = payload.ports.sample_input(ordinal);
+          return {.config = SampleOutputConfig{
               .name = input.name,
               .channel_layout = input.channel_layout,
               .history = input.history,
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
-          if (ordinal >= payload.ports.sample_outputs.size())
-            details::error("NodeBundle port ordinal is out of bounds");
-          return {.config = payload.ports.sample_outputs[ordinal]};
+          return {.config = payload.ports.sample_output(ordinal)};
         } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
-          if (ordinal >= payload.sample_output_configs.size())
-            details::error("NodeBundle port ordinal is out of bounds");
-          return {.config = payload.sample_output_configs[ordinal]};
+          return {.config = payload.ports.sample_output(ordinal)};
         } else {
           details::error(
               "SubgraphNodeBundle port configs must be resolved through its boundary");
@@ -804,15 +801,12 @@ NodeBundle::event_input_descriptor(size_t i) const {
       [&](auto const &payload) -> EventInputPortDescriptor {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) {
-          if (i >= payload.event_outputs.size())
-            details::error("NodeBundle port ordinal is out of bounds");
-          return {.config = inward_event_input_config(payload.event_outputs[i])};
+          return {.config = inward_event_input_config(
+              payload.ports.event_output(i))};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
-          return descriptor<EventInputPortDescriptor>(
-              payload.ports.event_input_configs, i);
+          return {.config = payload.ports.event_input(i)};
         } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
-          return descriptor<EventInputPortDescriptor>(
-              payload.event_input_configs, i);
+          return {.config = payload.ports.event_input(i)};
         } else {
           details::error(
               "SubgraphNodeBundle port configs must be resolved through its boundary");
@@ -828,15 +822,12 @@ NodeBundle::event_output_descriptor(size_t i) const {
       [&](auto const &payload) -> EventOutputPortDescriptor {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) {
-          if (i >= payload.event_inputs.size())
-            details::error("NodeBundle port ordinal is out of bounds");
-          return {.config = inward_event_output_config(payload.event_inputs[i])};
+          return {.config = inward_event_output_config(
+              payload.ports.event_input(i))};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
-          return descriptor<EventOutputPortDescriptor>(
-              payload.ports.event_output_configs, i);
+          return {.config = payload.ports.event_output(i)};
         } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
-          return descriptor<EventOutputPortDescriptor>(
-              payload.event_output_configs, i);
+          return {.config = payload.ports.event_output(i)};
         } else {
           details::error(
               "SubgraphNodeBundle port configs must be resolved through its boundary");
@@ -868,46 +859,48 @@ constexpr std::string_view NodeBundle::subgraph_kind() const {
   return subgraph->kind;
 }
 
-constexpr std::span<EventInputConfig const>
+constexpr std::vector<EventInputConfig>
 NodeBundle::boundary_event_inputs() const {
   auto const *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  return boundary->event_inputs;
+  return boundary->ports.event_inputs();
 }
-constexpr std::span<EventOutputConfig const>
+constexpr std::vector<EventOutputConfig>
 NodeBundle::boundary_event_outputs() const {
   auto const *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  return boundary->event_outputs;
+  return boundary->ports.event_outputs();
 }
 
-constexpr size_t NodeBundle::append_boundary_sample_input(InputConfig config) {
+constexpr size_t NodeBundle::append_boundary_sample_input(SampleInputConfig config) {
   auto *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  auto const ordinal = boundary->sample_inputs.size();
-  boundary->sample_inputs.push_back(std::move(config));
+  auto const ordinal = boundary->ports.sample_input_count();
+  boundary->ports.input_configs.push_back(make_input_config(config));
   return ordinal;
 }
 constexpr size_t NodeBundle::append_boundary_event_input(
     EventInputConfig config) {
   auto *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  auto const ordinal = boundary->event_inputs.size();
-  boundary->event_inputs.push_back(std::move(config));
+  auto const ordinal = boundary->ports.event_input_count();
+  boundary->ports.input_configs.push_back(make_input_config(config));
   return ordinal;
 }
 constexpr size_t NodeBundle::append_boundary_event_output(
     EventOutputConfig config) {
   auto *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  auto const ordinal = boundary->event_outputs.size();
-  boundary->event_outputs.push_back(std::move(config));
+  auto const ordinal = boundary->ports.event_output_count();
+  boundary->ports.output_configs.push_back(make_output_config(config));
   return ordinal;
 }
 constexpr void NodeBundle::clear_boundary_event_outputs() {
   auto *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  boundary->event_outputs.clear();
+  std::erase_if(boundary->ports.output_configs, [](OutputConfig const& config) {
+    return !is_sample(config);
+  });
 }
 
 constexpr ChannelLayout NodeBundle::sample_input_layout(size_t i) const {
@@ -916,10 +909,10 @@ constexpr ChannelLayout NodeBundle::sample_input_layout(size_t i) const {
 constexpr ChannelLayout NodeBundle::sample_output_layout(size_t i) const {
   return sample_output_descriptor(i).config.channel_layout;
 }
-constexpr InputConfig NodeBundle::sample_input_config(size_t i) const {
+constexpr SampleInputConfig NodeBundle::sample_input_config(size_t i) const {
   return sample_input_descriptor(i).config;
 }
-constexpr OutputConfig NodeBundle::sample_output_config(size_t i) const {
+constexpr SampleOutputConfig NodeBundle::sample_output_config(size_t i) const {
   return sample_output_descriptor(i).config;
 }
 constexpr EventInputConfig NodeBundle::event_input_config(size_t i) const {
@@ -947,30 +940,39 @@ constexpr size_t NodeBundle::sample_input_count() const {
   if (!_payload) details::error("empty NodeBundle");
   return std::visit([](auto const &payload) {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
-    if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) return payload.sample_outputs.size();
-    else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) return payload.ports.sample_inputs.size();
-    else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) return payload.sample_input_configs.size();
-    else return payload.sample_input_count;
+    if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
+      return payload.ports.sample_output_count();
+    else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>
+                       || std::is_same_v<Bundle, TiledNodeBundle>)
+      return payload.ports.sample_input_count();
+    else
+      return payload.sample_input_count;
   }, *_payload);
 }
 constexpr size_t NodeBundle::event_input_count() const {
   if (!_payload) details::error("empty NodeBundle");
   return std::visit([](auto const &payload) {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
-    if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) return payload.event_outputs.size();
-    else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) return payload.ports.event_input_configs.size();
-    else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) return payload.event_input_configs.size();
-    else return payload.event_input_count;
+    if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
+      return payload.ports.event_output_count();
+    else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>
+                       || std::is_same_v<Bundle, TiledNodeBundle>)
+      return payload.ports.event_input_count();
+    else
+      return payload.event_input_count;
   }, *_payload);
 }
 constexpr size_t NodeBundle::event_output_count() const {
   if (!_payload) details::error("empty NodeBundle");
   return std::visit([](auto const &payload) {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
-    if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) return payload.event_inputs.size();
-    else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) return payload.ports.event_output_configs.size();
-    else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) return payload.event_output_configs.size();
-    else return payload.event_output_count;
+    if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
+      return payload.ports.event_input_count();
+    else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>
+                       || std::is_same_v<Bundle, TiledNodeBundle>)
+      return payload.ports.event_output_count();
+    else
+      return payload.event_output_count;
   }, *_payload);
 }
 
@@ -989,6 +991,21 @@ constexpr size_t NodeBundle::event_input_index(std::string_view name) const {
 constexpr size_t NodeBundle::event_output_index(std::string_view name) const {
   return index_for_name(event_output_count(),
       [&](size_t i) { return event_output_config(i).name == name; }, name);
+}
+
+constexpr NodeBundlePortId NodeBundle::input_port_at(
+    NodeBundleHandle handle, size_t position) const {
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit([&](auto const& payload) -> NodeBundlePortId {
+    using Bundle = std::remove_cvref_t<decltype(payload)>;
+    if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>
+                  || std::is_same_v<Bundle, TiledNodeBundle>
+                  || std::is_same_v<Bundle, BoundaryNodeBundle>) {
+      return payload.ports.input_port_at(handle, position);
+    } else {
+      details::error("subgraph input order must resolve through its boundary");
+    }
+  }, *_payload);
 }
 
 constexpr void NodeBundle::import_into(
@@ -1033,85 +1050,82 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
         "tiled NodeBundle members must be concrete nodes or subgraphs");
   }
 
-  auto sample_inputs_of = [&](NodeBundleHandle handle) {
-    std::vector<InputConfig> configs;
+  auto logical_ports_of = [&](NodeBundleHandle handle) -> NodePorts const& {
     auto const& candidate = bundle(handle);
-    configs.reserve(candidate.sample_input_count());
-    for (size_t i = 0; i < candidate.sample_input_count(); ++i) {
-      auto config = resolve_sample_input({handle, PortKind::sample, i}).config;
-      if (config.channel_layout.channel_type != ChannelTypeId::mono) {
+    if (candidate.is_concrete()) return candidate.concrete_ports();
+    auto const boundary_handle = candidate.subgraph_boundary_handle();
+    if (!boundary_handle) {
+      details::error("tiled NodeBundle member has no logical port interface");
+    }
+    auto const& boundary = bundle(*boundary_handle);
+    auto const* payload = std::get_if<NodeBundle::BoundaryNodeBundle>(
+        &*boundary._payload);
+    if (!payload) details::error("subgraph boundary is not a BoundaryNodeBundle");
+    return payload->ports;
+  };
+
+  auto same_input = [](InputConfig const& lhs, InputConfig const& rhs) {
+    if (lhs.name != rhs.name || is_sample(lhs) != is_sample(rhs)) return false;
+    if (is_sample(lhs)) {
+      auto const& a = sample_properties(lhs);
+      auto const& b = sample_properties(rhs);
+      return a.channel_layout == b.channel_layout
+          && a.history == b.history
+          && a.default_value.value == b.default_value.value
+          && a.min.value == b.min.value
+          && a.max.value == b.max.value;
+    }
+    return event_properties(lhs).type == event_properties(rhs).type;
+  };
+  auto same_output = [](OutputConfig const& lhs, OutputConfig const& rhs) {
+    if (lhs.name != rhs.name || is_sample(lhs) != is_sample(rhs)) return false;
+    if (is_sample(lhs)) {
+      auto const& a = sample_properties(lhs);
+      auto const& b = sample_properties(rhs);
+      return a.channel_layout == b.channel_layout
+          && a.latency == b.latency
+          && a.history == b.history;
+    }
+    return event_properties(lhs).type == event_properties(rhs).type;
+  };
+  auto validate_mono_samples = [](NodePorts const& ports) {
+    for (InputConfig const& input : ports.inputs()) {
+      if (is_sample(input)
+          && sample_properties(input).channel_layout.channel_type
+              != ChannelTypeId::mono) {
         details::error(
             "tiled NodeBundle members must expose only mono sample inputs");
       }
-      configs.push_back(std::move(config));
     }
-    return configs;
-  };
-  auto sample_outputs_of = [&](NodeBundleHandle handle) {
-    std::vector<OutputConfig> configs;
-    auto const& candidate = bundle(handle);
-    configs.reserve(candidate.sample_output_count());
-    for (size_t i = 0; i < candidate.sample_output_count(); ++i) {
-      auto config = resolve_sample_output({handle, PortKind::sample, i}).config;
-      if (config.channel_layout.channel_type != ChannelTypeId::mono) {
+    for (OutputConfig const& output : ports.outputs()) {
+      if (is_sample(output)
+          && sample_properties(output).channel_layout.channel_type
+              != ChannelTypeId::mono) {
         details::error(
             "tiled NodeBundle members must expose only mono sample outputs");
       }
-      configs.push_back(std::move(config));
     }
-    return configs;
-  };
-  auto event_inputs_of = [&](NodeBundleHandle handle) {
-    std::vector<EventInputConfig> configs;
-    auto const& candidate = bundle(handle);
-    configs.reserve(candidate.event_input_count());
-    for (size_t i = 0; i < candidate.event_input_count(); ++i)
-      configs.push_back(
-          resolve_event_input({handle, PortKind::event, i}).config);
-    return configs;
-  };
-  auto event_outputs_of = [&](NodeBundleHandle handle) {
-    std::vector<EventOutputConfig> configs;
-    auto const& candidate = bundle(handle);
-    configs.reserve(candidate.event_output_count());
-    for (size_t i = 0; i < candidate.event_output_count(); ++i)
-      configs.push_back(
-          resolve_event_output({handle, PortKind::event, i}).config);
-    return configs;
-  };
-  auto same_sample_input = [](InputConfig const& lhs, InputConfig const& rhs) {
-    return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
-        && lhs.history == rhs.history
-        && lhs.default_value.value == rhs.default_value.value
-        && lhs.min.value == rhs.min.value && lhs.max.value == rhs.max.value;
-  };
-  auto same_sample_output = [](OutputConfig const& lhs, OutputConfig const& rhs) {
-    return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
-        && lhs.latency == rhs.latency && lhs.history == rhs.history;
-  };
-  auto same_event_port = [](auto const& lhs, auto const& rhs) {
-    return lhs.name == rhs.name && lhs.type == rhs.type;
   };
 
-  auto sample_input_configs = sample_inputs_of(members.front());
-  auto sample_output_configs = sample_outputs_of(members.front());
-  auto event_input_configs = event_inputs_of(members.front());
-  auto event_output_configs = event_outputs_of(members.front());
+  auto const& first_ports = logical_ports_of(members.front());
+  validate_mono_samples(first_ports);
 
   NodeBundle::TiledNodeBundle payload;
   payload.member_bundles.assign(members.begin(), members.end());
   payload.type_identity.value = std::string(first.type_identity());
-
-  for (auto config : sample_input_configs) {
-    config.channel_layout = promoted_channel_layout;
-    payload.sample_input_configs.push_back(std::move(config));
+  payload.ports = first_ports;
+  for (InputConfig& input : payload.ports.input_configs) {
+    if (is_sample(input)) {
+      std::get<SampleInputProperties>(input.kind).channel_layout =
+          promoted_channel_layout;
+    }
   }
-  for (auto config : sample_output_configs) {
-    config.channel_layout = promoted_channel_layout;
-    payload.sample_output_configs.push_back(std::move(config));
+  for (OutputConfig& output : payload.ports.output_configs) {
+    if (is_sample(output)) {
+      std::get<SampleOutputProperties>(output.kind).channel_layout =
+          promoted_channel_layout;
+    }
   }
-  payload.event_input_configs = event_input_configs;
-  payload.event_output_configs = event_output_configs;
 
   for (auto const member : members.subspan(1)) {
     auto const &candidate = bundle(member);
@@ -1120,24 +1134,12 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
       details::error(
           "tiled NodeBundle members must all be concrete nodes or all be subgraphs");
     }
-    if (candidate.sample_input_count() != first.sample_input_count() ||
-        candidate.sample_output_count() != first.sample_output_count() ||
-        candidate.event_input_count() != first.event_input_count() ||
-        candidate.event_output_count() != first.event_output_count()) {
-      details::error("tiled NodeBundle members do not expose the same ports");
-    }
-    auto candidate_inputs = sample_inputs_of(member);
-    auto candidate_outputs = sample_outputs_of(member);
-    auto candidate_event_inputs = event_inputs_of(member);
-    auto candidate_event_outputs = event_outputs_of(member);
+    auto const& candidate_ports = logical_ports_of(member);
+    validate_mono_samples(candidate_ports);
     if (!std::ranges::equal(
-            sample_input_configs, candidate_inputs, same_sample_input)
+            first_ports.inputs(), candidate_ports.inputs(), same_input)
         || !std::ranges::equal(
-            sample_output_configs, candidate_outputs, same_sample_output)
-        || !std::ranges::equal(
-            event_input_configs, candidate_event_inputs, same_event_port)
-        || !std::ranges::equal(
-            event_output_configs, candidate_event_outputs, same_event_port)) {
+            first_ports.outputs(), candidate_ports.outputs(), same_output)) {
       details::error(
           "tiled NodeBundle members do not expose equivalent port configurations");
     }
@@ -1374,24 +1376,10 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
         view.tiled_members = std::span<NodeBundleHandle const>{
             payload.member_bundles};
         view.type_identity = &payload.type_identity.value;
-        view.sample_input_configs = std::span<InputConfig const>{
-            payload.sample_input_configs};
-        view.sample_output_configs = std::span<OutputConfig const>{
-            payload.sample_output_configs};
-        view.event_input_configs = std::span<EventInputConfig const>{
-            payload.event_input_configs};
-        view.event_output_configs = std::span<EventOutputConfig const>{
-            payload.event_output_configs};
+        view.ports = &payload.ports;
       } else if constexpr (std::same_as<Payload, NodeBundle::BoundaryNodeBundle>) {
         view.kind = ConfiguredNodeBundleKind::boundary;
-        view.sample_input_configs = std::span<InputConfig const>{
-            payload.sample_inputs};
-        view.sample_output_configs = std::span<OutputConfig const>{
-            payload.sample_outputs};
-        view.event_input_configs = std::span<EventInputConfig const>{
-            payload.event_inputs};
-        view.event_output_configs = std::span<EventOutputConfig const>{
-            payload.event_outputs};
+        view.ports = &payload.ports;
       } else {
         view.kind = ConfiguredNodeBundleKind::subgraph;
         view.subgraph_boundary = payload.boundary;
@@ -1450,18 +1438,12 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
       bundle = NodeBundle(NodeBundle::TiledNodeBundle{
           .member_bundles = record.tiled_members,
           .type_identity = {.value = record.type_identity},
-          .sample_input_configs = record.sample_input_configs,
-          .sample_output_configs = record.sample_output_configs,
-          .event_input_configs = record.event_input_configs,
-          .event_output_configs = record.event_output_configs,
+          .ports = record.ports,
       });
       break;
     case ConfiguredNodeBundleKind::boundary:
       bundle = NodeBundle(NodeBundle::BoundaryNodeBundle{
-          .sample_inputs = record.sample_input_configs,
-          .sample_outputs = record.sample_output_configs,
-          .event_inputs = record.event_input_configs,
-          .event_outputs = record.event_output_configs,
+          .ports = record.ports,
       });
       break;
     case ConfiguredNodeBundleKind::subgraph:

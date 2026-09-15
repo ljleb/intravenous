@@ -111,7 +111,7 @@ namespace iv {
     // source-layout buffer, then the wrapper fans out conversions from it.
     struct SampleBufferStorage {
         std::string id;
-        InputConfig config;
+        SampleInputConfig config;
         PortBufferPlan plan;
     };
 
@@ -167,8 +167,8 @@ namespace iv {
         std::vector<size_t> member_nodes;
         std::vector<SourceInfo> source_infos;
         std::vector<SourceSpan> source_spans;
-        std::vector<InputConfig> sample_inputs;
-        std::vector<OutputConfig> sample_outputs;
+        std::vector<SampleInputConfig> sample_inputs;
+        std::vector<SampleOutputConfig> sample_outputs;
         std::vector<EventInputConfig> event_inputs;
         std::vector<EventOutputConfig> event_outputs;
         std::vector<std::vector<PortRef>> sample_input_targets;
@@ -184,8 +184,8 @@ namespace iv {
         std::string backing_node_id;
         std::vector<size_t> member_nodes;
         std::vector<SourceSpan> source_spans;
-        std::vector<InputConfig> sample_inputs;
-        std::vector<OutputConfig> sample_outputs;
+        std::vector<SampleInputConfig> sample_inputs;
+        std::vector<SampleOutputConfig> sample_outputs;
         std::vector<EventInputConfig> event_inputs;
         std::vector<EventOutputConfig> event_outputs;
         std::vector<std::vector<ConcretePortId>> sample_input_targets;

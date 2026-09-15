@@ -31,7 +31,7 @@ struct GraphBuilderVacantSampleInput {
   NodeBundlePortId target{};
   std::string virtual_node_id{};
   size_t member_ordinal = 0;
-  InputConfig config{};
+  SampleInputConfig config{};
 };
 struct GraphBuilderVacantEventInput {
   NodeBundlePortId target{};
@@ -48,7 +48,7 @@ struct GraphBuilderVirtualSampleInput {
   NodeBundlePortId target{};
   std::string virtual_node_id{};
   size_t member_ordinal = 0;
-  InputConfig config{};
+  SampleInputConfig config{};
   bool has_existing_connection = false;
 };
 struct GraphBuilderVirtualEventInput {
@@ -72,7 +72,7 @@ struct GraphBuilderVirtualSampleInputFamily {
   size_t member_ordinal = 0;
   size_t family_ordinal = 0;
   std::string family_name{};
-  InputConfig config{};
+  SampleInputConfig config{};
   ChannelTypeId channel_type = ChannelTypeId::mono;
   std::vector<GraphBuilderVirtualSampleInputChannel> channels{};
 };
@@ -84,7 +84,7 @@ struct GraphBuilderVirtualSampleOutput {
   NodeBundlePortId source{};
   std::string virtual_node_id{};
   size_t member_ordinal = 0;
-  OutputConfig config{};
+  SampleOutputConfig config{};
   bool has_existing_downstream_connection = false;
 };
 struct GraphBuilderVirtualEventOutput {
@@ -108,7 +108,7 @@ struct GraphBuilderVirtualSampleOutputFamily {
   size_t member_ordinal = 0;
   size_t family_ordinal = 0;
   std::string family_name{};
-  OutputConfig config{};
+  SampleOutputConfig config{};
   ChannelTypeId channel_type = ChannelTypeId::mono;
   std::vector<GraphBuilderVirtualSampleOutputChannel> channels{};
 };

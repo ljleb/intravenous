@@ -22,9 +22,23 @@ namespace iv::details {
     struct fixed_input_count<std::span<InputConfig, N>> : std::integral_constant<size_t, N> {};
 
     template<typename Node>
-    inline constexpr size_t fixed_input_count_v = fixed_input_count<
-        std::remove_cvref_t<decltype(get_inputs(std::declval<Node const&>()))>
-    >::value;
+    consteval size_t fixed_sample_input_count()
+    {
+        if constexpr (!has_inputs<Node>) {
+            return 0;
+        } else if constexpr (!has_constexpr_port_configs<Node>) {
+            return std::dynamic_extent;
+        } else {
+            using Inputs = std::remove_cvref_t<decltype(Node::inputs())>;
+            if constexpr (fixed_input_count<Inputs>::value == std::dynamic_extent)
+                return std::dynamic_extent;
+            else
+                return count_sample_ports(Node::inputs());
+        }
+    }
+
+    template<typename Node>
+    inline constexpr size_t fixed_input_count_v = fixed_sample_input_count<Node>();
 
     template<>
     inline constexpr size_t fixed_input_count_v<void> = std::dynamic_extent;
@@ -33,22 +47,24 @@ namespace iv::details {
     inline constexpr bool has_fixed_input_count_v =
         (fixed_input_count_v<Node> != std::dynamic_extent);
 
-    template<typename EventInputs>
-    struct fixed_event_input_count : std::integral_constant<size_t, std::dynamic_extent> {};
-
-    template<size_t N>
-    struct fixed_event_input_count<std::array<EventInputConfig, N>> : std::integral_constant<size_t, N> {};
-
-    template<size_t N>
-    struct fixed_event_input_count<std::span<EventInputConfig const, N>> : std::integral_constant<size_t, N> {};
-
-    template<size_t N>
-    struct fixed_event_input_count<std::span<EventInputConfig, N>> : std::integral_constant<size_t, N> {};
+    template<typename Node>
+    consteval size_t fixed_event_input_count()
+    {
+        if constexpr (!has_inputs<Node>) {
+            return 0;
+        } else if constexpr (!has_constexpr_port_configs<Node>) {
+            return std::dynamic_extent;
+        } else {
+            using Inputs = std::remove_cvref_t<decltype(Node::inputs())>;
+            if constexpr (fixed_input_count<Inputs>::value == std::dynamic_extent)
+                return std::dynamic_extent;
+            else
+                return count_event_ports(Node::inputs());
+        }
+    }
 
     template<typename Node>
-    inline constexpr size_t fixed_event_input_count_v = fixed_event_input_count<
-        std::remove_cvref_t<decltype(get_event_inputs(std::declval<Node const&>()))>
-    >::value;
+    inline constexpr size_t fixed_event_input_count_v = fixed_event_input_count<Node>();
 
     template<>
     inline constexpr size_t fixed_event_input_count_v<void> = std::dynamic_extent;
@@ -70,9 +86,23 @@ namespace iv::details {
     struct fixed_output_count<std::span<OutputConfig, N>> : std::integral_constant<size_t, N> {};
 
     template<typename Node>
-    inline constexpr size_t fixed_output_count_v = fixed_output_count<
-        std::remove_cvref_t<decltype(get_outputs(std::declval<Node const&>()))>
-    >::value;
+    consteval size_t fixed_sample_output_count()
+    {
+        if constexpr (!has_outputs<Node>) {
+            return 0;
+        } else if constexpr (!has_constexpr_port_configs<Node>) {
+            return std::dynamic_extent;
+        } else {
+            using Outputs = std::remove_cvref_t<decltype(Node::outputs())>;
+            if constexpr (fixed_output_count<Outputs>::value == std::dynamic_extent)
+                return std::dynamic_extent;
+            else
+                return count_sample_ports(Node::outputs());
+        }
+    }
+
+    template<typename Node>
+    inline constexpr size_t fixed_output_count_v = fixed_sample_output_count<Node>();
 
     template<>
     inline constexpr size_t fixed_output_count_v<void> = std::dynamic_extent;
@@ -81,22 +111,24 @@ namespace iv::details {
     inline constexpr bool has_fixed_output_count_v =
         (fixed_output_count_v<Node> != std::dynamic_extent);
 
-    template<typename EventOutputs>
-    struct fixed_event_output_count : std::integral_constant<size_t, std::dynamic_extent> {};
-
-    template<size_t N>
-    struct fixed_event_output_count<std::array<EventOutputConfig, N>> : std::integral_constant<size_t, N> {};
-
-    template<size_t N>
-    struct fixed_event_output_count<std::span<EventOutputConfig const, N>> : std::integral_constant<size_t, N> {};
-
-    template<size_t N>
-    struct fixed_event_output_count<std::span<EventOutputConfig, N>> : std::integral_constant<size_t, N> {};
+    template<typename Node>
+    consteval size_t fixed_event_output_count()
+    {
+        if constexpr (!has_outputs<Node>) {
+            return 0;
+        } else if constexpr (!has_constexpr_port_configs<Node>) {
+            return std::dynamic_extent;
+        } else {
+            using Outputs = std::remove_cvref_t<decltype(Node::outputs())>;
+            if constexpr (fixed_output_count<Outputs>::value == std::dynamic_extent)
+                return std::dynamic_extent;
+            else
+                return count_event_ports(Node::outputs());
+        }
+    }
 
     template<typename Node>
-    inline constexpr size_t fixed_event_output_count_v = fixed_event_output_count<
-        std::remove_cvref_t<decltype(get_event_outputs(std::declval<Node const&>()))>
-    >::value;
+    inline constexpr size_t fixed_event_output_count_v = fixed_event_output_count<Node>();
 
     template<>
     inline constexpr size_t fixed_event_output_count_v<void> = std::dynamic_extent;

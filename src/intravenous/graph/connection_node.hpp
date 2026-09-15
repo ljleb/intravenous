@@ -22,7 +22,7 @@ struct ConnectionNodeInputChannelCopy {
 };
 
 struct ConnectionNodeInputConfig {
-    InputConfig input {};
+    SampleInputConfig input {};
     std::vector<ConnectionNodeInputChannelCopy> channel_copies {};
 };
 
@@ -42,7 +42,7 @@ struct ConnectionNodeEphemeralPortConfig {
 struct ConnectionNodeSpec {
     std::vector<ConnectionNodeInputConfig> input_configs {};
     std::vector<ConnectionNodeEphemeralPortConfig> ephemeral_port_configs {};
-    OutputConfig output_config {};
+    SampleOutputConfig output_config {};
     Sample default_value = 0.0f;
     std::string runtime_binding_id {};
     size_t runtime_source_channel_offset = 0;
@@ -53,7 +53,7 @@ public:
     std::vector<ConnectionNodeInputConfig> input_configs {};
     std::vector<ConnectionNodeEphemeralPortConfig>
         ephemeral_port_configs {};
-    OutputConfig output_config {};
+    SampleOutputConfig output_config {};
     Sample default_value = 0.0f;
     std::string runtime_binding_id {};
     size_t runtime_source_channel_offset = 0;
@@ -76,13 +76,13 @@ public:
         std::vector<InputConfig> result;
         result.reserve(input_configs.size());
         for (auto const& input : input_configs)
-            result.push_back(input.input);
+            result.push_back(make_input_config(input.input));
         return result;
     }
 
     [[nodiscard]] constexpr auto outputs() const
     {
-        return std::array<OutputConfig, 1>{ output_config };
+        return std::array<OutputConfig, 1>{make_output_config(output_config)};
     }
 
     void declare(DeclarationContext<ConnectionNode> const& ctx) const

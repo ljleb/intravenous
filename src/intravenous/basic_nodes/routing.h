@@ -17,13 +17,12 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{OutputConfig{
-                .name = "out",
+            return std::array<OutputConfig, 1>{sample_output("out", {
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = SampleStreamLayout::planar,
                 },
-            }};
+            })};
         }
 
         void tick_block(TickBlockContext<ChannelPack> const& ctx) const
@@ -40,13 +39,12 @@ namespace iv {
     public:
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{InputConfig{
-                .name = "in",
+            return std::array<InputConfig, 1>{sample_input("in", {
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = SampleStreamLayout::planar,
                 },
-            }};
+            })};
         }
 
         static constexpr auto outputs()
@@ -86,21 +84,15 @@ namespace iv {
             _type(type)
         {}
 
-        constexpr auto event_inputs() const
+        constexpr auto inputs() const
         {
-            return std::array<EventInputConfig, 1> {{
-                { .type = _type }
-            }};
+            return std::array { event_input({}, _type) };
         }
 
-        constexpr auto event_outputs() const
+        constexpr auto outputs() const
         {
-            return std::vector<EventOutputConfig>(_num_outputs, EventOutputConfig{ .type = _type });
-        }
-
-        constexpr auto num_event_outputs() const
-        {
-            return _num_outputs;
+            return std::vector<OutputConfig>(
+                _num_outputs, event_output({}, _type));
         }
 
         void tick_block(TickBlockContext<BroadcastEvent> const& ctx) const
@@ -125,21 +117,14 @@ namespace iv {
             _type(type)
         {}
 
-        constexpr auto event_inputs() const
+        constexpr auto inputs() const
         {
-            return std::vector<EventInputConfig>(_num_inputs, EventInputConfig{ .type = _type });
+            return std::vector<InputConfig>(_num_inputs, event_input({}, _type));
         }
 
-        constexpr auto event_outputs() const
+        constexpr auto outputs() const
         {
-            return std::array<EventOutputConfig, 1> {{
-                { .type = _type }
-            }};
-        }
-
-        constexpr auto num_event_inputs() const
-        {
-            return _num_inputs;
+            return std::array { event_output({}, _type) };
         }
 
         void declare(DeclarationContext<EventConcatenation> const& ctx) const
@@ -273,11 +258,9 @@ struct DetachReaderNode {
     };
 
     struct DummyEventSink {
-        constexpr auto event_inputs() const
+        static constexpr auto inputs()
         {
-            return std::array<EventInputConfig, 1> {{
-                { .type = EventTypeId::empty }
-            }};
+            return std::array { event_input({}, EventTypeId::empty) };
         }
 
         void tick_block(TickBlockContext<DummyEventSink> const&) const

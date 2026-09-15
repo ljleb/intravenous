@@ -281,7 +281,8 @@ public:
   size_t sample_output_count(NodeBundleHandle) const;
   size_t event_input_count(NodeBundleHandle) const;
   size_t event_output_count(NodeBundleHandle) const;
-  InputConfig sample_input_config(NodeBundleHandle, size_t) const;
+  NodeBundlePortId input_port_at(NodeBundleHandle, size_t) const;
+  SampleInputConfig sample_input_config(NodeBundleHandle, size_t) const;
   EventInputConfig event_input_config(NodeBundleHandle, size_t) const;
   NodeBundleHandle tiled_member(NodeBundleHandle, size_t) const;
   NodePorts const& typed_ports(NodeBundleHandle) const;
@@ -439,6 +440,7 @@ auto make_node_call_requests(GraphBuilder& builder, Args&&... args)
   using Requests = NodeCallRequests<
       sample_input_arg_count_v<Args...>, event_input_arg_count_v<Args...>>;
   Requests requests;
+  size_t positional_index = 0;
   size_t sample_index = 0;
   size_t event_index = 0;
 
@@ -464,66 +466,17 @@ auto make_node_call_requests(GraphBuilder& builder, Args&&... args)
       }
     } else if constexpr (graph_builder_event_port_like<Arg>) {
       requests.event_inputs[event_index++] = {
-          .source = static_cast<EventPortRef>(std::forward<Arg>(arg)),
-          .name = {},
-          .input_ordinal = 0,
-          .target = NodeCallInputTarget::positional,
+        .source = static_cast<EventPortRef>(std::forward<Arg>(arg)),
+        .name = {},
+        .input_ordinal = positional_index++,
+        .target = NodeCallInputTarget::positional,
       };
     } else {
       requests.sample_inputs[sample_index++] = {
-          .source = builder.lift_to_sample_port(std::forward<Arg>(arg)),
-          .name = {},
-          .input_ordinal = 0,
-          .target = NodeCallInputTarget::positional,
-      };
-    }
-  };
-  (append(std::forward<Args>(args)), ...);
-  return requests;
-}
-
-template<class Node, class... Args>
-auto make_tiled_node_call_requests(GraphBuilder& builder, Args&&... args)
-    -> NodeCallRequests<
-        tiled_sample_input_arg_count_v<Args...>,
-        tiled_event_input_arg_count_v<Args...>>
-{
-  using Requests = NodeCallRequests<
-      tiled_sample_input_arg_count_v<Args...>,
-      tiled_event_input_arg_count_v<Args...>>;
-  Requests requests;
-  size_t positional_sample = 0;
-  size_t sample_index = 0;
-  size_t event_index = 0;
-
-  auto append = [&]<class Arg>(Arg&& arg) {
-    using Value = std::remove_cvref_t<Arg>;
-    if constexpr (is_named_arg_v<Value>) {
-      if constexpr (Value::kind == NamedPortKind::sample) {
-        constexpr auto input_ordinal =
-            static_input_port_index<Node, Value::name>();
-        requests.sample_inputs[sample_index++] = {
-            .source = builder.lift_to_sample_port(
-                std::forward<Arg>(arg).value),
-            .name = {},
-            .input_ordinal = input_ordinal,
-            .target = NodeCallInputTarget::explicit_ordinal,
-        };
-      } else {
-        requests.event_inputs[event_index++] = {
-            .source = lift_node_call_event_operand(
-                std::forward<Arg>(arg).value),
-            .name = Value::name.view(),
-            .input_ordinal = 0,
-            .target = NodeCallInputTarget::named,
-        };
-      }
-    } else {
-      requests.sample_inputs[sample_index++] = {
-          .source = builder.lift_to_sample_port(std::forward<Arg>(arg)),
-          .name = {},
-          .input_ordinal = positional_sample++,
-          .target = NodeCallInputTarget::explicit_ordinal,
+        .source = builder.lift_to_sample_port(std::forward<Arg>(arg)),
+        .name = {},
+        .input_ordinal = positional_index++,
+        .target = NodeCallInputTarget::positional,
       };
     }
   };

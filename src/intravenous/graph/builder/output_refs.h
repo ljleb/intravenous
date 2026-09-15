@@ -13,7 +13,7 @@
 namespace iv {
     // This describes how a concrete public sample port participates in a
     // public declaration. It deliberately lives beside, rather than inside,
-    // OutputConfig: OutputConfig describes one executable port, whose ordinal
+    // SampleOutputConfig describes one physical sample port, whose ordinal
     // is its position in the config array.
     struct PublicSamplePortMember {
         std::string family_name {};
@@ -33,7 +33,7 @@ namespace iv {
 
     struct OutputRefConfig {
         SamplePortRef ref;
-        OutputConfig config;
+        SampleOutputConfig config;
         PublicSamplePortMember public_member {};
         // When set, this declaration contributes only one semantic channel to
         // the wider destination port. Completion decides how to materialize
@@ -48,7 +48,7 @@ namespace iv {
 
     // Module-facing output declarations carry only borrowed views and fixed
     // size handles. libiv_builder copies the strings and materializes the
-    // owning OutputConfig records before the call returns.
+    // owning SampleOutputConfig records before the call returns.
     struct SampleOutputRequest {
         SamplePortRef ref;
         std::string_view name;

@@ -74,18 +74,14 @@ namespace iv {
             pitch_bend_range_semitones(pitch_bend_range_semitones)
         {}
 
-        constexpr auto event_inputs() const
+        static constexpr auto inputs()
         {
-            return std::array<EventInputConfig, 1> {{
-                { .name = "midi", .type = EventTypeId::midi }
-            }};
+            return std::array { event_input("midi", EventTypeId::midi) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1> {{
-                { .name = "frequency" }
-            }};
+            return std::array { sample_output("frequency") };
         }
 
         void declare(DeclarationContext<MidiPitch> const& ctx) const
@@ -175,18 +171,14 @@ namespace iv {
             std::span<Sample> block;
         };
 
-        constexpr auto event_inputs() const
+        static constexpr auto inputs()
         {
-            return std::array<EventInputConfig, 1> {{
-                { .name = "midi", .type = EventTypeId::midi }
-            }};
+            return std::array { event_input("midi", EventTypeId::midi) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1> {{
-                { .name = "gate" }
-            }};
+            return std::array { sample_output("gate") };
         }
 
         void declare(DeclarationContext<MidiGate> const& ctx) const
@@ -296,26 +288,20 @@ namespace iv {
             pitch_bend_range_semitones(pitch_bend_range_semitones)
         {}
 
-        constexpr auto event_inputs() const
+        constexpr auto inputs() const
         {
-            return std::array<EventInputConfig, 1> {{
-                { .name = "midi", .type = EventTypeId::midi }
-            }};
+            return std::array {
+                event_input("midi", EventTypeId::midi),
+            };
         }
 
-        static constexpr auto outputs()
+        constexpr auto outputs() const
         {
-            return std::array<OutputConfig, 2> {{
-                { .name = "amplitude" },
-                { .name = "frequency" },
-            }};
-        }
-
-        constexpr auto event_outputs() const
-        {
-            return std::array<EventOutputConfig, 1> {{
-                { .name = "trigger", .type = EventTypeId::trigger }
-            }};
+            return std::array {
+                sample_output("amplitude"),
+                sample_output("frequency"),
+                event_output("trigger", EventTypeId::trigger),
+            };
         }
 
         void tick_block(TickBlockContext<MidiVoiceAllocator> const& ctx) const

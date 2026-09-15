@@ -47,7 +47,7 @@ graph-specific optimization
 native realtime kernel
 ```
 
-The existing lane/DSP graph convergence remains an important later direction, but it is not part of the first whole-graph execution rewrite. The new kernel compiler should be placed below the current graph source so that the future canonical project graph can replace that source without rewriting the kernel compiler.
+Lane/DSP control-plane convergence is independent of the whole-project kernel rewrite. A canonical project graph may replace `Timeline`/`LaneGraph` before the generated kernel exists, or kernel work may proceed underneath compatibility execution; neither path should require another project-identity migration. See [unified_graph_direction.md](./unified_graph_direction.md). Compiled DSP-port semantics are specified separately in [compiled_dsp_nodes.md](./compiled_dsp_nodes.md) and must not be inferred from the legacy compiled-lane runtime.
 
 ---
 
@@ -74,7 +74,11 @@ The preferred words are:
 - **region**: a scheduling unit when the whole graph must be processed with a particular execution quantum;
 - **execution plan**: the finalizer's derived schedule/state/storage description before or alongside LLVM generation;
 - **finalizer**: the build/compiler stage that has the complete graph and emits the finalized native artifact/kernel;
-- **cache**: persisted reusable results whose invalidation is explicit.
+- **cache**: persisted reusable results whose invalidation is explicit;
+- **compiled port**: an ordinary DSP sample or event port with kind-appropriate
+  arbitrary access, as specified by [compiled_dsp_nodes.md](./compiled_dsp_nodes.md);
+  compiled samples are addressable at global sample positions, compiled events by
+  global event ranges, and `compiled` is a capability rather than a storage class.
 
 A useful invariant is:
 
@@ -1240,13 +1244,27 @@ Possible outcomes include:
 
 No gather/copy/convert temporary buffer is implied by the graph semantics themselves.
 
-### 14.3 Migration seam for later lane deletion
+### 14.3 Migration seam for project-graph convergence
 
-For the first runtime project, the current lowerer/`ConnectionNodeSpec` can be translated into the new connection semantics.
+The connection semantics should not depend on whether the producer is the legacy
+lane adapters, a compatibility per-instance executor, or the future generated
+whole-project kernel.
 
-Later, after lane/DSP graph convergence, the canonical project graph can feed the same connection-lowering stage directly.
+After the IV-package/configuration work, it is valid to move the control plane to
+the canonical project graph **before** the new kernel compiler exists. Project
+connections resolve stable module-instance/virtual-node/member/port endpoints
+independently of the execution backend.
 
-Therefore the new execution compiler does not depend on deleting the lane graph first.
+If preserving application functionality during migration is useful, those
+resolved connections may feed a temporary compatibility adapter that updates
+`GraphRuntimeBindings`, block/event transfer, and `TasksRunner` dependencies. Such
+an adapter can let per-instance execution partitions survive temporarily after
+`Timeline`/`LaneGraph` disappear, but it is optional scaffolding: a destructive
+lane-runtime removal may omit it if that produces a cleaner migration branch.
+
+Conversely, a kernel prototype can still be developed below the old producer if
+that is useful. The important invariant is that project connection identity and
+semantics are independent from either execution backend.
 
 ---
 
@@ -1275,6 +1293,11 @@ schedule/storage/LLVM generation
 ```
 
 Changing `B` recompiles the project kernel, not the node implementations or iv-module C++ sources.
+
+`B` is a sequential realtime execution parameter. It does not constrain compiled
+random-access queries: an `AccessRequest` may ask for a dense or sparse set of
+global sample positions over an arbitrary interval, independently of the current
+realtime block size.
 
 ### 15.2 Why fixed `B` matters
 
@@ -1405,7 +1428,45 @@ Multiple instances of one registered node type share one implementation function
 
 State should lower to direct typed state storage known by the graph compiler rather than repeatedly treating state as an untyped byte span in the hot path.
 
+Compiled-capable nodes may additionally declare `CompiledState`. Sequential
+`State` and `CompiledState` are distinct semantic lifetimes: arbitrary
+`access_block()` evaluation may use `CompiledState` but must not depend on
+sequential `State` or request order, while realtime `tick_block()` may use both
+when useful. Node lifecycle/storage planning must support both without requiring
+heap allocation or a particular physical layout.
+
 This gives LLVM ordinary field-addressing and alias information after inlining.
+
+### 16.6 Compiled DSP access is planned, not recursively pulled
+
+The normative compiled-port design is
+[compiled_dsp_nodes.md](./compiled_dsp_nodes.md). The whole-project compiler and
+runtime must preserve these integration rules:
+
+- sample/event kind and realtime/compiled capability are orthogonal; compiled
+  extends ordinary DSP ports rather than introducing a parallel graph or a
+  prepared-resource input vocabulary;
+- `tick_block()` is sequential realtime execution, while `access_block()` is
+  arbitrary compiled evaluation over compiled ports and `CompiledState`;
+- compiled sample queries may request sparse deterministic integer sample
+  positions as well as dense ranges, while compiled event queries request event
+  intervals and preserve all events in those intervals;
+- the caller submits one global batch of sink-output requests;
+- requirements propagate in reverse topological order and are unioned/coalesced
+  per compiled port before an upstream node is visited;
+- only after the complete demand graph is known does evaluation run forward; and
+- temporary/intermediate representation is selected after planning from actual
+  consumers and request sets.
+
+The first implementation deliberately does not persistently cache deterministic
+computed compiled outputs. This does not prevent per-query coalescing, temporary
+materialization, or node-owned `CompiledState`. It also has no implicit
+realtime-to-compiled edge: a graph that needs recording must use an explicit
+node with a realtime input and compiled output.
+
+The planner should expose enough information to the later whole-graph compiler to
+fuse, forward directly, allocate dense or sparse temporaries, or otherwise avoid
+materialization when random access is declared but not actually demanded.
 
 ---
 
@@ -1461,6 +1522,13 @@ The typed API exists specifically to give the compiler the stronger facts when t
 A connection/sample stream is a logical time-indexed value sequence.
 
 **Storage is a lowering decision, not part of the connection's semantic identity.**
+
+This section primarily describes sequential realtime streams, history/latency,
+and feedback storage. Do not treat those mechanisms as the physical definition of
+a compiled port. Compiled random-access queries follow
+[compiled_dsp_nodes.md](./compiled_dsp_nodes.md): their request sets are planned
+first, and any dense/sparse temporary representation is chosen afterward for that
+query.
 
 Do not begin by assuming either:
 
@@ -2205,12 +2273,42 @@ The design is intentionally staged so the existing 443-test runtime can remain t
 4. Keep any required source-owned retained globals/compiler data available for symbolic configured values.
 5. Use conservative package reload while profiling determines whether a more selective cache is worthwhile.
 
-### Phase D — project connections and multi-graph finalizer input
+### Phase D — canonical project graph and lane-runtime removal
 
-1. Add persistent project connections addressed through module instance + virtual node + direct member + port/channel.
-2. Extend finalization to accept many module instances/`ConfiguredGraph`s plus project connections.
-3. Resolve stable ports against the current configured definitions.
-4. Preserve current runtime behavior after resolution so this boundary can be tested before the execution rewrite.
+1. Implement the ordinary DSP-node compiled-port semantics in
+   [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). Do not carry forward the
+   legacy timeline-owned compiled cache/invalidation architecture.
+2. Complete the separately designed generalized iv-module capability sufficiently
+   that custom/composite user-facing objects no longer require lane types merely
+   to own a subgraph or custom UI.
+3. Add canonical project ownership for persistent connections addressed through
+   module instance + virtual node + direct member + port/channel, plus dangling
+   endpoints and project-local state that must survive lane deletion.
+4. Keep cached `ConfiguredGraph`s immutable. Reconcile project attachments against
+   stable configured identities and preserve dangling connections when an endpoint
+   temporarily disappears.
+5. Move graph-input live controls/source-introspection state, device routing, and
+   any retained transport state to project endpoints or focused services rather
+   than successor proxy lanes.
+6. Delete `Timeline`, `LaneGraph`, `TimelineExecution`, lane task production,
+   graph-input/device proxy lanes, and compiled-lane execution/storage machinery
+   as one architectural cut when the replacement ownership boundaries exist. Do
+   not require feature-by-feature class migration merely to keep the old
+   application continuously feature-complete.
+7. Reintroduce surviving product features (automation, beat/event generation,
+   recording/capture, specialized views, etc.) as ordinary DSP nodes, general iv
+   modules, project/UI state, or focused services. Their old lane implementations
+   are requirements/history, not required implementation scaffolding.
+8. If useful during migration, provide a temporary compatibility adapter from the
+   canonical project graph to existing per-instance `RuntimeGraphRoot`/
+   `TasksRunner` execution. This is optional scaffolding and may retain the
+   current DAG limitation; do not distort project semantics to preserve it.
+9. Extend whole-project finalization to accept many module
+   instances/`ConfiguredGraph`s plus these same project connections.
+
+This phase may precede the whole-project kernel. The canonical project graph is a
+control-plane representation and should survive unchanged when execution later
+moves from compatibility execution to generated LLVM.
 
 ### Phase E — first whole-graph LLVM execution subset
 
@@ -2258,7 +2356,7 @@ Eliminate temporary gather/conversion/copy buffers where not semantically necess
 1. whole-project SCC detection;
 2. feedback/detach storage;
 3. region/max-block-size scheduling;
-4. compiled activity propagation;
+4. compile-time activity propagation;
 5. TTL tail state;
 6. remove internal O(block-size) dormancy scans where activity is already known.
 
@@ -2273,13 +2371,17 @@ Eliminate temporary gather/conversion/copy buffers where not semantically necess
 
 Bring event routing, typed event ports, event storage, lifecycle corner cases, and remaining runtime behaviors into the new whole-graph execution model using the differential test harness.
 
-### Phase K — lane/DSP graph convergence
+### Phase K — compatibility execution retirement
 
-Only after the kernel compiler works below the existing graph source, replace lane/per-module execution graph production with the canonical project graph described by the unified-graph direction.
+The canonical project graph may already have replaced the lane control plane in
+Phase D. After the generated kernel covers the required runtime semantics, remove
+the remaining compatibility per-instance execution partitions,
+`GraphRuntimeBindings` project-edge adapter, and task-level cross-instance block
+transfer.
 
-Patch connection production into the same whole-project connection/lowering path.
-
-Do not rewrite the kernel architecture merely because the graph's product/UI producer changes.
+Feed the existing canonical project connections into the same whole-project
+connection/lowering path. Do not rewrite project identity or UI/persistence
+semantics merely because the execution backend changes.
 
 ---
 
@@ -2310,7 +2412,12 @@ Important coverage includes:
 - nested subgraphs;
 - virtual/tiled-node connections;
 - cross-module project connections;
-- module reload with stable virtual identities.
+- module reload with stable virtual identities;
+- dense and sparse compiled `AccessRequest`s;
+- converging compiled-demand paths coalesced before producer execution;
+- multi-output/global compiled query batching;
+- compiled-access request-order independence; and
+- explicit realtime-to-compiled recording nodes followed by random access.
 
 The existing test suite is a behavioral specification. The new kernel does not need to preserve obsolete runtime structures, but it must preserve relevant product semantics.
 
@@ -2343,7 +2450,7 @@ The following are treated as strong architectural decisions unless implementatio
 21. **Global-pointer configuration relocation remains supported.**
 22. **The finalizer generates lifecycle/state migration plans; the live host executes migration.**
 23. **Profiling and LLVM visibility are first-class.** Every important whole-graph compiler stage should be dumpable and timed.
-24. **Lane graph deletion is later and orthogonal.** The new execution compiler should be reusable when the canonical project graph replaces the current producer.
+24. **Lane control-plane deletion is orthogonal to the kernel rewrite.** Once the replacement project ownership and required DSP/module capabilities exist, `Timeline`/`LaneGraph` may be removed before the whole-project kernel. A compatibility execution adapter is optional migration scaffolding, not a prerequisite. The same project graph and connection semantics must later feed the generated kernel without another identity migration.
 25. **Registered constructors/functions are provider-owned.** `IV_NODE` and
     `IV_MODULE` accept ordinary configuration arguments through exact
     compiler-produced type identities; no cross-package implicit conversion or
@@ -2351,6 +2458,25 @@ The following are treated as strong architectural decisions unless implementatio
 26. **Built-ins are an ordinary shipped IV package.** Public non-template
     basic node types are registered there; template families stay internal
     until a concrete specialization receives an explicit stable ID.
+27. **Compiled is a DSP-port capability, not a storage class or parallel graph.**
+    Sample/event kind is orthogonal to realtime/compiled capability. A compiled
+    input extends the corresponding realtime access; compiled sample outputs are
+    queryable at arbitrary global sample positions and compiled event outputs over
+    arbitrary global event intervals.
+28. **Compiled queries are globally demand-planned.** Reverse requirement
+    propagation/union precedes forward evaluation; upstream work is not greedily
+    executed once per downstream path.
+29. **`access_block()` is order-independent arbitrary access.** It sees only
+    compiled ports and `CompiledState`, never realtime-only ports or sequential
+    `State`. `tick_block()` may use compiled inputs and may be synthesized from
+    access where the static port contract makes that valid, never vice versa.
+30. **Compiled capability does not imply materialization or persistent computed
+    caching.** The initial implementation chooses temporary representations after
+    planning and discards computed results after the query.
+31. **Realtime-to-compiled is explicit.** The initial graph has no implicit
+    recording edge. A node with a realtime input and compiled output owns any
+    recording/source-data semantics; this remains distinct from a
+    deterministic-output cache.
 
 ---
 
@@ -2405,23 +2531,28 @@ The following should remain open until prototypes or profiling provide evidence.
 
 ## 30. Near-term implementation target
 
-The immediate design work should not begin with the new DSP kernel itself. The compiler inputs must first reflect the new ownership/cache model.
+The package/registration/configured-graph foundation above has landed. The next
+architecture work should finish the semantic capabilities needed to remove the
+old lane runtime before treating the new DSP kernel as the immediate target.
 
-A practical first sequence is:
+The current sequence is:
 
 ```text
-1. independently registered node types
-2. independently registered iv modules
-3. IV package publishes multiple registrations transactionally
-4. reusable source configuration artifacts and a shared configuration generation
-5. generic `g.node<Id>()` with immediate registered-definition resolution
-6. fully realized `ConfiguredGraph` invocation results and configuration-cycle checks
-7. project connections through stable virtual-node/member ports
-8. finalizer accepts the complete active project graph
-9. only then begin replacing the generic runtime with whole-graph LLVM execution
+1. implement compiled DSP ports/access planning from compiled_dsp_nodes.md
+2. design and implement generalized iv modules not inherently backed by C++ packages
+3. establish canonical project-owned instances/connections/endpoints/state
+4. delete Timeline/LaneGraph/TimelineExecution and lane proxy/execution machinery
+5. restore wanted lane-era product features using ordinary nodes/modules/services
+6. make the finalizer consume the complete active project graph
+7. replace compatibility execution with whole-project LLVM execution
 ```
 
-This ordering is important because the whole-graph execution compiler should be built on the representation that will actually drive future project reloads. Otherwise execution work risks being optimized around per-module boundaries that the cache/registry design immediately removes.
+Items 1 and 2 should define semantic/API boundaries, not preserve lane classes.
+After those plans are precise, low-level compiled-port decisions intentionally
+left open by `compiled_dsp_nodes.md`—request ABI details, request-set data
+structures, planner representation, temporary allocation strategy, recording
+storage, and trait/context implementation—can be investigated without confusing
+them with the obsolete timeline execution model.
 
 ---
 

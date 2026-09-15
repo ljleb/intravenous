@@ -257,7 +257,7 @@ PublicOutputSnapshot named_channel_output_snapshot()
         .name_main = built.graph.outputs().size() == 1
             && built.graph.outputs()[0].name == "main",
         .channel_type = built.graph.outputs().size() == 1
-            ? built.graph.outputs()[0].channel_layout.channel_type
+            ? sample_properties(built.graph.outputs()[0]).channel_layout.channel_type
             : ChannelTypeId::mono,
         .family_count = configured.family_count,
     };
@@ -301,7 +301,7 @@ PublicOutputSnapshot repeated_named_output_snapshot()
         .name_main = built.graph.outputs().size() == 1
             && built.graph.outputs().front().name == "main",
         .channel_type = built.graph.outputs().size() == 1
-            ? built.graph.outputs().front().channel_layout.channel_type
+            ? sample_properties(built.graph.outputs().front()).channel_layout.channel_type
             : ChannelTypeId::stereo,
         .family_count = configured.family_count,
         .family_channels = configured.family_channels,
@@ -336,7 +336,7 @@ PublicOutputSnapshot repeated_unnamed_output_snapshot()
         .name_main = built.graph.outputs().size() == 1
             && built.graph.outputs().front().name == "main",
         .channel_type = built.graph.outputs().size() == 1
-            ? built.graph.outputs().front().channel_layout.channel_type
+            ? sample_properties(built.graph.outputs().front()).channel_layout.channel_type
             : ChannelTypeId::stereo,
         .family_count = configured.family_count,
         .family_channels = configured.family_channels,
@@ -389,10 +389,10 @@ PublicOutputSnapshot whole_and_channel_output_snapshot()
         .name_main = built.graph.outputs().size() == 1
             && built.graph.outputs().front().name == "main",
         .channel_type = built.graph.outputs().size() == 1
-            ? built.graph.outputs().front().channel_layout.channel_type
+            ? sample_properties(built.graph.outputs().front()).channel_layout.channel_type
             : ChannelTypeId::mono,
         .sample_layout = built.graph.outputs().size() == 1
-            ? built.graph.outputs().front().channel_layout.sample_layout
+            ? sample_properties(built.graph.outputs().front()).channel_layout.sample_layout
             : SampleStreamLayout::interleaved,
         .family_count = configured.family_count,
     };

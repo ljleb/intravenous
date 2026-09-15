@@ -37,7 +37,7 @@ namespace iv {
 
         template<fixed_string Name>
         auto input() const
-        requires details::has_constexpr_sample_port_configs<Node>
+        requires details::has_constexpr_port_configs<Node>
         {
             constexpr auto layout = details::static_input_port_layout<Node, Name>();
             constexpr auto port_index = details::static_input_port_index<Node, Name>();
@@ -48,7 +48,7 @@ namespace iv {
 
         template<fixed_string Name>
         auto output() const
-        requires details::has_constexpr_sample_port_configs<Node>
+        requires details::has_constexpr_port_configs<Node>
         {
             constexpr auto layout = details::static_output_port_layout<Node, Name>();
             constexpr auto port_index = details::static_output_port_index<Node, Name>();
@@ -71,7 +71,7 @@ namespace iv {
 
         template<fixed_string Name>
         auto input() const
-        requires details::has_constexpr_sample_port_configs<Node>
+        requires details::has_constexpr_port_configs<Node>
         {
             constexpr auto layout = details::static_input_port_layout<Node, Name>();
             constexpr auto port_index = details::static_input_port_index<Node, Name>();
@@ -83,7 +83,7 @@ namespace iv {
 
         template<fixed_string Name>
         auto output() const
-        requires details::has_constexpr_sample_port_configs<Node>
+        requires details::has_constexpr_port_configs<Node>
         {
             constexpr auto layout = details::static_output_port_layout<Node, Name>();
             constexpr auto port_index = details::static_output_port_index<Node, Name>();
@@ -129,7 +129,8 @@ namespace iv {
     }
 
     template<typename Node>
-    IV_FORCEINLINE TickSampleContext<Node>::TickSampleContext(TickContext<Node> base, size_t index)
+    IV_FORCEINLINE TickSampleContext<Node>::TickSampleContext(
+        TickContext<Node> base, size_t index)
     : TickContext<Node>(base), index(index)
     {}
 

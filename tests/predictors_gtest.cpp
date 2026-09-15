@@ -13,19 +13,19 @@ namespace {
         using ResidualAr2 = TanhResidualAR2Predictor<4, 9, 2, 6, 3>;
         using Poly = PolyResidualPredictor<1, 4>;
 
-        static_assert(details::has_constexpr_sample_port_configs<Nlms>);
-        static_assert(details::has_constexpr_sample_port_configs<Residual>);
-        static_assert(details::has_constexpr_sample_port_configs<ResidualAr2>);
-        static_assert(details::has_constexpr_sample_port_configs<Poly>);
+        static_assert(details::has_constexpr_port_configs<Nlms>);
+        static_assert(details::has_constexpr_port_configs<Residual>);
+        static_assert(details::has_constexpr_port_configs<ResidualAr2>);
+        static_assert(details::has_constexpr_port_configs<Poly>);
 
-        static_assert(Nlms::inputs()[0].history == 7);
-        static_assert(Nlms::outputs()[0].history == 3);
-        static_assert(Residual::inputs()[0].history == 6);
-        static_assert(Residual::outputs()[0].history == 5);
-        static_assert(ResidualAr2::inputs()[0].history == 8);
-        static_assert(ResidualAr2::outputs()[0].history == 6);
-        static_assert(Poly::inputs()[0].history == 3);
-        static_assert(Poly::outputs()[0].history == 1);
+        static_assert(sample_properties(Nlms::inputs()[0]).history == 7);
+        static_assert(sample_properties(Nlms::outputs()[0]).history == 3);
+        static_assert(sample_properties(Residual::inputs()[0]).history == 6);
+        static_assert(sample_properties(Residual::outputs()[0]).history == 5);
+        static_assert(sample_properties(ResidualAr2::inputs()[0]).history == 8);
+        static_assert(sample_properties(ResidualAr2::outputs()[0]).history == 6);
+        static_assert(sample_properties(Poly::inputs()[0]).history == 3);
+        static_assert(sample_properties(Poly::outputs()[0]).history == 1);
 
         [[maybe_unused]] Nlms nlms { 0.1f, 0.9f };
         [[maybe_unused]] Residual residual { 0.1f };

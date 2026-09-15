@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <array>
 #include <functional>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -1064,8 +1065,10 @@ namespace iv {
         }
     };
 
-    struct InputConfig {
-        std::string name {};
+    // The sample/event distinction is a property of one logical input, not a
+    // second parallel declaration API. These are the non-name properties of
+    // the two alternatives carried by InputConfig below.
+    struct SampleInputProperties {
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
@@ -1076,8 +1079,7 @@ namespace iv {
         Sample max = std::numeric_limits<Sample::storage>::infinity();
     };
 
-    struct OutputConfig {
-        std::string name {};
+    struct SampleOutputProperties {
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
@@ -1086,12 +1088,12 @@ namespace iv {
         size_t history = 0;
     };
 
-    constexpr ChannelLayout effective_channel_layout(InputConfig const& config)
+    constexpr ChannelLayout effective_channel_layout(SampleInputProperties const& config)
     {
         return config.channel_layout;
     }
 
-    constexpr ChannelLayout effective_channel_layout(OutputConfig const& config)
+    constexpr ChannelLayout effective_channel_layout(SampleOutputProperties const& config)
     {
         return config.channel_layout;
     }
@@ -1105,6 +1107,237 @@ namespace iv {
         std::string name {};
         EventTypeId type {};
     };
+
+    struct EventInputProperties {
+        EventTypeId type {};
+    };
+
+    struct EventOutputProperties {
+        EventTypeId type {};
+    };
+
+    // The authored declaration is one ordered input/output list. A variant
+    // makes nonsensical combinations unrepresentable: event ports cannot
+    // have sample history/range/default data. Builder/lowering code splits
+    // these alternatives into its separate sample/event execution collections.
+    struct InputConfig {
+        std::string name {};
+        std::variant<SampleInputProperties, EventInputProperties> kind {};
+
+        constexpr InputConfig() = default;
+        constexpr explicit InputConfig(std::string name)
+            : name(std::move(name))
+        {}
+        constexpr InputConfig(std::string name, SampleInputProperties config)
+            : name(std::move(name))
+            , kind(std::move(config))
+        {}
+        constexpr InputConfig(std::string name, EventInputProperties config)
+            : name(std::move(name))
+            , kind(std::move(config))
+        {}
+    };
+
+    struct OutputConfig {
+        std::string name {};
+        std::variant<SampleOutputProperties, EventOutputProperties> kind {};
+
+        constexpr OutputConfig() = default;
+        constexpr explicit OutputConfig(std::string name)
+            : name(std::move(name))
+        {}
+        constexpr OutputConfig(std::string name, SampleOutputProperties config)
+            : name(std::move(name))
+            , kind(std::move(config))
+        {}
+        constexpr OutputConfig(std::string name, EventOutputProperties config)
+            : name(std::move(name))
+            , kind(std::move(config))
+        {}
+    };
+
+    [[nodiscard]] constexpr InputConfig sample_input(
+        std::string name = {}, SampleInputProperties properties = {})
+    {
+        return InputConfig{std::move(name), std::move(properties)};
+    }
+
+    [[nodiscard]] constexpr OutputConfig sample_output(
+        std::string name = {}, SampleOutputProperties properties = {})
+    {
+        return OutputConfig{std::move(name), std::move(properties)};
+    }
+
+    [[nodiscard]] constexpr InputConfig event_input(
+        std::string name, EventTypeId type)
+    {
+        return InputConfig{std::move(name), EventInputProperties{.type = type}};
+    }
+
+    [[nodiscard]] constexpr OutputConfig event_output(
+        std::string name, EventTypeId type)
+    {
+        return OutputConfig{std::move(name), EventOutputProperties{.type = type}};
+    }
+
+    // The graph retains physical sample/event lists because its execution
+    // model has separate sample buffers and event streams. These descriptors
+    // are internal counterparts of the unified authored declarations above.
+    struct SampleInputConfig {
+        std::string name {};
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
+        size_t history = 0;
+        Sample default_value = 0.0;
+        Sample min = -std::numeric_limits<Sample::storage>::infinity();
+        Sample max = std::numeric_limits<Sample::storage>::infinity();
+    };
+
+    struct SampleOutputConfig {
+        std::string name {};
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
+        size_t latency = 0;
+        size_t history = 0;
+    };
+
+    constexpr ChannelLayout effective_channel_layout(SampleInputConfig const& config)
+    {
+        return config.channel_layout;
+    }
+
+    constexpr ChannelLayout effective_channel_layout(SampleOutputConfig const& config)
+    {
+        return config.channel_layout;
+    }
+
+    [[nodiscard]] constexpr SampleInputConfig materialize_sample_config(
+        InputConfig const& config)
+    {
+        auto const& properties = std::get<SampleInputProperties>(config.kind);
+        return {
+            .name = config.name,
+            .channel_layout = properties.channel_layout,
+            .history = properties.history,
+            .default_value = properties.default_value,
+            .min = properties.min,
+            .max = properties.max,
+        };
+    }
+
+    [[nodiscard]] constexpr SampleOutputConfig materialize_sample_config(
+        OutputConfig const& config)
+    {
+        auto const& properties = std::get<SampleOutputProperties>(config.kind);
+        return {
+            .name = config.name,
+            .channel_layout = properties.channel_layout,
+            .latency = properties.latency,
+            .history = properties.history,
+        };
+    }
+
+    [[nodiscard]] constexpr EventInputConfig materialize_event_config(
+        InputConfig const& config)
+    {
+        return {.name = config.name,
+                .type = std::get<EventInputProperties>(config.kind).type};
+    }
+
+    [[nodiscard]] constexpr EventOutputConfig materialize_event_config(
+        OutputConfig const& config)
+    {
+        return {.name = config.name,
+                .type = std::get<EventOutputProperties>(config.kind).type};
+    }
+
+    [[nodiscard]] constexpr InputConfig make_input_config(
+        SampleInputConfig const& config)
+    {
+        return {config.name, SampleInputProperties{
+            .channel_layout = config.channel_layout,
+            .history = config.history,
+            .default_value = config.default_value,
+            .min = config.min,
+            .max = config.max,
+        }};
+    }
+
+    [[nodiscard]] constexpr InputConfig make_input_config(
+        EventInputConfig const& config)
+    {
+        return {config.name, EventInputProperties{.type = config.type}};
+    }
+
+    [[nodiscard]] constexpr OutputConfig make_output_config(
+        SampleOutputConfig const& config)
+    {
+        return {config.name, SampleOutputProperties{
+            .channel_layout = config.channel_layout,
+            .latency = config.latency,
+            .history = config.history,
+        }};
+    }
+
+    [[nodiscard]] constexpr OutputConfig make_output_config(
+        EventOutputConfig const& config)
+    {
+        return {config.name, EventOutputProperties{.type = config.type}};
+    }
+
+    [[nodiscard]] constexpr bool is_sample(InputConfig const& config)
+    {
+        return std::holds_alternative<SampleInputProperties>(config.kind);
+    }
+
+    [[nodiscard]] constexpr bool is_sample(OutputConfig const& config)
+    {
+        return std::holds_alternative<SampleOutputProperties>(config.kind);
+    }
+
+    template<typename Ports>
+    constexpr size_t count_sample_ports(Ports const& ports)
+    {
+        size_t result = 0;
+        for (auto const& port : ports) {
+            result += is_sample(port);
+        }
+        return result;
+    }
+
+    template<typename Ports>
+    constexpr size_t count_event_ports(Ports const& ports)
+    {
+        return ports.size() - count_sample_ports(ports);
+    }
+
+    [[nodiscard]] constexpr SampleInputProperties const& sample_properties(
+        InputConfig const& config)
+    {
+        return std::get<SampleInputProperties>(config.kind);
+    }
+
+    [[nodiscard]] constexpr SampleOutputProperties const& sample_properties(
+        OutputConfig const& config)
+    {
+        return std::get<SampleOutputProperties>(config.kind);
+    }
+
+    [[nodiscard]] constexpr EventInputProperties const& event_properties(
+        InputConfig const& config)
+    {
+        return std::get<EventInputProperties>(config.kind);
+    }
+
+    [[nodiscard]] constexpr EventOutputProperties const& event_properties(
+        OutputConfig const& config)
+    {
+        return std::get<EventOutputProperties>(config.kind);
+    }
 
     IV_FORCEINLINE void advance_input(InputPort& input, size_t amount = 1)
     {

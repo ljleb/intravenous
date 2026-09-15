@@ -28,6 +28,8 @@ struct ArchiveFixture {
     {
         using namespace iv;
         iv::GraphBuilder graph;
+        auto const trigger = graph.event_input<"trigger">(iv::EventTypeId::trigger);
+        (void)trigger;
         auto const gain = graph.input<"gain">(0.25f);
         auto const source = iv::details::configure_concrete_node<iv::Constant>(
             graph, iv::Sample{0.75f});
@@ -88,16 +90,28 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_EQ(
         virtual_record->sample_inputs.front().source_infos.front().span.end, 18u);
 
+    auto const& declared_inputs = decoded.public_ports.inputs(decoded.node_bundles);
+    ASSERT_EQ(declared_inputs.size(), 2u);
+    EXPECT_FALSE(iv::is_sample(declared_inputs[0]));
+    EXPECT_EQ(declared_inputs[0].name, "trigger");
+    EXPECT_TRUE(iv::is_sample(declared_inputs[1]));
+    EXPECT_EQ(declared_inputs[1].name, "gain");
+
     auto plan = iv::GraphCompiler::compile(
         iv::GraphLowerer::lower(std::move(decoded)));
     auto const inputs = plan.graph.inputs();
     auto const outputs = plan.graph.outputs();
 
-    ASSERT_EQ(inputs.size(), 1u);
-    EXPECT_EQ(inputs.front().name, "gain");
-    EXPECT_FLOAT_EQ(inputs.front().default_value, 0.25f);
-    EXPECT_TRUE(std::isinf(inputs.front().min.value));
-    EXPECT_TRUE(std::isinf(inputs.front().max.value));
+    ASSERT_EQ(inputs.size(), 2u);
+    EXPECT_EQ(inputs[0].name, "trigger");
+    ASSERT_FALSE(iv::is_sample(inputs[0]));
+    EXPECT_EQ(iv::event_properties(inputs[0]).type, iv::EventTypeId::trigger);
+    EXPECT_EQ(inputs[1].name, "gain");
+    ASSERT_TRUE(iv::is_sample(inputs[1]));
+    auto const& gain_properties = iv::sample_properties(inputs[1]);
+    EXPECT_FLOAT_EQ(gain_properties.default_value, 0.25f);
+    EXPECT_TRUE(std::isinf(gain_properties.min.value));
+    EXPECT_TRUE(std::isinf(gain_properties.max.value));
     ASSERT_EQ(outputs.size(), 2u);
     EXPECT_EQ(outputs[0].name, "gain_out");
     EXPECT_EQ(outputs[1].name, "main");

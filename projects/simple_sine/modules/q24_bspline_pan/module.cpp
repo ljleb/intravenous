@@ -28,16 +28,16 @@ struct LearnedHrtfSource
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 3> {
-            InputConfig { .name = "in", .history = input_history, },
-            InputConfig { .name = "azimuth", .default_value = 0, .min = -180, .max = 180, },
-            InputConfig { .name = "elevation", .default_value = 0, .min = -180, .max = 180, },
+            sample_input("in", {.history = input_history}),
+            sample_input("azimuth", {.default_value = 0, .min = -180, .max = 180}),
+            sample_input("elevation", {.default_value = 0, .min = -180, .max = 180}),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array<OutputConfig, 1> {
-            OutputConfig { .name = "out", .channel_layout = { .channel_type = ChannelTypeId::stereo, } },
+            sample_output("out", {.channel_layout = { .channel_type = ChannelTypeId::stereo }}),
         };
     }
 
@@ -509,26 +509,24 @@ struct BaselineFir256
     static constexpr size_t input_history = tap_count - 1;
 
     static constexpr char coefficient_path[] =
-        "/home/ljleb/Downloads/P0014_v2_runtime_baseline_ir_256.csv";
+        "modules/q24_bspline_pan/P0014_v2_runtime_baseline_ir_256.csv";
 
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 1> {
-            InputConfig {
-                .name = "in",
-                .channel_layout = { .channel_type = ChannelTypeId::stereo, },
+            sample_input("in", {
+                .channel_layout = { .channel_type = ChannelTypeId::stereo },
                 .history = input_history,
-            },
+            }),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array<OutputConfig, 1> {
-            OutputConfig {
-                .name = "out",
-                .channel_layout = { .channel_type = ChannelTypeId::stereo, },
-            },
+            sample_output("out", {
+                .channel_layout = { .channel_type = ChannelTypeId::stereo },
+            }),
         };
     }
 

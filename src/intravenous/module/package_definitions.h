@@ -10,6 +10,7 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/module/configuration_argument.h>
 #include <intravenous/node/code_key.h>
+#include <intravenous/node/traits.h>
 
 #include <array>
 #include <concepts>
@@ -502,8 +503,16 @@ RegisteredSignature const* node_constructor_signature()
 
 #define IV_NODE(Id, Node) \
     IV_NODE_IMPL(Id, Node, __COUNTER__)
+
+#define IV_NODE_VALIDATE_DECLARATION(Node) \
+    static_assert(::iv::details::has_constexpr_port_configs<Node>, \
+        "IV_NODE requires inputs() and outputs() to return static constexpr arrays of InputConfig and OutputConfig. " \
+        "Each array carries both sample and event ports through its config variant. " \
+        "Dynamic-arity or configuration-dependent nodes must remain internal lowering nodes.")
+
 #define IV_NODE_IMPL(Id, Node, Unique) \
     namespace { \
+    IV_NODE_VALIDATE_DECLARATION(Node); \
     ::iv::NodeRef IV_PACKAGE_CONCAT(iv_package_node_configuration_pending_, Unique)( \
         ::iv::GraphBuilder&, std::span<::iv::details::ConfigurationArgument>, \
         ::iv::ChannelLayout const*) { \

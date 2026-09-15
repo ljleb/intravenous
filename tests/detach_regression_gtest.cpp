@@ -29,7 +29,7 @@ namespace {
 
         static constexpr auto outputs()
         {
-            return std::array { iv::OutputConfig { .name = "value" } };
+            return std::array {iv::sample_output("value")};
         }
 
         void tick(iv::TickSampleContext<RuntimeValueSource> const& ctx) const

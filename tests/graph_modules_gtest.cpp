@@ -42,11 +42,11 @@ struct CStringConfigNode {
 };
 
 struct NodeCallEventSource {
-    static constexpr auto event_outputs()
+    static constexpr auto outputs()
     {
-        return std::array<EventOutputConfig, 1>{EventOutputConfig {
-            .name = "trigger", .type = EventTypeId::trigger,
-        }};
+        return std::array<OutputConfig, 1>{
+            event_output("trigger", EventTypeId::trigger),
+        };
     }
 
     void tick_block(TickBlockContext<NodeCallEventSource> const&) const {}
@@ -55,21 +55,20 @@ struct NodeCallEventSource {
 struct NodeCallMixedSink {
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 2>{
-            InputConfig {.name = "left"},
-            InputConfig {.name = "right"},
+        return std::array<InputConfig, 3>{
+            sample_input("left"),
+            sample_input("right"),
+            event_input("trigger", EventTypeId::trigger),
         };
-    }
-
-    static constexpr auto event_inputs()
-    {
-        return std::array<EventInputConfig, 1>{EventInputConfig {
-            .name = "trigger", .type = EventTypeId::trigger,
-        }};
     }
 
     void tick_block(TickBlockContext<NodeCallMixedSink> const&) const {}
 };
+
+static_assert(details::fixed_input_count_v<NodeCallMixedSink> == 2);
+static_assert(details::fixed_event_input_count_v<NodeCallMixedSink> == 1);
+static_assert(details::fixed_input_count_v<Constant> == 0);
+static_assert(details::fixed_event_input_count_v<Constant> == 0);
 
 struct CStringConfigDetails {
     char const* first = "first";
@@ -565,9 +564,9 @@ TEST(GraphModules, EventOnlyFunctionalSubgraphDoesNotRequireSampleOutputs)
     EXPECT_TRUE(lowered_scope.sample_outputs.empty());
     ASSERT_EQ(lowered_scope.event_inputs.size(), 1u);
     EXPECT_EQ(lowered_scope.event_inputs.front().name, "event");
-    ASSERT_EQ(built.graph.outputs().size(), 0u);
-    ASSERT_EQ(built.graph.event_outputs().size(), 1u);
-    EXPECT_EQ(built.graph.event_outputs().front().name, "event");
+    ASSERT_EQ(built.graph.outputs().size(), 1u);
+    EXPECT_FALSE(is_sample(built.graph.outputs().front()));
+    EXPECT_EQ(built.graph.outputs().front().name, "event");
 }
 
 } // namespace iv

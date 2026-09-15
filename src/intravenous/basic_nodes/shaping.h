@@ -12,16 +12,16 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                InputConfig { .name = "in", .history = 1 },
-                InputConfig { .name = "threshold", .default_value = 1.0 },
+                sample_input("in", {.history = 1}),
+                sample_input("threshold", {.default_value = 1.0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                OutputConfig { .name = "anti_aliased", .latency = 1 },
-                OutputConfig { .name = "aliased" },
+                sample_output("anti_aliased", {.latency = 1}),
+                sample_output("aliased"),
             };
         }
 
@@ -56,12 +56,12 @@ namespace iv {
     struct PhaseIntegrator {
         static constexpr auto inputs()
         {
-            return std::array { InputConfig { .name = "delta" } };
+            return std::array { sample_input("delta") };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { OutputConfig { .name = "phase", .history = 1 } };
+            return std::array { sample_output("phase", {.history = 1}) };
         }
 
         void tick_block(TickBlockContext<PhaseIntegrator> const& ctx) const
@@ -85,15 +85,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                InputConfig { .name = "phase_offset", .history = 1 },
-                InputConfig { .name = "frequency", .history = 1, .min = 0 },
+                sample_input("phase_offset", {.history = 1}),
+                sample_input("frequency", {.history = 1, .min = 0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                OutputConfig { .name = "out", .latency = 1 },
+                sample_output("out", {.latency = 1}),
             };
         }
 
@@ -134,15 +134,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                InputConfig { .name = "phase_offset", .history = 1 },
-                InputConfig { .name = "frequency", .history = 1, .min = 0 },
+                sample_input("phase_offset", {.history = 1}),
+                sample_input("frequency", {.history = 1, .min = 0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                OutputConfig { .name = "out", .latency = 1 },
+                sample_output("out", {.latency = 1}),
             };
         }
 
@@ -292,12 +292,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { InputConfig { "f" } };
+            return std::array { sample_input("f") };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { OutputConfig { "offset" } };
+            return std::array { sample_output("offset") };
         }
 
         void tick(TickSampleContext<PhaseOffsetPredictor> const& state) const
@@ -312,15 +312,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                InputConfig { "a" },
-                InputConfig { "b" },
-                InputConfig { "alpha" },
+                sample_input("a"),
+                sample_input("b"),
+                sample_input("alpha"),
             };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { OutputConfig { "out" } };
+            return std::array { sample_output("out") };
         }
 
         void tick(TickSampleContext<Interpolation> const& state) const

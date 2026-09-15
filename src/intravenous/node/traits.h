@@ -7,8 +7,11 @@
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace iv {
     template<typename Node>
@@ -53,25 +56,40 @@ namespace iv {
         };
 
         template <typename Node>
-        concept has_num_outputs = requires(Node node, size_t num_outputs)
-        {
-            num_outputs = node.num_outputs();
-        };
-
-        template <typename Node>
         concept has_inputs = requires(Node const& node)
         {
             std::begin(node.inputs());
             std::end(node.inputs());
         };
 
-        template<typename Node>
-        concept has_static_sample_port_config_members =
-            (!has_inputs<Node> || requires { Node::inputs(); })
-            && (!has_outputs<Node> || requires { Node::outputs(); });
+        template<typename Range, typename Config>
+        concept port_config_range =
+            std::ranges::input_range<Range>
+            && std::convertible_to<std::ranges::range_value_t<Range>, Config>;
 
         template<typename Node>
-        consteval bool constexpr_sample_port_configs_available()
+        concept has_declared_inputs =
+            has_inputs<Node>
+            && port_config_range<decltype(std::declval<Node const&>().inputs()), InputConfig>;
+
+        template<typename Node>
+        concept has_declared_outputs =
+            has_outputs<Node>
+            && port_config_range<decltype(std::declval<Node const&>().outputs()), OutputConfig>;
+
+        template<typename Node>
+        concept has_static_port_config_members =
+            (!has_inputs<Node> || requires {
+                { Node::inputs() };
+                requires port_config_range<decltype(Node::inputs()), InputConfig>;
+            })
+            && (!has_outputs<Node> || requires {
+                { Node::outputs() };
+                requires port_config_range<decltype(Node::outputs()), OutputConfig>;
+            });
+
+        template<typename Node>
+        consteval bool constexpr_port_configs_available()
         {
             if constexpr (requires { Node::inputs(); }) {
                 (void)Node::inputs();
@@ -83,43 +101,11 @@ namespace iv {
         }
 
         template<typename Node>
-        concept has_constexpr_sample_port_configs =
-            has_static_sample_port_config_members<Node>
+        concept has_constexpr_port_configs =
+            has_static_port_config_members<Node>
             && requires {
-                std::bool_constant<constexpr_sample_port_configs_available<Node>()>{};
+                std::bool_constant<constexpr_port_configs_available<Node>()>{};
             };
-
-        template <typename Node>
-        concept has_event_outputs = requires(Node const& node)
-        {
-            std::begin(node.event_outputs());
-            std::end(node.event_outputs());
-        };
-
-        template <typename Node>
-        concept has_num_event_outputs = requires(Node node, size_t num_outputs)
-        {
-            num_outputs = node.num_event_outputs();
-        };
-
-        template <typename Node>
-        concept has_event_inputs = requires(Node const& node)
-        {
-            std::begin(node.event_inputs());
-            std::end(node.event_inputs());
-        };
-
-        template <typename Node>
-        concept has_num_event_inputs = requires(Node node, size_t num_inputs)
-        {
-            num_inputs = node.num_event_inputs();
-        };
-
-        template <typename Node>
-        concept has_num_inputs = requires(Node node, size_t num_inputs)
-        {
-            num_inputs = node.num_inputs();
-        };
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)
@@ -148,107 +134,93 @@ namespace iv {
     }
 
     template<typename Node>
-    constexpr auto get_outputs(Node const& node)
+    constexpr auto get_declared_outputs(Node const& node)
     {
-        if constexpr (details::has_outputs<Node>)
+        if constexpr (details::has_declared_outputs<Node>)
         {
             return node.outputs();
         }
         else
         {
-            return std::span<OutputConfig, 0>{};
+            return std::span<OutputConfig const, 0>{};
         }
     }
 
     template<typename Node>
-    constexpr auto get_num_outputs(Node const& node)
+    constexpr auto get_declared_inputs(Node const& node)
     {
-        if constexpr (details::has_num_outputs<Node>)
-        {
-            return node.num_outputs();
-        }
-        else
-        {
-            return get_outputs(node).size();
-        }
-    }
-
-    template<typename Node>
-    constexpr auto get_inputs(Node const& node)
-    {
-        if constexpr (details::has_inputs<Node>)
+        if constexpr (details::has_declared_inputs<Node>)
         {
             return node.inputs();
         }
         else
         {
-            return std::span<InputConfig, 0>{};
+            return std::span<InputConfig const, 0>{};
         }
     }
 
     template<typename Node>
-    constexpr auto get_num_inputs(Node const& node)
+    std::vector<SampleInputConfig> get_inputs(Node const& node)
     {
-        if constexpr (details::has_num_inputs<Node>)
-        {
-            return node.num_inputs();
+        std::vector<SampleInputConfig> result;
+        for (InputConfig const& input : get_declared_inputs(node)) {
+            if (is_sample(input)) result.push_back(materialize_sample_config(input));
         }
-        else
-        {
-            return get_inputs(node).size();
-        }
+        return result;
     }
 
     template<typename Node>
-    constexpr auto get_event_outputs(Node const& node)
+    std::vector<SampleOutputConfig> get_outputs(Node const& node)
     {
-        if constexpr (details::has_event_outputs<Node>)
-        {
-            return node.event_outputs();
+        std::vector<SampleOutputConfig> result;
+        for (OutputConfig const& output : get_declared_outputs(node)) {
+            if (is_sample(output)) result.push_back(materialize_sample_config(output));
         }
-        else
-        {
-            return std::span<EventOutputConfig, 0>{};
-        }
+        return result;
     }
 
     template<typename Node>
-    constexpr auto get_num_event_outputs(Node const& node)
+    std::vector<EventInputConfig> get_event_inputs(Node const& node)
     {
-        if constexpr (details::has_num_event_outputs<Node>)
-        {
-            return node.num_event_outputs();
+        std::vector<EventInputConfig> result;
+        for (InputConfig const& input : get_declared_inputs(node)) {
+            if (!is_sample(input)) result.push_back(materialize_event_config(input));
         }
-        else
-        {
-            return get_event_outputs(node).size();
-        }
+        return result;
     }
 
     template<typename Node>
-    constexpr auto get_event_inputs(Node const& node)
+    std::vector<EventOutputConfig> get_event_outputs(Node const& node)
     {
-        if constexpr (details::has_event_inputs<Node>)
-        {
-            return node.event_inputs();
+        std::vector<EventOutputConfig> result;
+        for (OutputConfig const& output : get_declared_outputs(node)) {
+            if (!is_sample(output)) result.push_back(materialize_event_config(output));
         }
-        else
-        {
-            return std::span<EventInputConfig, 0>{};
-        }
+        return result;
     }
 
     template<typename Node>
-    constexpr auto get_num_event_inputs(Node const& node)
+    constexpr size_t get_num_inputs(Node const& node)
     {
-        if constexpr (details::has_num_event_inputs<Node>)
-        {
-            return node.num_event_inputs();
-        }
-        else
-        {
-            return get_event_inputs(node).size();
-        }
+        return count_sample_ports(get_declared_inputs(node));
+    }
+
+    template<typename Node>
+    constexpr size_t get_num_outputs(Node const& node)
+    {
+        return count_sample_ports(get_declared_outputs(node));
+    }
+
+    template<typename Node>
+    constexpr size_t get_num_event_inputs(Node const& node)
+    {
+        return count_event_ports(get_declared_inputs(node));
+    }
+
+    template<typename Node>
+    constexpr size_t get_num_event_outputs(Node const& node)
+    {
+        return count_event_ports(get_declared_outputs(node));
     }
 
     template<typename Node>
@@ -298,7 +270,8 @@ namespace iv {
         } else {
             return get_num_event_outputs(node) == 0
                 && get_num_outputs(node) > 0
-                && (get_num_inputs(node) > 0 || get_num_event_inputs(node) > 0);
+                && (get_num_inputs(node) > 0
+                    || get_num_event_inputs(node) > 0);
         }
     }
 

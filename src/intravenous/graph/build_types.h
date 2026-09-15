@@ -86,8 +86,8 @@ namespace iv {
     struct GraphBuilderPublicSamplePortFamily {
         size_t family_ordinal = 0;
         std::string family_name {};
-        InputConfig input_config {};
-        OutputConfig output_config {};
+        SampleInputConfig input_config {};
+        SampleOutputConfig output_config {};
         ChannelTypeId channel_type = ChannelTypeId::mono;
         std::vector<GraphBuilderPublicSamplePortChannel> channels {};
         std::vector<SourceInfo> source_infos {};
@@ -136,10 +136,12 @@ namespace iv {
         std::flat_set<GraphEventEdge> event_edges;
         std::vector<DetachedInfo> detached;
         GraphExecutionPlan execution_plan;
-        std::vector<InputConfig> public_inputs;
-        std::vector<OutputConfig> public_outputs;
+        std::vector<SampleInputConfig> public_inputs;
+        std::vector<SampleOutputConfig> public_outputs;
         std::vector<EventInputConfig> public_event_inputs;
         std::vector<EventOutputConfig> public_event_outputs;
+        std::vector<InputConfig> declared_inputs;
+        std::vector<OutputConfig> declared_outputs;
         std::vector<InputPortPlan> public_output_buffer_plans;
         std::vector<SampleInputBinding> public_output_bindings;
         std::vector<SampleBufferStorage> public_input_fanout_storage;

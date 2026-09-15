@@ -9,7 +9,19 @@ modules, persistence, queries, and specialized UI.
 
 It supersedes the parts of older direction notes that require separate lane and
 per-IV-module execution graphs. Those notes remain useful records of existing
-behavior and migration constraints.
+behavior and migration constraints, but their `Timeline`/lane ownership rules are
+not current architecture.
+
+This direction was revalidated after the IV-package/configuration refactor. The
+package work changed several mechanisms from the earliest proposal (dynamic
+registered construction, greedy iv-module expansion, retained lossless
+`ConfiguredGraph`s, and explicit registered primitive provenance), but those
+changes make the project-graph convergence simpler rather than invalidating it.
+
+Compiled DSP-port semantics are specified separately and normatively in
+[compiled_dsp_nodes.md](./compiled_dsp_nodes.md). This document describes how
+that capability fits the unified project graph; it should not restate or replace
+the node API, request-planning, or storage rules from that document.
 
 ## The central change
 
@@ -32,9 +44,12 @@ The old lane/DSP division was justified principally by the cost of changing
 DSP topology. If graph composition can be regenerated and compiled quickly,
 ordinary rewiring no longer requires a distinct lane execution system.
 
-This does not mean deleting lane code or making every workflow a generic node
-editor. It means separating the useful semantics now carried by lanes from the
-old execution partition that happens to implement them.
+This does not mean deleting lane-oriented product semantics or making every
+workflow a generic node editor. It does mean that the current `Timeline`,
+`LaneGraph`, `TimelineExecution`, and graph-input/device proxy lanes are allowed
+to disappear. The useful presentation, persistence, query, transport, and data
+domain semantics now carried by those objects must be moved to the project graph
+or to focused services rather than preserved by keeping a second graph model.
 
 ## One canonical project graph
 
@@ -228,13 +243,63 @@ Symmetric graph shapes must not cause arbitrary matching. Tags, provenance
 retained from reification, and explicit user choices can help resolve a valid
 but ambiguous correspondence.
 
+## Consequences of the implemented IV-package model
+
+The package/configuration implementation now provides several invariants that
+should be used directly by the project graph instead of recreating lane-era
+adapters:
+
+- a project iv-module instance has a completed, lossless `ConfiguredGraph`;
+- registered iv-module calls are greedily expanded during configuration, so no
+  recursive registered-module execution boundary remains to be represented at
+  project runtime;
+- virtual-node identity and ordered direct members survive configuration and are
+  the stable addressing seam for project attachments;
+- registered primitive leaves retain their stable node-type identity and provider
+  provenance independently from build-local compiler keys; and
+- source provenance, including virtual-port provenance used by live editing, is
+  attached to configured graph structure rather than to lane identity.
+
+Therefore a project connection can address an iv-module instance and one of its
+virtual/public endpoints directly. `GraphInputLanes` does not need a successor
+that manufactures one proxy lane per exposed port. The replacement should store
+the connection/control state against the stable project endpoint and adapt it to
+the compatibility executor only for as long as that executor remains.
+
+Public module ports are boundary endpoints, not implicit project nodes. A
+specialized UI may present them as controls or lane-like rows without requiring
+extra graph nodes merely for presentation.
+
 ## Execution and runtime state
 
-Compiled and realtime remain dataflow semantics, not indicators of different
-graph executors. They should be represented explicitly in port/dataflow
-semantics and handled during graph-kernel lowering. In particular,
-realtime-to-compiled remains a meaningful materialization or recording
-operation.
+Compiled and realtime are capabilities of ordinary DSP ports in the same graph,
+not indicators of different node families or graph executors. The normative
+contract is in [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). In summary:
+
+- sample/event kind and realtime/compiled capability are orthogonal;
+- a compiled sample output can be requested at arbitrary global sample positions,
+  while a compiled event output can be queried over arbitrary global intervals;
+- a compiled input extends the corresponding ordinary realtime sample/event
+  access rather than replacing it with a separate resource API;
+- compiled sample requests may use sparse sampled grids, while compiled event
+  requests preserve every event in the requested interval;
+- compiled capability does not imply persistent materialization, buffering, or
+  caching;
+- sequential `tick_block()` and arbitrary `access_block()` are distinct execution
+  modes, with `access_block()` restricted to compiled ports and `CompiledState`;
+- a compiled query is planned globally: demands propagate in reverse topological
+  order, request sets are unioned/coalesced, and evaluation then runs forward;
+- temporary representation/materialization is chosen only after planning; and
+- the initial graph has no implicit realtime-to-compiled edge; any recording is
+  an explicit node with a realtime input and compiled output, rather than a
+  general computed-output cache policy.
+
+The initial compiled-data implementation deliberately has no persistent cache of
+deterministic computed outputs. `CompiledState` is node-managed arbitrary-access
+state and is distinct from any future framework cache. Old `TimelineExecution`
+compiled caches, invalidation spans, explicit recording-lane requirements, and
+prepared-resource input APIs are therefore migration history, not replacement
+architecture.
 
 The executable kernel is replaceable. Logical node state survives when a
 stable node correspondence and compatible state layout survive:
@@ -251,25 +316,77 @@ node implementations and the kernels that use them.
 
 ## Migration posture
 
-The practical starting point is to replace lane nodes in place with ordinary
-DSP-style nodes while preserving useful lane-oriented product behavior.
+Do not require a feature-preserving, class-by-class conversion of lane nodes into
+new graph objects. The lane subsystem is sufficiently entangled that preserving
+its implementation while moving ownership can retain obsolete constraints. Use
+the old code and tests as a requirements inventory, establish the replacement
+semantic capabilities and durable project ownership, then allow the obsolete lane
+execution architecture to be deleted as an architectural cut. Product features
+that disappear in that cut can be reintroduced afterward using ordinary DSP nodes,
+general iv modules, focused services, or project/UI state as appropriate.
+
+The capabilities that must be designed independently of the old lane
+implementation are:
+
+1. **Compiled DSP ports.** Implement the semantics in
+   [compiled_dsp_nodes.md](./compiled_dsp_nodes.md): compiled capability is
+   orthogonal to sample/event kind, so both compiled sample and compiled event
+   ports remain first-class. Use global batched demand planning, cacheless
+   computed access initially, kind-appropriate sample/event request semantics,
+   and explicit realtime-to-compiled recording nodes where a graph needs that
+   transition. Do not migrate `TimelineExecution` compiled caches or invalidation
+   machinery into this model.
+2. **General iv modules.** Complete the separately planned abstraction by which an
+   iv module need not be backed by a C++ IV package, may own/manage a project
+   subgraph, and may provide a custom UI. The exact API remains follow-up design
+   work; lane deletion should not force that API to imitate lane types.
+3. **Canonical project ownership.** Provide enough project-owned identity,
+   connections, dangling-endpoint state, hierarchy/metadata, controls, and
+   persistence that deleting `Timeline` does not delete the project's topology or
+   user state. C++ iv-module instances can continue to use their retained
+   `ConfiguredGraph` realization and stable virtual/member/port identities.
+4. **Focused host services.** Retain or extract device callback/buffering and
+   transport/playback state only where those are independently useful product
+   services. They should not remain lane semantics merely to keep the old graph
+   alive.
+
+Once those ownership/capability boundaries exist, `Timeline`, `LaneGraph`,
+`TimelineExecution`, lane task production, graph-input/device proxy lanes, and
+compiled-lane execution machinery may be removed together. It is acceptable for
+specialized features such as beat-trigger generation, automation editors, audio
+file capture, or lane visualizations to be temporarily absent on the migration
+branch and then return in forms native to the remaining system. Git and the old
+tests preserve the former implementation; they do not require a one-to-one object
+migration.
+
+A compatibility adapter from the canonical project graph to per-instance
+`RuntimeGraphRoot`/`TasksRunner` execution is optional migration scaffolding, not
+an architectural requirement. If retaining application functionality during the
+delete is useful, direct cross-instance project edges may temporarily become task
+dependencies plus block/event transfer. If a destructive cut is simpler, the
+project model should not be distorted merely to preserve that adapter. The future
+whole-project generated kernel consumes the same canonical project graph either
+way.
 
 Preserve or reinterpret:
 
-- timeline and lane presentation;
+- lane/timeline presentation where it remains useful;
 - hierarchy;
 - tags, metadata, and query language;
 - UI-created graph structure;
-- persistence and source navigation;
+- persistent project connections and dangling-endpoint behavior;
+- source navigation and live-edit controls;
+- transport semantics that remain part of the product;
 - state migration; and
 - specialized interaction surfaces.
 
 Replace:
 
-- lane execution scheduling;
+- `Timeline` as the canonical graph owner;
+- lane execution scheduling and compiled/realtime executor partitioning;
 - separate lane and DSP runtime graphs;
-- per-module DSP execution partitions; and
-- graph input/output proxy machinery needed only to bridge those systems.
+- graph input/output proxy lanes; and
+- eventually, per-module DSP execution partitions.
 
 The existing codebase and tests remain a behavioral specification and migration
 inventory. New architecture should preserve their product semantics where they
@@ -287,7 +404,10 @@ The following are intentionally unresolved:
 - reification provenance and subsumption correspondence APIs;
 - interactions between user-created and iv-module-managed hierarchy;
 - C++ expression support in ordinary webviews;
-- the final compiled/realtime port model and materialization representation;
+- low-level compiled-port API/ABI choices intentionally left open by
+  `compiled_dsp_nodes.md` (including exact sample-request endpoint/index mapping,
+  compiled-event range APIs and ordering, request-set representation/coalescing,
+  and concrete planner/runtime data structures);
 - kernel invalidation, caching, inlining, and state layout; and
 - the most useful generic and specialized graph-editing surfaces.
 
@@ -319,3 +439,12 @@ this direction.
     require user disambiguation.
 12. Runtime-state migration remains essential, while the old lane scheduler and
     module execution partitions do not.
+13. Compiled data is an ordinary DSP-port capability, not a parallel lane/node
+    graph or a storage class.
+14. Compiled capability does not imply persistent materialization or caching;
+    storage is chosen from actual query/consumer demand.
+15. Arbitrary compiled access is globally demand-planned before execution, with
+    reverse requirement propagation followed by forward evaluation.
+16. The initial framework does not persistently cache deterministic compiled
+    outputs. Explicit realtime-to-compiled nodes may own retained source data;
+    that is a separate concept from such a cache.

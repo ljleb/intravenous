@@ -8,6 +8,7 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 namespace {
 
@@ -18,12 +19,12 @@ struct RequestNode {
 
     auto inputs() const
     {
-        return std::array{iv::InputConfig{.name = input_name}};
+        return std::array{iv::sample_input(input_name)};
     }
 
     auto outputs() const
     {
-        return std::array{iv::OutputConfig{.name = output_name}};
+        return std::array{iv::sample_output(output_name)};
     }
 
     std::size_t internal_latency() const
@@ -43,6 +44,21 @@ struct RequestNode {
 
     void tick_block(auto const&) const {}
 };
+
+template<class Config>
+concept HasSampleRange = requires(Config const& config) {
+    config.min;
+    config.max;
+};
+
+static_assert(std::same_as<decltype(iv::sample_input()), iv::InputConfig>);
+static_assert(std::same_as<
+    decltype(iv::event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
+static_assert(std::same_as<decltype(iv::sample_output()), iv::OutputConfig>);
+static_assert(std::same_as<
+    decltype(iv::event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
+static_assert(HasSampleRange<iv::SampleInputProperties>);
+static_assert(!HasSampleRange<iv::EventInputProperties>);
 
 TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
 {

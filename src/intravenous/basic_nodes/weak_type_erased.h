@@ -13,8 +13,6 @@ namespace iv {
         void const* _node = nullptr;
         std::vector<InputConfig> (*_inputs_fn)(void const*) = nullptr;
         std::vector<OutputConfig> (*_outputs_fn)(void const*) = nullptr;
-        std::vector<EventInputConfig> (*_event_inputs_fn)(void const*) = nullptr;
-        std::vector<EventOutputConfig> (*_event_outputs_fn)(void const*) = nullptr;
         size_t (*_internal_latency_fn)(void const*) = nullptr;
         size_t (*_max_block_size_fn)(void const*) = nullptr;
         std::optional<size_t> (*_ttl_samples_fn)(void const*) = nullptr;
@@ -45,20 +43,14 @@ namespace iv {
             : _node(&node)
         {
             _inputs_fn = [](void const* node_ptr) {
-                return copy_configs<InputConfig>(
-                    get_inputs(*static_cast<Node const*>(node_ptr)));
+                auto const configs = get_declared_inputs(
+                    *static_cast<Node const*>(node_ptr));
+                return std::vector<InputConfig>(configs.begin(), configs.end());
             };
             _outputs_fn = [](void const* node_ptr) {
-                return copy_configs<OutputConfig>(
-                    get_outputs(*static_cast<Node const*>(node_ptr)));
-            };
-            _event_inputs_fn = [](void const* node_ptr) {
-                return copy_configs<EventInputConfig>(
-                    get_event_inputs(*static_cast<Node const*>(node_ptr)));
-            };
-            _event_outputs_fn = [](void const* node_ptr) {
-                return copy_configs<EventOutputConfig>(
-                    get_event_outputs(*static_cast<Node const*>(node_ptr)));
+                auto const configs = get_declared_outputs(
+                    *static_cast<Node const*>(node_ptr));
+                return std::vector<OutputConfig>(configs.begin(), configs.end());
             };
             _internal_latency_fn = [](void const* node_ptr) {
                 return get_internal_latency(*static_cast<Node const*>(node_ptr));
@@ -135,8 +127,6 @@ namespace iv {
 
         std::vector<InputConfig> inputs() const { return _inputs_fn(_node); }
         std::vector<OutputConfig> outputs() const { return _outputs_fn(_node); }
-        std::vector<EventInputConfig> event_inputs() const { return _event_inputs_fn(_node); }
-        std::vector<EventOutputConfig> event_outputs() const { return _event_outputs_fn(_node); }
         size_t internal_latency() const { return _internal_latency_fn(_node); }
         size_t max_block_size() const { return _max_block_size_fn(_node); }
         char const* type_name() const { return _type_name; }

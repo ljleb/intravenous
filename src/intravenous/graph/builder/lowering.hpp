@@ -805,7 +805,8 @@ namespace details {
         size_t nodes_size = g.nodes.size();
         for (size_t node = 0; node < nodes_size; ++node)
         {
-            size_t const num_inputs = get_num_event_inputs(g.nodes[node]);
+            auto const event_inputs = get_event_inputs(g.nodes[node]);
+            size_t const num_inputs = event_inputs.size();
             for (size_t in_port = 0; in_port < num_inputs; ++in_port)
             {
                 auto const* edges = reverse_event_edges_map.find({ node, in_port });
@@ -815,7 +816,7 @@ namespace details {
                 size_t const port_arity = edges_to_expand.size();
                 if (port_arity <= 1) continue;
 
-                EventTypeId const concat_type = get_event_inputs(g.nodes[node])[in_port].type;
+                EventTypeId const concat_type = event_inputs[in_port].type;
                 append_generated_node(g.nodes, g.generated_node_storage,
                     EventConcatenationNodeSpec{
                         .input_count = port_arity, .type = concat_type});
@@ -852,7 +853,8 @@ namespace details {
         nodes_size = g.nodes.size();
         for (size_t node = 0; node < nodes_size; ++node)
         {
-            size_t const num_outputs = get_num_event_outputs(g.nodes[node]);
+            auto const event_outputs = get_event_outputs(g.nodes[node]);
+            size_t const num_outputs = event_outputs.size();
             for (size_t out_port = 0; out_port < num_outputs; ++out_port)
             {
                 auto const* edges = event_edges_map.find({ node, out_port });
@@ -862,7 +864,7 @@ namespace details {
                 size_t const port_arity = edges_to_expand.size();
                 if (port_arity <= 1) continue;
 
-                EventTypeId const broadcast_type = get_event_outputs(g.nodes[node])[out_port].type;
+                EventTypeId const broadcast_type = event_outputs[out_port].type;
                 append_generated_node(g.nodes, g.generated_node_storage,
                     BroadcastEventNodeSpec{
                         .output_count = port_arity, .type = broadcast_type});
@@ -900,8 +902,13 @@ namespace details {
         for (size_t node_id = 0; node_id < num_nodes + 1; ++node_id)
         {
             size_t const node = (node_id == num_nodes) ? GRAPH_ID : node_id;
-            size_t const num_outputs = (node == GRAPH_ID) ? num_public_inputs : get_num_outputs(g.nodes[node]);
-            size_t const num_event_outputs = (node == GRAPH_ID) ? 0 : get_num_event_outputs(g.nodes[node]);
+            size_t const num_outputs = (node == GRAPH_ID)
+                ? num_public_inputs
+                : get_num_outputs(g.nodes[node]);
+            auto const event_outputs = (node == GRAPH_ID)
+                ? std::vector<EventOutputConfig>{}
+                : get_event_outputs(g.nodes[node]);
+            size_t const num_event_outputs = event_outputs.size();
 
             for (size_t output_port = 0; output_port < num_outputs; ++output_port)
             {
@@ -934,7 +941,7 @@ namespace details {
                     g.node_source_infos.emplace_back();
                     g.node_construction_order.push_back(next_construction_order++);
                     size_t const new_node = g.nodes.size() - 1;
-                    EventTypeId const source_type = get_event_outputs(g.nodes[node])[output_port].type;
+                    EventTypeId const source_type = event_outputs[output_port].type;
                     g.event_edges.insert(GraphEventEdge{
                         this_port,
                         { new_node, 0 },
@@ -968,18 +975,20 @@ namespace details {
 
     constexpr void resolve_lowered_sample_edge_conversions(
         ExecutableGraphData& g,
-        std::span<InputConfig const> public_inputs,
-        std::span<OutputConfig const> public_outputs)
+        std::span<SampleInputConfig const> public_inputs,
+        std::span<SampleOutputConfig const> public_outputs)
     {
         auto output_layout_for = [&](ConcretePortId port) {
             return port.node == GRAPH_ID
                 ? effective_channel_layout(public_inputs[port.port])
-                : effective_channel_layout(g.nodes[port.node].outputs()[port.port]);
+                : effective_channel_layout(
+                    g.nodes[port.node].ports.sample_output(port.port));
         };
         auto input_layout_for = [&](ConcretePortId port) {
             return port.node == GRAPH_ID
                 ? effective_channel_layout(public_outputs[port.port])
-                : effective_channel_layout(g.nodes[port.node].inputs()[port.port]);
+                : effective_channel_layout(
+                    g.nodes[port.node].ports.sample_input(port.port));
         };
 
         std::vector<GraphEdge> resolved_edges;
@@ -1173,7 +1182,7 @@ class GraphLowerer {
     out.topology_nodes.emplace_back(std::move(node));
     return out.topology_nodes.size() - 1;
   }
-  constexpr TopologyPortId append_scope_sample_input(OutputConfig) {
+  constexpr TopologyPortId append_scope_sample_input(SampleOutputConfig) {
     return {GRAPH_ID - 1 - out.scope_boundary_port_count++, 0};
   }
   constexpr TopologyPortId append_scope_event_input(EventOutputConfig) {
@@ -1276,20 +1285,14 @@ class GraphLowerer {
     for (auto const& edge : out.topology_event_edges) fn(edge);
   }
   constexpr size_t append_lowered_subgraph_node(
-      std::string kind, std::vector<InputConfig> inputs,
-      std::vector<OutputConfig> outputs,
-      std::vector<EventInputConfig> event_inputs,
-      std::vector<EventOutputConfig> event_outputs, size_t begin, size_t count,
+      std::string kind, NodePorts ports, size_t begin, size_t count,
       std::vector<std::vector<TopologyPortId>> sample_input_targets,
       std::vector<TopologyPortId> sample_output_sources,
       std::vector<std::vector<TopologyPortId>> event_input_targets,
       std::vector<TopologyPortId> event_output_sources) {
     auto const type_identity = "lowered-subgraph:" + kind;
     return append_topology_node(SubgraphNode{
-        .ports = NodePorts{.sample_inputs = std::move(inputs),
-                           .sample_outputs = std::move(outputs),
-                           .event_input_configs = std::move(event_inputs),
-                           .event_output_configs = std::move(event_outputs)},
+        .ports = std::move(ports),
         .lifetime = NodeLifetime{.ttl_samples = std::nullopt},
         .lowered_subgraph = LoweredSubgraphBinding{
             .begin = begin, .count = count,
@@ -1406,12 +1409,7 @@ class GraphLowerer {
         }
         if(!found) begin=topology_node_count(), end=begin;
         auto node=append_lowered_subgraph_node(
-            info.kind,
-            std::vector<InputConfig>(boundary.boundary_sample_inputs().begin(),boundary.boundary_sample_inputs().end()),
-            std::vector<OutputConfig>(boundary.boundary_sample_outputs().begin(),boundary.boundary_sample_outputs().end()),
-            std::vector<EventInputConfig>(boundary.boundary_event_inputs().begin(),boundary.boundary_event_inputs().end()),
-            std::vector<EventOutputConfig>(boundary.boundary_event_outputs().begin(),boundary.boundary_event_outputs().end()),
-            begin,end-begin,
+            info.kind, boundary.boundary_ports(), begin,end-begin,
             std::vector<std::vector<TopologyPortId>>(boundary.boundary_sample_inputs().size()),
             std::vector<TopologyPortId>(boundary.boundary_sample_outputs().size()),
             std::vector<std::vector<TopologyPortId>>(boundary.boundary_event_inputs().size()),
@@ -1479,13 +1477,13 @@ class GraphLowerer {
 
   struct ResolvedSampleSourceChannel {
     TopologyPortId port{};
-    OutputConfig config{};
+    SampleOutputConfig config{};
     size_t channel = 0;
   };
 
   struct ResolvedSampleTargetChannel {
     std::optional<TopologyPortId> port{};
-    InputConfig config{};
+    SampleInputConfig config{};
     size_t channel = 0;
   };
 
@@ -1548,7 +1546,7 @@ class GraphLowerer {
   constexpr ConcreteNode make_connection_node(
       std::vector<ConnectionNodeInputConfig> inputs,
       std::vector<ConnectionNodeEphemeralPortConfig> ephemeral_ports,
-      OutputConfig output, Sample default_value,
+      SampleOutputConfig output, Sample default_value,
       std::string runtime_binding_id = {},
       size_t runtime_source_channel_offset = 0) const {
     ConnectionNodeSpec spec{
@@ -1582,7 +1580,7 @@ class GraphLowerer {
 
   struct ConnectionNodeTarget {
     std::optional<TopologyPortId> endpoint{};
-    InputConfig config{};
+    SampleInputConfig config{};
     std::optional<size_t> tiled_channel{};
   };
 
@@ -1657,7 +1655,7 @@ class GraphLowerer {
       auto it = std::ranges::find(input_sources, source.port);
       if (it != input_sources.end()) return static_cast<size_t>(it - input_sources.begin());
       input_sources.push_back(source.port);
-      input_configs.push_back(ConnectionNodeInputConfig{.input = InputConfig{.channel_layout = source.config.channel_layout}});
+      input_configs.push_back(ConnectionNodeInputConfig{.input = SampleInputConfig{.channel_layout = source.config.channel_layout}});
       return input_sources.size() - 1;
     };
     for (auto const* connection : group.connections) {
@@ -1702,7 +1700,7 @@ class GraphLowerer {
         group.target, target.endpoint);
     auto const node = append_generated(make_connection_node(
         std::move(used_input_configs), std::move(ephemeral_configs),
-        OutputConfig{.name = target.config.name,
+        SampleOutputConfig{.name = target.config.name,
                      .channel_layout = target.config.channel_layout},
         target.config.default_value, runtime_binding.binding_id,
         runtime_binding.source_channel_offset));
@@ -1775,7 +1773,7 @@ class GraphLowerer {
       state.input_slot_offsets[node] = input_slot_count;
       if (!topology_is_subgraph_node(node)) {
         input_slot_count +=
-            topology_concrete_ports(node).sample_inputs.size();
+            topology_concrete_ports(node).sample_input_count();
       }
     }
     state.input_slot_offsets[state.configured_topology_node_count] =
@@ -1789,7 +1787,7 @@ class GraphLowerer {
         return;
       }
       if (target.port >=
-          topology_concrete_ports(target.node).sample_inputs.size()) {
+          topology_concrete_ports(target.node).sample_input_count()) {
         details::error("sample target is outside its configured input range");
       }
       auto const slot = state.input_slot_offsets[target.node] + target.port;
@@ -1886,7 +1884,7 @@ class GraphLowerer {
     for (size_t node = 0; node < state.configured_topology_node_count; ++node) {
       if (topology_is_subgraph_node(node)) continue;
       auto const input_count =
-          topology_concrete_ports(node).sample_inputs.size();
+          topology_concrete_ports(node).sample_input_count();
       for (size_t input = 0; input < input_count; ++input) {
         TopologyPortId const target{node, input};
         auto const slot = state.input_slot_offsets[node] + input;
@@ -1895,7 +1893,7 @@ class GraphLowerer {
         lower_connection_node(
             vacant,
             {.endpoint = target,
-             .config = topology_concrete_ports(node).sample_inputs.at(input),
+             .config = topology_concrete_ports(node).sample_input(input),
              .tiled_channel = std::nullopt});
         mark_bound(target);
       }
@@ -2043,7 +2041,7 @@ class GraphLowerer {
   constexpr TopologyPortId materialize_sample_output_channels(
       ChannelTypeId semantic_type,
       std::span<SampleOutputChannelId const> semantic_channels,
-      OutputConfig output_config) {
+      SampleOutputConfig output_config) {
     if (semantic_channels.size() != channel_count(semantic_type))
       details::error("virtual sample output member channel count changed");
     if (semantic_type != output_config.channel_layout.channel_type)
@@ -2073,7 +2071,7 @@ class GraphLowerer {
       if (it == input_sources.end()) {
         input = input_sources.size();
         input_sources.push_back(resolved.port);
-        input_configs.push_back(ConnectionNodeInputConfig{.input = InputConfig{.channel_layout = resolved.config.channel_layout}});
+        input_configs.push_back(ConnectionNodeInputConfig{.input = SampleInputConfig{.channel_layout = resolved.config.channel_layout}});
       } else input = static_cast<size_t>(it - input_sources.begin());
       input_configs[input].channel_copies.push_back({.input_channel = resolved.channel, .ephemeral_port = 0, .ephemeral_channel = channel});
       ephemeral.output_channel_copies.push_back({.converted_channel = channel, .output_channel = channel});
@@ -2085,7 +2083,7 @@ class GraphLowerer {
   }
 
   constexpr TopologyPortId materialize_sample_output_port(
-      NodeBundlePortId logical, OutputConfig output_config) {
+      NodeBundlePortId logical, SampleOutputConfig output_config) {
     auto const semantic_channels = bundles.sample_output_channels(logical);
     return materialize_sample_output_channels(
         bundles.resolve_sample_output(logical).config.channel_layout.channel_type,
@@ -2095,7 +2093,7 @@ class GraphLowerer {
   constexpr void lower_runtime_output_observers() {
     for (auto const& output : virtual_ports.sample_outputs) {
       std::vector<TopologyPortId> sources;
-      std::vector<InputConfig> inputs;
+      std::vector<SampleInputConfig> inputs;
       std::vector<std::string> member_binding_ids;
       sources.reserve(output.member_channels.size());
       inputs.reserve(output.member_channels.size());
@@ -2104,7 +2102,7 @@ class GraphLowerer {
         sources.push_back(materialize_sample_output_channels(
             output.config.channel_layout.channel_type,
             output.member_channels[member], output.config));
-        inputs.push_back(InputConfig{.name = output.config.name, .channel_layout = output.config.channel_layout});
+        inputs.push_back(SampleInputConfig{.name = output.config.name, .channel_layout = output.config.channel_layout});
         member_binding_ids.push_back(runtime_virtual_port_key(false, PortKind::sample, output.id.virtual_node_id, member, output.id.port_ordinal));
       }
       auto const node = append_generated(make_generated_node(
@@ -2152,7 +2150,7 @@ class GraphLowerer {
       auto const& input = sample_inputs[port];
       auto node = append_generated(make_generated_node(
           RuntimeSampleInputNodeSpec{
-              .output = OutputConfig{.name = input.name, .channel_layout = input.channel_layout},
+              .output = SampleOutputConfig{.name = input.name, .channel_layout = input.channel_layout},
               .default_value = input.default_value,
               .binding_id = runtime_public_port_key(true, PortKind::sample, port),
           }, "iv::RuntimeSampleInputNode"));
@@ -2172,7 +2170,7 @@ class GraphLowerer {
       auto const& output = sample_outputs[port];
       auto node = append_generated(make_generated_node(
           RuntimeSampleOutputNodeSpec{
-              .input = InputConfig{.name = output.name, .channel_layout = output.channel_layout},
+              .input = SampleInputConfig{.name = output.name, .channel_layout = output.channel_layout},
               .binding_id = runtime_public_port_key(false, PortKind::sample, port),
           }, "iv::RuntimeSampleOutputNode"));
       sample_targets.emplace_back(TopologyPortId{GRAPH_ID, port},
@@ -2447,7 +2445,7 @@ class GraphLowerer {
         graph.generated_node_storage,
         ConstantNodeSpec{
             .value = topology_subgraph_node(subgraph_node)
-                         .inputs()[input_port]
+                         .ports.sample_input(input_port)
                          .default_value});
     graph.explicit_ttl_samples.push_back(std::nullopt);
     graph.node_ids.push_back(identity.child_id(subgraph_node) + ".default." +
@@ -2462,7 +2460,7 @@ class GraphLowerer {
     for (size_t node_i = 0; node_i < topology_node_count(); ++node_i) {
       if (!topology_is_subgraph_node(node_i)) continue;
       auto const& node = topology_subgraph_node(node_i);
-      for (size_t input = 0; input < node.inputs().size(); ++input) {
+      for (size_t input = 0; input < node.ports.sample_input_count(); ++input) {
         TopologyPortId subgraph_input{node_i, input};
         if (source_of.contains(subgraph_input)) continue;
         auto source = materialize_subgraph_default(node_i, input);
@@ -2645,10 +2643,10 @@ class GraphLowerer {
           scope.source_spans.push_back(info.span);
       }
 
-      scope.sample_inputs = subgraph.ports.sample_inputs;
-      scope.sample_outputs = subgraph.ports.sample_outputs;
-      scope.event_inputs = subgraph.ports.event_input_configs;
-      scope.event_outputs = subgraph.ports.event_output_configs;
+      scope.sample_inputs = subgraph.ports.sample_inputs();
+      scope.sample_outputs = subgraph.ports.sample_outputs();
+      scope.event_inputs = subgraph.ports.event_inputs();
+      scope.event_outputs = subgraph.ports.event_outputs();
       scope.ttl_samples = subgraph.lifetime.ttl_samples;
 
       for (auto node : scope_member_topology_nodes[subgraph_order])
@@ -2792,15 +2790,11 @@ inline size_t GraphLowerer::profile(
     return graph_cardinality();
 
   auto sample_inputs = options.execution_root
-      ? std::vector<InputConfig>{}
-      : std::vector<InputConfig>(
-            configured.public_ports.sample_inputs(configured.node_bundles).begin(),
-            configured.public_ports.sample_inputs(configured.node_bundles).end());
+      ? std::vector<SampleInputConfig>{}
+      : configured.public_ports.sample_inputs(configured.node_bundles);
   auto sample_outputs = options.execution_root
-      ? std::vector<OutputConfig>{}
-      : std::vector<OutputConfig>(
-            configured.public_ports.sample_outputs(configured.node_bundles).begin(),
-            configured.public_ports.sample_outputs(configured.node_bundles).end());
+      ? std::vector<SampleOutputConfig>{}
+      : configured.public_ports.sample_outputs(configured.node_bundles);
 
   details::expand_lowered_hyperedge_ports(lowerer.graph, configured.identity.value);
   details::stub_lowered_dangling_ports(
@@ -2831,25 +2825,17 @@ inline ExecutableGraphIR GraphLowerer::lower(
   lowerer.copy_detach_info();
 
   auto sample_inputs = options.execution_root
-      ? std::vector<InputConfig>{}
-      : std::vector<InputConfig>(
-            configured.public_ports.sample_inputs(configured.node_bundles).begin(),
-            configured.public_ports.sample_inputs(configured.node_bundles).end());
+      ? std::vector<SampleInputConfig>{}
+      : configured.public_ports.sample_inputs(configured.node_bundles);
   auto sample_outputs = options.execution_root
-      ? std::vector<OutputConfig>{}
-      : std::vector<OutputConfig>(
-            configured.public_ports.sample_outputs(configured.node_bundles).begin(),
-            configured.public_ports.sample_outputs(configured.node_bundles).end());
+      ? std::vector<SampleOutputConfig>{}
+      : configured.public_ports.sample_outputs(configured.node_bundles);
   auto event_inputs = options.execution_root
       ? std::vector<EventInputConfig>{}
-      : std::vector<EventInputConfig>(
-            configured.public_ports.event_inputs(configured.node_bundles).begin(),
-            configured.public_ports.event_inputs(configured.node_bundles).end());
+      : configured.public_ports.event_inputs(configured.node_bundles);
   auto event_outputs = options.execution_root
       ? std::vector<EventOutputConfig>{}
-      : std::vector<EventOutputConfig>(
-            configured.public_ports.event_outputs(configured.node_bundles).begin(),
-            configured.public_ports.event_outputs(configured.node_bundles).end());
+      : configured.public_ports.event_outputs(configured.node_bundles);
 
   details::expand_lowered_hyperedge_ports(lowerer.graph, configured.identity.value);
   details::stub_lowered_dangling_ports(
@@ -2913,6 +2899,12 @@ inline ExecutableGraphIR GraphLowerer::lower(
       .public_outputs = std::move(sample_outputs),
       .public_event_inputs = std::move(event_inputs),
       .public_event_outputs = std::move(event_outputs),
+      .declared_inputs = options.execution_root
+          ? std::vector<InputConfig>{}
+          : configured.public_ports.inputs(configured.node_bundles),
+      .declared_outputs = options.execution_root
+          ? std::vector<OutputConfig>{}
+          : configured.public_ports.outputs(configured.node_bundles),
       .virtual_node_ids_by_backing_node_id =
           std::move(virtual_node_ids_by_backing_node_id),
       .introspection = std::move(introspection),

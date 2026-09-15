@@ -36,10 +36,8 @@ class NodeDescriptionSink {
     friend class NodeDescriptionBuilder;
 
 public:
-    void add_sample_input(InputConfig const&) const;
-    void add_sample_output(OutputConfig const&) const;
-    void add_event_input(EventInputConfig const&) const;
-    void add_event_output(EventOutputConfig const&) const;
+    void add_input(InputConfig const&) const;
+    void add_output(OutputConfig const&) const;
     void set_internal_latency(std::size_t) const;
     void set_maximum_block_size(std::size_t) const;
     void set_default_ttl(std::optional<std::size_t>) const;
@@ -176,17 +174,11 @@ template<class Node>
 void describe_node(void const* node_data, NodeDescriptionSink& sink)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    for (auto const& input : get_inputs(node)) {
-        sink.add_sample_input(input);
+    for (InputConfig const& input : get_declared_inputs(node)) {
+        sink.add_input(input);
     }
-    for (auto const& output : get_outputs(node)) {
-        sink.add_sample_output(output);
-    }
-    for (auto const& input : get_event_inputs(node)) {
-        sink.add_event_input(input);
-    }
-    for (auto const& output : get_event_outputs(node)) {
-        sink.add_event_output(output);
+    for (OutputConfig const& output : get_declared_outputs(node)) {
+        sink.add_output(output);
     }
     sink.set_internal_latency(get_internal_latency(node));
     sink.set_maximum_block_size(get_max_block_size(node));
