@@ -69,7 +69,7 @@ namespace iv {
         )
         : _operations(node.operations.runtime)
         , _outputs(build_mode == GraphNodeWrapperBuildMode::full
-              ? make_output_port_configs(node.outputs())
+              ? make_output_port_configs(node.sample_outputs())
               : std::vector<GraphOutputPortConfig>{})
         , _event_output_types(build_mode == GraphNodeWrapperBuildMode::full
               ? make_event_output_types(node.event_outputs())
@@ -98,7 +98,7 @@ namespace iv {
               : std::vector<EventOutputBinding>{})
         , _input_port_data_nodes(build_mode == GraphNodeWrapperBuildMode::full
               ? make_input_port_data_nodes(
-                    node_id, node.inputs(), input_plans, input_bindings)
+                    node_id, node.sample_inputs(), input_plans, input_bindings)
               : std::vector<GraphPortDataNode>{})
         , _output_port_data_nodes(build_mode == GraphNodeWrapperBuildMode::full
               ? make_output_port_data_nodes(output_fanout_storage)
@@ -122,7 +122,7 @@ namespace iv {
                 node,
                 std::nullopt,
                 std::move(input_plans),
-                std::vector<SampleInputBinding>(node.inputs().size()),
+                std::vector<SampleInputBinding>(node.sample_inputs().size()),
                 {},
                 std::move(node_id),
                 wrap_primary_output_targets(output_targets),

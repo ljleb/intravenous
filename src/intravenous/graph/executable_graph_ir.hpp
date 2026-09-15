@@ -43,6 +43,11 @@ struct ExecutableGraphIR {
   std::vector<SampleOutputConfig> public_outputs{};
   std::vector<EventInputConfig> public_event_inputs{};
   std::vector<EventOutputConfig> public_event_outputs{};
+  // Graph is itself a node. Keep the logical declaration order alongside the
+  // kind-specific execution projections so Graph::inputs()/outputs() expose
+  // the same interface that was configured.
+  std::vector<InputConfig> declared_inputs{};
+  std::vector<OutputConfig> declared_outputs{};
   // Lowering has already grouped virtual metadata by backing runtime node.
   // Node IDs are stable across compiler scheduling, so compiler forwards this
   // finished provenance instead of reconstructing it from the IR.

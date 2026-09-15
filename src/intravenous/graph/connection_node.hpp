@@ -76,24 +76,13 @@ public:
         std::vector<InputConfig> result;
         result.reserve(input_configs.size());
         for (auto const& input : input_configs)
-            result.emplace_back(input.input.name, SampleInputProperties{
-                .channel_layout = input.input.channel_layout,
-                .history = input.input.history,
-                .default_value = input.input.default_value,
-                .min = input.input.min,
-                .max = input.input.max,
-            });
+            result.push_back(make_input_config(input.input));
         return result;
     }
 
     [[nodiscard]] constexpr auto outputs() const
     {
-        return std::array<OutputConfig, 1>{OutputConfig{
-            output_config.name, SampleOutputProperties{
-                .channel_layout = output_config.channel_layout,
-                .latency = output_config.latency,
-                .history = output_config.history,
-            }}};
+        return std::array<OutputConfig, 1>{make_output_config(output_config)};
     }
 
     void declare(DeclarationContext<ConnectionNode> const& ctx) const

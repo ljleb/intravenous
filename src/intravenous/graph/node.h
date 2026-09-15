@@ -35,6 +35,8 @@ namespace iv {
         std::vector<SampleOutputConfig> _public_outputs {};
         std::vector<EventInputConfig> _public_event_inputs {};
         std::vector<EventOutputConfig> _public_event_outputs {};
+        std::vector<InputConfig> _declared_inputs {};
+        std::vector<OutputConfig> _declared_outputs {};
         size_t _internal_latency = 0;
         std::vector<std::string> _node_ids {};
         std::vector<DormancyGroup> _dormancy_groups {};
@@ -67,6 +69,8 @@ namespace iv {
             _public_outputs(std::move(artifact.public_outputs)),
             _public_event_inputs(std::move(artifact.public_event_inputs)),
             _public_event_outputs(std::move(artifact.public_event_outputs)),
+            _declared_inputs(std::move(artifact.declared_inputs)),
+            _declared_outputs(std::move(artifact.declared_outputs)),
             _internal_latency(artifact.internal_latency),
             _node_ids(std::move(artifact.node_ids)),
             _dormancy_groups(),
@@ -291,43 +295,9 @@ namespace iv {
             return event_port_data_export_id(_node_ids[target.node], target.port);
         }
 
-        constexpr auto inputs() const
-        {
-            std::vector<InputConfig> result;
-            result.reserve(_public_inputs.size() + _public_event_inputs.size());
-            for (SampleInputConfig const& input : _public_inputs) {
-                result.emplace_back(input.name, SampleInputProperties{
-                    .channel_layout = input.channel_layout,
-                    .history = input.history,
-                    .default_value = input.default_value,
-                    .min = input.min,
-                    .max = input.max,
-                });
-            }
-            for (EventInputConfig const& input : _public_event_inputs) {
-                result.emplace_back(
-                    input.name, EventInputProperties{.type = input.type});
-            }
-            return result;
-        }
+        constexpr std::vector<InputConfig> const& inputs() const { return _declared_inputs; }
 
-        constexpr auto outputs() const
-        {
-            std::vector<OutputConfig> result;
-            result.reserve(_public_outputs.size() + _public_event_outputs.size());
-            for (SampleOutputConfig const& output : _public_outputs) {
-                result.emplace_back(output.name, SampleOutputProperties{
-                    .channel_layout = output.channel_layout,
-                    .latency = output.latency,
-                    .history = output.history,
-                });
-            }
-            for (EventOutputConfig const& output : _public_event_outputs) {
-                result.emplace_back(
-                    output.name, EventOutputProperties{.type = output.type});
-            }
-            return result;
-        }
+        constexpr std::vector<OutputConfig> const& outputs() const { return _declared_outputs; }
 
 
         size_t internal_latency() const

@@ -65,10 +65,10 @@ struct NodeCallMixedSink {
     void tick_block(TickBlockContext<NodeCallMixedSink> const&) const {}
 };
 
-static_assert(details::fixed_num_inputs_v<NodeCallMixedSink> == 2);
-static_assert(details::fixed_num_event_inputs_v<NodeCallMixedSink> == 1);
-static_assert(details::fixed_num_inputs_v<Constant> == 0);
-static_assert(details::fixed_num_event_inputs_v<Constant> == 0);
+static_assert(details::fixed_input_count_v<NodeCallMixedSink> == 2);
+static_assert(details::fixed_event_input_count_v<NodeCallMixedSink> == 1);
+static_assert(details::fixed_input_count_v<Constant> == 0);
+static_assert(details::fixed_event_input_count_v<Constant> == 0);
 
 struct CStringConfigDetails {
     char const* first = "first";

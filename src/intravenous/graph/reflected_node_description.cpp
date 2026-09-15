@@ -26,26 +26,14 @@ ReflectedNodeDescription& NodeDescriptionSink::description() const
     return *static_cast<ReflectedNodeDescription*>(_description);
 }
 
-void NodeDescriptionSink::add_sample_input(SampleInputConfig const& input) const
+void NodeDescriptionSink::add_input(InputConfig const& input) const
 {
-    description().ports.sample_inputs.push_back(input);
-    description().ports.input_port_order.push_back(PortKind::sample);
+    description().ports.input_configs.push_back(input);
 }
 
-void NodeDescriptionSink::add_sample_output(SampleOutputConfig const& output) const
+void NodeDescriptionSink::add_output(OutputConfig const& output) const
 {
-    description().ports.sample_outputs.push_back(output);
-}
-
-void NodeDescriptionSink::add_event_input(EventInputConfig const& input) const
-{
-    description().ports.event_input_configs.push_back(input);
-    description().ports.input_port_order.push_back(PortKind::event);
-}
-
-void NodeDescriptionSink::add_event_output(EventOutputConfig const& output) const
-{
-    description().ports.event_output_configs.push_back(output);
+    description().ports.output_configs.push_back(output);
 }
 
 void NodeDescriptionSink::set_internal_latency(std::size_t value) const

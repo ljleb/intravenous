@@ -34,25 +34,20 @@ struct ReflectedNodeDescription {
     bool block_skippable = false;
     std::optional<Sample> static_sample_value {};
 
-    constexpr std::vector<SampleInputConfig> const& inputs() const
+    constexpr std::vector<InputConfig> const& inputs() const
     {
-        return ports.sample_inputs;
+        return ports.input_configs;
     }
 
-    constexpr std::vector<SampleOutputConfig> const& outputs() const
+    constexpr std::vector<OutputConfig> const& outputs() const
     {
-        return ports.sample_outputs;
+        return ports.output_configs;
     }
 
-    constexpr std::vector<EventInputConfig> const& event_inputs() const
-    {
-        return ports.event_input_configs;
-    }
-
-    constexpr std::vector<EventOutputConfig> const& event_outputs() const
-    {
-        return ports.event_output_configs;
-    }
+    constexpr std::vector<SampleInputConfig> sample_inputs() const { return ports.sample_inputs(); }
+    constexpr std::vector<SampleOutputConfig> sample_outputs() const { return ports.sample_outputs(); }
+    constexpr std::vector<EventInputConfig> event_inputs() const { return ports.event_inputs(); }
+    constexpr std::vector<EventOutputConfig> event_outputs() const { return ports.event_outputs(); }
 
     constexpr std::size_t internal_latency() const
     {

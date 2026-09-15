@@ -1255,6 +1255,40 @@ namespace iv {
                 .type = std::get<EventOutputProperties>(config.kind).type};
     }
 
+    [[nodiscard]] constexpr InputConfig make_input_config(
+        SampleInputConfig const& config)
+    {
+        return {config.name, SampleInputProperties{
+            .channel_layout = config.channel_layout,
+            .history = config.history,
+            .default_value = config.default_value,
+            .min = config.min,
+            .max = config.max,
+        }};
+    }
+
+    [[nodiscard]] constexpr InputConfig make_input_config(
+        EventInputConfig const& config)
+    {
+        return {config.name, EventInputProperties{.type = config.type}};
+    }
+
+    [[nodiscard]] constexpr OutputConfig make_output_config(
+        SampleOutputConfig const& config)
+    {
+        return {config.name, SampleOutputProperties{
+            .channel_layout = config.channel_layout,
+            .latency = config.latency,
+            .history = config.history,
+        }};
+    }
+
+    [[nodiscard]] constexpr OutputConfig make_output_config(
+        EventOutputConfig const& config)
+    {
+        return {config.name, EventOutputProperties{.type = config.type}};
+    }
+
     [[nodiscard]] constexpr bool is_sample(InputConfig const& config)
     {
         return std::holds_alternative<SampleInputProperties>(config.kind);

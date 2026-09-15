@@ -92,35 +92,11 @@ struct ConcreteNode {
   std::optional<DeferredDetachNode> deferred_detach{};
   GeneratedNodeSpec generated_node{};
 
-  std::vector<InputConfig> inputs() const {
-    std::vector<InputConfig> result;
-    result.reserve(ports.sample_inputs.size() + ports.event_input_configs.size());
-    for (SampleInputConfig const& input : ports.sample_inputs) {
-      result.emplace_back(input.name, SampleInputProperties{
-          .channel_layout = input.channel_layout, .history = input.history, .default_value = input.default_value,
-          .min = input.min, .max = input.max});
-    }
-    for (EventInputConfig const& input : ports.event_input_configs)
-      result.emplace_back(input.name, EventInputProperties{.type = input.type});
-    return result;
+  constexpr std::vector<InputConfig> const& inputs() const {
+    return ports.inputs();
   }
-  std::vector<OutputConfig> outputs() const {
-    std::vector<OutputConfig> result;
-    result.reserve(ports.sample_outputs.size() + ports.event_output_configs.size());
-    for (SampleOutputConfig const& output : ports.sample_outputs) {
-      result.emplace_back(output.name, SampleOutputProperties{
-          .channel_layout = output.channel_layout, .latency = output.latency,
-          .history = output.history});
-    }
-    for (EventOutputConfig const& output : ports.event_output_configs)
-      result.emplace_back(output.name, EventOutputProperties{.type = output.type});
-    return result;
-  }
-  constexpr std::vector<EventInputConfig> const& event_inputs() const {
-    return ports.event_inputs();
-  }
-  constexpr std::vector<EventOutputConfig> const& event_outputs() const {
-    return ports.event_outputs();
+  constexpr std::vector<OutputConfig> const& outputs() const {
+    return ports.outputs();
   }
 };
 
@@ -130,35 +106,11 @@ struct SubgraphNode {
   LoweredSubgraphBinding lowered_subgraph{};
   NodeTypeIdentity type_identity{};
 
-  std::vector<InputConfig> inputs() const {
-    std::vector<InputConfig> result;
-    result.reserve(ports.sample_inputs.size() + ports.event_input_configs.size());
-    for (SampleInputConfig const& input : ports.sample_inputs) {
-      result.emplace_back(input.name, SampleInputProperties{
-          .channel_layout = input.channel_layout, .history = input.history, .default_value = input.default_value,
-          .min = input.min, .max = input.max});
-    }
-    for (EventInputConfig const& input : ports.event_input_configs)
-      result.emplace_back(input.name, EventInputProperties{.type = input.type});
-    return result;
+  constexpr std::vector<InputConfig> const& inputs() const {
+    return ports.inputs();
   }
-  std::vector<OutputConfig> outputs() const {
-    std::vector<OutputConfig> result;
-    result.reserve(ports.sample_outputs.size() + ports.event_output_configs.size());
-    for (SampleOutputConfig const& output : ports.sample_outputs) {
-      result.emplace_back(output.name, SampleOutputProperties{
-          .channel_layout = output.channel_layout, .latency = output.latency,
-          .history = output.history});
-    }
-    for (EventOutputConfig const& output : ports.event_output_configs)
-      result.emplace_back(output.name, EventOutputProperties{.type = output.type});
-    return result;
-  }
-  constexpr std::vector<EventInputConfig> const& event_inputs() const {
-    return ports.event_inputs();
-  }
-  constexpr std::vector<EventOutputConfig> const& event_outputs() const {
-    return ports.event_outputs();
+  constexpr std::vector<OutputConfig> const& outputs() const {
+    return ports.outputs();
   }
 };
 

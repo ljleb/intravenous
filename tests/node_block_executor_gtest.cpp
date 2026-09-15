@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <memory>
 #include <type_traits>
 
@@ -71,6 +72,29 @@ struct LifecycleTrackingNode {
     {}
 };
 
+struct MixedPortDeclarationNode {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 3>{
+            iv::event_input("event-a", iv::EventTypeId::trigger),
+            iv::sample_input("sample"),
+            iv::event_input("event-b", iv::EventTypeId::trigger),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 3>{
+            iv::sample_output("sample-a"),
+            iv::event_output("event", iv::EventTypeId::trigger),
+            iv::sample_output("sample-b"),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<MixedPortDeclarationNode> const&) const
+    {}
+};
+
 struct MigratingLifecycleNode {
     std::string id;
     int* initialized = nullptr;
@@ -118,6 +142,29 @@ TEST(BlockNodeExecutor, TicksRootOncePerCall)
 
     EXPECT_EQ(executor.block_size(), 8u);
     EXPECT_EQ(ticks, 2);
+}
+
+TEST(TypeErasedNode, PreservesMixedPortDeclarationOrder)
+{
+    iv::TypeErasedNode node = MixedPortDeclarationNode{};
+
+    auto const& inputs = node.inputs();
+    ASSERT_EQ(inputs.size(), 3u);
+    EXPECT_FALSE(iv::is_sample(inputs[0]));
+    EXPECT_EQ(inputs[0].name, "event-a");
+    EXPECT_TRUE(iv::is_sample(inputs[1]));
+    EXPECT_EQ(inputs[1].name, "sample");
+    EXPECT_FALSE(iv::is_sample(inputs[2]));
+    EXPECT_EQ(inputs[2].name, "event-b");
+
+    auto const& outputs = node.outputs();
+    ASSERT_EQ(outputs.size(), 3u);
+    EXPECT_TRUE(iv::is_sample(outputs[0]));
+    EXPECT_EQ(outputs[0].name, "sample-a");
+    EXPECT_FALSE(iv::is_sample(outputs[1]));
+    EXPECT_EQ(outputs[1].name, "event");
+    EXPECT_TRUE(iv::is_sample(outputs[2]));
+    EXPECT_EQ(outputs[2].name, "sample-b");
 }
 
 TEST(TypeErasedNode, RetainsMoveOnlyNodeSupport)

@@ -138,12 +138,12 @@ namespace iv::details {
         valid_node_call_args_v<Args...>
         && (
             std::same_as<Node, void>
-            || !has_fixed_num_inputs_v<Node>
-            || sample_input_arg_count_v<Args...> <= fixed_num_inputs_v<Node>
+            || !has_fixed_input_count_v<Node>
+            || sample_input_arg_count_v<Args...> <= fixed_input_count_v<Node>
         )
         && (
             std::same_as<Node, void>
-            || !has_fixed_num_event_inputs_v<Node>
-            || event_input_arg_count_v<Args...> <= fixed_num_event_inputs_v<Node>
+            || !has_fixed_event_input_count_v<Node>
+            || event_input_arg_count_v<Args...> <= fixed_event_input_count_v<Node>
         );
 }

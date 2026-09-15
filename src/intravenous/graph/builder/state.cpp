@@ -61,12 +61,12 @@ NodeBundleHandle GraphBuilderState::append_tiled_node_description(
     ReflectedNodeDescription const& description, ChannelLayout layout)
 {
   auto concrete = GraphBuilderNodeBundles::make_concrete_node(description);
-  for (auto const& config : concrete.ports.sample_inputs) {
+  for (auto const& config : concrete.ports.sample_inputs()) {
     if (config.channel_layout.channel_type != ChannelTypeId::mono)
       details::error(
           "the tiled-node model requires fully mono concrete sample nodes");
   }
-  for (auto const& config : concrete.ports.sample_outputs) {
+  for (auto const& config : concrete.ports.sample_outputs()) {
     if (config.channel_layout.channel_type != ChannelTypeId::mono)
       details::error(
           "the tiled-node model requires fully mono concrete sample nodes");

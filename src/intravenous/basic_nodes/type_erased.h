@@ -16,10 +16,8 @@ namespace iv {
         using NodeStoragePtr = std::unique_ptr<void, void(*)(void*)>;
 
         NodeStoragePtr _node { nullptr, +[](void*) {} };
-        std::vector<SampleInputConfig> _inputs;
-        std::vector<SampleOutputConfig> _outputs;
-        std::vector<EventInputConfig> _event_inputs;
-        std::vector<EventOutputConfig> _event_outputs;
+        std::vector<InputConfig> _inputs;
+        std::vector<OutputConfig> _outputs;
         size_t _internal_latency;
         size_t _max_block_size;
         std::optional<size_t> _ttl_samples;
@@ -46,14 +44,10 @@ namespace iv {
         template<typename Node>
         /*implicit*/ TypeErasedNode(Node node)
         {
-            auto const inputs = get_inputs(node);
-            auto const outputs = get_outputs(node);
-            auto const event_inputs = get_event_inputs(node);
-            auto const event_outputs = get_event_outputs(node);
+            auto const inputs = get_declared_inputs(node);
+            auto const outputs = get_declared_outputs(node);
             _inputs.assign(inputs.begin(), inputs.end());
             _outputs.assign(outputs.begin(), outputs.end());
-            _event_inputs.assign(event_inputs.begin(), event_inputs.end());
-            _event_outputs.assign(event_outputs.begin(), event_outputs.end());
             _internal_latency = get_internal_latency(node);
             _max_block_size = get_max_block_size(node);
             _ttl_samples = get_ttl_samples(node);
@@ -178,43 +172,8 @@ namespace iv {
             }
         }
 
-        std::vector<InputConfig> inputs() const
-        {
-            std::vector<InputConfig> result;
-            result.reserve(_inputs.size() + _event_inputs.size());
-            for (SampleInputConfig const& input : _inputs) {
-                result.emplace_back(input.name, SampleInputProperties{
-                    .channel_layout = input.channel_layout,
-                    .history = input.history,
-                    .default_value = input.default_value,
-                    .min = input.min,
-                    .max = input.max,
-                });
-            }
-            for (EventInputConfig const& input : _event_inputs) {
-                result.emplace_back(
-                    input.name, EventInputProperties{.type = input.type});
-            }
-            return result;
-        }
-
-        std::vector<OutputConfig> outputs() const
-        {
-            std::vector<OutputConfig> result;
-            result.reserve(_outputs.size() + _event_outputs.size());
-            for (SampleOutputConfig const& output : _outputs) {
-                result.emplace_back(output.name, SampleOutputProperties{
-                    .channel_layout = output.channel_layout,
-                    .latency = output.latency,
-                    .history = output.history,
-                });
-            }
-            for (EventOutputConfig const& output : _event_outputs) {
-                result.emplace_back(
-                    output.name, EventOutputProperties{.type = output.type});
-            }
-            return result;
-        }
+        std::vector<InputConfig> const& inputs() const { return _inputs; }
+        std::vector<OutputConfig> const& outputs() const { return _outputs; }
         size_t internal_latency() const { return _internal_latency; }
         size_t max_block_size() const { return _max_block_size; }
         char const* type_name() const { return _type_name; }

@@ -72,79 +72,86 @@ inline RuntimeGeneratedNode materialize_compiler_node(Node node)
 constexpr NodePorts generated_node_ports(ConnectionNodeSpec const& spec)
 {
     NodePorts ports;
-    ports.sample_inputs.reserve(spec.input_configs.size());
+    ports.input_configs.reserve(spec.input_configs.size());
     for (auto const& input : spec.input_configs) {
-        ports.sample_inputs.push_back(input.input);
+        ports.input_configs.push_back(make_input_config(input.input));
     }
-    ports.sample_outputs.push_back(spec.output_config);
+    ports.output_configs.push_back(make_output_config(spec.output_config));
     return ports;
 }
 
 constexpr NodePorts generated_node_ports(RuntimeSampleInputNodeSpec const& spec)
 {
-    return {.sample_outputs = {spec.output}};
+    return {.output_configs = {make_output_config(spec.output)}};
 }
 
 constexpr NodePorts generated_node_ports(RuntimeEventInputNodeSpec const& spec)
 {
-    return {.event_output_configs = {{.type = spec.type}}};
+    return {.output_configs = {event_output({}, spec.type)}};
 }
 
 constexpr NodePorts generated_node_ports(RuntimeSampleOutputNodeSpec const& spec)
 {
-    return {.sample_inputs = {spec.input}};
+    return {.input_configs = {make_input_config(spec.input)}};
 }
 
 constexpr NodePorts generated_node_ports(RuntimeEventOutputNodeSpec const& spec)
 {
-    return {.event_input_configs = {{.type = spec.type}}};
+    return {.input_configs = {event_input({}, spec.type)}};
 }
 
 constexpr NodePorts generated_node_ports(
     RuntimeSampleOutputFamilyNodeSpec const& spec)
 {
-    return {.sample_inputs = spec.input_configs};
+    NodePorts ports;
+    ports.input_configs.reserve(spec.input_configs.size());
+    for (auto const& input : spec.input_configs) {
+        ports.input_configs.push_back(make_input_config(input));
+    }
+    return ports;
 }
 
 constexpr NodePorts generated_node_ports(
     RuntimeEventOutputFamilyNodeSpec const& spec)
 {
-    return {.event_input_configs = std::vector<EventInputConfig>(
-        spec.member_count, EventInputConfig{.type = spec.type})};
+    NodePorts ports;
+    ports.input_configs.assign(
+        spec.member_count, event_input({}, spec.type));
+    return ports;
 }
 
 constexpr NodePorts generated_node_ports(
     EventConcatenationNodeSpec const& spec)
 {
     return {
-        .event_input_configs = std::vector<EventInputConfig>(
-            spec.input_count, EventInputConfig{.type = spec.type}),
-        .event_output_configs = {{.type = spec.type}},
+        .input_configs = std::vector<InputConfig>(
+            spec.input_count, event_input({}, spec.type)),
+        .output_configs = {event_output({}, spec.type)},
     };
 }
 
 constexpr NodePorts generated_node_ports(BroadcastEventNodeSpec const& spec)
 {
     return {
-        .event_input_configs = {{.type = spec.type}},
-        .event_output_configs = std::vector<EventOutputConfig>(
-            spec.output_count, EventOutputConfig{.type = spec.type}),
+        .input_configs = {event_input({}, spec.type)},
+        .output_configs = std::vector<OutputConfig>(
+            spec.output_count, event_output({}, spec.type)),
     };
 }
 
 constexpr NodePorts generated_node_ports(DummySinkNodeSpec const&)
 {
-    return {.sample_inputs = {SampleInputConfig{}}};
+    return {.input_configs = {sample_input()}};
 }
 
 constexpr NodePorts generated_node_ports(DummyEventSinkNodeSpec const&)
 {
-    return {.event_input_configs = {{.type = EventTypeId::empty}}};
+    return {.input_configs = {event_input({}, EventTypeId::empty)}};
 }
 
 constexpr NodePorts generated_node_ports(ConstantNodeSpec const&)
 {
-    return {.sample_outputs = {SampleOutputConfig{}}};
+    return {.output_configs = {sample_output()}};
 }
 
 inline EventConcatenation make_generated_node(

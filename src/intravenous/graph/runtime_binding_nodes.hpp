@@ -18,11 +18,7 @@ struct RuntimeSampleInputNodeSpec {
 
     constexpr auto outputs() const
     {
-        return std::array<OutputConfig, 1>{sample_output(output.name, {
-            .channel_layout = output.channel_layout,
-            .latency = output.latency,
-            .history = output.history,
-        })};
+        return std::array<OutputConfig, 1>{make_output_config(output)};
     }
 };
 
@@ -42,13 +38,7 @@ struct RuntimeSampleOutputNodeSpec {
 
     constexpr auto inputs() const
     {
-        return std::array<InputConfig, 1>{sample_input(input.name, {
-            .channel_layout = input.channel_layout,
-            .history = input.history,
-            .default_value = input.default_value,
-            .min = input.min,
-            .max = input.max,
-        })};
+        return std::array<InputConfig, 1>{make_input_config(input)};
     }
 };
 
@@ -71,15 +61,8 @@ struct RuntimeSampleOutputFamilyNodeSpec {
     {
         std::vector<InputConfig> result;
         result.reserve(input_configs.size());
-        for (SampleInputConfig const& input : input_configs) {
-            result.emplace_back(input.name, SampleInputProperties{
-                .channel_layout = input.channel_layout,
-                .history = input.history,
-                .default_value = input.default_value,
-                .min = input.min,
-                .max = input.max,
-            });
-        }
+        for (SampleInputConfig const& input : input_configs)
+            result.push_back(make_input_config(input));
         return result;
     }
 };
@@ -108,11 +91,7 @@ struct RuntimeSampleInputNode {
 
     constexpr auto outputs() const
     {
-        return std::array<OutputConfig, 1>{sample_output(output.name, {
-            .channel_layout = output.channel_layout,
-            .latency = output.latency,
-            .history = output.history,
-        })};
+        return std::array<OutputConfig, 1>{make_output_config(output)};
     }
 
     void declare(DeclarationContext<RuntimeSampleInputNode> const& ctx) const
@@ -209,13 +188,7 @@ struct RuntimeSampleOutputNode {
 
     constexpr auto inputs() const
     {
-        return std::array<InputConfig, 1>{sample_input(input.name, {
-            .channel_layout = input.channel_layout,
-            .history = input.history,
-            .default_value = input.default_value,
-            .min = input.min,
-            .max = input.max,
-        })};
+        return std::array<InputConfig, 1>{make_input_config(input)};
     }
 
     void declare(DeclarationContext<RuntimeSampleOutputNode> const& ctx) const
@@ -318,15 +291,8 @@ struct RuntimeSampleOutputFamilyNode {
     {
         std::vector<InputConfig> result;
         result.reserve(input_configs.size());
-        for (SampleInputConfig const& input : input_configs) {
-            result.emplace_back(input.name, SampleInputProperties{
-                .channel_layout = input.channel_layout,
-                .history = input.history,
-                .default_value = input.default_value,
-                .min = input.min,
-                .max = input.max,
-            });
-        }
+        for (SampleInputConfig const& input : input_configs)
+            result.push_back(make_input_config(input));
         return result;
     }
 
