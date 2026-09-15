@@ -129,30 +129,37 @@ over-approximates and will flag some propagations that cannot actually happen
 at runtime; the architecture accepts this and treats flagged collisions as
 review items rather than proof of a bug.
 
-## Source modules
+## Source invocations, not permanently source-only modules
 
-A source module is a module designated as an origin of control: all of its
-externally visible events are initially triggered by it, never by a
-propagation arriving at it.
+The tree is rooted at a **control-source invocation**, not at a permanent class
+of source-only app modules.
 
-Designating modules rather than individual events is the workable option: it
-keeps the analysis well-defined, since a source's *whole* event surface is
-root-level. The restriction that comes with designation is deliberate:
+For example, one incoming client message can start a tree at `SocketRpcServer`,
+while a later independent presentation-update cause may reach `SocketRpcServer`
+as a notification sink. Those are different causes and therefore different
+trees.
 
-> **A source module does not subscribe to events.** It only raises.
+The hard rule is local to one cause:
 
-If a source module also subscribed, it would have two kinds of causes — its own
-originations and arriving propagations — and the tree rooted at "its own
-origination" would no longer be a pure tree from a single source. Where a
-module needs both roles, split it: the subscribing half delegates internally to
-the raising half, and only the raising half is declared a source.
+> An application module may appear at most once in the propagation tree rooted
+> at one source invocation.
 
-Typical source modules in this application:
+A module may therefore be a root in one procedure and a child in another. What
+is forbidden is a procedure that starts at a module, takes some path through
+other modules, and then re-enters that same module before the original cause has
+unwound.
 
-- `SocketRpcServer` (client messages);
-- `ProjectPersistence` (project file load/save);
-- the module watcher's reload service (filesystem changes);
-- the audio device boundary.
+Typical external source invocations include:
+
+- a client message arriving in `SocketRpcServer`;
+- project-file replay initiated by `ProjectPersistence`;
+- completed package reload/build work entering `PackageReload`;
+- hardware/audio callbacks entering the device domain;
+- future presentation/user-interface events.
+
+When an asynchronous operation is scheduled by one cause and completes later,
+its completion starts a new source invocation/tree. This is often the correct
+way to avoid re-entry through long-running compile/reload work.
 
 ## Cost and what it buys
 

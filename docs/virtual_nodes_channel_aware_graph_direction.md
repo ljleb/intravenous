@@ -1,5 +1,11 @@
 # Virtual Nodes and Channel-Aware DSP Graph Direction
 
+> **Current hierarchy requirement:** project-wide matching now requires arbitrary
+> recursive navigation through nested virtual scopes, stable direct-member order,
+> and separately addressable tiled children. Child import must preserve hierarchy
+> rather than flatten virtual nodes. See
+> [graph_builder_embedding_and_matchers.md](./graph_builder_embedding_and_matchers.md).
+
 ## Status and scope
 
 This document records the target direction for replacing the current

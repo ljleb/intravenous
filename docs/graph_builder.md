@@ -1,3 +1,12 @@
+# GraphBuilder Historical Decomposition Notes
+
+> **Current structural requirements:** direct frozen `ConfiguredGraph` embedding,
+> explicit local-to-parent handle translation, hierarchical virtual scopes,
+> stable direct-member ordering, tiled-child identity, and recursive project path
+> matching are specified in
+> [graph_builder_embedding_and_matchers.md](./graph_builder_embedding_and_matchers.md).
+> The material below is retained as historical decomposition/refactoring notes.
+
 """
 You’re right. I meant “current pasted unit,” not filenames.
 

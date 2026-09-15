@@ -1,9 +1,11 @@
 # Iv-Module Instances And Graph-Input Direction
 
-> **Status note:** the iv-module definition/instance ownership portions remain
-> useful, but `GraphInputLanes` is planned for deletion. Any graph-input-lane
-> ownership or proxy-lane integration below is historical. See
-> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+> **Status note:** superseded for current definition/instance ownership by
+> [node_definitions_and_instances_direction.md](./node_definitions_and_instances_direction.md).
+> `NodeDefinitions` now supplies one immutable versioned provider snapshot and
+> `NodeInstances` performs one complete recursive batched configuration against
+> that snapshot. `GraphInputLanes` and the canonical-builder-copy model below are
+> historical.
 
 This note captures the current intended direction for iv-module definitions,
 iv-module instances, and graph-input lane ownership.

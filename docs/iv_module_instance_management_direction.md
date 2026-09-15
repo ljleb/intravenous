@@ -1,10 +1,11 @@
 # Iv-Module Instance Management Direction
 
-> **Status note:** `IvModuleInstances` remains an app module, but the lane-specific
-> integration described below is historical. `Timeline` and `GraphInputLanes`
-> are planned for deletion; replacement execution/query integration will be
-> designed separately. See
-> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+> **Status note:** superseded for generalized instance ownership by
+> [node_definitions_and_instances_direction.md](./node_definitions_and_instances_direction.md).
+> `IvModuleInstances` is becoming `NodeInstances`: it configures both leaf and
+> module node definitions in one batch against one immutable definition snapshot
+> and owns reusable configured node-instance caches. The older lane-specific and
+> definition-copy model below is historical.
 
 This note captures the remaining intended direction for iv-module instance
 management beyond the lifecycle and rebuild work already present in code.

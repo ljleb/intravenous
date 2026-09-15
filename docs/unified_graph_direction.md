@@ -1,6 +1,12 @@
 # Unified Graph Direction
 
-_Status: working architecture direction, not a final implementation plan._
+_Status: unified-graph direction. The concrete application-module decomposition,
+node terminology, caching ownership, recursive project matcher model, and event
+procedures are now normative in
+[project_graph_application_architecture.md](./project_graph_application_architecture.md).
+Where older sections below use `iv module` as the general node abstraction or
+describe a separate managed-realization/controller layer, the newer document
+takes precedence._
 
 The immediate application-module cleanup that precedes the replacement executor
 is recorded in
@@ -28,6 +34,30 @@ Compiled DSP-port semantics are specified separately and normatively in
 [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). This document describes how
 that capability fits the unified project graph; it should not restate or replace
 the node API, request-planning, or storage rules from that document.
+
+## Settled terminology and ownership
+
+The general registered abstraction is now **node definition**:
+
+- a primitive registered `IV_NODE` definition is a **leaf node definition**;
+- a registered `IV_MODULE` graph-producing definition is a **module node definition**.
+
+Their configured reusable results are **node instances**. A cached node instance
+may be referenced by several stable project instance ids and embedded several
+times, producing distinct runtime storage/state at each placement. Module nodes
+remain configuration/project identities rather than execution partitions.
+
+`NodeDefinitions` owns the immutable versioned id-to-provider snapshot.
+`NodeInstances` owns recursive configuration and reusable configured instance
+caches. `ProjectGraph` owns durable project declarations and orchestrates the root
+builder. `GraphConnections` applies project-wide connections after all desired
+instances have been embedded. `GraphExecutor` owns whole-project executable
+generations.
+
+The old proposal for a generic automatically-managed graph-fragment/controller
+layer is not part of the current core design. Presentations and optional device
+convenience services can issue ordinary batched node/connection requests through
+the same project-graph machinery when those features are designed.
 
 ## The central change
 

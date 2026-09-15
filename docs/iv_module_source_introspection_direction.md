@@ -1,6 +1,13 @@
 # Iv Module Source Introspection Direction
 
-`IvModuleSourceIntrospection` is a read model for tooling and UI queries.
+> **Naming/status:** this module is expected to generalize to
+> `NodeSourceIntrospection` (or a shorter `SourceIntrospection` if its final
+> responsibility warrants it) as leaf/module definitions converge under the node
+> terminology. It remains a read model and must not participate in root graph
+> construction. See
+> [project_graph_application_architecture.md](./project_graph_application_architecture.md).
+
+`IvModuleSourceIntrospection` is the current read model for tooling and UI queries.
 
 Its job is to:
 - map source spans to logical nodes

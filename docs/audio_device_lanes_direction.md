@@ -1,12 +1,11 @@
 # Audio Device Lanes Direction
 
-> **Status:** the lane-specific architecture in this note is superseded.
-> `AudioDeviceLanes` is planned to become `SystemAudioDevices`, retaining generic
-> system-audio/device logic while deleting lane, timeline, and task-runner
-> ownership. See
-> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
-> The device/backend and synchronization observations below remain useful where
-> they do not depend on lane-node execution.
+> **Status:** superseded for current device architecture. See
+> [system_audio_devices_direction.md](./system_audio_devices_direction.md).
+> `SystemAudioDevices` now owns stable logical device bindings and physical-device
+> lifetime only; system audio nodes are ordinary manually instantiated project
+> nodes. The backend/synchronization observations below remain historical input
+> where they do not depend on lanes or `TasksRunner`.
 
 This note captures the current intended first implementation direction for
 audio devices as timeline lanes.

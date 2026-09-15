@@ -1,5 +1,14 @@
 # Intravenous: LLVM Hot Reload, Registered Nodes, and Whole-Graph Execution
 
+> **Current application architecture:** the detailed compiler/runtime material in
+> this document remains relevant, but app-module ownership, generalized
+> leaf/module node terminology, configured node-instance caching, project matcher
+> semantics, and event-tree procedures are now specified in
+> [project_graph_application_architecture.md](./project_graph_application_architecture.md).
+> Where older passages name `IvModuleReload`, `IvModuleDefinitions`, lane execution,
+> or a managed-realization/controller architecture, the newer design takes
+> precedence.
+
 _Status: consolidated architecture direction based on the current `feature/llvm-module-reload` branch and the subsequent design discussion. This is intentionally more concrete than a direction note, but it is not a line-by-line implementation plan. Items marked **decided** are intended constraints; items marked **provisional** are design choices that should be validated by implementation and profiling._
 
 ## 1. Purpose

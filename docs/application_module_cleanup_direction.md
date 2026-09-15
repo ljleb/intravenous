@@ -1,6 +1,13 @@
 # Application Module Cleanup Direction
 
-This note records the next application-module maintenance boundary before the
+> **Status:** completed cleanup checkpoint. The lane/timeline/task-runner deletion
+> described here has landed. The authoritative replacement project-graph module
+> design is now
+> [project_graph_application_architecture.md](./project_graph_application_architecture.md).
+> Generalized future names drop the redundant `Iv` prefix: `NodeDefinitions`,
+> `NodeInstances`, `PackageReload`, and `PackageDefinitions`.
+
+This note records the application-module maintenance boundary that preceded the
 project-wide graph execution redesign.
 
 It is intentionally a cleanup plan, not a design for the replacement executor.
@@ -198,39 +205,51 @@ before it gains its future source.
 This temporary disconnection is preferable to introducing adapters whose sole
 purpose is to emulate the modules being deleted.
 
-## Explicitly deferred decisions
+## Decisions made after this checkpoint
 
-This cleanup does not yet decide:
+The previously deferred execution-side decisions are now specified in
+[project_graph_application_architecture.md](./project_graph_application_architecture.md).
+In particular:
 
-- the new project-wide graph execution app-module decomposition
-- ownership of realtime execution scheduling
-- ownership of compiled sample/event query planning and caching
-- the future source model for lane filters/views/query schema
-- the future data-source API consumed by `LanesVisualization`
-- how `SystemAudioDevices` attaches to graph execution
-- which new isolated app modules should mediate persistence and execution state
+- `ProjectGraph` owns durable user graph intent **and** orchestrates complete root
+  `GraphBuilder` transactions; there is no separate `RootGraph` app module.
+- `NodeDefinitions` owns one immutable versioned definition snapshot containing
+  both leaf and module node definitions.
+- `NodeInstances` performs one-snapshot batched recursive configuration and owns
+  reusable configured node-instance caches.
+- `GraphConnections` resolves recursive `ProjectNodePortMatcher`s only after the
+  complete node batch has been embedded.
+- `GraphExecutor` owns compilation/optimization and active/pending whole-project
+  executable generations, with activation only between complete audio passes.
+- `SystemAudioDevices` supplies stable logical bindings for requested ids and no
+  longer creates project graph structure as part of its core responsibility.
+- tree-shaped event procedures are documented under
+  [event_flows/](./event_flows/README.md).
 
-Those decisions should be made after the deletion/refocus pass, against the
-smaller surviving module graph.
+Lane filter/view/query and visualization source redesign remains separate work.
 
 ## Resulting retained module inventory
 
-After the cleanup, the intended retained/refocused app-module set is:
+Immediately after the cleanup the retained/refocused set still used several
+`Iv*` names. The next implementation phase generalizes/renames those modules and
+adds the project-graph pipeline. Its target core inventory is:
 
 - `SystemAudioDevices`
 - `LanesVisualization`
 - `LaneFilters` (temporarily disconnected)
 - `LaneQuerySchemaService` (temporarily disconnected)
 - `LaneViews` (temporarily disconnected)
-- `IvModuleInstances`
-- `IvModuleDefinitions`
-- `IvPackageReload`
-- `IvModuleSourceIntrospection`
-- `IvPackageDefinitions`
+- `NodeInstances`
+- `NodeDefinitions`
+- `PackageReload`
+- `NodeSourceIntrospection` (provisional generalized name)
+- `PackageDefinitions`
+- `ProjectGraph`
+- `GraphConnections`
+- `GraphExecutor`
 - `ProjectPersistence`
 - `ProjectAutosave`
 - `SocketRpcServer`
 
-This is a maintenance checkpoint, not the final module set. New execution-side
-modules should be added only after their ownership can be stated independently
-and their event boundaries are clear.
+See the current architecture document for exact responsibilities and event
+procedures.
