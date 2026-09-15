@@ -1,5 +1,11 @@
 # Iv-Module Instance Management Direction
 
+> **Status note:** `IvModuleInstances` remains an app module, but the lane-specific
+> integration described below is historical. `Timeline` and `GraphInputLanes`
+> are planned for deletion; replacement execution/query integration will be
+> designed separately. See
+> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+
 This note captures the remaining intended direction for iv-module instance
 management beyond the lifecycle and rebuild work already present in code.
 

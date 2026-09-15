@@ -1,5 +1,14 @@
 # Execution Model Direction
 
+> **Status:** historical execution direction. The next maintenance step deletes
+> `Timeline`, `TimelineExecution`, `TasksRunner`, and
+> `IvModuleInstancesExecution` before the project-wide graph executor is
+> designed. See
+> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+> Do not use this document's timeline/task-runner ownership model as current
+> implementation direction.
+
+
 _Status: historical migration inventory. `Timeline` ownership and lane/DSP
 execution-partition decisions are superseded by
 [unified_graph_direction.md](./unified_graph_direction.md). Compiled-data

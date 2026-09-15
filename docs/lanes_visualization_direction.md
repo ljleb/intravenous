@@ -1,5 +1,11 @@
 # Lanes Visualization Direction
 
+> **Status:** `LanesVisualization` is retained, but its current integration with
+> `Timeline`, `TimelineExecution`, and `TasksRunner` is superseded. The module
+> will temporarily lose those bridges and receive a replacement data-source
+> design later. See
+> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+
 This note captures the current intended direction for lane visualization and UI
 refresh behavior.
 

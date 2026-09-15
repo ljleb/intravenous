@@ -1,5 +1,11 @@
 ## Execution Recovery Blueprint
 
+> **Status:** historical recovery record only. The recovered
+> `TimelineExecution`, `IvModuleInstancesExecution`, and `TasksRunner` execution
+> architecture is now planned for deletion rather than further recovery or
+> extension. See
+> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+
 This note records what was recoverable from the build tree and staged tests after the execution-side source files were lost.
 
 ### Missing Runtime Files Confirmed By Build Metadata

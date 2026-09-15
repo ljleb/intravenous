@@ -96,9 +96,68 @@ namespace iv::details {
     }
 
     template<typename Node, fixed_string Name>
+    consteval bool static_input_port_is_compiled()
+    {
+        static constexpr auto configs = Node::inputs();
+        for (InputConfig const& config : configs) {
+            if (is_sample(config) && config.name == Name.view()) return config.compiled;
+        }
+        throw "unknown static sample input port name";
+    }
+
+    // Access contexts contain only compiled ports. Convert a declaration's
+    // physical sample-port ordinal to its compact compiled-port ordinal so
+    // access callbacks never receive fake realtime placeholders.
+    template<typename Node, fixed_string Name>
+    consteval size_t static_compiled_input_port_index()
+    {
+        static constexpr auto configs = Node::inputs();
+        constexpr size_t port_index = static_input_port_index<Node, Name>();
+        static_assert(static_input_port_is_compiled<Node, Name>(),
+            "requested static input is not declared compiled");
+        size_t compiled_index = 0;
+        size_t sample_index = 0;
+        for (InputConfig const& config : configs) {
+            if (!is_sample(config)) continue;
+            if (sample_index == port_index) return compiled_index;
+            if (config.compiled) ++compiled_index;
+            ++sample_index;
+        }
+        throw "unknown static sample input port name";
+    }
+
+    template<typename Node, fixed_string Name>
     consteval ChannelLayout static_output_port_layout()
     {
         return effective_channel_layout(static_output_port_properties<Node, Name>());
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval bool static_output_port_is_compiled()
+    {
+        static constexpr auto configs = Node::outputs();
+        for (OutputConfig const& config : configs) {
+            if (is_sample(config) && config.name == Name.view()) return config.compiled;
+        }
+        throw "unknown static sample output port name";
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval size_t static_compiled_output_port_index()
+    {
+        static constexpr auto configs = Node::outputs();
+        constexpr size_t port_index = static_output_port_index<Node, Name>();
+        static_assert(static_output_port_is_compiled<Node, Name>(),
+            "requested static output is not declared compiled");
+        size_t compiled_index = 0;
+        size_t sample_index = 0;
+        for (OutputConfig const& config : configs) {
+            if (!is_sample(config)) continue;
+            if (sample_index == port_index) return compiled_index;
+            if (config.compiled) ++compiled_index;
+            ++sample_index;
+        }
+        throw "unknown static sample output port name";
     }
 
     template<typename Node, size_t Index>

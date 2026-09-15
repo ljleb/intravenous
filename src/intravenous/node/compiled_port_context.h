@@ -8,6 +8,7 @@
 #include <intravenous/node/traits.h>
 
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <span>
 #include <type_traits>
@@ -70,12 +71,13 @@ namespace iv {
 
     // Query-local, type-erased read access. A missing callback, an index
     // outside the logical extent, and a disconnected compiled input all read
-    // as zero. This makes reads total without committing to a buffer layout or
-    // persistent cache.
+    // as this port's configured neutral value. This makes reads total without
+    // committing to a buffer layout or persistent cache.
     struct CompiledInputPort {
         void const* data = nullptr;
         CompiledSampleExtent (*extent_fn)(void const*) = nullptr;
         Sample (*read_sample_fn)(void const*, SampleIndex, std::size_t) = nullptr;
+        Sample neutral_value {};
 
         [[nodiscard]] constexpr CompiledSampleExtent extent() const noexcept
         {
@@ -92,7 +94,7 @@ namespace iv {
         {
             return read_sample_fn && extent().contains(index)
                 ? read_sample_fn(data, index, channel)
-                : Sample {};
+                : neutral_value;
         }
     };
 
@@ -271,6 +273,11 @@ namespace iv {
         using PropagateInputAccess = void (*)(
             void*, std::size_t, AccessRequestSet const&);
 
+        // One logical extent per compiled sample input, in the same compact
+        // ordinal order used by AccessBlockContext::inputs. The normalized
+        // propagation operation uses these extents to synthesize conservative
+        // full-input requests when the node provides no propagation callback.
+        std::span<CompiledSampleExtent const> input_extents {};
         std::span<AccessRequestSet const> output_requests {};
         void* user_data = nullptr;
         PropagateInputAccess propagate_input_access = nullptr;
@@ -348,19 +355,49 @@ namespace iv {
     do_propagate_block_access_batched()
     {
         static_assert(
-            details::has_valid_propagate_block_access_callback_v<Node>,
-            "do_propagate_block_access_batched requires exactly one of propagate_block_access(...) or propagate_block_access_batch(...)");
+            details::propagate_block_access_callback_kind_v<Node>
+                != CompiledPortCallbackKind::conflicting,
+            "do_propagate_block_access_batched cannot normalize both propagate_block_access(...) and propagate_block_access_batch(...)");
 
         if constexpr (details::propagate_block_access_callback_kind_v<Node>
             == CompiledPortCallbackKind::batch) {
             return +[](Node const& node, PropagateBlockAccessBatchContext<Node>& context) {
                 node.propagate_block_access_batch(context);
             };
-        } else {
+        } else if constexpr (details::propagate_block_access_callback_kind_v<Node>
+            == CompiledPortCallbackKind::unbatched) {
             return +[](Node const& node, PropagateBlockAccessBatchContext<Node>& context) {
                 for (PropagateBlockAccessContext<Node>& propagation
                     : context.unbatched_propagations) {
                     node.propagate_block_access(propagation);
+                }
+            };
+        } else {
+            return +[](Node const&, PropagateBlockAccessBatchContext<Node>& context) {
+                auto const& propagation = context.batch;
+
+                for (std::size_t input_index = 0;
+                     input_index < propagation.input_extents.size(); ++input_index) {
+                    CompiledSampleExtent const extent =
+                        propagation.input_extents[input_index];
+                    SampleIndex const sample_count = extent.size();
+                    if (sample_count == 0) continue;
+
+                    IV_ASSERT(propagation.propagate_input_access != nullptr,
+                        "default block-access propagation has no compiled-input request sink");
+                    IV_ASSERT(
+                        sample_count <= static_cast<SampleIndex>(
+                            std::numeric_limits<std::size_t>::max()),
+                        "compiled input extent is too large for an access request");
+                    AccessRequest const request {
+                        .begin = extent.begin,
+                        .end = extent.end,
+                        .sample_count = static_cast<std::size_t>(sample_count),
+                    };
+                    AccessRequestSet const requests {
+                        std::span<AccessRequest const>(&request, 1)};
+                    propagation.propagate_input_access(
+                        propagation.user_data, input_index, requests);
                 }
             };
         }

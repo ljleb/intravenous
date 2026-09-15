@@ -1,5 +1,13 @@
 # Graph I/O Repatching Direction
 
+> **Status:** historical integration direction. `GraphInputLanes` and the
+> timeline-lane exposure model are planned for deletion. Stable graph endpoint
+> and repatching requirements should be carried forward through the unified
+> project graph instead of a replacement proxy-lane module. See
+> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md)
+> and [unified_graph_direction.md](./unified_graph_direction.md).
+
+
 ## Goal
 
 `GraphInputLanes` should not think only in terms of vacant DSP graph inputs.

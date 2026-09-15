@@ -508,7 +508,16 @@ RegisteredSignature const* node_constructor_signature()
     static_assert(::iv::details::has_constexpr_port_configs<Node>, \
         "IV_NODE requires inputs() and outputs() to return static constexpr arrays of InputConfig and OutputConfig. " \
         "Each array carries both sample and event ports through its config variant. " \
-        "Dynamic-arity or configuration-dependent nodes must remain internal lowering nodes.")
+        "Dynamic-arity or configuration-dependent nodes must remain internal lowering nodes."); \
+    static_assert(::iv::details::access_block_callback_kind_v<Node> \
+            != ::iv::CompiledPortCallbackKind::conflicting, \
+        "IV_NODE node type must define only one compiled-access callback: access_block(...) or access_block_batch(...)."); \
+    static_assert(!::iv::details::declares_compiled_sample_ports_v<Node> \
+            || ::iv::details::has_valid_access_block_callback_v<Node>, \
+        "IV_NODE node type declares a compiled sample port; define exactly one of access_block(...) or access_block_batch(...)."); \
+    static_assert(::iv::details::propagate_block_access_callback_kind_v<Node> \
+            != ::iv::CompiledPortCallbackKind::conflicting, \
+        "IV_NODE node type may define at most one compiled block-access propagation callback: propagate_block_access(...) or propagate_block_access_batch(...).")
 
 #define IV_NODE_IMPL(Id, Node, Unique) \
     namespace { \

@@ -632,6 +632,7 @@ NodeBundle::sample_input_descriptor(size_t ordinal) const {
           return {.config = SampleInputConfig{
               .name = output.name,
               .channel_layout = output.channel_layout,
+              .compiled = output.compiled,
               .history = output.history,
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
@@ -657,6 +658,7 @@ NodeBundle::sample_output_descriptor(size_t ordinal) const {
           return {.config = SampleOutputConfig{
               .name = input.name,
               .channel_layout = input.channel_layout,
+              .compiled = input.compiled,
               .history = input.history,
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
@@ -758,12 +760,12 @@ namespace iv {
 namespace {
 constexpr EventOutputConfig inward_event_output_config(
     EventInputConfig const &config) {
-  return EventOutputConfig{.name = config.name, .type = config.type};
+  return EventOutputConfig{.name = config.name, .type = config.type, .compiled = config.compiled};
 }
 
 constexpr EventInputConfig inward_event_input_config(
     EventOutputConfig const &config) {
-  return EventInputConfig{.name = config.name, .type = config.type};
+  return EventInputConfig{.name = config.name, .type = config.type, .compiled = config.compiled};
 }
 
 template <class MatchesName>
@@ -1065,12 +1067,14 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
   };
 
   auto same_input = [](InputConfig const& lhs, InputConfig const& rhs) {
-    if (lhs.name != rhs.name || is_sample(lhs) != is_sample(rhs)) return false;
+    if (lhs.name != rhs.name || lhs.compiled != rhs.compiled
+        || is_sample(lhs) != is_sample(rhs)) return false;
     if (is_sample(lhs)) {
       auto const& a = sample_properties(lhs);
       auto const& b = sample_properties(rhs);
       return a.channel_layout == b.channel_layout
           && a.history == b.history
+          && a.neutral_value.value == b.neutral_value.value
           && a.default_value.value == b.default_value.value
           && a.min.value == b.min.value
           && a.max.value == b.max.value;
@@ -1078,7 +1082,8 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
     return event_properties(lhs).type == event_properties(rhs).type;
   };
   auto same_output = [](OutputConfig const& lhs, OutputConfig const& rhs) {
-    if (lhs.name != rhs.name || is_sample(lhs) != is_sample(rhs)) return false;
+    if (lhs.name != rhs.name || lhs.compiled != rhs.compiled
+        || is_sample(lhs) != is_sample(rhs)) return false;
     if (is_sample(lhs)) {
       auto const& a = sample_properties(lhs);
       auto const& b = sample_properties(rhs);

@@ -1,5 +1,11 @@
 # Configured Lane Creation Direction
 
+> **Status:** superseded as an implementation plan. `ConfiguredLanes` and
+> `Timeline` are planned for deletion in the application-module cleanup. This
+> note remains useful as a record of product/configuration semantics that may be
+> reintroduced against the unified project graph. See
+> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+
 This note records the remaining work for user-created timeline lanes. It
 builds on `lane_ui_model_direction.md`.
 

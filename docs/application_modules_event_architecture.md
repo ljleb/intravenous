@@ -6,6 +6,22 @@ actually being implemented.
 It is intentionally high level. The goal is to keep ownership boundaries and
 control-flow seams clear as the runtime grows.
 
+## Current transition status
+
+The application-module inventory in this older note is being simplified. The
+authoritative keep/delete/rename decisions for the next maintenance step are in
+[application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+
+In particular, `Timeline`, `TimelineExecution`, `GraphInputLanes`,
+`ConfiguredLanes`, `TasksRunner`, and `IvModuleInstancesExecution` are planned
+for deletion; `AudioDeviceLanes` is being refocused as `SystemAudioDevices`;
+`IvModuleReload` is being refocused as package-scoped `IvPackageReload`; and
+`IvPackages` is being refocused as event-isolated `IvPackageDefinitions`.
+
+The event/bridge principles below remain current. Module-specific ownership and
+control-flow descriptions below should be treated as historical wherever they
+conflict with the cleanup-direction note.
+
 ## Goal
 
 The application should be organized around a small number of long-lived

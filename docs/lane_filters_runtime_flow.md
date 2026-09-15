@@ -1,5 +1,12 @@
 # Lane Filters Runtime Flow
 
+> **Status:** `LaneFilters`, `LaneQuerySchemaService`, and `LaneViews` are being
+> retained but disconnected during the lane-node execution cleanup. The flow
+> below documents the old timeline-backed integration and is not a requirement
+> to preserve compatibility while `Timeline` is removed. See
+> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+
+
 - `Timeline` owns only base lane facts:
   - lane ids
   - base lane metadata
