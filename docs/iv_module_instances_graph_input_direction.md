@@ -1,5 +1,10 @@
 # Iv-Module Instances And Graph-Input Direction
 
+> **Status note:** the iv-module definition/instance ownership portions remain
+> useful, but `GraphInputLanes` is planned for deletion. Any graph-input-lane
+> ownership or proxy-lane integration below is historical. See
+> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+
 This note captures the current intended direction for iv-module definitions,
 iv-module instances, and graph-input lane ownership.
 

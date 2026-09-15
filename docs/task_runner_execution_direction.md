@@ -1,5 +1,11 @@
 # Task Runner Execution Direction
 
+> **Status:** superseded for implementation planning. `TasksRunner`,
+> `TimelineExecution`, and `IvModuleInstancesExecution` are planned for
+> deletion rather than further evolution. This document is retained as useful
+> history about requirements and failure modes. See
+> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+
 This note captures the current intended direction for runtime execution task
 ordering.
 

@@ -2,6 +2,12 @@
 
 _Status: working architecture direction, not a final implementation plan._
 
+The immediate application-module cleanup that precedes the replacement executor
+is recorded in
+[application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+That cleanup deliberately deletes the old lane/task execution modules before
+choosing the new isolated execution-module decomposition.
+
 This note records the direction opened by fast LLVM-based module reload and
 graph-composition compilation. It proposes convergence of the lane and DSP graph
 models, while retaining the product semantics currently implemented around lanes,

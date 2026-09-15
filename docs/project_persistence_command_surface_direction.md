@@ -1,5 +1,12 @@
 # Project Persistence And Command Surface Direction
 
+> **Status note:** `ProjectPersistence` remains part of the target application,
+> but the concrete per-module persistence inventory below contains modules now
+> planned for deletion or refocus. Preserve the persistence principles and
+> product state requirements, not the old `Timeline`/lane/task-runner ownership
+> boundaries. See
+> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+
 This note consolidates the current direction for project persistence, shared
 modification commands, config-file ownership, and configured-state boundaries.
 
