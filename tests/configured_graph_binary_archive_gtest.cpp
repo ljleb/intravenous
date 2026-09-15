@@ -129,4 +129,66 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_THROW(fixture.decode(trailing), std::runtime_error);
 }
 
+TEST(ConfiguredGraphBinaryArchive, RoundTripsCompiledSamplePortCapabilities)
+{
+    iv::SampleInputConfig const input {
+        .name = "compiled-input",
+        .channel_layout = {
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::interleaved,
+        },
+        .compiled = true,
+        .history = 7,
+        .neutral_value = -0.125f,
+        .default_value = 0.25f,
+    };
+    iv::SampleOutputConfig const output {
+        .name = "compiled-output",
+        .compiled = true,
+        .latency = 3,
+        .history = 11,
+    };
+    iv::EventInputConfig const event_input {
+        .name = "compiled-event-input",
+        .type = iv::EventTypeId::trigger,
+        .compiled = true,
+    };
+    iv::EventOutputConfig const event_output {
+        .name = "compiled-event-output",
+        .type = iv::EventTypeId::midi,
+        .compiled = true,
+    };
+
+    iv::binary_wire_details::Writer writer;
+    iv::binary_wire_details::write_input(writer, input);
+    iv::binary_wire_details::write_output(writer, output);
+    iv::binary_wire_details::write_event_input(writer, event_input);
+    iv::binary_wire_details::write_event_output(writer, event_output);
+    auto const bytes = std::move(writer).take();
+
+    iv::binary_wire_details::Reader reader(bytes);
+    auto const decoded_input = iv::binary_wire_details::read_input(reader);
+    auto const decoded_output = iv::binary_wire_details::read_output(reader);
+    auto const decoded_event_input = iv::binary_wire_details::read_event_input(reader);
+    auto const decoded_event_output = iv::binary_wire_details::read_event_output(reader);
+    reader.finish();
+
+    EXPECT_EQ(decoded_input.name, input.name);
+    EXPECT_EQ(decoded_input.channel_layout, input.channel_layout);
+    EXPECT_TRUE(decoded_input.compiled);
+    EXPECT_EQ(decoded_input.history, 7u);
+    EXPECT_FLOAT_EQ(static_cast<float>(decoded_input.neutral_value), -0.125f);
+    EXPECT_FLOAT_EQ(static_cast<float>(decoded_input.default_value), 0.25f);
+    EXPECT_EQ(decoded_output.name, output.name);
+    EXPECT_TRUE(decoded_output.compiled);
+    EXPECT_EQ(decoded_output.latency, 3u);
+    EXPECT_EQ(decoded_output.history, 11u);
+    EXPECT_EQ(decoded_event_input.name, event_input.name);
+    EXPECT_EQ(decoded_event_input.type, event_input.type);
+    EXPECT_TRUE(decoded_event_input.compiled);
+    EXPECT_EQ(decoded_event_output.name, event_output.name);
+    EXPECT_EQ(decoded_event_output.type, event_output.type);
+    EXPECT_TRUE(decoded_event_output.compiled);
+}
+
 } // namespace

@@ -2,29 +2,38 @@ Below is the design we converged on for **compiled DSP ports and compiled-data e
 
 ## Implementation staging
 
-The current port-configuration refactor does **not** implement compiled DSP-port
-access. It only makes port kind explicit inside the authored `InputConfig` and
-`OutputConfig` variants: each declaration is either a sample port or an event
-port, and sample-only fields remain nested in the sample alternative.
+The first compiled-port implementation is deliberately limited to the
+node-facing contract:
 
-Compiled capability is a planned, orthogonal axis. The ordinary DSP-node model
-must eventually support all four combinations:
+* `InputConfig::compiled` / `OutputConfig::compiled`, independent of whether
+  the config contains sample or event properties;
+* the sample-input `neutral_value` used by total arbitrary sample reads;
+* compiled-sample callback traits, static-declaration validation, `AccessRequest`
+  types, and sample access/block-access propagation contexts.
+
+The `compiled` flag is preserved by the semantic/configured graph and its
+archive. This stage does not yet add graph lowering, query planning,
+materialization, or compiled-state lifecycle storage.
+
+Compiled capability is orthogonal to port kind. The ordinary DSP-node model
+therefore has all four declaration combinations:
 
 | Port kind | Realtime access | Compiled-capable access |
 | --- | --- | --- |
 | sample | sequential/current-block samples | arbitrary global sample access |
 | event | sequential/current-block events | arbitrary global event-range access |
 
-Legacy lane nodes already support both compiled sample and compiled event data.
-As lane nodes are phased out, the ordinary DSP-node compiled-port design must
-preserve that capability rather than accidentally making `compiled`
-sample-specific.
+The callback/context API implemented in this stage is specifically for
+**compiled sample ports**. Its contexts contain compact lists of compiled sample
+ports only; they never contain placeholder realtime ports. Compiled event ports
+are nevertheless valid declarations and remain a distinct planned capability.
+Their eventual arbitrary-access API must operate on event ranges/event sets, not
+reuse the sample-grid `AccessRequest` semantics merely because both capabilities
+share the `compiled` flag.
 
-The compiled-port follow-up may add declaration flags, access callbacks, request
-sets, planning, and compiled state. Those APIs are intentionally not part of the
-port-kind refactor. In particular, sample and event compiled access need
-different request/value interfaces even though they share the same high-level
-compiled capability.
+Legacy lane nodes already support both compiled sample and compiled event data.
+As lane nodes are phased out, ordinary DSP nodes must preserve that capability
+rather than making `compiled` sample-specific.
 
 ## 1. Meaning of a compiled port
 
@@ -68,7 +77,9 @@ Compiled sample values have a finite logical sample extent. Consumers need this 
 
 Sample reads should be total: requesting a sample outside the logical extent, in a disconnected region, or otherwise unsupported still returns a value.
 
-The default is `0`.
+The default is the input port's explicit `neutral_value`, initially `0`.
+This is distinct from the ordinary disconnected sequential `default_value`, even
+when both use zero by default.
 
 The ordinary DSP implementation therefore does not need pervasive availability checks.
 

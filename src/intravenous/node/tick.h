@@ -31,9 +31,9 @@ namespace iv {
 
     template<typename Node>
     struct TickSampleContext : public TickContext<Node> {
-        size_t index;
+        SampleIndex index;
 
-        TickSampleContext(TickContext<Node> base, size_t index);
+        TickSampleContext(TickContext<Node> base, SampleIndex index);
 
         template<fixed_string Name>
         auto input() const
@@ -60,12 +60,12 @@ namespace iv {
 
     template<typename Node>
     struct TickBlockContext : public TickContext<Node> {
-        size_t index;
+        SampleIndex index;
         size_t block_size;
 
         TickBlockContext(
             TickContext<Node> base,
-            size_t index,
+            SampleIndex index,
             size_t block_size
         );
 
@@ -130,14 +130,14 @@ namespace iv {
 
     template<typename Node>
     IV_FORCEINLINE TickSampleContext<Node>::TickSampleContext(
-        TickContext<Node> base, size_t index)
+        TickContext<Node> base, SampleIndex index)
     : TickContext<Node>(base), index(index)
     {}
 
     template<typename Node>
     IV_FORCEINLINE TickBlockContext<Node>::TickBlockContext(
         TickContext<Node> base,
-        size_t index,
+        SampleIndex index,
         size_t block_size
     )
     : TickContext<Node>(base)
