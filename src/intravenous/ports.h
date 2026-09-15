@@ -86,10 +86,6 @@ namespace iv {
         event,
     };
 
-    // A global DSP timeline position. Unlike a buffer offset or event offset,
-    // this remains meaningful across sequential and arbitrary-access work.
-    using SampleIndex = std::uint64_t;
-
     using EventTime = size_t;
 
     using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent>;

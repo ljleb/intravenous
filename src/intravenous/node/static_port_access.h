@@ -96,42 +96,9 @@ namespace iv::details {
     }
 
     template<typename Node, fixed_string Name>
-    consteval bool static_input_port_is_compiled()
-    {
-        (void)static_input_port_index<Node, Name>();
-        return false;
-    }
-
-    // Access contexts contain only compiled ports. Convert a declaration's
-    // physical sample-port ordinal to its compact compiled-port ordinal so
-    // access callbacks never receive fake realtime placeholders.
-    template<typename Node, fixed_string Name>
-    consteval size_t static_compiled_input_port_index()
-    {
-        static_assert(static_input_port_is_compiled<Node, Name>(),
-            "requested static input is not declared compiled");
-        return static_input_port_index<Node, Name>();
-    }
-
-    template<typename Node, fixed_string Name>
     consteval ChannelLayout static_output_port_layout()
     {
         return effective_channel_layout(static_output_port_properties<Node, Name>());
-    }
-
-    template<typename Node, fixed_string Name>
-    consteval bool static_output_port_is_compiled()
-    {
-        (void)static_output_port_index<Node, Name>();
-        return false;
-    }
-
-    template<typename Node, fixed_string Name>
-    consteval size_t static_compiled_output_port_index()
-    {
-        static_assert(static_output_port_is_compiled<Node, Name>(),
-            "requested static output is not declared compiled");
-        return static_output_port_index<Node, Name>();
     }
 
     template<typename Node, size_t Index>

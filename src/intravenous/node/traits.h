@@ -16,37 +16,6 @@
 
 namespace iv {
     template<typename Node>
-    struct AccessBlockContext;
-
-    template<typename Node>
-    struct AccessBlockBatchContext;
-
-    template<typename Node>
-    struct PropagateBlockAccessContext;
-
-    template<typename Node>
-    struct PropagateBlockAccessBatchContext;
-
-    template<typename Node>
-    using PropagateBlockAccessBatchedOperation = void (*) (
-        Node const&, PropagateBlockAccessBatchContext<Node>&);
-
-    // Normalizes the author-facing access_block/access_block_batch pair to
-    // one batched execution entry point. Its definition accompanies the
-    // concrete contexts because the unbatched fallback needs their request
-    // views.
-    template<typename Node>
-    void do_access_block_batched(
-        Node const&, AccessBlockBatchContext<Node>&);
-
-    // Returns the normalized block-access propagation callback. A function
-    // pointer is useful to future planner/compiler records without capturing
-    // a Node instance.
-    template<typename Node>
-    constexpr PropagateBlockAccessBatchedOperation<Node>
-    do_propagate_block_access_batched();
-
-    template<typename Node>
     struct NodeState {
         using Type = void;
     };
@@ -62,33 +31,6 @@ namespace iv {
     requires(details::has_State<Node>)
     struct NodeState<Node> {
         using Type = typename Node::State;
-    };
-
-    // CompiledState belongs exclusively to arbitrary compiled-port access.
-    // Its lifetime and storage are intentionally not coupled to Node::State.
-    template<typename Node>
-    struct NodeCompiledState {
-        using Type = void;
-    };
-
-    namespace details {
-        template<typename Node>
-        concept has_CompiledState = requires {
-            typename Node::CompiledState;
-        };
-    }
-
-    template<typename Node>
-    requires(details::has_CompiledState<Node>)
-    struct NodeCompiledState<Node> {
-        using Type = typename Node::CompiledState;
-    };
-
-    enum class CompiledPortCallbackKind {
-        none,
-        unbatched,
-        batch,
-        conflicting,
     };
 
     template<typename A>
@@ -303,81 +245,6 @@ namespace iv {
         template<typename Node>
         inline constexpr bool has_fixed_num_event_outputs_v =
             fixed_num_event_outputs_v<Node> != std::dynamic_extent;
-
-        template<typename Node>
-        concept has_access_block = requires(Node const& node) {
-            { node.access_block(std::declval<AccessBlockContext<Node>&>()) }
-                -> std::same_as<void>;
-        };
-
-        template<typename Node>
-        concept has_access_block_batch = requires(Node const& node) {
-            { node.access_block_batch(std::declval<AccessBlockBatchContext<Node>&>()) }
-                -> std::same_as<void>;
-        };
-
-        template<typename Node>
-        concept has_propagate_block_access = requires(Node const& node) {
-            { node.propagate_block_access(
-                std::declval<PropagateBlockAccessContext<Node>&>()) }
-                -> std::same_as<void>;
-        };
-
-        template<typename Node>
-        concept has_propagate_block_access_batch = requires(Node const& node) {
-            { node.propagate_block_access_batch(
-                std::declval<PropagateBlockAccessBatchContext<Node>&>()) }
-                -> std::same_as<void>;
-        };
-
-        template<typename Node>
-        consteval CompiledPortCallbackKind access_block_callback_kind()
-        {
-            if constexpr (has_access_block<Node> && has_access_block_batch<Node>) {
-                return CompiledPortCallbackKind::conflicting;
-            } else if constexpr (has_access_block<Node>) {
-                return CompiledPortCallbackKind::unbatched;
-            } else if constexpr (has_access_block_batch<Node>) {
-                return CompiledPortCallbackKind::batch;
-            } else {
-                return CompiledPortCallbackKind::none;
-            }
-        }
-
-        template<typename Node>
-        consteval CompiledPortCallbackKind propagate_block_access_callback_kind()
-        {
-            if constexpr (has_propagate_block_access<Node>
-                && has_propagate_block_access_batch<Node>) {
-                return CompiledPortCallbackKind::conflicting;
-            } else if constexpr (has_propagate_block_access<Node>) {
-                return CompiledPortCallbackKind::unbatched;
-            } else if constexpr (has_propagate_block_access_batch<Node>) {
-                return CompiledPortCallbackKind::batch;
-            } else {
-                return CompiledPortCallbackKind::none;
-            }
-        }
-
-        template<typename Node>
-        inline constexpr CompiledPortCallbackKind access_block_callback_kind_v =
-            access_block_callback_kind<Node>();
-
-        template<typename Node>
-        inline constexpr CompiledPortCallbackKind propagate_block_access_callback_kind_v =
-            propagate_block_access_callback_kind<Node>();
-
-        template<typename Node>
-        inline constexpr bool has_valid_access_block_callback_v =
-            access_block_callback_kind_v<Node> == CompiledPortCallbackKind::unbatched
-            || access_block_callback_kind_v<Node> == CompiledPortCallbackKind::batch;
-
-        template<typename Node>
-        inline constexpr bool has_valid_propagate_block_access_callback_v =
-            propagate_block_access_callback_kind_v<Node>
-                == CompiledPortCallbackKind::unbatched
-            || propagate_block_access_callback_kind_v<Node>
-                == CompiledPortCallbackKind::batch;
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)

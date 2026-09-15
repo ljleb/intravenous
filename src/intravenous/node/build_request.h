@@ -91,7 +91,7 @@ IV_FORCEINLINE void tick_node_block(
             .scc_feedback_latency = ctx.scc_feedback_latency,
             .buffer = ctx.state,
         },
-        static_cast<SampleIndex>(index),
+        index,
         block_size,
     });
 }
@@ -114,7 +114,7 @@ IV_FORCEINLINE void skip_node_block(
             .scc_feedback_latency = ctx.scc_feedback_latency,
             .buffer = ctx.state,
         },
-        static_cast<SampleIndex>(index),
+        index,
         block_size,
     });
 }

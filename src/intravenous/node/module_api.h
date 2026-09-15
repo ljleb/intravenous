@@ -5,6 +5,5 @@
 // to define their own node types. It intentionally does not expose graph
 // builder storage or GraphBuilder implementation details.
 #include <intravenous/node/lifecycle.h>
-#include <intravenous/node/compiled_port_context.h>
 #include <intravenous/node/traits.h>
 #include <intravenous/ports.h>
