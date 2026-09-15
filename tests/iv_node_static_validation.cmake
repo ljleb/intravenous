@@ -43,5 +43,4 @@ expect_invalid(
     invalid.cpp
     "IV_NODE requires inputs() and outputs()"
     "declares a compiled sample port"
-    "must define only one compiled-access callback"
-    "declares compiled inputs and outputs")
+    "must define only one compiled-access callback")

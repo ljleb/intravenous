@@ -312,9 +312,8 @@ namespace iv {
                 || (
                     (!declares_compiled_sample_ports_v<Node>
                         || has_valid_access_block_callback_v<Node>)
-                    && (!(declares_compiled_sample_inputs_v<Node>
-                            && declares_compiled_sample_outputs_v<Node>)
-                        || has_valid_propagate_block_access_callback_v<Node>)));
+                    && propagate_block_access_callback_kind_v<Node>
+                        != CompiledPortCallbackKind::conflicting));
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)

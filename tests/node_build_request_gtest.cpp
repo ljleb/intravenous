@@ -277,7 +277,9 @@ static_assert(!iv::details::compiled_dsp_node_declaration_is_valid_v<MissingComp
 static_assert(iv::details::access_block_callback_kind_v<ConflictingCompiledAccess>
     == iv::CompiledPortCallbackKind::conflicting);
 static_assert(!iv::details::compiled_dsp_node_declaration_is_valid_v<ConflictingCompiledAccess>);
-static_assert(!iv::details::compiled_dsp_node_declaration_is_valid_v<MissingBlockAccessPropagation>);
+static_assert(iv::details::propagate_block_access_callback_kind_v<MissingBlockAccessPropagation>
+    == iv::CompiledPortCallbackKind::none);
+static_assert(iv::details::compiled_dsp_node_declaration_is_valid_v<MissingBlockAccessPropagation>);
 static_assert(iv::details::static_compiled_input_port_index<MixedCompiledPorts, "compiled">() == 0);
 static_assert(iv::details::static_compiled_output_port_index<MixedCompiledPorts, "compiled">() == 0);
 static_assert(iv::details::compiled_dsp_node_declaration_is_valid_v<MixedCompiledPorts>);
@@ -320,6 +322,23 @@ void capture_propagated_access(
     auto& capture = *static_cast<PropagatedAccessCapture*>(data);
     capture.input_index = input_index;
     capture.requests = requests;
+}
+
+struct DefaultPropagationCapture {
+    std::size_t calls = 0;
+    std::size_t input_index = 0;
+    iv::AccessRequest request {};
+};
+
+void capture_default_propagated_access(
+    void* data, std::size_t input_index, iv::AccessRequestSet const& requests)
+{
+    auto& capture = *static_cast<DefaultPropagationCapture*>(data);
+    ++capture.calls;
+    capture.input_index = input_index;
+    if (!requests.requests().empty()) {
+        capture.request = requests.requests().front();
+    }
 }
 
 TEST(CompiledDspPorts, AccessContextExposesOnlyDeclaredCompiledPorts)
@@ -464,6 +483,31 @@ TEST(CompiledDspPorts, BatchedPropagationNormalizesAnUnbatchedCallbackPerRequest
     iv::do_propagate_block_access_batched<UnbatchedBlockAccessPropagationNode>()(node, batch);
 
     EXPECT_EQ(calls, 2);
+}
+
+TEST(CompiledDspPorts, MissingPropagationCallbackRequestsEntireCompiledInputExtent)
+{
+    MissingBlockAccessPropagation node;
+    std::array<iv::CompiledSampleExtent, 1> input_extents {{
+        {.begin = 25, .end = 89},
+    }};
+    DefaultPropagationCapture capture;
+    iv::PropagateBlockAccessBatchContext<MissingBlockAccessPropagation> batch {
+        .batch = {
+            .input_extents = input_extents,
+            .user_data = &capture,
+            .propagate_input_access = &capture_default_propagated_access,
+        },
+    };
+
+    iv::do_propagate_block_access_batched<MissingBlockAccessPropagation>()(
+        node, batch);
+
+    EXPECT_EQ(capture.calls, 1u);
+    EXPECT_EQ(capture.input_index, 0u);
+    EXPECT_EQ(capture.request.begin, 25u);
+    EXPECT_EQ(capture.request.end, 89u);
+    EXPECT_EQ(capture.request.sample_count, 64u);
 }
 
 TEST(CompiledDspPorts, BatchedCallbacksReceiveOneWholeQueryContext)

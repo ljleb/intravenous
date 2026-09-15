@@ -21,8 +21,6 @@ struct ValidCompiledNode {
         (void)ctx.template output<"output">();
     }
     void access_block_batch(iv::AccessBlockBatchContext<ValidCompiledNode>&) const {}
-    void propagate_block_access_batch(
-        iv::PropagateBlockAccessBatchContext<ValidCompiledNode>&) const {}
 };
 
 IV_NODE("iv.test.valid_compiled_node", ValidCompiledNode);

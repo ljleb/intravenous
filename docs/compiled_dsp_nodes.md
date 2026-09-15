@@ -322,18 +322,33 @@ Request coalescing and caching are distinct concepts.
 
 ## 9. Block-access propagation callback
 
-A node therefore needs a way to describe:
+The planner needs a way to determine:
 
 > Given these requested samples on my outputs, what samples do I need from my inputs?
 
-There should be unbatched/batched trait handling analogous to `access_block`:
+Nodes may override the conservative default with either of two callback forms,
+with unbatched/batched trait handling analogous to `access_block`:
 
 ```cpp
 propagate_block_access(...)
 propagate_block_access_batch(...)
 ```
 
-with framework code always calling the normalized batched trait.
+with framework code always calling the normalized batched trait. Both callbacks
+are optional. A node may define either one to describe a narrower dependency
+footprint, but it must not define both.
+
+If neither callback is present, the framework synthesizes conservative
+propagation automatically: every compiled sample input is requested across its
+entire logical extent. The planner supplies those input extents to the
+propagation context, and the synthesized operation emits one dense
+`AccessRequest` covering each non-empty input extent.
+
+This default is intentionally correct rather than selective. It lets simple
+nodes participate in compiled execution without writing propagation boilerplate,
+while transforms such as convolution, resampling, windowing, or other
+range-sensitive operations can provide an explicit callback to avoid requesting
+unneeded upstream data.
 
 However, the context API should be extremely terse because dependency propagation is essentially the only purpose of this callback.
 
@@ -602,11 +617,12 @@ static declaration validation. For nodes whose compiled port contract is
 statically described, validate at minimum:
 
 * compiled ports require a valid access implementation;
-* only one of unbatched/batched variants is user-defined for a given operation;
+* at most one of the optional block-access propagation variants is user-defined;
 * callback signatures are valid;
 * `tick_block_batch` / `tick_block` combinations are valid;
 * `access_block_batch` / `access_block` combinations are valid;
-* block-access propagation callback combinations are valid;
+* block-access propagation callback combinations are valid, with no callback
+  meaning conservative full-input-range propagation;
 * `State`/`CompiledState` lifecycle functions are usable; and
 * the compiled sample/event declarations are structurally valid.
 

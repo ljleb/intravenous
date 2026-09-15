@@ -55,26 +55,9 @@ struct ConflictingCompiledAccessNode {
         iv::AccessBlockBatchContext<ConflictingCompiledAccessNode>&) const {}
 };
 
-struct MissingBlockAccessPropagationNode {
-    static constexpr auto inputs()
-    {
-        return std::array {iv::sample_input("input", {}, true)};
-    }
-
-    static constexpr auto outputs()
-    {
-        return std::array {iv::sample_output("output", {}, true)};
-    }
-
-    void tick_block(iv::TickBlockContext<MissingBlockAccessPropagationNode> const&) const {}
-    void access_block(
-        iv::AccessBlockContext<MissingBlockAccessPropagationNode>&) const {}
-};
-
 IV_NODE("iv.test.dynamic_sample_port_node", DynamicSamplePortNode);
 IV_NODE("iv.test.dynamic_event_port_node", DynamicEventPortNode);
 IV_NODE("iv.test.non_constexpr_port_node", NonConstexprPortNode);
 IV_NODE("iv.test.dynamic_port_count_node", DynamicPortCountNode);
 IV_NODE("iv.test.missing_compiled_access", MissingCompiledAccessNode);
 IV_NODE("iv.test.conflicting_compiled_access", ConflictingCompiledAccessNode);
-IV_NODE("iv.test.missing_block_access_propagation", MissingBlockAccessPropagationNode);
