@@ -44,3 +44,17 @@ expect_invalid(
     "IV_NODE requires inputs() and outputs()"
     "declares a compiled output port"
     "must define only one compiled-access callback")
+
+expect_invalid(
+    invalid_compiled_tick_output.cpp
+    "tick/tick_block cannot write a compiled sample output"
+    "tick/tick_block cannot write a compiled event output")
+
+expect_invalid(
+    invalid_compiled_callback_shape.cpp
+    "defines access_block/access_block_batch but declares no compiled output port"
+    "defines compiled block-access propagation but does not declare both compiled input and compiled output ports")
+
+expect_invalid(
+    invalid_compiled_state.cpp
+    "Node::CompiledState must be a mutable, non-volatile, default-constructible object type")

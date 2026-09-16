@@ -82,6 +82,7 @@ namespace iv {
                         .event_outputs = ctx.event_outputs,
                         .compiled_inputs = ctx.compiled_inputs,
                         .compiled_event_inputs = ctx.compiled_event_inputs,
+                        .compiled_state_storage = ctx.compiled_state_storage,
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
                         .buffer = ctx.buffer
@@ -98,6 +99,7 @@ namespace iv {
                         .event_outputs = ctx.event_outputs,
                         .compiled_inputs = ctx.compiled_inputs,
                         .compiled_event_inputs = ctx.compiled_event_inputs,
+                        .compiled_state_storage = ctx.compiled_state_storage,
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
                         .buffer = ctx.buffer
@@ -115,6 +117,7 @@ namespace iv {
                         .event_outputs = ctx.event_outputs,
                         .compiled_inputs = ctx.compiled_inputs,
                         .compiled_event_inputs = ctx.compiled_event_inputs,
+                        .compiled_state_storage = ctx.compiled_state_storage,
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
                         .buffer = ctx.buffer

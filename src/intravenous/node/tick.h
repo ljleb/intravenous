@@ -21,6 +21,10 @@ namespace iv {
         // port spans above.
         std::span<CompiledInputPort const> compiled_inputs = {};
         std::span<CompiledEventInputPort const> compiled_event_inputs = {};
+        // Shared persistent state for compiled-side machinery. tick[_block]
+        // may mutate it (for example, a recorder appending realtime input) and
+        // access_block[_batch] observes the same object later.
+        std::span<std::byte> compiled_state_storage = {};
         size_t sample_rate = 48000;
         size_t scc_feedback_latency = 0;
         std::span<std::byte> buffer = {};
@@ -31,9 +35,13 @@ namespace iv {
         }
 
         using State = typename NodeState<Node>::Type;
+        using CompiledState = typename NodeCompiledState<Node>::Type;
 
         std::add_lvalue_reference_t<State> state() const
         requires(!std::is_void_v<State>);
+
+        std::add_lvalue_reference_t<CompiledState> compiled_state() const
+        requires(!std::is_void_v<CompiledState>);
     };
 
     namespace details {
@@ -273,12 +281,16 @@ namespace iv {
         {
             constexpr auto port_kind = details::static_output_port_kind<Node, Name>();
             if constexpr (port_kind == PortKind::sample) {
+                static_assert(!details::static_output_port_is_compiled<Node, Name>(),
+                    "tick/tick_block cannot write a compiled sample output; produce it from access_block/access_block_batch");
                 constexpr auto layout = details::static_output_port_layout<Node, Name>();
                 constexpr auto port_index = details::static_output_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->outputs.size(), "static output port is absent from execution context");
                 IV_ASSERT(this->outputs[port_index].channel_layout() == layout, "static output port layout does not match execution context");
                 return details::StaticOutputSamplePortAccess<layout.channel_type>(this->outputs[port_index]);
             } else {
+                static_assert(!details::static_event_output_port_is_compiled<Node, Name>(),
+                    "tick/tick_block cannot write a compiled event output; produce it from access_block/access_block_batch");
                 constexpr auto port_index =
                     details::static_event_output_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->event_outputs.size(),
@@ -358,6 +370,8 @@ namespace iv {
         {
             constexpr auto port_kind = details::static_output_port_kind<Node, Name>();
             if constexpr (port_kind == PortKind::sample) {
+                static_assert(!details::static_output_port_is_compiled<Node, Name>(),
+                    "tick/tick_block cannot write a compiled sample output; produce it from access_block/access_block_batch");
                 constexpr auto layout = details::static_output_port_layout<Node, Name>();
                 constexpr auto port_index = details::static_output_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->outputs.size(), "static output port is absent from execution context");
@@ -366,6 +380,8 @@ namespace iv {
                     layout.channel_type, layout.sample_layout>(
                         this->outputs[port_index], this->block_size);
             } else {
+                static_assert(!details::static_event_output_port_is_compiled<Node, Name>(),
+                    "tick/tick_block cannot write a compiled event output; produce it from access_block/access_block_batch");
                 constexpr auto port_index =
                     details::static_event_output_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->event_outputs.size(),
@@ -410,6 +426,20 @@ namespace iv {
         void* ptr = buffer.data();
         size_t space = buffer.size();
         return *reinterpret_cast<State*>(std::align(alignof(State), sizeof(State), ptr, space));
+    }
+
+    template<typename Node>
+    IV_FORCEINLINE std::add_lvalue_reference_t<typename TickContext<Node>::CompiledState>
+    TickContext<Node>::compiled_state() const
+    requires(!std::is_void_v<CompiledState>)
+    {
+        void* pointer = compiled_state_storage.data();
+        std::size_t space = compiled_state_storage.size();
+        void* const aligned = std::align(
+            alignof(CompiledState), sizeof(CompiledState), pointer, space);
+        IV_ASSERT(aligned != nullptr,
+            "compiled state storage does not contain the node CompiledState");
+        return *static_cast<CompiledState*>(aligned);
     }
 
     template<typename Node>

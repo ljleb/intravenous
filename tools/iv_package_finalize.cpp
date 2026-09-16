@@ -282,6 +282,8 @@ struct IrNodeRecord {
     std::string type_name{};
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
+    std::size_t compiled_state_size = 0;
+    std::size_t compiled_state_alignment = 1;
     Constant* initializer = nullptr;
 };
 
@@ -308,7 +310,7 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
         auto const section = global.getSection();
         if (section != "iv_node_types" && !section.ends_with("__iv_node_types")) continue;
         auto* record = dyn_cast_or_null<ConstantStruct>(global.getInitializer());
-        if (!record || record->getNumOperands() != 6) fail("malformed iv_node_types record");
+        if (!record || record->getNumOperands() != 8) fail("malformed iv_node_types record");
         auto* key = dyn_cast<ConstantStruct>(record->getOperand(0));
         if (!key || key->getNumOperands() != 2) fail("malformed iv_node_types key");
         StringRef name;
@@ -324,6 +326,10 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
             .type_name = name.substr(0, name_size).str(),
             .state_size = constant_size(record->getOperand(4), "state size"),
             .state_alignment = constant_size(record->getOperand(5), "state alignment"),
+            .compiled_state_size = constant_size(
+                record->getOperand(6), "compiled state size"),
+            .compiled_state_alignment = constant_size(
+                record->getOperand(7), "compiled state alignment"),
             .initializer = record,
         });
     }
@@ -694,7 +700,7 @@ void reject_node_runtime_mutable_globals(std::span<IrNodeRecord const> records)
     };
     for (auto const& record : records) {
         auto const* initializer = dyn_cast_or_null<ConstantStruct>(record.initializer);
-        if (!initializer || initializer->getNumOperands() != 6) {
+        if (!initializer || initializer->getNumOperands() != 8) {
             fail("malformed compiler record while validating node runtime globals");
         }
         SmallPtrSet<GlobalValue const*, 32> reachable;
@@ -710,7 +716,7 @@ void reject_node_runtime_mutable_globals(std::span<IrNodeRecord const> records)
                 "node type '" + record.type_name
                 + "' runtime/compiler operations reference mutable package global '"
                 + global->getName().str()
-                + "'; persistent mutable runtime data must be Node::State");
+                + "'; persistent mutable runtime data must be Node::State or Node::CompiledState");
         }
     }
 }
@@ -759,7 +765,7 @@ iv::NodeCodeKey compiler_record_key(Constant* pointer)
         fail("node type definition does not reference a compiler record global");
     }
     auto const* record = dyn_cast<ConstantStruct>(global->getInitializer());
-    if (!record || record->getNumOperands() != 6) {
+    if (!record || record->getNumOperands() != 8) {
         fail("node type definition references a malformed compiler record");
     }
     auto const* key = dyn_cast<ConstantStruct>(record->getOperand(0));

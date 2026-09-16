@@ -1468,11 +1468,13 @@ Multiple instances of one registered node type share one implementation function
 State should lower to direct typed state storage known by the graph compiler rather than repeatedly treating state as an untyped byte span in the hot path.
 
 Compiled-capable nodes may additionally declare `CompiledState`. Sequential
-`State` and `CompiledState` are distinct semantic lifetimes: arbitrary
-`access_block()` evaluation may use `CompiledState` but must not depend on
-sequential `State` or request order, while realtime `tick_block()` may use both
-when useful. Node lifecycle/storage planning must support both without requiring
-heap allocation or a particular physical layout.
+`State` and `CompiledState` have distinct storage identities, but the same mutable
+`CompiledState` object is intentionally visible to both realtime `tick_block()`
+and arbitrary `access_block()` evaluation. This is what permits explicit recorder
+nodes to append realtime input into wide state during tick execution and expose it
+later through compiled outputs. `access_block()` must not depend on sequential
+`State` or request order. Node lifecycle/storage planning must support both state
+objects without requiring heap allocation or a particular physical layout.
 
 This gives LLVM ordinary field-addressing and alias information after inlining.
 
@@ -1486,11 +1488,13 @@ runtime must preserve these integration rules:
   axes; realtime declarations carry finite `RealtimeInputConfig` /
   `RealtimeOutputConfig` timing while compiled declarations carry the empty
   `CompiledPortConfig`;
-- compiled access remains additive at the typed `tick()` / `tick_block()`
-  accessor surface rather than by combining realtime and compiled config state;
-  it does not introduce a parallel graph or prepared-resource vocabulary;
-- `tick_block()` is sequential realtime execution, while `access_block()` is
-  arbitrary compiled evaluation over compiled ports and `CompiledState`;
+- compiled **input** access remains additive at the typed `tick()` / `tick_block()`
+  accessor surface; compiled outputs are absent from that write surface and are
+  produced only by `access_block*`;
+- `tick_block()` is sequential realtime execution over realtime/compiled inputs,
+  realtime outputs, `State`, and mutable `CompiledState`; `access_block()` is a
+  separate arbitrary compiled evaluation over compiled ports and that same mutable
+  `CompiledState`; neither callback is synthesized from the other;
 - compiled sample queries may request sparse deterministic integer sample
   positions as well as dense ranges, while compiled event queries request event
   intervals and preserve all events in those intervals;

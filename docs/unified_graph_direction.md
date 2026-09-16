@@ -327,9 +327,9 @@ contract is in [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). In summary:
 - sample/event kind and realtime/compiled access are orthogonal declaration axes;
 - a declaration chooses either bounded realtime timing (`RealtimeInputConfig` /
   `RealtimeOutputConfig`) or compiled random access (`CompiledPortConfig`);
-- compiled ports still expose the ordinary current-block typed wrapper during
-  `tick()` / `tick_block()`, so additivity belongs to the accessor API rather than
-  to a combined realtime+compiled config;
+- compiled **inputs** still expose the ordinary current-block typed wrapper during
+  `tick()` / `tick_block()` and add arbitrary reads there; compiled outputs are
+  not writable from tick execution and are produced only by `access_block*`;
 - a compiled sample output can be requested at arbitrary global sample positions,
   while a compiled event output can be queried over arbitrary global intervals;
 - a compiled input extends the corresponding ordinary realtime sample/event
@@ -339,7 +339,10 @@ contract is in [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). In summary:
 - compiled access does not imply persistent materialization, buffering, or
   caching;
 - sequential `tick_block()` and arbitrary `access_block()` are distinct execution
-  modes, with `access_block()` restricted to compiled ports and `CompiledState`;
+  modes that are not synthesized from one another; `tick_block()` reads realtime/
+  compiled inputs, writes realtime outputs, and may mutate `State` plus
+  `CompiledState`, while `access_block()` sees only compiled ports plus the same
+  mutable `CompiledState`;
 - a compiled query is planned globally: demands propagate in reverse topological
   order, request sets are unioned/coalesced, and evaluation then runs forward;
 - temporary representation/materialization is chosen only after planning; and

@@ -21,6 +21,7 @@ struct ReflectedNodeTickContext {
     std::span<EventOutputPort> event_outputs {};
     std::span<CompiledInputPort const> compiled_inputs {};
     std::span<CompiledEventInputPort const> compiled_event_inputs {};
+    std::span<std::byte> compiled_state {};
     std::size_t sample_rate = 48000;
     std::size_t scc_feedback_latency = 0;
     std::span<std::byte> state {};

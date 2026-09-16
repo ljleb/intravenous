@@ -51,6 +51,10 @@ struct NodeCompilerRecord {
     // received from Clang before publishing it to the graph compiler.
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
+    // CompiledState is persistent mutable state shared by tick[_block] and
+    // access_block[_batch]. It is allocated independently from State.
+    std::size_t compiled_state_size = 0;
+    std::size_t compiled_state_alignment = 1;
 };
 
 } // namespace details

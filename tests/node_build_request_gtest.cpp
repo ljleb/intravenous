@@ -139,6 +139,28 @@ struct CompiledSource {
     void access_block(iv::AccessBlockContext<CompiledSource>&) const {}
 };
 
+
+struct TickCompiledStateRecorder {
+    struct CompiledState {
+        int writes = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0> {};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0> {};
+    }
+
+    void tick_block(iv::TickBlockContext<TickCompiledStateRecorder> const& ctx) const
+    {
+        ++ctx.compiled_state().writes;
+    }
+};
+
 struct CompiledTransform {
     static constexpr auto inputs()
     {
@@ -361,6 +383,12 @@ struct BatchedCallbacksNode {
 static_assert(std::same_as<
     iv::NodeCompiledState<CompiledSource>::Type,
     CompiledSource::CompiledState>);
+static_assert(
+    iv::details::node_compiled_state_size<CompiledSource>()
+    == sizeof(CompiledSource::CompiledState));
+static_assert(
+    iv::details::node_compiled_state_alignment<CompiledSource>()
+    == alignof(CompiledSource::CompiledState));
 static_assert(std::same_as<
     decltype(iv::TickBlockContext<CompiledSource>::index),
     iv::SampleIndex>);
@@ -853,6 +881,53 @@ TEST(CompiledDspPorts, CompiledStateHasASeparateExplicitAccessor)
     };
 
     EXPECT_EQ(context.compiled_state().calls, 3);
+    std::destroy_at(state);
+}
+
+
+TEST(CompiledDspPorts, TickAndAccessContextsShareWritableCompiledState)
+{
+    alignas(CompiledSource::CompiledState)
+        std::array<std::byte, sizeof(CompiledSource::CompiledState)> storage {};
+    auto* state = std::construct_at(
+        reinterpret_cast<CompiledSource::CompiledState*>(storage.data()),
+        CompiledSource::CompiledState {.calls = 1});
+
+    iv::TickBlockContext<CompiledSource> tick {
+        iv::TickContext<CompiledSource> {.compiled_state_storage = storage},
+        0,
+        16,
+    };
+    ++tick.compiled_state().calls;
+
+    iv::AccessBlockContext<CompiledSource> access {
+        .compiled_state_storage = storage,
+    };
+    access.compiled_state().calls += 3;
+
+    EXPECT_EQ(state->calls, 5);
+    std::destroy_at(state);
+}
+
+TEST(CompiledDspPorts, CompilerTickOperationReceivesCompiledStateStorage)
+{
+    alignas(TickCompiledStateRecorder::CompiledState)
+        std::array<std::byte, sizeof(TickCompiledStateRecorder::CompiledState)> storage {};
+    auto* state = std::construct_at(
+        reinterpret_cast<TickCompiledStateRecorder::CompiledState*>(storage.data()));
+
+    auto const& record = iv::details::node_compiler_record<TickCompiledStateRecorder>;
+    EXPECT_EQ(record.compiled_state_size, sizeof(TickCompiledStateRecorder::CompiledState));
+    EXPECT_EQ(record.compiled_state_alignment, alignof(TickCompiledStateRecorder::CompiledState));
+
+    TickCompiledStateRecorder node;
+    record.operations.tick_block(
+        &node,
+        iv::ReflectedNodeTickContext {.compiled_state = storage},
+        0,
+        16);
+
+    EXPECT_EQ(state->writes, 1);
     std::destroy_at(state);
 }
 

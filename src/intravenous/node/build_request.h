@@ -88,6 +88,7 @@ IV_FORCEINLINE void tick_node_block(
             .event_outputs = ctx.event_outputs,
             .compiled_inputs = ctx.compiled_inputs,
             .compiled_event_inputs = ctx.compiled_event_inputs,
+            .compiled_state_storage = ctx.compiled_state,
             .sample_rate = ctx.sample_rate,
             .scc_feedback_latency = ctx.scc_feedback_latency,
             .buffer = ctx.state,
@@ -113,6 +114,7 @@ IV_FORCEINLINE void skip_node_block(
             .event_outputs = ctx.event_outputs,
             .compiled_inputs = ctx.compiled_inputs,
             .compiled_event_inputs = ctx.compiled_event_inputs,
+            .compiled_state_storage = ctx.compiled_state,
             .sample_rate = ctx.sample_rate,
             .scc_feedback_latency = ctx.scc_feedback_latency,
             .buffer = ctx.state,
@@ -199,6 +201,28 @@ consteval std::size_t node_state_alignment()
     }
 }
 
+template<class Node>
+consteval std::size_t node_compiled_state_size()
+{
+    using CompiledState = typename NodeCompiledState<Node>::Type;
+    if constexpr (std::is_void_v<CompiledState>) {
+        return 0;
+    } else {
+        return sizeof(CompiledState);
+    }
+}
+
+template<class Node>
+consteval std::size_t node_compiled_state_alignment()
+{
+    using CompiledState = typename NodeCompiledState<Node>::Type;
+    if constexpr (std::is_void_v<CompiledState>) {
+        return 1;
+    } else {
+        return alignof(CompiledState);
+    }
+}
+
 #if defined(__APPLE__)
 #define IV_NODE_COMPILER_RECORD_ATTR __attribute__((used, section("__DATA,__iv_node_types")))
 #elif defined(_WIN32)
@@ -216,6 +240,8 @@ IV_NODE_COMPILER_RECORD_ATTR inline const NodeCompilerRecord
         .type_name_size = clang_type_name<Node>().size(),
         .state_size = node_state_size<Node>(),
         .state_alignment = node_state_alignment<Node>(),
+        .compiled_state_size = node_compiled_state_size<Node>(),
+        .compiled_state_alignment = node_compiled_state_alignment<Node>(),
     };
 
 #undef IV_NODE_COMPILER_RECORD_ATTR

@@ -181,9 +181,10 @@ Sequential realtime execution.
 It:
 
 * may access realtime and compiled inputs;
-* may produce realtime and compiled outputs;
+* may produce realtime outputs only;
+* cannot write compiled outputs; those are produced only by `access_block*`;
 * may access the ordinary sequential `State`;
-* may also use compiled-support state where useful;
+* may read and mutate the same `CompiledState` used by compiled access;
 * executes in the normal realtime graph order.
 
 ### `access_block()`
@@ -201,12 +202,15 @@ It:
 
 Do **not** provide fake silence for realtime inputs or discard sinks for realtime outputs in `AccessBlockContext`. Realtime ports should simply be unavailable there. This statically prevents an arbitrary-access implementation from accidentally depending on sequential realtime information.
 
-The asymmetry is important:
+The execution modes are intentionally independent:
 
-> `tick_block()` may be implemented in terms of `access_block()`.
-> `access_block()` must never be synthesized from `tick_block()`.
+> `tick_block()` is not synthesized from `access_block()`, and `access_block()` is
+> not synthesized from `tick_block()`.
 
-A stateful sequential `tick_block()` cannot generally be called out of order and therefore cannot satisfy arbitrary access.
+They may communicate through the node's persistent mutable `CompiledState`, but
+they run for different reasons and at different times. A stateful sequential
+`tick_block()` cannot generally be called out of order, while compiled-output
+production must remain demand-driven through `access_block*`.
 
 ---
 
@@ -496,8 +500,8 @@ tiny intermediate
 immutable resource
 → direct view/pointer
 
-compiled producer consumed only sequentially
-→ ordinary realtime connection lowering
+compiled output demanded by sequential tick execution
+→ materialize the requested current range through compiled access before the consumer runs
 ```
 
 A compiled input may therefore receive a contiguous pointer/span when that representation was chosen for the current query, but the graph semantics must not force every compiled connection into such a buffer.
@@ -577,9 +581,13 @@ Its hard semantic constraint is:
 
 Different request orders may populate `CompiledState` differently for performance, but they must produce identical values.
 
-`AccessBlockContext` may expose `CompiledState`, but never `State`.
+`AccessBlockContext` exposes mutable `CompiledState`, but never `State`.
 
-`TickBlockContext` may need access to both when the realtime path benefits from compiled-side machinery. If both are exposed, use distinct accessor names rather than overloading an ambiguous `state()`.
+`TickBlockContext` exposes mutable `CompiledState` as well as ordinary `State`,
+using distinct `compiled_state()` and `state()` accessors. The same
+`CompiledState` object is bound into both callback domains. This supports explicit
+recording nodes: `tick_block()` writes realtime input into node-owned wide state,
+and `access_block()` later serves compiled-output requests from that state.
 
 ---
 
@@ -635,23 +643,22 @@ Therefore `tick_block_batch()` should be designed around batches of compatible n
 
 ---
 
-## 17. Automatic `tick_block()` from `access_block()`
+## 17. `tick_block()` and `access_block()` are independent
 
-The safe synthesis direction remains:
+Neither callback is synthesized from the other. They execute for different reasons and may run at different times:
 
 ```text
-access implementation
-        ↓
-possible realtime implementation
+sequential realtime execution       arbitrary compiled demand
+          │                                  │
+          ▼                                  ▼
+     tick_block()                       access_block()
+          │                                  │
+          └────── shared mutable CompiledState ──────┘
 ```
 
-not the reverse.
+A compiled output is produced only by `access_block*`; it has no writable sequential projection. A compiled input may still be read from `tick_block()` because the caller can provide both its ordinary current-block view and its arbitrary-access binding.
 
-If the node's realtime projection can be fully satisfied from its compiled-access implementation, traits may synthesize realtime ticking for the current block by requesting the current global range from the access implementation.
-
-The static trait machinery must verify that doing so is semantically possible given the node's realtime-only ports.
-
-There is no general rule that an arbitrary mixed node can get a synthesized `tick_block()`.
+When sequential execution needs data from a compiled output, the graph compiler must plan an explicit compiled-access materialization before the realtime consumer. It must not implement that relationship by calling the producer's `tick_block()` or by treating the compiled output as a realtime port.
 
 ---
 

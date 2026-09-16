@@ -56,8 +56,10 @@ namespace iv {
         using Type = typename Node::State;
     };
 
-    // CompiledState belongs exclusively to arbitrary compiled-port access.
-    // Its lifetime and storage are intentionally not coupled to Node::State.
+    // CompiledState is persistent state shared by sequential tick execution and
+    // arbitrary compiled-port access. Its lifetime/storage remain intentionally
+    // distinct from Node::State so GraphJit can bind the same object into both
+    // callback domains without making compiled outputs sequential.
     template<typename Node>
     struct NodeCompiledState {
         using Type = void;
@@ -75,6 +77,22 @@ namespace iv {
     struct NodeCompiledState<Node> {
         using Type = typename Node::CompiledState;
     };
+
+    namespace details {
+        template<typename Node>
+        inline constexpr bool compiled_state_type_is_valid_v = [] {
+            using CompiledState = typename NodeCompiledState<Node>::Type;
+            if constexpr (std::is_void_v<CompiledState>) {
+                return true;
+            } else {
+                return std::is_object_v<CompiledState>
+                    && !std::is_const_v<CompiledState>
+                    && !std::is_volatile_v<CompiledState>
+                    && std::is_default_constructible_v<CompiledState>
+                    && std::is_destructible_v<CompiledState>;
+            }
+        }();
+    }
 
     enum class CompiledPortCallbackKind {
         none,
@@ -347,12 +365,22 @@ namespace iv {
 
         template<typename Node>
         inline constexpr bool compiled_dsp_node_declaration_is_valid_v =
-            (!has_constexpr_port_configs<Node>
+            compiled_state_type_is_valid_v<Node>
+            && (!has_constexpr_port_configs<Node>
                 || (
-                    (!declares_compiled_outputs_v<Node>
+                    access_block_callback_kind_v<Node>
+                        != CompiledPortCallbackKind::conflicting
+                    && (!declares_compiled_outputs_v<Node>
                         || has_valid_access_block_callback_v<Node>)
+                    && (access_block_callback_kind_v<Node>
+                            == CompiledPortCallbackKind::none
+                        || declares_compiled_outputs_v<Node>)
                     && propagate_block_access_callback_kind_v<Node>
-                        != CompiledPortCallbackKind::conflicting));
+                        != CompiledPortCallbackKind::conflicting
+                    && (propagate_block_access_callback_kind_v<Node>
+                            == CompiledPortCallbackKind::none
+                        || (declares_compiled_outputs_v<Node>
+                            && declares_compiled_inputs_v<Node>))));
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)

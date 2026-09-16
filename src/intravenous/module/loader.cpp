@@ -624,10 +624,10 @@ void collect_compatibility_runtime_code(
         }
         auto const* record = llvm::dyn_cast_or_null<llvm::ConstantStruct>(
             global.getInitializer());
-        if (!record || record->getNumOperands() != 6) continue;
+        if (!record || record->getNumOperands() != 8) continue;
         auto const* operations = llvm::dyn_cast<llvm::ConstantStruct>(
             record->getOperand(1));
-        if (!operations || operations->getNumOperands() != 3) continue;
+        if (!operations || operations->getNumOperands() != 5) continue;
 
         // declare_node participates in graph construction and is intentionally
         // left at package O0.  Package/provider configuration is allowed to
