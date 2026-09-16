@@ -1,10 +1,13 @@
+#include <intravenous/dsl.h>
 #include <intravenous/module/package_definitions.h>
+#include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/package_pipeline_types.h>
 #include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/project_graph_graph_connections_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
@@ -32,8 +35,10 @@ RegisteredSignature const* signature_callback() { return &zero_signature; }
 
 void configure_module(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
 {
+    using namespace iv;
     ++configure_calls;
-    graph.outputs();
+    auto input = graph.input<"main">();
+    graph.outputs("main"_P = input);
 }
 
 std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_snapshot(std::uint64_t generation)
@@ -77,9 +82,12 @@ std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_snapshot(std::uint64_t g
 
 struct ProjectGraphFixture : ::testing::Test {
     iv::NodeInstances instances;
+    iv::GraphConnections connections;
     iv::ProjectGraph project_graph;
     iv::project_graph_node_instances_bridge::scope instances_scope{
         project_graph, instances};
+    iv::project_graph_graph_connections_bridge::scope connections_scope{
+        project_graph, connections};
 
     void SetUp() override { configure_calls = 0; }
 };
@@ -195,10 +203,13 @@ TEST(ProjectGraphBridge, NodeDefinitionsSnapshotFlowsThroughProjectGraphBeforeNo
     iv::NodeDefinitions definitions;
     iv::ProjectGraph project_graph;
     iv::NodeInstances instances;
+    iv::GraphConnections connections;
     auto definitions_scope = iv::node_definitions_project_graph_bridge::bind(
         definitions, project_graph);
     auto instances_scope = iv::project_graph_node_instances_bridge::bind(
         project_graph, instances);
+    auto connections_scope = iv::project_graph_graph_connections_bridge::bind(
+        project_graph, connections);
 
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_node_definitions_snapshot_changed_event,
@@ -213,6 +224,9 @@ TEST(ProjectGraphBridge, NodeDefinitionsSnapshotFlowsThroughProjectGraphBeforeNo
 TEST(ProjectGraph, FailedRootBuildDoesNotCommitDefinitionsAndSameSnapshotCanRetry)
 {
     iv::ProjectGraph project_graph;
+    iv::NodeInstances instances;
+    auto instances_scope = iv::project_graph_node_instances_bridge::bind(
+        project_graph, instances);
     auto snapshot = make_snapshot(1);
     EXPECT_THROW(
         project_graph.handle_node_definitions_snapshot_changed(
@@ -221,9 +235,9 @@ TEST(ProjectGraph, FailedRootBuildDoesNotCommitDefinitionsAndSameSnapshotCanRetr
     EXPECT_FALSE(project_graph.current_generation());
     EXPECT_EQ(project_graph.definitions_snapshot()->generation, 0u);
 
-    iv::NodeInstances instances;
-    auto instances_scope = iv::project_graph_node_instances_bridge::bind(
-        project_graph, instances);
+    iv::GraphConnections connections;
+    auto connections_scope = iv::project_graph_graph_connections_bridge::bind(
+        project_graph, connections);
     EXPECT_NO_THROW(project_graph.handle_node_definitions_snapshot_changed(
         iv::NodeDefinitionsSnapshotChanged{.snapshot = snapshot}));
     auto generation = project_graph.current_generation();
@@ -263,4 +277,71 @@ TEST_F(ProjectGraphFixture, InvalidUpdateBatchDoesNotPartiallyMutateDesiredState
     ASSERT_EQ(listed.size(), 1u);
     EXPECT_EQ(listed.front().display_name, "Original");
     EXPECT_EQ(project_graph.current_generation()->generation, before->generation);
+}
+
+
+TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntentRecovers)
+{
+    project_graph.handle_node_definitions_snapshot_changed(
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+
+    for (auto const* instance_id : {"instance:source", "instance:sink"}) {
+        iv::ProjectStringBuilder builder;
+        project_graph.handle_project_create_iv_module_instance(
+            iv::ProjectCreateIvModuleInstanceRequest{
+                .instance_id = std::string(instance_id),
+                .module_id = definition_id,
+            },
+            builder);
+        EXPECT_EQ(builder.build(), instance_id);
+    }
+
+    iv::ProjectAckBuilder connect_builder;
+    project_graph.handle_project_upsert_graph_connection(
+        iv::ProjectUpsertGraphConnectionRequest{
+            .connection = iv::ProjectSampleConnection{
+                .connection_id = "connection:main",
+                .outputs = {{
+                    .instance_id = "instance:source",
+                    .port = {.name = "main"},
+                }},
+                .inputs = {{
+                    .instance_id = "instance:sink",
+                    .port = {.name = "main"},
+                }},
+            },
+        },
+        connect_builder);
+    EXPECT_NO_THROW(connect_builder.build());
+    auto generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation->applied_connection_ids,
+              std::vector<std::string>{"connection:main"});
+    EXPECT_TRUE(generation->connection_diagnostics.empty());
+    ASSERT_EQ(connections.desired_connections().size(), 1u);
+
+    iv::ProjectAckBuilder delete_builder;
+    project_graph.handle_project_delete_iv_module_instance(
+        iv::ProjectDeleteIvModuleInstanceRequest{.instance_id = "instance:sink"},
+        delete_builder);
+    EXPECT_NO_THROW(delete_builder.build());
+    generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_TRUE(generation->applied_connection_ids.empty());
+    ASSERT_EQ(generation->connection_diagnostics.size(), 1u);
+    EXPECT_EQ(connections.desired_connections().size(), 1u);
+
+    iv::ProjectStringBuilder recreate_builder;
+    project_graph.handle_project_create_iv_module_instance(
+        iv::ProjectCreateIvModuleInstanceRequest{
+            .instance_id = "instance:sink",
+            .module_id = definition_id,
+        },
+        recreate_builder);
+    EXPECT_EQ(recreate_builder.build(), "instance:sink");
+    generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation->applied_connection_ids,
+              std::vector<std::string>{"connection:main"});
+    EXPECT_TRUE(generation->connection_diagnostics.empty());
 }

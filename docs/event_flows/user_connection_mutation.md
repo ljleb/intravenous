@@ -1,5 +1,11 @@
 # Event Flow: User Connection Mutation
 
+_Implementation checkpoint: the typed project mutation surface,
+`ProjectGraph -> GraphConnections` sibling edge, desired-state ownership, matcher
+resolution, dangling diagnostics, and root-builder application are implemented.
+The JSON-RPC/persistence serialization adapters for structured matchers remain a
+follow-up transport checkpoint._
+
 This procedure covers user creation, deletion, or replacement of project-wide
 connections expressed through `ProjectNodePortMatcher`s.
 

@@ -2,7 +2,9 @@
 
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
+#include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/project_graph_graph_connections_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/node_instances.h>
@@ -38,6 +40,7 @@ Json parse_json_line(std::string_view line)
 struct SeededIvModuleSourceIntrospectionOwner {
     NodeInstances instances;
     NodeDefinitions definitions;
+    GraphConnections graph_connections;
     ProjectGraph project_graph;
     IvModuleSourceIntrospection introspection;
     StartupConfig startup_config;
@@ -45,6 +48,8 @@ struct SeededIvModuleSourceIntrospectionOwner {
         node_definitions_project_graph_scope;
     project_graph_node_instances_bridge::scope
         project_graph_node_instances_scope;
+    project_graph_graph_connections_bridge::scope
+        project_graph_graph_connections_scope;
     node_definitions_iv_module_source_introspection_bridge::scope
         node_definitions_iv_module_source_introspection_scope;
     node_instances_iv_module_source_introspection_bridge::scope
@@ -60,6 +65,7 @@ struct SeededIvModuleSourceIntrospectionOwner {
               std::move(extra_search_roots)),
           node_definitions_project_graph_scope(definitions, project_graph),
           project_graph_node_instances_scope(project_graph, instances),
+          project_graph_graph_connections_scope(project_graph, graph_connections),
           node_definitions_iv_module_source_introspection_scope(
               definitions,
               introspection),

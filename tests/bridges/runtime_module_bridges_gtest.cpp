@@ -2,7 +2,9 @@
 
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
+#include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/project_graph_graph_connections_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/node_instances.h>
@@ -87,6 +89,7 @@ TEST(InstanceDefinitionBridges, InstanceCreatedAfterDefinitionPublicationRealize
 
     iv::NodeInstances instances;
     iv::NodeDefinitions definitions;
+    iv::GraphConnections graph_connections;
     iv::ProjectGraph project_graph;
     auto definitions_project_graph_scope =
         iv::node_definitions_project_graph_bridge::bind(
@@ -94,6 +97,9 @@ TEST(InstanceDefinitionBridges, InstanceCreatedAfterDefinitionPublicationRealize
     auto project_graph_instances_scope =
         iv::project_graph_node_instances_bridge::bind(
             project_graph, instances);
+    auto project_graph_connections_scope =
+        iv::project_graph_graph_connections_bridge::bind(
+            project_graph, graph_connections);
 
     definitions.seed_loaded_definition(
         make_loaded_definition(package_root, std::string(module_id)));

@@ -20,6 +20,12 @@ IV_DEFINE_LINKER_EVENT(
     ProjectUpdateIvModuleInstancesRequestedEvent,
     iv_runtime_project_update_iv_module_instances_requested_event)
 IV_DEFINE_LINKER_EVENT(
+    ProjectUpsertGraphConnectionRequestedEvent,
+    iv_runtime_project_upsert_graph_connection_requested_event)
+IV_DEFINE_LINKER_EVENT(
+    ProjectDeleteGraphConnectionRequestedEvent,
+    iv_runtime_project_delete_graph_connection_requested_event)
+IV_DEFINE_LINKER_EVENT(
     ProjectSetAudioDevicesRequestedEvent,
     iv_runtime_project_set_audio_devices_requested_event)
 } // namespace iv

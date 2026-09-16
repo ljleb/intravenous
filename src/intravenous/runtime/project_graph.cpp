@@ -15,13 +15,15 @@ ProjectGraph::ProjectGraph()
     : definitions_snapshot_(std::make_shared<NodeDefinitionsSnapshot const>())
 {}
 
-ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(NodeInstancesMutation mutation)
+ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
+    NodeInstancesMutation instance_mutation,
+    GraphConnectionsMutation connection_mutation)
 {
     GraphBuilder root_builder;
     NodeInstancesProjectGraphRequest request{
         .snapshot = definitions_snapshot_,
         .root_builder = &root_builder,
-        .mutation = std::move(mutation),
+        .mutation = std::move(instance_mutation),
     };
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_graph_node_instances_requested_event,
@@ -30,9 +32,18 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(NodeInstancesMutation m
         throw std::runtime_error("ProjectGraph cannot rebuild without NodeInstances");
     }
 
-    // GraphConnections will run immediately before this finish step once that
-    // sibling module lands. Until then, an empty public root interface is the
-    // complete project-root contract.
+    GraphConnectionsProjectGraphRequest connections_request{
+        .root_builder = &root_builder,
+        .placements = &request.result.placements,
+        .mutation = std::move(connection_mutation),
+    };
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_project_graph_connections_requested_event,
+        connections_request);
+    if (!connections_request.handled) {
+        throw std::runtime_error("ProjectGraph cannot rebuild without GraphConnections");
+    }
+
     root_builder.outputs();
     auto graph = std::make_shared<ConfiguredGraph const>(std::move(root_builder).finish());
     auto generation = std::make_shared<ProjectGraphGeneration>();
@@ -42,6 +53,10 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(NodeInstancesMutation m
     generation->graph = std::move(graph);
     generation->placements = std::move(request.result.placements);
     generation->diagnostics = std::move(request.result.diagnostics);
+    generation->applied_connection_ids =
+        std::move(connections_request.result.applied_connection_ids);
+    generation->connection_diagnostics =
+        std::move(connections_request.result.diagnostics);
     current_generation_ = generation;
     return RebuildResult{
         .generation = std::move(generation),
@@ -76,7 +91,7 @@ void ProjectGraph::handle_node_definitions_snapshot_changed(
     auto previous_snapshot = definitions_snapshot_;
     definitions_snapshot_ = change.snapshot;
     try {
-        (void)rebuild_locked(std::monostate{});
+        (void)rebuild_locked(std::monostate{}, std::monostate{});
     } catch (...) {
         // A snapshot is committed only together with the root generation built
         // from it. This also keeps an identical publication retryable after a
@@ -98,7 +113,7 @@ void ProjectGraph::handle_project_create_iv_module_instance(
             .definition_id = request.module_id,
             .package_root = request.package_root,
             .display_name = request.display_name,
-        });
+        }, std::monostate{});
         if (rebuilt.created_instance_ids.size() != 1) {
             throw std::logic_error("NodeInstances did not return one created instance id");
         }
@@ -116,7 +131,7 @@ void ProjectGraph::handle_project_delete_iv_module_instance(
         std::scoped_lock lock(mutex_);
         (void)rebuild_locked(NodeInstanceDeleteMutation{
             .instance_id = request.instance_id,
-        });
+        }, std::monostate{});
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -136,7 +151,35 @@ void ProjectGraph::handle_project_update_iv_module_instances(
     }
     {
         std::scoped_lock lock(mutex_);
-        (void)rebuild_locked(std::move(mutation));
+        (void)rebuild_locked(std::move(mutation), std::monostate{});
+    }
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void ProjectGraph::handle_project_upsert_graph_connection(
+    ProjectUpsertGraphConnectionRequest const& request,
+    ProjectAckBuilder& builder)
+{
+    {
+        std::scoped_lock lock(mutex_);
+        (void)rebuild_locked(
+            std::monostate{},
+            GraphConnectionUpsertMutation{.connection = request.connection});
+    }
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void ProjectGraph::handle_project_delete_graph_connection(
+    ProjectDeleteGraphConnectionRequest const& request,
+    ProjectAckBuilder& builder)
+{
+    {
+        std::scoped_lock lock(mutex_);
+        (void)rebuild_locked(
+            std::monostate{},
+            GraphConnectionDeleteMutation{.connection_id = request.connection_id});
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);

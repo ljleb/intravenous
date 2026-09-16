@@ -1,7 +1,9 @@
 #include "../module_test_utils.h"
 
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
+#include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/project_graph_graph_connections_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/node_instances.h>
@@ -37,6 +39,7 @@ std::string source_text(iv::LiveSourceSpan const& span)
 struct SeededIvModuleSourceIntrospectionApp {
     iv::NodeInstances instances;
     iv::NodeDefinitions definitions;
+    iv::GraphConnections graph_connections;
     iv::ProjectGraph project_graph;
     iv::IvModuleSourceIntrospection introspection;
     iv::StartupConfig startup_config;
@@ -44,6 +47,8 @@ struct SeededIvModuleSourceIntrospectionApp {
         node_definitions_project_graph_scope;
     iv::project_graph_node_instances_bridge::scope
         project_graph_node_instances_scope;
+    iv::project_graph_graph_connections_bridge::scope
+        project_graph_graph_connections_scope;
     iv::node_definitions_iv_module_source_introspection_bridge::scope
         node_definitions_iv_module_source_introspection_scope;
     iv::node_instances_iv_module_source_introspection_bridge::scope
@@ -59,6 +64,7 @@ struct SeededIvModuleSourceIntrospectionApp {
               std::move(extra_search_roots)),
           node_definitions_project_graph_scope(definitions, project_graph),
           project_graph_node_instances_scope(project_graph, instances),
+          project_graph_graph_connections_scope(project_graph, graph_connections),
           node_definitions_iv_module_source_introspection_scope(
               definitions,
               introspection),

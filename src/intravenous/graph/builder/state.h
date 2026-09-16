@@ -216,6 +216,8 @@ public:
 
   constexpr void connect_sample_input(
       NodeBundlePortId target, SamplePortRef source);
+  constexpr void connect_sample_input(
+      SampleInputChannelId target, SamplePortRef source);
   void connect_sample_input(NodeBundlePortId target, std::span<SamplePortRef const> sources);
   void connect_event_input(NodeBundlePortId target, EventPortRef source);
   bool sample_input_is_connected(NodeBundlePortId target) const;
@@ -509,6 +511,13 @@ constexpr void GraphBuilderState::record_configured_sample_connection(
 
 constexpr void GraphBuilderState::connect_sample_input(
     NodeBundlePortId target,
+    SamplePortRef source)
+{
+  record_configured_sample_connection(target, source);
+}
+
+constexpr void GraphBuilderState::connect_sample_input(
+    SampleInputChannelId target,
     SamplePortRef source)
 {
   record_configured_sample_connection(target, source);

@@ -2,6 +2,7 @@
 
 #include <intravenous/devices/audio_device.h>
 #include <intravenous/linker_event.h>
+#include <intravenous/runtime/project_connection_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 
 #include <filesystem>
@@ -56,6 +57,14 @@ struct ProjectUpdateIvModuleInstancesRequest {
     std::vector<ProjectUpdateIvModuleInstance> updates {};
 };
 
+struct ProjectUpsertGraphConnectionRequest {
+    ProjectConnection connection{};
+};
+
+struct ProjectDeleteGraphConnectionRequest {
+    std::string connection_id{};
+};
+
 struct ProjectSetAudioDevicesRequest {
     std::optional<std::string> output_device_id {};
     std::optional<std::string> input_device_id {};
@@ -88,6 +97,10 @@ using ProjectDeleteIvModuleInstanceRequestedEvent =
     void (*)(ProjectDeleteIvModuleInstanceRequest const&, ProjectAckBuilder&);
 using ProjectUpdateIvModuleInstancesRequestedEvent =
     void (*)(ProjectUpdateIvModuleInstancesRequest const&, ProjectAckBuilder&);
+using ProjectUpsertGraphConnectionRequestedEvent =
+    void (*)(ProjectUpsertGraphConnectionRequest const&, ProjectAckBuilder&);
+using ProjectDeleteGraphConnectionRequestedEvent =
+    void (*)(ProjectDeleteGraphConnectionRequest const&, ProjectAckBuilder&);
 using ProjectSetAudioDevicesRequestedEvent =
     void (*)(ProjectSetAudioDevicesRequest const&, ProjectAudioDevicesBuilder&);
 using ProjectOverrideSettingsRequestedEvent =
@@ -111,6 +124,12 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     ProjectUpdateIvModuleInstancesRequestedEvent,
     iv_runtime_project_update_iv_module_instances_requested_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectUpsertGraphConnectionRequestedEvent,
+    iv_runtime_project_upsert_graph_connection_requested_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectDeleteGraphConnectionRequestedEvent,
+    iv_runtime_project_delete_graph_connection_requested_event);
 IV_DECLARE_LINKER_EVENT(
     ProjectSetAudioDevicesRequestedEvent,
     iv_runtime_project_set_audio_devices_requested_event);

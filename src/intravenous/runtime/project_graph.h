@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/configured_graph.hpp>
+#include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/node_definition_types.h>
 #include <intravenous/runtime/node_instances.h>
 
@@ -21,6 +22,8 @@ struct NodeDefinitionsSnapshotChanged;
 struct ProjectCreateIvModuleInstanceRequest;
 struct ProjectDeleteIvModuleInstanceRequest;
 struct ProjectUpdateIvModuleInstancesRequest;
+struct ProjectUpsertGraphConnectionRequest;
+struct ProjectDeleteGraphConnectionRequest;
 struct UpdateIvModuleInstancesRequest;
 
 // One immutable root-configuration generation produced by ProjectGraph. GraphJit
@@ -33,11 +36,14 @@ struct ProjectGraphGeneration {
     std::shared_ptr<ConfiguredGraph const> graph{};
     std::unordered_map<std::string, NodeInstancePlacement> placements{};
     std::vector<NodeInstanceDiagnostic> diagnostics{};
+    std::vector<std::string> applied_connection_ids{};
+    std::vector<GraphConnectionDiagnostic> connection_diagnostics{};
 };
 
 // Root-graph transaction coordinator. It deliberately does not own desired
-// instance state; NodeInstances remains the canonical owner and is invoked once
-// per transaction through the ProjectGraph -> NodeInstances child edge.
+// instance or connection state. NodeInstances and GraphConnections remain the
+// canonical sibling owners and are each invoked once per transaction through
+// ProjectGraph child edges.
 class ProjectGraph {
     struct RebuildResult {
         std::shared_ptr<ProjectGraphGeneration const> generation{};
@@ -49,7 +55,9 @@ class ProjectGraph {
     std::shared_ptr<ProjectGraphGeneration const> current_generation_{};
     std::uint64_t next_generation_ = 1;
 
-    RebuildResult rebuild_locked(NodeInstancesMutation mutation);
+    RebuildResult rebuild_locked(
+        NodeInstancesMutation instance_mutation,
+        GraphConnectionsMutation connection_mutation);
 
 public:
     ProjectGraph();
@@ -69,6 +77,13 @@ public:
         ProjectAckBuilder& builder);
     void handle_project_update_iv_module_instances(
         ProjectUpdateIvModuleInstancesRequest const& request,
+        ProjectAckBuilder& builder);
+
+    void handle_project_upsert_graph_connection(
+        ProjectUpsertGraphConnectionRequest const& request,
+        ProjectAckBuilder& builder);
+    void handle_project_delete_graph_connection(
+        ProjectDeleteGraphConnectionRequest const& request,
         ProjectAckBuilder& builder);
 
     void handle_socket_rpc_create_iv_module_instance(

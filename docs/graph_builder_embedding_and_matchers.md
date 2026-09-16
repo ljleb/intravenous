@@ -1,9 +1,9 @@
 # GraphBuilder Embedding, Hierarchy, And Project Port Matchers
 
-_Status: current builder requirements for reusable node instances and
-project-wide cross-node connections. Direct frozen-graph embedding and explicit
-handle translation are implemented; recursive project matcher resolution remains
-a later checkpoint._
+_Status: direct frozen-graph embedding, explicit handle translation, and the
+first recursive `ProjectNodePortMatcher`/`GraphConnections` semantic layer are
+implemented. Structured persistence/wire adapters and richer compound-path
+coverage remain follow-up work._
 
 This document supplements [graph_builder.md](./graph_builder.md),
 [virtual_nodes_channel_aware_graph_direction.md](./virtual_nodes_channel_aware_graph_direction.md),
@@ -26,8 +26,16 @@ coalesce those declarations back into one root-scope virtual node. Nested
 subgraph bundles and tiled child bundles continue to translate through the
 node-bundle mapping.
 
-The remaining work in this document is the persistent recursive matcher layer
-and any richer convenience API needed to navigate those preserved scopes.
+`GraphConnections` now consumes these preserved identities through structured
+project matchers. The current path vocabulary has separate selectors for virtual
+node identity, ordered virtual members, tiled children, and nested subgraph
+scopes; the port matcher separately selects by name/ordinal and optional sample
+channel. Matchers are resolved against a frozen view of the complete freshly
+embedded root before project connections are applied.
+
+The remaining work in this document is persistence/wire encoding for those
+structured matchers plus richer compound-path/adversarial coverage as graph
+shapes become more varied.
 
 ## One embedding mechanism
 
@@ -222,8 +230,8 @@ input-side matchers.
 Channel type/layout conversion remains explicit graph semantics; matcher
 resolution itself should not silently redefine channel type.
 
-Equivalent event-port matcher structures can be added using event type identity
-rather than sample channel type.
+Equivalent event-port matcher structures are implemented using event type
+identity rather than sample channel type.
 
 ## `GraphConnections` transaction
 
@@ -246,10 +254,12 @@ It then:
 There is no app event from `NodeInstances` directly to `GraphConnections`; both
 are invoked once by `ProjectGraph` in the same root-build transaction.
 
-## Required builder tests before project matchers
+## Matcher/embedding coverage checkpoint
 
-Before `ProjectNodePortMatcher` becomes persistent project state, tests should
-prove at least:
+The current frozen-embedding and semantic `GraphConnections` tests cover the
+core invariants needed by the in-memory `ProjectNodePortMatcher` model. Before
+that matcher model is serialized as persistent/wire state, coverage should
+continue to prove at least:
 
 1. a frozen `ConfiguredGraph` embeds through the same importer as a live child;
 2. embedding the same frozen graph twice creates distinct parent objects while

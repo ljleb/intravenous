@@ -17,4 +17,12 @@ IV_SUBSCRIBE_LINKER_EVENT(
     project_persistence_project_graph_bridge,
     iv_runtime_project_update_iv_module_instances_requested_event,
     &ProjectGraph::handle_project_update_iv_module_instances)
+IV_SUBSCRIBE_LINKER_EVENT(
+    project_persistence_project_graph_bridge,
+    iv_runtime_project_upsert_graph_connection_requested_event,
+    &ProjectGraph::handle_project_upsert_graph_connection)
+IV_SUBSCRIBE_LINKER_EVENT(
+    project_persistence_project_graph_bridge,
+    iv_runtime_project_delete_graph_connection_requested_event,
+    &ProjectGraph::handle_project_delete_graph_connection)
 } // namespace iv

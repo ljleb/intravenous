@@ -128,14 +128,24 @@ with the latched snapshot and optional mutation, finishes one immutable root
 `NodeInstances` remains the canonical desired-instance owner and keeps only its
 read/persistence projection surfaces outside that synchronous child operation.
 
-`GraphConnections`, `GraphJit`, and `GraphExecutor` are still unimplemented
-sibling stages, so the current root transaction stops after `ConfiguredGraph`.
-The existing line-oriented `ProjectPersistence` loader also still replays legacy
-node commands one at a time; collapsing those commands into the one normalized
-startup replay batch described below is a remaining persistence-side checkpoint.
-C++ argument-list expression compilation remains the next internal
-`NodeInstances` checkpoint; `IvModuleSourceIntrospection` remains a later
-read-model migration checkpoint.
+The first `GraphConnections` checkpoint has now landed. It owns the canonical
+desired cross-node connection set, resolves structured set-valued
+`ProjectNodePortMatcher`s only after the complete instance set has been embedded,
+applies all currently resolvable sample/event connections to the same fresh root
+builder, and retains dangling connection intent with diagnostics. `ProjectGraph`
+invokes it exactly once after `NodeInstances` and retains the resulting applied-id
+and diagnostic batch on the immutable root generation.
+
+`GraphJit` and `GraphExecutor` are still unimplemented sibling stages, so the
+current root transaction stops after `ConfiguredGraph`. Structured connection
+persistence/JSON-RPC adapters are also still pending; the typed project command
+surface and canonical connection owner now exist so those adapters do not need to
+invent connection semantics. The existing line-oriented `ProjectPersistence`
+loader still replays legacy node commands one at a time; collapsing those commands
+into the one normalized startup replay batch described below remains a
+persistence-side checkpoint. C++ argument-list expression compilation remains an
+independent internal `NodeInstances` checkpoint; `IvModuleSourceIntrospection`
+remains a later read-model migration checkpoint.
 
 ## `ProjectGraph` is the root-graph transaction coordinator
 
@@ -600,14 +610,18 @@ The implementation checkpoints now stand as follows:
    provider-generated typed owned argument operations, one-snapshot recursive
    configuration, batched diagnostics, and reusable frozen-graph value caching.
    Cache invalidation is deliberately whole-snapshot for now.
-4. **Next:** compile persisted C++ configuration argument-list source into owned
-   typed expression thunks/tuples and feed them into the existing `NodeInstances`
-   value-level cache path.
-5. introduce `ProjectGraph` as the root-build transaction coordinator without
-   duplicating the desired instance/connection sets;
-6. introduce `GraphConnections` and recursive `ProjectNodePortMatcher`
-   resolution;
-7. introduce pure connection/history/latency/event-window storage planning;
+4. **Pending independent NodeInstances checkpoint:** compile persisted C++
+   configuration argument-list source into owned typed expression thunks/tuples
+   and feed them into the existing `NodeInstances` value-level cache path.
+5. **Landed:** `ProjectGraph` is the root-build transaction coordinator without
+   duplicating the desired instance/connection sets.
+6. **Landed (semantic connection core):** `GraphConnections` owns desired
+   cross-node connection intent, resolves recursive structured
+   `ProjectNodePortMatcher`s against the complete placement map, applies
+   sample/event connections, and preserves dangling matchers with diagnostics.
+   Structured persistence and JSON-RPC adapters remain follow-up transport work.
+7. **Next execution-side checkpoint:** introduce pure
+   connection/history/latency/event-window storage planning;
 8. introduce `GraphJit` with synchronous whole-project LLVM/ORC compilation;
 9. introduce `GraphExecutor` ownership of runtime storage, execution requests,
    state migration, and safe-boundary activation;
