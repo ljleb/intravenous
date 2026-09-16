@@ -18,10 +18,11 @@ The lane/timeline/task-runner cleanup has landed. The replacement execution-side
 application architecture is now defined in
 [project_graph_application_architecture.md](./project_graph_application_architecture.md).
 
-The generalized target names are `NodeDefinitions`, `NodeInstances`,
-`PackageReload`, `PackageDefinitions`, `ProjectGraph`, `GraphConnections`,
-`GraphJit`, and `GraphExecutor`, with `SystemAudioDevices` remaining a separate
-device-domain module.
+The generalized target names are `PackageWatcher`, `PackageJit`,
+`PackageDefinitions`, `NodeDefinitions`, `NodeInstances`, `ProjectGraph`,
+`GraphConnections`, `GraphJit`, and `GraphExecutor`, with `SystemAudioDevices`
+remaining a separate device-domain module. The package-specific split is defined
+in [package_pipeline_architecture.md](./package_pipeline_architecture.md).
 
 The event/bridge principles below remain useful. Module-specific inventories and
 lane-era propagation descriptions below are historical wherever they conflict

@@ -153,7 +153,7 @@ Typical external source invocations include:
 
 - a client message arriving in `SocketRpcServer`;
 - project-file replay initiated by `ProjectPersistence`;
-- completed package reload/build work entering `PackageReload`;
+- Linux package filesystem/discovery activity entering `PackageWatcher`;
 - hardware/audio callbacks entering the device domain;
 - future presentation/user-interface events.
 

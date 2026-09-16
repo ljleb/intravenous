@@ -10,6 +10,7 @@ wins.
 Related documents:
 
 - [event_propagation_tree_constraint.md](./event_propagation_tree_constraint.md)
+- [package_pipeline_architecture.md](./package_pipeline_architecture.md)
 - [node_definitions_and_instances_direction.md](./node_definitions_and_instances_direction.md)
 - [graph_builder_embedding_and_matchers.md](./graph_builder_embedding_and_matchers.md)
 - [system_audio_devices_direction.md](./system_audio_devices_direction.md)
@@ -40,33 +41,35 @@ survive that lowering independently of runtime call boundaries.
 The `Iv` prefix is no longer useful on generalized application modules. Planned
 names therefore use:
 
+- `PackageWatcher`
+- `PackageJit`
+- `PackageDefinitions`
 - `NodeDefinitions`
 - `NodeInstances`
-- `PackageReload`
-- `PackageDefinitions`
-- `NodeSourceIntrospection` or a later shorter name if its responsibility
-  becomes broader than node source introspection
 
-IV-specific names remain appropriate where they identify an actual source
-format, registration API, package ABI, or compiler concept.
+`IvModuleSourceIntrospection` keeps its existing name because only module nodes
+have this source-level introspection contract; leaf nodes do not. IV-specific
+names also remain appropriate where they identify an actual source format,
+registration API, package ABI, or compiler concept.
 
 ## App-module inventory
 
-The core project-graph modules are:
+The core package/project-graph modules are:
 
 | Module | Primary responsibility |
 | --- | --- |
-| `PackageReload` | detect/build/reload IV packages and publish completed package-provider updates |
-| `PackageDefinitions` | own configured/known package catalog state and package-level user operations |
-| `NodeDefinitions` | own the current immutable, versioned node-definition registry snapshot |
-| `ProjectGraph` | own durable user graph intent and orchestrate one complete root-graph configuration transaction |
-| `NodeInstances` | instantiate one requested batch against exactly one definitions snapshot; own reusable configured node-instance caches |
-| `GraphConnections` | resolve project-wide port matchers against one complete root embedding and apply cross-node connections |
+| `PackageWatcher` | own package source/watch state and coordinate one complete package-refresh transaction for every build cause |
+| `PackageJit` | synchronously build/JIT one requested package batch into immutable package revision results |
+| `PackageDefinitions` | own accepted package revisions, package catalog/build state, and one immutable package-revision snapshot |
+| `NodeDefinitions` | derive the immutable global node-definition namespace from accepted package revisions |
+| `ProjectGraph` | orchestrate one complete root-graph construction transaction without duplicating instance/connection intent |
+| `NodeInstances` | own desired node-instance state, instantiate one complete batch against exactly one definitions snapshot, and own reusable configured node-instance caches |
+| `GraphConnections` | own desired cross-node connection state, resolve project-wide port matchers against one complete root embedding, and apply those connections |
 | `GraphJit` | synchronously lower, optimize, and ORC-JIT one complete root `ConfiguredGraph` into an immutable `CompiledGraph` generation |
 | `GraphExecutor` | own active/pending compiled generations, mutable node storage, execution requests, state migration, and safe-boundary activation |
-| `NodeSourceIntrospection` | derived read model for source/logical-node/tooling queries; provisional generalized name |
-| `SystemAudioDevices` | own system-audio enumeration, logical device bindings, physical-device lifetime, buffering, and synchronization |
-| `ProjectPersistence` | load/save normalized persistent state without becoming the canonical graph owner |
+| `IvModuleSourceIntrospection` | derived source/logical-node read model for module nodes only |
+| `SystemAudioDevices` | own system-audio enumeration, stable logical device bindings, physical-device lifetime, buffering, and synchronization |
+| `ProjectPersistence` | load/save normalized persistent state without becoming the canonical owner of instance/connection intent |
 | `ProjectAutosave` | coalesce configured-state mutations and request persistence |
 | `SocketRpcServer` | transport JSON-RPC requests/notifications without becoming the owner of project state |
 
@@ -76,61 +79,78 @@ project-graph implementation.
 
 ### Implementation checkpoints
 
-`NodeDefinitions` and `PackageReload` now use their generalized application
-module names. `PackageReload` publishes explicit module-definition and
-leaf-definition candidate batches through type-only contracts shared with
-`NodeDefinitions`; neither app-module header depends on the other app module.
-The process-level `PackageReloadService` remains a support object rather than an
-app module and owns only discovery/watcher worker lifetime.
+`NodeDefinitions` and the intermediate generalized `PackageReload` rename have
+landed. The current package implementation is not yet the final package
+architecture. The target package pipeline is specified in
+[package_pipeline_architecture.md](./package_pipeline_architecture.md):
 
-> **TODO — package discovery should become event-driven on Linux.** Existing
-> dependency/source hot-reload watching already uses `inotify`, so detected
-> packages do not rely on periodic filesystem rescans for ordinary source edits.
-> The remaining periodic package-root discovery scan should later be replaced by
-> `inotify`-driven directory/manifest discovery (with event coalescing as needed),
-> rather than retaining a polling fallback for currently unsupported platforms.
+```text
+PackageWatcher
+    +-> PackageJit
+    `-> PackageDefinitions
+            `-> NodeDefinitions
+```
 
-`PackageDefinitions`, `NodeInstances`, and `NodeSourceIntrospection` still have
-legacy implementation names or responsibilities and are subsequent migration
-checkpoints.
+There is deliberately no fourth package coordinator module. `PackageWatcher` is
+the natural coordinator because every package build can return a new dependency
+set that changes the filesystem state it owns. Build results return synchronously
+from `PackageJit`; `PackageWatcher` updates its watches and then enters
+`PackageDefinitions` exactly once with the complete transaction.
 
-## `ProjectGraph` combines state ownership and root-graph orchestration
+The package-side migration is therefore:
+
+1. extract `PackageJit` from the `ModuleLoader`/ORC/build portions of the current
+   `PackageReload`;
+2. turn the current `IvPackageDefinitions` projection into the authoritative
+   `PackageDefinitions` accepted-revision registry and simplify `NodeDefinitions`
+   to derive only the global namespace;
+3. reduce/rename the remaining source/discovery/dependency/dirty-state portion of
+   `PackageReload` to `PackageWatcher`.
+
+The current dependency watcher already uses `inotify`. The remaining periodic
+package-root discovery scan is explicitly temporary and should be replaced by
+event-driven Linux discovery rather than preserved as a portability fallback.
+
+`NodeInstances` and `IvModuleSourceIntrospection` still retain legacy internals
+and are later migration checkpoints.
+
+## `ProjectGraph` is the root-graph transaction coordinator
 
 There is no separate `RootGraph` app module.
 
-`ProjectGraph` coherently owns both:
+`ProjectGraph` does **not** duplicate the desired instance and connection sets.
+Those are owned by the modules that interpret them:
 
-- canonical user-authored project graph intent; and
-- the transaction that materializes that intent into one root
-  `ConfiguredGraph`.
+- `NodeInstances` owns desired node-instance batches;
+- `GraphConnections` owns desired cross-node connection batches.
 
-Its durable graph state initially contains:
-
-- user-created node-instance declarations;
-- user-created project-wide connection declarations; and
-- a monotonically increasing project revision.
+`ProjectGraph` owns the transaction that combines those independently maintained
+states into one coherent root graph. It also latches the latest immutable
+`NodeDefinitionsSnapshot` delivered by `NodeDefinitions` so one complete root
+transaction uses exactly one definition world.
 
 Its root-build procedure is always batched:
 
 1. create one fresh root `GraphBuilder`;
-2. invoke `NodeInstances` exactly once to resolve/embed the complete requested
-   instance batch;
-3. invoke `GraphConnections` exactly once after all requested instances have
-   been considered, passing the same root builder and the complete embedding
-   map;
+2. invoke `NodeInstances` exactly once, optionally carrying an instance mutation
+   or replay batch, and have it populate/embed its complete current desired set
+   using exactly the latched `NodeDefinitionsSnapshot`;
+3. invoke `GraphConnections` exactly once after all instances have been
+   considered, optionally carrying a connection mutation/replay batch, passing
+   the same root builder and complete embedding map;
 4. finish the root builder into one `ConfiguredGraph`;
 5. invoke `GraphJit` exactly once to synchronously compile that graph into one
    immutable `CompiledGraph`;
 6. invoke `GraphExecutor` exactly once with that compiled successor generation.
 
-The four downstream modules are siblings in the propagation tree. Their numeric
+The downstream modules are siblings in the propagation tree. Their numeric
 order above is execution order inside one `ProjectGraph` handler, not a
 parent/child relationship between those modules.
 
-A project mutation can be accepted even if some node definitions are currently
-unavailable or some configuration expressions fail to compile. Desired project
-state is durable; its current configured/runtime realization may be incomplete
-and should carry diagnostics rather than deleting user intent.
+An unavailable definition or temporarily unresolved matcher does not delete the
+corresponding desired state from `NodeInstances` or `GraphConnections`. The
+root transaction reports unresolved/failed configured state while the owning
+module retains the user's request for a later generation.
 
 ## Tree-shaped event propagation is a hard constraint
 
@@ -168,7 +188,7 @@ application event per node or per connection.
 The fundamental event procedures are documented separately:
 
 - [User node mutation](./event_flows/user_node_mutation.md)
-- [Package reload](./event_flows/package_reload.md)
+- [Package refresh](./event_flows/package_refresh.md)
 - [User connection mutation](./event_flows/user_connection_mutation.md)
 - [Startup and project replay](./event_flows/startup_and_project_replay.md)
 

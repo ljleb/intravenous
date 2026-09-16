@@ -9,8 +9,9 @@ The detailed propagation procedures are in
 
 Startup must keep three states separate:
 
-- **desired project state** — durable node-instance and project-connection
-  declarations owned by `ProjectGraph`;
+- **desired project state** — durable node-instance declarations owned by
+  `NodeInstances` and project-connection declarations owned by
+  `GraphConnections`;
 - **configured project graph** — the root `ConfiguredGraph` that can currently
   be built from available definitions;
 - **compiled project graph** — the immutable `CompiledGraph` synchronously
@@ -28,25 +29,30 @@ be compiled first, and it does not require audio execution to be active.
    project-domain activity.
 3. Start only inert/local infrastructure needed by replay and package discovery.
 4. Load and parse project persistence synchronously into normalized batches.
-5. Replay the project-owned graph batch into `ProjectGraph`.
+5. Replay normalized desired-instance and desired-connection batches through
+   `ProjectGraph`; it forwards those batches once to `NodeInstances` and
+   `GraphConnections`, which own the desired state.
 6. `ProjectGraph` performs one root-build transaction with the definitions
    snapshot currently available, which may be empty/incomplete.
 7. Finish server-ready initialization and enable autosave only after replay is
    complete.
-8. Start or continue asynchronous package discovery/build/reload work.
-9. A completed initial package-provider batch starts a **new** propagation:
-   `PackageReload -> NodeDefinitions -> ProjectGraph`.
-10. `ProjectGraph` rebuilds the same desired state against the new immutable
-    definitions snapshot, synchronously compiles the resulting root graph through
-    `GraphJit`, and submits the compiled successor to `GraphExecutor`.
+8. Start `PackageWatcher` and perform initial event-driven package discovery.
+9. Each discovered/changed package batch starts the normal package transaction:
+   `PackageWatcher -> {PackageJit, PackageDefinitions -> NodeDefinitions -> ProjectGraph}`,
+   with `PackageJit` invoked first and its complete result returned to
+   `PackageWatcher` before `PackageDefinitions` is entered.
+10. `ProjectGraph` rebuilds the same desired instance/connection state against
+    the new immutable definitions snapshot, synchronously compiles the resulting
+    root graph through `GraphJit`, and submits the compiled successor to
+    `GraphExecutor`.
 
 ## Valid initialized state before package realization
 
 After project replay and before package build completion, all of these are
 valid:
 
-- requested node instances exist in `ProjectGraph` but some definitions are
-  unavailable;
+- requested node instances remain owned by `NodeInstances` even when some
+  definitions are unavailable;
 - their C++ configuration argument-list source is retained even if it cannot yet
   be compiled;
 - project-wide `ProjectNodePortMatcher` connections are retained even when they
@@ -59,15 +65,20 @@ valid:
 - `GraphExecutor` may have no active generation or may run the latest complete
   generation available under the chosen execution policy.
 
-## Package compilation is a separate cause
+## Package filesystem activity starts its own package transaction
 
-Declaration/watch events may schedule package compilation, but expensive build
-work must not keep the initiating application propagation alive.
+Project replay does not synchronously reach into package watching/building.
+`PackageWatcher` activity is a separate source invocation after the watcher has
+started.
 
-When asynchronous compilation finishes, completion starts a new cause and uses
-the normal package-reload tree. This prevents project replay or some other
-source from reaching `ProjectGraph`, scheduling work, and then re-entering
-`ProjectGraph` through the completion path before the first cause has unwound.
+Within one watcher-originated package transaction, `PackageWatcher` may
+synchronously invoke `PackageJit` once for the complete build subset, update its
+own dependency watches from the returned result, then pass the complete package
+update once to `PackageDefinitions`. The resulting accepted package revision
+snapshot flows once through `NodeDefinitions` and then into `ProjectGraph`.
+
+This keeps startup replay and package-source causes separate while still allowing
+one package refresh transaction to be synchronous and tree-shaped.
 
 ## One snapshot per instance batch
 

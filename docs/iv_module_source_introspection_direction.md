@@ -1,10 +1,11 @@
 # Iv Module Source Introspection Direction
 
-> **Naming/status:** this module is expected to generalize to
-> `NodeSourceIntrospection` (or a shorter `SourceIntrospection` if its final
-> responsibility warrants it) as leaf/module definitions converge under the node
-> terminology. It remains a read model and must not participate in root graph
-> construction. See
+> **Naming/status:** `IvModuleSourceIntrospection` remains the appropriate name.
+> Only module nodes expose source graph structure for this read model; leaf nodes
+> do not. Its internal event path may change as the project-graph pipeline is
+> rebuilt, but the responsibility should not be generalized merely because leaf
+> and module definitions share the `NodeDefinitions` namespace. It remains a read
+> model and must not participate in root graph construction. See
 > [project_graph_application_architecture.md](./project_graph_application_architecture.md).
 
 `IvModuleSourceIntrospection` is the current read model for tooling and UI queries.

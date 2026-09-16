@@ -54,7 +54,7 @@ state.
 
 ## Derived read models and notifications
 
-If `NodeSourceIntrospection` needs to observe this change, `ProjectGraph` should
+If `IvModuleSourceIntrospection` needs to observe this change, `ProjectGraph` should
 update it once using the combined state/result already available in the root-build
 transaction. Do not preserve separate definition-side and instance-side paths
 that converge on the read model.

@@ -18,15 +18,17 @@ flowchart TD
     GE["GraphExecutor"]
 
     SRC --> PP
-    PP -->|"one normalized project graph replay batch"| PG
-    PG -->|"1. requested instance batch using current definitions snapshot"| NI
-    PG -->|"2. requested connection batch against complete current embeddings"| GC
+    PP -->|"one normalized replay batch"| PG
+    PG -->|"1. replace/update desired instance batch; populate root builder"| NI
+    PG -->|"2. replace/update desired connection batch; apply against complete embeddings"| GC
     PG -->|"3. current complete/partial ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
     PG -->|"4. compiled current generation"| GE
 ```
 
-`ProjectPersistence` reconstructs canonical project intent. It does not become
-the owner of that graph state.
+`ProjectPersistence` reconstructs persistent data but does not become the owner
+of graph intent. `NodeInstances` owns the replayed desired instance state and
+`GraphConnections` owns the replayed desired connection state. `ProjectGraph`
+only orchestrates the one coherent root-build transaction.
 
 The current definitions snapshot may be empty or incomplete. `NodeInstances`
 retains unresolved requested instances/diagnostics, and `GraphConnections`
@@ -37,14 +39,16 @@ or future presentation state should be replayed through their owning modules in
 separate batched procedures where necessary. Do not create one broad replay
 propagation whose branches later converge on the same module.
 
-## 2. Initial package load completion
+## 2. Initial package discovery/build
 
-When initial package build/reload work later completes, it starts a new cause:
+After startup enables Linux package watching/discovery, `PackageWatcher`
+originates a separate cause for the initially discovered package batch:
 
 ```mermaid
 flowchart TD
-    SRC["Initial package load completion"]
-    PR["PackageReload"]
+    PW["PackageWatcher"]
+    PJ["PackageJit"]
+    PD["PackageDefinitions"]
     ND["NodeDefinitions"]
     PG["ProjectGraph"]
     NI["NodeInstances"]
@@ -52,21 +56,29 @@ flowchart TD
     GJ["GraphJit"]
     GE["GraphExecutor"]
 
-    SRC --> PR
-    PR --> ND
+    PW -->|"1. build initial package subset ⇄ revisions + dependencies + diagnostics"| PJ
+    PW -->|"2. detected declarations + complete build results"| PD
+    PD -->|"accepted package revision snapshot ⇄ publication diagnostics"| ND
     ND -->|"first/updated immutable definitions snapshot"| PG
-    PG -->|"1. reconfigure all stored requested instances"| NI
-    PG -->|"2. re-resolve all stored project connections"| GC
+    PG -->|"1. reconfigure/embed all stored requested instances"| NI
+    PG -->|"2. re-resolve/apply all stored project connections"| GC
     PG -->|"3. populated ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
     PG -->|"4. compiled successor generation"| GE
 ```
 
-The desired project state did not change, so this second procedure does not
-route back through `ProjectPersistence`.
+`PackageWatcher` updates its dependency-watch state from the synchronous
+`PackageJit` result before invoking `PackageDefinitions`. The desired
+instance/connection state did not change, so this procedure does not route back
+through `ProjectPersistence`.
 
 ## Startup ordering rule
 
 All app modules and bridges must exist before sources capable of emitting these
-procedures are started. Package source/build work may complete asynchronously and
-start a later package-reload cause, but final whole-project `GraphJit` compilation
-is synchronous inside each `ProjectGraph` transaction.
+procedures are started. Project replay should complete before package-source
+causes are allowed to mutate package/definition state if deterministic startup
+ordering requires that separation.
+
+Within one package-source cause, `PackageWatcher` invokes `PackageJit` at most
+once for the complete build subset and then invokes `PackageDefinitions` exactly
+once with the completed package transaction. Whole-project `GraphJit` compilation
+is likewise synchronous inside the later `ProjectGraph` transaction.

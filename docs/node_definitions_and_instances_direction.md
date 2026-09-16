@@ -33,10 +33,22 @@ Existing iv-module-era consumers temporarily continue to receive the compatibili
 package-definition diff event. Future batched configuration must consume one
 immutable definitions snapshot and must not re-enter `NodeDefinitions`.
 
+The current implementation checkpoint still accepts package reload candidates
+directly and retains package declaration/candidate state. That is transitional.
+The target package pipeline is
+[`PackageWatcher -> {PackageJit, PackageDefinitions} -> NodeDefinitions`](./package_pipeline_architecture.md).
+After that migration, `NodeDefinitions` consumes only the immutable accepted
+package-revision snapshot from `PackageDefinitions` and derives the global node
+definition namespace from it.
+
 ## Definitions are providers, not configured instances
 
 `NodeDefinitions` owns one immutable versioned registry containing both leaf
-node definitions and module node definitions.
+node definitions and module node definitions. It is a **derived global namespace**,
+not the owner of discovered packages, accepted package revisions, build queues,
+or package catalog state; those package-level responsibilities belong to the
+package pipeline described in
+[package_pipeline_architecture.md](./package_pipeline_architecture.md).
 
 A definition entry identifies how to construct/configure one node from typed
 configuration arguments. It is not itself a `ConfiguredGraph`, and it does not

@@ -8,7 +8,7 @@ for one source invocation, no application module may be entered more than once.
 The procedures are:
 
 - [User node mutation](./user_node_mutation.md)
-- [Package reload](./package_reload.md)
+- [Package refresh](./package_refresh.md)
 - [User connection mutation](./user_connection_mutation.md)
 - [Startup and project replay](./startup_and_project_replay.md)
 
@@ -28,9 +28,13 @@ so creates a diamond or causes one module to process the same cause twice.
 
 The diagrams emphasize the graph/execution state path. Other state-only children
 may be attached to the same tree when they do not create convergence. For
-example, package reload can update `PackageDefinitions`, and `ProjectGraph` can
-update `NodeSourceIntrospection` once using the combined state it already holds.
+example, package refresh can update `PackageDefinitions`, and `ProjectGraph` can
+update `IvModuleSourceIntrospection` once using the combined module-instance/source state it already holds.
 
 Any UI notification that would cause a module such as `SocketRpcServer` to be
 re-entered during its own incoming-request cause must be emitted only after that
 cause unwinds, as a new source invocation.
+
+Package-specific ownership and the reason `PackageWatcher` coordinates every package
+build cause are specified in
+[../package_pipeline_architecture.md](../package_pipeline_architecture.md).

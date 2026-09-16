@@ -32,13 +32,13 @@ children of `ProjectGraph`. The labels `1` through `4` specify the order in whic
 `SocketRpcServer` converts the wire request into a typed mutation request and
 forwards it to `ProjectGraph`. It does not own project state.
 
-`ProjectGraph` first updates its durable desired state. It then starts exactly
-one root-build transaction using:
+`ProjectGraph` forwards the typed mutation to `NodeInstances` during the one
+root-build transaction. `NodeInstances` owns and updates the desired instance set;
+`GraphConnections` independently owns the desired connection set. `ProjectGraph`
+does not retain duplicate copies of either domain.
 
-- the complete current project-owned node-instance declaration batch;
-- the complete current project-owned connection declaration batch; and
-- the latest immutable `NodeDefinitionsSnapshot` already delivered to
-  `ProjectGraph` by the package/definition flow.
+The transaction uses the latest immutable `NodeDefinitionsSnapshot` already
+delivered to `ProjectGraph` by the package/definition flow.
 
 `NodeInstances` receives that one definitions snapshot and uses it for the
 entire batch, including every nested `g.node(...)` call. It resolves cache hits,
@@ -71,7 +71,7 @@ occurs only at a legal `GraphExecutor` pass boundary.
 
 ## Derived read models and notifications
 
-If `NodeSourceIntrospection` needs to observe this change, `ProjectGraph` should
+If `IvModuleSourceIntrospection` needs to observe this change, `ProjectGraph` should
 update it once using the combined state/result already available in the root-build
 transaction. Do not preserve separate definition-side and instance-side paths
 that converge on the read model.
