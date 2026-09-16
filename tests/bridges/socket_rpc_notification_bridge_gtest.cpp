@@ -1,6 +1,6 @@
 #include "../module_test_utils.h"
 
-#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_events.h>
@@ -8,7 +8,7 @@
 #include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/package_pipeline_events.h>
 #include <intravenous/runtime/socket_rpc_package_definitions_bridge.h>
-#include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
+#include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
 #include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/lane_query_schema_service.h>
 #include <intravenous/runtime/socket_rpc_lane_query_schema_bridge.h>
@@ -275,9 +275,9 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneQuerySchemaChanges)
 TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
 {
     auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_instances_notification_server"));
-    IvModuleInstances instances;
+    NodeInstances instances;
     auto notification_scope =
-        socket_rpc_iv_module_instances_bridge::bind(
+        socket_rpc_node_instances_bridge::bind(
             harness.server,
             instances);
 

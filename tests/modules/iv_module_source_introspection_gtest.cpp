@@ -1,9 +1,9 @@
 #include "../module_test_utils.h"
 
-#include <intravenous/runtime/node_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_node_instances_bridge.h>
 #include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
-#include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/node/block_executor.h>
 
@@ -33,15 +33,15 @@ std::string source_text(iv::LiveSourceSpan const& span)
 }
 
 struct SeededIvModuleSourceIntrospectionApp {
-    iv::IvModuleInstances instances;
+    iv::NodeInstances instances;
     iv::NodeDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
     iv::StartupConfig startup_config;
-    iv::node_definitions_iv_module_instances_bridge::scope
+    iv::node_definitions_node_instances_bridge::scope
         node_definitions_iv_module_instances_scope;
     iv::node_definitions_iv_module_source_introspection_bridge::scope
         node_definitions_iv_module_source_introspection_scope;
-    iv::iv_module_instances_iv_module_source_introspection_bridge::scope
+    iv::node_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
 
     SeededIvModuleSourceIntrospectionApp(

@@ -43,6 +43,9 @@ NodeRef configure_tiled_package_definition(
 NodeRef configure_package_definition_impl(
     GraphBuilder&, std::string_view, std::optional<ChannelLayout>,
     std::span<ConfigurationArgument>);
+NodeRef configure_package_definition_provider(
+    GraphBuilder&, std::string_view, std::optional<ChannelLayout>,
+    std::span<ConfigurationArgument>);
 template<class Node, class... Args>
 node_ref_for_t<Node> configure_concrete_node(GraphBuilder&, Args&&...);
 template<class Node, class ChannelType, class... Args>
@@ -97,6 +100,9 @@ class GraphBuilder {
       GraphBuilder&, std::string_view, ChannelLayout,
       std::span<details::ConfigurationArgument>);
   friend NodeRef details::configure_package_definition_impl(
+      GraphBuilder&, std::string_view, std::optional<ChannelLayout>,
+      std::span<details::ConfigurationArgument>);
+  friend NodeRef details::configure_package_definition_provider(
       GraphBuilder&, std::string_view, std::optional<ChannelLayout>,
       std::span<details::ConfigurationArgument>);
   template<class Node, class... Args>

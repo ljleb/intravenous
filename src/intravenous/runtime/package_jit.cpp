@@ -94,6 +94,10 @@ PackageJitBatchResult PackageJit::build(
                 .package_id = declaration.package_id,
                 .package_root = declaration.package_root,
                 .package_code = std::move(loaded_package.package_code),
+                .provider_definitions = std::move(loaded_package.provider_definitions),
+                .config_pointer_fields = std::move(loaded_package.config_pointer_fields),
+                .retained_globals = std::move(loaded_package.retained_globals),
+                .node_state_structures = std::move(loaded_package.node_state_structures),
                 .dependencies = std::move(loaded_package.dependencies),
             };
             {

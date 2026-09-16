@@ -1,10 +1,10 @@
 #include "module_test_utils.h"
 
-#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/project_persistence_events.h>
-#include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
+#include <intravenous/runtime/project_persistence_node_instances_bridge.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
 #include <gtest/gtest.h>
@@ -172,10 +172,10 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
         R"({"command":"ivModuleInstances.create","args":{"instance_id":"instance:1","module_id":"iv.test.replayed","package_root":"modules/replayed","display_name":"Replayed"}})" "\n");
 
     iv::ProjectPersistence persistence(workspace, startup);
-    iv::IvModuleInstances instances;
+    iv::NodeInstances instances;
     ProjectNotificationWitness witness;
     auto instances_scope =
-        iv::project_persistence_iv_module_instances_bridge::bind(persistence, instances);
+        iv::project_persistence_node_instances_bridge::bind(persistence, instances);
     auto witness_scope = project_notification_witness_bridge::bind(persistence, witness);
 
     persistence.load();
@@ -196,9 +196,9 @@ TEST(ProjectPersistence, SaveCollectsInstanceMetadataWithoutExecutionState)
     auto const workspace = fresh_workspace("project_persistence_instance_save");
     auto startup = startup_for(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
-    iv::IvModuleInstances instances;
+    iv::NodeInstances instances;
     auto instances_scope =
-        iv::project_persistence_iv_module_instances_bridge::bind(persistence, instances);
+        iv::project_persistence_node_instances_bridge::bind(persistence, instances);
 
     (void)instances.create_instance(
         "iv.test.persisted",

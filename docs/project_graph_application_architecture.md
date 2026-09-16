@@ -97,9 +97,9 @@ from `PackageJit`; `PackageWatcher` updates its watches and then enters
 
 `PackageDefinitions` now owns accepted package revisions and package-catalog
 state; `NodeDefinitions` derives only the global namespace. The old
-`IvPackageDefinitionsChanged` event survives temporarily as a compatibility
-projection to legacy `IvModuleInstances` and source-introspection consumers, not
-as package-state ownership.
+`IvPackageDefinitionsChanged` event survives temporarily only as a compatibility
+projection to module-source introspection, not as package-state ownership.
+`NodeInstances` now consumes the immutable `NodeDefinitionsSnapshot` directly.
 
 The dependency watcher already uses `inotify`. The remaining periodic
 package-root discovery scan in `PackageWatcherService` is explicitly temporary
@@ -112,8 +112,15 @@ explicit local-to-parent translation for node bundles/scopes and virtual nodes,
 and imported virtual identities remain distinct across child scopes. This
 removes the live-`BuilderSession` obstacle to cacheable `NodeInstance` values.
 
-`NodeInstances` and `IvModuleSourceIntrospection` still retain legacy internals
-and are later migration checkpoints.
+The `NodeInstances` configuration core has now landed as well. The application
+module is generalized/renamed, consumes complete immutable definition snapshots,
+owns provider-generated typed argument values, recursively resolves nested
+configuration through one snapshot, caches immutable configured graphs by typed
+value, and uses the frozen-graph embedding translation for repeated placements.
+Its old IV-module RPC/persistence methods remain only as a temporary command-surface
+compatibility layer. C++ argument-list expression compilation is the next
+`NodeInstances` checkpoint. `IvModuleSourceIntrospection` remains a later read-model
+migration checkpoint.
 
 ## `ProjectGraph` is the root-graph transaction coordinator
 
@@ -574,18 +581,22 @@ The implementation checkpoints now stand as follows:
 2. **Landed:** direct frozen `ConfiguredGraph` embedding through the same
    importer as live children, with explicit local-to-parent handle translation
    and scope-preserving virtual-node import.
-3. **Next:** generalize/rename `NodeInstances`; implement typed owned
-   configuration-argument operations, C++ expression-thunk compilation,
-   one-snapshot recursive configuration, and reusable frozen-graph caching.
-4. introduce `ProjectGraph` as the root-build transaction coordinator without
+3. **Landed (configuration core):** generalized/renamed `NodeInstances`,
+   provider-generated typed owned argument operations, one-snapshot recursive
+   configuration, batched diagnostics, and reusable frozen-graph value caching.
+   Cache invalidation is deliberately whole-snapshot for now.
+4. **Next:** compile persisted C++ configuration argument-list source into owned
+   typed expression thunks/tuples and feed them into the existing `NodeInstances`
+   value-level cache path.
+5. introduce `ProjectGraph` as the root-build transaction coordinator without
    duplicating the desired instance/connection sets;
-5. introduce `GraphConnections` and recursive `ProjectNodePortMatcher`
+6. introduce `GraphConnections` and recursive `ProjectNodePortMatcher`
    resolution;
-6. introduce pure connection/history/latency/event-window storage planning;
-7. introduce `GraphJit` with synchronous whole-project LLVM/ORC compilation;
-8. introduce `GraphExecutor` ownership of runtime storage, execution requests,
+7. introduce pure connection/history/latency/event-window storage planning;
+8. introduce `GraphJit` with synchronous whole-project LLVM/ORC compilation;
+9. introduce `GraphExecutor` ownership of runtime storage, execution requests,
    state migration, and safe-boundary activation;
-9. integrate stable logical `SystemAudioDevices` bindings with ordinary system
-   audio leaf node definitions;
-10. add presentation-specific and automatic-device convenience services only
+10. integrate stable logical `SystemAudioDevices` bindings with ordinary system
+    audio leaf node definitions;
+11. add presentation-specific and automatic-device convenience services only
     after the core graph path is stable.

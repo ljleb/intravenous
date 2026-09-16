@@ -4,10 +4,10 @@
 
 namespace iv {
 class NodeDefinitions;
-class IvModuleInstances;
+class NodeInstances;
 
 IV_DECLARE_BRIDGE(
-    node_definitions_iv_module_instances_bridge,
+    node_definitions_node_instances_bridge,
     NodeDefinitions,
-    IvModuleInstances);
+    NodeInstances);
 } // namespace iv

@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -14,6 +15,7 @@
 namespace iv {
 class GraphBuilder;
 class GraphBuilderState;
+class NodeRef;
 struct ConfiguredGraph;
 
 namespace details {
@@ -40,6 +42,18 @@ struct BuilderDefinition {
 };
 
 struct BuilderSession;
+
+using BuilderDefinitionResolver = NodeRef (*)(
+    void* context,
+    GraphBuilder&,
+    std::string_view id,
+    std::optional<ChannelLayout> tiled_layout,
+    std::span<ConfigurationArgument> arguments);
+
+void set_builder_definition_resolver(
+    BuilderSession*, void* context, BuilderDefinitionResolver resolver) noexcept;
+BuilderDefinitionResolver builder_definition_resolver(BuilderSession const*) noexcept;
+void* builder_definition_resolver_context(BuilderSession const*) noexcept;
 
 extern "C" BuilderSession* iv_builder_session_create();
 extern "C" void iv_builder_session_destroy(BuilderSession*) noexcept;

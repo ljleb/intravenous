@@ -1,7 +1,7 @@
 #include <intravenous/runtime/package_watcher.h>
 
 #include <intravenous/module/package_manifest.h>
-#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/package_pipeline_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 

@@ -17,6 +17,7 @@
 namespace iv {
 using ModuleRef = std::shared_ptr<void>;
 struct ConfiguredGraph;
+struct PackageRevision;
 
 struct IvPackageDeclaration {
     // Stable identity of one independently compiled IV package.
@@ -32,8 +33,8 @@ struct IvPackageDeclarationsChanged {
 
 // Invocation surface retained from one loaded provider revision. Function and
 // signature pointers are valid while the owning definition's module_refs live.
-// Typed value operations for cached configuration arguments will extend this
-// record when NodeInstances is generalized.
+// The signature callback includes provider-generated typed value operations used
+// by NodeInstances to own and compare erased configuration arguments safely.
 struct NodeDefinitionProvider {
     details::IvModuleConfigureFunction module_build = nullptr;
     details::NodeTypeConfigureFunction leaf_build = nullptr;
@@ -101,6 +102,10 @@ struct NodeDefinitionEntry {
 struct NodeDefinitionsSnapshot {
     std::uint64_t generation = 0;
     std::unordered_map<std::string, NodeDefinitionEntry> by_id{};
+    // Exact accepted package revisions backing this definition world. Keeping
+    // them here makes one snapshot sufficient for recursive configuration and
+    // pins every provider/configuration table for the batch lifetime.
+    std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
 };
 
 // Temporary compatibility projection for legacy runtime consumers. Package

@@ -1,10 +1,10 @@
 #include "../module_test_utils.h"
 
 #include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_node_instances_bridge.h>
 #include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
-#include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <gtest/gtest.h>
 
@@ -66,7 +66,7 @@ TEST(IntrospectionBridges, InstancesToDefinitionsRequiresBinding)
     auto const workspace =
         fresh_module_fixture_workspace("runtime_bridges_instances_to_definitions_unbound");
 
-    iv::IvModuleInstances instances;
+    iv::NodeInstances instances;
     iv::NodeDefinitions definitions;
 
     (void)instances.create_instance(
@@ -83,10 +83,10 @@ TEST(InstanceDefinitionBridges, InstanceCreatedAfterDefinitionPublicationRealize
     auto const package_root = std::filesystem::weakly_canonical(workspace);
     constexpr std::string_view module_id = "iv.test.definition_before_instance";
 
-    iv::IvModuleInstances instances;
+    iv::NodeInstances instances;
     iv::NodeDefinitions definitions;
     auto bridge_scope =
-        iv::node_definitions_iv_module_instances_bridge::bind(
+        iv::node_definitions_node_instances_bridge::bind(
             definitions,
             instances);
 

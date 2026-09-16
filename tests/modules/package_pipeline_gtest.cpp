@@ -3,6 +3,7 @@
 #include <intravenous/bridge.h>
 #include <intravenous/node/block_executor.h>
 #include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
 #include <intravenous/runtime/package_jit.h>
@@ -14,6 +15,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <filesystem>
 #include <regex>
 #include <string>
@@ -270,4 +272,87 @@ TEST(PackagePipeline, FailedFirstBuildRemainsWatchedAndCanRecoverAfterSourceEdit
     auto const definitions = pipeline.definitions.loaded_module_definitions();
     ASSERT_EQ(definitions.size(), 1u);
     EXPECT_EQ(definitions.front().definition_id, "iv.test.recovered");
+}
+
+
+TEST(PackagePipeline, NodeInstancesUsesJitOwnedTypedArgumentOperationsFromPublishedSnapshot)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
+        "node_instances_jit_typed_argument_operations");
+    iv::test_support::write_text(workspace / "iv_project.jsonl", "");
+    iv::test_support::write_text(
+        workspace / "iv_package.json",
+        "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
+    iv::test_support::write_text(
+        workspace / "module.cpp",
+        R"cpp(#include <intravenous/dsl.h>
+#include <stdexcept>
+
+void node_instances_jit_config(iv::GraphBuilder& g, int value)
+{
+    if (value != 37) throw std::runtime_error("typed argument value was corrupted");
+    g.outputs();
+}
+IV_MODULE("iv.test.node_instances_jit_config", node_instances_jit_config);
+)cpp");
+
+    iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
+    PipelineHarness pipeline(startup_config.initialize(), workspace);
+    pipeline.watcher.synchronize_discovered_packages({
+        package_declaration("iv.test.node_instances_jit_package", workspace),
+    });
+    ASSERT_TRUE(pipeline.refresh());
+
+    auto const snapshot = pipeline.definitions.snapshot();
+    auto const definition = snapshot->by_id.find("iv.test.node_instances_jit_config");
+    ASSERT_NE(definition, snapshot->by_id.end());
+    auto const* module = std::get_if<iv::ModuleNodeDefinition>(&definition->second.definition);
+    ASSERT_NE(module, nullptr);
+    ASSERT_NE(module->provider.signature, nullptr);
+    auto const* signature = module->provider.signature();
+    ASSERT_NE(signature, nullptr);
+    ASSERT_EQ(signature->argument_count, 1u);
+    ASSERT_NE(signature->parameter_types, nullptr);
+    ASSERT_NE(signature->parameter_operations, nullptr);
+    ASSERT_NE(signature->parameter_operations[0], nullptr);
+    ASSERT_NE(signature->parameter_operations[0]->copy_construct, nullptr);
+    ASSERT_NE(signature->parameter_operations[0]->equal, nullptr);
+    ASSERT_NE(signature->parameter_operations[0]->hash, nullptr);
+
+    int first_value = 37;
+    int second_value = 37;
+    iv::details::ConfigurationArgument first_argument{
+        .data = &first_value,
+        .type = signature->parameter_types[0],
+    };
+    iv::details::ConfigurationArgument second_argument{
+        .data = &second_value,
+        .type = signature->parameter_types[0],
+    };
+    std::array first_arguments{first_argument};
+    std::array second_arguments{second_argument};
+    std::array requests{
+        iv::NodeInstanceConfigurationRequest{
+            .instance_id = "first",
+            .definition_id = "iv.test.node_instances_jit_config",
+            .arguments = first_arguments,
+        },
+        iv::NodeInstanceConfigurationRequest{
+            .instance_id = "second",
+            .definition_id = "iv.test.node_instances_jit_config",
+            .arguments = second_arguments,
+        },
+    };
+
+    iv::NodeInstances instances;
+    iv::GraphBuilder root;
+    auto result = instances.configure_and_embed(snapshot, root, requests);
+
+    ASSERT_TRUE(result.diagnostics.empty());
+    ASSERT_EQ(result.placements.size(), 2u);
+    EXPECT_EQ(instances.configuration_cache_size(), 1u);
+    EXPECT_EQ(
+        result.placements.at("first").configured,
+        result.placements.at("second").configured);
+    EXPECT_NE(result.placements.at("first").root, result.placements.at("second").root);
 }

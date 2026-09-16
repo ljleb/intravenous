@@ -39,6 +39,7 @@ enum class PackageDefinitionKind {
 // GraphBuilder& of an IV_MODULE is deliberately not represented here.
 struct RegisteredSignature {
     ConfigurationTypeIdentity const* const* parameter_types = nullptr;
+    ConfigurationValueOperations const* const* parameter_operations = nullptr;
     std::size_t required_argument_count = 0;
     std::size_t argument_count = 0;
 };
@@ -140,7 +141,8 @@ inline void validate_registered_signature_shape(
     RegisteredSignature const& signature)
 {
     if (signature.required_argument_count > signature.argument_count
-        || (signature.argument_count != 0 && !signature.parameter_types)) {
+        || (signature.argument_count != 0
+            && (!signature.parameter_types || !signature.parameter_operations))) {
         throw std::logic_error(
             "registered definition '" + std::string(id)
             + "' published an invalid construction signature");
@@ -172,8 +174,11 @@ struct RegisteredSignatureStorage {
 
     inline static constexpr std::array<ConfigurationTypeIdentity const*, sizeof...(Args)>
         parameter_types{configuration_type_identity<std::remove_cvref_t<Args>>()...};
+    inline static constexpr std::array<ConfigurationValueOperations const*, sizeof...(Args)>
+        parameter_operations{configuration_value_operations<std::remove_cvref_t<Args>>()...};
     inline static constexpr RegisteredSignature value{
         .parameter_types = parameter_types.data(),
+        .parameter_operations = parameter_operations.data(),
         .required_argument_count = Required,
         .argument_count = sizeof...(Args),
     };

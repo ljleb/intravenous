@@ -1,13 +1,13 @@
 #include "../module_test_utils.h"
 
-#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
 #include <intravenous/runtime/package_definitions.h>
-#include <intravenous/runtime/node_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
-#include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_node_instances_bridge.h>
+#include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
@@ -29,7 +29,7 @@ Json parse_json_line(std::string_view line)
 }
 } // namespace
 
-TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventLeavesResponseUnbuilt)
+TEST(SocketRpcNodeInstancesBridge, UnboundCreateEventLeavesResponseUnbuilt)
 {
     iv::SocketRpcCreateIvModuleInstanceResultBuilder builder;
 
@@ -213,26 +213,26 @@ TEST(PackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
         std::string::npos);
 }
 
-TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
+TEST(SocketRpcNodeInstancesBridge, BoundEventsCreateAndDeleteInstances)
 {
-    iv::IvModuleInstances instances;
+    iv::NodeInstances instances;
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
     iv::NodeDefinitions definitions;
     iv::SocketRpcServer server("/tmp", -1);
     auto node_definitions_iv_module_instances_scope =
-        iv::node_definitions_iv_module_instances_bridge::bind(
+        iv::node_definitions_node_instances_bridge::bind(
             definitions, instances);
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
     definitions.seed_loaded_definition(std::move(definition));
     auto iv_module_instances_iv_module_source_introspection_scope =
-        iv::iv_module_instances_iv_module_source_introspection_bridge::bind(
+        iv::node_instances_iv_module_source_introspection_bridge::bind(
             instances,
             introspection);
     auto socket_rpc_iv_module_instances_scope =
-        iv::socket_rpc_iv_module_instances_bridge::bind(server, instances);
+        iv::socket_rpc_node_instances_bridge::bind(server, instances);
 
     iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;
     IV_INVOKE_LINKER_EVENT(
@@ -258,26 +258,26 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
 
 }
 
-TEST(SocketRpcIvModuleInstancesBridge, BoundUpdateRenamesInstance)
+TEST(SocketRpcNodeInstancesBridge, BoundUpdateRenamesInstance)
 {
-    iv::IvModuleInstances instances;
+    iv::NodeInstances instances;
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
     iv::NodeDefinitions definitions;
     iv::SocketRpcServer server("/tmp", -1);
     auto node_definitions_iv_module_instances_scope =
-        iv::node_definitions_iv_module_instances_bridge::bind(
+        iv::node_definitions_node_instances_bridge::bind(
             definitions, instances);
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
     definitions.seed_loaded_definition(std::move(definition));
     auto iv_module_instances_iv_module_source_introspection_scope =
-        iv::iv_module_instances_iv_module_source_introspection_bridge::bind(
+        iv::node_instances_iv_module_source_introspection_bridge::bind(
             instances,
             introspection);
     auto socket_rpc_iv_module_instances_scope =
-        iv::socket_rpc_iv_module_instances_bridge::bind(server, instances);
+        iv::socket_rpc_node_instances_bridge::bind(server, instances);
 
     iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;
     IV_INVOKE_LINKER_EVENT(

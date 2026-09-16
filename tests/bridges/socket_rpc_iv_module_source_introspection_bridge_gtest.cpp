@@ -1,10 +1,10 @@
 #include "../module_test_utils.h"
 
 #include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_node_instances_bridge.h>
 #include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
-#include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
@@ -34,15 +34,15 @@ Json parse_json_line(std::string_view line)
 }
 
 struct SeededIvModuleSourceIntrospectionOwner {
-    IvModuleInstances instances;
+    NodeInstances instances;
     NodeDefinitions definitions;
     IvModuleSourceIntrospection introspection;
     StartupConfig startup_config;
-    node_definitions_iv_module_instances_bridge::scope
+    node_definitions_node_instances_bridge::scope
         node_definitions_iv_module_instances_scope;
     node_definitions_iv_module_source_introspection_bridge::scope
         node_definitions_iv_module_source_introspection_scope;
-    iv_module_instances_iv_module_source_introspection_bridge::scope
+    node_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
 
     SeededIvModuleSourceIntrospectionOwner(

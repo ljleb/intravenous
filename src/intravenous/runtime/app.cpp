@@ -5,30 +5,30 @@
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_node_instances_bridge.h>
 #include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
-#include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/package_jit.h>
 #include <intravenous/runtime/package_watcher.h>
 #include <intravenous/runtime/package_watcher_package_definitions_bridge.h>
 #include <intravenous/runtime/package_watcher_package_jit_bridge.h>
-#include <intravenous/runtime/package_watcher_iv_module_instances_bridge.h>
+#include <intravenous/runtime/package_watcher_node_instances_bridge.h>
 #include <intravenous/runtime/package_watcher_service.h>
 #include <intravenous/runtime/package_watcher_service_bridge.h>
 #include <intravenous/runtime/lanes_visualization.h>
 #include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/project_autosave.h>
 #include <intravenous/runtime/project_persistence.h>
-#include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
+#include <intravenous/runtime/project_persistence_node_instances_bridge.h>
 #include <intravenous/runtime/project_persistence_package_jit_bridge.h>
 #include <intravenous/runtime/project_persistence_project_autosave_bridge.h>
 #include <intravenous/runtime/project_persistence_system_audio_devices_bridge.h>
 #include <intravenous/runtime/server_options.h>
-#include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
+#include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/socket_rpc_package_definitions_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_autosave_bridge.h>
@@ -145,7 +145,7 @@ int run_server_mode(int argc, char** argv)
     // App modules are constructed independently. Cross-module behavior is
     // expressed only by explicit bridges below; none of these constructors
     // retains another app module.
-    IvModuleInstances iv_module_instances;
+    NodeInstances node_instances;
     NodeDefinitions node_definitions;
     PackageWatcher package_watcher;
     PackageJit package_jit(startup);
@@ -192,7 +192,7 @@ int run_server_mode(int argc, char** argv)
 
     // Runtime bridges.
     auto definitions_instances_scope =
-        node_definitions_iv_module_instances_bridge::bind(node_definitions, iv_module_instances);
+        node_definitions_node_instances_bridge::bind(node_definitions, node_instances);
     auto definitions_introspection_scope =
         node_definitions_iv_module_source_introspection_bridge::bind(
             node_definitions, introspection);
@@ -205,13 +205,13 @@ int run_server_mode(int argc, char** argv)
     auto packages_definitions_scope =
         package_definitions_node_definitions_bridge::bind(package_definitions, node_definitions);
     auto watcher_instances_scope =
-        package_watcher_iv_module_instances_bridge::bind(package_watcher, iv_module_instances);
+        package_watcher_node_instances_bridge::bind(package_watcher, node_instances);
     auto instances_introspection_scope =
-        iv_module_instances_iv_module_source_introspection_bridge::bind(iv_module_instances, introspection);
+        node_instances_iv_module_source_introspection_bridge::bind(node_instances, introspection);
 
     // Persistence bridges.
     auto persistence_instances_scope =
-        project_persistence_iv_module_instances_bridge::bind(project_persistence, iv_module_instances);
+        project_persistence_node_instances_bridge::bind(project_persistence, node_instances);
     auto persistence_jit_scope =
         project_persistence_package_jit_bridge::bind(project_persistence, package_jit);
     auto persistence_audio_scope =
@@ -224,7 +224,7 @@ int run_server_mode(int argc, char** argv)
     auto rpc_audio_scope =
         socket_rpc_system_audio_devices_bridge::bind(server, system_audio_devices);
     auto rpc_instances_scope =
-        socket_rpc_iv_module_instances_bridge::bind(server, iv_module_instances);
+        socket_rpc_node_instances_bridge::bind(server, node_instances);
     auto rpc_packages_scope =
         socket_rpc_package_definitions_bridge::bind(server, package_definitions);
     auto rpc_introspection_scope =

@@ -2,9 +2,9 @@
 #include <intravenous/bridge.h>
 namespace iv {
 class PackageWatcher;
-class IvModuleInstances;
+class NodeInstances;
 IV_DECLARE_BRIDGE(
-    package_watcher_iv_module_instances_bridge,
+    package_watcher_node_instances_bridge,
     PackageWatcher,
-    IvModuleInstances);
+    NodeInstances);
 }

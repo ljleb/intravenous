@@ -23,21 +23,56 @@ owned by that package while unchanged definitions owned by other packages retain
 their versions. The registry snapshot generation advances only when the published
 definition set/provider revisions actually change.
 
-The currently retained construction surface includes module/leaf configuration
-callbacks plus the registered signature callback. The typed owned-argument
-operations described below are intentionally deferred to the `NodeInstances`
-checkpoint, where their concrete cache requirements become executable rather than
-being speculative registry API.
+The retained construction surface now includes module/leaf configuration callbacks,
+the registered signature callback, and provider-generated value operations for each
+configuration parameter. `NodeDefinitionsSnapshot` also pins the exact accepted
+`PackageRevision` objects whose provider/configuration tables define that generation,
+so recursive configuration can create a complete `BuilderSession` without re-entering
+the package pipeline.
 
-Existing iv-module-era consumers temporarily continue to receive the compatibility
-package-definition diff event. Future batched configuration must consume one
-immutable definitions snapshot and must not re-enter `NodeDefinitions`.
+The configuration-core `NodeInstances` checkpoint has also landed. `NodeInstances`
+subscribes to the immutable snapshot event directly; it no longer consumes the
+legacy package-definition diff. The old diff remains only as a temporary downstream
+projection for module-source introspection.
 
 The package-pipeline migration has landed. `NodeDefinitions` consumes only the
 immutable accepted package-revision snapshot from `PackageDefinitions` and
 derives the global node-definition namespace from it. Package declarations,
 build candidates, accepted package revisions, and package-catalog state remain
 outside this module.
+
+## Implementation checkpoint: `NodeInstances` configuration core
+
+The generalized app module is now named `NodeInstances`. Its compatibility
+IV-module RPC/persistence surface remains temporarily, but definition realization
+is driven by complete `NodeDefinitionsSnapshot` values and supports both leaf and
+module definitions.
+
+The first configuration-cache implementation now provides:
+
+- provider-generated copy/destruction/equality/hash operations for typed erased
+  configuration values;
+- one-snapshot recursive definition resolution, including nested `g.node(...)`
+  calls without another app-module event;
+- owned invocation values whose lifetime is retained by the configured result;
+- immutable `ConfiguredGraph` cache entries keyed by definition generation/version,
+  tiled layout, and typed semantic argument values;
+- deliberate reconfiguration when an owned argument type lacks safe equality/hash;
+- transitive lifetime retention for nested configured results, including nested
+  invocations that are not reusable cache entries;
+- cycle detection and batched per-instance diagnostics;
+- repeated placement of one cached configured result through the frozen-graph
+  embedding API.
+
+Cache invalidation is intentionally conservative at this checkpoint: publication
+of a new definitions snapshot clears the reusable cache. Preserving entries whose
+exact transitive provider dependencies did not change is a later optimization pass,
+not a prerequisite for the application architecture.
+
+The **C++ configuration-expression compiler has not landed yet**. The new
+configuration core currently accepts already-typed erased arguments synchronously.
+The next checkpoint is to compile the durable project argument-list source into an
+owned typed thunk/tuple and feed that result into this same value-level cache path.
 
 ## Definitions are providers, not configured instances
 
@@ -71,6 +106,7 @@ struct NodeDefinitionEntry {
 struct NodeDefinitionsSnapshot {
     uint64_t generation;
     DefinitionMap by_id;
+    std::vector<std::shared_ptr<PackageRevision const>> package_revisions;
 };
 ```
 
@@ -114,17 +150,19 @@ does not change the persistence/configuration ABI.
 The existing erased configuration call boundary can remain, but cached
 arguments must become owned and value-comparable.
 
-For each registered configuration signature the provider/compiler should expose
-typed operations generated in the translation unit that knows the real C++
-types. Expected operations include:
+Each registered configuration signature now exposes typed operations generated
+in the translation unit that knows the real C++ types. The current operations are:
 
 - copy/clone;
 - destruction;
 - equality;
 - hashing;
-- optional move support where useful.
+Move-only ownership remains a future extension; the first cache implementation
+requires a safe provider-side copy operation for retained values.
 
-Do not infer semantic equality with raw bytes.
+Do not infer semantic equality with raw bytes. Equality/hash are optional for
+reuse: a safely owned value without them is configured normally but is not shared
+through the reusable cache.
 
 The expression compiler may materialize each argument as an LLVM global or
 other retained typed object and pass its address through the existing erased
@@ -212,15 +250,19 @@ or replay batch into one `NodeInstances` invocation and receives the complete
 realization/embedding result for the current root-build transaction; it does not
 duplicate instance intent.
 
-One invocation of `NodeInstances`:
+One invocation of the completed `NodeInstances` path will:
 
-1. installs/uses exactly one definitions snapshot for that batch;
-2. resolves/compiles requested project configuration expressions;
-3. recursively evaluates all cache misses;
-4. detects recursive definition/configuration cycles within that one context;
-5. embeds all requested instances into the supplied root builder;
-6. returns a complete instance-id -> embedding mapping;
-7. returns batched diagnostics for unresolved/failed requests.
+1. install/use exactly one definitions snapshot for that batch;
+2. compile requested project configuration expressions into typed owned values;
+3. recursively evaluate all cache misses;
+4. detect recursive definition/configuration cycles within that one context;
+5. embed all requested instances into the supplied root builder;
+6. return a complete instance-id -> embedding mapping;
+7. return batched diagnostics for unresolved/failed requests.
+
+Steps 1 and 3-7 are implemented for already-typed arguments. Step 2 is the next
+checkpoint and will sit in front of the existing value-level configuration/cache
+primitive rather than changing it.
 
 It must not publish one downstream app event per instance.
 
@@ -230,11 +272,11 @@ Definition versions participate in cache identity. A provider reload therefore
 cannot accidentally reuse a configured instance produced by an older provider
 version unless compatibility/reuse is explicitly proven later.
 
-On a new `NodeDefinitionsSnapshot`, `ProjectGraph` starts one new root-build
-transaction and invokes `NodeInstances` once. `NodeInstances` can preserve cache
-entries whose provider/version dependencies are unchanged and rebuild only
-invalidated entries internally, but downstream modules observe one completed
-batch result.
+On a new `NodeDefinitionsSnapshot`, `ProjectGraph` will start one new root-build
+transaction and invoke `NodeInstances` once. The current implementation clears its
+reusable cache on snapshot publication for correctness. A later optimization pass
+may preserve entries whose exact provider/version dependencies are unchanged;
+downstream modules must still observe only one completed batch result.
 
 ## Exact provider provenance survives into `GraphJit`
 

@@ -1344,6 +1344,10 @@ public:
             .definitions = {},
             .node_types = std::move(loaded_node_types),
             .dependencies = std::move(dependencies),
+            .provider_definitions = package->definitions,
+            .config_pointer_fields = package->config_pointer_fields,
+            .retained_globals = package->retained_globals,
+            .node_state_structures = package->node_state_structures,
             .package_code = package,
         };
     }

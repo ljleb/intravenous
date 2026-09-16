@@ -5,6 +5,7 @@
 #include <intravenous/module/abi.h>
 #include <intravenous/module/dependency.h>
 #include <intravenous/module/package_definitions.h>
+#include <intravenous/module/builder_session.h>
 #include <intravenous/node/compiler_record.h>
 
 #include <filesystem>
@@ -88,6 +89,12 @@ namespace iv {
             std::vector<LoadedDefinition> definitions;
             std::vector<LoadedNodeType> node_types;
             std::vector<ModuleDependency> dependencies;
+            // Complete package-side configuration tables used to create a stable
+            // BuilderSession later from an immutable NodeDefinitions snapshot.
+            std::vector<details::PackageDefinition> provider_definitions{};
+            std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
+            std::vector<RetainedGlobalData> retained_globals{};
+            std::vector<details::BuilderNodeStateStructure> node_state_structures{};
             // Opaque ownership of this IV package's ORC resources. Definitions and
             // configured graphs retain it while callbacks or retained LLVM globals
             // from this package can still be referenced.

@@ -1743,7 +1743,7 @@ void write_state_metadata(
     }
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
-            {"version", 8},
+            {"version", 0},
             {"states", std::move(state_collector).take_states()},
             {"config_pointers", std::move(node_config_collector).take_fields()},
             {"configuration_types", std::move(configuration_type_collector).take_identities()},

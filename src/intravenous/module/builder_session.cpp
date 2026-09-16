@@ -88,6 +88,8 @@ struct BuilderSession {
     std::shared_ptr<BuilderConfiguration> configuration =
         std::make_shared<BuilderConfiguration>();
     std::size_t package_index = static_cast<std::size_t>(-1);
+    void* definition_resolver_context = nullptr;
+    BuilderDefinitionResolver definition_resolver = nullptr;
 
     struct NodeConfigAllocation {
         void* storage = nullptr;
@@ -129,6 +131,24 @@ extern "C" BuilderSession* iv_builder_session_create()
     return new BuilderSession;
 }
 
+void set_builder_definition_resolver(
+    BuilderSession* session, void* context, BuilderDefinitionResolver resolver) noexcept
+{
+    if (!session) return;
+    session->definition_resolver_context = context;
+    session->definition_resolver = resolver;
+}
+
+BuilderDefinitionResolver builder_definition_resolver(BuilderSession const* session) noexcept
+{
+    return session ? session->definition_resolver : nullptr;
+}
+
+void* builder_definition_resolver_context(BuilderSession const* session) noexcept
+{
+    return session ? session->definition_resolver_context : nullptr;
+}
+
 extern "C" void iv_builder_session_destroy(BuilderSession* session) noexcept
 {
     delete session;
@@ -146,6 +166,8 @@ BuilderSession* iv_builder_child_session_create(
     auto child = std::make_unique<BuilderSession>();
     child->configuration = parent->configuration;
     child->package_index = package_index;
+    child->definition_resolver_context = parent->definition_resolver_context;
+    child->definition_resolver = parent->definition_resolver;
     // The configured graph now contains code/data produced by this package even
     // when the nested iv module contributes no primitive node directly. Pin it.
     child->configuration->used_packages[package_index] = true;

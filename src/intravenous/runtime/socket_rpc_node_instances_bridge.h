@@ -3,11 +3,11 @@
 #include <intravenous/bridge.h>
 
 namespace iv {
-class IvModuleInstances;
+class NodeInstances;
 class SocketRpcServer;
 
 IV_DECLARE_BRIDGE(
-    socket_rpc_iv_module_instances_bridge,
+    socket_rpc_node_instances_bridge,
     SocketRpcServer,
-    IvModuleInstances);
+    NodeInstances);
 } // namespace iv

@@ -7,7 +7,7 @@
 #include <type_traits>
 
 namespace iv {
-inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 1;
+inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 0;
 
 struct ModuleDataView {
     void const* data = nullptr;

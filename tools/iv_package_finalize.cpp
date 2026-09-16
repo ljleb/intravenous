@@ -93,7 +93,7 @@ public:
         }
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
         if (!output) fail("cannot write timing report '" + path.string() + "'");
-        output << "version=1\n";
+        output << "version=0\n";
         for (auto const& [name, duration] : stages_) {
             output << name << "_us=" << duration.count() << '\n';
         }
@@ -418,7 +418,7 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         auto* object = parsed->getAsObject();
         if (!object) fail("metadata root is not an object in '" + entry.path().string() + "'");
         auto version = object->getInteger("version");
-        if (!version || *version != 8) {
+        if (!version || *version != 0) {
             fail("unsupported compiler metadata version in '" + entry.path().string() + "'");
         }
         auto* states = object->getArray("states");

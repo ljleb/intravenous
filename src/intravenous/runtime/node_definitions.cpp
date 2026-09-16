@@ -254,6 +254,14 @@ void NodeDefinitions::handle_package_definitions_publication(
         if (registry_changed) {
             auto next_snapshot = std::make_shared<NodeDefinitionsSnapshot>();
             next_snapshot->generation = ++snapshot_generation_;
+            next_snapshot->package_revisions.reserve(request.snapshot->by_package_id.size());
+            for (auto const& [_, revision] : request.snapshot->by_package_id) {
+                next_snapshot->package_revisions.push_back(revision);
+            }
+            std::ranges::sort(
+                next_snapshot->package_revisions,
+                {},
+                [](auto const& revision) { return revision->package_id; });
             next_snapshot->by_id.reserve(
                 loaded_module_definitions_by_id_.size()
                 + loaded_leaf_definitions_by_id_.size());

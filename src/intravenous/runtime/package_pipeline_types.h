@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/runtime/node_definition_types.h>
+#include <intravenous/module/builder_session.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -41,6 +42,12 @@ struct PackageRevision {
     std::uint64_t revision = 0;
     // Pins this package JIT generation, including retained LLVM/code/data.
     ModuleRef package_code{};
+    // Immutable configuration tables copied from the accepted package code.
+    // Their function/data pointers remain valid while package_code is retained.
+    std::vector<details::PackageDefinition> provider_definitions{};
+    std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
+    std::vector<RetainedGlobalData> retained_globals{};
+    std::vector<details::BuilderNodeStateStructure> node_state_structures{};
     std::vector<ModuleDependency> dependencies{};
     std::vector<PackageModuleDefinition> module_definitions{};
     std::vector<PackageLeafDefinition> leaf_definitions{};

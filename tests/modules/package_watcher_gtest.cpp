@@ -1,7 +1,7 @@
 #include "../module_test_utils.h"
 
 #include <intravenous/bridge.h>
-#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/package_pipeline_events.h>
 #include <intravenous/runtime/package_watcher.h>
 

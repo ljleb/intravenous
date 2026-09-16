@@ -394,9 +394,9 @@ The package-side app-module split described above has landed:
 
 There is no `PackageReload` application module or `IvPackageDefinitions`
 application module anymore. The old package-definition change event remains only
-as a temporary compatibility projection from `NodeDefinitions` to legacy
-`IvModuleInstances`/source-introspection consumers until those modules move to the
-new project-graph architecture.
+as a temporary compatibility projection from `NodeDefinitions` to module-source
+introspection. `NodeInstances` has moved to the immutable
+`NodeDefinitionsSnapshot` edge and no longer consumes that legacy diff.
 
 The remaining package-side migration item is package-root discovery.
 `PackageWatcherService` still performs the temporary periodic discovery scan; the

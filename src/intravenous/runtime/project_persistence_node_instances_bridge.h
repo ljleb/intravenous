@@ -3,11 +3,11 @@
 #include <intravenous/bridge.h>
 
 namespace iv {
-class IvModuleInstances;
+class NodeInstances;
 class ProjectPersistence;
 
 IV_DECLARE_BRIDGE(
-    project_persistence_iv_module_instances_bridge,
+    project_persistence_node_instances_bridge,
     ProjectPersistence,
-    IvModuleInstances);
+    NodeInstances);
 } // namespace iv

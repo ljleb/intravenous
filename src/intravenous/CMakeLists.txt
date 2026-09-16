@@ -346,15 +346,15 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/audio_input_synchronizer.cpp
     runtime/config.cpp
     runtime/node_definitions.cpp
-    runtime/node_definitions_iv_module_instances_bridge.cpp
+    runtime/node_definitions_node_instances_bridge.cpp
     runtime/node_definitions_iv_module_source_introspection_bridge.cpp
     runtime/package_definitions_node_definitions_bridge.cpp
     runtime/package_watcher_package_definitions_bridge.cpp
     runtime/package_watcher_package_jit_bridge.cpp
-    runtime/package_watcher_iv_module_instances_bridge.cpp
+    runtime/package_watcher_node_instances_bridge.cpp
     runtime/package_watcher_service_bridge.cpp
-    runtime/iv_module_instances.cpp
-    runtime/iv_module_instances_iv_module_source_introspection_bridge.cpp
+    runtime/node_instances.cpp
+    runtime/node_instances_iv_module_source_introspection_bridge.cpp
     runtime/package_definitions.cpp
     runtime/package_jit.cpp
     runtime/package_watcher.cpp
@@ -375,14 +375,14 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/runtime_project_events.cpp
     runtime/project_persistence_system_audio_devices_bridge.cpp
     runtime/project_persistence_project_autosave_bridge.cpp
-    runtime/project_persistence_iv_module_instances_bridge.cpp
+    runtime/project_persistence_node_instances_bridge.cpp
     runtime/project_persistence_package_jit_bridge.cpp
     runtime/socket_rpc_lane_views_bridge.cpp
     runtime/socket_rpc_lane_query_schema_bridge.cpp
     runtime/socket_rpc_lane_query_completion_bridge.cpp
     runtime/socket_rpc_system_audio_devices_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
-    runtime/socket_rpc_iv_module_instances_bridge.cpp
+    runtime/socket_rpc_node_instances_bridge.cpp
     runtime/socket_rpc_package_definitions_bridge.cpp
     runtime/socket_rpc_project_autosave_bridge.cpp
     runtime/socket_rpc_project_persistence_bridge.cpp

@@ -16,14 +16,14 @@ struct CreateIvPackageRequest;
 struct GetIvPackageDefinitionsRequest;
 
 struct IvPackageInfo {
-    std::string package_id;
-    std::filesystem::path package_root;
+    std::string package_id = {};
+    std::filesystem::path package_root = {};
     bool project_local = false;
-    std::vector<std::string> module_ids;
-    std::vector<std::string> node_type_ids;
+    std::vector<std::string> module_ids = {};
+    std::vector<std::string> node_type_ids = {};
     PackageBuildState build_state = PackageBuildState::queued;
-    std::string build_message{};
-    std::string publication_message{};
+    std::string build_message = {};
+    std::string publication_message = {};
 };
 
 class PackageDefinitions {
