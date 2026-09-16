@@ -133,6 +133,14 @@ add_iv_gtest(intravenous_lane_query_tests query/lane_query_gtest.cpp)
 add_iv_gtest(intravenous_startup_config_tests modules/startup_config_gtest.cpp)
 add_iv_gtest(intravenous_node_definitions_tests modules/node_definitions_gtest.cpp)
 add_iv_gtest(intravenous_iv_module_instances_tests modules/iv_module_instances_gtest.cpp)
+add_iv_gtest(intravenous_package_watcher_tests modules/package_watcher_gtest.cpp)
+add_iv_gtest(intravenous_package_definitions_tests modules/package_definitions_gtest.cpp)
+add_iv_gtest(intravenous_package_pipeline_logic_tests modules/package_pipeline_logic_gtest.cpp)
+add_iv_gtest(
+    intravenous_package_jit_tests
+    modules/package_jit_gtest.cpp
+    IV_MODULE_COMPILATION_TESTS
+        PackageJit.MixedBatchIsolatesFailuresAndSuccessfulRevisionsAdvanceMonotonically)
 add_iv_gtest(
     intravenous_package_pipeline_tests
     modules/package_pipeline_gtest.cpp

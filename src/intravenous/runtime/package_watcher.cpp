@@ -248,8 +248,17 @@ void PackageWatcher::synchronize_discovered_packages(
     }
 
     std::scoped_lock lock(mutex_);
+    auto merged = retained_package_declarations_by_id_;
+    for (auto const& [package_id, declaration] : next_discovered) {
+        auto const [position, inserted] = merged.emplace(package_id, declaration);
+        if (!inserted && position->second.package_root != declaration.package_root) {
+            throw std::runtime_error(
+                "IV package declaration sources disagree about package ID '"
+                + package_id + "'");
+        }
+    }
     discovered_package_declarations_by_id_ = std::move(next_discovered);
-    install_effective_declarations_locked(merge_declaration_sources_locked());
+    install_effective_declarations_locked(std::move(merged));
 }
 
 void PackageWatcher::poll_dependency_changes()

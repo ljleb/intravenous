@@ -312,3 +312,75 @@ TEST(NodeDefinitions, SeedLoadedDefinitionUsesAcceptedRevisionPublicationPath)
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().definition_id, "iv.test.seeded");
 }
+
+TEST(NodeDefinitions, NullPackageSnapshotIsRejectedWithoutMutatingPublishedNamespace)
+{
+    auto const workspace = fresh_module_fixture_workspace(
+        "node_definitions_null_snapshot");
+    auto const package_id = canonical_package_id(workspace);
+
+    iv::NodeDefinitions definitions;
+    publish(definitions, {iv::PackageRevision{
+        .package_id = package_id,
+        .package_root = workspace,
+        .revision = 1,
+        .module_definitions = {
+            module_definition(workspace, package_id, "iv.test.stable"),
+        },
+    }});
+    auto const before = definitions.snapshot();
+
+    iv::PackageDefinitionsPublicationRequest request;
+    EXPECT_THROW(
+        definitions.handle_package_definitions_publication(request),
+        std::invalid_argument);
+    EXPECT_EQ(definitions.snapshot(), before);
+}
+
+TEST(NodeDefinitions, CrossPackageLeafModuleCollisionPreservesPreviousUnifiedNamespace)
+{
+    auto const module_root = fresh_module_fixture_workspace(
+        "node_definitions_cross_kind_module");
+    auto const leaf_root = fresh_module_fixture_workspace(
+        "node_definitions_cross_kind_leaf");
+    auto const module_package_id = canonical_package_id(module_root);
+    auto const leaf_package_id = canonical_package_id(leaf_root);
+
+    iv::NodeDefinitions definitions;
+    publish(definitions, {iv::PackageRevision{
+        .package_id = module_package_id,
+        .package_root = module_root,
+        .revision = 1,
+        .module_definitions = {
+            module_definition(module_root, module_package_id, "iv.test.shared.kind"),
+        },
+    }});
+    auto const before = definitions.snapshot();
+
+    auto result = publish(definitions, {
+        iv::PackageRevision{
+            .package_id = module_package_id,
+            .package_root = module_root,
+            .revision = 1,
+            .module_definitions = {
+                module_definition(module_root, module_package_id, "iv.test.shared.kind"),
+            },
+        },
+        iv::PackageRevision{
+            .package_id = leaf_package_id,
+            .package_root = leaf_root,
+            .revision = 1,
+            .leaf_definitions = {
+                leaf_definition(leaf_root, leaf_package_id, "iv.test.shared.kind"),
+            },
+        },
+    }, 2);
+
+    EXPECT_EQ(definitions.snapshot(), before);
+    EXPECT_TRUE(result.publication_messages_by_package_id.contains(module_package_id));
+    EXPECT_TRUE(result.publication_messages_by_package_id.contains(leaf_package_id));
+    EXPECT_EQ(
+        result.published_module_ids_by_package_id.at(module_package_id),
+        std::vector<std::string>{"iv.test.shared.kind"});
+    EXPECT_FALSE(result.published_leaf_ids_by_package_id.contains(leaf_package_id));
+}
