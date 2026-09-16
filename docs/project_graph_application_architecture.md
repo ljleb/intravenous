@@ -81,7 +81,14 @@ module names. `PackageReload` publishes explicit module-definition and
 leaf-definition candidate batches through type-only contracts shared with
 `NodeDefinitions`; neither app-module header depends on the other app module.
 The process-level `PackageReloadService` remains a support object rather than an
-app module and owns only discovery/polling worker lifetime.
+app module and owns only discovery/watcher worker lifetime.
+
+> **TODO — package discovery should become event-driven on Linux.** Existing
+> dependency/source hot-reload watching already uses `inotify`, so detected
+> packages do not rely on periodic filesystem rescans for ordinary source edits.
+> The remaining periodic package-root discovery scan should later be replaced by
+> `inotify`-driven directory/manifest discovery (with event coalescing as needed),
+> rather than retaining a polling fallback for currently unsupported platforms.
 
 `PackageDefinitions`, `NodeInstances`, and `NodeSourceIntrospection` still have
 legacy implementation names or responsibilities and are subsequent migration
