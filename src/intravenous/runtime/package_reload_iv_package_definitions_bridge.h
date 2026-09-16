@@ -1,10 +1,10 @@
 #pragma once
 #include <intravenous/bridge.h>
 namespace iv {
-class IvPackageReload;
+class PackageReload;
 class IvPackageDefinitions;
 IV_DECLARE_BRIDGE(
-    iv_package_reload_iv_package_definitions_bridge,
-    IvPackageReload,
+    package_reload_iv_package_definitions_bridge,
+    PackageReload,
     IvPackageDefinitions);
 }

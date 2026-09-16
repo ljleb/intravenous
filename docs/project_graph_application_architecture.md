@@ -74,6 +74,19 @@ Future presentation modules may include `PresentationDefinitions` and
 `PresentationInstances`. They are intentionally not required for the initial
 project-graph implementation.
 
+### Implementation checkpoints
+
+`NodeDefinitions` and `PackageReload` now use their generalized application
+module names. `PackageReload` publishes explicit module-definition and
+leaf-definition candidate batches through type-only contracts shared with
+`NodeDefinitions`; neither app-module header depends on the other app module.
+The process-level `PackageReloadService` remains a support object rather than an
+app module and owns only discovery/polling worker lifetime.
+
+`PackageDefinitions`, `NodeInstances`, and `NodeSourceIntrospection` still have
+legacy implementation names or responsibilities and are subsequent migration
+checkpoints.
+
 ## `ProjectGraph` combines state ownership and root-graph orchestration
 
 There is no separate `RootGraph` app module.

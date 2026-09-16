@@ -106,8 +106,8 @@ TEST(IvPackageDefinitions, NewProjectPackagesReceivePackageSpecificSharedPchComp
     ASSERT_EQ(listed.size(), 2u);
     EXPECT_EQ(listed[0].package_id, first.package_id);
     EXPECT_EQ(listed[1].package_id, second.package_id);
-    EXPECT_EQ(listed[0].build_state, iv::IvPackageBuildState::queued);
-    EXPECT_EQ(listed[1].build_state, iv::IvPackageBuildState::queued);
+    EXPECT_EQ(listed[0].build_state, iv::PackageBuildState::queued);
+    EXPECT_EQ(listed[1].build_state, iv::PackageBuildState::queued);
 
     std::filesystem::remove_all(project_root);
 }
@@ -147,13 +147,13 @@ TEST(IvPackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
     iv::IvPackageDefinitions packages(workspace);
     auto definitions_scope = iv::node_definitions_iv_package_definitions_bridge::bind(
         definitions, packages);
-    definitions.seed_loaded_definition(iv::IvPackageReloadedDefinition{
+    definitions.seed_loaded_definition(iv::PackageReloadedModuleDefinition{
         .package_id = "iv.test.first",
         .definition_id = "iv.test.shared",
         .package_root = first_root,
         .module_id = "iv.test.shared",
     });
-    definitions.seed_loaded_definition(iv::IvPackageReloadedDefinition{
+    definitions.seed_loaded_definition(iv::PackageReloadedModuleDefinition{
         .package_id = "iv.test.second",
         .definition_id = "iv.test.shared",
         .package_root = second_root,
@@ -168,7 +168,7 @@ TEST(IvPackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
         });
     ASSERT_NE(second, listed.end());
     EXPECT_TRUE(second->module_ids.empty());
-    EXPECT_EQ(second->build_state, iv::IvPackageBuildState::queued);
+    EXPECT_EQ(second->build_state, iv::PackageBuildState::queued);
     EXPECT_NE(
         second->publication_message.find("provided by multiple IV packages"),
         std::string::npos);

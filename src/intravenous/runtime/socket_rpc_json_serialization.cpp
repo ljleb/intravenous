@@ -107,16 +107,16 @@ std::string_view lane_query_completion_kind_json(query::LaneQueryCompletionKind 
     return "property";
 }
 
-std::string_view package_build_state_json(IvPackageBuildState state)
+std::string_view package_build_state_json(PackageBuildState state)
 {
     switch (state) {
-    case IvPackageBuildState::queued:
+    case PackageBuildState::queued:
         return "queued";
-    case IvPackageBuildState::building:
+    case PackageBuildState::building:
         return "building";
-    case IvPackageBuildState::built:
+    case PackageBuildState::built:
         return "built";
-    case IvPackageBuildState::failed:
+    case PackageBuildState::failed:
         return "failed";
     }
     return "queued";

@@ -29,9 +29,15 @@ flowchart TD
 
 ## Data movement
 
-`PackageReload` owns reload/build completion and publishes provider-level
-changes. `NodeDefinitions` reconciles those changes into a complete immutable
-registry snapshot.
+`PackageReload` owns reload/build completion and publishes one
+`PackageReloadResults` batch containing successful packages, module-definition
+candidates, leaf-definition candidates, and failures. Its public result/value
+contracts live in type-only headers, so `PackageReload` and `NodeDefinitions`
+remain independently constructed app modules connected only by their explicit
+linker-event bridge.
+
+`NodeDefinitions` reconciles those changes into a complete immutable registry
+snapshot.
 
 `ProjectGraph` stores that snapshot as the current definition world and starts
 one root rebuild using its unchanged desired project graph state.

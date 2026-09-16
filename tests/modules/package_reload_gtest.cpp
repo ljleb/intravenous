@@ -2,8 +2,8 @@
 
 #include <intravenous/bridge.h>
 #include <intravenous/node/block_executor.h>
-#include <intravenous/runtime/iv_package_reload.h>
-#include <intravenous/runtime/iv_package_reload_events.h>
+#include <intravenous/runtime/package_reload.h>
+#include <intravenous/runtime/package_reload_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/startup_config.h>
 
@@ -17,20 +17,20 @@
 #include <vector>
 
 namespace {
-struct IvPackageReloadWitness {
-    std::optional<iv::IvPackageReloadResults> results {};
+struct PackageReloadWitness {
+    std::optional<iv::PackageReloadResults> results {};
 
     void reset()
     {
         results.reset();
     }
-    void handle_results(iv::IvPackageReloadResults const &value)
+    void handle_results(iv::PackageReloadResults const &value)
     {
         results = value;
     }
 };
 
-struct IvPackageReloadStatusWitness {
+struct PackageReloadStatusWitness {
     std::vector<iv::ProjectStatusNotification> statuses {};
 
     void handle_notification(iv::ProjectNotification const &notification)
@@ -42,13 +42,13 @@ struct IvPackageReloadStatusWitness {
 };
 
 using namespace iv;
-IV_DECLARE_BRIDGE(iv_package_reload_witness_bridge, iv::IvPackageReload, IvPackageReloadWitness);
+IV_DECLARE_BRIDGE(package_reload_witness_bridge, iv::PackageReload, PackageReloadWitness);
 IV_DECLARE_BRIDGE(
-    iv_package_reload_status_witness_bridge,
-    iv::IvPackageReload,
-    IvPackageReloadStatusWitness);
-IV_DEFINE_BRIDGE(iv_package_reload_witness_bridge)
-IV_DEFINE_BRIDGE(iv_package_reload_status_witness_bridge)
+    package_reload_status_witness_bridge,
+    iv::PackageReload,
+    PackageReloadStatusWitness);
+IV_DEFINE_BRIDGE(package_reload_witness_bridge)
+IV_DEFINE_BRIDGE(package_reload_status_witness_bridge)
 
 iv::IvPackageDeclaration make_package_declaration(
     std::string_view package_id,
@@ -70,36 +70,36 @@ iv::IvPackageDeclaration test_default_package_declaration()
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv_package_reload_witness_bridge,
-    iv_runtime_iv_package_reload_results_event,
-    &IvPackageReloadWitness::handle_results)
+    package_reload_witness_bridge,
+    iv_runtime_package_reload_results_event,
+    &PackageReloadWitness::handle_results)
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv_package_reload_status_witness_bridge,
+    package_reload_status_witness_bridge,
     iv_runtime_project_notification_event,
-    &IvPackageReloadStatusWitness::handle_notification)
+    &PackageReloadStatusWitness::handle_notification)
 
-class IvPackageReloadTest : public ::testing::Test {
+class PackageReloadTest : public ::testing::Test {
 protected:
-    iv::IvPackageReload bridge_source {
+    iv::PackageReload bridge_source {
         iv::StartupConfigState{},
         iv::ModuleLoader::OptimizationLevel::O0};
-    IvPackageReloadWitness witness {};
-    iv_package_reload_witness_bridge::scope witness_scope {bridge_source, witness};
-    IvPackageReloadStatusWitness status_witness {};
-    iv_package_reload_status_witness_bridge::scope status_witness_scope {
+    PackageReloadWitness witness {};
+    package_reload_witness_bridge::scope witness_scope {bridge_source, witness};
+    PackageReloadStatusWitness status_witness {};
+    package_reload_status_witness_bridge::scope status_witness_scope {
         bridge_source,
         status_witness};
 };
 } // namespace
 
-TEST_F(IvPackageReloadTest, DirtyDeclarationCompilesAndPublishesLoadedDefinition)
+TEST_F(PackageReloadTest, DirtyDeclarationCompilesAndPublishesModuleDefinition)
 {
     auto const workspace =
         iv::test_support::read_only_module_fixture_workspace("local_cmake");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
-    iv::IvPackageReload reload(
+    iv::PackageReload reload(
         startup, iv::ModuleLoader::OptimizationLevel::O0);
 
     reload.handle_package_declarations_changed(
@@ -120,29 +120,35 @@ TEST_F(IvPackageReloadTest, DirtyDeclarationCompilesAndPublishesLoadedDefinition
     auto const build_statuses = reload.package_build_statuses();
     ASSERT_EQ(build_statuses.size(), 2u);
     auto const local_status = std::ranges::find(
-        build_statuses, "iv.test.local_cmake", &iv::IvPackageBuildStatus::package_id);
+        build_statuses, "iv.test.local_cmake", &iv::PackageBuildStatus::package_id);
     ASSERT_NE(local_status, build_statuses.end());
-    EXPECT_EQ(local_status->state, iv::IvPackageBuildState::built);
+    EXPECT_EQ(local_status->state, iv::PackageBuildState::built);
     EXPECT_TRUE(local_status->message.empty());
 
     reload.apply_pending_results();
 
     ASSERT_TRUE(witness.results.has_value());
-    ASSERT_EQ(witness.results->loaded.size(), 1u);
+    ASSERT_EQ(witness.results->module_definitions.size(), 1u);
     EXPECT_TRUE(witness.results->failed.empty());
-    EXPECT_EQ(witness.results->loaded.front().definition_id, "iv.test.local_cmake");
-    EXPECT_FALSE(witness.results->loaded.front().module_id.empty());
-    EXPECT_TRUE(static_cast<bool>(witness.results->loaded.front().root));
+    EXPECT_EQ(witness.results->module_definitions.front().definition_id, "iv.test.local_cmake");
+    EXPECT_FALSE(witness.results->module_definitions.front().module_id.empty());
+    EXPECT_TRUE(static_cast<bool>(witness.results->module_definitions.front().root));
+    EXPECT_NE(
+        std::ranges::find(
+            witness.results->leaf_definitions,
+            "iv.builtin.constant",
+            &iv::PackageReloadedLeafDefinition::definition_id),
+        witness.results->leaf_definitions.end());
 }
 
-TEST_F(IvPackageReloadTest, DirtyInvalidDeclarationCompilesAndPublishesFailure)
+TEST_F(PackageReloadTest, DirtyInvalidDeclarationCompilesAndPublishesFailure)
 {
     auto const workspace =
         iv::test_support::read_only_module_fixture_workspace("missing_export");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
-    iv::IvPackageReload reload(
+    iv::PackageReload reload(
         startup, iv::ModuleLoader::OptimizationLevel::O0);
 
     reload.handle_package_declarations_changed(
@@ -158,26 +164,26 @@ TEST_F(IvPackageReloadTest, DirtyInvalidDeclarationCompilesAndPublishesFailure)
     auto const build_statuses = reload.package_build_statuses();
     ASSERT_EQ(build_statuses.size(), 1u);
     EXPECT_EQ(build_statuses.front().package_id, "iv.test.missing_export");
-    EXPECT_EQ(build_statuses.front().state, iv::IvPackageBuildState::failed);
+    EXPECT_EQ(build_statuses.front().state, iv::PackageBuildState::failed);
     EXPECT_FALSE(build_statuses.front().message.empty());
 
     reload.apply_pending_results();
 
     ASSERT_TRUE(witness.results.has_value());
-    EXPECT_TRUE(witness.results->loaded.empty());
+    EXPECT_TRUE(witness.results->module_definitions.empty());
     ASSERT_EQ(witness.results->failed.size(), 1u);
     EXPECT_EQ(witness.results->failed.front().package_id, "iv.test.missing_export");
     EXPECT_FALSE(witness.results->failed.front().message.empty());
 }
 
-TEST_F(IvPackageReloadTest, SuccessfulBuildStatusIncludesElapsedTime)
+TEST_F(PackageReloadTest, SuccessfulBuildStatusIncludesElapsedTime)
 {
     auto const workspace =
         iv::test_support::read_only_module_fixture_workspace("local_cmake");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
-    iv::IvPackageReload reload(
+    iv::PackageReload reload(
         startup, iv::ModuleLoader::OptimizationLevel::O0);
     reload.handle_package_declarations_changed(
         iv::IvPackageDeclarationsChanged{
@@ -200,14 +206,14 @@ TEST_F(IvPackageReloadTest, SuccessfulBuildStatusIncludesElapsedTime)
         std::regex("IV package build ready to apply in [0-9]+ ms")));
 }
 
-TEST_F(IvPackageReloadTest, CompiledDefinitionPublishesUsableExecutionRoot)
+TEST_F(PackageReloadTest, CompiledModuleDefinitionPublishesUsableExecutionRoot)
 {
     auto const workspace =
         iv::test_support::read_only_module_fixture_workspace("reload_sample_period");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
-    iv::IvPackageReload reload(
+    iv::PackageReload reload(
         startup, iv::ModuleLoader::OptimizationLevel::O0);
 
     reload.handle_package_declarations_changed(
@@ -218,9 +224,9 @@ TEST_F(IvPackageReloadTest, CompiledDefinitionPublishesUsableExecutionRoot)
     reload.apply_pending_results();
 
     ASSERT_TRUE(witness.results.has_value());
-    ASSERT_EQ(witness.results->loaded.size(), 1u);
+    ASSERT_EQ(witness.results->module_definitions.size(), 1u);
 
-    auto const root = witness.results->loaded.front().root;
+    auto const root = witness.results->module_definitions.front().root;
     ASSERT_TRUE(static_cast<bool>(root));
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(root),
@@ -233,11 +239,11 @@ TEST_F(IvPackageReloadTest, CompiledDefinitionPublishesUsableExecutionRoot)
     EXPECT_NO_THROW(executor.tick_block(0));
 }
 
-TEST_F(IvPackageReloadTest, ReloadChangedDefinitionsDoesNothingWithoutWatcherChanges)
+TEST_F(PackageReloadTest, ReloadChangedDefinitionsDoesNothingWithoutWatcherChanges)
 {
     auto const workspace =
         iv::test_support::fresh_module_fixture_workspace(
-            "iv_package_reload_without_watcher_changes");
+            "package_reload_without_watcher_changes");
     iv::test_support::copy_directory(
         iv::test_support::test_modules_root() / "local_cmake",
         workspace);
@@ -245,7 +251,7 @@ TEST_F(IvPackageReloadTest, ReloadChangedDefinitionsDoesNothingWithoutWatcherCha
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
-    iv::IvPackageReload reload(
+    iv::PackageReload reload(
         startup, iv::ModuleLoader::OptimizationLevel::O0);
 
     reload.handle_package_declarations_changed(

@@ -215,7 +215,7 @@ TEST_F(IvModuleInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirst
     auto const expected_root = std::filesystem::weakly_canonical(source_root);
     EXPECT_EQ(discovered.front().package_root, expected_root);
     EXPECT_EQ(discovered.front().package_id, expected_root.generic_string());
-    EXPECT_EQ(discovered.front().build_state, iv::IvPackageBuildState::queued);
+    EXPECT_EQ(discovered.front().build_state, iv::PackageBuildState::queued);
     EXPECT_TRUE(discovered.front().module_ids.empty());
 }
 

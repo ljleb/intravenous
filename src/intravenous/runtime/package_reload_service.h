@@ -9,13 +9,13 @@
 
 namespace iv {
 class NodeDefinitions;
-class IvPackageReload;
+class PackageReload;
 
 // Owns the server-lifetime control loop for package discovery, compilation,
 // and publication. The registry and reloader retain their respective state;
 // this service owns only polling state and its worker lifetime.
-class IvPackageReloadService {
-    IvPackageReload* reload_ = nullptr;
+class PackageReloadService {
+    PackageReload* reload_ = nullptr;
     NodeDefinitions* definitions_ = nullptr;
     std::filesystem::path project_root_;
     std::vector<std::filesystem::path> shared_roots_;
@@ -28,15 +28,15 @@ class IvPackageReloadService {
     void report_discovery_error(std::string message);
 
 public:
-    IvPackageReloadService(
-        IvPackageReload& reload,
+    PackageReloadService(
+        PackageReload& reload,
         NodeDefinitions& definitions,
         std::filesystem::path project_root,
         std::vector<std::filesystem::path> shared_roots);
-    ~IvPackageReloadService();
+    ~PackageReloadService();
 
-    IvPackageReloadService(IvPackageReloadService const&) = delete;
-    IvPackageReloadService& operator=(IvPackageReloadService const&) = delete;
+    PackageReloadService(PackageReloadService const&) = delete;
+    PackageReloadService& operator=(PackageReloadService const&) = delete;
 
     // Discovery, build, and registry publication begin only after RPC
     // readiness. Persisted module instances retain their own package

@@ -20,7 +20,7 @@ namespace {
 using iv::test_support::fresh_module_fixture_workspace;
 using iv::test_support::make_loaded_definition;
 
-iv::IvPackageReloadedDefinition source_definition(
+iv::PackageReloadedModuleDefinition source_definition(
     std::filesystem::path const& package_root,
     std::string package_id,
     std::string module_id)
@@ -122,15 +122,15 @@ TEST(NodeDefinitions, SnapshotIsImmutableVersionedAndUnifiesLeafAndModuleDefinit
         .module_build = &test_module_provider,
         .signature = &empty_configuration_signature,
     };
-    iv::IvPackageReloadResults first;
+    iv::PackageReloadResults first;
     first.packages.push_back({
         .package_id = package_id,
         .package_root = workspace,
     });
-    first.loaded.push_back(module);
-    first.node_types.push_back({
+    first.module_definitions.push_back(module);
+    first.leaf_definitions.push_back({
         .package_id = package_id,
-        .node_type_id = "iv.test.leaf",
+        .definition_id = "iv.test.leaf",
         .package_root = workspace,
         .provider = iv::NodeDefinitionProvider{
             .leaf_build = &test_leaf_provider,
@@ -161,19 +161,19 @@ TEST(NodeDefinitions, SnapshotIsImmutableVersionedAndUnifiesLeafAndModuleDefinit
 
     // Republishing this package is a new provider revision even when its stable
     // IDs are unchanged. The previous immutable snapshot remains unchanged.
-    iv::IvPackageReloadResults second;
+    iv::PackageReloadResults second;
     second.packages.push_back({
         .package_id = package_id,
         .package_root = workspace,
     });
     auto module_v2_source = source_definition(workspace, package_id, "iv.test.module");
     module_v2_source.provider = module.provider;
-    second.loaded.push_back(std::move(module_v2_source));
-    second.node_types.push_back({
+    second.module_definitions.push_back(std::move(module_v2_source));
+    second.leaf_definitions.push_back({
         .package_id = package_id,
-        .node_type_id = "iv.test.leaf",
+        .definition_id = "iv.test.leaf",
         .package_root = workspace,
-        .provider = first.node_types.front().provider,
+        .provider = first.leaf_definitions.front().provider,
     });
     definitions.handle_reload_results(second);
 
@@ -207,19 +207,19 @@ TEST(NodeDefinitions, DefinitionCollisionDoesNotPublishPartialSnapshot)
     definitions.declare_package(first_id, first_root);
     definitions.declare_package(second_id, second_root);
 
-    definitions.handle_reload_results(iv::IvPackageReloadResults{
+    definitions.handle_reload_results(iv::PackageReloadResults{
         .packages = {{.package_id = first_id, .package_root = first_root}},
-        .loaded = {source_definition(first_root, first_id, "iv.test.shared")},
+        .module_definitions = {source_definition(first_root, first_id, "iv.test.shared")},
     });
     auto before_collision = definitions.snapshot();
     ASSERT_EQ(before_collision->generation, 1u);
     ASSERT_EQ(before_collision->by_id.size(), 1u);
 
-    definitions.handle_reload_results(iv::IvPackageReloadResults{
+    definitions.handle_reload_results(iv::PackageReloadResults{
         .packages = {{.package_id = second_id, .package_root = second_root}},
-        .node_types = {{
+        .leaf_definitions = {{
             .package_id = second_id,
-            .node_type_id = "iv.test.shared",
+            .definition_id = "iv.test.shared",
             .package_root = second_root,
         }},
     });
@@ -286,12 +286,12 @@ TEST(NodeDefinitions, ReloadingOnePackagePreservesOtherProviderVersion)
     iv::NodeDefinitions definitions;
     definitions.declare_package(first_id, first_root);
     definitions.declare_package(second_id, second_root);
-    definitions.handle_reload_results(iv::IvPackageReloadResults{
+    definitions.handle_reload_results(iv::PackageReloadResults{
         .packages = {
             {.package_id = first_id, .package_root = first_root},
             {.package_id = second_id, .package_root = second_root},
         },
-        .loaded = {
+        .module_definitions = {
             source_definition(first_root, first_id, "iv.test.first"),
             source_definition(second_root, second_id, "iv.test.second"),
         },
@@ -302,9 +302,9 @@ TEST(NodeDefinitions, ReloadingOnePackagePreservesOtherProviderVersion)
     auto const first_version = first_snapshot->by_id.at("iv.test.first").version;
     auto const second_version = first_snapshot->by_id.at("iv.test.second").version;
 
-    definitions.handle_reload_results(iv::IvPackageReloadResults{
+    definitions.handle_reload_results(iv::PackageReloadResults{
         .packages = {{.package_id = first_id, .package_root = first_root}},
-        .loaded = {source_definition(first_root, first_id, "iv.test.first")},
+        .module_definitions = {source_definition(first_root, first_id, "iv.test.first")},
     });
 
     auto second_snapshot = definitions.snapshot();
@@ -326,7 +326,7 @@ TEST(NodeDefinitions, PackageReloadReplacesItsCompleteModuleSet)
     definitions.declare_package(std::string(package_id), source_root);
     definitions.declare_package(std::string(other_package_id), other_source_root);
 
-    iv::IvPackageReloadResults initial;
+    iv::PackageReloadResults initial;
     initial.packages.push_back({
         .package_id = std::string(package_id),
         .package_root = source_root,
@@ -335,9 +335,9 @@ TEST(NodeDefinitions, PackageReloadReplacesItsCompleteModuleSet)
         .package_id = std::string(other_package_id),
         .package_root = other_source_root,
     });
-    initial.loaded.push_back(source_definition(source_root, std::string(package_id), "iv.test.a"));
-    initial.loaded.push_back(source_definition(source_root, std::string(package_id), "iv.test.b"));
-    initial.loaded.push_back(source_definition(
+    initial.module_definitions.push_back(source_definition(source_root, std::string(package_id), "iv.test.a"));
+    initial.module_definitions.push_back(source_definition(source_root, std::string(package_id), "iv.test.b"));
+    initial.module_definitions.push_back(source_definition(
         other_source_root, std::string(other_package_id), "iv.test.c"));
     definitions.handle_reload_results(initial);
 
@@ -347,12 +347,12 @@ TEST(NodeDefinitions, PackageReloadReplacesItsCompleteModuleSet)
     EXPECT_EQ(loaded[1].module_id, "iv.test.b");
     EXPECT_EQ(loaded[2].module_id, "iv.test.c");
 
-    iv::IvPackageReloadResults replacement;
+    iv::PackageReloadResults replacement;
     replacement.packages.push_back({
         .package_id = std::string(package_id),
         .package_root = source_root,
     });
-    replacement.loaded.push_back(
+    replacement.module_definitions.push_back(
         source_definition(source_root, std::string(package_id), "iv.test.b"));
     definitions.handle_reload_results(replacement);
 
@@ -377,12 +377,12 @@ TEST(NodeDefinitions, RequiredDefinitionSourceFirstMovePublishesRemovalUntilRepl
     node_definitions_witness_bridge::scope witness_scope{definitions, witness};
     definitions.declare_package(source_package_id, source_root);
     definitions.declare_package(destination_package_id, destination_root);
-    definitions.handle_reload_results(iv::IvPackageReloadResults{
+    definitions.handle_reload_results(iv::PackageReloadResults{
         .packages = {{
             .package_id = source_package_id,
             .package_root = source_root,
         }},
-        .loaded = {source_definition(
+        .module_definitions = {source_definition(
             source_root, source_package_id, std::string(definition_id))},
     });
     definitions.handle_required_definitions_changed(
@@ -397,7 +397,7 @@ TEST(NodeDefinitions, RequiredDefinitionSourceFirstMovePublishesRemovalUntilRepl
     // Desired project instances do not make a missing definition a registry
     // conflict. Publish the successful empty source candidate; the instance
     // becomes unrealized but remains available for the user to delete.
-    definitions.handle_reload_results(iv::IvPackageReloadResults{
+    definitions.handle_reload_results(iv::PackageReloadResults{
         .packages = {{
             .package_id = source_package_id,
             .package_root = source_root,
@@ -412,12 +412,12 @@ TEST(NodeDefinitions, RequiredDefinitionSourceFirstMovePublishesRemovalUntilRepl
 
     // The destination can later recreate the ID from its own complete
     // candidate without any third save or retained stale provider.
-    definitions.handle_reload_results(iv::IvPackageReloadResults{
+    definitions.handle_reload_results(iv::PackageReloadResults{
         .packages = {{
             .package_id = destination_package_id,
             .package_root = destination_root,
         }},
-        .loaded = {source_definition(
+        .module_definitions = {source_definition(
             destination_root, destination_package_id, std::string(definition_id))},
     });
     loaded = definitions.loaded_module_definitions();
@@ -439,12 +439,12 @@ TEST(NodeDefinitions, RequiredDefinitionDestinationFirstMoveHoldsCollisionUntilS
     iv::NodeDefinitions definitions;
     definitions.declare_package(source_package_id, source_root);
     definitions.declare_package(destination_package_id, destination_root);
-    definitions.handle_reload_results(iv::IvPackageReloadResults{
+    definitions.handle_reload_results(iv::PackageReloadResults{
         .packages = {{
             .package_id = source_package_id,
             .package_root = source_root,
         }},
-        .loaded = {source_definition(
+        .module_definitions = {source_definition(
             source_root, source_package_id, std::string(definition_id))},
     });
     definitions.handle_required_definitions_changed(
@@ -457,19 +457,19 @@ TEST(NodeDefinitions, RequiredDefinitionDestinationFirstMoveHoldsCollisionUntilS
 
     // Saving the destination first creates a duplicate candidate ID. Preserve
     // the prior live provider until the source candidate is complete too.
-    definitions.handle_reload_results(iv::IvPackageReloadResults{
+    definitions.handle_reload_results(iv::PackageReloadResults{
         .packages = {{
             .package_id = destination_package_id,
             .package_root = destination_root,
         }},
-        .loaded = {source_definition(
+        .module_definitions = {source_definition(
             destination_root, destination_package_id, std::string(definition_id))},
     });
     auto loaded = definitions.loaded_module_definitions();
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().package_id, source_package_id);
 
-    definitions.handle_reload_results(iv::IvPackageReloadResults{
+    definitions.handle_reload_results(iv::PackageReloadResults{
         .packages = {{
             .package_id = source_package_id,
             .package_root = source_root,

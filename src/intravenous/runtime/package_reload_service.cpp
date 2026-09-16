@@ -1,8 +1,8 @@
-#include <intravenous/runtime/iv_package_reload_service.h>
+#include <intravenous/runtime/package_reload_service.h>
 
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_events.h>
-#include <intravenous/runtime/iv_package_reload.h>
+#include <intravenous/runtime/package_reload.h>
 #include <intravenous/runtime/iv_package_definitions.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
@@ -24,8 +24,8 @@ void publish_package_catalog_changed()
 }
 } // namespace
 
-IvPackageReloadService::IvPackageReloadService(
-    IvPackageReload& reload,
+PackageReloadService::PackageReloadService(
+    PackageReload& reload,
     NodeDefinitions& definitions,
     std::filesystem::path project_root,
     std::vector<std::filesystem::path> shared_roots)
@@ -35,12 +35,12 @@ IvPackageReloadService::IvPackageReloadService(
     , shared_roots_(std::move(shared_roots))
 {}
 
-IvPackageReloadService::~IvPackageReloadService()
+PackageReloadService::~PackageReloadService()
 {
     request_shutdown();
 }
 
-void IvPackageReloadService::report_discovery_error(std::string message)
+void PackageReloadService::report_discovery_error(std::string message)
 {
     if (last_discovery_error_.has_value() && *last_discovery_error_ == message) {
         return;
@@ -55,7 +55,7 @@ void IvPackageReloadService::report_discovery_error(std::string message)
         }));
 }
 
-bool IvPackageReloadService::synchronize_discovered_packages()
+bool PackageReloadService::synchronize_discovered_packages()
 {
     try {
         auto declarations = discover_iv_package_declarations(project_root_, shared_roots_);
@@ -73,7 +73,7 @@ bool IvPackageReloadService::synchronize_discovered_packages()
     }
 }
 
-void IvPackageReloadService::start()
+void PackageReloadService::start()
 {
     if (worker_.has_value()) {
         return;
@@ -102,7 +102,7 @@ void IvPackageReloadService::start()
     });
 }
 
-void IvPackageReloadService::request_shutdown()
+void PackageReloadService::request_shutdown()
 {
     if (worker_.has_value()) {
         worker_->request_stop();

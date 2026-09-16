@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/runtime/iv_package_reload.h>
+#include <intravenous/runtime/package_reload_types.h>
 #include <intravenous/runtime/node_definitions.h>
 
 #include <filesystem>
@@ -29,7 +29,7 @@ struct IvPackageInfo {
     // Publication and compilation are separate states. A package with no
     // modules may be a valid node-only/empty package, still building, or have
     // failed before its compiler-produced definitions could be published.
-    IvPackageBuildState build_state = IvPackageBuildState::queued;
+    PackageBuildState build_state = PackageBuildState::queued;
     std::string build_message{};
     // A completed artifact can still be withheld by the definition registry.
     // This is distinct from a compiler failure and from a package that simply
@@ -62,7 +62,7 @@ public:
     void handle_package_declarations_changed(IvPackageDeclarationsChanged const &diff);
     void handle_package_definitions_changed(IvPackageDefinitionsChanged const &diff);
     void handle_package_build_statuses_changed(
-        std::vector<IvPackageBuildStatus> const &statuses);
+        std::vector<PackageBuildStatus> const &statuses);
     void handle_socket_rpc_get_iv_package_definitions(
         GetIvPackageDefinitionsRequest const &request,
         SocketRpcIvPackageDefinitionsResultBuilder &builder) const;

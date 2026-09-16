@@ -8,20 +8,20 @@
 #include <intravenous/runtime/node_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/node_definitions_iv_package_definitions_bridge.h>
-#include <intravenous/runtime/node_definitions_iv_package_reload_bridge.h>
+#include <intravenous/runtime/node_definitions_package_reload_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_package_definitions.h>
-#include <intravenous/runtime/iv_package_reload.h>
-#include <intravenous/runtime/iv_package_reload_iv_package_definitions_bridge.h>
-#include <intravenous/runtime/iv_package_reload_service.h>
+#include <intravenous/runtime/package_reload.h>
+#include <intravenous/runtime/package_reload_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/package_reload_service.h>
 #include <intravenous/runtime/lanes_visualization.h>
 #include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/project_autosave.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
-#include <intravenous/runtime/project_persistence_iv_package_reload_bridge.h>
+#include <intravenous/runtime/project_persistence_package_reload_bridge.h>
 #include <intravenous/runtime/project_persistence_project_autosave_bridge.h>
 #include <intravenous/runtime/project_persistence_system_audio_devices_bridge.h>
 #include <intravenous/runtime/server_options.h>
@@ -144,7 +144,7 @@ int run_server_mode(int argc, char** argv)
     // retains another app module.
     IvModuleInstances iv_module_instances;
     NodeDefinitions node_definitions;
-    IvPackageReload iv_package_reload(startup);
+    PackageReload package_reload(startup);
     IvModuleSourceIntrospection introspection;
     IvPackageDefinitions iv_package_definitions(startup.workspace_root);
     SystemAudioDevices system_audio_devices(
@@ -172,14 +172,14 @@ int run_server_mode(int argc, char** argv)
     // Services own process-level loops only; durable domain state remains in
     // their corresponding app modules.
     ProjectAutosaveService project_autosave_service(project_autosave, project_persistence);
-    IvPackageReloadService iv_package_reload_service(
-        iv_package_reload,
+    PackageReloadService package_reload_service(
+        package_reload,
         node_definitions,
         startup.workspace_root,
         startup.search_roots);
 
     std::function<void()> shutdown = [&] {
-        iv_package_reload_service.request_shutdown();
+        package_reload_service.request_shutdown();
         project_autosave_service.request_shutdown();
         system_audio_devices.request_shutdown();
         server.request_shutdown();
@@ -194,11 +194,11 @@ int run_server_mode(int argc, char** argv)
         node_definitions_iv_module_source_introspection_bridge::bind(
             node_definitions, introspection);
     auto definitions_reload_scope =
-        node_definitions_iv_package_reload_bridge::bind(node_definitions, iv_package_reload);
+        node_definitions_package_reload_bridge::bind(node_definitions, package_reload);
     auto definitions_packages_scope =
         node_definitions_iv_package_definitions_bridge::bind(node_definitions, iv_package_definitions);
     auto reload_packages_scope =
-        iv_package_reload_iv_package_definitions_bridge::bind(iv_package_reload, iv_package_definitions);
+        package_reload_iv_package_definitions_bridge::bind(package_reload, iv_package_definitions);
     auto instances_introspection_scope =
         iv_module_instances_iv_module_source_introspection_bridge::bind(iv_module_instances, introspection);
 
@@ -206,7 +206,7 @@ int run_server_mode(int argc, char** argv)
     auto persistence_instances_scope =
         project_persistence_iv_module_instances_bridge::bind(project_persistence, iv_module_instances);
     auto persistence_reload_scope =
-        project_persistence_iv_package_reload_bridge::bind(project_persistence, iv_package_reload);
+        project_persistence_package_reload_bridge::bind(project_persistence, package_reload);
     auto persistence_audio_scope =
         project_persistence_system_audio_devices_bridge::bind(project_persistence, system_audio_devices);
     auto persistence_autosave_scope =
@@ -240,11 +240,11 @@ int run_server_mode(int argc, char** argv)
     }
 
     startup_log("starting iv package reload watcher");
-    iv_package_reload_service.start();
+    package_reload_service.start();
     std::cout << "Intravenous server connected on rpc fd " << options.rpc_fd << '\n';
     server.wait();
 
-    iv_package_reload_service.request_shutdown();
+    package_reload_service.request_shutdown();
     project_autosave_service.stop();
     system_audio_devices.request_shutdown();
     return 0;

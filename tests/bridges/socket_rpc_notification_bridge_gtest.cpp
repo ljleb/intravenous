@@ -323,7 +323,7 @@ TEST(SocketRpcNotificationBridge, PublishedPackageDefinitionsRefreshThePackageCa
         harness.server,
         package_definitions);
 
-    definitions.seed_loaded_definition(IvPackageReloadedDefinition{
+    definitions.seed_loaded_definition(PackageReloadedModuleDefinition{
         .package_id = "iv.test.catalog",
         .definition_id = "iv.test.catalog.module",
         .package_root = workspace,

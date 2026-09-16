@@ -2,7 +2,6 @@
 
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_package_reload.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -22,7 +21,7 @@ std::filesystem::path normalize_path(std::filesystem::path const& path)
 }
 
 std::unique_ptr<NodeDefinitions::ModuleDefinitionState> make_module_definition_state(
-    IvPackageReloadedDefinition const& loaded,
+    PackageReloadedModuleDefinition const& loaded,
     std::uint64_t version)
 {
     auto state = std::make_unique<NodeDefinitions::ModuleDefinitionState>();
@@ -44,14 +43,14 @@ std::unique_ptr<NodeDefinitions::ModuleDefinitionState> make_module_definition_s
 }
 
 std::unique_ptr<NodeDefinitions::LeafDefinitionState> make_leaf_definition_state(
-    IvPackageReloadedNodeType const& loaded,
+    PackageReloadedLeafDefinition const& loaded,
     std::uint64_t version)
 {
     auto state = std::make_unique<NodeDefinitions::LeafDefinitionState>();
     state->module_refs = loaded.module_refs;
     state->version = version;
     state->snapshot = LeafNodeDefinition{
-        .definition_id = loaded.node_type_id,
+        .definition_id = loaded.definition_id,
         .package_id = loaded.package_id,
         .package_root = normalize_path(loaded.package_root),
         .provider = loaded.provider,
@@ -284,7 +283,7 @@ void NodeDefinitions::handle_required_definitions_changed(
     IvModuleRequiredDefinitionsChanged const& diff)
 {
     // One required-definitions event is one source-event batch. Consolidate all
-    // package declarations before propagating so IvPackageReload is entered at most
+    // package declarations before propagating so PackageReload is entered at most
     // once for this event, even when several definitions become required together.
     std::vector<IvPackageDeclaration> declarations;
     declarations.reserve(diff.created.size() + diff.updated.size());
@@ -310,11 +309,11 @@ void NodeDefinitions::rebuild_published_registry_locked(
 {
     struct ModuleProvider {
         std::string package_id;
-        IvPackageReloadedDefinition const* definition = nullptr;
+        PackageReloadedModuleDefinition const* definition = nullptr;
     };
     struct LeafProvider {
         std::string package_id;
-        IvPackageReloadedNodeType const* definition = nullptr;
+        PackageReloadedLeafDefinition const* definition = nullptr;
     };
     std::unordered_map<std::string, std::vector<ModuleProvider>> module_providers;
     std::unordered_map<std::string, std::vector<LeafProvider>> leaf_providers;
@@ -329,11 +328,11 @@ void NodeDefinitions::rebuild_published_registry_locked(
             ++provider_count_by_id[definition.module_id];
         }
         for (auto const& definition : candidate.leaf_definitions) {
-            leaf_providers[definition.node_type_id].push_back({
+            leaf_providers[definition.definition_id].push_back({
                 .package_id = package_id,
                 .definition = &definition,
             });
-            ++provider_count_by_id[definition.node_type_id];
+            ++provider_count_by_id[definition.definition_id];
         }
     }
 
@@ -467,16 +466,16 @@ void NodeDefinitions::rebuild_published_registry_locked(
     definitions_snapshot_ = std::move(next_snapshot);
 }
 
-void NodeDefinitions::handle_reload_results(IvPackageReloadResults const& results)
+void NodeDefinitions::handle_reload_results(PackageReloadResults const& results)
 {
-    std::unordered_map<std::string, std::vector<IvPackageReloadedDefinition const*>>
+    std::unordered_map<std::string, std::vector<PackageReloadedModuleDefinition const*>>
         modules_by_package_id;
-    for (auto const& loaded : results.loaded) {
+    for (auto const& loaded : results.module_definitions) {
         modules_by_package_id[loaded.package_id].push_back(&loaded);
     }
-    std::unordered_map<std::string, std::vector<IvPackageReloadedNodeType const*>>
+    std::unordered_map<std::string, std::vector<PackageReloadedLeafDefinition const*>>
         leaf_definitions_by_package_id;
-    for (auto const& node_type : results.node_types) {
+    for (auto const& node_type : results.leaf_definitions) {
         leaf_definitions_by_package_id[node_type.package_id].push_back(&node_type);
     }
 
@@ -512,17 +511,17 @@ void NodeDefinitions::handle_reload_results(IvPackageReloadResults const& result
                     leaf_definitions_by_package_id.find(package.package_id);
                 leaf_definitions != leaf_definitions_by_package_id.end()) {
                 candidate.leaf_definitions.reserve(leaf_definitions->second.size());
-                for (auto const* node_type : leaf_definitions->second) {
-                    if (node_type->node_type_id.empty()) {
-                        error = "IV package published a node type with an empty ID";
+                for (auto const* leaf_definition : leaf_definitions->second) {
+                    if (leaf_definition->definition_id.empty()) {
+                        error = "IV package published a leaf definition with an empty ID";
                         break;
                     }
-                    if (!definition_ids.insert(node_type->node_type_id).second) {
+                    if (!definition_ids.insert(leaf_definition->definition_id).second) {
                         error = "IV package published duplicate IV definition ID '"
-                            + node_type->node_type_id + "'";
+                            + leaf_definition->definition_id + "'";
                         break;
                     }
-                    candidate.leaf_definitions.push_back(*node_type);
+                    candidate.leaf_definitions.push_back(*leaf_definition);
                 }
             }
             if (!error.empty()) {
@@ -546,19 +545,19 @@ void NodeDefinitions::handle_reload_results(IvPackageReloadResults const& result
 }
 
 void NodeDefinitions::seed_loaded_definition(
-    IvPackageReloadedDefinition loaded_definition)
+    PackageReloadedModuleDefinition loaded_definition)
 {
     auto const package_id = loaded_definition.package_id.empty()
         ? loaded_definition.definition_id
         : loaded_definition.package_id;
     declare_package(package_id, loaded_definition.package_root);
     loaded_definition.package_id = package_id;
-    IvPackageReloadResults results;
+    PackageReloadResults results;
     results.packages.push_back({
         .package_id = package_id,
         .package_root = loaded_definition.package_root,
     });
-    results.loaded.push_back(std::move(loaded_definition));
+    results.module_definitions.push_back(std::move(loaded_definition));
     handle_reload_results(results);
 }
 
@@ -578,9 +577,9 @@ NodeDefinitions::package_definition_snapshots() const
             ids.push_back(module.module_id);
             candidate_packages_by_id[module.module_id].push_back(package_id);
         }
-        for (auto const& node_type : candidate.leaf_definitions) {
-            ids.push_back(node_type.node_type_id);
-            candidate_packages_by_id[node_type.node_type_id].push_back(package_id);
+        for (auto const& leaf_definition : candidate.leaf_definitions) {
+            ids.push_back(leaf_definition.definition_id);
+            candidate_packages_by_id[leaf_definition.definition_id].push_back(package_id);
         }
     }
 

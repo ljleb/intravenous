@@ -156,7 +156,7 @@ function(iv_add_host_runtime_objects target)
         intravenous_module_watcher
         intravenous_runtime_iv_module_instances_events
         intravenous_runtime_node_definitions_events
-        intravenous_runtime_iv_package_reload_events
+        intravenous_runtime_package_reload_events
         intravenous_runtime_iv_module_source_introspection_events
         intravenous_runtime_lane_filters_events
         intravenous_runtime_lane_views_events
@@ -303,8 +303,8 @@ iv_add_linker_event_object(
     runtime/node_definitions_events.cpp
 )
 iv_add_linker_event_object(
-    intravenous_runtime_iv_package_reload_events
-    runtime/iv_package_reload_events.cpp
+    intravenous_runtime_package_reload_events
+    runtime/package_reload_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_iv_module_source_introspection_events
@@ -349,12 +349,12 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/node_definitions_iv_module_instances_bridge.cpp
     runtime/node_definitions_iv_module_source_introspection_bridge.cpp
     runtime/node_definitions_iv_package_definitions_bridge.cpp
-    runtime/iv_package_reload_iv_package_definitions_bridge.cpp
-    runtime/node_definitions_iv_package_reload_bridge.cpp
+    runtime/package_reload_iv_package_definitions_bridge.cpp
+    runtime/node_definitions_package_reload_bridge.cpp
     runtime/iv_module_instances.cpp
     runtime/iv_module_instances_iv_module_source_introspection_bridge.cpp
-    runtime/iv_package_reload.cpp
-    runtime/iv_package_reload_service.cpp
+    runtime/package_reload.cpp
+    runtime/package_reload_service.cpp
     runtime/lane_filters.cpp
     runtime/lane_filters_lane_views_bridge.cpp
     runtime/lane_views_lanes_visualization_bridge.cpp
@@ -373,7 +373,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/project_persistence_system_audio_devices_bridge.cpp
     runtime/project_persistence_project_autosave_bridge.cpp
     runtime/project_persistence_iv_module_instances_bridge.cpp
-    runtime/project_persistence_iv_package_reload_bridge.cpp
+    runtime/project_persistence_package_reload_bridge.cpp
     runtime/socket_rpc_lane_views_bridge.cpp
     runtime/socket_rpc_lane_query_schema_bridge.cpp
     runtime/socket_rpc_lane_query_completion_bridge.cpp

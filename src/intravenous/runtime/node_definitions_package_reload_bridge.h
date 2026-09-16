@@ -4,10 +4,10 @@
 
 namespace iv {
 class NodeDefinitions;
-class IvPackageReload;
+class PackageReload;
 
 IV_DECLARE_BRIDGE(
-    node_definitions_iv_package_reload_bridge,
+    node_definitions_package_reload_bridge,
     NodeDefinitions,
-    IvPackageReload);
+    PackageReload);
 } // namespace iv

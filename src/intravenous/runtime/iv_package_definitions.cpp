@@ -226,7 +226,7 @@ IvPackageInfo& IvPackageDefinitions::ensure_package(
         .project_local = is_within(package_root, project_root_),
         .module_ids = {},
         .node_type_ids = {},
-        .build_state = IvPackageBuildState::queued,
+        .build_state = PackageBuildState::queued,
         .build_message = {},
         .publication_message = {},
     });
@@ -305,10 +305,10 @@ void IvPackageDefinitions::handle_package_definitions_changed(
 }
 
 void IvPackageDefinitions::handle_package_build_statuses_changed(
-    std::vector<IvPackageBuildStatus> const &statuses)
+    std::vector<PackageBuildStatus> const &statuses)
 {
     std::scoped_lock lock(mutex_);
-    std::unordered_map<std::string, IvPackageBuildStatus> by_id;
+    std::unordered_map<std::string, PackageBuildStatus> by_id;
     for (auto const &status : statuses) {
         by_id.emplace(status.package_id, status);
         auto &package = ensure_package(status.package_id, {});
@@ -317,7 +317,7 @@ void IvPackageDefinitions::handle_package_build_statuses_changed(
     }
     for (auto &[package_id, package] : packages_by_id_) {
         if (!by_id.contains(package_id)) {
-            package.build_state = IvPackageBuildState::queued;
+            package.build_state = PackageBuildState::queued;
             package.build_message.clear();
         }
     }
@@ -382,7 +382,7 @@ IvPackageInfo IvPackageDefinitions::create_project_package(std::string const& na
         .project_local = true,
         .module_ids = {},
         .node_type_ids = {},
-        .build_state = IvPackageBuildState::queued,
+        .build_state = PackageBuildState::queued,
         .build_message = {},
         .publication_message = {},
     };

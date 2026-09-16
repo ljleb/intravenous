@@ -1,11 +1,8 @@
 #pragma once
 
-#include <intravenous/basic_nodes/weak_type_erased.h>
-#include <intravenous/graph/build_types.h>
-#include <intravenous/module/dependency.h>
 #include <intravenous/module/loader.h>
 #include <intravenous/module/watcher.h>
-#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/package_reload_types.h>
 #include <intravenous/runtime/startup_config.h>
 
 #include <memory>
@@ -17,48 +14,10 @@
 #include <vector>
 
 namespace iv {
-struct IvPackageReloadFailure {
-    std::string package_id{};
-    std::filesystem::path package_root{};
-    std::string message{};
-};
-
-struct IvPackageReloadedPackage {
-    std::string package_id{};
-    std::filesystem::path package_root{};
-    std::vector<ModuleDependency> dependencies{};
-};
-
-struct IvPackageReloadResults {
-    // A successful source result is present even when the source currently
-    // publishes zero IV modules, allowing transactional removal of its prior
-    // definitions.
-    std::vector<IvPackageReloadedPackage> packages{};
-    std::vector<IvPackageReloadedDefinition> loaded{};
-    std::vector<IvPackageReloadedNodeType> node_types{};
-    std::vector<IvPackageReloadFailure> failed{};
-};
-
-// Compilation is deliberately separate from definition publication. A package
-// can be discovered before it has a usable artifact, and a failed rebuild must
-// not be misrepresented to the UI as a source with no definitions.
-enum class IvPackageBuildState {
-    queued,
-    building,
-    built,
-    failed,
-};
-
-struct IvPackageBuildStatus {
-    std::string package_id{};
-    IvPackageBuildState state = IvPackageBuildState::queued;
-    std::string message{};
-};
-
 struct ProjectOverrideSettingsRequest;
 class ProjectPersistenceBuilder;
 
-class IvPackageReload {
+class PackageReload {
     StartupConfigState startup_config;
     ModuleLoader::OptimizationLevel loader_optimization_level_;
     std::unique_ptr<ModuleLoader> loader_;
@@ -66,8 +25,8 @@ class IvPackageReload {
     std::unordered_map<std::string, IvPackageDeclaration> package_declarations_by_id;
     std::unordered_map<std::string, std::vector<ModuleDependency>> dependencies_by_package_id;
     std::unordered_set<std::string> dirty_package_ids;
-    std::unordered_map<std::string, IvPackageBuildStatus> build_status_by_package_id;
-    IvPackageReloadResults pending_results;
+    std::unordered_map<std::string, PackageBuildStatus> build_status_by_package_id;
+    PackageReloadResults pending_results;
     DependencyWatcher watcher;
 
     // Bridge-only owners may intentionally have no startup configuration.
@@ -75,7 +34,7 @@ class IvPackageReload {
     // Once created it remains the same loader, preserving its shared ORC JIT
     // and the lifetime of previously configured package revisions.
     [[nodiscard]] ModuleLoader& ensure_loader();
-    [[nodiscard]] IvPackageReloadResults reload_packages(
+    [[nodiscard]] PackageReloadResults reload_packages(
         std::vector<IvPackageDeclaration> const &declarations);
     void refresh_watched_dependencies_locked();
     void publish_build_statuses() const;
@@ -86,7 +45,7 @@ class IvPackageReload {
         std::filesystem::path package_root = {});
 
 public:
-    explicit IvPackageReload(
+    explicit PackageReload(
         StartupConfigState startup_config_,
         ModuleLoader::OptimizationLevel loader_optimization_level =
             ModuleLoader::OptimizationLevel::O3);
@@ -99,7 +58,7 @@ public:
         IvPackageDeclarationsChanged const &diff);
 
     [[nodiscard]] bool has_dirty_packages() const;
-    [[nodiscard]] std::vector<IvPackageBuildStatus> package_build_statuses() const;
+    [[nodiscard]] std::vector<PackageBuildStatus> package_build_statuses() const;
     void compile_dirty_packages();
     void reload_changed_packages();
     [[nodiscard]] bool has_pending_results() const;
