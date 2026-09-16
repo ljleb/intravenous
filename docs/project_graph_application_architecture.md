@@ -79,10 +79,8 @@ project-graph implementation.
 
 ### Implementation checkpoints
 
-`NodeDefinitions` and the intermediate generalized `PackageReload` rename have
-landed. The current package implementation is not yet the final package
-architecture. The target package pipeline is specified in
-[package_pipeline_architecture.md](./package_pipeline_architecture.md):
+The package-side app-module migration specified in
+[package_pipeline_architecture.md](./package_pipeline_architecture.md) has landed:
 
 ```text
 PackageWatcher
@@ -97,19 +95,16 @@ set that changes the filesystem state it owns. Build results return synchronousl
 from `PackageJit`; `PackageWatcher` updates its watches and then enters
 `PackageDefinitions` exactly once with the complete transaction.
 
-The package-side migration is therefore:
+`PackageDefinitions` now owns accepted package revisions and package-catalog
+state; `NodeDefinitions` derives only the global namespace. The old
+`IvPackageDefinitionsChanged` event survives temporarily as a compatibility
+projection to legacy `IvModuleInstances` and source-introspection consumers, not
+as package-state ownership.
 
-1. extract `PackageJit` from the `ModuleLoader`/ORC/build portions of the current
-   `PackageReload`;
-2. turn the current `IvPackageDefinitions` projection into the authoritative
-   `PackageDefinitions` accepted-revision registry and simplify `NodeDefinitions`
-   to derive only the global namespace;
-3. reduce/rename the remaining source/discovery/dependency/dirty-state portion of
-   `PackageReload` to `PackageWatcher`.
-
-The current dependency watcher already uses `inotify`. The remaining periodic
-package-root discovery scan is explicitly temporary and should be replaced by
-event-driven Linux discovery rather than preserved as a portability fallback.
+The dependency watcher already uses `inotify`. The remaining periodic
+package-root discovery scan in `PackageWatcherService` is explicitly temporary
+and should be replaced by event-driven Linux discovery rather than preserved as a
+portability fallback.
 
 `NodeInstances` and `IvModuleSourceIntrospection` still retain legacy internals
 and are later migration checkpoints.

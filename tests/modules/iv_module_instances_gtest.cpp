@@ -4,8 +4,9 @@
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_definitions_iv_package_definitions_bridge.h>
-#include <intravenous/runtime/iv_package_definitions.h>
+#include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
+#include <intravenous/runtime/package_definitions.h>
+#include <intravenous/runtime/package_watcher.h>
 
 #include <gtest/gtest.h>
 
@@ -204,11 +205,23 @@ TEST_F(IvModuleInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirst
         "IV_MODULE(\"iv.test.module.secondary\", secondary);\n");
 
     iv::NodeDefinitions definitions;
-    iv::IvPackageDefinitions sources(workspace);
+    iv::PackageDefinitions sources(workspace);
     auto package_definitions_scope =
-        iv::node_definitions_iv_package_definitions_bridge::bind(definitions, sources);
-    definitions.sync_package_declarations(
-        iv::discover_iv_package_declarations(workspace, {}));
+        iv::package_definitions_node_definitions_bridge::bind(sources, definitions);
+    auto const discovered_declarations = iv::discover_iv_package_declarations(workspace, {});
+    std::vector<iv::IvPackageDeclaration> declarations;
+    declarations.reserve(discovered_declarations.size());
+    for (auto const& [package_id, package_root] : discovered_declarations) {
+        declarations.push_back(iv::IvPackageDeclaration{
+            .package_id = package_id,
+            .package_root = package_root,
+        });
+    }
+    sources.handle_package_refresh(iv::PackageRefreshTransaction{
+        .declarations = iv::IvPackageDeclarationsChanged{
+            .created = std::move(declarations),
+        },
+    });
     auto const discovered = sources.list_packages();
 
     ASSERT_EQ(discovered.size(), 1u);

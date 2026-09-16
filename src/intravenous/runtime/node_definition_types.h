@@ -103,23 +103,11 @@ struct NodeDefinitionsSnapshot {
     std::unordered_map<std::string, NodeDefinitionEntry> by_id{};
 };
 
+// Temporary compatibility projection for legacy runtime consumers. Package
+// catalog/publication diagnostics return synchronously to PackageDefinitions
+// and are deliberately not carried on this downstream-only event.
 struct IvPackageDefinitionsChanged {
     ModuleNodeDefinitionsChanged module_definitions{};
     LeafNodeDefinitionsChanged leaf_definitions{};
-    // Package-level publication diagnostics are registry state, not reload
-    // state. Publish them with the definition diff so package tooling does
-    // not need a direct reference back to NodeDefinitions.
-    std::unordered_map<std::string, std::string> publication_messages_by_package_id{};
-};
-
-// One coherent read of the package registry. Published IDs are the only IDs
-// that can be instantiated or resolved by a graph. A non-empty publication
-// message means the package produced a candidate that deliberately remains
-// unavailable (for example, an invalid local registration or an ID conflict).
-struct IvPackageDefinitionSnapshot {
-    IvPackageDeclaration declaration{};
-    std::vector<std::string> published_module_definition_ids{};
-    std::vector<std::string> published_leaf_definition_ids{};
-    std::string publication_message{};
 };
 } // namespace iv

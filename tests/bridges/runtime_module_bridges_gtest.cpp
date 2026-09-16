@@ -45,7 +45,7 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionForwardsWhenB
     auto loaded = iv::test::load_runtime_iv_module_definition(
         startup,
         std::filesystem::weakly_canonical(workspace));
-    definitions.seed_loaded_definition(iv::PackageReloadedModuleDefinition{
+    definitions.seed_loaded_definition(iv::PackageModuleDefinition{
         .package_id = loaded.package_id,
         .definition_id = loaded.definition_id,
         .package_root = loaded.package_root,

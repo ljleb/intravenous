@@ -3,8 +3,8 @@
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_definitions_iv_package_definitions_bridge.h>
-#include <intravenous/runtime/iv_package_definitions.h>
+#include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
+#include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/node_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
@@ -43,13 +43,13 @@ TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventLeavesResponseUnbuilt)
     EXPECT_THROW(static_cast<void>(builder.build(1)), std::runtime_error);
 }
 
-TEST(IvPackageDefinitions, NewProjectPackagesReceivePackageSpecificSharedPchCompileDatabase)
+TEST(PackageDefinitions, NewProjectPackagesReceivePackageSpecificSharedPchCompileDatabase)
 {
     auto const project_root = std::filesystem::temp_directory_path()
         / "intravenous_iv_package_definitions_compile_commands_test";
     std::filesystem::remove_all(project_root);
 
-    iv::IvPackageDefinitions packages(project_root);
+    iv::PackageDefinitions packages(project_root);
     auto const first = packages.create_project_package("first");
     auto const second = packages.create_project_package("second");
 
@@ -95,10 +95,12 @@ TEST(IvPackageDefinitions, NewProjectPackagesReceivePackageSpecificSharedPchComp
     // File creation and catalog publication are separate responsibilities.
     // The package catalog only changes when the definition pipeline publishes
     // package declarations.
-    packages.handle_package_declarations_changed(iv::IvPackageDeclarationsChanged{
-        .created = {
-            {.package_id = first.package_id, .package_root = first.package_root},
-            {.package_id = second.package_id, .package_root = second.package_root},
+    packages.handle_package_refresh(iv::PackageRefreshTransaction{
+        .declarations = iv::IvPackageDeclarationsChanged{
+            .created = {
+                {.package_id = first.package_id, .package_root = first.package_root},
+                {.package_id = second.package_id, .package_root = second.package_root},
+            },
         },
     });
 
@@ -112,19 +114,32 @@ TEST(IvPackageDefinitions, NewProjectPackagesReceivePackageSpecificSharedPchComp
     std::filesystem::remove_all(project_root);
 }
 
-TEST(IvPackageDefinitions, ListsPublishedDefinitionsFromTheRegistrySnapshot)
+TEST(PackageDefinitions, ListsPublishedDefinitionsFromTheRegistrySnapshot)
 {
     auto const package_root = iv::test::test_modules_root() / "local_cmake";
     auto const normalized_root = std::filesystem::weakly_canonical(package_root);
     iv::NodeDefinitions definitions;
-    iv::IvPackageDefinitions packages("/tmp");
-    auto definitions_scope = iv::node_definitions_iv_package_definitions_bridge::bind(
-        definitions, packages);
+    iv::PackageDefinitions packages("/tmp");
+    auto definitions_scope = iv::package_definitions_node_definitions_bridge::bind(
+        packages, definitions);
 
     auto definition = iv::test_support::make_loaded_definition(
         package_root, "iv.test.local_cmake");
     definition.package_id = normalized_root.generic_string();
-    definitions.seed_loaded_definition(std::move(definition));
+    packages.handle_package_refresh(iv::PackageRefreshTransaction{
+        .declarations = iv::IvPackageDeclarationsChanged{
+            .created = {{
+                .package_id = normalized_root.generic_string(),
+                .package_root = normalized_root,
+            }},
+        },
+        .successful_revisions = {iv::PackageRevision{
+            .package_id = normalized_root.generic_string(),
+            .package_root = normalized_root,
+            .revision = 1,
+            .module_definitions = {std::move(definition)},
+        }},
+    });
 
     auto const listed = packages.list_packages();
     ASSERT_EQ(listed.size(), 1u);
@@ -134,7 +149,7 @@ TEST(IvPackageDefinitions, ListsPublishedDefinitionsFromTheRegistrySnapshot)
     EXPECT_TRUE(listed.front().publication_message.empty());
 }
 
-TEST(IvPackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
+TEST(PackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
 {
     auto const workspace = iv::test::fresh_module_fixture_workspace(
         "iv_package_definitions_registry_conflict");
@@ -144,20 +159,44 @@ TEST(IvPackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
     std::filesystem::create_directories(second_root);
 
     iv::NodeDefinitions definitions;
-    iv::IvPackageDefinitions packages(workspace);
-    auto definitions_scope = iv::node_definitions_iv_package_definitions_bridge::bind(
-        definitions, packages);
-    definitions.seed_loaded_definition(iv::PackageReloadedModuleDefinition{
-        .package_id = "iv.test.first",
-        .definition_id = "iv.test.shared",
-        .package_root = first_root,
-        .module_id = "iv.test.shared",
+    iv::PackageDefinitions packages(workspace);
+    auto definitions_scope = iv::package_definitions_node_definitions_bridge::bind(
+        packages, definitions);
+    packages.handle_package_refresh(iv::PackageRefreshTransaction{
+        .declarations = iv::IvPackageDeclarationsChanged{
+            .created = {
+                {.package_id = "iv.test.first", .package_root = first_root},
+            },
+        },
+        .successful_revisions = {iv::PackageRevision{
+            .package_id = "iv.test.first",
+            .package_root = first_root,
+            .revision = 1,
+            .module_definitions = {iv::PackageModuleDefinition{
+                .package_id = "iv.test.first",
+                .definition_id = "iv.test.shared",
+                .package_root = first_root,
+                .module_id = "iv.test.shared",
+            }},
+        }},
     });
-    definitions.seed_loaded_definition(iv::PackageReloadedModuleDefinition{
-        .package_id = "iv.test.second",
-        .definition_id = "iv.test.shared",
-        .package_root = second_root,
-        .module_id = "iv.test.shared",
+    packages.handle_package_refresh(iv::PackageRefreshTransaction{
+        .declarations = iv::IvPackageDeclarationsChanged{
+            .created = {
+                {.package_id = "iv.test.second", .package_root = second_root},
+            },
+        },
+        .successful_revisions = {iv::PackageRevision{
+            .package_id = "iv.test.second",
+            .package_root = second_root,
+            .revision = 1,
+            .module_definitions = {iv::PackageModuleDefinition{
+                .package_id = "iv.test.second",
+                .definition_id = "iv.test.shared",
+                .package_root = second_root,
+                .module_id = "iv.test.shared",
+            }},
+        }},
     });
 
     auto const listed = packages.list_packages();
@@ -168,7 +207,7 @@ TEST(IvPackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
         });
     ASSERT_NE(second, listed.end());
     EXPECT_TRUE(second->module_ids.empty());
-    EXPECT_EQ(second->build_state, iv::PackageBuildState::queued);
+    EXPECT_EQ(second->build_state, iv::PackageBuildState::built);
     EXPECT_NE(
         second->publication_message.find("provided by multiple IV packages"),
         std::string::npos);

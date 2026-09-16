@@ -4,9 +4,10 @@
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_events.h>
-#include <intravenous/runtime/node_definitions_iv_package_definitions_bridge.h>
-#include <intravenous/runtime/iv_package_definitions.h>
-#include <intravenous/runtime/socket_rpc_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
+#include <intravenous/runtime/package_definitions.h>
+#include <intravenous/runtime/package_pipeline_events.h>
+#include <intravenous/runtime/socket_rpc_package_definitions_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/lane_query_schema_service.h>
@@ -315,19 +316,29 @@ TEST(SocketRpcNotificationBridge, PublishedPackageDefinitionsRefreshThePackageCa
         "socket_rpc_package_catalog_notification_server");
     auto harness = NotificationServerHarness(workspace);
     NodeDefinitions definitions;
-    IvPackageDefinitions package_definitions(workspace);
-    auto definitions_scope = node_definitions_iv_package_definitions_bridge::bind(
-        definitions,
-        package_definitions);
-    auto package_catalog_scope = socket_rpc_iv_package_definitions_bridge::bind(
+    PackageDefinitions package_definitions(workspace);
+    auto definitions_scope = package_definitions_node_definitions_bridge::bind(
+        package_definitions,
+        definitions);
+    auto package_catalog_scope = socket_rpc_package_definitions_bridge::bind(
         harness.server,
         package_definitions);
 
-    definitions.seed_loaded_definition(PackageReloadedModuleDefinition{
-        .package_id = "iv.test.catalog",
-        .definition_id = "iv.test.catalog.module",
-        .package_root = workspace,
-        .module_id = "iv.test.catalog.module",
+    package_definitions.handle_package_refresh(PackageRefreshTransaction{
+        .declarations = IvPackageDeclarationsChanged{
+            .created = {{.package_id = "iv.test.catalog", .package_root = workspace}},
+        },
+        .successful_revisions = {PackageRevision{
+            .package_id = "iv.test.catalog",
+            .package_root = workspace,
+            .revision = 1,
+            .module_definitions = {PackageModuleDefinition{
+                .package_id = "iv.test.catalog",
+                .definition_id = "iv.test.catalog.module",
+                .package_root = workspace,
+                .module_id = "iv.test.catalog.module",
+            }},
+        }},
     });
     IV_INVOKE_LINKER_EVENT_SOURCE(
         iv_runtime_iv_package_catalog_changed_event,

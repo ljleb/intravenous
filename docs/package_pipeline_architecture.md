@@ -376,33 +376,33 @@ flowchart TD
 The static package-side graph remains acyclic for both filesystem and manual
 build causes.
 
-## Current implementation and migration order
+## Current implementation checkpoint
 
-The current implementation is an intermediate checkpoint:
+The package-side app-module split described above has landed:
 
-- `PackageReload` still combines dependency watching, dirty/build orchestration,
-  `ModuleLoader`, package ORC state, and completed build-result publication;
-- `PackageReloadService` still owns a periodic package-root discovery loop;
-- `IvPackageDefinitions` is still largely a terminal package-catalog/UI
-  projection rather than the accepted-revision owner;
-- `NodeDefinitions` still retains package declaration/candidate/publication state
-  that belongs in `PackageDefinitions`.
+- `PackageWatcher` owns discovered/retained declarations, dirty state, dependency
+  watches, and coordinates each complete refresh transaction;
+- `PackageJit` owns `ModuleLoader`, package ORC/JIT/compiler state, and returns
+  self-contained immutable `PackageRevision` results synchronously;
+- `PackageDefinitions` owns the package catalog, accepted successful revisions,
+  build diagnostics/status, and immutable accepted-revision snapshots;
+- `NodeDefinitions` consumes those snapshots and owns only the derived global
+  definition namespace plus namespace-publication diagnostics;
+- linker-set control flow follows `PackageWatcher -> PackageJit`, then
+  `PackageWatcher -> PackageDefinitions -> NodeDefinitions`, with diagnostics
+  returned synchronously over the last request/response edge.
 
-Migrate one app module at a time in this order:
+There is no `PackageReload` application module or `IvPackageDefinitions`
+application module anymore. The old package-definition change event remains only
+as a temporary compatibility projection from `NodeDefinitions` to legacy
+`IvModuleInstances`/source-introspection consumers until those modules move to the
+new project-graph architecture.
 
-1. **Extract `PackageJit` from the existing `PackageReload`.** Move
-   `ModuleLoader`, package ORC/JIT state, package compilation, compiler caches,
-   and synchronous build-result production behind the batch request/response
-   boundary. The remaining `PackageReload` is temporarily the caller.
-2. **Migrate `IvPackageDefinitions` to `PackageDefinitions`.** Make it the real
-   package catalog/accepted-revision owner. In the same boundary cleanup,
-   simplify `NodeDefinitions` so it consumes accepted package revisions instead
-   of owning package declarations/candidates itself.
-3. **Reduce and rename the remainder of `PackageReload` to `PackageWatcher`.** It
-   retains source/discovery/dependency/dirty state, becomes the coordinator of
-   every package build cause, and uses event-driven Linux package discovery.
+The remaining package-side migration item is package-root discovery.
+`PackageWatcherService` still performs the temporary periodic discovery scan; the
+dependency watcher itself is event-driven on Linux. Replace the root scan with
+event-driven Linux discovery without changing the app-module ownership or event
+topology above.
 
-After step 3 there is no `PackageReload` app module in the target architecture.
-
-Only after this package pipeline is coherent should later graph-side app modules
-depend on its final event topology.
+With this package pipeline coherent, later graph-side app modules can depend on
+its final event topology.

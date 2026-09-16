@@ -134,8 +134,8 @@ add_iv_gtest(intravenous_startup_config_tests modules/startup_config_gtest.cpp)
 add_iv_gtest(intravenous_node_definitions_tests modules/node_definitions_gtest.cpp)
 add_iv_gtest(intravenous_iv_module_instances_tests modules/iv_module_instances_gtest.cpp)
 add_iv_gtest(
-    intravenous_package_reload_tests
-    modules/package_reload_gtest.cpp
+    intravenous_package_pipeline_tests
+    modules/package_pipeline_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
     intravenous_iv_module_source_introspection_tests
