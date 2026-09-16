@@ -4,6 +4,7 @@
 #include <intravenous/graph/build_types.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/dependency.h>
+#include <intravenous/module/package_definitions.h>
 #include <intravenous/node/compiler_record.h>
 
 #include <filesystem>
@@ -55,6 +56,7 @@ namespace iv {
             GraphIntrospectionMetadata introspection;
             std::filesystem::path package_path;
             std::string module_id;
+            details::PackageDefinition provider{};
             std::vector<ModuleDependency> dependencies;
             // The configured graph is retained above the compatibility GraphLowerer
             // path so whole-project compilation can consume it directly.
@@ -66,6 +68,7 @@ namespace iv {
                 GraphIntrospectionMetadata introspection_,
                 std::filesystem::path package_path_,
                 std::string module_id_,
+                details::PackageDefinition provider_,
                 std::vector<ModuleDependency> dependencies_,
                 std::shared_ptr<ConfiguredGraph const> configured_graph_
             );
@@ -76,6 +79,7 @@ namespace iv {
             // belong to the loaded IV package code held alive by module_refs.
             std::string node_type_id;
             details::NodeCompilerRecord compiler_record{};
+            details::PackageDefinition provider{};
             std::filesystem::path package_path;
             std::vector<ModuleRef> module_refs;
         };

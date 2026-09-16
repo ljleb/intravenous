@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/runtime/iv_module_instance_types.h>
-#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/node_definitions.h>
 
 #include <filesystem>
 #include <mutex>
@@ -71,12 +71,12 @@ private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, DesiredInstance> desired_instances_by_id_;
     std::unordered_map<std::string, IvModuleRequiredDefinition> required_definitions_by_id_;
-    std::unordered_map<std::string, IvModuleDefinition> definitions_by_id_;
+    std::unordered_map<std::string, ModuleNodeDefinition> definitions_by_id_;
     std::unordered_map<std::string, IvModuleInstance> published_instances_by_id_;
 
     bool publish_instance_locked(
         std::string const &instance_id,
-        IvModuleDefinition const &definition,
+        ModuleNodeDefinition const &definition,
         IvModuleInstancesChanged &diff);
     void publish_instance_changes(IvModuleInstancesChanged diff, bool list_changed) const;
     void publish_instance_declarations_changed() const;

@@ -25,7 +25,7 @@ std::filesystem::path normalize_path(std::filesystem::path const &path)
 }
 
 IvModuleInstance make_instance(
-    IvModuleDefinition const &definition,
+    ModuleNodeDefinition const &definition,
     std::string const &instance_id,
     std::string const &display_name)
 {
@@ -41,7 +41,7 @@ IvModuleInstance make_instance(
 
 bool IvModuleInstances::publish_instance_locked(
     std::string const &instance_id,
-    IvModuleDefinition const &definition,
+    ModuleNodeDefinition const &definition,
     IvModuleInstancesChanged &diff)
 {
     auto desired = desired_instances_by_id_.find(instance_id);
@@ -252,7 +252,7 @@ void IvModuleInstances::handle_iv_package_definitions_changed(
     bool list_changed = false;
     {
         std::scoped_lock lock(mutex_);
-        auto apply = [&](IvModuleDefinition const &definition) {
+        auto apply = [&](ModuleNodeDefinition const &definition) {
             definitions_by_id_[definition.definition_id] = definition;
             for (auto &[instance_id, desired] : desired_instances_by_id_) {
                 if (desired.definition_id != definition.definition_id) {
@@ -261,13 +261,13 @@ void IvModuleInstances::handle_iv_package_definitions_changed(
                 list_changed = publish_instance_locked(instance_id, definition, diff) || list_changed;
             }
         };
-        for (auto const &definition : package_diff.modules.created) {
+        for (auto const &definition : package_diff.module_definitions.created) {
             apply(definition);
         }
-        for (auto const &definition : package_diff.modules.updated) {
+        for (auto const &definition : package_diff.module_definitions.updated) {
             apply(definition);
         }
-        for (auto const &definition_id : package_diff.modules.deleted_definition_ids) {
+        for (auto const &definition_id : package_diff.module_definitions.deleted_definition_ids) {
             definitions_by_id_.erase(definition_id);
             for (auto it = published_instances_by_id_.begin();
                  it != published_instances_by_id_.end();) {

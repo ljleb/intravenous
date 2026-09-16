@@ -2,10 +2,10 @@
 
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_definitions_iv_package_definitions_bridge.h>
 #include <intravenous/runtime/iv_package_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -116,9 +116,9 @@ TEST(IvPackageDefinitions, ListsPublishedDefinitionsFromTheRegistrySnapshot)
 {
     auto const package_root = iv::test::test_modules_root() / "local_cmake";
     auto const normalized_root = std::filesystem::weakly_canonical(package_root);
-    iv::IvModuleDefinitions definitions;
+    iv::NodeDefinitions definitions;
     iv::IvPackageDefinitions packages("/tmp");
-    auto definitions_scope = iv::iv_module_definitions_iv_package_definitions_bridge::bind(
+    auto definitions_scope = iv::node_definitions_iv_package_definitions_bridge::bind(
         definitions, packages);
 
     auto definition = iv::test_support::make_loaded_definition(
@@ -143,9 +143,9 @@ TEST(IvPackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
     std::filesystem::create_directories(first_root);
     std::filesystem::create_directories(second_root);
 
-    iv::IvModuleDefinitions definitions;
+    iv::NodeDefinitions definitions;
     iv::IvPackageDefinitions packages(workspace);
-    auto definitions_scope = iv::iv_module_definitions_iv_package_definitions_bridge::bind(
+    auto definitions_scope = iv::node_definitions_iv_package_definitions_bridge::bind(
         definitions, packages);
     definitions.seed_loaded_definition(iv::IvPackageReloadedDefinition{
         .package_id = "iv.test.first",
@@ -179,10 +179,10 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
     iv::IvModuleInstances instances;
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
-    iv::IvModuleDefinitions definitions;
+    iv::NodeDefinitions definitions;
     iv::SocketRpcServer server("/tmp", -1);
-    auto iv_module_definitions_iv_module_instances_scope =
-        iv::iv_module_definitions_iv_module_instances_bridge::bind(
+    auto node_definitions_iv_module_instances_scope =
+        iv::node_definitions_iv_module_instances_bridge::bind(
             definitions, instances);
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
@@ -224,10 +224,10 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundUpdateRenamesInstance)
     iv::IvModuleInstances instances;
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
-    iv::IvModuleDefinitions definitions;
+    iv::NodeDefinitions definitions;
     iv::SocketRpcServer server("/tmp", -1);
-    auto iv_module_definitions_iv_module_instances_scope =
-        iv::iv_module_definitions_iv_module_instances_bridge::bind(
+    auto node_definitions_iv_module_instances_scope =
+        iv::node_definitions_iv_module_instances_bridge::bind(
             definitions, instances);
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/runtime/iv_package_reload.h>
-#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/node_definitions.h>
 
 #include <filesystem>
 #include <mutex>
@@ -18,7 +18,7 @@ struct GetIvPackageDefinitionsRequest;
 
 struct IvPackageInfo {
     // One independently discoverable IV package. Package definition IDs are
-    // compiler-produced data published by IvModuleDefinitions.
+    // compiler-produced data published by NodeDefinitions.
     std::string package_id;
     std::filesystem::path package_root;
     bool project_local = false;

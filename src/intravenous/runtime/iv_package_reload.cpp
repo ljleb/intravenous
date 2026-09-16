@@ -279,6 +279,10 @@ IvPackageReloadResults IvPackageReload::reload_packages(
                     .definition_id = loaded_definition.module_id,
                     .package_root = declaration.package_root,
                     .module_id = std::move(loaded_definition.module_id),
+                    .provider = NodeDefinitionProvider{
+                        .module_build = loaded_definition.provider.module_build,
+                        .signature = loaded_definition.provider.signature,
+                    },
                     .introspection = std::move(loaded_definition.introspection),
                     .dependencies = std::move(loaded_definition.dependencies),
                     .module_refs = std::move(loaded_definition.module_refs),
@@ -291,6 +295,10 @@ IvPackageReloadResults IvPackageReload::reload_packages(
                     .package_id = declaration.package_id,
                     .node_type_id = std::move(node_type.node_type_id),
                     .package_root = declaration.package_root,
+                    .provider = NodeDefinitionProvider{
+                        .leaf_build = node_type.provider.node_build,
+                        .signature = node_type.provider.signature,
+                    },
                     .compiler_record = node_type.compiler_record,
                     .module_refs = std::move(node_type.module_refs),
                 });

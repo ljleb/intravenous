@@ -1,6 +1,6 @@
-#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/node_definitions.h>
 
-#include <intravenous/runtime/iv_module_definitions_events.h>
+#include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_package_reload.h>
 
@@ -21,16 +21,19 @@ std::filesystem::path normalize_path(std::filesystem::path const& path)
               : canonical.lexically_normal();
 }
 
-std::unique_ptr<IvModuleDefinitions::DefinitionState> make_definition_state(
-    IvPackageReloadedDefinition const& loaded)
+std::unique_ptr<NodeDefinitions::ModuleDefinitionState> make_module_definition_state(
+    IvPackageReloadedDefinition const& loaded,
+    std::uint64_t version)
 {
-    auto state = std::make_unique<IvModuleDefinitions::DefinitionState>();
+    auto state = std::make_unique<NodeDefinitions::ModuleDefinitionState>();
     state->module_refs = loaded.module_refs;
-    state->snapshot = IvModuleDefinition{
+    state->version = version;
+    state->snapshot = ModuleNodeDefinition{
         .definition_id = loaded.definition_id,
         .package_id = loaded.package_id,
         .package_root = normalize_path(loaded.package_root),
         .module_id = loaded.module_id,
+        .provider = loaded.provider,
         .introspection = loaded.introspection,
         .dependencies = loaded.dependencies,
         .module_refs = state->module_refs,
@@ -40,15 +43,18 @@ std::unique_ptr<IvModuleDefinitions::DefinitionState> make_definition_state(
     return state;
 }
 
-std::unique_ptr<IvModuleDefinitions::NodeTypeState> make_node_type_state(
-    IvPackageReloadedNodeType const& loaded)
+std::unique_ptr<NodeDefinitions::LeafDefinitionState> make_leaf_definition_state(
+    IvPackageReloadedNodeType const& loaded,
+    std::uint64_t version)
 {
-    auto state = std::make_unique<IvModuleDefinitions::NodeTypeState>();
+    auto state = std::make_unique<NodeDefinitions::LeafDefinitionState>();
     state->module_refs = loaded.module_refs;
-    state->snapshot = IvNodeTypeDefinition{
-        .node_type_id = loaded.node_type_id,
+    state->version = version;
+    state->snapshot = LeafNodeDefinition{
+        .definition_id = loaded.node_type_id,
         .package_id = loaded.package_id,
         .package_root = normalize_path(loaded.package_root),
+        .provider = loaded.provider,
         .compiler_record = loaded.compiler_record,
         .module_refs = state->module_refs,
     };
@@ -56,10 +62,14 @@ std::unique_ptr<IvModuleDefinitions::NodeTypeState> make_node_type_state(
 }
 } // namespace
 
-IvModuleDefinitions::~IvModuleDefinitions() = default;
+NodeDefinitions::NodeDefinitions()
+    : definitions_snapshot_(std::make_shared<NodeDefinitionsSnapshot const>())
+{}
+
+NodeDefinitions::~NodeDefinitions() = default;
 
 std::unordered_map<std::string, IvPackageDeclaration>
-IvModuleDefinitions::merge_declaration_sources_locked(
+NodeDefinitions::merge_declaration_sources_locked(
     std::unordered_map<std::string, IvPackageDeclaration> const& retained,
     std::unordered_map<std::string, IvPackageDeclaration> const& discovered) const
 {
@@ -75,19 +85,24 @@ IvModuleDefinitions::merge_declaration_sources_locked(
     return merged;
 }
 
-void IvModuleDefinitions::publish_package_definitions_changed(
-    IvModuleDefinitionsChanged modules,
-    IvNodeTypeDefinitionsChanged node_types,
+void NodeDefinitions::publish_package_definitions_changed(
+    ModuleNodeDefinitionsChanged modules,
+    LeafNodeDefinitionsChanged leaf_definitions,
     bool force) const
 {
     auto const has_module_changes = !modules.created.empty()
         || !modules.updated.empty()
         || !modules.deleted_definition_ids.empty();
-    auto const has_node_type_changes = !node_types.created.empty()
-        || !node_types.updated.empty()
-        || !node_types.deleted_node_type_ids.empty();
-    if (!has_module_changes && !has_node_type_changes && !force) {
+    auto const has_leaf_changes = !leaf_definitions.created.empty()
+        || !leaf_definitions.updated.empty()
+        || !leaf_definitions.deleted_definition_ids.empty();
+    if (!has_module_changes && !has_leaf_changes && !force) {
         return;
+    }
+    if (has_module_changes || has_leaf_changes) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_node_definitions_snapshot_changed_event,
+            NodeDefinitionsSnapshotChanged{.snapshot = snapshot()});
     }
     std::unordered_map<std::string, std::string> publication_messages;
     for (auto const &snapshot : package_definition_snapshots()) {
@@ -100,13 +115,13 @@ void IvModuleDefinitions::publish_package_definitions_changed(
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_iv_package_definitions_changed_event,
         IvPackageDefinitionsChanged{
-            .modules = std::move(modules),
-            .node_types = std::move(node_types),
+            .module_definitions = std::move(modules),
+            .leaf_definitions = std::move(leaf_definitions),
             .publication_messages_by_package_id = std::move(publication_messages),
         });
 }
 
-void IvModuleDefinitions::declare_packages(
+void NodeDefinitions::declare_packages(
     std::vector<IvPackageDeclaration> declarations)
 {
     std::unordered_map<std::string, IvPackageDeclaration> declarations_by_id;
@@ -157,7 +172,7 @@ void IvModuleDefinitions::declare_packages(
     }
 }
 
-std::string IvModuleDefinitions::declare_package(
+std::string NodeDefinitions::declare_package(
     std::string package_id,
     std::filesystem::path package_root)
 {
@@ -169,7 +184,7 @@ std::string IvModuleDefinitions::declare_package(
     return result;
 }
 
-void IvModuleDefinitions::sync_package_declarations(
+void NodeDefinitions::sync_package_declarations(
     std::vector<std::pair<std::string, std::filesystem::path>> declarations)
 {
     std::unordered_map<std::string, IvPackageDeclaration> next;
@@ -190,8 +205,8 @@ void IvModuleDefinitions::sync_package_declarations(
     }
 
     IvPackageDeclarationsChanged declaration_diff;
-    IvModuleDefinitionsChanged definition_diff;
-    IvNodeTypeDefinitionsChanged node_type_diff;
+    ModuleNodeDefinitionsChanged definition_diff;
+    LeafNodeDefinitionsChanged leaf_diff;
     {
         std::scoped_lock lock(mutex);
         auto const effective = merge_declaration_sources_locked(
@@ -220,7 +235,7 @@ void IvModuleDefinitions::sync_package_declarations(
         declarations_by_package_id = std::move(effective);
         if (!removed_package_ids.empty()) {
             rebuild_published_registry_locked(
-                definition_diff, node_type_diff, removed_package_ids);
+                definition_diff, leaf_diff, removed_package_ids);
         }
     }
 
@@ -232,13 +247,13 @@ void IvModuleDefinitions::sync_package_declarations(
     }
     publish_package_definitions_changed(
         std::move(definition_diff),
-        std::move(node_type_diff));
+        std::move(leaf_diff));
 }
 
-void IvModuleDefinitions::remove_package(std::string const& package_id)
+void NodeDefinitions::remove_package(std::string const& package_id)
 {
-    IvModuleDefinitionsChanged definition_diff;
-    IvNodeTypeDefinitionsChanged node_type_diff;
+    ModuleNodeDefinitionsChanged definition_diff;
+    LeafNodeDefinitionsChanged leaf_diff;
     bool removed = false;
     {
         std::scoped_lock lock(mutex);
@@ -249,7 +264,7 @@ void IvModuleDefinitions::remove_package(std::string const& package_id)
             candidates_by_package_id.erase(package_id);
             candidate_validation_messages_by_package_id.erase(package_id);
             rebuild_published_registry_locked(
-                definition_diff, node_type_diff,
+                definition_diff, leaf_diff,
                 std::unordered_set<std::string>{package_id});
         }
     }
@@ -262,10 +277,10 @@ void IvModuleDefinitions::remove_package(std::string const& package_id)
     }
     publish_package_definitions_changed(
         std::move(definition_diff),
-        std::move(node_type_diff));
+        std::move(leaf_diff));
 }
 
-void IvModuleDefinitions::handle_required_definitions_changed(
+void NodeDefinitions::handle_required_definitions_changed(
     IvModuleRequiredDefinitionsChanged const& diff)
 {
     // One required-definitions event is one source-event batch. Consolidate all
@@ -288,33 +303,33 @@ void IvModuleDefinitions::handle_required_definitions_changed(
     // package's complete candidate set can be atomically replaced on the next edit.
 }
 
-void IvModuleDefinitions::rebuild_published_registry_locked(
-    IvModuleDefinitionsChanged& diff,
-    IvNodeTypeDefinitionsChanged& node_type_diff,
+void NodeDefinitions::rebuild_published_registry_locked(
+    ModuleNodeDefinitionsChanged& diff,
+    LeafNodeDefinitionsChanged& leaf_diff,
     std::unordered_set<std::string> const& changed_package_ids)
 {
     struct ModuleProvider {
         std::string package_id;
         IvPackageReloadedDefinition const* definition = nullptr;
     };
-    struct NodeTypeProvider {
+    struct LeafProvider {
         std::string package_id;
         IvPackageReloadedNodeType const* definition = nullptr;
     };
     std::unordered_map<std::string, std::vector<ModuleProvider>> module_providers;
-    std::unordered_map<std::string, std::vector<NodeTypeProvider>> node_type_providers;
+    std::unordered_map<std::string, std::vector<LeafProvider>> leaf_providers;
     std::unordered_map<std::string, std::size_t> provider_count_by_id;
     for (auto const& [package_id, candidate] : candidates_by_package_id) {
         if (!declarations_by_package_id.contains(package_id)) continue;
-        for (auto const& definition : candidate.modules) {
+        for (auto const& definition : candidate.module_definitions) {
             module_providers[definition.module_id].push_back({
                 .package_id = package_id,
                 .definition = &definition,
             });
             ++provider_count_by_id[definition.module_id];
         }
-        for (auto const& definition : candidate.node_types) {
-            node_type_providers[definition.node_type_id].push_back({
+        for (auto const& definition : candidate.leaf_definitions) {
+            leaf_providers[definition.node_type_id].push_back({
                 .package_id = package_id,
                 .definition = &definition,
             });
@@ -340,23 +355,26 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
             selected_modules.emplace(id, providers.front());
         }
     }
-    std::unordered_map<std::string, NodeTypeProvider> selected_node_types;
-    for (auto const& [id, providers] : node_type_providers) {
+    std::unordered_map<std::string, LeafProvider> selected_leaf_definitions;
+    for (auto const& [id, providers] : leaf_providers) {
         if (provider_count_by_id[id] == 1) {
-            selected_node_types.emplace(id, providers.front());
+            selected_leaf_definitions.emplace(id, providers.front());
         }
     }
 
-    std::unordered_map<std::string, std::unique_ptr<DefinitionState>> next_modules;
+    std::unordered_map<std::string, std::unique_ptr<ModuleDefinitionState>> next_modules;
     next_modules.reserve(selected_modules.size());
     for (auto const& [module_id, provider] : selected_modules) {
-        auto existing = loaded_definitions_by_module_id.find(module_id);
-        auto const requires_publication = existing == loaded_definitions_by_module_id.end()
+        auto existing = loaded_module_definitions_by_id.find(module_id);
+        auto const requires_publication = existing == loaded_module_definitions_by_id.end()
             || existing->second->snapshot.package_id != provider.package_id
             || changed_package_ids.contains(provider.package_id);
-        auto state = make_definition_state(*provider.definition);
+        auto const version = requires_publication
+            ? next_definition_version_++
+            : existing->second->version;
+        auto state = make_module_definition_state(*provider.definition, version);
         auto snapshot = state->snapshot;
-        if (existing == loaded_definitions_by_module_id.end()) {
+        if (existing == loaded_module_definitions_by_id.end()) {
             diff.created.push_back(std::move(snapshot));
         } else if (requires_publication) {
             diff.updated.push_back(std::move(snapshot));
@@ -364,32 +382,35 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
         next_modules.emplace(module_id, std::move(state));
     }
 
-    for (auto const& [module_id, _] : loaded_definitions_by_module_id) {
+    for (auto const& [module_id, _] : loaded_module_definitions_by_id) {
         if (!next_modules.contains(module_id)) {
             diff.deleted_definition_ids.push_back(module_id);
         }
     }
 
-    std::unordered_map<std::string, std::unique_ptr<NodeTypeState>> next_node_types;
-    next_node_types.reserve(selected_node_types.size());
-    for (auto const& [node_type_id, provider] : selected_node_types) {
-        auto existing = loaded_node_types_by_id.find(node_type_id);
-        auto const requires_publication = existing == loaded_node_types_by_id.end()
+    std::unordered_map<std::string, std::unique_ptr<LeafDefinitionState>> next_leaf_definitions;
+    next_leaf_definitions.reserve(selected_leaf_definitions.size());
+    for (auto const& [node_type_id, provider] : selected_leaf_definitions) {
+        auto existing = loaded_leaf_definitions_by_id.find(node_type_id);
+        auto const requires_publication = existing == loaded_leaf_definitions_by_id.end()
             || existing->second->snapshot.package_id != provider.package_id
             || changed_package_ids.contains(provider.package_id);
-        auto state = make_node_type_state(*provider.definition);
+        auto const version = requires_publication
+            ? next_definition_version_++
+            : existing->second->version;
+        auto state = make_leaf_definition_state(*provider.definition, version);
         auto snapshot = state->snapshot;
-        if (existing == loaded_node_types_by_id.end()) {
-            node_type_diff.created.push_back(std::move(snapshot));
+        if (existing == loaded_leaf_definitions_by_id.end()) {
+            leaf_diff.created.push_back(std::move(snapshot));
         } else if (requires_publication) {
-            node_type_diff.updated.push_back(std::move(snapshot));
+            leaf_diff.updated.push_back(std::move(snapshot));
         }
-        next_node_types.emplace(node_type_id, std::move(state));
+        next_leaf_definitions.emplace(node_type_id, std::move(state));
     }
 
-    for (auto const& [node_type_id, _] : loaded_node_types_by_id) {
-        if (!next_node_types.contains(node_type_id)) {
-            node_type_diff.deleted_node_type_ids.push_back(node_type_id);
+    for (auto const& [node_type_id, _] : loaded_leaf_definitions_by_id) {
+        if (!next_leaf_definitions.contains(node_type_id)) {
+            leaf_diff.deleted_definition_ids.push_back(node_type_id);
         }
     }
 
@@ -399,7 +420,7 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
         next_owners[module_id] = state->snapshot.package_id;
         next_modules_by_package[state->snapshot.package_id].push_back(module_id);
     }
-    for (auto const& [node_type_id, state] : next_node_types) {
+    for (auto const& [node_type_id, state] : next_leaf_definitions) {
         next_owners[node_type_id] = state->snapshot.package_id;
     }
     for (auto& [_, module_ids] : next_modules_by_package) {
@@ -408,13 +429,45 @@ void IvModuleDefinitions::rebuild_published_registry_locked(
 
     // One atomic state transition: downstream consumers see exactly this
     // complete snapshot, never a mixture of old and candidate providers.
-    loaded_definitions_by_module_id = std::move(next_modules);
-    loaded_node_types_by_id = std::move(next_node_types);
+    loaded_module_definitions_by_id = std::move(next_modules);
+    loaded_leaf_definitions_by_id = std::move(next_leaf_definitions);
     package_id_by_definition_id = std::move(next_owners);
-    module_ids_by_package_id = std::move(next_modules_by_package);
+    module_definition_ids_by_package_id = std::move(next_modules_by_package);
+
+    auto const registry_changed = !diff.created.empty() || !diff.updated.empty()
+        || !diff.deleted_definition_ids.empty() || !leaf_diff.created.empty()
+        || !leaf_diff.updated.empty()
+        || !leaf_diff.deleted_definition_ids.empty();
+    if (!registry_changed) return;
+
+    auto next_snapshot = std::make_shared<NodeDefinitionsSnapshot>();
+    next_snapshot->generation = ++snapshot_generation_;
+    next_snapshot->by_id.reserve(
+        loaded_module_definitions_by_id.size() + loaded_leaf_definitions_by_id.size());
+    for (auto const& [definition_id, state] : loaded_module_definitions_by_id) {
+        next_snapshot->by_id.emplace(
+            definition_id,
+            NodeDefinitionEntry{
+                .definition_id = definition_id,
+                .kind = NodeDefinitionKind::module,
+                .version = state->version,
+                .definition = state->snapshot,
+            });
+    }
+    for (auto const& [definition_id, state] : loaded_leaf_definitions_by_id) {
+        next_snapshot->by_id.emplace(
+            definition_id,
+            NodeDefinitionEntry{
+                .definition_id = definition_id,
+                .kind = NodeDefinitionKind::leaf,
+                .version = state->version,
+                .definition = state->snapshot,
+            });
+    }
+    definitions_snapshot_ = std::move(next_snapshot);
 }
 
-void IvModuleDefinitions::handle_reload_results(IvPackageReloadResults const& results)
+void NodeDefinitions::handle_reload_results(IvPackageReloadResults const& results)
 {
     std::unordered_map<std::string, std::vector<IvPackageReloadedDefinition const*>>
         modules_by_package_id;
@@ -422,13 +475,13 @@ void IvModuleDefinitions::handle_reload_results(IvPackageReloadResults const& re
         modules_by_package_id[loaded.package_id].push_back(&loaded);
     }
     std::unordered_map<std::string, std::vector<IvPackageReloadedNodeType const*>>
-        node_types_by_package_id;
+        leaf_definitions_by_package_id;
     for (auto const& node_type : results.node_types) {
-        node_types_by_package_id[node_type.package_id].push_back(&node_type);
+        leaf_definitions_by_package_id[node_type.package_id].push_back(&node_type);
     }
 
-    IvModuleDefinitionsChanged definition_diff;
-    IvNodeTypeDefinitionsChanged node_type_diff;
+    ModuleNodeDefinitionsChanged definition_diff;
+    LeafNodeDefinitionsChanged leaf_diff;
     {
         std::scoped_lock lock(mutex);
         std::unordered_set<std::string> changed_package_ids;
@@ -441,7 +494,7 @@ void IvModuleDefinitions::handle_reload_results(IvPackageReloadResults const& re
             std::string error;
             if (auto modules = modules_by_package_id.find(package.package_id);
                 modules != modules_by_package_id.end()) {
-                candidate.modules.reserve(modules->second.size());
+                candidate.module_definitions.reserve(modules->second.size());
                 for (auto const* module : modules->second) {
                     if (module->module_id.empty()) {
                         error = "IV package published an IV module with an empty ID";
@@ -452,13 +505,14 @@ void IvModuleDefinitions::handle_reload_results(IvPackageReloadResults const& re
                             + module->module_id + "'";
                         break;
                     }
-                    candidate.modules.push_back(*module);
+                    candidate.module_definitions.push_back(*module);
                 }
             }
-            if (auto node_types = node_types_by_package_id.find(package.package_id);
-                node_types != node_types_by_package_id.end()) {
-                candidate.node_types.reserve(node_types->second.size());
-                for (auto const* node_type : node_types->second) {
+            if (auto leaf_definitions =
+                    leaf_definitions_by_package_id.find(package.package_id);
+                leaf_definitions != leaf_definitions_by_package_id.end()) {
+                candidate.leaf_definitions.reserve(leaf_definitions->second.size());
+                for (auto const* node_type : leaf_definitions->second) {
                     if (node_type->node_type_id.empty()) {
                         error = "IV package published a node type with an empty ID";
                         break;
@@ -468,7 +522,7 @@ void IvModuleDefinitions::handle_reload_results(IvPackageReloadResults const& re
                             + node_type->node_type_id + "'";
                         break;
                     }
-                    candidate.node_types.push_back(*node_type);
+                    candidate.leaf_definitions.push_back(*node_type);
                 }
             }
             if (!error.empty()) {
@@ -482,16 +536,16 @@ void IvModuleDefinitions::handle_reload_results(IvPackageReloadResults const& re
         }
         if (!changed_package_ids.empty()) {
             rebuild_published_registry_locked(
-                definition_diff, node_type_diff, changed_package_ids);
+                definition_diff, leaf_diff, changed_package_ids);
         }
     }
     publish_package_definitions_changed(
         std::move(definition_diff),
-        std::move(node_type_diff),
+        std::move(leaf_diff),
         !results.packages.empty());
 }
 
-void IvModuleDefinitions::seed_loaded_definition(
+void NodeDefinitions::seed_loaded_definition(
     IvPackageReloadedDefinition loaded_definition)
 {
     auto const package_id = loaded_definition.package_id.empty()
@@ -509,7 +563,7 @@ void IvModuleDefinitions::seed_loaded_definition(
 }
 
 std::vector<IvPackageDefinitionSnapshot>
-IvModuleDefinitions::package_definition_snapshots() const
+NodeDefinitions::package_definition_snapshots() const
 {
     std::vector<IvPackageDefinitionSnapshot> snapshots;
     std::scoped_lock lock(mutex);
@@ -519,12 +573,12 @@ IvModuleDefinitions::package_definition_snapshots() const
     for (auto const& [package_id, candidate] : candidates_by_package_id) {
         if (!declarations_by_package_id.contains(package_id)) continue;
         auto& ids = candidate_ids_by_package[package_id];
-        ids.reserve(candidate.modules.size() + candidate.node_types.size());
-        for (auto const& module : candidate.modules) {
+        ids.reserve(candidate.module_definitions.size() + candidate.leaf_definitions.size());
+        for (auto const& module : candidate.module_definitions) {
             ids.push_back(module.module_id);
             candidate_packages_by_id[module.module_id].push_back(package_id);
         }
-        for (auto const& node_type : candidate.node_types) {
+        for (auto const& node_type : candidate.leaf_definitions) {
             ids.push_back(node_type.node_type_id);
             candidate_packages_by_id[node_type.node_type_id].push_back(package_id);
         }
@@ -535,16 +589,16 @@ IvModuleDefinitions::package_definition_snapshots() const
         IvPackageDefinitionSnapshot snapshot{
             .declaration = declaration,
         };
-        if (auto modules = module_ids_by_package_id.find(package_id);
-            modules != module_ids_by_package_id.end()) {
-            snapshot.published_module_ids = modules->second;
+        if (auto modules = module_definition_ids_by_package_id.find(package_id);
+            modules != module_definition_ids_by_package_id.end()) {
+            snapshot.published_module_definition_ids = modules->second;
         }
-        for (auto const& [node_type_id, state] : loaded_node_types_by_id) {
+        for (auto const& [node_type_id, state] : loaded_leaf_definitions_by_id) {
             if (state->snapshot.package_id == package_id) {
-                snapshot.published_node_type_ids.push_back(node_type_id);
+                snapshot.published_leaf_definition_ids.push_back(node_type_id);
             }
         }
-        std::ranges::sort(snapshot.published_node_type_ids);
+        std::ranges::sort(snapshot.published_leaf_definition_ids);
 
         if (auto const validation =
                 candidate_validation_messages_by_package_id.find(package_id);
@@ -587,28 +641,35 @@ IvModuleDefinitions::package_definition_snapshots() const
     return snapshots;
 }
 
-std::vector<IvModuleDefinition> IvModuleDefinitions::loaded_definitions() const
+
+std::shared_ptr<NodeDefinitionsSnapshot const> NodeDefinitions::snapshot() const
 {
-    std::vector<IvModuleDefinition> definitions;
     std::scoped_lock lock(mutex);
-    definitions.reserve(loaded_definitions_by_module_id.size());
-    for (auto const& [_, definition] : loaded_definitions_by_module_id) {
+    return definitions_snapshot_;
+}
+
+std::vector<ModuleNodeDefinition> NodeDefinitions::loaded_module_definitions() const
+{
+    std::vector<ModuleNodeDefinition> definitions;
+    std::scoped_lock lock(mutex);
+    definitions.reserve(loaded_module_definitions_by_id.size());
+    for (auto const& [_, definition] : loaded_module_definitions_by_id) {
         definitions.push_back(definition->snapshot);
     }
-    std::ranges::sort(definitions, {}, &IvModuleDefinition::module_id);
+    std::ranges::sort(definitions, {}, &ModuleNodeDefinition::definition_id);
     return definitions;
 }
 
-std::vector<IvNodeTypeDefinition> IvModuleDefinitions::loaded_node_types() const
+std::vector<LeafNodeDefinition> NodeDefinitions::loaded_leaf_definitions() const
 {
-    std::vector<IvNodeTypeDefinition> node_types;
+    std::vector<LeafNodeDefinition> definitions;
     std::scoped_lock lock(mutex);
-    node_types.reserve(loaded_node_types_by_id.size());
-    for (auto const& [_, node_type] : loaded_node_types_by_id) {
-        node_types.push_back(node_type->snapshot);
+    definitions.reserve(loaded_leaf_definitions_by_id.size());
+    for (auto const& [_, definition] : loaded_leaf_definitions_by_id) {
+        definitions.push_back(definition->snapshot);
     }
-    std::ranges::sort(node_types, {}, &IvNodeTypeDefinition::node_type_id);
-    return node_types;
+    std::ranges::sort(definitions, {}, &LeafNodeDefinition::definition_id);
+    return definitions;
 }
 
 

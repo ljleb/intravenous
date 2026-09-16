@@ -1,7 +1,7 @@
 #include <intravenous/runtime/iv_package_definitions.h>
 
 #include <intravenous/module/package_manifest.h>
-#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <nlohmann/json.hpp>
@@ -276,25 +276,25 @@ void IvPackageDefinitions::handle_package_definitions_changed(
             std::erase(package.node_type_ids, id);
         }
     };
-    auto apply_module = [&](IvModuleDefinition const &definition) {
+    auto apply_module = [&](ModuleNodeDefinition const &definition) {
         erase_id(definition.definition_id);
         auto &package = ensure_package(definition.package_id, definition.package_root);
         package.module_ids.push_back(definition.definition_id);
         std::ranges::sort(package.module_ids);
     };
-    auto apply_node_type = [&](IvNodeTypeDefinition const &definition) {
-        erase_id(definition.node_type_id);
+    auto apply_node_type = [&](LeafNodeDefinition const &definition) {
+        erase_id(definition.definition_id);
         auto &package = ensure_package(definition.package_id, definition.package_root);
-        package.node_type_ids.push_back(definition.node_type_id);
+        package.node_type_ids.push_back(definition.definition_id);
         std::ranges::sort(package.node_type_ids);
     };
 
-    for (auto const &id : diff.modules.deleted_definition_ids) erase_id(id);
-    for (auto const &id : diff.node_types.deleted_node_type_ids) erase_id(id);
-    for (auto const &definition : diff.modules.created) apply_module(definition);
-    for (auto const &definition : diff.modules.updated) apply_module(definition);
-    for (auto const &definition : diff.node_types.created) apply_node_type(definition);
-    for (auto const &definition : diff.node_types.updated) apply_node_type(definition);
+    for (auto const &id : diff.module_definitions.deleted_definition_ids) erase_id(id);
+    for (auto const &id : diff.leaf_definitions.deleted_definition_ids) erase_id(id);
+    for (auto const &definition : diff.module_definitions.created) apply_module(definition);
+    for (auto const &definition : diff.module_definitions.updated) apply_module(definition);
+    for (auto const &definition : diff.leaf_definitions.created) apply_node_type(definition);
+    for (auto const &definition : diff.leaf_definitions.updated) apply_node_type(definition);
 
     for (auto &[package_id, package] : packages_by_id_) {
         auto const message = diff.publication_messages_by_package_id.find(package_id);

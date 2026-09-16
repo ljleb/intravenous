@@ -1,8 +1,8 @@
 #include "../module_test_utils.h"
 
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
@@ -21,7 +21,7 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionRequiresBindi
 {
     auto const workspace =
         fresh_module_fixture_workspace("runtime_bridges_defs_to_introspection_unbound");
-    iv::IvModuleDefinitions definitions;
+    iv::NodeDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
 
     definitions.seed_loaded_definition(make_loaded_definition(workspace));
@@ -34,10 +34,10 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionForwardsWhenB
 {
     auto const workspace =
         read_only_module_fixture_workspace("local_cmake");
-    iv::IvModuleDefinitions definitions;
+    iv::NodeDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
     auto definitions_introspection_scope =
-        iv::iv_module_definitions_iv_module_source_introspection_bridge::bind(
+        iv::node_definitions_iv_module_source_introspection_bridge::bind(
             definitions,
             introspection);
 
@@ -67,13 +67,13 @@ TEST(IntrospectionBridges, InstancesToDefinitionsRequiresBinding)
         fresh_module_fixture_workspace("runtime_bridges_instances_to_definitions_unbound");
 
     iv::IvModuleInstances instances;
-    iv::IvModuleDefinitions definitions;
+    iv::NodeDefinitions definitions;
 
     (void)instances.create_instance(
         "iv.test.runtime_module_bridges",
         std::filesystem::weakly_canonical(workspace));
 
-    EXPECT_TRUE(definitions.loaded_definitions().empty());
+    EXPECT_TRUE(definitions.loaded_module_definitions().empty());
 }
 
 TEST(InstanceDefinitionBridges, InstanceCreatedAfterDefinitionPublicationRealizesImmediately)
@@ -84,9 +84,9 @@ TEST(InstanceDefinitionBridges, InstanceCreatedAfterDefinitionPublicationRealize
     constexpr std::string_view module_id = "iv.test.definition_before_instance";
 
     iv::IvModuleInstances instances;
-    iv::IvModuleDefinitions definitions;
+    iv::NodeDefinitions definitions;
     auto bridge_scope =
-        iv::iv_module_definitions_iv_module_instances_bridge::bind(
+        iv::node_definitions_iv_module_instances_bridge::bind(
             definitions,
             instances);
 

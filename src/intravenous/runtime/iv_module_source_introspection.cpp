@@ -5,7 +5,7 @@
 #include <intravenous/compat.h>
 #include <intravenous/filesystem_paths.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
-#include <intravenous/runtime/iv_module_definitions_events.h>
+#include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
@@ -298,7 +298,7 @@ void IvModuleSourceIntrospection::handle_iv_package_definitions_changed(
         std::scoped_lock lock(mutex);
         std::unordered_set<std::string> changed_definition_ids;
 
-        auto apply_definition = [&](IvModuleDefinition const &definition) {
+        auto apply_definition = [&](ModuleNodeDefinition const &definition) {
             changed_definition_ids.insert(definition.definition_id);
             invalidate_source_texts(definition.dependencies);
             graph_indexes_by_definition_id[definition.definition_id] =
@@ -310,13 +310,13 @@ void IvModuleSourceIntrospection::handle_iv_package_definitions_changed(
                     definition.dependencies);
         };
 
-        for (auto const &definition : package_diff.modules.created) {
+        for (auto const &definition : package_diff.module_definitions.created) {
             apply_definition(definition);
         }
-        for (auto const &definition : package_diff.modules.updated) {
+        for (auto const &definition : package_diff.module_definitions.updated) {
             apply_definition(definition);
         }
-        for (auto const &definition_id : package_diff.modules.deleted_definition_ids) {
+        for (auto const &definition_id : package_diff.module_definitions.deleted_definition_ids) {
             changed_definition_ids.insert(definition_id);
             if (auto index = graph_indexes_by_definition_id.find(definition_id);
                 index != graph_indexes_by_definition_id.end()) {

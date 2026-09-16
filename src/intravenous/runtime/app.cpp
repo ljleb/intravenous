@@ -4,11 +4,11 @@
 #include <intravenous/devices/miniaudio_device.h>
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/handlers.h>
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_package_definitions_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_package_reload_bridge.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/node_definitions_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/node_definitions_iv_package_reload_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
@@ -143,7 +143,7 @@ int run_server_mode(int argc, char** argv)
     // expressed only by explicit bridges below; none of these constructors
     // retains another app module.
     IvModuleInstances iv_module_instances;
-    IvModuleDefinitions iv_module_definitions;
+    NodeDefinitions node_definitions;
     IvPackageReload iv_package_reload(startup);
     IvModuleSourceIntrospection introspection;
     IvPackageDefinitions iv_package_definitions(startup.workspace_root);
@@ -174,7 +174,7 @@ int run_server_mode(int argc, char** argv)
     ProjectAutosaveService project_autosave_service(project_autosave, project_persistence);
     IvPackageReloadService iv_package_reload_service(
         iv_package_reload,
-        iv_module_definitions,
+        node_definitions,
         startup.workspace_root,
         startup.search_roots);
 
@@ -189,14 +189,14 @@ int run_server_mode(int argc, char** argv)
 
     // Runtime bridges.
     auto definitions_instances_scope =
-        iv_module_definitions_iv_module_instances_bridge::bind(iv_module_definitions, iv_module_instances);
+        node_definitions_iv_module_instances_bridge::bind(node_definitions, iv_module_instances);
     auto definitions_introspection_scope =
-        iv_module_definitions_iv_module_source_introspection_bridge::bind(
-            iv_module_definitions, introspection);
+        node_definitions_iv_module_source_introspection_bridge::bind(
+            node_definitions, introspection);
     auto definitions_reload_scope =
-        iv_module_definitions_iv_package_reload_bridge::bind(iv_module_definitions, iv_package_reload);
+        node_definitions_iv_package_reload_bridge::bind(node_definitions, iv_package_reload);
     auto definitions_packages_scope =
-        iv_module_definitions_iv_package_definitions_bridge::bind(iv_module_definitions, iv_package_definitions);
+        node_definitions_iv_package_definitions_bridge::bind(node_definitions, iv_package_definitions);
     auto reload_packages_scope =
         iv_package_reload_iv_package_definitions_bridge::bind(iv_package_reload, iv_package_definitions);
     auto instances_introspection_scope =

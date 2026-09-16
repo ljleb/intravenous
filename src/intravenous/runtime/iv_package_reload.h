@@ -5,7 +5,7 @@
 #include <intravenous/module/dependency.h>
 #include <intravenous/module/loader.h>
 #include <intravenous/module/watcher.h>
-#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/startup_config.h>
 
 #include <memory>

@@ -8,7 +8,7 @@
 #include <vector>
 
 namespace iv {
-class IvModuleDefinitions;
+class NodeDefinitions;
 class IvPackageReload;
 
 // Owns the server-lifetime control loop for package discovery, compilation,
@@ -16,7 +16,7 @@ class IvPackageReload;
 // this service owns only polling state and its worker lifetime.
 class IvPackageReloadService {
     IvPackageReload* reload_ = nullptr;
-    IvModuleDefinitions* definitions_ = nullptr;
+    NodeDefinitions* definitions_ = nullptr;
     std::filesystem::path project_root_;
     std::vector<std::filesystem::path> shared_roots_;
     std::optional<std::vector<std::pair<std::string, std::filesystem::path>>>
@@ -30,7 +30,7 @@ class IvPackageReloadService {
 public:
     IvPackageReloadService(
         IvPackageReload& reload,
-        IvModuleDefinitions& definitions,
+        NodeDefinitions& definitions,
         std::filesystem::path project_root,
         std::vector<std::filesystem::path> shared_roots);
     ~IvPackageReloadService();

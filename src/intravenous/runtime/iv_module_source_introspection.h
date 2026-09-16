@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/module/dependency.h>
-#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 

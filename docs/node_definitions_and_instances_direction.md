@@ -9,6 +9,30 @@ It supersedes iv-module-only instance-management assumptions in
 [iv_module_instance_management_direction.md](./historical/iv_module_instance_management_direction.md)
 and [iv_module_instances_graph_input_direction.md](./historical/iv_module_instances_graph_input_direction.md).
 
+## Implementation checkpoint: `NodeDefinitions`
+
+The first generalized app-module checkpoint is implemented as `NodeDefinitions`.
+The former `IvModuleDefinitions` runtime module has been renamed and now publishes
+an immutable `NodeDefinitionsSnapshot` that unifies leaf and module definitions in
+one stable-ID namespace.
+
+Each published entry carries a per-provider version, the construction/signature
+surface required for later invocation, and lifetime references that pin the loaded
+provider revision. Republishing one package advances the versions of definitions
+owned by that package while unchanged definitions owned by other packages retain
+their versions. The registry snapshot generation advances only when the published
+definition set/provider revisions actually change.
+
+The currently retained construction surface includes module/leaf configuration
+callbacks plus the registered signature callback. The typed owned-argument
+operations described below are intentionally deferred to the `NodeInstances`
+checkpoint, where their concrete cache requirements become executable rather than
+being speculative registry API.
+
+Existing iv-module-era consumers temporarily continue to receive the compatibility
+package-definition diff event. Future batched configuration must consume one
+immutable definitions snapshot and must not re-enter `NodeDefinitions`.
+
 ## Definitions are providers, not configured instances
 
 `NodeDefinitions` owns one immutable versioned registry containing both leaf

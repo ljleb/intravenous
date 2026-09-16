@@ -488,7 +488,7 @@ Do not persist:
 - visualization payloads
 - refresh/publishing runtime state
 
-### `IvModuleDefinitions`
+### `NodeDefinitions`
 
 Persist:
 

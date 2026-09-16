@@ -1,8 +1,8 @@
 #include "../module_test_utils.h"
 
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
@@ -35,13 +35,13 @@ Json parse_json_line(std::string_view line)
 
 struct SeededIvModuleSourceIntrospectionOwner {
     IvModuleInstances instances;
-    IvModuleDefinitions definitions;
+    NodeDefinitions definitions;
     IvModuleSourceIntrospection introspection;
     StartupConfig startup_config;
-    iv_module_definitions_iv_module_instances_bridge::scope
-        iv_module_definitions_iv_module_instances_scope;
-    iv_module_definitions_iv_module_source_introspection_bridge::scope
-        iv_module_definitions_iv_module_source_introspection_scope;
+    node_definitions_iv_module_instances_bridge::scope
+        node_definitions_iv_module_instances_scope;
+    node_definitions_iv_module_source_introspection_bridge::scope
+        node_definitions_iv_module_source_introspection_scope;
     iv_module_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
 
@@ -53,8 +53,8 @@ struct SeededIvModuleSourceIntrospectionOwner {
               std::move(workspace_root),
               std::move(discovery_start),
               std::move(extra_search_roots)),
-          iv_module_definitions_iv_module_instances_scope(definitions, instances),
-          iv_module_definitions_iv_module_source_introspection_scope(
+          node_definitions_iv_module_instances_scope(definitions, instances),
+          node_definitions_iv_module_source_introspection_scope(
               definitions,
               introspection),
           iv_module_instances_iv_module_source_introspection_scope(

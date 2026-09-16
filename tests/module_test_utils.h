@@ -5,7 +5,7 @@
 #include <intravenous/module/loader.h>
 #include <intravenous/node/block_executor.h>
 #include <intravenous/runtime/handlers.h>
-#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/iv_package_reload.h>
 #include <intravenous/runtime/startup_config.h>
 #include <intravenous/juce/vst_runtime.h>

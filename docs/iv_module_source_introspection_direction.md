@@ -28,7 +28,7 @@ Direction:
 Implications:
 - `app.cpp` should only instantiate modules, wire bridges, and start event sources
 - query methods should not fail because introspection has not been manually initialized
-- `IvModuleDefinitionsChanged` remains the event that updates the introspection index
+- the current compatibility `IvPackageDefinitionsChanged` diff published by `NodeDefinitions` updates the introspection index; this direct bridge is temporary until `ProjectGraph` becomes the single execution/read-model join described in the project-graph architecture
 - live port values continue to come from the existing snapshot request event
 
 Behavior:

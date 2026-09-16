@@ -1,7 +1,7 @@
 #include <intravenous/runtime/socket_rpc_iv_package_definitions_bridge.h>
 
 #include <intravenous/runtime/iv_package_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_events.h>
+#include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 namespace iv {

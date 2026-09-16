@@ -1328,6 +1328,7 @@ public:
             loaded_node_types.push_back({
                 .node_type_id = std::move(node_type_id),
                 .compiler_record = *compiler_record,
+                .provider = definition,
                 .package_path = root.module_dir,
                 .module_refs = {package},
             });
@@ -1408,6 +1409,7 @@ public:
                     GraphIntrospectionMetadata{},
                     compiled.root.module_dir,
                     std::move(module_id),
+                    definition,
                     package_result.dependencies,
                     nullptr);
                 continue;
@@ -1472,6 +1474,7 @@ public:
                 std::move(plan.introspection),
                 compiled.root.module_dir,
                 std::move(module_id),
+                definition,
                 std::move(dependencies),
                 std::move(configured));
         }
@@ -1625,6 +1628,7 @@ ModuleLoader::LoadedDefinition::LoadedDefinition(
     GraphIntrospectionMetadata introspection_,
     std::filesystem::path path,
     std::string id,
+    details::PackageDefinition provider_,
     std::vector<ModuleDependency> deps,
     std::shared_ptr<ConfiguredGraph const> configured_graph_)
     : module_refs(std::move(refs)),
@@ -1632,6 +1636,7 @@ ModuleLoader::LoadedDefinition::LoadedDefinition(
       introspection(std::move(introspection_)),
       package_path(std::move(path)),
       module_id(std::move(id)),
+      provider(provider_),
       dependencies(std::move(deps)),
       configured_graph(std::move(configured_graph_))
 {}

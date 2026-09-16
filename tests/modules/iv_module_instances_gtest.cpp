@@ -3,8 +3,8 @@
 #include <intravenous/bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_definitions_iv_package_definitions_bridge.h>
 #include <intravenous/runtime/iv_package_definitions.h>
 
 #include <gtest/gtest.h>
@@ -54,10 +54,10 @@ IV_DECLARE_BRIDGE(
     IvModuleInstancesWitness);
 IV_DEFINE_BRIDGE(iv_module_instances_witness_bridge)
 
-iv::IvModuleDefinition make_definition(std::filesystem::path module_root)
+iv::ModuleNodeDefinition make_definition(std::filesystem::path module_root)
 {
     auto const normalized = std::filesystem::weakly_canonical(module_root).lexically_normal();
-    return iv::IvModuleDefinition{
+    return iv::ModuleNodeDefinition{
         .definition_id = std::string(module_id),
         .package_root = normalized,
         .module_id = "iv.test.module",
@@ -66,10 +66,10 @@ iv::IvModuleDefinition make_definition(std::filesystem::path module_root)
 
 void apply_module_definitions(
     iv::IvModuleInstances &instances,
-    iv::IvModuleDefinitionsChanged diff)
+    iv::ModuleNodeDefinitionsChanged diff)
 {
     instances.handle_iv_package_definitions_changed(iv::IvPackageDefinitionsChanged{
-        .modules = std::move(diff),
+        .module_definitions = std::move(diff),
     });
 }
 
@@ -172,13 +172,13 @@ TEST_F(IvModuleInstancesTest, DefinitionChangeMovesInstanceToPublishedPackageRoo
     (void)instances.create_instance(module_id, stale_root);
     witness.reset();
 
-    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+    apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(moved_root)},
     });
 
     // A definition publication is already authoritative about package ownership.
     // Updating the local instance snapshot must not feed a second requirement event
-    // back into IvModuleDefinitions during the same source-event propagation.
+    // back into NodeDefinitions during the same source-event propagation.
     EXPECT_FALSE(witness.required_diff.has_value());
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 1u);
@@ -203,10 +203,10 @@ TEST_F(IvModuleInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirst
         "IV_MODULE(\"iv.test.module\", primary);\n"
         "IV_MODULE(\"iv.test.module.secondary\", secondary);\n");
 
-    iv::IvModuleDefinitions definitions;
+    iv::NodeDefinitions definitions;
     iv::IvPackageDefinitions sources(workspace);
     auto package_definitions_scope =
-        iv::iv_module_definitions_iv_package_definitions_bridge::bind(definitions, sources);
+        iv::node_definitions_iv_package_definitions_bridge::bind(definitions, sources);
     definitions.sync_package_declarations(
         iv::discover_iv_package_declarations(workspace, {}));
     auto const discovered = sources.list_packages();
@@ -229,7 +229,7 @@ TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPubl
     auto const instance_id = instances.create_instance(module_id, module_root);
     witness.reset();
 
-    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+    apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
 
@@ -253,7 +253,7 @@ TEST_F(IvModuleInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnre
     iv::IvModuleInstances instances;
 
     auto const instance_id = instances.create_instance(module_id, module_root);
-    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+    apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
     witness.reset();
@@ -262,7 +262,7 @@ TEST_F(IvModuleInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnre
     // while the project still desires an instance of it. Drop the published
     // snapshot but preserve durable instance metadata so the UI can show it as
     // unresolved and offer deletion instead of hiding orphaned project state.
-    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+    apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
         .deleted_definition_ids = {std::string(module_id)},
     });
 
@@ -284,7 +284,7 @@ TEST_F(IvModuleInstancesTest, RemoveLastPublishedInstancePublishesDeleteAndDrops
     iv::IvModuleInstances instances;
 
     auto const instance_id = instances.create_instance(module_id, module_root);
-    apply_module_definitions(instances, iv::IvModuleDefinitionsChanged{
+    apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
     witness.reset();

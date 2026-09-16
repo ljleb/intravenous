@@ -2,9 +2,9 @@
 
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_events.h>
-#include <intravenous/runtime/iv_module_definitions_iv_package_definitions_bridge.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_definitions_events.h>
+#include <intravenous/runtime/node_definitions_iv_package_definitions_bridge.h>
 #include <intravenous/runtime/iv_package_definitions.h>
 #include <intravenous/runtime/socket_rpc_iv_package_definitions_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
@@ -314,9 +314,9 @@ TEST(SocketRpcNotificationBridge, PublishedPackageDefinitionsRefreshThePackageCa
     auto const workspace = iv::test::fresh_module_fixture_workspace(
         "socket_rpc_package_catalog_notification_server");
     auto harness = NotificationServerHarness(workspace);
-    IvModuleDefinitions definitions;
+    NodeDefinitions definitions;
     IvPackageDefinitions package_definitions(workspace);
-    auto definitions_scope = iv_module_definitions_iv_package_definitions_bridge::bind(
+    auto definitions_scope = node_definitions_iv_package_definitions_bridge::bind(
         definitions,
         package_definitions);
     auto package_catalog_scope = socket_rpc_iv_package_definitions_bridge::bind(
