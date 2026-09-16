@@ -211,6 +211,32 @@ namespace iv {
         }
 
         template<typename Node>
+        consteval bool declares_compiled_event_inputs()
+        {
+            if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
+                return false;
+            } else {
+                for (auto const& config : Node::inputs()) {
+                    if (!is_sample(config) && is_compiled(config)) return true;
+                }
+                return false;
+            }
+        }
+
+        template<typename Node>
+        consteval bool declares_compiled_event_outputs()
+        {
+            if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
+                return false;
+            } else {
+                for (auto const& config : Node::outputs()) {
+                    if (!is_sample(config) && is_compiled(config)) return true;
+                }
+                return false;
+            }
+        }
+
+        template<typename Node>
         inline constexpr bool declares_compiled_inputs_v =
             declares_compiled_inputs<Node>();
 
@@ -227,9 +253,22 @@ namespace iv {
             declares_compiled_sample_outputs<Node>();
 
         template<typename Node>
+        inline constexpr bool declares_compiled_event_inputs_v =
+            declares_compiled_event_inputs<Node>();
+
+        template<typename Node>
+        inline constexpr bool declares_compiled_event_outputs_v =
+            declares_compiled_event_outputs<Node>();
+
+        template<typename Node>
         inline constexpr bool declares_compiled_sample_ports_v =
             declares_compiled_sample_inputs_v<Node>
             || declares_compiled_sample_outputs_v<Node>;
+
+        template<typename Node>
+        inline constexpr bool declares_compiled_event_ports_v =
+            declares_compiled_event_inputs_v<Node>
+            || declares_compiled_event_outputs_v<Node>;
 
         template<typename Node>
         concept has_access_block = requires(Node const& node) {
@@ -310,7 +349,7 @@ namespace iv {
         inline constexpr bool compiled_dsp_node_declaration_is_valid_v =
             (!has_constexpr_port_configs<Node>
                 || (
-                    (!declares_compiled_sample_ports_v<Node>
+                    (!declares_compiled_outputs_v<Node>
                         || has_valid_access_block_callback_v<Node>)
                     && propagate_block_access_callback_kind_v<Node>
                         != CompiledPortCallbackKind::conflicting));

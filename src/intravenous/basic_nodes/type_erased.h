@@ -72,6 +72,8 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .compiled_inputs = ctx.compiled_inputs,
+                            .compiled_event_inputs = ctx.compiled_event_inputs,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
@@ -87,6 +89,8 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .compiled_inputs = ctx.compiled_inputs,
+                            .compiled_event_inputs = ctx.compiled_event_inputs,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
@@ -103,6 +107,8 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .compiled_inputs = ctx.compiled_inputs,
+                            .compiled_event_inputs = ctx.compiled_event_inputs,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
@@ -130,6 +136,8 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .compiled_inputs = ctx.compiled_inputs,
+                            .compiled_event_inputs = ctx.compiled_event_inputs,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
@@ -145,6 +153,8 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .compiled_inputs = ctx.compiled_inputs,
+                            .compiled_event_inputs = ctx.compiled_event_inputs,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
@@ -161,6 +171,8 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .compiled_inputs = ctx.compiled_inputs,
+                            .compiled_event_inputs = ctx.compiled_event_inputs,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]

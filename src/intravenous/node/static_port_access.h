@@ -6,6 +6,48 @@
 #include <cstddef>
 
 namespace iv::details {
+    template<typename Node, fixed_string Name>
+    consteval InputConfig static_input_config()
+    {
+        static constexpr auto configs = Node::inputs();
+        InputConfig const* found = nullptr;
+        for (InputConfig const& config : configs) {
+            if (config.name != Name.view()) continue;
+            if (found != nullptr) throw "duplicate static input port name";
+            found = &config;
+        }
+        if (found == nullptr) throw "unknown static input port name";
+        return *found;
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval OutputConfig static_output_config()
+    {
+        static constexpr auto configs = Node::outputs();
+        OutputConfig const* found = nullptr;
+        for (OutputConfig const& config : configs) {
+            if (config.name != Name.view()) continue;
+            if (found != nullptr) throw "duplicate static output port name";
+            found = &config;
+        }
+        if (found == nullptr) throw "unknown static output port name";
+        return *found;
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval PortKind static_input_port_kind()
+    {
+        return is_sample(static_input_config<Node, Name>())
+            ? PortKind::sample : PortKind::event;
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval PortKind static_output_port_kind()
+    {
+        return is_sample(static_output_config<Node, Name>())
+            ? PortKind::sample : PortKind::event;
+    }
+
     template<typename Node>
     consteval size_t static_output_count()
     {
@@ -98,11 +140,9 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval bool static_input_port_is_compiled()
     {
-        static constexpr auto configs = Node::inputs();
-        for (InputConfig const& config : configs) {
-            if (is_sample(config) && config.name == Name.view()) return is_compiled(config);
-        }
-        throw "unknown static sample input port name";
+        InputConfig const config = static_input_config<Node, Name>();
+        if (!is_sample(config)) throw "static input port is not a sample port";
+        return is_compiled(config);
     }
 
     // Access contexts contain only compiled ports. Convert a declaration's
@@ -135,11 +175,9 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval bool static_output_port_is_compiled()
     {
-        static constexpr auto configs = Node::outputs();
-        for (OutputConfig const& config : configs) {
-            if (is_sample(config) && config.name == Name.view()) return is_compiled(config);
-        }
-        throw "unknown static sample output port name";
+        OutputConfig const config = static_output_config<Node, Name>();
+        if (!is_sample(config)) throw "static output port is not a sample port";
+        return is_compiled(config);
     }
 
     template<typename Node, fixed_string Name>
@@ -158,6 +196,102 @@ namespace iv::details {
             ++sample_index;
         }
         throw "unknown static sample output port name";
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval size_t static_event_input_port_index()
+    {
+        static constexpr auto configs = Node::inputs();
+        size_t found = static_cast<size_t>(-1);
+        size_t event_index = 0;
+        for (InputConfig const& config : configs) {
+            if (is_sample(config)) continue;
+            if (config.name == Name.view()) {
+                if (found != static_cast<size_t>(-1)) {
+                    throw "duplicate static input port name";
+                }
+                found = event_index;
+            }
+            ++event_index;
+        }
+        if (found == static_cast<size_t>(-1)) {
+            throw "unknown static event input port name";
+        }
+        return found;
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval size_t static_event_output_port_index()
+    {
+        static constexpr auto configs = Node::outputs();
+        size_t found = static_cast<size_t>(-1);
+        size_t event_index = 0;
+        for (OutputConfig const& config : configs) {
+            if (is_sample(config)) continue;
+            if (config.name == Name.view()) {
+                if (found != static_cast<size_t>(-1)) {
+                    throw "duplicate static output port name";
+                }
+                found = event_index;
+            }
+            ++event_index;
+        }
+        if (found == static_cast<size_t>(-1)) {
+            throw "unknown static event output port name";
+        }
+        return found;
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval bool static_event_input_port_is_compiled()
+    {
+        InputConfig const config = static_input_config<Node, Name>();
+        if (is_sample(config)) throw "static input port is not an event port";
+        return is_compiled(config);
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval bool static_event_output_port_is_compiled()
+    {
+        OutputConfig const config = static_output_config<Node, Name>();
+        if (is_sample(config)) throw "static output port is not an event port";
+        return is_compiled(config);
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval size_t static_compiled_event_input_port_index()
+    {
+        static constexpr auto configs = Node::inputs();
+        constexpr size_t port_index = static_event_input_port_index<Node, Name>();
+        static_assert(static_event_input_port_is_compiled<Node, Name>(),
+            "requested static event input is not declared compiled");
+        size_t compiled_index = 0;
+        size_t event_index = 0;
+        for (InputConfig const& config : configs) {
+            if (is_sample(config)) continue;
+            if (event_index == port_index) return compiled_index;
+            if (is_compiled(config)) ++compiled_index;
+            ++event_index;
+        }
+        throw "unknown static event input port name";
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval size_t static_compiled_event_output_port_index()
+    {
+        static constexpr auto configs = Node::outputs();
+        constexpr size_t port_index = static_event_output_port_index<Node, Name>();
+        static_assert(static_event_output_port_is_compiled<Node, Name>(),
+            "requested static event output is not declared compiled");
+        size_t compiled_index = 0;
+        size_t event_index = 0;
+        for (OutputConfig const& config : configs) {
+            if (is_sample(config)) continue;
+            if (event_index == port_index) return compiled_index;
+            if (is_compiled(config)) ++compiled_index;
+            ++event_index;
+        }
+        throw "unknown static event output port name";
     }
 
     template<typename Node, size_t Index>

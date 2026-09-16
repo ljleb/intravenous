@@ -8,6 +8,7 @@
 
 #include <intravenous/basic_nodes/constant.h>
 #include <intravenous/graph/reflected_node_operations.h>
+#include <intravenous/node/compiled_port_context.h>
 #include <intravenous/node/compiler_record.h>
 #include <intravenous/node/lifecycle.h>
 
@@ -85,6 +86,8 @@ IV_FORCEINLINE void tick_node_block(
             .outputs = ctx.outputs,
             .event_inputs = ctx.event_inputs,
             .event_outputs = ctx.event_outputs,
+            .compiled_inputs = ctx.compiled_inputs,
+            .compiled_event_inputs = ctx.compiled_event_inputs,
             .sample_rate = ctx.sample_rate,
             .scc_feedback_latency = ctx.scc_feedback_latency,
             .buffer = ctx.state,
@@ -108,6 +111,8 @@ IV_FORCEINLINE void skip_node_block(
             .outputs = ctx.outputs,
             .event_inputs = ctx.event_inputs,
             .event_outputs = ctx.event_outputs,
+            .compiled_inputs = ctx.compiled_inputs,
+            .compiled_event_inputs = ctx.compiled_event_inputs,
             .sample_rate = ctx.sample_rate,
             .scc_feedback_latency = ctx.scc_feedback_latency,
             .buffer = ctx.state,
@@ -118,12 +123,57 @@ IV_FORCEINLINE void skip_node_block(
 }
 
 template<class Node>
+IV_FORCEINLINE void access_node_block_batched(
+    void const* node_data, void* opaque_context)
+{
+    auto const& node = *static_cast<Node const*>(node_data);
+    auto& context = *static_cast<AccessBlockBatchContext<Node>*>(opaque_context);
+    do_access_block_batched(node, context);
+}
+
+template<class Node>
+IV_FORCEINLINE void propagate_node_block_access_batched(
+    void const* node_data, void* opaque_context)
+{
+    auto const& node = *static_cast<Node const*>(node_data);
+    auto& context =
+        *static_cast<PropagateBlockAccessBatchContext<Node>*>(opaque_context);
+    do_propagate_block_access_batched<Node>()(node, context);
+}
+
+template<class Node>
+consteval auto node_access_block_batched_operation()
+{
+    if constexpr (details::declares_compiled_outputs_v<Node>) {
+        static_assert(details::has_valid_access_block_callback_v<Node>,
+            "compiled-output node has no valid access_block/access_block_batch implementation");
+        return &access_node_block_batched<Node>;
+    } else {
+        return static_cast<void (*)(void const*, void*)>(nullptr);
+    }
+}
+
+template<class Node>
+consteval auto node_propagate_block_access_batched_operation()
+{
+    if constexpr (details::declares_compiled_outputs_v<Node>
+        && details::declares_compiled_inputs_v<Node>) {
+        return &propagate_node_block_access_batched<Node>;
+    } else {
+        return static_cast<void (*)(void const*, void*)>(nullptr);
+    }
+}
+
+template<class Node>
 constexpr NodeCompilerOperations node_compiler_operations()
 {
     return {
         .declare_node = &declare_node<Node>,
         .tick_block = &tick_node_block<Node>,
         .skip_block = &skip_node_block<Node>,
+        .access_block_batched = node_access_block_batched_operation<Node>(),
+        .propagate_block_access_batched =
+            node_propagate_block_access_batched_operation<Node>(),
     };
 }
 

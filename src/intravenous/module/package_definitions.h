@@ -517,9 +517,9 @@ RegisteredSignature const* node_constructor_signature()
     static_assert(::iv::details::access_block_callback_kind_v<Node> \
             != ::iv::CompiledPortCallbackKind::conflicting, \
         "IV_NODE node type must define only one compiled-access callback: access_block(...) or access_block_batch(...)."); \
-    static_assert(!::iv::details::declares_compiled_sample_ports_v<Node> \
+    static_assert(!::iv::details::declares_compiled_outputs_v<Node> \
             || ::iv::details::has_valid_access_block_callback_v<Node>, \
-        "IV_NODE node type declares a compiled sample port; define exactly one of access_block(...) or access_block_batch(...)."); \
+        "IV_NODE node type declares a compiled output port; define exactly one of access_block(...) or access_block_batch(...)."); \
     static_assert(::iv::details::propagate_block_access_callback_kind_v<Node> \
             != ::iv::CompiledPortCallbackKind::conflicting, \
         "IV_NODE node type may define at most one compiled block-access propagation callback: propagate_block_access(...) or propagate_block_access_batch(...).")

@@ -41,6 +41,22 @@ struct ValidCompiledEventNode {
     }
 
     void tick_block(iv::TickBlockContext<ValidCompiledEventNode> const&) const {}
+    void access_block_batch(
+        iv::AccessBlockBatchContext<ValidCompiledEventNode>&) const {}
 };
 
 IV_NODE("iv.test.valid_compiled_event_node", ValidCompiledEventNode);
+
+struct ValidCompiledInputOnlyNode {
+    static constexpr auto inputs()
+    {
+        return std::array {
+            iv::compiled_sample_input("samples"),
+            iv::compiled_event_input("events", iv::EventTypeId::trigger),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<ValidCompiledInputOnlyNode> const&) const {}
+};
+
+IV_NODE("iv.test.valid_compiled_input_only_node", ValidCompiledInputOnlyNode);

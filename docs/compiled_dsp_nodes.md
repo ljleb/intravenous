@@ -28,13 +28,12 @@ therefore has all four declaration combinations:
 | sample | finite sequential/current-block timing contract | arbitrary global sample access |
 | event | finite sequential/current-block timing contract | arbitrary global event-range access |
 
-The callback/context API implemented in this stage is specifically for
-**compiled sample ports**. Its contexts contain compact lists of compiled sample
-ports only; they never contain placeholder realtime ports. Compiled event ports
-are nevertheless valid declarations and remain a distinct planned capability.
-Their eventual arbitrary-access API must operate on event ranges/event sets, not
-reuse the sample-grid `AccessRequest` semantics merely because both capabilities
-share the `compiled` flag.
+The callback/context API now covers **compiled sample and compiled event ports**.
+Its contexts contain compact lists of compiled ports only; they never contain
+placeholder realtime ports. Sample and event access remain distinct inside that
+context: samples use sampled-grid `AccessRequestSet`s, while events use lossless
+half-open `EventAccessRequestSet` intervals. The shared `compiled` flag does not
+collapse those two demand models.
 
 Legacy lane nodes already support both compiled sample and compiled event data.
 As lane nodes are phased out, ordinary DSP nodes must preserve that capability
@@ -211,9 +210,17 @@ A stateful sequential `tick_block()` cannot generally be called out of order and
 
 ---
 
-## 5. Any compiled port requires an access implementation
+## 5. Compiled outputs require an access implementation
 
-If an `IV_NODE` declares at least one compiled port, its type must provide a valid compiled-access implementation.
+If an `IV_NODE` declares at least one compiled **output**—sample or event—its
+type must provide a valid compiled-access implementation. A node with only
+compiled inputs does not need `access_block(...)`: its sequential `tick_block()`
+is already the consumer of those inputs, and no downstream arbitrary-access
+demand can enter the node through an output.
+
+This distinction is important for compiled-input-to-realtime-output transforms.
+They may use the compiled input's arbitrary-access capability while executing
+sequentially, but they are not themselves arbitrary-access producers.
 
 This should be enforced at the `IV_NODE` declaration boundary with a targeted compile-time diagnostic rather than failing later in obscure trait machinery.
 
@@ -357,7 +364,8 @@ Request coalescing and caching are distinct concepts.
 
 The planner needs a way to determine:
 
-> Given these requested samples on my outputs, what samples do I need from my inputs?
+> Given these requested sample grids/event intervals on my outputs, what sample
+> grids/event intervals do I need from my inputs?
 
 Nodes may override the conservative default with either of two callback forms,
 with unbatched/batched trait handling analogous to `access_block`:
@@ -371,11 +379,22 @@ with framework code always calling the normalized batched trait. Both callbacks
 are optional. A node may define either one to describe a narrower dependency
 footprint, but it must not define both.
 
+Propagation only participates in arbitrary-access planning when the node has
+both compiled outputs and compiled inputs. An input-only node has no compiled
+output through which arbitrary demand can enter, while an output-only source has
+no upstream dependency to propagate to; the normalized operation is a no-op in
+both cases.
+
 If neither callback is present, the framework synthesizes conservative
-propagation automatically: every compiled sample input is requested across its
-entire logical extent. The planner supplies those input extents to the
-propagation context, and the synthesized operation emits one dense
-`AccessRequest` covering each non-empty input extent.
+propagation automatically. Every compiled sample input is requested across its
+entire logical extent with one dense `AccessRequest`; every compiled event input
+is requested across its entire logical extent with one lossless
+`EventAccessRequest`. The two request kinds stay separate throughout planning.
+
+For a compiled-output node with no compiled inputs, this synthesized propagation
+is trivially a no-op. Such a source still requires `access_block[_batch]` to
+produce its outputs, but it does not need a propagation callback because there
+is nothing upstream to request.
 
 This default is intentionally correct rather than selective. It lets simple
 nodes participate in compiled execution without writing propagation boilerplate,
@@ -649,7 +668,8 @@ compiled-specific validation needed by that capability on top of the existing
 static declaration validation. For nodes whose compiled port contract is
 statically described, validate at minimum:
 
-* compiled ports require a valid access implementation;
+* compiled outputs require a valid access implementation; compiled-input-only
+  nodes do not;
 * at most one of the optional block-access propagation variants is user-defined;
 * callback signatures are valid;
 * `tick_block_batch` / `tick_block` combinations are valid;

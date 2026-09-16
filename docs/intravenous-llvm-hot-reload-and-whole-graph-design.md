@@ -146,6 +146,8 @@ struct NodeCompilerOperations {
     std::size_t (*declare_node)(...);
     void (*tick_block)(...);
     void (*skip_block)(...);
+    void (*access_block_batched)(...);
+    void (*propagate_block_access_batched)(...);
 };
 
 struct NodeCompilerRecord {
@@ -159,6 +161,14 @@ struct NodeCompilerRecord {
 ```
 
 `NodeCodeKey` is deliberately build-local. It is a compiler join between a configured node instance and LLVM functions in that build, not a persistent server identity.
+
+The compiled-access entries are normalized compiler anchors rather than
+compatibility-executor callbacks. `access_block_batched` is present exactly for
+statically declared compiled-output nodes. The propagation anchor is present
+only when the node has both compiled outputs and compiled inputs; output-only
+sources and compiled-input-only sequential consumers have no backward demand to
+propagate. These anchors also force the provider build to retain the relevant
+LLVM implementations for later whole-project import/inlining.
 
 Concrete nodes realized through a registered `IV_NODE` also retain explicit
 `RegisteredNodeTypeIdentity` provenance: the canonical stable node ID and the
@@ -671,6 +681,7 @@ stable id
 state layout / state metadata
 lifecycle implementation
 LLVM tick/skip/declare implementation
+LLVM compiled-access / demand-propagation implementation when applicable
 source/type metadata
 configuration construction entry
 ```
