@@ -17,7 +17,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{sample_output("out", {
+            return std::array<OutputConfig, 1>{realtime_sample_output("out", {
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = SampleStreamLayout::planar,
@@ -39,7 +39,7 @@ namespace iv {
     public:
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{sample_input("in", {
+            return std::array<InputConfig, 1>{realtime_sample_input("in", {
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = SampleStreamLayout::planar,
@@ -86,13 +86,13 @@ namespace iv {
 
         constexpr auto inputs() const
         {
-            return std::array { event_input({}, _type) };
+            return std::array { realtime_event_input({}, _type) };
         }
 
         constexpr auto outputs() const
         {
             return std::vector<OutputConfig>(
-                _num_outputs, event_output({}, _type));
+                _num_outputs, realtime_event_output({}, _type));
         }
 
         void tick_block(TickBlockContext<BroadcastEvent> const& ctx) const
@@ -119,12 +119,12 @@ namespace iv {
 
         constexpr auto inputs() const
         {
-            return std::vector<InputConfig>(_num_inputs, event_input({}, _type));
+            return std::vector<InputConfig>(_num_inputs, realtime_event_input({}, _type));
         }
 
         constexpr auto outputs() const
         {
-            return std::array { event_output({}, _type) };
+            return std::array { realtime_event_output({}, _type) };
         }
 
         void declare(DeclarationContext<EventConcatenation> const& ctx) const
@@ -260,7 +260,7 @@ struct DetachReaderNode {
     struct DummyEventSink {
         static constexpr auto inputs()
         {
-            return std::array { event_input({}, EventTypeId::empty) };
+            return std::array { realtime_event_input({}, EventTypeId::empty) };
         }
 
         void tick_block(TickBlockContext<DummyEventSink> const&) const

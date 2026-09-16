@@ -97,8 +97,8 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sample_input("min", {.default_value = -1.0}),
-                sample_input("max", {.default_value = 1.0}),
+                realtime_sample_input("min", {.default_value = -1.0}),
+                realtime_sample_input("max", {.default_value = 1.0}),
             };
         }
 
@@ -166,8 +166,8 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sample_input("min", {.default_value = -1.0}),
-                sample_input("max", {.default_value = 1.0}),
+                realtime_sample_input("min", {.default_value = -1.0}),
+                realtime_sample_input("max", {.default_value = 1.0}),
             };
         }
 

@@ -421,7 +421,7 @@ constexpr NodeBundleHandle
 GraphBuilderNodeBundles::append_deferred_detach_writer(
     size_t detach_id, size_t loop_extra_latency) {
   ConcreteNode node;
-  node.ports.input_configs = {sample_input()};
+  node.ports.input_configs = {realtime_sample_input()};
   node.type_identity = {.value = std::string(
       details::clang_type_name<DetachWriterNode>())};
   node.deferred_detach = DeferredDetachNode{
@@ -436,7 +436,7 @@ constexpr NodeBundleHandle
 GraphBuilderNodeBundles::append_deferred_detach_reader(
     size_t detach_id, size_t loop_extra_latency) {
   ConcreteNode node;
-  node.ports.output_configs = {sample_output()};
+  node.ports.output_configs = {realtime_sample_output()};
   node.type_identity = {.value = std::string(
       details::clang_type_name<DetachReaderNode>())};
   node.deferred_detach = DeferredDetachNode{

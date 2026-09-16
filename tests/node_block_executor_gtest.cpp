@@ -76,18 +76,18 @@ struct MixedPortDeclarationNode {
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 3>{
-            iv::event_input("event-a", iv::EventTypeId::trigger),
-            iv::sample_input("sample"),
-            iv::event_input("event-b", iv::EventTypeId::trigger),
+            iv::realtime_event_input("event-a", iv::EventTypeId::trigger),
+            iv::realtime_sample_input("sample"),
+            iv::realtime_event_input("event-b", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array<iv::OutputConfig, 3>{
-            iv::sample_output("sample-a"),
-            iv::event_output("event", iv::EventTypeId::trigger),
-            iv::sample_output("sample-b"),
+            iv::realtime_sample_output("sample-a"),
+            iv::realtime_event_output("event", iv::EventTypeId::trigger),
+            iv::realtime_sample_output("sample-b"),
         };
     }
 

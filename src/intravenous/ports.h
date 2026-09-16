@@ -74,10 +74,10 @@ namespace iv {
     };
 
     enum class EventTypeId : unsigned int {
+        empty,
         midi,
         trigger,
         boundary,
-        empty,
         count,
     };
 
@@ -1273,85 +1273,105 @@ namespace iv {
     };
 
     [[nodiscard]] constexpr InputConfig sample_input(
-        std::string name = {}, SampleInputProperties properties = {},
-        RealtimeInputConfig access = {})
+        std::string name = {},
+        SampleInputProperties properties = {},
+        InputAccessConfig access = RealtimeInputConfig{})
     {
         return InputConfig{
             std::move(name), std::move(properties), std::move(access)};
     }
 
-    [[nodiscard]] constexpr InputConfig sample_input(
-        std::string name, SampleInputProperties properties, CompiledPortConfig access)
-    {
-        return InputConfig{
-            std::move(name), std::move(properties), access};
-    }
-
     [[nodiscard]] constexpr OutputConfig sample_output(
-        std::string name = {}, SampleOutputProperties properties = {},
-        RealtimeOutputConfig access = {})
+        std::string name = {},
+        SampleOutputProperties properties = {},
+        OutputAccessConfig access = RealtimeOutputConfig{})
     {
         return OutputConfig{
-            std::move(name), std::move(properties), std::move(access)};
-    }
-
-    [[nodiscard]] constexpr OutputConfig sample_output(
-        std::string name, SampleOutputProperties properties, CompiledPortConfig access)
-    {
-        return OutputConfig{
-            std::move(name), std::move(properties), access};
+            std::move(name),
+            std::move(properties),
+            std::move(access)};
     }
 
     [[nodiscard]] constexpr InputConfig event_input(
-        std::string name, EventTypeId type, RealtimeInputConfig access = {})
+        std::string name = {},
+        EventTypeId type = {},
+        InputAccessConfig access = RealtimeInputConfig{})
     {
         return InputConfig{
-            std::move(name), EventInputProperties{.type = type}, std::move(access)};
-    }
-
-    [[nodiscard]] constexpr InputConfig event_input(
-        std::string name, EventTypeId type, CompiledPortConfig access)
-    {
-        return InputConfig{
-            std::move(name), EventInputProperties{.type = type}, access};
+            std::move(name),
+            EventInputProperties{.type = type},
+            std::move(access)};
     }
 
     [[nodiscard]] constexpr OutputConfig event_output(
-        std::string name, EventTypeId type, RealtimeOutputConfig access = {})
+        std::string name = {},
+        EventTypeId type = {},
+        OutputAccessConfig access = RealtimeOutputConfig{})
     {
         return OutputConfig{
-            std::move(name), EventOutputProperties{.type = type}, std::move(access)};
-    }
-
-    [[nodiscard]] constexpr OutputConfig event_output(
-        std::string name, EventTypeId type, CompiledPortConfig access)
-    {
-        return OutputConfig{
-            std::move(name), EventOutputProperties{.type = type}, access};
+            std::move(name),
+            EventOutputProperties{.type = type},
+            std::move(access)};
     }
 
     [[nodiscard]] constexpr InputConfig compiled_sample_input(
-        std::string name = {}, SampleInputProperties properties = {})
+        std::string name = {},
+        SampleInputProperties properties = {})
     {
         return sample_input(std::move(name), std::move(properties), compiled_port);
     }
 
     [[nodiscard]] constexpr OutputConfig compiled_sample_output(
-        std::string name = {}, SampleOutputProperties properties = {})
+        std::string name = {},
+        SampleOutputProperties properties = {})
     {
         return sample_output(std::move(name), std::move(properties), compiled_port);
     }
 
     [[nodiscard]] constexpr InputConfig compiled_event_input(
-        std::string name, EventTypeId type)
+        std::string name = {},
+        EventTypeId type = {})
     {
         return event_input(std::move(name), type, compiled_port);
     }
 
     [[nodiscard]] constexpr OutputConfig compiled_event_output(
-        std::string name, EventTypeId type)
+        std::string name = {},
+        EventTypeId type = {})
     {
         return event_output(std::move(name), type, compiled_port);
+    }
+
+    [[nodiscard]] constexpr InputConfig realtime_sample_input(
+        std::string name = {},
+        SampleInputProperties properties = {},
+        RealtimeInputConfig access = {})
+    {
+        return sample_input(std::move(name), std::move(properties), std::move(access));
+    }
+
+    [[nodiscard]] constexpr OutputConfig realtime_sample_output(
+        std::string name = {},
+        SampleOutputProperties properties = {},
+        RealtimeOutputConfig access = {})
+    {
+        return sample_output(std::move(name), std::move(properties), std::move(access));
+    }
+
+    [[nodiscard]] constexpr InputConfig realtime_event_input(
+        std::string name = {},
+        EventTypeId type = {},
+        RealtimeInputConfig access = {})
+    {
+        return event_input(std::move(name), type, std::move(access));
+    }
+
+    [[nodiscard]] constexpr OutputConfig realtime_event_output(
+        std::string name = {},
+        EventTypeId type = {},
+        RealtimeOutputConfig access = {})
+    {
+        return event_output(std::move(name), type, std::move(access));
     }
 
     // The configured graph keeps physical sample/event lists because lowering

@@ -89,16 +89,16 @@ struct StereoSourceGeometry
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 3>{
-            sample_input("center_azimuth"),
-            sample_input("width"),
-            sample_input("distance", {.channel_layout = stereo_planar}),
+            realtime_sample_input("center_azimuth"),
+            realtime_sample_input("width"),
+            realtime_sample_input("distance", {.channel_layout = stereo_planar}),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array<OutputConfig, 1>{
-            sample_output("azimuth", {.channel_layout = stereo_planar}),
+            realtime_sample_output("azimuth", {.channel_layout = stereo_planar}),
         };
     }
 
@@ -218,23 +218,23 @@ struct BrownDudaParameters
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 2>{
-            sample_input("azimuth"),
-            sample_input("elevation"),
+            realtime_sample_input("azimuth"),
+            realtime_sample_input("elevation"),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array<OutputConfig, 9>{
-            sample_output("head_b0", {.channel_layout = stereo_planar}),
-            sample_output("head_b1", {.channel_layout = stereo_planar}),
-            sample_output("head_feedback"),
-            sample_output("head_delay", {.channel_layout = stereo_planar}),
-            sample_output("d2", {.channel_layout = stereo_planar}),
-            sample_output("d3", {.channel_layout = stereo_planar}),
-            sample_output("d4", {.channel_layout = stereo_planar}),
-            sample_output("d5", {.channel_layout = stereo_planar}),
-            sample_output("d6", {.channel_layout = stereo_planar}),
+            realtime_sample_output("head_b0", {.channel_layout = stereo_planar}),
+            realtime_sample_output("head_b1", {.channel_layout = stereo_planar}),
+            realtime_sample_output("head_feedback"),
+            realtime_sample_output("head_delay", {.channel_layout = stereo_planar}),
+            realtime_sample_output("d2", {.channel_layout = stereo_planar}),
+            realtime_sample_output("d3", {.channel_layout = stereo_planar}),
+            realtime_sample_output("d4", {.channel_layout = stereo_planar}),
+            realtime_sample_output("d5", {.channel_layout = stereo_planar}),
+            realtime_sample_output("d6", {.channel_layout = stereo_planar}),
         };
     }
 
@@ -596,16 +596,16 @@ struct OnePoleOneZero
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 4>{
-            sample_input("in", {.history = 1}),
-            sample_input("b0"),
-            sample_input("b1"),
-            sample_input("feedback"),
+            realtime_sample_input("in", {.history = 1}),
+            realtime_sample_input("b0"),
+            realtime_sample_input("b1"),
+            realtime_sample_input("feedback"),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{sample_output("out")};
+        return std::array<OutputConfig, 1>{realtime_sample_output("out")};
     }
 
     void tick_block(
@@ -670,14 +670,14 @@ struct SampleDelay
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 2>{
-            sample_input("in", {.history = max_delay_samples}),
-            sample_input("delay_samples"),
+            realtime_sample_input("in", {.history = max_delay_samples}),
+            realtime_sample_input("delay_samples"),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{sample_output("out")};
+        return std::array<OutputConfig, 1>{realtime_sample_output("out")};
     }
 
     void tick_block(
@@ -738,18 +738,18 @@ struct BrownDudaPinna
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 6>{
-            sample_input("in", {.history = max_delay_samples}),
-            sample_input("d2"),
-            sample_input("d3"),
-            sample_input("d4"),
-            sample_input("d5"),
-            sample_input("d6"),
+            realtime_sample_input("in", {.history = max_delay_samples}),
+            realtime_sample_input("d2"),
+            realtime_sample_input("d3"),
+            realtime_sample_input("d4"),
+            realtime_sample_input("d5"),
+            realtime_sample_input("d6"),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{sample_output("out")};
+        return std::array<OutputConfig, 1>{realtime_sample_output("out")};
     }
 
     void tick_block(

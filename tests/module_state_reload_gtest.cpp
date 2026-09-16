@@ -154,16 +154,16 @@ namespace {
         static constexpr auto inputs()
         {
             return std::array<iv::InputConfig, 2>{
-                iv::sample_input("signal"),
-                iv::event_input("reset", iv::EventTypeId::trigger),
+                iv::realtime_sample_input("signal"),
+                iv::realtime_event_input("reset", iv::EventTypeId::trigger),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array<iv::OutputConfig, 2>{
-                iv::sample_output("out"),
-                iv::event_output("changed", iv::EventTypeId::trigger),
+                iv::realtime_sample_output("out"),
+                iv::realtime_event_output("changed", iv::EventTypeId::trigger),
             };
         }
 
@@ -319,15 +319,15 @@ namespace {
         static constexpr auto inputs()
         {
             return std::array<iv::InputConfig, 2>{
-                iv::sample_input("input"),
-                iv::sample_input("modulation"),
+                iv::realtime_sample_input("input"),
+                iv::realtime_sample_input("modulation"),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array<iv::OutputConfig, 1>{
-                iv::sample_output("out"),
+                iv::realtime_sample_output("out"),
             };
         }
 
@@ -384,7 +384,7 @@ namespace {
         static constexpr auto outputs()
         {
             return std::array<iv::OutputConfig, 1>{
-                iv::sample_output("out"),
+                iv::realtime_sample_output("out"),
             };
         }
 

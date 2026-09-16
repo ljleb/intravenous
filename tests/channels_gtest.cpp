@@ -82,7 +82,7 @@ std::vector<iv::Sample> sample_values(iv::SampleStorageBlock const& block)
 struct PlanarStereoCopy {
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 1>{iv::sample_input("audio", {
+        return std::array<iv::InputConfig, 1>{iv::realtime_sample_input("audio", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::planar,
@@ -92,7 +92,7 @@ struct PlanarStereoCopy {
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("main", {
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("main", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::planar,
@@ -114,7 +114,7 @@ struct PlanarStereoCopy {
 struct InterleavedStereoCopy {
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 1>{iv::sample_input("audio", {
+        return std::array<iv::InputConfig, 1>{iv::realtime_sample_input("audio", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -124,7 +124,7 @@ struct InterleavedStereoCopy {
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("main", {
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("main", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -154,7 +154,7 @@ struct NamedStereoSource {
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("main", {
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("main", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::planar,
@@ -171,7 +171,7 @@ struct NamedStereoSource {
 struct NamedInterleavedStereoSource {
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("main", {
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("main", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -188,12 +188,12 @@ struct NamedInterleavedStereoSource {
 struct MonoPass {
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 1>{iv::sample_input("in")};
+        return std::array<iv::InputConfig, 1>{iv::realtime_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("out")};
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("out")};
     }
 
     void tick(iv::TickSampleContext<MonoPass> const& ctx) const
@@ -205,14 +205,14 @@ struct MonoPass {
 struct DefaultMonoPass {
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 1>{iv::sample_input("in", {
+        return std::array<iv::InputConfig, 1>{iv::realtime_sample_input("in", {
             .default_value = iv::Sample{0.75f},
         })};
     }
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("out")};
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("out")};
     }
 
     void tick(iv::TickSampleContext<DefaultMonoPass> const& ctx) const
@@ -225,16 +225,16 @@ struct EventfulMonoPass {
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 2>{
-            iv::sample_input("in"),
-            iv::event_input("trigger", iv::EventTypeId::trigger),
+            iv::realtime_sample_input("in"),
+            iv::realtime_event_input("trigger", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array<iv::OutputConfig, 2>{
-            iv::sample_output("out"),
-            iv::event_output("trigger", iv::EventTypeId::trigger),
+            iv::realtime_sample_output("out"),
+            iv::realtime_event_output("trigger", iv::EventTypeId::trigger),
         };
     }
 
@@ -248,14 +248,14 @@ struct EventBeforeSamplePass {
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 2>{
-            iv::event_input("trigger", iv::EventTypeId::trigger),
-            iv::sample_input("in"),
+            iv::realtime_event_input("trigger", iv::EventTypeId::trigger),
+            iv::realtime_sample_input("in"),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("out")};
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("out")};
     }
 
     void tick(iv::TickSampleContext<EventBeforeSamplePass> const& ctx) const
@@ -270,7 +270,7 @@ struct ScheduledTriggerSource {
     static constexpr auto outputs()
     {
         return std::array<iv::OutputConfig, 1>{
-            iv::event_output("trigger", iv::EventTypeId::trigger),
+            iv::realtime_event_output("trigger", iv::EventTypeId::trigger),
         };
     }
 

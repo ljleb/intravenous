@@ -87,7 +87,7 @@ constexpr NodePorts generated_node_ports(RuntimeSampleInputNodeSpec const& spec)
 
 constexpr NodePorts generated_node_ports(RuntimeEventInputNodeSpec const& spec)
 {
-    return {.output_configs = {event_output({}, spec.type)}};
+    return {.output_configs = {realtime_event_output({}, spec.type)}};
 }
 
 constexpr NodePorts generated_node_ports(RuntimeSampleOutputNodeSpec const& spec)
@@ -97,7 +97,7 @@ constexpr NodePorts generated_node_ports(RuntimeSampleOutputNodeSpec const& spec
 
 constexpr NodePorts generated_node_ports(RuntimeEventOutputNodeSpec const& spec)
 {
-    return {.input_configs = {event_input({}, spec.type)}};
+    return {.input_configs = {realtime_event_input({}, spec.type)}};
 }
 
 constexpr NodePorts generated_node_ports(
@@ -116,7 +116,7 @@ constexpr NodePorts generated_node_ports(
 {
     NodePorts ports;
     ports.input_configs.assign(
-        spec.member_count, event_input({}, spec.type));
+        spec.member_count, realtime_event_input({}, spec.type));
     return ports;
 }
 
@@ -125,33 +125,33 @@ constexpr NodePorts generated_node_ports(
 {
     return {
         .input_configs = std::vector<InputConfig>(
-            spec.input_count, event_input({}, spec.type)),
-        .output_configs = {event_output({}, spec.type)},
+            spec.input_count, realtime_event_input({}, spec.type)),
+        .output_configs = {realtime_event_output({}, spec.type)},
     };
 }
 
 constexpr NodePorts generated_node_ports(BroadcastEventNodeSpec const& spec)
 {
     return {
-        .input_configs = {event_input({}, spec.type)},
+        .input_configs = {realtime_event_input({}, spec.type)},
         .output_configs = std::vector<OutputConfig>(
-            spec.output_count, event_output({}, spec.type)),
+            spec.output_count, realtime_event_output({}, spec.type)),
     };
 }
 
 constexpr NodePorts generated_node_ports(DummySinkNodeSpec const&)
 {
-    return {.input_configs = {sample_input()}};
+    return {.input_configs = {realtime_sample_input()}};
 }
 
 constexpr NodePorts generated_node_ports(DummyEventSinkNodeSpec const&)
 {
-    return {.input_configs = {event_input({}, EventTypeId::empty)}};
+    return {.input_configs = {realtime_event_input({}, EventTypeId::empty)}};
 }
 
 constexpr NodePorts generated_node_ports(ConstantNodeSpec const&)
 {
-    return {.output_configs = {sample_output()}};
+    return {.output_configs = {realtime_sample_output()}};
 }
 
 inline EventConcatenation make_generated_node(

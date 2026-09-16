@@ -21,12 +21,12 @@ struct RequestNode {
 
     auto inputs() const
     {
-        return std::array{iv::sample_input(input_name)};
+        return std::array{iv::realtime_sample_input(input_name)};
     }
 
     auto outputs() const
     {
-        return std::array{iv::sample_output(output_name)};
+        return std::array{iv::realtime_sample_output(output_name)};
     }
 
     std::size_t internal_latency() const
@@ -63,12 +63,12 @@ concept HasLatency = requires(Config const& config) {
     config.latency;
 };
 
-static_assert(std::same_as<decltype(iv::sample_input()), iv::InputConfig>);
+static_assert(std::same_as<decltype(iv::realtime_sample_input()), iv::InputConfig>);
 static_assert(std::same_as<
-    decltype(iv::event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
-static_assert(std::same_as<decltype(iv::sample_output()), iv::OutputConfig>);
+    decltype(iv::realtime_event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
+static_assert(std::same_as<decltype(iv::realtime_sample_output()), iv::OutputConfig>);
 static_assert(std::same_as<
-    decltype(iv::event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
+    decltype(iv::realtime_event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
 static_assert(HasSampleRange<iv::SampleInputProperties>);
 static_assert(!HasSampleRange<iv::EventInputProperties>);
 static_assert(!HasHistory<iv::SampleInputProperties>);
@@ -84,13 +84,13 @@ static_assert(!HasHistory<iv::CompiledPortConfig>);
 static_assert(!HasLatency<iv::CompiledPortConfig>);
 static_assert(iv::sample_properties(iv::InputConfig {}).neutral_value.value == 0.0f);
 static_assert(iv::realtime_history(
-    iv::sample_input("history", {}, {.history = 7})) == 7);
+    iv::realtime_sample_input("history", {}, {.history = 7})) == 7);
 static_assert(iv::realtime_history(
-    iv::event_input("history", iv::EventTypeId::trigger, {.history = 5})) == 5);
+    iv::realtime_event_input("history", iv::EventTypeId::trigger, {.history = 5})) == 5);
 static_assert(iv::realtime_history(
-    iv::sample_output("timing", {}, {.history = 11, .latency = 3})) == 11);
+    iv::realtime_sample_output("timing", {}, {.history = 11, .latency = 3})) == 11);
 static_assert(iv::realtime_latency(
-    iv::sample_output("timing", {}, {.history = 11, .latency = 3})) == 3);
+    iv::realtime_sample_output("timing", {}, {.history = 11, .latency = 3})) == 3);
 static_assert(iv::is_compiled(iv::compiled_sample_input("compiled")));
 static_assert(iv::is_compiled(iv::compiled_event_output(
     "compiled", iv::EventTypeId::trigger)));
@@ -203,7 +203,7 @@ struct MixedCompiledPorts {
     static constexpr auto inputs()
     {
         return std::array {
-            iv::sample_input("realtime"),
+            iv::realtime_sample_input("realtime"),
             iv::compiled_sample_input("compiled"),
         };
     }
@@ -211,7 +211,7 @@ struct MixedCompiledPorts {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::sample_output("realtime"),
+            iv::realtime_sample_output("realtime"),
             iv::compiled_sample_output("compiled"),
         };
     }

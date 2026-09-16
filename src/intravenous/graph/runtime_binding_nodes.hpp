@@ -28,7 +28,7 @@ struct RuntimeEventInputNodeSpec {
 
     constexpr auto outputs() const
     {
-        return std::array { event_output({}, type) };
+        return std::array { realtime_event_output({}, type) };
     }
 };
 
@@ -48,7 +48,7 @@ struct RuntimeEventOutputNodeSpec {
 
     constexpr auto inputs() const
     {
-        return std::array { event_input({}, type) };
+        return std::array { realtime_event_input({}, type) };
     }
 };
 
@@ -75,7 +75,7 @@ struct RuntimeEventOutputFamilyNodeSpec {
 
     constexpr std::vector<InputConfig> inputs() const
     {
-        return std::vector<InputConfig>(member_count, event_input({}, type));
+        return std::vector<InputConfig>(member_count, realtime_event_input({}, type));
     }
 };
 
@@ -150,7 +150,7 @@ struct RuntimeEventInputNode {
 
     constexpr auto outputs() const
     {
-        return std::array { event_output({}, type) };
+        return std::array { realtime_event_output({}, type) };
     }
 
     void declare(DeclarationContext<RuntimeEventInputNode> const& ctx) const
@@ -239,7 +239,7 @@ struct RuntimeEventOutputNode {
 
     constexpr auto inputs() const
     {
-        return std::array { event_input({}, type) };
+        return std::array { realtime_event_input({}, type) };
     }
 
     void declare(DeclarationContext<RuntimeEventOutputNode> const& ctx) const
@@ -390,7 +390,7 @@ struct RuntimeEventOutputFamilyNode {
 
     constexpr std::vector<InputConfig> inputs() const
     {
-        return std::vector<InputConfig>(member_count, event_input({}, type));
+        return std::vector<InputConfig>(member_count, realtime_event_input({}, type));
     }
 
     void declare(
