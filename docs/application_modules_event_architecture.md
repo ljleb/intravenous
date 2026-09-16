@@ -19,9 +19,9 @@ application architecture is now defined in
 [project_graph_application_architecture.md](./project_graph_application_architecture.md).
 
 The generalized target names are `NodeDefinitions`, `NodeInstances`,
-`PackageReload`, `PackageDefinitions`, `ProjectGraph`, `GraphConnections`, and
-`GraphExecutor`, with `SystemAudioDevices` remaining a separate device-domain
-module.
+`PackageReload`, `PackageDefinitions`, `ProjectGraph`, `GraphConnections`,
+`GraphJit`, and `GraphExecutor`, with `SystemAudioDevices` remaining a separate
+device-domain module.
 
 The event/bridge principles below remain useful. Module-specific inventories and
 lane-era propagation descriptions below are historical wherever they conflict

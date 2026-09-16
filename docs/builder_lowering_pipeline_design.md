@@ -6,6 +6,16 @@
 > constexpr-friendly intermediate storage is no longer a current requirement.
 > See `docs/runtime_graph_container_cleanup.md` for an audit of container and
 > helper choices that remain from that constraint.
+>
+> **Whole-project JIT direction:** the `ConfiguredGraph -> ExecutableGraphIR ->
+> Graph` path described below is the current compatibility compiler boundary,
+> not a requirement that the future whole-project executor retain `Graph` or
+> ring-buffer-backed ports as its final representation. The current target adds
+> `GraphJit`, which consumes the complete root configured graph, performs pure
+> connection/history/latency/storage planning, generates specialized LLVM, and
+> returns an immutable `CompiledGraph`. See
+> [graph_jit_direction.md](./graph_jit_direction.md) and
+> [realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
 
 ## Purpose
 
@@ -53,9 +63,11 @@ Each semantic transition has one owner and one invariant:
   lays out, and freezes that fixed semantic graph into `Graph`.
 
 No semantic node or edge may be created after `ExecutableGraphIR` is finished.
-The compiler may reorder, wrap, schedule, allocate buffers for, or freeze its
-nodes, but discovering a required `Broadcast`, `ConnectionNode`, default, or
-sink after this boundary is a lowering bug.
+The compiler may reorder, wrap, schedule, choose physical storage for, or freeze
+its nodes, but discovering a required semantic connection/default/sink after
+this boundary is a lowering bug. Compatibility-only helper nodes such as
+`Broadcast`/`ConnectionNode` must not be treated as semantic requirements of the
+future whole-project JIT.
 
 `GraphBuilder` exposes one ordinary result-producing convenience method:
 
@@ -124,21 +136,26 @@ receive; `GraphCompiler` therefore never needs a completion-state flag.
 runtime `Graph`. No intermediate graph, diagnostic build mode, or profiling API
 is exposed.
 
-## Deferred event fan-out
+## Compatibility fan-out versus whole-project storage planning
 
-Sample fan-out no longer lowers a `Broadcast` node: layout-compatible consumers
-share one output ring, each `InputPort` owns its read cursor, history, and
-validated latency, and only conversion branches receive a wrapper-managed copy.
+The current compatibility runtime still contains concrete sample/event fan-out
+representations such as shared sample rings and `BroadcastEvent`. Those are
+implementation details of the compatibility `Graph`, not semantic requirements
+of `ConfiguredGraph`.
 
-Event fan-out intentionally remains materialized through `BroadcastEvent` for
-now. `EventSharedPortData` currently owns its read index, so aliasing an event
-buffer would let one consumer advance or clear events needed by another. The
-future event equivalent must first make the reader state consumer-owned in
-`EventInputPort` and give shared event storage a retention rule sufficient for
-all readers. Only then may event lowering stop materializing `BroadcastEvent`:
-same-type consumers can alias one event store, while type-converting consumers
-can receive compiler-managed conversion branches. Do not remove the event
-broadcast node before that reader/retention split exists.
+The whole-project compiler must plan a producer and all of its consumers as one
+connection group. Layout-compatible sample consumers may alias one produced
+value/materialization, conversion branches may materialize only when necessary,
+and a simple acyclic chain may need no physical edge storage at all. Event
+fan-out likewise becomes eligible for shared immutable transient representation
+or direct/fused handling once realtime event windows and consumer retention are
+statically known.
+
+Do not preserve `SharedPortData`, `EventSharedPortData`, one-ring-per-stream, or
+`BroadcastEvent` merely to match the compatibility runtime. Correctness facts
+(history, latency, feedback, legal event windows, conversion, fanout) are derived
+first; a separate pure heuristic then chooses physical storage. See
+[realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
 
 ## Conversion ownership and information flow
 

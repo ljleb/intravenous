@@ -14,13 +14,15 @@ flowchart TD
     PG["ProjectGraph"]
     NI["NodeInstances"]
     GC["GraphConnections"]
+    GJ["GraphJit"]
     GE["GraphExecutor"]
 
     SRC --> PP
     PP -->|"one normalized project graph replay batch"| PG
     PG -->|"1. requested instance batch using current definitions snapshot"| NI
     PG -->|"2. requested connection batch against complete current embeddings"| GC
-    PG -->|"3. current complete/partial ConfiguredGraph"| GE
+    PG -->|"3. current complete/partial ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
+    PG -->|"4. compiled current generation"| GE
 ```
 
 `ProjectPersistence` reconstructs canonical project intent. It does not become
@@ -47,6 +49,7 @@ flowchart TD
     PG["ProjectGraph"]
     NI["NodeInstances"]
     GC["GraphConnections"]
+    GJ["GraphJit"]
     GE["GraphExecutor"]
 
     SRC --> PR
@@ -54,7 +57,8 @@ flowchart TD
     ND -->|"first/updated immutable definitions snapshot"| PG
     PG -->|"1. reconfigure all stored requested instances"| NI
     PG -->|"2. re-resolve all stored project connections"| GC
-    PG -->|"3. populated successor ConfiguredGraph"| GE
+    PG -->|"3. populated ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
+    PG -->|"4. compiled successor generation"| GE
 ```
 
 The desired project state did not change, so this second procedure does not
@@ -63,5 +67,6 @@ route back through `ProjectPersistence`.
 ## Startup ordering rule
 
 All app modules and bridges must exist before sources capable of emitting these
-procedures are started. Asynchronous compilation completion must begin a new
-propagation after the initiating scheduling event has unwound.
+procedures are started. Package source/build work may complete asynchronously and
+start a later package-reload cause, but final whole-project `GraphJit` compilation
+is synchronous inside each `ProjectGraph` transaction.

@@ -35,6 +35,14 @@ Legacy lane nodes already support both compiled sample and compiled event data.
 As lane nodes are phased out, ordinary DSP nodes must preserve that capability
 rather than making `compiled` sample-specific.
 
+Realtime storage and compiled random-access storage are intentionally separate
+compiler problems. The sequential projection of an ordinary/compiled-capable
+port follows the bounded realtime history/latency/event-window model in
+[realtime_port_storage_planning.md](./realtime_port_storage_planning.md). A
+logical realtime connection does not imply a ring or any other buffer. Compiled
+sample/event access remains request-driven and arbitrary-access as specified in
+this document.
+
 ## 1. Meaning of a compiled port
 
 A compiled port is not a separate kind of node and does not imply a particular buffer/cache implementation.
@@ -135,6 +143,23 @@ The required semantics are:
 
 The planner may still batch and union event intervals globally, but it must keep
 event-range demand distinct from sampled scalar demand.
+
+### Realtime event production is bounded even when a port is compiled-capable
+
+The arbitrary intervals above apply to compiled `access_block()` queries. They
+do not permit sequential realtime code to emit events at arbitrary absolute
+times.
+
+During `tick_block()`, a realtime event output must only produce events inside a
+finite compiler-known time window determined by the current block plus the
+port's declared history/latency semantics. Realtime event declarations therefore
+need temporal properties sufficient for the compiler to derive that window, in
+the same conceptual model used for sample ports.
+
+The compatibility runtime should reject realtime event writes outside the legal
+window. The whole-project JIT can then specialize/eliminate those checks when
+validity is statically known. Compiled event queries remain random-access and do
+not inherit this finite realtime retention window.
 
 ---
 

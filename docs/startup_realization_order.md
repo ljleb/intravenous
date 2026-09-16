@@ -13,8 +13,10 @@ Startup must keep three states separate:
   declarations owned by `ProjectGraph`;
 - **configured project graph** — the root `ConfiguredGraph` that can currently
   be built from available definitions;
-- **active execution** — the executable generation currently owned by
-  `GraphExecutor`.
+- **compiled project graph** — the immutable `CompiledGraph` synchronously
+  produced by `GraphJit` from that configured generation;
+- **active execution** — the executable generation/current mutable storage owned
+  by `GraphExecutor`.
 
 Project load reconstructs desired state. It does not require every IV package to
 be compiled first, and it does not require audio execution to be active.
@@ -35,8 +37,8 @@ be compiled first, and it does not require audio execution to be active.
 9. A completed initial package-provider batch starts a **new** propagation:
    `PackageReload -> NodeDefinitions -> ProjectGraph`.
 10. `ProjectGraph` rebuilds the same desired state against the new immutable
-    definitions snapshot and submits a new candidate generation to
-    `GraphExecutor`.
+    definitions snapshot, synchronously compiles the resulting root graph through
+    `GraphJit`, and submits the compiled successor to `GraphExecutor`.
 
 ## Valid initialized state before package realization
 
@@ -77,12 +79,14 @@ Every top-level requested node and every nested `g.node(...)` lookup/configure
 operation uses that same snapshot. A concurrently arriving definition snapshot
 can only become input to a later root-build transaction.
 
-## Graph execution activation
+## Graph compilation and execution activation
 
-`GraphExecutor` may compile/optimize a submitted root graph asynchronously.
-Compilation completion does not mutate an active audio pass.
+Whole-project `GraphJit` compilation is synchronous inside the `ProjectGraph`
+rebuild transaction. It uses exactly the configured graph/provider generation
+produced by that transaction and returns one immutable `CompiledGraph` before
+`ProjectGraph` calls `GraphExecutor`.
 
-The active generation remains immutable for the duration of a complete pass.
-A completed successor can replace it only at a safe boundary after the current
-pass finishes. Newer graph revisions may supersede older pending compilation
-results.
+Receiving that compiled generation does not mutate an active audio pass. The
+active generation remains immutable for the duration of a complete pass, and a
+completed successor can replace it only at a safe boundary after the current
+pass finishes.

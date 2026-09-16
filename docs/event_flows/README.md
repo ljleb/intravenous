@@ -14,8 +14,10 @@ The procedures are:
 
 The diagrams describe **control flow**. Data may travel in either direction
 along an event/request edge. In particular, `ProjectGraph` may pass a mutable
-root builder to `NodeInstances`/`GraphConnections` and receive embedding maps or
-diagnostics back without creating reverse control-flow edges.
+root builder to `NodeInstances`/`GraphConnections`, receive embedding maps or
+diagnostics back, synchronously exchange a completed graph for a `CompiledGraph`
+with `GraphJit`, and finally offer that result to `GraphExecutor` without creating
+reverse control-flow edges.
 
 Future sources such as undo/redo, presentation-driven structural changes,
 project save collection, and UI-only presentation settings should be designed

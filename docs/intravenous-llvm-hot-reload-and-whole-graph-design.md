@@ -5,9 +5,13 @@
 > leaf/module node terminology, configured node-instance caching, project matcher
 > semantics, and event-tree procedures are now specified in
 > [project_graph_application_architecture.md](./project_graph_application_architecture.md).
+> Whole-project ORC ownership/synchronous compilation is specified in
+> [graph_jit_direction.md](./graph_jit_direction.md), and physical realtime
+> sample/event connection planning is specified in
+> [realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
 > Where older passages name `IvModuleReload`, `IvModuleDefinitions`, lane execution,
-> or a managed-realization/controller architecture, the newer design takes
-> precedence.
+> a managed-realization/controller architecture, an asynchronous project JIT, or
+> buffer-backed logical connections, the newer design takes precedence.
 
 _Status: consolidated architecture direction based on the current `feature/llvm-module-reload` branch and the subsequent design discussion. This is intentionally more concrete than a direction note, but it is not a line-by-line implementation plan. Items marked **decided** are intended constraints; items marked **provisional** are design choices that should be validated by implementation and profiling._
 
@@ -82,7 +86,7 @@ The preferred words are:
 - **lowering**: a compiler transformation from a richer graph representation to a more execution-specific one;
 - **region**: a scheduling unit when the whole graph must be processed with a particular execution quantum;
 - **execution plan**: the finalizer's derived schedule/state/storage description before or alongside LLVM generation;
-- **finalizer**: the build/compiler stage that has the complete graph and emits the finalized native artifact/kernel;
+- **finalizer**: the internal whole-project compiler stage owned by `GraphJit`; it has the complete configured root graph and emits the finalized native artifact/kernel;
 - **cache**: persisted reusable results whose invalidation is explicit;
 - **compiled port**: an ordinary DSP sample or event port with kind-appropriate
   arbitrary access, as specified by [compiled_dsp_nodes.md](./compiled_dsp_nodes.md);
@@ -1148,25 +1152,27 @@ This makes definitions immutable/shareable and prevents user project state from 
 
 ---
 
-## 13. Whole-project finalization
+## 13. Whole-project finalization (`GraphJit`)
 
-The finalizer becomes the first stage allowed to make decisions that depend on all active module instances and all project connections.
+`GraphJit` owns the internal finalizer/compiler stage. It is entered only after
+`ProjectGraph` has completed one root-build transaction: `NodeInstances` has
+embedded the complete requested instance batch into one root `GraphBuilder`,
+`GraphConnections` has resolved/applied every currently resolvable project
+connection, and the root builder has been finished into one immutable
+`ConfiguredGraph`.
 
-### 13.1 Finalizer inputs
+Whole-project compilation is synchronous for that transaction.
+
+### 13.1 `GraphJit` inputs
 
 Conceptually:
 
 ```text
-active module instances
-    -> cached ConfiguredGraphs
+one complete root ConfiguredGraph
 
-project connections
-
-node type registry
-    -> state/lifecycle metadata
-    -> LLVM implementation
-
-source-owned retained LLVM globals as required
+exact provider/code provenance retained by the configured node instances
+    -> primitive node LLVM implementations
+    -> source-owned retained LLVM globals as required
 
 kernel specialization:
     block size B
@@ -1174,49 +1180,61 @@ kernel specialization:
     target triple / CPU / features
 ```
 
-### 13.2 Do not physically merge builders first
+`GraphJit` must not query `NodeDefinitions` for a newer registry generation.
+The code/provenance compiled must be exactly the generation used to configure
+the root graph.
 
-Do not recreate one huge `BuilderSession` merely to call existing builder mutation functions.
+### 13.2 Root-builder composition is already complete
 
-Do not require physical concatenation into one giant `ConfiguredGraph` before lowering.
+The project-composition representation is the finished root `ConfiguredGraph`.
+`GraphJit` does not recreate one huge mutable `BuilderSession` and does not
+re-enter node-definition/configuration callbacks.
 
-The finalizer can keep each cached graph locally numbered and introduce temporary project-wide compiler IDs while resolving instances.
+Cached node instances are introduced into the root builder earlier by direct
+`ConfiguredGraph` embedding through the same low-level importer/remapper used by
+live child-builder embedding. Their local handles/scopes are translated during
+that root-build transaction.
 
-If existing `GraphBuilder::subgraph()`/embedder logic contains useful semantic rules, extract/reuse those rules. Do not make mutable builder state the project-composition model.
+By the time `GraphJit` runs, builder-local mutation is over.
 
-### 13.3 Registered iv modules are already resolved
+### 13.3 Module nodes are already configured
 
-When a registered node ID denotes an iv module, its child graph was executed
-and embedded during configuration.  Whole-project finalization therefore receives
-the completed invocation graph rather than a recursive registered-ID request.
+When a registered definition denotes a module node, its construction function
+has already run inside `NodeInstances` against the one immutable definition
+snapshot for the transaction. Nested `g.node(...)` requests have likewise been
+resolved/configured there.
 
-It composes the top-level project module instances and their project-owned
-connections, then lowers ordinary virtual/tiled/subgraph structure as needed.
+`GraphJit` therefore receives ordinary completed configured graph structure,
+not recursive registered-ID requests. Module identity may remain attached for
+state/provenance/debugging, but it is not an execution optimization boundary.
 
-Module identity may remain attached for state/provenance/debugging, but it must not become an execution optimization boundary.
+### 13.4 Project matcher resolution happens before `GraphJit`
 
-### 13.4 Resolve virtual nodes and direct members before flattening
+Stable project connection references are resolved by `GraphConnections` while
+the root builder still retains its hierarchy/embedding maps. Recursive
+`ProjectNodePortMatcher` navigation through virtual nodes, ordered direct
+members, tiled child selectors, nested subgraph scopes, ports, and optional port
+channels is therefore complete before finalization.
 
-Project connections are first resolved against the current iv-module instance's virtual-node structure.
+Dangling desired project connections remain owned by `ProjectGraph`; they do not
+become fabricated edges in the configured root graph.
 
-Only after all cross-module connections have been resolved is it valid to flatten tiling/virtual/subgraph implementation structure for execution.
+### 13.5 Complete producer/consumer knowledge drives implementation planning
 
-This ensures that project-owned connections can target aggregate/tiled/virtual ports without exposing their internal concrete representation.
-
-### 13.5 Complete producer/consumer knowledge first
-
-All local `ConfiguredGraph` connections and all resolved project connections are combined before connection implementation is chosen.
-
-At this point, and only at this point, the compiler knows:
+The root `ConfiguredGraph` contains the complete logical connection semantics for
+the configured project generation. At this point the compiler can derive:
 
 - every producer of each input;
 - every consumer of each output;
 - global fanout;
 - channel/layout conversions required across all uses;
-- cycles introduced across module boundaries;
+- cycles introduced across former module-instance boundaries;
+- history/latency/event-window requirements;
 - which values are observable by project outputs or side effects.
 
-These facts drive the execution model.
+These facts drive connection implementation/storage planning. A logical
+connection still does **not** imply a physical buffer. See
+[realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
 
 ---
 
@@ -1390,7 +1408,7 @@ branch on layout
 load sample
 ```
 
-This is what gives the finalizer freedom to implement a connection as SSA, scratch, history storage, a ring, or an external buffer.
+This is what gives `GraphJit` freedom to implement a connection as SSA, scratch, compact persistent carry, a ring, external storage, or no materialization at all.
 
 ### 16.3 Compiler-recognizable semantic port operations
 
@@ -1403,7 +1421,7 @@ Illustratively:
 call void @iv.sample.write(... logical port ..., %frame, %v)
 ```
 
-The whole-graph finalizer replaces/lowers those operations after graph wiring and storage choices are known, before final optimization.
+`GraphJit` replaces/lowers those operations after logical graph wiring and pure connection/storage planning are known, before final optimization.
 
 This gives cached node implementation LLVM a stable graph-independent port vocabulary.
 
@@ -1525,6 +1543,11 @@ The typed API exists specifically to give the compiler the stronger facts when t
 ---
 
 ## 18. Stream storage: history, latency, lifetime, and reuse
+
+> The normative current storage-planner contract, including realtime event time
+> windows and the required pure heuristic boundary, is
+> [realtime_port_storage_planning.md](./realtime_port_storage_planning.md). This
+> section provides supporting whole-graph compiler rationale.
 
 ### 18.1 Core principle
 
@@ -1976,46 +1999,39 @@ new registry generation.
 
 On failure, retain the previous valid live generation.
 
-### Stage 4 — project input assembly
+### Stage 4 — root project graph configuration
 
-Collect:
+`ProjectGraph` creates one fresh root `GraphBuilder`. `NodeInstances` embeds the
+complete requested project instance batch using exactly one immutable definitions
+snapshot. Cached node instances may be reused by value while each external
+instance id receives a distinct embedding/runtime placement.
 
-```text
-active project module instances
-cached ConfiguredGraphs
-project connections
-registered node type definitions
-```
+`GraphConnections` then resolves every currently desired
+`ProjectNodePortMatcher` against the complete embedding map and applies every
+resolvable cross-node connection. Dangling matchers remain desired project state
+and do not become edges in the root graph.
 
-No module has yet been flattened merely because another module uses it.
+Finish the root builder into one immutable root `ConfiguredGraph`.
 
-### Stage 5 — project connection and port resolution
+### Stage 5 — synchronous `GraphJit` input capture
 
-Resolve project connections through:
+Pass that complete root `ConfiguredGraph` plus the exact provider/code provenance
+used during configuration to `GraphJit`. Do not query the live definition
+registry again.
 
-```text
-module instance
-virtual node identity
-direct-member selection if any
-port/channel
-```
-
-Preserve dangling project connections if the stable identity is absent.
+No physical connection storage decision has been made merely by constructing the
+configured graph.
 
 ### Stage 6 — whole-project graph lowering
 
-Now flatten execution-only structure as appropriate:
+Flatten execution-only structure as appropriate while preserving stable
+identity/provenance separately for lifecycle/debugging/reconciliation. The root
+configured graph already contains the complete logical local + project
+connections, so full producer/consumer knowledge exists.
 
-- virtual/tiled/subgraph implementation structure;
-- current generated routing concepts;
+### Stage 7 — logical connection lowering and implementation requirements
 
-while preserving stable identities separately for lifecycle/debugging/reconciliation.
-
-Combine every configured and project connection so full producer/consumer knowledge exists.
-
-### Stage 7 — connection lowering
-
-Replace generic `ConnectionNode` execution with direct connection semantics:
+Replace generic compatibility `ConnectionNode` execution with direct connection semantics:
 
 ```text
 fanin
@@ -2025,7 +2041,7 @@ default values
 runtime/project inputs
 ```
 
-No physical buffer choice yet unless semantics force one.
+No physical buffer choice is implied by the logical connection. Derive correctness requirements first; physical implementation selection happens in the explicit storage-planning stage.
 
 ### Stage 8 — dependency/SCC/region analysis
 
@@ -2046,25 +2062,33 @@ Compute:
 - history requirements;
 - latency requirements;
 - persistent temporal carry `K`;
+- finite legal realtime event input/output windows from current block + declared
+  history/latency semantics;
 - TTL/quiescence behavior;
 - activity propagation;
 - cross-kernel-call lifetime.
 
-### Stage 10 — storage planning
+### Stage 10 — pure connection/storage planning
 
-Choose for every logical produced value/stream:
+First derive correctness requirements for each producer connection group from
+fanout, schedule, conversion, history/latency, feedback, event windows, and
+cross-pass lifetime. Then call a deterministic heuristic/cost-model function to
+choose among legal physical representations such as:
 
 ```text
-SSA
-scratch
-compact carry
+SSA/direct forwarding
+stack/pass-local storage
+reusable scratch
+compact carry + current scratch
 ring
 feedback storage
 external I/O
 explicit materialization
 ```
 
-Run liveness analysis and assign reusable scratch offsets.
+The requirements derivation and heuristic must be ordinary pure testable compiler
+functions, independent of ORC. After selection, run liveness analysis and assign
+reusable scratch offsets globally.
 
 ### Stage 11 — state/lifecycle planning
 
@@ -2110,13 +2134,18 @@ loop vectorization
 SLP vectorization
 ```
 
-### Stage 14 — native code emission and publication
+### Stage 14 — ORC materialization and executor handoff
 
-Emit the project kernel/native artifact for the selected target CPU/features.
+`GraphJit` materializes the project kernel in its project `LLJIT`, using
+project-generation-specific ORC resources, and returns one immutable
+`CompiledGraph` with its code-lifetime handle.
 
-Activate only after successful compilation and state migration preparation.
+`ProjectGraph` then immediately calls `GraphExecutor` with that result in the
+same propagation cause. `GraphExecutor` prepares mutable runtime storage/state
+migration and activates the successor only at a legal audio-pass boundary.
 
-Keep the previous generation active on failure.
+Keep the previous executable generation active if `GraphJit` fails; do not call
+`GraphExecutor` with a partial result.
 
 ---
 
@@ -2655,6 +2684,6 @@ them with the obsolete timeline execution model.
 
 The key architectural split is now short enough to state directly:
 
-> **IV packages compile definitions. `ConfiguredGraph`s cache iv-module configuration. The node-type registry owns primitive implementation code. Project connections address stable virtual-node/member ports. The finalizer is the first place all active graphs meet, and only there are scheduling, connection wiring, temporal storage, buffer reuse, TTL, and LLVM execution decisions made.**
+> **Packages provide versioned node definitions and retained implementation LLVM. `NodeInstances` caches configured node instances by definition generation + argument values. `ProjectGraph` composes one complete root `ConfiguredGraph`; `GraphConnections` resolves stable project port matchers before compilation. `GraphJit` then owns whole-project scheduling, temporal/connection storage planning, LLVM generation/optimization, and ORC materialization, while `GraphExecutor` owns mutable runtime storage and safe-boundary activation.**
 
 That is the foundation for both fast whole-project graph reload and the later unified project graph.

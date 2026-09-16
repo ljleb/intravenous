@@ -3,10 +3,14 @@
 _Status: unified-graph direction. The concrete application-module decomposition,
 node terminology, caching ownership, recursive project matcher model, and event
 procedures are now normative in
-[project_graph_application_architecture.md](./project_graph_application_architecture.md).
-Where older sections below use `iv module` as the general node abstraction or
-describe a separate managed-realization/controller layer, the newer document
-takes precedence._
+[project_graph_application_architecture.md](./project_graph_application_architecture.md),
+with whole-project compilation ownership in
+[graph_jit_direction.md](./graph_jit_direction.md) and realtime physical
+connection planning in
+[realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
+Where older sections below use `iv module` as the general node abstraction,
+describe a separate managed-realization/controller layer, or imply that logical
+connections require buffers, the newer documents take precedence._
 
 The immediate application-module cleanup that precedes the replacement executor
 is recorded in
@@ -51,8 +55,9 @@ remain configuration/project identities rather than execution partitions.
 `NodeInstances` owns recursive configuration and reusable configured instance
 caches. `ProjectGraph` owns durable project declarations and orchestrates the root
 builder. `GraphConnections` applies project-wide connections after all desired
-instances have been embedded. `GraphExecutor` owns whole-project executable
-generations.
+instances have been embedded. `GraphJit` synchronously compiles the completed
+root `ConfiguredGraph`; `GraphExecutor` owns mutable runtime storage, active/
+pending compiled generations, execution requests, and safe-boundary activation.
 
 The old proposal for a generic automatically-managed graph-fragment/controller
 layer is not part of the current core design. Presentations and optional device
@@ -70,10 +75,17 @@ node implementations, cached independently
 project graph topology
                 |
                 v
-      generated LLVM graph-composition layer
+      completed root ConfiguredGraph
                 |
                 v
-        executable project graph kernel
+             GraphJit
+      generated/optimized LLVM
+                |
+                v
+          CompiledGraph
+                |
+                v
+          GraphExecutor
 ```
 
 The old lane/DSP division was justified principally by the cost of changing
@@ -151,7 +163,7 @@ means changing the module definition or reifying the realization.
 The criterion for a generated node to receive a user-managed project
 connection is stable identity.
 
-- A generated node with stable identity is an addressable project-edge endpoint.
+- A generated node with stable identity may be matched by persistent project connection state.
 - A generated node without stable identity is generated-only; it cannot receive
   a persistent user-managed connection.
 - This is not a separate sealing or per-port authorization policy. Normal graph
@@ -172,7 +184,7 @@ source-configured virtual node has stable identity. A virtual node may represent
 one or several concrete members, and the ordering of concrete members under a
 given virtual node is itself stable identity.
 
-Thus a C++ attachment endpoint can be modeled as:
+Thus a C++ persistent port attachment/matcher can be modeled as:
 
 ```text
 iv-module instance
@@ -297,12 +309,12 @@ adapters:
   attached to configured graph structure rather than to lane identity.
 
 Therefore a project connection can address an iv-module instance and one of its
-virtual/public endpoints directly. `GraphInputLanes` does not need a successor
+virtual/public ports directly. `GraphInputLanes` does not need a successor
 that manufactures one proxy lane per exposed port. The replacement should store
-the connection/control state against the stable project endpoint and adapt it to
+the connection/control state against the stable project node/port matcher and adapt it to
 the compatibility executor only for as long as that executor remains.
 
-Public module ports are boundary endpoints, not implicit project nodes. A
+Public module ports are boundary ports, not implicit project nodes. A
 specialized UI may present them as controls or lane-like rows without requiring
 extra graph nodes merely for presentation.
 
@@ -336,6 +348,20 @@ state and is distinct from any future framework cache. Old `TimelineExecution`
 compiled caches, invalidation spans, explicit recording-lane requirements, and
 prepared-resource input APIs are therefore migration history, not replacement
 architecture.
+
+Realtime sample/event connections follow the same storage-independent principle.
+`ConfiguredGraph` records logical connection semantics only. The whole-project
+compiler derives history/latency/event-window correctness requirements, chooses
+physical connection implementations with a pure testable planner, performs
+transient liveness/scratch reuse, and only then emits LLVM. Realtime event
+outputs must have finite compiler-known production windows; compiled event access
+remains arbitrary-range. See
+[realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
+
+`GraphJit` owns that synchronous whole-project compiler/ORC domain. It compiles
+one coherent configured/provider generation and returns an immutable
+`CompiledGraph`; `GraphExecutor` owns live `NodeStorage` and activates successors
+only at legal audio-pass boundaries.
 
 The executable kernel is replaceable. Logical node state survives when a
 stable node correspondence and compatible state layout survive:
@@ -377,7 +403,7 @@ implementation are:
    subgraph, and may provide a custom UI. The exact API remains follow-up design
    work; lane deletion should not force that API to imitate lane types.
 3. **Canonical project ownership.** Provide enough project-owned identity,
-   connections, dangling-endpoint state, hierarchy/metadata, controls, and
+   connections, dangling matcher state, hierarchy/metadata, controls, and
    persistence that deleting `Timeline` does not delete the project's topology or
    user state. C++ iv-module instances can continue to use their retained
    `ConfiguredGraph` realization and stable virtual/member/port identities.
@@ -410,7 +436,7 @@ Preserve or reinterpret:
 - hierarchy;
 - tags, metadata, and query language;
 - UI-created graph structure;
-- persistent project connections and dangling-endpoint behavior;
+- persistent project connections and dangling matcher behavior;
 - source navigation and live-edit controls;
 - transport semantics that remain part of the product;
 - state migration; and

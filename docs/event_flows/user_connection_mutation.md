@@ -12,13 +12,15 @@ flowchart TD
     PG["ProjectGraph"]
     NI["NodeInstances"]
     GC["GraphConnections"]
+    GJ["GraphJit"]
     GE["GraphExecutor"]
 
     SRC --> RPC
     RPC -->|"connection mutation request ⇄ acceptance / diagnostics"| PG
     PG -->|"1. embed complete current instance set into fresh root builder"| NI
     PG -->|"2. resolve/apply complete ProjectNodePortMatcher connection batch"| GC
-    PG -->|"3. completed ConfiguredGraph generation"| GE
+    PG -->|"3. completed ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
+    PG -->|"4. compiled successor generation"| GE
 ```
 
 ## Why `NodeInstances` still runs
@@ -32,7 +34,9 @@ instance id and cached local handle to parent-builder handles. `GraphConnections
 needs this translation before it can resolve recursive matchers.
 
 There is intentionally no separate incremental connection-only root graph path
-for the initial implementation.
+for the initial implementation. After connection application, `ProjectGraph`
+finishes the root graph, synchronously recompiles it through `GraphJit`, and then
+offers the resulting `CompiledGraph` to `GraphExecutor`.
 
 ## Matcher semantics
 

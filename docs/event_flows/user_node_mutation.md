@@ -12,17 +12,19 @@ flowchart TD
     PG["ProjectGraph"]
     NI["NodeInstances"]
     GC["GraphConnections"]
+    GJ["GraphJit"]
     GE["GraphExecutor"]
 
     SRC --> RPC
     RPC -->|"node mutation request ⇄ acceptance / diagnostics"| PG
     PG -->|"1. complete requested instance batch + one definitions snapshot; root builder ⇄ embedding map"| NI
     PG -->|"2. complete requested connection batch; root builder + embedding map ⇄ diagnostics"| GC
-    PG -->|"3. completed ConfiguredGraph generation"| GE
+    PG -->|"3. completed ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
+    PG -->|"4. compiled successor generation"| GE
 ```
 
-`NodeInstances`, `GraphConnections`, and `GraphExecutor` are sibling children of
-`ProjectGraph`. The labels `1`, `2`, and `3` specify the order in which
+`NodeInstances`, `GraphConnections`, `GraphJit`, and `GraphExecutor` are sibling
+children of `ProjectGraph`. The labels `1` through `4` specify the order in which
 `ProjectGraph` invokes them inside one handler.
 
 ## Data movement
@@ -49,8 +51,9 @@ Only after that invocation returns does `ProjectGraph` invoke
 `ProjectNodePortMatcher`s against the complete embedding map and applies every
 resolvable cross-node connection to the same root builder.
 
-`ProjectGraph` then finishes the root builder and submits one completed
-`ConfiguredGraph` generation to `GraphExecutor`.
+`ProjectGraph` then finishes the root builder, synchronously asks `GraphJit` to
+compile that exact `ConfiguredGraph`/definition generation into one immutable
+`CompiledGraph`, and finally offers that compiled successor to `GraphExecutor`.
 
 ## Failure semantics
 
@@ -61,9 +64,10 @@ definition or a C++ configuration expression that fails to compile.
 The mutation should therefore produce diagnostics/unresolved state rather than
 silently deleting the requested node or its dangling project connections.
 
-The JSON-RPC response may acknowledge acceptance of desired state without
-waiting for LLVM compilation or realtime activation of the resulting successor
-generation.
+The root-build transaction, including `GraphJit`, is synchronous with the
+mutation handler. A JSON-RPC result may therefore include graph-JIT diagnostics.
+It still does not wait for realtime activation of the compiled successor, which
+occurs only at a legal `GraphExecutor` pass boundary.
 
 ## Derived read models and notifications
 

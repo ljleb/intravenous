@@ -2,7 +2,7 @@
 
 This procedure starts when package compilation/reload work has completed and a
 new provider batch is ready to be applied. Raw filesystem notifications and
-asynchronous compilation scheduling may occur earlier and are not part of this
+asynchronous package source/build scheduling may occur earlier and are not part of this
 synchronous propagation.
 
 ## Propagation tree
@@ -15,6 +15,7 @@ flowchart TD
     PG["ProjectGraph"]
     NI["NodeInstances"]
     GC["GraphConnections"]
+    GJ["GraphJit"]
     GE["GraphExecutor"]
 
     SRC --> PR
@@ -22,7 +23,8 @@ flowchart TD
     ND -->|"one immutable versioned NodeDefinitionsSnapshot"| PG
     PG -->|"1. reconfigure complete requested node batch against exactly this snapshot"| NI
     PG -->|"2. re-resolve complete connection batch against new embeddings"| GC
-    PG -->|"3. successor ConfiguredGraph generation"| GE
+    PG -->|"3. successor ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
+    PG -->|"4. compiled successor generation"| GE
 ```
 
 ## Data movement
@@ -45,7 +47,9 @@ No nested configuration call re-enters `NodeDefinitions`.
 been embedded. Connections whose path no longer resolves become dangling; they
 are retained so that the same stable path can resolve again in a later reload.
 
-The resulting complete graph generation is submitted once to `GraphExecutor`.
+The resulting complete `ConfiguredGraph` is synchronously compiled exactly once
+by `GraphJit` using the same provider/code generation, then the resulting
+`CompiledGraph` is submitted once to `GraphExecutor`.
 
 ## Async source separation
 

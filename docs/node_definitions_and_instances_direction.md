@@ -196,3 +196,23 @@ transaction and invokes `NodeInstances` once. `NodeInstances` can preserve cache
 entries whose provider/version dependencies are unchanged and rebuild only
 invalidated entries internally, but downstream modules observe one completed
 batch result.
+
+## Exact provider provenance survives into `GraphJit`
+
+A cached `NodeInstance` must pin not only the configuration callback/data needed
+to describe its frozen `ConfiguredGraph`, but also the exact primitive
+implementation LLVM/provider revisions required to compile that configured graph
+later.
+
+When `ProjectGraph` embeds cached instances into the root graph, the resulting
+configured generation must retain enough provenance for `GraphJit` to compile
+exactly the same definition world. `GraphJit` must not query `NodeDefinitions`
+for a newer snapshot after configuration has completed.
+
+Initially `ProjectGraph` may pass the same immutable `NodeDefinitionsSnapshot`
+alongside the root `ConfiguredGraph` if that is the simplest lifetime-safe
+interface. The preferred long-term direction is for configured instances/root
+graph provenance to pin only the exact provider LLVM/module references they
+actually require.
+
+See [graph_jit_direction.md](./graph_jit_direction.md).

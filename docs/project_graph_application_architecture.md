@@ -13,6 +13,8 @@ Related documents:
 - [node_definitions_and_instances_direction.md](./node_definitions_and_instances_direction.md)
 - [graph_builder_embedding_and_matchers.md](./graph_builder_embedding_and_matchers.md)
 - [system_audio_devices_direction.md](./system_audio_devices_direction.md)
+- [graph_jit_direction.md](./graph_jit_direction.md)
+- [realtime_port_storage_planning.md](./realtime_port_storage_planning.md)
 - [startup_realization_order.md](./startup_realization_order.md)
 - [unified_graph_direction.md](./unified_graph_direction.md)
 - [event_flows/README.md](./event_flows/README.md)
@@ -60,7 +62,8 @@ The core project-graph modules are:
 | `ProjectGraph` | own durable user graph intent and orchestrate one complete root-graph configuration transaction |
 | `NodeInstances` | instantiate one requested batch against exactly one definitions snapshot; own reusable configured node-instance caches |
 | `GraphConnections` | resolve project-wide port matchers against one complete root embedding and apply cross-node connections |
-| `GraphExecutor` | compile/optimize completed project graphs, own active/pending executable generations, and activate only at safe pass boundaries |
+| `GraphJit` | synchronously lower, optimize, and ORC-JIT one complete root `ConfiguredGraph` into an immutable `CompiledGraph` generation |
+| `GraphExecutor` | own active/pending compiled generations, mutable node storage, execution requests, state migration, and safe-boundary activation |
 | `NodeSourceIntrospection` | derived read model for source/logical-node/tooling queries; provisional generalized name |
 | `SystemAudioDevices` | own system-audio enumeration, logical device bindings, physical-device lifetime, buffering, and synchronization |
 | `ProjectPersistence` | load/save normalized persistent state without becoming the canonical graph owner |
@@ -96,10 +99,12 @@ Its root-build procedure is always batched:
    been considered, passing the same root builder and the complete embedding
    map;
 4. finish the root builder into one `ConfiguredGraph`;
-5. invoke `GraphExecutor` exactly once with the completed candidate generation.
+5. invoke `GraphJit` exactly once to synchronously compile that graph into one
+   immutable `CompiledGraph`;
+6. invoke `GraphExecutor` exactly once with that compiled successor generation.
 
-The three downstream modules are siblings in the propagation tree. Their
-numeric order above is execution order inside one `ProjectGraph` handler, not a
+The four downstream modules are siblings in the propagation tree. Their numeric
+order above is execution order inside one `ProjectGraph` handler, not a
 parent/child relationship between those modules.
 
 A project mutation can be accepted even if some node definitions are currently
@@ -134,8 +139,8 @@ A -> D -> B
 `D` is then entered once and invokes `B` and `C` once each.
 
 This is why `ProjectGraph` is the parent/orchestrator of `NodeInstances`,
-`GraphConnections`, and `GraphExecutor` for every execution-affecting graph
-change.
+`GraphConnections`, `GraphJit`, and `GraphExecutor` for every execution-affecting
+graph change.
 
 Batches are the normal API shape. One logical graph change must not emit one
 application event per node or per connection.
@@ -367,27 +372,62 @@ Tiled nodes must preserve child-node structure in `GraphBuilder` and
 `ConfiguredGraph`. A tile child selector identifies a child node. It is not the
 same as selecting channel N of a matched sample port.
 
+## `GraphJit`
+
+`GraphJit` is the whole-project compilation app module. `ProjectGraph` gives it
+only a complete root `ConfiguredGraph` plus the exact provider/code provenance
+used to construct that graph. `GraphJit` synchronously returns one immutable
+`CompiledGraph`.
+
+`GraphJit` owns the project-compilation ORC domain: a long-lived project
+`LLJIT`, generation-specific `JITDylib`/resource-tracker state, graph-specific
+LLVM generation/optimization, and the code-lifetime handles returned with each
+compiled generation. This ORC state is separate from the package/configuration
+JIT currently used to execute definition/configuration callbacks. The two JITs
+run at different compiler stages and have different lifetime keys even though
+they may share low-level LLVM helper code.
+
+Compilation is intentionally synchronous inside the `ProjectGraph` root-build
+transaction. The compiler is expected to perform graph-specific scheduling,
+connection, temporal, storage, and lifecycle analysis before generating LLVM so
+the final LLVM program is already small/specialized enough for a fast final
+optimization/codegen pass. Do not introduce an asynchronous graph-JIT generation
+boundary merely to hide avoidable compiler work.
+
+Logical sample/event connections do not imply buffers. Connection implementation
+selection is an explicit pure compiler-planning phase before LLVM generation;
+see [realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
+
+See [graph_jit_direction.md](./graph_jit_direction.md) for ORC ownership,
+`CompiledGraph` lifetime, and the two-JIT compiler model.
+
 ## `GraphExecutor`
 
-`GraphExecutor` owns the executable realization of the completed project graph.
-For now it may contain its own asynchronous whole-project compilation and
-optimization worker rather than introducing another app module.
-
-`ProjectGraph` submits only complete `ConfiguredGraph` generations. Expensive
-lowering/LLVM compilation occurs away from the realtime pass.
+`GraphExecutor` owns the mutable runtime realization of an already compiled
+project generation. It does not own ORC compilation.
 
 `GraphExecutor` keeps at least:
 
-- one immutable active generation;
-- optionally one newest pending prepared generation;
-- the state correspondence/migration information needed to activate a successor.
+- one immutable active `CompiledGraph` generation;
+- optionally one newest pending compiled generation;
+- live `NodeStorage` and pass-scoped execution state/resources;
+- state correspondence/migration information needed to activate a successor;
+- sequential execution and compiled sample/event request handling against the
+  active generation.
 
-The active executable graph is immutable for an entire audio pass. Replacement
-or modification occurs only after a complete pass has finished. Newer desired
-revisions may supersede older pending compile results.
+Receiving a new `CompiledGraph` does not mutate an in-progress audio pass. Work
+that is safe before the boundary may be prepared immediately, but replacement
+or modification of active execution occurs only after a complete pass has
+finished.
 
 The mechanism intentionally preserves the useful part of the deleted
 `TasksRunner` update model without preserving task-graph or lane semantics.
+
+If synchronous `GraphJit` compilation fails, `ProjectGraph` retains the desired
+revision and diagnostics but does not invoke `GraphExecutor` with a partial
+successor. The previous active executable generation may continue running.
+Desired project revision and active executable revision are therefore distinct
+state even though graph compilation itself is synchronous.
 
 ## System audio devices
 
@@ -449,7 +489,8 @@ Do not persist:
 - embedding maps;
 - builder-local handles;
 - resolved concrete connection ids;
-- `GraphExecutor` kernels or execution caches;
+- `GraphJit` compiled generations/ORC resources;
+- `GraphExecutor` runtime storage or execution caches;
 - volatile physical audio-device objects.
 
 Project replay may produce unresolved node instances/connections until package
@@ -496,9 +537,11 @@ The most useful order is:
    transaction;
 6. introduce `GraphConnections` and recursive `ProjectNodePortMatcher`
    resolution;
-7. introduce `GraphExecutor` successor compilation/activation at pass
-   boundaries;
-8. integrate stable logical `SystemAudioDevices` bindings with ordinary system
-   audio leaf node definitions;
-9. add presentation-specific and automatic-device convenience services only
-   after the core graph path is stable.
+7. introduce pure connection/history/latency/event-window storage planning;
+8. introduce `GraphJit` with synchronous whole-project LLVM/ORC compilation;
+9. introduce `GraphExecutor` ownership of runtime storage, execution requests,
+   state migration, and safe-boundary activation;
+10. integrate stable logical `SystemAudioDevices` bindings with ordinary system
+    audio leaf node definitions;
+11. add presentation-specific and automatic-device convenience services only
+    after the core graph path is stable.
