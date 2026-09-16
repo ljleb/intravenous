@@ -93,6 +93,7 @@ PackageJitBatchResult PackageJit::build(
             PackageRevision revision{
                 .package_id = declaration.package_id,
                 .package_root = declaration.package_root,
+                .compiler_artifact = std::move(loaded_package.compiler_artifact),
                 .package_code = std::move(loaded_package.package_code),
                 .provider_definitions = std::move(loaded_package.provider_definitions),
                 .config_pointer_fields = std::move(loaded_package.config_pointer_fields),

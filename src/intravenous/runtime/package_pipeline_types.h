@@ -2,6 +2,7 @@
 
 #include <intravenous/runtime/node_definition_types.h>
 #include <intravenous/module/builder_session.h>
+#include <intravenous/module/package_compiler_artifact.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -40,6 +41,10 @@ struct PackageRevision {
     std::string package_id{};
     std::filesystem::path package_root{};
     std::uint64_t revision = 0;
+    // Exact finalized O0 LLVM and native link dependencies for this accepted
+    // package generation. Whole-project compilation consumes these directly
+    // rather than reaching back into PackageJit/ModuleLoader state.
+    PackageCompilerArtifact compiler_artifact{};
     // Pins this package JIT generation, including retained LLVM/code/data.
     ModuleRef package_code{};
     // Immutable configuration tables copied from the accepted package code.

@@ -53,6 +53,11 @@ void package_jit_batch_good(iv::GraphBuilder& g)
     EXPECT_EQ(first_revision.package_id, good.package_id);
     EXPECT_EQ(first_revision.package_root, good.package_root);
     EXPECT_EQ(first_revision.revision, 1u);
+    EXPECT_TRUE(std::filesystem::is_regular_file(
+        first_revision.compiler_artifact.bitcode_path));
+    EXPECT_EQ(
+        first_revision.compiler_artifact.bitcode_path.extension(),
+        ".bc");
     EXPECT_TRUE(static_cast<bool>(first_revision.package_code));
     ASSERT_EQ(first_revision.module_definitions.size(), 1u);
     EXPECT_EQ(
@@ -72,6 +77,9 @@ void package_jit_batch_good(iv::GraphBuilder& g)
     EXPECT_TRUE(second_request.result.failed.empty());
     EXPECT_EQ(second_request.result.revisions.front().package_id, good.package_id);
     EXPECT_EQ(second_request.result.revisions.front().revision, 2u);
+    EXPECT_EQ(
+        second_request.result.revisions.front().compiler_artifact.bitcode_path,
+        first_revision.compiler_artifact.bitcode_path);
     EXPECT_TRUE(static_cast<bool>(second_request.result.revisions.front().package_code));
 }
 

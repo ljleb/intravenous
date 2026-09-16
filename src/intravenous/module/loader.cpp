@@ -1344,6 +1344,10 @@ public:
             .definitions = {},
             .node_types = std::move(loaded_node_types),
             .dependencies = std::move(dependencies),
+            .compiler_artifact = {
+                .bitcode_path = package->bitcode_path,
+                .dynamic_libraries = package->dynamic_libraries,
+            },
             .provider_definitions = package->definitions,
             .config_pointer_fields = package->config_pointer_fields,
             .retained_globals = package->retained_globals,

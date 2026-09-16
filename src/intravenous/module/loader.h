@@ -4,6 +4,7 @@
 #include <intravenous/graph/build_types.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/dependency.h>
+#include <intravenous/module/package_compiler_artifact.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/node/compiler_record.h>
@@ -89,6 +90,10 @@ namespace iv {
             std::vector<LoadedDefinition> definitions;
             std::vector<LoadedNodeType> node_types;
             std::vector<ModuleDependency> dependencies;
+            // Exact finalized package compiler inputs. These are kept separate
+            // from package_code so whole-project compilation does not need to
+            // reach through the loader's opaque ORC ownership object.
+            PackageCompilerArtifact compiler_artifact{};
             // Complete package-side configuration tables used to create a stable
             // BuilderSession later from an immutable NodeDefinitions snapshot.
             std::vector<details::PackageDefinition> provider_definitions{};
