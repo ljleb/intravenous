@@ -14,23 +14,14 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace iv {
-class ProjectAckBuilder;
 class ProjectPersistenceBuilder;
-class ProjectStringBuilder;
-class SocketRpcAckResponseBuilder;
-class SocketRpcCreateIvModuleInstanceResultBuilder;
 class SocketRpcIvModuleInstancesResultBuilder;
 struct NodeDefinitionsSnapshotChanged;
-struct ProjectCreateIvModuleInstanceRequest;
-struct ProjectDeleteIvModuleInstanceRequest;
-struct ProjectUpdateIvModuleInstancesRequest;
-struct CreateIvModuleInstanceRequest;
-struct DeleteIvModuleInstanceRequest;
 struct GetIvModuleInstancesRequest;
-struct UpdateIvModuleInstancesRequest;
 
 struct IvModuleRequiredDefinition {
     std::string definition_id{};
@@ -109,10 +100,49 @@ struct NodeInstancesBatchResult {
     std::vector<NodeInstanceDiagnostic> diagnostics{};
 };
 
+struct NodeInstanceCreateMutation {
+    std::optional<std::string> instance_id{};
+    std::string definition_id{};
+    std::optional<std::filesystem::path> package_root{};
+    std::optional<std::string> display_name{};
+};
+
+struct NodeInstanceDeleteMutation {
+    std::string instance_id{};
+};
+
+struct NodeInstanceDisplayNameUpdate {
+    std::string instance_id{};
+    std::optional<std::string> display_name{};
+};
+
+struct NodeInstanceUpdateMutation {
+    std::vector<NodeInstanceDisplayNameUpdate> updates{};
+};
+
+using NodeInstancesMutation = std::variant<
+    std::monostate,
+    NodeInstanceCreateMutation,
+    NodeInstanceDeleteMutation,
+    NodeInstanceUpdateMutation>;
+
+// Synchronous ProjectGraph -> NodeInstances transaction request. ProjectGraph
+// supplies one pinned definition world and one fresh root builder. NodeInstances
+// applies at most one logical mutation, realizes its complete desired set once,
+// and returns placements/diagnostics through this same control-flow edge.
+struct NodeInstancesProjectGraphRequest {
+    std::shared_ptr<NodeDefinitionsSnapshot const> snapshot{};
+    GraphBuilder* root_builder = nullptr;
+    NodeInstancesMutation mutation{};
+    NodeInstancesBatchResult result{};
+    std::vector<std::string> created_instance_ids{};
+    bool handled = false;
+};
+
 // Canonical desired-instance owner plus reusable typed configured-graph cache.
-// Legacy IV-module RPC/persistence handlers remain here until ProjectGraph owns
-// the generalized command surface, but definition lookup/configuration is now
-// snapshot based and supports both leaf and module definitions.
+// ProjectGraph owns the write-side transaction surface and invokes this module
+// synchronously with one pinned definition snapshot and one fresh root builder.
+// The remaining IV-module handlers are read/persistence projection surfaces.
 class NodeInstances {
 public:
     struct Update {
@@ -183,25 +213,8 @@ public:
 
     void handle_node_definitions_snapshot_changed(
         NodeDefinitionsSnapshotChanged const& change);
-    void handle_project_create_iv_module_instance(
-        ProjectCreateIvModuleInstanceRequest const& request,
-        ProjectStringBuilder& builder);
-    void handle_project_delete_iv_module_instance(
-        ProjectDeleteIvModuleInstanceRequest const& request,
-        ProjectAckBuilder& builder);
-    void handle_project_update_iv_module_instances(
-        ProjectUpdateIvModuleInstancesRequest const& request,
-        ProjectAckBuilder& builder);
+    void handle_project_graph_transaction(NodeInstancesProjectGraphRequest& request);
     void handle_project_persistence_collect_state(ProjectPersistenceBuilder& builder) const;
-    void handle_socket_rpc_create_iv_module_instance(
-        CreateIvModuleInstanceRequest const& request,
-        SocketRpcCreateIvModuleInstanceResultBuilder& builder);
-    void handle_socket_rpc_delete_iv_module_instance(
-        DeleteIvModuleInstanceRequest const& request,
-        SocketRpcAckResponseBuilder& builder);
-    void handle_socket_rpc_update_iv_module_instances(
-        UpdateIvModuleInstancesRequest const& request,
-        SocketRpcAckResponseBuilder& builder);
     void handle_socket_rpc_get_iv_module_instances(
         GetIvModuleInstancesRequest const& request,
         SocketRpcIvModuleInstancesResultBuilder& builder) const;

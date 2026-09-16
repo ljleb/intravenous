@@ -5,6 +5,9 @@
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/project_persistence_events.h>
 #include <intravenous/runtime/project_persistence_node_instances_bridge.h>
+#include <intravenous/runtime/project_persistence_project_graph_bridge.h>
+#include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
 #include <gtest/gtest.h>
@@ -173,7 +176,12 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
 
     iv::ProjectPersistence persistence(workspace, startup);
     iv::NodeInstances instances;
+    iv::ProjectGraph project_graph;
     ProjectNotificationWitness witness;
+    auto project_graph_scope =
+        iv::project_persistence_project_graph_bridge::bind(persistence, project_graph);
+    auto project_graph_instances_scope =
+        iv::project_graph_node_instances_bridge::bind(project_graph, instances);
     auto instances_scope =
         iv::project_persistence_node_instances_bridge::bind(persistence, instances);
     auto witness_scope = project_notification_witness_bridge::bind(persistence, witness);

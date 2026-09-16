@@ -1,7 +1,9 @@
 #include "../module_test_utils.h"
 
 #include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_definitions_node_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_project_graph_bridge.h>
+#include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
@@ -85,10 +87,13 @@ TEST(InstanceDefinitionBridges, InstanceCreatedAfterDefinitionPublicationRealize
 
     iv::NodeInstances instances;
     iv::NodeDefinitions definitions;
-    auto bridge_scope =
-        iv::node_definitions_node_instances_bridge::bind(
-            definitions,
-            instances);
+    iv::ProjectGraph project_graph;
+    auto definitions_project_graph_scope =
+        iv::node_definitions_project_graph_bridge::bind(
+            definitions, project_graph);
+    auto project_graph_instances_scope =
+        iv::project_graph_node_instances_bridge::bind(
+            project_graph, instances);
 
     definitions.seed_loaded_definition(
         make_loaded_definition(package_root, std::string(module_id)));

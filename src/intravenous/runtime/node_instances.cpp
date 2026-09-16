@@ -8,15 +8,16 @@
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/package_pipeline_types.h>
 #include <intravenous/runtime/project_persistence_builder.h>
-#include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/uuid.h>
 
 #include <algorithm>
+#include <concepts>
 #include <new>
 #include <ranges>
 #include <stdexcept>
 #include <system_error>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 
@@ -402,11 +403,15 @@ void NodeInstances::update_instances(std::vector<Update> updates)
     bool list_changed = false;
     {
         std::scoped_lock lock(mutex_);
+        // Validate the complete mutation batch before changing any desired
+        // state. ProjectGraph treats this call as one logical transaction.
         for (auto const& update : updates) {
-            auto desired = desired_instances_by_id_.find(update.instance_id);
-            if (desired == desired_instances_by_id_.end()) {
+            if (!desired_instances_by_id_.contains(update.instance_id)) {
                 throw std::runtime_error("unknown node instance id: " + update.instance_id);
             }
+        }
+        for (auto const& update : updates) {
+            auto desired = desired_instances_by_id_.find(update.instance_id);
             if (!update.display_name.has_value()) continue;
             auto next = *update.display_name;
             if (next.empty()) next = desired->second.definition_id;
@@ -758,121 +763,91 @@ void NodeInstances::handle_node_definitions_snapshot_changed(
     publish_instance_changes(std::move(diff), list_changed);
 }
 
-void NodeInstances::handle_project_create_iv_module_instance(
-    ProjectCreateIvModuleInstanceRequest const& request,
-    ProjectStringBuilder& builder)
+void NodeInstances::handle_project_graph_transaction(
+    NodeInstancesProjectGraphRequest& request)
 {
-    std::optional<std::filesystem::path> package_root;
+    if (request.handled) {
+        throw std::logic_error("NodeInstances ProjectGraph request was handled more than once");
+    }
+    request.handled = true;
+    if (!request.snapshot) {
+        throw std::invalid_argument("ProjectGraph transaction requires a definitions snapshot");
+    }
+    if (!request.root_builder) {
+        throw std::invalid_argument("ProjectGraph transaction requires a root GraphBuilder");
+    }
+
+    bool install_snapshot = false;
     {
         std::scoped_lock lock(mutex_);
-        if (definitions_snapshot_) {
-            if (auto definition = definitions_snapshot_->by_id.find(request.module_id);
-                definition != definitions_snapshot_->by_id.end()) {
-                package_root = definition_package_root(definition->second);
+        install_snapshot = definitions_snapshot_.get() != request.snapshot.get();
+    }
+    if (install_snapshot) {
+        handle_node_definitions_snapshot_changed(
+            NodeDefinitionsSnapshotChanged{.snapshot = request.snapshot});
+    }
+
+    std::visit(
+        [&](auto const& mutation) {
+            using Mutation = std::remove_cvref_t<decltype(mutation)>;
+            if constexpr (std::same_as<Mutation, std::monostate>) {
+                return;
+            } else if constexpr (std::same_as<Mutation, NodeInstanceCreateMutation>) {
+                std::optional<std::filesystem::path> package_root;
+                {
+                    std::scoped_lock lock(mutex_);
+                    if (auto definition = definitions_snapshot_->by_id.find(mutation.definition_id);
+                        definition != definitions_snapshot_->by_id.end()) {
+                        package_root = definition_package_root(definition->second);
+                    }
+                }
+                if (!package_root.has_value()) package_root = mutation.package_root;
+                if (!package_root.has_value()) {
+                    throw std::runtime_error(
+                        "unknown loaded node definition: " + mutation.definition_id);
+                }
+                request.created_instance_ids.push_back(create_instance(
+                    mutation.definition_id,
+                    *package_root,
+                    mutation.instance_id,
+                    mutation.display_name));
+            } else if constexpr (std::same_as<Mutation, NodeInstanceDeleteMutation>) {
+                remove_instance(mutation.instance_id);
+            } else if constexpr (std::same_as<Mutation, NodeInstanceUpdateMutation>) {
+                std::vector<Update> updates;
+                updates.reserve(mutation.updates.size());
+                for (auto const& update : mutation.updates) {
+                    updates.push_back(Update{
+                        .instance_id = update.instance_id,
+                        .display_name = update.display_name,
+                    });
+                }
+                update_instances(std::move(updates));
             }
+        },
+        request.mutation);
+
+    std::vector<NodeInstanceConfigurationRequest> configuration_requests;
+    {
+        std::scoped_lock lock(mutex_);
+        configuration_requests.reserve(desired_instances_by_id_.size());
+        for (auto const& [instance_id, desired] : desired_instances_by_id_) {
+            configuration_requests.push_back(NodeInstanceConfigurationRequest{
+                .instance_id = instance_id,
+                .definition_id = desired.definition_id,
+            });
         }
     }
-    if (!package_root.has_value()) package_root = request.package_root;
-    if (!package_root.has_value()) {
-        throw std::runtime_error("unknown loaded node definition: " + request.module_id);
-    }
-
-    builder.succeed(create_instance(
-        request.module_id,
-        *package_root,
-        request.instance_id,
-        request.display_name));
-    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
-}
-
-void NodeInstances::handle_project_delete_iv_module_instance(
-    ProjectDeleteIvModuleInstanceRequest const& request,
-    ProjectAckBuilder& builder)
-{
-    remove_instance(request.instance_id);
-    builder.succeed();
-    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
-}
-
-void NodeInstances::handle_project_update_iv_module_instances(
-    ProjectUpdateIvModuleInstancesRequest const& request,
-    ProjectAckBuilder& builder)
-{
-    std::vector<Update> updates;
-    updates.reserve(request.updates.size());
-    for (auto const& update : request.updates) {
-        updates.push_back(Update{
-            .instance_id = update.instance_id,
-            .display_name = update.display_name,
-        });
-    }
-    update_instances(std::move(updates));
-    builder.succeed();
-    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+    std::ranges::sort(
+        configuration_requests, {}, &NodeInstanceConfigurationRequest::instance_id);
+    request.result = configure_and_embed(
+        request.snapshot, *request.root_builder, configuration_requests);
 }
 
 void NodeInstances::handle_project_persistence_collect_state(
     ProjectPersistenceBuilder& builder) const
 {
     builder.add_iv_module_instances(list_instances());
-}
-
-void NodeInstances::handle_socket_rpc_create_iv_module_instance(
-    CreateIvModuleInstanceRequest const& request,
-    SocketRpcCreateIvModuleInstanceResultBuilder& builder)
-{
-    try {
-        ProjectStringBuilder project_builder;
-        handle_project_create_iv_module_instance(
-            ProjectCreateIvModuleInstanceRequest{
-                .module_id = request.module_id,
-                .display_name = request.display_name,
-            },
-            project_builder);
-        builder.succeed(project_builder.build());
-    } catch (std::exception const& error) {
-        builder.fail(error.what());
-    }
-}
-
-void NodeInstances::handle_socket_rpc_delete_iv_module_instance(
-    DeleteIvModuleInstanceRequest const& request,
-    SocketRpcAckResponseBuilder& builder)
-{
-    try {
-        ProjectAckBuilder project_builder;
-        handle_project_delete_iv_module_instance(
-            ProjectDeleteIvModuleInstanceRequest{.instance_id = request.instance_id},
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const& error) {
-        builder.fail(error.what());
-    }
-}
-
-void NodeInstances::handle_socket_rpc_update_iv_module_instances(
-    UpdateIvModuleInstancesRequest const& request,
-    SocketRpcAckResponseBuilder& builder)
-{
-    try {
-        std::vector<ProjectUpdateIvModuleInstance> updates;
-        updates.reserve(request.updates.size());
-        for (auto const& update : request.updates) {
-            updates.push_back(ProjectUpdateIvModuleInstance{
-                .instance_id = update.instance_id,
-                .display_name = update.display_name,
-            });
-        }
-        ProjectAckBuilder project_builder;
-        handle_project_update_iv_module_instances(
-            ProjectUpdateIvModuleInstancesRequest{.updates = std::move(updates)},
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const& error) {
-        builder.fail(error.what());
-    }
 }
 
 void NodeInstances::handle_socket_rpc_get_iv_module_instances(

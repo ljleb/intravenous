@@ -30,10 +30,12 @@ configuration parameter. `NodeDefinitionsSnapshot` also pins the exact accepted
 so recursive configuration can create a complete `BuilderSession` without re-entering
 the package pipeline.
 
-The configuration-core `NodeInstances` checkpoint has also landed. `NodeInstances`
-subscribes to the immutable snapshot event directly; it no longer consumes the
-legacy package-definition diff. The old diff remains only as a temporary downstream
-projection for module-source introspection.
+The configuration-core `NodeInstances` checkpoint has also landed. `ProjectGraph`
+subscribes to the immutable snapshot event and supplies that pinned snapshot to
+`NodeInstances` synchronously during one root transaction; `NodeInstances` no
+longer has a runtime event edge directly from `NodeDefinitions`. The legacy
+package-definition diff remains only as a temporary downstream projection for
+module-source introspection.
 
 The package-pipeline migration has landed. `NodeDefinitions` consumes only the
 immutable accepted package-revision snapshot from `PackageDefinitions` and
@@ -43,10 +45,11 @@ outside this module.
 
 ## Implementation checkpoint: `NodeInstances` configuration core
 
-The generalized app module is now named `NodeInstances`. Its compatibility
-IV-module RPC/persistence surface remains temporarily, but definition realization
-is driven by complete `NodeDefinitionsSnapshot` values and supports both leaf and
-module definitions.
+The generalized app module is now named `NodeInstances`. `ProjectGraph` owns the
+write-side RPC/persistence transaction surface; `NodeInstances` retains only its
+compatibility read/persistence projection surfaces. Definition realization is
+driven by complete `NodeDefinitionsSnapshot` values supplied by `ProjectGraph` and
+supports both leaf and module definitions.
 
 The first configuration-cache implementation now provides:
 
@@ -272,8 +275,8 @@ Definition versions participate in cache identity. A provider reload therefore
 cannot accidentally reuse a configured instance produced by an older provider
 version unless compatibility/reuse is explicitly proven later.
 
-On a new `NodeDefinitionsSnapshot`, `ProjectGraph` will start one new root-build
-transaction and invoke `NodeInstances` once. The current implementation clears its
+On a new `NodeDefinitionsSnapshot`, `ProjectGraph` starts one new root-build
+transaction and invokes `NodeInstances` once. The current implementation clears its
 reusable cache on snapshot publication for correctness. A later optimization pass
 may preserve entries whose exact provider/version dependencies are unchanged;
 downstream modules must still observe only one completed batch result.

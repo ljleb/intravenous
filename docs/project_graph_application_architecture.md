@@ -1,6 +1,6 @@
 # Project Graph Application Architecture
 
-_Status: current design direction for the next project-graph implementation phase._
+_Status: current project-graph architecture and implementation direction._
 
 This document is the authoritative application-module design for the unified
 project graph after the lane/timeline/task-runner deletion checkpoint. Where it
@@ -99,7 +99,8 @@ from `PackageJit`; `PackageWatcher` updates its watches and then enters
 state; `NodeDefinitions` derives only the global namespace. The old
 `IvPackageDefinitionsChanged` event survives temporarily only as a compatibility
 projection to module-source introspection, not as package-state ownership.
-`NodeInstances` now consumes the immutable `NodeDefinitionsSnapshot` directly.
+`ProjectGraph` now consumes the immutable `NodeDefinitionsSnapshot` and passes
+the pinned snapshot synchronously to `NodeInstances` during each root transaction.
 
 The dependency watcher already uses `inotify`. The remaining periodic
 package-root discovery scan in `PackageWatcherService` is explicitly temporary
@@ -117,10 +118,24 @@ module is generalized/renamed, consumes complete immutable definition snapshots,
 owns provider-generated typed argument values, recursively resolves nested
 configuration through one snapshot, caches immutable configured graphs by typed
 value, and uses the frozen-graph embedding translation for repeated placements.
-Its old IV-module RPC/persistence methods remain only as a temporary command-surface
-compatibility layer. C++ argument-list expression compilation is the next
-`NodeInstances` checkpoint. `IvModuleSourceIntrospection` remains a later read-model
-migration checkpoint.
+
+The first `ProjectGraph` coordinator checkpoint has now landed too. Runtime
+definition publication enters `ProjectGraph`, not `NodeInstances`; node create,
+delete, and update commands from persistence/RPC also enter `ProjectGraph`. For
+each cause it creates a fresh root builder, invokes `NodeInstances` exactly once
+with the latched snapshot and optional mutation, finishes one immutable root
+`ConfiguredGraph`, and retains that root generation plus placements/diagnostics.
+`NodeInstances` remains the canonical desired-instance owner and keeps only its
+read/persistence projection surfaces outside that synchronous child operation.
+
+`GraphConnections`, `GraphJit`, and `GraphExecutor` are still unimplemented
+sibling stages, so the current root transaction stops after `ConfiguredGraph`.
+The existing line-oriented `ProjectPersistence` loader also still replays legacy
+node commands one at a time; collapsing those commands into the one normalized
+startup replay batch described below is a remaining persistence-side checkpoint.
+C++ argument-list expression compilation remains the next internal
+`NodeInstances` checkpoint; `IvModuleSourceIntrospection` remains a later
+read-model migration checkpoint.
 
 ## `ProjectGraph` is the root-graph transaction coordinator
 

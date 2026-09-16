@@ -5,9 +5,12 @@
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
 #include <intravenous/runtime/package_definitions.h>
-#include <intravenous/runtime/node_definitions_node_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_project_graph_bridge.h>
+#include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
+#include <intravenous/runtime/socket_rpc_project_graph_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
@@ -219,10 +222,14 @@ TEST(SocketRpcNodeInstancesBridge, BoundEventsCreateAndDeleteInstances)
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
     iv::NodeDefinitions definitions;
+    iv::ProjectGraph project_graph;
     iv::SocketRpcServer server("/tmp", -1);
-    auto node_definitions_iv_module_instances_scope =
-        iv::node_definitions_node_instances_bridge::bind(
-            definitions, instances);
+    auto node_definitions_project_graph_scope =
+        iv::node_definitions_project_graph_bridge::bind(
+            definitions, project_graph);
+    auto project_graph_node_instances_scope =
+        iv::project_graph_node_instances_bridge::bind(
+            project_graph, instances);
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
@@ -231,6 +238,8 @@ TEST(SocketRpcNodeInstancesBridge, BoundEventsCreateAndDeleteInstances)
         iv::node_instances_iv_module_source_introspection_bridge::bind(
             instances,
             introspection);
+    auto socket_rpc_project_graph_scope =
+        iv::socket_rpc_project_graph_bridge::bind(server, project_graph);
     auto socket_rpc_iv_module_instances_scope =
         iv::socket_rpc_node_instances_bridge::bind(server, instances);
 
@@ -264,10 +273,14 @@ TEST(SocketRpcNodeInstancesBridge, BoundUpdateRenamesInstance)
     iv::IvModuleSourceIntrospection introspection;
     auto const module_root = iv::test::test_modules_root() / "local_cmake";
     iv::NodeDefinitions definitions;
+    iv::ProjectGraph project_graph;
     iv::SocketRpcServer server("/tmp", -1);
-    auto node_definitions_iv_module_instances_scope =
-        iv::node_definitions_node_instances_bridge::bind(
-            definitions, instances);
+    auto node_definitions_project_graph_scope =
+        iv::node_definitions_project_graph_bridge::bind(
+            definitions, project_graph);
+    auto project_graph_node_instances_scope =
+        iv::project_graph_node_instances_bridge::bind(
+            project_graph, instances);
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
@@ -276,6 +289,8 @@ TEST(SocketRpcNodeInstancesBridge, BoundUpdateRenamesInstance)
         iv::node_instances_iv_module_source_introspection_bridge::bind(
             instances,
             introspection);
+    auto socket_rpc_project_graph_scope =
+        iv::socket_rpc_project_graph_bridge::bind(server, project_graph);
     auto socket_rpc_iv_module_instances_scope =
         iv::socket_rpc_node_instances_bridge::bind(server, instances);
 

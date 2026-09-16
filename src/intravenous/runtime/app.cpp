@@ -5,7 +5,7 @@
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_definitions_node_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_project_graph_bridge.h>
 #include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
 #include <intravenous/runtime/node_instances.h>
@@ -24,11 +24,15 @@
 #include <intravenous/runtime/project_autosave.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_node_instances_bridge.h>
+#include <intravenous/runtime/project_persistence_project_graph_bridge.h>
 #include <intravenous/runtime/project_persistence_package_jit_bridge.h>
 #include <intravenous/runtime/project_persistence_project_autosave_bridge.h>
 #include <intravenous/runtime/project_persistence_system_audio_devices_bridge.h>
+#include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/server_options.h>
 #include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
+#include <intravenous/runtime/socket_rpc_project_graph_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/socket_rpc_package_definitions_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_autosave_bridge.h>
@@ -147,6 +151,7 @@ int run_server_mode(int argc, char** argv)
     // retains another app module.
     NodeInstances node_instances;
     NodeDefinitions node_definitions;
+    ProjectGraph project_graph;
     PackageWatcher package_watcher;
     PackageJit package_jit(startup);
     PackageDefinitions package_definitions(startup.workspace_root);
@@ -191,8 +196,10 @@ int run_server_mode(int argc, char** argv)
     install_shutdown_handlers(request_shutdown);
 
     // Runtime bridges.
-    auto definitions_instances_scope =
-        node_definitions_node_instances_bridge::bind(node_definitions, node_instances);
+    auto definitions_project_graph_scope =
+        node_definitions_project_graph_bridge::bind(node_definitions, project_graph);
+    auto project_graph_instances_scope =
+        project_graph_node_instances_bridge::bind(project_graph, node_instances);
     auto definitions_introspection_scope =
         node_definitions_iv_module_source_introspection_bridge::bind(
             node_definitions, introspection);
@@ -210,6 +217,8 @@ int run_server_mode(int argc, char** argv)
         node_instances_iv_module_source_introspection_bridge::bind(node_instances, introspection);
 
     // Persistence bridges.
+    auto persistence_project_graph_scope =
+        project_persistence_project_graph_bridge::bind(project_persistence, project_graph);
     auto persistence_instances_scope =
         project_persistence_node_instances_bridge::bind(project_persistence, node_instances);
     auto persistence_jit_scope =
@@ -223,6 +232,8 @@ int run_server_mode(int argc, char** argv)
     // disconnected until a replacement canonical project graph supplies them.
     auto rpc_audio_scope =
         socket_rpc_system_audio_devices_bridge::bind(server, system_audio_devices);
+    auto rpc_project_graph_scope =
+        socket_rpc_project_graph_bridge::bind(server, project_graph);
     auto rpc_instances_scope =
         socket_rpc_node_instances_bridge::bind(server, node_instances);
     auto rpc_packages_scope =

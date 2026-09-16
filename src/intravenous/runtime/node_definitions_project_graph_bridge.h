@@ -4,10 +4,10 @@
 
 namespace iv {
 class NodeDefinitions;
-class NodeInstances;
+class ProjectGraph;
 
 IV_DECLARE_BRIDGE(
-    node_definitions_node_instances_bridge,
+    node_definitions_project_graph_bridge,
     NodeDefinitions,
-    NodeInstances);
+    ProjectGraph);
 } // namespace iv

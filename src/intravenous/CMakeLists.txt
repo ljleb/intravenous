@@ -156,6 +156,7 @@ function(iv_add_host_runtime_objects target)
         intravenous_module_watcher
         intravenous_runtime_iv_module_instances_events
         intravenous_runtime_node_definitions_events
+        intravenous_runtime_project_graph_events
         intravenous_runtime_package_pipeline_events
         intravenous_runtime_iv_module_source_introspection_events
         intravenous_runtime_lane_filters_events
@@ -307,6 +308,10 @@ iv_add_linker_event_object(
     runtime/package_pipeline_events.cpp
 )
 iv_add_linker_event_object(
+    intravenous_runtime_project_graph_events
+    runtime/project_graph_events.cpp
+)
+iv_add_linker_event_object(
     intravenous_runtime_iv_module_source_introspection_events
     runtime/iv_module_source_introspection_linker_events.cpp
 )
@@ -346,7 +351,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/audio_input_synchronizer.cpp
     runtime/config.cpp
     runtime/node_definitions.cpp
-    runtime/node_definitions_node_instances_bridge.cpp
+    runtime/node_definitions_project_graph_bridge.cpp
     runtime/node_definitions_iv_module_source_introspection_bridge.cpp
     runtime/package_definitions_node_definitions_bridge.cpp
     runtime/package_watcher_package_definitions_bridge.cpp
@@ -355,6 +360,8 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/package_watcher_service_bridge.cpp
     runtime/node_instances.cpp
     runtime/node_instances_iv_module_source_introspection_bridge.cpp
+    runtime/project_graph.cpp
+    runtime/project_graph_node_instances_bridge.cpp
     runtime/package_definitions.cpp
     runtime/package_jit.cpp
     runtime/package_watcher.cpp
@@ -376,6 +383,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/project_persistence_system_audio_devices_bridge.cpp
     runtime/project_persistence_project_autosave_bridge.cpp
     runtime/project_persistence_node_instances_bridge.cpp
+    runtime/project_persistence_project_graph_bridge.cpp
     runtime/project_persistence_package_jit_bridge.cpp
     runtime/socket_rpc_lane_views_bridge.cpp
     runtime/socket_rpc_lane_query_schema_bridge.cpp
@@ -383,6 +391,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_system_audio_devices_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
     runtime/socket_rpc_node_instances_bridge.cpp
+    runtime/socket_rpc_project_graph_bridge.cpp
     runtime/socket_rpc_package_definitions_bridge.cpp
     runtime/socket_rpc_project_autosave_bridge.cpp
     runtime/socket_rpc_project_persistence_bridge.cpp
