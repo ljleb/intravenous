@@ -5,23 +5,28 @@ Below is the design we converged on for **compiled DSP ports and compiled-data e
 The first compiled-port implementation is deliberately limited to the
 node-facing contract:
 
-* `InputConfig::compiled` / `OutputConfig::compiled`, independent of whether
-  the config contains sample or event properties;
-* the sample-input `neutral_value` used by total arbitrary sample reads;
+* `InputConfig::access` / `OutputConfig::access` as an orthogonal variant of
+  bounded realtime access or compiled random access, independent of whether the
+  payload kind is sample or event;
+* realtime input history and realtime output history/latency stored only in the
+  realtime access alternatives;
+* an empty `CompiledPortConfig`, so compiled declarations cannot accidentally
+  carry meaningless finite realtime timing fields;
+* the sample-input `neutral_value` used by total arbitrary sample reads; and
 * compiled-sample callback traits, static-declaration validation, `AccessRequest`
   types, and sample access/block-access propagation contexts.
 
-The `compiled` flag is preserved by the semantic/configured graph and its
-archive. This stage does not yet add graph lowering, query planning,
-materialization, or compiled-state lifecycle storage.
+The access variant is preserved by the semantic/configured graph and its archive.
+This stage does not yet add graph lowering, query planning, materialization, or
+compiled-state lifecycle storage.
 
-Compiled capability is orthogonal to port kind. The ordinary DSP-node model
+Payload kind and access model are orthogonal. The ordinary DSP-node model
 therefore has all four declaration combinations:
 
-| Port kind | Realtime access | Compiled-capable access |
+| Port kind | Realtime declaration | Compiled declaration |
 | --- | --- | --- |
-| sample | sequential/current-block samples | arbitrary global sample access |
-| event | sequential/current-block events | arbitrary global event-range access |
+| sample | finite sequential/current-block timing contract | arbitrary global sample access |
+| event | finite sequential/current-block timing contract | arbitrary global event-range access |
 
 The callback/context API implemented in this stage is specifically for
 **compiled sample ports**. Its contexts contain compact lists of compiled sample
@@ -36,12 +41,18 @@ As lane nodes are phased out, ordinary DSP nodes must preserve that capability
 rather than making `compiled` sample-specific.
 
 Realtime storage and compiled random-access storage are intentionally separate
-compiler problems. The sequential projection of an ordinary/compiled-capable
-port follows the bounded realtime history/latency/event-window model in
+compiler problems. A realtime declaration follows the bounded
+history/latency/event-window model in
 [realtime_port_storage_planning.md](./realtime_port_storage_planning.md). A
-logical realtime connection does not imply a ring or any other buffer. Compiled
+logical realtime connection does not imply a ring or any other buffer. A
+compiled declaration carries no finite realtime timing config; compiled
 sample/event access remains request-driven and arbitrary-access as specified in
 this document.
+
+The **typed `tick()` / `tick_block()` wrapper remains additive**: when a port is
+declared compiled, its current-block accessor still supports the corresponding
+ordinary sample/event operations, and adds compiled random access. This accessor
+superset does not mean the declaration also contains a `Realtime*Config`.
 
 ## 1. Meaning of a compiled port
 
@@ -49,7 +60,7 @@ A compiled port is not a separate kind of node and does not imply a particular b
 
 A **compiled output** is an output whose data can be requested independently of sequential realtime advancement. For a sample port, that means arbitrary global sample positions. For an event port, that means arbitrary global time/sample-index intervals containing timestamped events.
 
-A **compiled input** extends the corresponding normal realtime input API with random access to its source. In `tick()` / `tick_block()`, the author should not need to remember whether an input is compiled merely to use its current-block data:
+A **compiled input** uses compiled random-access semantics. In `tick()` / `tick_block()`, however, its statically typed wrapper is a superset of the ordinary current-block input API, so the author should not need a different current-block vocabulary merely because the declaration is compiled:
 
 ```cpp
 auto in = ctx.input<"in">();
@@ -69,13 +80,13 @@ x.at(global_index);    // arbitrary global access
 x.size();               // finite logical extent
 ```
 
-The precise API can differ, but the important rule is that **compiled extends realtime access rather than replacing it with a completely separate accessor vocabulary**.
+The precise API can differ, but the important rule is that **compiled access is additive at the typed accessor surface, not by combining realtime and compiled timing configs in one declaration**.
 
 A compiled output similarly behaves like an ordinary output during realtime ticking. Merely declaring an output compiled must not force it to be stored in a persistent dynamically allocated buffer.
 
 > Compiled is a capability/demand, not a storage class.
 
-If a compiled-capable output is only consumed sequentially, the compiler should remain free to lower it just like an ordinary realtime edge, including direct forwarding, fusion, stack/arena scratch, etc.
+If a compiled output is only used through its current-block projection, the compiler should remain free to lower that use like an ordinary sequential edge, including direct forwarding, fusion, stack/arena scratch, etc.
 
 ---
 
@@ -144,22 +155,19 @@ The required semantics are:
 The planner may still batch and union event intervals globally, but it must keep
 event-range demand distinct from sampled scalar demand.
 
-### Realtime event production is bounded even when a port is compiled-capable
+### Realtime event production is bounded; compiled event access is not
 
-The arbitrary intervals above apply to compiled `access_block()` queries. They
-do not permit sequential realtime code to emit events at arbitrary absolute
-times.
+A realtime event output has a finite compiler-known production window determined
+by the current block plus its `RealtimeOutputConfig` history/latency. The
+compatibility runtime should reject realtime writes outside that legal window,
+and the whole-project JIT may specialize/eliminate those checks when validity is
+statically known.
 
-During `tick_block()`, a realtime event output must only produce events inside a
-finite compiler-known time window determined by the current block plus the
-port's declared history/latency semantics. Realtime event declarations therefore
-need temporal properties sufficient for the compiler to derive that window, in
-the same conceptual model used for sample ports.
-
-The compatibility runtime should reject realtime event writes outside the legal
-window. The whole-project JIT can then specialize/eliminate those checks when
-validity is statically known. Compiled event queries remain random-access and do
-not inherit this finite realtime retention window.
+A compiled event output instead carries `CompiledPortConfig` and has no finite
+realtime history/latency declaration. Its arbitrary `access_block()` queries may
+cover any supported global interval. Its typed `tick_block()` wrapper may still
+provide the ordinary current-block event-writing vocabulary, but that convenience
+does not turn the compiled declaration into a realtime-timed port.
 
 ---
 
@@ -634,7 +642,7 @@ The `InputConfig` / `OutputConfig` declaration model requires a registered
 node's `inputs()` and `outputs()` to be `static constexpr`. That is part of the
 port-declaration contract itself: a registered node ID has one immutable,
 compile-time-visible ordered port interface, regardless of whether any future
-port is realtime-only or compiled-capable.
+port uses realtime or compiled access.
 
 When compiled declarations are introduced, `IV_NODE` should add the
 compiled-specific validation needed by that capability on top of the existing
@@ -706,7 +714,7 @@ An FFT implementation can use `CompiledState` for plans/workspaces without makin
 
 The implementation should keep these principles explicit:
 
-> **Sample/event kind and realtime/compiled capability are orthogonal. Compiled sample and compiled event ports are both first-class ordinary DSP ports; neither creates a parallel node graph.**
+> **Sample/event kind and realtime/compiled access are orthogonal. A declaration chooses one access model; compiled sample and compiled event ports are still first-class ordinary DSP ports, and their typed `tick_block()` wrappers retain the ordinary current-block API. Neither creates a parallel node graph.**
 
 > **Compiled capability does not imply materialization.**
 

@@ -324,14 +324,19 @@ Compiled and realtime are capabilities of ordinary DSP ports in the same graph,
 not indicators of different node families or graph executors. The normative
 contract is in [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). In summary:
 
-- sample/event kind and realtime/compiled capability are orthogonal;
+- sample/event kind and realtime/compiled access are orthogonal declaration axes;
+- a declaration chooses either bounded realtime timing (`RealtimeInputConfig` /
+  `RealtimeOutputConfig`) or compiled random access (`CompiledPortConfig`);
+- compiled ports still expose the ordinary current-block typed wrapper during
+  `tick()` / `tick_block()`, so additivity belongs to the accessor API rather than
+  to a combined realtime+compiled config;
 - a compiled sample output can be requested at arbitrary global sample positions,
   while a compiled event output can be queried over arbitrary global intervals;
 - a compiled input extends the corresponding ordinary realtime sample/event
   access rather than replacing it with a separate resource API;
 - compiled sample requests may use sparse sampled grids, while compiled event
   requests preserve every event in the requested interval;
-- compiled capability does not imply persistent materialization, buffering, or
+- compiled access does not imply persistent materialization, buffering, or
   caching;
 - sequential `tick_block()` and arbitrary `access_block()` are distinct execution
   modes, with `access_block()` restricted to compiled ports and `CompiledState`;
@@ -391,7 +396,7 @@ The capabilities that must be designed independently of the old lane
 implementation are:
 
 1. **Compiled DSP ports.** Implement the semantics in
-   [compiled_dsp_nodes.md](./compiled_dsp_nodes.md): compiled capability is
+   [compiled_dsp_nodes.md](./compiled_dsp_nodes.md): compiled access is
    orthogonal to sample/event kind, so both compiled sample and compiled event
    ports remain first-class. Use global batched demand planning, cacheless
    computed access initially, kind-appropriate sample/event request semantics,

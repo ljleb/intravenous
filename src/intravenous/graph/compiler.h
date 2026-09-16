@@ -216,7 +216,7 @@ namespace iv::details {
                     if (seen_sample_inputs.insert(target)) {
                         groups[group_i].sample_input_frontier.push_back(DormancySamplePortRef{
                             .port = target,
-                            .history = inputs[input].history,
+                            .history = realtime_history_or_zero(inputs[input]),
                         });
                     }
                     size_t const ordered_region =
@@ -239,9 +239,8 @@ namespace iv::details {
                         }
                         size_t history = 0;
                         if (edge.target.node != GRAPH_ID) {
-                            history = g.nodes[edge.target.node]
-                                          .sample_inputs()[edge.target.port]
-                                          .history;
+                            history = realtime_history_or_zero(g.nodes[edge.target.node]
+                                          .sample_inputs()[edge.target.port]);
                         }
                         if (seen_sample_outputs.insert(edge.target)) {
                             groups[group_i].sample_output_frontier.push_back(
@@ -968,7 +967,7 @@ namespace iv::details {
             size_t max_latency = node_latency;
             for (auto const& output : node.sample_outputs()) {
                 max_latency = std::max(
-                    max_latency, node_latency + output.latency);
+                    max_latency, node_latency + realtime_latency_or_zero(output));
             }
             return max_latency;
         }
@@ -988,7 +987,7 @@ namespace iv::details {
 
             auto const outputs = nodes[node_i].sample_outputs();
             for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
-                size_t const output_latency = node_latency + outputs[output_port].latency;
+                size_t const output_latency = node_latency + realtime_latency_or_zero(outputs[output_port]);
                 max_latency = std::max(max_latency, output_latency);
                 if (auto const* it = connectivity.sample_targets.find({ node_i, output_port })) {
                     for (GraphEdge const& edge : *it) {
@@ -1065,6 +1064,7 @@ namespace iv::details {
             private_input_configs.push_back(SampleInputConfig{
                 .name = output.name,
                 .channel_layout = output.channel_layout,
+                .access = inward_input_access(output.access),
             });
         }
         InputPortLatencyTable input_port_global_latencies(
@@ -1083,7 +1083,7 @@ namespace iv::details {
                 if (auto const* it = targets_of.find({node_i, output})) {
                     for (GraphEdge const& edge : *it) {
                         input_port_global_latencies[edge.target] =
-                            node_global_latency + output_configs[output].latency;
+                            node_global_latency + realtime_latency_or_zero(output_configs[output]);
                     }
                 }
             }
@@ -1109,15 +1109,16 @@ namespace iv::details {
                             ? SampleOutputConfig{
                                 .name = public_inputs[output_port_i].name,
                                 .channel_layout = public_inputs[output_port_i].channel_layout,
+                                .access = inward_output_access(public_inputs[output_port_i].access),
                             }
                             : nodes[output_node_i].sample_outputs()[output_port_i];
-                        size_t const corrected_latency = delay_input(this_input, output_config.latency);
+                        size_t const corrected_latency = delay_input(this_input, realtime_latency_or_zero(output_config));
                         node_input_plans[node_i].push_back({
                             .storage = {
                                 .connection_max_block_size = connection_block_size(*it, this_input, MAX_BLOCK_SIZE, execution_plan),
                                 .corrected_latency = corrected_latency,
-                                .input_history = input_configs[input_i].history,
-                                .output_history = output_config.history,
+                                .input_history = realtime_history_or_zero(input_configs[input_i]),
+                                .output_history = realtime_history_or_zero(output_config),
                             },
                             .read_latency = corrected_latency,
                         });
@@ -1126,7 +1127,7 @@ namespace iv::details {
                             .storage = {
                                 .connection_max_block_size = MAX_BLOCK_SIZE,
                                 .corrected_latency = 0,
-                                .input_history = input_configs[input_i].history,
+                                .input_history = realtime_history_or_zero(input_configs[input_i]),
                                 .output_history = 0,
                             },
                             .read_latency = 0,
@@ -1145,15 +1146,16 @@ namespace iv::details {
                             ? SampleOutputConfig{
                                 .name = public_inputs[output_port_i].name,
                                 .channel_layout = public_inputs[output_port_i].channel_layout,
+                                .access = inward_output_access(public_inputs[output_port_i].access),
                             }
                             : nodes[output_node_i].sample_outputs()[output_port_i];
-                        size_t const corrected_latency = delay_input(this_input, output_config.latency);
+                        size_t const corrected_latency = delay_input(this_input, realtime_latency_or_zero(output_config));
                         public_output_plans[input_i] = {
                             .storage = {
                                 .connection_max_block_size = connection_block_size(*it, this_input, MAX_BLOCK_SIZE, execution_plan),
                                 .corrected_latency = corrected_latency,
-                                .input_history = input_configs[input_i].history,
-                                .output_history = output_config.history,
+                                .input_history = realtime_history_or_zero(input_configs[input_i]),
+                                .output_history = realtime_history_or_zero(output_config),
                             },
                             .read_latency = corrected_latency,
                         };
@@ -1162,7 +1164,7 @@ namespace iv::details {
                             .storage = {
                                 .connection_max_block_size = MAX_BLOCK_SIZE,
                                 .corrected_latency = 0,
-                                .input_history = input_configs[input_i].history,
+                                .input_history = realtime_history_or_zero(input_configs[input_i]),
                                 .output_history = 0,
                             },
                             .read_latency = 0,
@@ -1255,6 +1257,7 @@ namespace iv::details {
             return SampleInputConfig{
                 .name = output.name,
                 .channel_layout = output.channel_layout,
+                .access = inward_input_access(output.access),
             };
         };
         auto merge_buffer_plan = [](PortBufferPlan& destination,
@@ -1413,7 +1416,7 @@ namespace iv::details {
                 auto node_outputs = node.sample_outputs();
                 for (size_t output_port = 0; output_port < node_outputs.size(); ++output_port) {
                     if (auto const* it = connectivity.sample_targets.find({ node_i, output_port })) {
-                        size_t const new_latency = node_global_latency + node_outputs[output_port].latency;
+                        size_t const new_latency = node_global_latency + realtime_latency_or_zero(node_outputs[output_port]);
                         max_latency = std::max(max_latency, new_latency);
                         for (GraphEdge const& edge : *it) {
                             input_global_latencies[edge.target] = new_latency;

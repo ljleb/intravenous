@@ -215,31 +215,42 @@ JIT may then specialize it away when the authored access is statically valid.
 Arbitrary `TimedEvent` insertion outside that window is not part of the future
 realtime port contract.
 
-## Event-port properties should carry temporal requirements
+## Realtime timing is an orthogonal access config
 
-Realtime event port declarations currently carry less temporal information than
-sample ports. They should gain the history/latency information necessary to
-state the same bounded-window contract, using semantics aligned with sample
-ports rather than a separate event-only interpretation.
+History and latency are not sample-payload properties and should not be
+duplicated into event-payload properties. They describe the finite temporal
+contract of **realtime access**, regardless of whether the payload is samples or
+events.
 
-Conceptually:
+The port declaration therefore has two orthogonal axes:
 
 ```cpp
-struct EventInputProperties {
-    EventTypeId type;
+struct RealtimeInputConfig {
     std::size_t history = 0;
 };
 
-struct EventOutputProperties {
-    EventTypeId type;
+struct RealtimeOutputConfig {
     std::size_t history = 0;
     std::size_t latency = 0;
 };
+
+struct CompiledPortConfig {};
+
+using InputAccessConfig =
+    std::variant<RealtimeInputConfig, CompiledPortConfig>;
+using OutputAccessConfig =
+    std::variant<RealtimeOutputConfig, CompiledPortConfig>;
 ```
 
-The exact fields may follow the final sample-port property vocabulary. The
-architectural requirement is the finite realtime temporal extent, not these
-specific member names.
+`InputConfig` / `OutputConfig` separately carry the sample/event payload variant
+and this access variant. `SampleInputProperties`, `SampleOutputProperties`,
+`EventInputProperties`, and `EventOutputProperties` do not carry history or
+latency. The same distinction is preserved in `ConfiguredGraph`; it must not be
+flattened back into a `compiled` boolean plus timing fields that are meaningless
+for compiled declarations.
+
+This makes invalid combinations unrepresentable: a compiled port cannot
+accidentally acquire a finite realtime history or latency.
 
 ## Compiled ports remain random-access
 
@@ -251,11 +262,13 @@ event ports support arbitrary global event intervals according to
 request-driven and cannot generally benefit from one static realtime
 history/latency retention window.
 
-A port may be both realtime and compiled-capable. Its sequential `tick_block()`
-projection uses the realtime bounded-window/storage planner, while its
-`access_block()` projection follows compiled demand planning.
+A compiled declaration therefore carries the empty `CompiledPortConfig`, not a
+realtime timing config. The additive rule applies instead to the statically typed
+`tick()` / `tick_block()` accessor: a compiled port's current-block wrapper still
+exposes the corresponding ordinary sequential operations, while compiled random
+access adds the more precise arbitrary-position/range operations.
 
-`compiled` remains a capability, not a storage class.
+Compiled access remains an execution capability, not a storage class.
 
 ## Event storage planning mirrors sample storage planning where possible
 

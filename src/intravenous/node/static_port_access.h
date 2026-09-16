@@ -100,7 +100,7 @@ namespace iv::details {
     {
         static constexpr auto configs = Node::inputs();
         for (InputConfig const& config : configs) {
-            if (is_sample(config) && config.name == Name.view()) return config.compiled;
+            if (is_sample(config) && config.name == Name.view()) return is_compiled(config);
         }
         throw "unknown static sample input port name";
     }
@@ -120,7 +120,7 @@ namespace iv::details {
         for (InputConfig const& config : configs) {
             if (!is_sample(config)) continue;
             if (sample_index == port_index) return compiled_index;
-            if (config.compiled) ++compiled_index;
+            if (is_compiled(config)) ++compiled_index;
             ++sample_index;
         }
         throw "unknown static sample input port name";
@@ -137,7 +137,7 @@ namespace iv::details {
     {
         static constexpr auto configs = Node::outputs();
         for (OutputConfig const& config : configs) {
-            if (is_sample(config) && config.name == Name.view()) return config.compiled;
+            if (is_sample(config) && config.name == Name.view()) return is_compiled(config);
         }
         throw "unknown static sample output port name";
     }
@@ -154,7 +154,7 @@ namespace iv::details {
         for (OutputConfig const& config : configs) {
             if (!is_sample(config)) continue;
             if (sample_index == port_index) return compiled_index;
-            if (config.compiled) ++compiled_index;
+            if (is_compiled(config)) ++compiled_index;
             ++sample_index;
         }
         throw "unknown static sample output port name";

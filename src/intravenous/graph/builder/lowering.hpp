@@ -276,7 +276,7 @@ build_virtual_metadata(ExecutableGraphData const& g,
           .type = "sample",
           .connected = input_i < scope.sample_input_targets.size() &&
                        !scope.sample_input_targets[input_i].empty(),
-          .history = scope.sample_inputs[input_i].history,
+          .history = realtime_history_or_zero(scope.sample_inputs[input_i]),
           .default_value = scope.sample_inputs[input_i].default_value,
           .min = scope.sample_inputs[input_i].min,
           .max = scope.sample_inputs[input_i].max,
@@ -291,8 +291,8 @@ build_virtual_metadata(ExecutableGraphData const& g,
           .type = "sample",
           .connected = output_i < scope.sample_output_sources.size() &&
                        scope.sample_output_sources[output_i].valid,
-          .history = scope.sample_outputs[output_i].history,
-          .latency = scope.sample_outputs[output_i].latency,
+          .history = realtime_history_or_zero(scope.sample_outputs[output_i]),
+          .latency = realtime_latency_or_zero(scope.sample_outputs[output_i]),
       });
     }
 
@@ -546,9 +546,9 @@ constexpr std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
       default_value = config.default_value;
       min = config.min;
       max = config.max;
-      history = config.history;
+      history = realtime_history_or_zero(config);
     } else {
-      latency = node_bundles.resolve_sample_output(first_address).config.latency;
+      latency = realtime_latency_or_zero(node_bundles.resolve_sample_output(first_address).config);
     }
     bool any_connected = false;
     bool any_disconnected = false;

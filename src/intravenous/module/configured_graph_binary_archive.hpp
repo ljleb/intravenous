@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 5;
+inline constexpr std::uint32_t archive_version = 6;
 
 class Writer {
 public:
@@ -217,49 +217,108 @@ inline ChannelLayout read_layout(Reader& r)
     return {.channel_type = read_enum<ChannelTypeId>(r), .sample_layout = read_enum<SampleStreamLayout>(r)};
 }
 
+inline void write_input_access(Writer& w, InputAccessConfig const& value)
+{
+    w.flag(is_compiled(value));
+    if (auto const* realtime = std::get_if<RealtimeInputConfig>(&value)) {
+        w.size(realtime->history);
+    }
+}
+
+inline InputAccessConfig read_input_access(Reader& r)
+{
+    if (r.flag()) return CompiledPortConfig{};
+    return RealtimeInputConfig{.history = r.size()};
+}
+
+inline void write_output_access(Writer& w, OutputAccessConfig const& value)
+{
+    w.flag(is_compiled(value));
+    if (auto const* realtime = std::get_if<RealtimeOutputConfig>(&value)) {
+        w.size(realtime->history);
+        w.size(realtime->latency);
+    }
+}
+
+inline OutputAccessConfig read_output_access(Reader& r)
+{
+    if (r.flag()) return CompiledPortConfig{};
+    return RealtimeOutputConfig{
+        .history = r.size(),
+        .latency = r.size(),
+    };
+}
+
 inline void write_input(Writer& w, SampleInputConfig const& value)
 {
-    w.string(value.name); write_layout(w, value.channel_layout); w.flag(value.compiled); w.size(value.history);
-    w.pod(value.neutral_value.value); w.pod(value.default_value.value);
-    w.pod(value.min.value); w.pod(value.max.value);
+    w.string(value.name);
+    write_layout(w, value.channel_layout);
+    write_input_access(w, value.access);
+    w.pod(value.neutral_value.value);
+    w.pod(value.default_value.value);
+    w.pod(value.min.value);
+    w.pod(value.max.value);
 }
 
 inline SampleInputConfig read_input(Reader& r)
 {
-    return {.name = r.string(), .channel_layout = read_layout(r), .compiled = r.flag(), .history = r.size(),
+    return {
+        .name = r.string(),
+        .channel_layout = read_layout(r),
+        .access = read_input_access(r),
         .neutral_value = Sample{r.pod<Sample::storage>()},
         .default_value = Sample{r.pod<Sample::storage>()},
-        .min = Sample{r.pod<Sample::storage>()}, .max = Sample{r.pod<Sample::storage>()}};
+        .min = Sample{r.pod<Sample::storage>()},
+        .max = Sample{r.pod<Sample::storage>()},
+    };
 }
 
 inline void write_output(Writer& w, SampleOutputConfig const& value)
 {
-    w.string(value.name); write_layout(w, value.channel_layout); w.flag(value.compiled); w.size(value.latency); w.size(value.history);
+    w.string(value.name);
+    write_layout(w, value.channel_layout);
+    write_output_access(w, value.access);
 }
 
 inline SampleOutputConfig read_output(Reader& r)
 {
-    return {.name = r.string(), .channel_layout = read_layout(r), .compiled = r.flag(), .latency = r.size(), .history = r.size()};
+    return {
+        .name = r.string(),
+        .channel_layout = read_layout(r),
+        .access = read_output_access(r),
+    };
 }
 
 inline void write_event_input(Writer& w, EventInputConfig const& value)
 {
-    w.string(value.name); write_enum(w, value.type); w.flag(value.compiled);
+    w.string(value.name);
+    write_enum(w, value.type);
+    write_input_access(w, value.access);
 }
 
 inline EventInputConfig read_event_input(Reader& r)
 {
-    return {.name = r.string(), .type = read_enum<EventTypeId>(r), .compiled = r.flag()};
+    return {
+        .name = r.string(),
+        .type = read_enum<EventTypeId>(r),
+        .access = read_input_access(r),
+    };
 }
 
 inline void write_event_output(Writer& w, EventOutputConfig const& value)
 {
-    w.string(value.name); write_enum(w, value.type); w.flag(value.compiled);
+    w.string(value.name);
+    write_enum(w, value.type);
+    write_output_access(w, value.access);
 }
 
 inline EventOutputConfig read_event_output(Reader& r)
 {
-    return {.name = r.string(), .type = read_enum<EventTypeId>(r), .compiled = r.flag()};
+    return {
+        .name = r.string(),
+        .type = read_enum<EventTypeId>(r),
+        .access = read_output_access(r),
+    };
 }
 
 template<class T, class Fn> void write_configs(Writer& w, std::span<T const> values, Fn&& write)

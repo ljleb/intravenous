@@ -150,7 +150,7 @@ namespace iv {
             for (auto const& output : outputs) {
                 result.push_back({
                     .channel_layout = output.channel_layout,
-                    .history = output.history,
+                    .history = realtime_history_or_zero(output),
                 });
             }
             return result;
@@ -225,7 +225,7 @@ namespace iv {
                     port_data_export_id(node_id, input_i),
                     GraphPortStorageConfig {
                         .channel_layout = input.channel_layout,
-                        .history = input.history,
+                        .history = realtime_history_or_zero(input),
                         .default_value = input_bindings[input_i].static_value
                             .value_or(input.default_value),
                     },
@@ -248,7 +248,7 @@ namespace iv {
                     entry.id,
                     GraphPortStorageConfig {
                         .channel_layout = entry.config.channel_layout,
-                        .history = entry.config.history,
+                        .history = realtime_history_or_zero(entry.config),
                         .default_value = entry.config.default_value,
                     },
                     InputPortPlan{.storage = entry.plan});

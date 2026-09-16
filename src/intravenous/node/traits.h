@@ -165,7 +165,7 @@ namespace iv {
                 return false;
             } else {
                 for (auto const& config : Node::inputs()) {
-                    if (config.compiled) return true;
+                    if (is_compiled(config)) return true;
                 }
                 return false;
             }
@@ -178,7 +178,7 @@ namespace iv {
                 return false;
             } else {
                 for (auto const& config : Node::outputs()) {
-                    if (config.compiled) return true;
+                    if (is_compiled(config)) return true;
                 }
                 return false;
             }
@@ -191,7 +191,7 @@ namespace iv {
                 return false;
             } else {
                 for (auto const& config : Node::inputs()) {
-                    if (is_sample(config) && config.compiled) return true;
+                    if (is_sample(config) && is_compiled(config)) return true;
                 }
                 return false;
             }
@@ -204,7 +204,7 @@ namespace iv {
                 return false;
             } else {
                 for (auto const& config : Node::outputs()) {
-                    if (is_sample(config) && config.compiled) return true;
+                    if (is_sample(config) && is_compiled(config)) return true;
                 }
                 return false;
             }

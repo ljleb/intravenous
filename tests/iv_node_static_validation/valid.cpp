@@ -5,12 +5,12 @@
 struct ValidCompiledNode {
     static constexpr auto inputs()
     {
-        return std::array {iv::sample_input("input", {}, true)};
+        return std::array {iv::compiled_sample_input("input")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {iv::sample_output("output", {}, true)};
+        return std::array {iv::compiled_sample_output("output")};
     }
 
     static constexpr std::size_t num_inputs() { return inputs().size(); }
@@ -29,14 +29,14 @@ struct ValidCompiledEventNode {
     static constexpr auto inputs()
     {
         return std::array {
-            iv::event_input("input", iv::EventTypeId::trigger, true),
+            iv::compiled_event_input("input", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array {
-            iv::event_output("output", iv::EventTypeId::trigger, true),
+            iv::compiled_event_output("output", iv::EventTypeId::trigger),
         };
     }
 

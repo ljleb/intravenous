@@ -1069,15 +1069,15 @@ namespace iv {
         }
     };
 
-    // The sample/event distinction is a property of one logical input, not a
-    // second parallel declaration API. These are the non-name properties of
-    // the two alternatives carried by InputConfig below.
+    // The sample/event distinction is one axis of a logical port declaration.
+    // Its temporal access model is a separate axis: realtime ports have a
+    // finite history/latency contract, while compiled ports are random-access
+    // and therefore do not carry realtime timing requirements.
     struct SampleInputProperties {
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        size_t history = 0;
         // The total-read value for an unavailable or out-of-range compiled
         // input. This is deliberately separate from default_value, which is
         // the value used for an ordinary disconnected sequential input.
@@ -1092,8 +1092,6 @@ namespace iv {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        size_t latency = 0;
-        size_t history = 0;
     };
 
     constexpr ChannelLayout effective_channel_layout(SampleInputProperties const& config)
@@ -1106,18 +1104,6 @@ namespace iv {
         return config.channel_layout;
     }
 
-    struct EventInputConfig {
-        std::string name {};
-        EventTypeId type {};
-        bool compiled = false;
-    };
-
-    struct EventOutputConfig {
-        std::string name {};
-        EventTypeId type {};
-        bool compiled = false;
-    };
-
     struct EventInputProperties {
         EventTypeId type {};
     };
@@ -1126,99 +1112,271 @@ namespace iv {
         EventTypeId type {};
     };
 
-    // The authored declaration is one ordered input/output list. A variant
-    // makes nonsensical combinations unrepresentable: event ports cannot
-    // have sample history/range/default data. Builder/lowering code splits
-    // these alternatives into its separate sample/event execution collections.
+    struct RealtimeInputConfig {
+        size_t history = 0;
+
+        constexpr bool operator==(RealtimeInputConfig const&) const = default;
+    };
+
+    struct RealtimeOutputConfig {
+        size_t history = 0;
+        size_t latency = 0;
+
+        constexpr bool operator==(RealtimeOutputConfig const&) const = default;
+    };
+
+    struct CompiledPortConfig {
+        constexpr bool operator==(CompiledPortConfig const&) const = default;
+    };
+
+    using InputAccessConfig = std::variant<RealtimeInputConfig, CompiledPortConfig>;
+    using OutputAccessConfig = std::variant<RealtimeOutputConfig, CompiledPortConfig>;
+
+    inline constexpr CompiledPortConfig compiled_port {};
+
+    [[nodiscard]] constexpr bool is_compiled(InputAccessConfig const& config)
+    {
+        return std::holds_alternative<CompiledPortConfig>(config);
+    }
+
+    [[nodiscard]] constexpr bool is_compiled(OutputAccessConfig const& config)
+    {
+        return std::holds_alternative<CompiledPortConfig>(config);
+    }
+
+    [[nodiscard]] constexpr bool is_realtime(InputAccessConfig const& config)
+    {
+        return std::holds_alternative<RealtimeInputConfig>(config);
+    }
+
+    [[nodiscard]] constexpr bool is_realtime(OutputAccessConfig const& config)
+    {
+        return std::holds_alternative<RealtimeOutputConfig>(config);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history(InputAccessConfig const& config)
+    {
+        return std::get<RealtimeInputConfig>(config).history;
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history(OutputAccessConfig const& config)
+    {
+        return std::get<RealtimeOutputConfig>(config).history;
+    }
+
+    [[nodiscard]] constexpr size_t realtime_latency(OutputAccessConfig const& config)
+    {
+        return std::get<RealtimeOutputConfig>(config).latency;
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+        InputAccessConfig const& config)
+    {
+        if (auto const* realtime = std::get_if<RealtimeInputConfig>(&config)) {
+            return realtime->history;
+        }
+        return 0;
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+        OutputAccessConfig const& config)
+    {
+        if (auto const* realtime = std::get_if<RealtimeOutputConfig>(&config)) {
+            return realtime->history;
+        }
+        return 0;
+    }
+
+    [[nodiscard]] constexpr size_t realtime_latency_or_zero(
+        OutputAccessConfig const& config)
+    {
+        if (auto const* realtime = std::get_if<RealtimeOutputConfig>(&config)) {
+            return realtime->latency;
+        }
+        return 0;
+    }
+
+    [[nodiscard]] constexpr InputAccessConfig inward_input_access(
+        OutputAccessConfig const& config)
+    {
+        if (auto const* realtime = std::get_if<RealtimeOutputConfig>(&config)) {
+            return RealtimeInputConfig{.history = realtime->history};
+        }
+        return CompiledPortConfig{};
+    }
+
+    [[nodiscard]] constexpr OutputAccessConfig inward_output_access(
+        InputAccessConfig const& config)
+    {
+        if (auto const* realtime = std::get_if<RealtimeInputConfig>(&config)) {
+            return RealtimeOutputConfig{.history = realtime->history};
+        }
+        return CompiledPortConfig{};
+    }
+
+    // Authored declarations keep payload kind and temporal/access semantics
+    // orthogonal. Compiled ports still expose their ordinary current-block
+    // typed wrappers in tick()/tick_block(); the additive capability lives in
+    // that accessor surface rather than in a realtime timing declaration.
     struct InputConfig {
         std::string name {};
-        // Compiled is a property of the logical port, independent of whether
-        // its payload is a sample stream or an event stream.
-        bool compiled = false;
         std::variant<SampleInputProperties, EventInputProperties> kind {};
+        InputAccessConfig access {RealtimeInputConfig{}};
 
         constexpr InputConfig() = default;
         constexpr explicit InputConfig(std::string name)
             : name(std::move(name))
         {}
         constexpr InputConfig(
-            std::string name, SampleInputProperties config, bool compiled = false)
+            std::string name,
+            SampleInputProperties config,
+            InputAccessConfig access = RealtimeInputConfig{})
             : name(std::move(name))
-            , compiled(compiled)
             , kind(std::move(config))
+            , access(std::move(access))
         {}
         constexpr InputConfig(
-            std::string name, EventInputProperties config, bool compiled = false)
+            std::string name,
+            EventInputProperties config,
+            InputAccessConfig access = RealtimeInputConfig{})
             : name(std::move(name))
-            , compiled(compiled)
             , kind(std::move(config))
+            , access(std::move(access))
         {}
     };
 
     struct OutputConfig {
         std::string name {};
-        // See InputConfig::compiled. This stays outside the payload variant
-        // because compilation is independent of port kind.
-        bool compiled = false;
         std::variant<SampleOutputProperties, EventOutputProperties> kind {};
+        OutputAccessConfig access {RealtimeOutputConfig{}};
 
         constexpr OutputConfig() = default;
         constexpr explicit OutputConfig(std::string name)
             : name(std::move(name))
         {}
         constexpr OutputConfig(
-            std::string name, SampleOutputProperties config, bool compiled = false)
+            std::string name,
+            SampleOutputProperties config,
+            OutputAccessConfig access = RealtimeOutputConfig{})
             : name(std::move(name))
-            , compiled(compiled)
             , kind(std::move(config))
+            , access(std::move(access))
         {}
         constexpr OutputConfig(
-            std::string name, EventOutputProperties config, bool compiled = false)
+            std::string name,
+            EventOutputProperties config,
+            OutputAccessConfig access = RealtimeOutputConfig{})
             : name(std::move(name))
-            , compiled(compiled)
             , kind(std::move(config))
+            , access(std::move(access))
         {}
     };
 
     [[nodiscard]] constexpr InputConfig sample_input(
         std::string name = {}, SampleInputProperties properties = {},
-        bool compiled = false)
+        RealtimeInputConfig access = {})
     {
-        return InputConfig{std::move(name), std::move(properties), compiled};
+        return InputConfig{
+            std::move(name), std::move(properties), std::move(access)};
+    }
+
+    [[nodiscard]] constexpr InputConfig sample_input(
+        std::string name, SampleInputProperties properties, CompiledPortConfig access)
+    {
+        return InputConfig{
+            std::move(name), std::move(properties), access};
     }
 
     [[nodiscard]] constexpr OutputConfig sample_output(
         std::string name = {}, SampleOutputProperties properties = {},
-        bool compiled = false)
+        RealtimeOutputConfig access = {})
     {
-        return OutputConfig{std::move(name), std::move(properties), compiled};
+        return OutputConfig{
+            std::move(name), std::move(properties), std::move(access)};
+    }
+
+    [[nodiscard]] constexpr OutputConfig sample_output(
+        std::string name, SampleOutputProperties properties, CompiledPortConfig access)
+    {
+        return OutputConfig{
+            std::move(name), std::move(properties), access};
     }
 
     [[nodiscard]] constexpr InputConfig event_input(
-        std::string name, EventTypeId type, bool compiled = false)
+        std::string name, EventTypeId type, RealtimeInputConfig access = {})
     {
         return InputConfig{
-            std::move(name), EventInputProperties{.type = type}, compiled};
+            std::move(name), EventInputProperties{.type = type}, std::move(access)};
+    }
+
+    [[nodiscard]] constexpr InputConfig event_input(
+        std::string name, EventTypeId type, CompiledPortConfig access)
+    {
+        return InputConfig{
+            std::move(name), EventInputProperties{.type = type}, access};
     }
 
     [[nodiscard]] constexpr OutputConfig event_output(
-        std::string name, EventTypeId type, bool compiled = false)
+        std::string name, EventTypeId type, RealtimeOutputConfig access = {})
     {
         return OutputConfig{
-            std::move(name), EventOutputProperties{.type = type}, compiled};
+            std::move(name), EventOutputProperties{.type = type}, std::move(access)};
     }
 
-    // The graph retains physical sample/event lists because its execution
-    // model has separate sample buffers and event streams. These descriptors
-    // are internal counterparts of the unified authored declarations above.
+    [[nodiscard]] constexpr OutputConfig event_output(
+        std::string name, EventTypeId type, CompiledPortConfig access)
+    {
+        return OutputConfig{
+            std::move(name), EventOutputProperties{.type = type}, access};
+    }
+
+    [[nodiscard]] constexpr InputConfig compiled_sample_input(
+        std::string name = {}, SampleInputProperties properties = {})
+    {
+        return sample_input(std::move(name), std::move(properties), compiled_port);
+    }
+
+    [[nodiscard]] constexpr OutputConfig compiled_sample_output(
+        std::string name = {}, SampleOutputProperties properties = {})
+    {
+        return sample_output(std::move(name), std::move(properties), compiled_port);
+    }
+
+    [[nodiscard]] constexpr InputConfig compiled_event_input(
+        std::string name, EventTypeId type)
+    {
+        return event_input(std::move(name), type, compiled_port);
+    }
+
+    [[nodiscard]] constexpr OutputConfig compiled_event_output(
+        std::string name, EventTypeId type)
+    {
+        return event_output(std::move(name), type, compiled_port);
+    }
+
+    // The configured graph keeps physical sample/event lists because lowering
+    // uses separate sample and event collections. It preserves the same access
+    // variant instead of flattening compiled ports back into meaningless
+    // realtime history/latency fields.
+    struct EventInputConfig {
+        std::string name {};
+        EventTypeId type {};
+        InputAccessConfig access {RealtimeInputConfig{}};
+    };
+
+    struct EventOutputConfig {
+        std::string name {};
+        EventTypeId type {};
+        OutputAccessConfig access {RealtimeOutputConfig{}};
+    };
+
     struct SampleInputConfig {
         std::string name {};
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        bool compiled = false;
-        size_t history = 0;
+        InputAccessConfig access {RealtimeInputConfig{}};
         Sample neutral_value = 0.0;
         Sample default_value = 0.0;
         Sample min = -std::numeric_limits<Sample::storage>::infinity();
@@ -1231,9 +1389,7 @@ namespace iv {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        bool compiled = false;
-        size_t latency = 0;
-        size_t history = 0;
+        OutputAccessConfig access {RealtimeOutputConfig{}};
     };
 
     constexpr ChannelLayout effective_channel_layout(SampleInputConfig const& config)
@@ -1246,6 +1402,135 @@ namespace iv {
         return config.channel_layout;
     }
 
+    [[nodiscard]] constexpr bool is_compiled(InputConfig const& config)
+    {
+        return is_compiled(config.access);
+    }
+
+    [[nodiscard]] constexpr bool is_compiled(OutputConfig const& config)
+    {
+        return is_compiled(config.access);
+    }
+
+    [[nodiscard]] constexpr bool is_compiled(SampleInputConfig const& config)
+    {
+        return is_compiled(config.access);
+    }
+
+    [[nodiscard]] constexpr bool is_compiled(SampleOutputConfig const& config)
+    {
+        return is_compiled(config.access);
+    }
+
+    [[nodiscard]] constexpr bool is_compiled(EventInputConfig const& config)
+    {
+        return is_compiled(config.access);
+    }
+
+    [[nodiscard]] constexpr bool is_compiled(EventOutputConfig const& config)
+    {
+        return is_compiled(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history(InputConfig const& config)
+    {
+        return realtime_history(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history(OutputConfig const& config)
+    {
+        return realtime_history(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history(SampleInputConfig const& config)
+    {
+        return realtime_history(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history(SampleOutputConfig const& config)
+    {
+        return realtime_history(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history(EventInputConfig const& config)
+    {
+        return realtime_history(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history(EventOutputConfig const& config)
+    {
+        return realtime_history(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_latency(OutputConfig const& config)
+    {
+        return realtime_latency(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_latency(SampleOutputConfig const& config)
+    {
+        return realtime_latency(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_latency(EventOutputConfig const& config)
+    {
+        return realtime_latency(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+        InputConfig const& config)
+    {
+        return realtime_history_or_zero(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+        OutputConfig const& config)
+    {
+        return realtime_history_or_zero(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+        SampleInputConfig const& config)
+    {
+        return realtime_history_or_zero(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+        SampleOutputConfig const& config)
+    {
+        return realtime_history_or_zero(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+        EventInputConfig const& config)
+    {
+        return realtime_history_or_zero(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+        EventOutputConfig const& config)
+    {
+        return realtime_history_or_zero(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_latency_or_zero(
+        OutputConfig const& config)
+    {
+        return realtime_latency_or_zero(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_latency_or_zero(
+        SampleOutputConfig const& config)
+    {
+        return realtime_latency_or_zero(config.access);
+    }
+
+    [[nodiscard]] constexpr size_t realtime_latency_or_zero(
+        EventOutputConfig const& config)
+    {
+        return realtime_latency_or_zero(config.access);
+    }
+
     [[nodiscard]] constexpr SampleInputConfig materialize_sample_config(
         InputConfig const& config)
     {
@@ -1253,8 +1538,7 @@ namespace iv {
         return {
             .name = config.name,
             .channel_layout = properties.channel_layout,
-            .compiled = config.compiled,
-            .history = properties.history,
+            .access = config.access,
             .neutral_value = properties.neutral_value,
             .default_value = properties.default_value,
             .min = properties.min,
@@ -1269,61 +1553,74 @@ namespace iv {
         return {
             .name = config.name,
             .channel_layout = properties.channel_layout,
-            .compiled = config.compiled,
-            .latency = properties.latency,
-            .history = properties.history,
+            .access = config.access,
         };
     }
 
     [[nodiscard]] constexpr EventInputConfig materialize_event_config(
         InputConfig const& config)
     {
-        return {.name = config.name,
-                .type = std::get<EventInputProperties>(config.kind).type,
-                .compiled = config.compiled};
+        return {
+            .name = config.name,
+            .type = std::get<EventInputProperties>(config.kind).type,
+            .access = config.access,
+        };
     }
 
     [[nodiscard]] constexpr EventOutputConfig materialize_event_config(
         OutputConfig const& config)
     {
-        return {.name = config.name,
-                .type = std::get<EventOutputProperties>(config.kind).type,
-                .compiled = config.compiled};
+        return {
+            .name = config.name,
+            .type = std::get<EventOutputProperties>(config.kind).type,
+            .access = config.access,
+        };
     }
 
     [[nodiscard]] constexpr InputConfig make_input_config(
         SampleInputConfig const& config)
     {
-        return {config.name, SampleInputProperties{
-            .channel_layout = config.channel_layout,
-            .history = config.history,
-            .neutral_value = config.neutral_value,
-            .default_value = config.default_value,
-            .min = config.min,
-            .max = config.max,
-        }, config.compiled};
+        return {
+            config.name,
+            SampleInputProperties{
+                .channel_layout = config.channel_layout,
+                .neutral_value = config.neutral_value,
+                .default_value = config.default_value,
+                .min = config.min,
+                .max = config.max,
+            },
+            config.access,
+        };
     }
 
     [[nodiscard]] constexpr InputConfig make_input_config(
         EventInputConfig const& config)
     {
-        return {config.name, EventInputProperties{.type = config.type}, config.compiled};
+        return {
+            config.name,
+            EventInputProperties{.type = config.type},
+            config.access,
+        };
     }
 
     [[nodiscard]] constexpr OutputConfig make_output_config(
         SampleOutputConfig const& config)
     {
-        return {config.name, SampleOutputProperties{
-            .channel_layout = config.channel_layout,
-            .latency = config.latency,
-            .history = config.history,
-        }, config.compiled};
+        return {
+            config.name,
+            SampleOutputProperties{.channel_layout = config.channel_layout},
+            config.access,
+        };
     }
 
     [[nodiscard]] constexpr OutputConfig make_output_config(
         EventOutputConfig const& config)
     {
-        return {config.name, EventOutputProperties{.type = config.type}, config.compiled};
+        return {
+            config.name,
+            EventOutputProperties{.type = config.type},
+            config.access,
+        };
     }
 
     [[nodiscard]] constexpr bool is_sample(InputConfig const& config)

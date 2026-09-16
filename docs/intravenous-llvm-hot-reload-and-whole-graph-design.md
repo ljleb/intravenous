@@ -1470,9 +1470,13 @@ The normative compiled-port design is
 [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). The whole-project compiler and
 runtime must preserve these integration rules:
 
-- sample/event kind and realtime/compiled capability are orthogonal; compiled
-  extends ordinary DSP ports rather than introducing a parallel graph or a
-  prepared-resource input vocabulary;
+- sample/event kind and realtime/compiled access are orthogonal declaration
+  axes; realtime declarations carry finite `RealtimeInputConfig` /
+  `RealtimeOutputConfig` timing while compiled declarations carry the empty
+  `CompiledPortConfig`;
+- compiled access remains additive at the typed `tick()` / `tick_block()`
+  accessor surface rather than by combining realtime and compiled config state;
+  it does not introduce a parallel graph or prepared-resource vocabulary;
 - `tick_block()` is sequential realtime execution, while `access_block()` is
   arbitrary compiled evaluation over compiled ports and `CompiledState`;
 - compiled sample queries may request sparse deterministic integer sample
@@ -2496,11 +2500,13 @@ The following are treated as strong architectural decisions unless implementatio
 26. **Built-ins are an ordinary shipped IV package.** Public non-template
     basic node types are registered there; template families stay internal
     until a concrete specialization receives an explicit stable ID.
-27. **Compiled is a DSP-port capability, not a storage class or parallel graph.**
-    Sample/event kind is orthogonal to realtime/compiled capability. A compiled
-    input extends the corresponding realtime access; compiled sample outputs are
-    queryable at arbitrary global sample positions and compiled event outputs over
-    arbitrary global event intervals.
+27. **Compiled is a DSP-port access model, not a storage class or parallel graph.**
+    Sample/event kind is orthogonal to realtime/compiled access. A port
+    declaration chooses finite realtime timing or compiled random access; it does
+    not carry both timing configs. The typed `tick()` / `tick_block()` wrapper for
+    a compiled port nevertheless retains the corresponding ordinary current-block
+    operations. Compiled sample outputs are queryable at arbitrary global sample
+    positions and compiled event outputs over arbitrary global event intervals.
 28. **Compiled queries are globally demand-planned.** Reverse requirement
     propagation/union precedes forward evaluation; upstream work is not greedily
     executed once per downstream path.

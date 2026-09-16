@@ -234,7 +234,7 @@ namespace iv {
                     entry.id,
                     GraphPortStorageConfig {
                         .channel_layout = entry.config.channel_layout,
-                        .history = entry.config.history,
+                        .history = realtime_history_or_zero(entry.config),
                         .default_value = entry.config.default_value,
                     },
                     InputPortPlan{.storage = entry.plan});

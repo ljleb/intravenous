@@ -53,6 +53,16 @@ concept HasSampleRange = requires(Config const& config) {
     config.max;
 };
 
+template<class Config>
+concept HasHistory = requires(Config const& config) {
+    config.history;
+};
+
+template<class Config>
+concept HasLatency = requires(Config const& config) {
+    config.latency;
+};
+
 static_assert(std::same_as<decltype(iv::sample_input()), iv::InputConfig>);
 static_assert(std::same_as<
     decltype(iv::event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
@@ -61,7 +71,29 @@ static_assert(std::same_as<
     decltype(iv::event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
 static_assert(HasSampleRange<iv::SampleInputProperties>);
 static_assert(!HasSampleRange<iv::EventInputProperties>);
+static_assert(!HasHistory<iv::SampleInputProperties>);
+static_assert(!HasHistory<iv::SampleOutputProperties>);
+static_assert(!HasHistory<iv::EventInputProperties>);
+static_assert(!HasHistory<iv::EventOutputProperties>);
+static_assert(!HasLatency<iv::SampleOutputProperties>);
+static_assert(!HasLatency<iv::EventOutputProperties>);
+static_assert(HasHistory<iv::RealtimeInputConfig>);
+static_assert(HasHistory<iv::RealtimeOutputConfig>);
+static_assert(HasLatency<iv::RealtimeOutputConfig>);
+static_assert(!HasHistory<iv::CompiledPortConfig>);
+static_assert(!HasLatency<iv::CompiledPortConfig>);
 static_assert(iv::sample_properties(iv::InputConfig {}).neutral_value.value == 0.0f);
+static_assert(iv::realtime_history(
+    iv::sample_input("history", {}, {.history = 7})) == 7);
+static_assert(iv::realtime_history(
+    iv::event_input("history", iv::EventTypeId::trigger, {.history = 5})) == 5);
+static_assert(iv::realtime_history(
+    iv::sample_output("timing", {}, {.history = 11, .latency = 3})) == 11);
+static_assert(iv::realtime_latency(
+    iv::sample_output("timing", {}, {.history = 11, .latency = 3})) == 3);
+static_assert(iv::is_compiled(iv::compiled_sample_input("compiled")));
+static_assert(iv::is_compiled(iv::compiled_event_output(
+    "compiled", iv::EventTypeId::trigger)));
 
 TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
 {
@@ -100,7 +132,7 @@ struct CompiledSource {
 
     static constexpr auto outputs()
     {
-        return std::array {iv::sample_output("signal", {}, true)};
+        return std::array {iv::compiled_sample_output("signal")};
     }
 
     void access_block(iv::AccessBlockContext<CompiledSource>&) const {}
@@ -109,12 +141,12 @@ struct CompiledSource {
 struct CompiledTransform {
     static constexpr auto inputs()
     {
-        return std::array {iv::sample_input("input", {}, true)};
+        return std::array {iv::compiled_sample_input("input")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {iv::sample_output("output", {}, true)};
+        return std::array {iv::compiled_sample_output("output")};
     }
 
     void access_block_batch(iv::AccessBlockBatchContext<CompiledTransform>&) const {}
@@ -126,26 +158,26 @@ struct CompiledTransform {
 struct CompiledEvents {
     static constexpr auto inputs()
     {
-        return std::array {iv::event_input("events-in", iv::EventTypeId::trigger, true)};
+        return std::array {iv::compiled_event_input("events-in", iv::EventTypeId::trigger)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {iv::event_output("events-out", iv::EventTypeId::trigger, true)};
+        return std::array {iv::compiled_event_output("events-out", iv::EventTypeId::trigger)};
     }
 };
 
 struct MissingCompiledAccess {
     static constexpr auto outputs()
     {
-        return std::array {iv::sample_output("output", {}, true)};
+        return std::array {iv::compiled_sample_output("output")};
     }
 };
 
 struct ConflictingCompiledAccess {
     static constexpr auto outputs()
     {
-        return std::array {iv::sample_output("output", {}, true)};
+        return std::array {iv::compiled_sample_output("output")};
     }
 
     void access_block(iv::AccessBlockContext<ConflictingCompiledAccess>&) const {}
@@ -156,12 +188,12 @@ struct ConflictingCompiledAccess {
 struct MissingBlockAccessPropagation {
     static constexpr auto inputs()
     {
-        return std::array {iv::sample_input("input", {}, true)};
+        return std::array {iv::compiled_sample_input("input")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {iv::sample_output("output", {}, true)};
+        return std::array {iv::compiled_sample_output("output")};
     }
 
     void access_block(iv::AccessBlockContext<MissingBlockAccessPropagation>&) const {}
@@ -172,7 +204,7 @@ struct MixedCompiledPorts {
     {
         return std::array {
             iv::sample_input("realtime"),
-            iv::sample_input("compiled", {}, true),
+            iv::compiled_sample_input("compiled"),
         };
     }
 
@@ -180,7 +212,7 @@ struct MixedCompiledPorts {
     {
         return std::array {
             iv::sample_output("realtime"),
-            iv::sample_output("compiled", {}, true),
+            iv::compiled_sample_output("compiled"),
         };
     }
 
@@ -194,7 +226,7 @@ struct UnbatchedAccessNode {
 
     static constexpr auto outputs()
     {
-        return std::array {iv::sample_output("output", {}, true)};
+        return std::array {iv::compiled_sample_output("output")};
     }
 
     void access_block(iv::AccessBlockContext<UnbatchedAccessNode>&) const
@@ -208,12 +240,12 @@ struct UnbatchedBlockAccessPropagationNode {
 
     static constexpr auto inputs()
     {
-        return std::array {iv::sample_input("input", {}, true)};
+        return std::array {iv::compiled_sample_input("input")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {iv::sample_output("output", {}, true)};
+        return std::array {iv::compiled_sample_output("output")};
     }
 
     void access_block(
@@ -232,12 +264,12 @@ struct BatchedCallbacksNode {
 
     static constexpr auto inputs()
     {
-        return std::array {iv::sample_input("input", {}, true)};
+        return std::array {iv::compiled_sample_input("input")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {iv::sample_output("output", {}, true)};
+        return std::array {iv::compiled_sample_output("output")};
     }
 
     void access_block_batch(iv::AccessBlockBatchContext<BatchedCallbacksNode>&) const

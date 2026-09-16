@@ -41,7 +41,7 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sample_input("in", {.history = 1}),
+                sample_input("in", {}, {.history = 1}),
                 sample_input("cutoff"),
             };
         }
@@ -79,7 +79,7 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sample_input("in", {.history = 1}),
+                sample_input("in", {}, {.history = 1}),
                 sample_input("cutoff"),
             };
         }

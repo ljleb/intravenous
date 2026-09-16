@@ -37,7 +37,7 @@ struct DynamicPortCountNode {
 struct MissingCompiledAccessNode {
     static constexpr auto outputs()
     {
-        return std::array {iv::sample_output("output", {}, true)};
+        return std::array {iv::compiled_sample_output("output")};
     }
 
     void tick_block(iv::TickBlockContext<MissingCompiledAccessNode> const&) const {}
@@ -46,7 +46,7 @@ struct MissingCompiledAccessNode {
 struct ConflictingCompiledAccessNode {
     static constexpr auto outputs()
     {
-        return std::array {iv::sample_output("output", {}, true)};
+        return std::array {iv::compiled_sample_output("output")};
     }
 
     void tick_block(iv::TickBlockContext<ConflictingCompiledAccessNode> const&) const {}

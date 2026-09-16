@@ -129,66 +129,97 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_THROW(fixture.decode(trailing), std::runtime_error);
 }
 
-TEST(ConfiguredGraphBinaryArchive, RoundTripsCompiledSamplePortCapabilities)
+TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
 {
-    iv::SampleInputConfig const input {
-        .name = "compiled-input",
+    iv::SampleInputConfig const realtime_input {
+        .name = "realtime-input",
         .channel_layout = {
             .channel_type = iv::ChannelTypeId::stereo,
             .sample_layout = iv::SampleStreamLayout::interleaved,
         },
-        .compiled = true,
-        .history = 7,
+        .access = iv::RealtimeInputConfig{.history = 7},
         .neutral_value = -0.125f,
         .default_value = 0.25f,
     };
-    iv::SampleOutputConfig const output {
-        .name = "compiled-output",
-        .compiled = true,
-        .latency = 3,
-        .history = 11,
+    iv::SampleInputConfig const compiled_input {
+        .name = "compiled-input",
+        .access = iv::CompiledPortConfig{},
     };
-    iv::EventInputConfig const event_input {
+    iv::SampleOutputConfig const realtime_output {
+        .name = "realtime-output",
+        .access = iv::RealtimeOutputConfig{.history = 11, .latency = 3},
+    };
+    iv::SampleOutputConfig const compiled_output {
+        .name = "compiled-output",
+        .access = iv::CompiledPortConfig{},
+    };
+    iv::EventInputConfig const realtime_event_input {
+        .name = "realtime-event-input",
+        .type = iv::EventTypeId::trigger,
+        .access = iv::RealtimeInputConfig{.history = 5},
+    };
+    iv::EventInputConfig const compiled_event_input {
         .name = "compiled-event-input",
         .type = iv::EventTypeId::trigger,
-        .compiled = true,
+        .access = iv::CompiledPortConfig{},
     };
-    iv::EventOutputConfig const event_output {
+    iv::EventOutputConfig const realtime_event_output {
+        .name = "realtime-event-output",
+        .type = iv::EventTypeId::midi,
+        .access = iv::RealtimeOutputConfig{.history = 13, .latency = 2},
+    };
+    iv::EventOutputConfig const compiled_event_output {
         .name = "compiled-event-output",
         .type = iv::EventTypeId::midi,
-        .compiled = true,
+        .access = iv::CompiledPortConfig{},
     };
 
     iv::binary_wire_details::Writer writer;
-    iv::binary_wire_details::write_input(writer, input);
-    iv::binary_wire_details::write_output(writer, output);
-    iv::binary_wire_details::write_event_input(writer, event_input);
-    iv::binary_wire_details::write_event_output(writer, event_output);
+    iv::binary_wire_details::write_input(writer, realtime_input);
+    iv::binary_wire_details::write_input(writer, compiled_input);
+    iv::binary_wire_details::write_output(writer, realtime_output);
+    iv::binary_wire_details::write_output(writer, compiled_output);
+    iv::binary_wire_details::write_event_input(writer, realtime_event_input);
+    iv::binary_wire_details::write_event_input(writer, compiled_event_input);
+    iv::binary_wire_details::write_event_output(writer, realtime_event_output);
+    iv::binary_wire_details::write_event_output(writer, compiled_event_output);
     auto const bytes = std::move(writer).take();
 
     iv::binary_wire_details::Reader reader(bytes);
-    auto const decoded_input = iv::binary_wire_details::read_input(reader);
-    auto const decoded_output = iv::binary_wire_details::read_output(reader);
-    auto const decoded_event_input = iv::binary_wire_details::read_event_input(reader);
-    auto const decoded_event_output = iv::binary_wire_details::read_event_output(reader);
+    auto const decoded_realtime_input = iv::binary_wire_details::read_input(reader);
+    auto const decoded_compiled_input = iv::binary_wire_details::read_input(reader);
+    auto const decoded_realtime_output = iv::binary_wire_details::read_output(reader);
+    auto const decoded_compiled_output = iv::binary_wire_details::read_output(reader);
+    auto const decoded_realtime_event_input = iv::binary_wire_details::read_event_input(reader);
+    auto const decoded_compiled_event_input = iv::binary_wire_details::read_event_input(reader);
+    auto const decoded_realtime_event_output = iv::binary_wire_details::read_event_output(reader);
+    auto const decoded_compiled_event_output = iv::binary_wire_details::read_event_output(reader);
     reader.finish();
 
-    EXPECT_EQ(decoded_input.name, input.name);
-    EXPECT_EQ(decoded_input.channel_layout, input.channel_layout);
-    EXPECT_TRUE(decoded_input.compiled);
-    EXPECT_EQ(decoded_input.history, 7u);
-    EXPECT_FLOAT_EQ(static_cast<float>(decoded_input.neutral_value), -0.125f);
-    EXPECT_FLOAT_EQ(static_cast<float>(decoded_input.default_value), 0.25f);
-    EXPECT_EQ(decoded_output.name, output.name);
-    EXPECT_TRUE(decoded_output.compiled);
-    EXPECT_EQ(decoded_output.latency, 3u);
-    EXPECT_EQ(decoded_output.history, 11u);
-    EXPECT_EQ(decoded_event_input.name, event_input.name);
-    EXPECT_EQ(decoded_event_input.type, event_input.type);
-    EXPECT_TRUE(decoded_event_input.compiled);
-    EXPECT_EQ(decoded_event_output.name, event_output.name);
-    EXPECT_EQ(decoded_event_output.type, event_output.type);
-    EXPECT_TRUE(decoded_event_output.compiled);
+    EXPECT_EQ(decoded_realtime_input.name, realtime_input.name);
+    EXPECT_EQ(decoded_realtime_input.channel_layout, realtime_input.channel_layout);
+    EXPECT_FALSE(iv::is_compiled(decoded_realtime_input));
+    EXPECT_EQ(iv::realtime_history(decoded_realtime_input), 7u);
+    EXPECT_FLOAT_EQ(static_cast<float>(decoded_realtime_input.neutral_value), -0.125f);
+    EXPECT_FLOAT_EQ(static_cast<float>(decoded_realtime_input.default_value), 0.25f);
+    EXPECT_TRUE(iv::is_compiled(decoded_compiled_input));
+    EXPECT_FALSE(iv::is_realtime(decoded_compiled_input.access));
+
+    EXPECT_EQ(decoded_realtime_output.name, realtime_output.name);
+    EXPECT_FALSE(iv::is_compiled(decoded_realtime_output));
+    EXPECT_EQ(iv::realtime_history(decoded_realtime_output), 11u);
+    EXPECT_EQ(iv::realtime_latency(decoded_realtime_output), 3u);
+    EXPECT_TRUE(iv::is_compiled(decoded_compiled_output));
+    EXPECT_FALSE(iv::is_realtime(decoded_compiled_output.access));
+
+    EXPECT_EQ(decoded_realtime_event_input.type, realtime_event_input.type);
+    EXPECT_EQ(iv::realtime_history(decoded_realtime_event_input), 5u);
+    EXPECT_TRUE(iv::is_compiled(decoded_compiled_event_input));
+
+    EXPECT_EQ(decoded_realtime_event_output.type, realtime_event_output.type);
+    EXPECT_EQ(iv::realtime_history(decoded_realtime_event_output), 13u);
+    EXPECT_EQ(iv::realtime_latency(decoded_realtime_event_output), 2u);
+    EXPECT_TRUE(iv::is_compiled(decoded_compiled_event_output));
 }
 
 } // namespace
