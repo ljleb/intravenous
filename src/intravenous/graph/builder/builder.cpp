@@ -463,7 +463,14 @@ NodeRef GraphBuilder::embed_child(GraphBuilder& child, std::string_view kind)
 {
     auto& graph = state(*this);
     auto& child_graph = state(child);
-    return graph.embed_subgraph(child_graph, kind);
+    auto embedding = graph.embed_subgraph(child_graph, kind);
+    return NodeRef(*this, embedding.root_scope);
+}
+
+ConfiguredGraphEmbedding GraphBuilder::embed(
+    ConfiguredGraph const& child, std::string_view kind)
+{
+    return state(*this).embed_configured_graph(child, kind);
 }
 
 details::SubgraphBuildScope* GraphBuilder::begin_subgraph()

@@ -1216,8 +1216,9 @@ the root builder still retains its hierarchy/embedding maps. Recursive
 members, tiled child selectors, nested subgraph scopes, ports, and optional port
 channels is therefore complete before finalization.
 
-Dangling desired project connections remain owned by `ProjectGraph`; they do not
-become fabricated edges in the configured root graph.
+Dangling desired project connections remain owned by `GraphConnections`;
+`ProjectGraph` only coordinates the rebuild transaction, and unresolved intent
+does not become fabricated edges in the configured root graph.
 
 ### 13.5 Complete producer/consumer knowledge drives implementation planning
 

@@ -103,10 +103,11 @@ application-module ownership merely because both use ORC.
 
 ## Current JIT ownership and future graph-JIT ownership
 
-Today the package/configuration ORC state is owned below `ModuleLoader`, which is
-kept alive by package reload state. A shared package `LLJIT` survives individual
-package revisions, and each loaded package revision owns generation-specific ORC
-resources such as a `JITDylib`/resource tracker.
+Today `PackageJit` owns the persistent `ModuleLoader` and therefore the shared
+package/configuration ORC state. A shared package `LLJIT` survives individual
+package revisions, while each accepted `PackageRevision` pins its
+generation-specific package code/resources so callbacks, retained LLVM, and
+configuration data remain valid after later refreshes.
 
 The whole-project graph JIT should use the analogous lifetime pattern in its own
 domain:

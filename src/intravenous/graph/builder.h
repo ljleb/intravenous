@@ -6,6 +6,7 @@
 #include <intravenous/basic_nodes/constant.h>
 #include <intravenous/channel_ports.h>
 #include <intravenous/graph/builder/node_refs.h>
+#include <intravenous/graph/builder/embedding.h>
 #include <intravenous/graph/builder/output_refs.h>
 #include <intravenous/graph/builder/subgraphs.hpp>
 #include <intravenous/graph/source_info.h>
@@ -310,6 +311,12 @@ public:
   void annotate_public_event_output_source_info(std::span<SourceInfo const>);
   void annotate_public_sample_output_source_info(size_t, SourceInfo);
   void annotate_public_event_output_source_info(size_t, SourceInfo);
+  // Imports a frozen configured graph directly through the same semantic
+  // remapper used for live child builders. The returned translation is stable
+  // for this parent builder and leaves all local handles in the child untouched.
+  ConfiguredGraphEmbedding embed(
+      ConfiguredGraph const&, std::string_view kind = "Configured graph");
+
   ConfiguredGraph finish() const &;
   ConfiguredGraph finish() &&;
 

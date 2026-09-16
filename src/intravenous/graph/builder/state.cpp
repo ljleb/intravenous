@@ -422,49 +422,85 @@ void GraphBuilderState::annotate_public_event_output_source_info(
       ordinal, std::move(info));
 }
 
-NodeRef GraphBuilderState::embed_subgraph(
-    GraphBuilderState const& child, std::string_view kind) {
-  if (!child._public_ports.sample_outputs_defined())
-    details::error(
-        "builder " + child._identity.value +
-        ": g.outputs(...) must be called before insertion");
-  auto const begin = _node_bundles.size();
-  auto const offset = GraphBuilderChildEmbedder::embed(
-      _node_bundles, _connections, _detach, _virtual_nodes,
-      child._public_ports, child._node_bundles, child._connections,
-      child._detach, child._virtual_nodes);
-  IV_ASSERT(offset == begin, "embedded child bundle offset changed unexpectedly");
-  auto const boundary = offset + child._public_ports.boundary_handle();
-  auto const count = child._node_bundles.size();
-  auto const subgraph = _node_bundles.append_subgraph(
-      boundary, begin, count, kind);
+ConfiguredGraphEmbedding GraphBuilderState::embed_graph_components(
+    GraphBuilderPublicPorts const& child_public_ports,
+    GraphBuilderNodeBundles const& child_bundles,
+    GraphBuilderConnections const& child_connections,
+    GraphBuilderDetach const& child_detach,
+    GraphBuilderVirtualNodes const& child_virtual_nodes,
+    std::string_view kind) {
+  if (!child_public_ports.sample_outputs_defined())
+    details::error("embedded graph must call g.outputs(...) before insertion");
 
-  // Once a child module is embedded, its public inputs become input ports of
-  // the surrounding subgraph. Keep the child declaration/reference source
+  auto const begin = _node_bundles.size();
+  auto imported = GraphBuilderChildEmbedder::import(
+      _node_bundles, _connections, _detach, _virtual_nodes,
+      child_bundles, child_connections, child_detach, child_virtual_nodes);
+  IV_ASSERT(
+      imported.bundle_offset == begin,
+      "embedded child bundle offset changed unexpectedly");
+
+  auto const boundary = imported.bundle_offset
+      + child_public_ports.boundary_handle();
+  auto const subgraph = _node_bundles.append_subgraph(
+      boundary, begin, child_bundles.size(), kind);
+
+  // Once a child graph is embedded, its public inputs become input ports of
+  // the surrounding subgraph. Keep child declaration/reference source
   // identities on those virtual ports so source introspection does not lose
-  // `auto x = g.input<...>()` provenance at the module boundary.
-  auto const sample_inputs =
-      child._public_ports.sample_inputs(child._node_bundles);
+  // provenance at the graph boundary.
+  auto const sample_inputs = child_public_ports.sample_inputs(child_bundles);
   for (size_t ordinal = 0; ordinal < sample_inputs.size(); ++ordinal) {
-    for (auto const& info :
-         child._public_ports.sample_input_source_infos(ordinal)) {
+    for (auto const& info : child_public_ports.sample_input_source_infos(ordinal)) {
       _virtual_nodes.annotate_input_source_info(
           _node_bundles, subgraph, info.declaration_identity,
           PortKind::sample, sample_inputs[ordinal].name, info);
     }
   }
-  auto const event_inputs =
-      child._public_ports.event_inputs(child._node_bundles);
+  auto const event_inputs = child_public_ports.event_inputs(child_bundles);
   for (size_t ordinal = 0; ordinal < event_inputs.size(); ++ordinal) {
-    for (auto const& info :
-         child._public_ports.event_input_source_infos(ordinal)) {
+    for (auto const& info : child_public_ports.event_input_source_infos(ordinal)) {
       _virtual_nodes.annotate_input_source_info(
           _node_bundles, subgraph, info.declaration_identity,
           PortKind::event, event_inputs[ordinal].name, info);
     }
   }
 
-  return NodeRef(facade(), subgraph);
+  return ConfiguredGraphEmbedding{
+      .root_scope = subgraph,
+      .node_bundles = std::move(imported.node_bundles),
+      .virtual_nodes = std::move(imported.virtual_nodes),
+  };
+}
+
+ConfiguredGraphEmbedding GraphBuilderState::embed_subgraph(
+    GraphBuilderState const& child, std::string_view kind) {
+  if (!child._public_ports.sample_outputs_defined())
+    details::error(
+        "builder " + child._identity.value
+        + ": g.outputs(...) must be called before insertion");
+  return embed_graph_components(
+      child._public_ports,
+      child._node_bundles,
+      child._connections,
+      child._detach,
+      child._virtual_nodes,
+      kind);
+}
+
+ConfiguredGraphEmbedding GraphBuilderState::embed_configured_graph(
+    ConfiguredGraph const& child, std::string_view kind) {
+  if (!child.public_ports.sample_outputs_defined())
+    details::error(
+        "configured graph " + child.identity.value
+        + ": g.outputs(...) must be called before insertion");
+  return embed_graph_components(
+      child.public_ports,
+      child.node_bundles,
+      child.connections,
+      child.detach,
+      child.virtual_nodes,
+      kind);
 }
 
 void GraphBuilderState::event_outputs(

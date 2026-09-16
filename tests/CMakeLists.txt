@@ -88,6 +88,9 @@ add_iv_gtest(
     intravenous_configured_graph_binary_archive_tests
     configured_graph_binary_archive_gtest.cpp)
 add_iv_gtest(
+    intravenous_configured_graph_embedding_tests
+    configured_graph_embedding_gtest.cpp)
+add_iv_gtest(
     intravenous_node_build_request_tests
     node_build_request_gtest.cpp)
 

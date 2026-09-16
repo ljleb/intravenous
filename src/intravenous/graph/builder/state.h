@@ -3,6 +3,7 @@
 // Private implementation for libiv_builder only. Do not include from a
 // module TU.
 #include <intravenous/graph/builder.h>
+#include <intravenous/graph/builder/embedding.h>
 #include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_nodes/type_erased.h>
@@ -106,8 +107,19 @@ class GraphBuilderState {
     return *_facade;
   }
 
+  ConfiguredGraphEmbedding embed_graph_components(
+      GraphBuilderPublicPorts const& child_public_ports,
+      GraphBuilderNodeBundles const& child_bundles,
+      GraphBuilderConnections const& child_connections,
+      GraphBuilderDetach const& child_detach,
+      GraphBuilderVirtualNodes const& child_virtual_nodes,
+      std::string_view kind);
+
   constexpr explicit GraphBuilderState(GraphBuilderIdentity identity);
-  NodeRef embed_subgraph(GraphBuilderState const& child, std::string_view kind = "Subgraph");
+  ConfiguredGraphEmbedding embed_subgraph(
+      GraphBuilderState const& child, std::string_view kind = "Subgraph");
+  ConfiguredGraphEmbedding embed_configured_graph(
+      ConfiguredGraph const& child, std::string_view kind = "Configured graph");
   constexpr PublicSampleInputRef input_named(std::string_view name, Sample default_value,
                                    std::optional<Sample> min,
                                    std::optional<Sample> max);

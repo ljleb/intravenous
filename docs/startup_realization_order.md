@@ -41,7 +41,8 @@ be compiled first, and it does not require audio execution to be active.
    `PackageWatcher -> {PackageJit, PackageDefinitions -> NodeDefinitions -> ProjectGraph}`,
    with `PackageJit` invoked first and its complete result returned to
    `PackageWatcher` before `PackageDefinitions` is entered.
-10. `ProjectGraph` rebuilds the same desired instance/connection state against
+10. `ProjectGraph` orchestrates reconstruction using the desired instances owned
+    by `NodeInstances` and desired connections owned by `GraphConnections` against
     the new immutable definitions snapshot, synchronously compiles the resulting
     root graph through `GraphJit`, and submits the compiled successor to
     `GraphExecutor`.

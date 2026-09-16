@@ -106,6 +106,12 @@ package-root discovery scan in `PackageWatcherService` is explicitly temporary
 and should be replaced by event-driven Linux discovery rather than preserved as a
 portability fallback.
 
+Direct frozen `ConfiguredGraph` embedding has also landed. Live child builders
+and frozen graphs now share one importer/remapper; each placement returns an
+explicit local-to-parent translation for node bundles/scopes and virtual nodes,
+and imported virtual identities remain distinct across child scopes. This
+removes the live-`BuilderSession` obstacle to cacheable `NodeInstance` values.
+
 `NodeInstances` and `IvModuleSourceIntrospection` still retain legacy internals
 and are later migration checkpoints.
 
@@ -278,10 +284,11 @@ definition id
 C++ configuration argument-list source
 ```
 
-`NodeInstances` does not own the canonical desired project instance list. It
-receives the complete requested batch for the current root-build transaction
-from `ProjectGraph`. Its retained state is cache/configuration machinery and any
-derived diagnostics needed to make later batches efficient.
+`NodeInstances` owns the canonical desired project instance set. `ProjectGraph`
+may carry one typed mutation or replay batch into the current root-build
+transaction, but it does not retain a duplicate desired-instance list.
+`NodeInstances` also retains cache/configuration machinery and derived
+diagnostics needed to make later batches efficient.
 
 `NodeInstances` does **not** define one runtime DSP object per external instance
 id. Multiple external instance ids may resolve to the same cached immutable
@@ -343,10 +350,12 @@ See [graph_builder_embedding_and_matchers.md](./graph_builder_embedding_and_matc
 
 ## `GraphConnections`
 
-`GraphConnections` owns project-wide cross-node connection **resolution and
-application** for one complete requested batch. Canonical desired connection
-declarations remain owned by `ProjectGraph`; `GraphConnections` may retain only
-derived resolution/cache/diagnostic state that is useful across transactions.
+`GraphConnections` owns the canonical desired cross-node connection set plus
+project-wide connection **resolution and application** for one complete batch.
+`ProjectGraph` may carry one typed connection mutation/replay batch into a root
+transaction, but it does not retain a duplicate connection list.
+`GraphConnections` may additionally retain derived resolution/cache/diagnostic
+state that is useful across transactions.
 
 Connections are applied **only after the complete requested node-instance batch
 has been embedded**. This avoids transient failures caused by resolving a
@@ -558,25 +567,25 @@ is implemented.
 
 ## Immediate implementation order
 
-The most useful order is:
+The implementation checkpoints now stand as follows:
 
-1. generalize/rename the definition registry to `NodeDefinitions` and make its
-   immutable snapshot sufficient for recursive construction;
-2. implement typed owned configuration argument operations and C++ expression
-   thunk compilation;
-3. repair `GraphBuilder`/`ConfiguredGraph` embedding, recursive scopes, stable
-   handle translation, and tiled-child identity;
-4. generalize/rename `NodeInstances` and implement one-snapshot batched
-   configuration plus caching;
-5. introduce `ProjectGraph` with durable node declarations and one root-builder
-   transaction;
-6. introduce `GraphConnections` and recursive `ProjectNodePortMatcher`
+1. **Landed:** generalized `NodeDefinitions` plus the package pipeline that feeds
+   one immutable accepted-definition snapshot into it.
+2. **Landed:** direct frozen `ConfiguredGraph` embedding through the same
+   importer as live children, with explicit local-to-parent handle translation
+   and scope-preserving virtual-node import.
+3. **Next:** generalize/rename `NodeInstances`; implement typed owned
+   configuration-argument operations, C++ expression-thunk compilation,
+   one-snapshot recursive configuration, and reusable frozen-graph caching.
+4. introduce `ProjectGraph` as the root-build transaction coordinator without
+   duplicating the desired instance/connection sets;
+5. introduce `GraphConnections` and recursive `ProjectNodePortMatcher`
    resolution;
-7. introduce pure connection/history/latency/event-window storage planning;
-8. introduce `GraphJit` with synchronous whole-project LLVM/ORC compilation;
-9. introduce `GraphExecutor` ownership of runtime storage, execution requests,
+6. introduce pure connection/history/latency/event-window storage planning;
+7. introduce `GraphJit` with synchronous whole-project LLVM/ORC compilation;
+8. introduce `GraphExecutor` ownership of runtime storage, execution requests,
    state migration, and safe-boundary activation;
-10. integrate stable logical `SystemAudioDevices` bindings with ordinary system
-    audio leaf node definitions;
-11. add presentation-specific and automatic-device convenience services only
+9. integrate stable logical `SystemAudioDevices` bindings with ordinary system
+   audio leaf node definitions;
+10. add presentation-specific and automatic-device convenience services only
     after the core graph path is stable.

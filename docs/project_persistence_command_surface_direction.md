@@ -1,8 +1,10 @@
 # Project Persistence And Command Surface Direction
 
-> **Current project-graph note:** `ProjectPersistence` remains the serializer/replayer,
-> but `ProjectGraph` is the canonical owner of user node-instance and connection
-> declarations. Current graph-state fields and event procedures are specified in
+> **Current project-graph note:** `ProjectPersistence` remains the serializer/replayer.
+> `NodeInstances` owns desired node-instance declarations, `GraphConnections` owns
+> desired connection declarations, and `ProjectGraph` coordinates reconstruction
+> transactions without duplicating either set. Current graph-state fields and event
+> procedures are specified in
 > [project_graph_application_architecture.md](./project_graph_application_architecture.md)
 > and [event_flows/startup_and_project_replay.md](./event_flows/startup_and_project_replay.md).
 > Older lane/timeline and `IvModuleInstances` ownership sections below are historical.

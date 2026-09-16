@@ -33,13 +33,11 @@ Existing iv-module-era consumers temporarily continue to receive the compatibili
 package-definition diff event. Future batched configuration must consume one
 immutable definitions snapshot and must not re-enter `NodeDefinitions`.
 
-The current implementation checkpoint still accepts package reload candidates
-directly and retains package declaration/candidate state. That is transitional.
-The target package pipeline is
-[`PackageWatcher -> {PackageJit, PackageDefinitions} -> NodeDefinitions`](./package_pipeline_architecture.md).
-After that migration, `NodeDefinitions` consumes only the immutable accepted
-package-revision snapshot from `PackageDefinitions` and derives the global node
-definition namespace from it.
+The package-pipeline migration has landed. `NodeDefinitions` consumes only the
+immutable accepted package-revision snapshot from `PackageDefinitions` and
+derives the global node-definition namespace from it. Package declarations,
+build candidates, accepted package revisions, and package-catalog state remain
+outside this module.
 
 ## Definitions are providers, not configured instances
 
@@ -190,8 +188,11 @@ pending allocations, temporary expression/ref state, and builder-local
 mutation state. Sharing that state across embeddings would create unnecessary
 coupling and hazards.
 
-Instead, make frozen `ConfiguredGraph` embedding first-class. Both live-child
-and frozen-child embedding should delegate to the same importer/remapper.
+Frozen `ConfiguredGraph` embedding is now first-class. Live-child and
+frozen-child embedding delegate to the same importer/remapper, and each frozen
+embedding returns an explicit local-to-parent translation without mutating the
+cached local handles. Imported virtual-node records remain scope-distinct rather
+than being merged into the parent root namespace.
 
 ## Batched request/result contract
 
@@ -205,9 +206,11 @@ struct NodeInstanceRequest {
 };
 ```
 
-The actual API should be batched and revisioned. `ProjectGraph` owns the
-canonical desired list and passes the complete requested set for one root-build
-transaction; `NodeInstances` does not become a second owner of project intent.
+The actual API should be batched and revisioned. `NodeInstances` owns the
+canonical desired instance set. `ProjectGraph` carries an optional typed mutation
+or replay batch into one `NodeInstances` invocation and receives the complete
+realization/embedding result for the current root-build transaction; it does not
+duplicate instance intent.
 
 One invocation of `NodeInstances`:
 

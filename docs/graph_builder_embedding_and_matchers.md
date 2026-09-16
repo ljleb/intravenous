@@ -1,11 +1,33 @@
 # GraphBuilder Embedding, Hierarchy, And Project Port Matchers
 
 _Status: current builder requirements for reusable node instances and
-project-wide cross-node connections._
+project-wide cross-node connections. Direct frozen-graph embedding and explicit
+handle translation are implemented; recursive project matcher resolution remains
+a later checkpoint._
 
 This document supplements [graph_builder.md](./graph_builder.md),
 [virtual_nodes_channel_aware_graph_direction.md](./virtual_nodes_channel_aware_graph_direction.md),
 and [project_graph_application_architecture.md](./project_graph_application_architecture.md).
+
+## Implemented embedding checkpoint
+
+The builder now imports a frozen `ConfiguredGraph` directly; it does not rebuild
+a temporary child `GraphBuilder`. Live-child and frozen-child insertion use the
+same component importer for node bundles, sample/event connections, detach
+state, and virtual-node state. Each frozen placement returns an explicit
+`ConfiguredGraphEmbedding` containing the synthetic parent root scope plus
+local-to-parent node-bundle/scope and virtual-node translations.
+
+Imported virtual-node records are cloned/remapped one-for-one and receive a
+scope-qualified introspection ID. Their source and type identities remain
+unchanged. This is deliberate: two embeddings of the same cached configured
+graph may contain the same local virtual declaration, but lowering must not
+coalesce those declarations back into one root-scope virtual node. Nested
+subgraph bundles and tiled child bundles continue to translate through the
+node-bundle mapping.
+
+The remaining work in this document is the persistent recursive matcher layer
+and any richer convenience API needed to navigate those preserved scopes.
 
 ## One embedding mechanism
 
@@ -207,8 +229,10 @@ rather than sample channel type.
 
 `GraphConnections` receives a root builder only after `NodeInstances` has
 finished embedding the complete requested node set for the current transaction.
-It also receives the complete external instance-id -> embedding mapping and the
-connection batch currently owned by `ProjectGraph`.
+It also receives the complete external instance-id -> embedding mapping and uses
+its own complete desired connection set for the transaction. `ProjectGraph` may
+carry a mutation/replay batch into the transaction, but it does not duplicate
+that canonical connection intent.
 
 It then:
 

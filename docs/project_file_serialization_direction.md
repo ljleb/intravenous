@@ -2,8 +2,10 @@
 
 _Status: current persistence direction for the generalized `ProjectGraph`._
 
-The canonical project graph owner is `ProjectGraph`; `ProjectPersistence` is the
-serializer/replayer. See
+Canonical project intent is split by responsibility: `NodeInstances` owns the
+desired node-instance set, `GraphConnections` owns the desired connection set,
+and `ProjectGraph` coordinates reconstruction transactions without duplicating
+either. `ProjectPersistence` is the serializer/replayer. See
 [project_graph_application_architecture.md](./project_graph_application_architecture.md)
 and [event_flows/startup_and_project_replay.md](./event_flows/startup_and_project_replay.md).
 
