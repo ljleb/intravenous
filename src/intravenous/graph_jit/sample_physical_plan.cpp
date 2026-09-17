@@ -421,8 +421,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     .after_execution_position = canonical_live.begin,
                     .source_layout = *group.canonical_source_layout,
                     .target_layout = connection.target_layout,
-                    .target_history = connection.target_history,
-                    .read_latency = connection.read_latency,
+                    .retained_before = retained_before,
+                    .latest_read_latency = connection.read_latency,
                 });
                 derived.push_back(DerivedBranch{
                     .key = key,
@@ -436,19 +436,16 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     representation.live_interval.end,
                     target_position(connection, group.live_interval));
                 auto& materialization = plan.materializations[branch->materialization];
-                materialization.target_history = std::max(
-                    materialization.target_history, connection.target_history);
-                materialization.read_latency = std::max(
-                    materialization.read_latency, connection.read_latency);
-                if (materialization.target_history
-                    > std::numeric_limits<std::size_t>::max()
-                        - materialization.read_latency) {
-                    return std::unexpected(
-                        "GraphJit shared converted sample retention overflows size_t");
-                }
+                // The shared derived representation must cover the union of all
+                // consumer windows, not merely the branch with the largest
+                // latency. A lower-latency sibling extends the window toward
+                // newer frames while history/latency can extend it backward.
+                materialization.retained_before = std::max(
+                    materialization.retained_before, retained_before);
+                materialization.latest_read_latency = std::min(
+                    materialization.latest_read_latency, connection.read_latency);
                 auto widened_capacity = working_ring_capacity(
-                    kernel_block_size,
-                    materialization.target_history + materialization.read_latency);
+                    kernel_block_size, materialization.retained_before);
                 if (!widened_capacity) {
                     return std::unexpected(std::move(widened_capacity.error()));
                 }

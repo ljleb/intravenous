@@ -50,8 +50,15 @@ struct SampleMaterializationPlan {
     std::size_t after_execution_position = 0;
     ChannelLayout source_layout{};
     ChannelLayout target_layout{};
-    std::size_t target_history = 0;
-    std::size_t read_latency = 0;
+
+    // Shared converted fanout materializes the union of every consumer window.
+    // retained_before is the distance from the current sample index to the
+    // earliest frame any consumer can address. latest_read_latency is the
+    // smallest effective read latency, hence the latest frame any consumer
+    // needs from the current block. For one consumer these reduce to
+    // target_history + read_latency and read_latency respectively.
+    std::size_t retained_before = 0;
+    std::size_t latest_read_latency = 0;
 };
 
 // Exact transient byte range assigned to one representation. Ranges may overlap

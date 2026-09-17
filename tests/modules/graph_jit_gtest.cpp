@@ -49,6 +49,7 @@ constexpr char graph_jit_stereo_conversion_module_id[] = "iv.test.graph_jit.stat
 constexpr char graph_jit_history_fanout_module_id[] = "iv.test.graph_jit.state_context.history_fanout_module";
 constexpr char graph_jit_persistent_history_module_id[] = "iv.test.graph_jit.state_context.persistent_history_module";
 constexpr char graph_jit_latency_compensation_module_id[] = "iv.test.graph_jit.state_context.latency_compensation_module";
+constexpr char graph_jit_latency_conversion_fanout_module_id[] = "iv.test.graph_jit.state_context.latency_conversion_fanout_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -1076,8 +1077,8 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedRetentionMaterializesHistoricalWindow)
     auto const& materialization = physical->materializations[0];
     EXPECT_EQ(materialization.source_representation, canonical);
     EXPECT_EQ(materialization.target_representation, derived);
-    EXPECT_EQ(materialization.target_history, 5u);
-    EXPECT_EQ(materialization.read_latency, 2u);
+    EXPECT_EQ(materialization.retained_before, 7u);
+    EXPECT_EQ(materialization.latest_read_latency, 2u);
 
     auto const canonical_allocation = physical->representations[canonical]
         .transient_allocation;
@@ -1091,6 +1092,75 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedRetentionMaterializesHistoricalWindow)
     auto const target_end = target_range.region_relative_offset + target_range.size_bytes;
     EXPECT_TRUE(source_end <= target_range.region_relative_offset
         || target_end <= source_range.region_relative_offset);
+}
+
+TEST(GraphJitSamplePhysicalPlan, SharedConvertedFanoutMaterializesUnionOfReadWindows)
+{
+    using namespace iv::graph_jit::detail;
+
+    iv::ChannelLayout const mono{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    iv::ChannelLayout const stereo{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::interleaved,
+    };
+
+    ConnectionAnalysisPlan connections;
+    SampleConnectionPlan compensated;
+    compensated.access = PlannedConnectionAccess::realtime_to_realtime;
+    compensated.canonical_source_layout = mono;
+    compensated.target_layout = stereo;
+    compensated.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
+    compensated.read_latency = 7;
+    compensated.requires_conversion = true;
+    connections.sample_connections.push_back(compensated);
+
+    SampleConnectionPlan current = compensated;
+    current.target_port = iv::NodeBundlePortId{3, iv::PortKind::sample, 0};
+    current.read_latency = 0;
+    connections.sample_connections.push_back(current);
+
+    connections.schedule.bundle_execution_position.resize(4);
+    connections.schedule.bundle_execution_position[1] = 0;
+    connections.schedule.bundle_execution_position[2] = 1;
+    connections.schedule.bundle_execution_position[3] = 2;
+
+    SampleProducerGroupPlan group;
+    group.canonical_source_layout = mono;
+    group.connection_indices = {0, 1};
+    group.has_realtime_connections = true;
+    group.requirements.retained_frames = 7;
+    group.requirements.channel_count = 1;
+    group.requirements.value_size_bytes = sizeof(iv::Sample);
+    group.implementation =
+        iv::SampleConnectionImplementationKind::compact_persistent_carry;
+    group.live_interval = ConnectionLiveIntervalPlan{
+        .begin = 0,
+        .end = 2,
+        .crosses_kernel_invocations = true,
+    };
+    connections.sample_producer_groups.push_back(group);
+
+    auto physical = build_sample_physical_plan(connections, 64);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->representations.size(), 2u);
+    ASSERT_EQ(physical->materializations.size(), 1u);
+    ASSERT_EQ(physical->connection_representations.size(), 2u);
+    ASSERT_TRUE(physical->connection_representations[0].has_value());
+    ASSERT_TRUE(physical->connection_representations[1].has_value());
+    EXPECT_EQ(
+        *physical->connection_representations[0],
+        *physical->connection_representations[1]);
+
+    auto const& materialization = physical->materializations[0];
+    EXPECT_EQ(materialization.retained_before, 7u);
+    EXPECT_EQ(materialization.latest_read_latency, 0u);
+    EXPECT_EQ(
+        physical->representations[materialization.target_representation].frame_capacity,
+        128u);
 }
 
 TEST(GraphJitSamplePhysicalPlan, RejectsTransientStorageThatCrossesKernelCalls)
@@ -1878,6 +1948,70 @@ struct LatencyCompensationProbe {
     }
 };
 
+struct InterleavedLatencyCompensationProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t last_index = 0;
+        std::uint64_t last_block_size = 0;
+        std::uint64_t mismatches = 0;
+        float fast_first = 0.0f;
+        float slow_first = 0.0f;
+        float fast_last = 0.0f;
+        float slow_last = 0.0f;
+        float max_abs_difference = 0.0f;
+        std::uint32_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_sample_input(
+                "fast",
+                {.channel_layout = {
+                    .channel_type = iv::ChannelTypeId::mono,
+                    .sample_layout = iv::SampleStreamLayout::interleaved,
+                }}),
+            iv::realtime_sample_input(
+                "slow",
+                {.channel_layout = {
+                    .channel_type = iv::ChannelTypeId::mono,
+                    .sample_layout = iv::SampleStreamLayout::interleaved,
+                }}),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<InterleavedLatencyCompensationProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const fast = ctx.inputs[0].get_block(ctx.block_size);
+        auto const slow = ctx.inputs[1].get_block(ctx.block_size);
+        ++state.calls;
+        state.last_index = ctx.index;
+        state.last_block_size = ctx.block_size;
+        state.marker = 0x1a7e2e0u;
+        if (ctx.block_size != 0) {
+            state.fast_first = fast[0];
+            state.slow_first = slow[0];
+            state.fast_last = fast[ctx.block_size - 1];
+            state.slow_last = slow[ctx.block_size - 1];
+        }
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            auto difference = static_cast<float>(fast[i] - slow[i]);
+            if (difference < 0.0f) difference = -difference;
+            if (difference != 0.0f) ++state.mismatches;
+            if (difference > state.max_abs_difference) {
+                state.max_abs_difference = difference;
+            }
+        }
+    }
+};
+
 struct PortedProbe {
     static constexpr auto inputs()
     {
@@ -2037,6 +2171,18 @@ void latency_compensation_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void latency_conversion_fanout_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.interleaved_latency_compensation_probe">();
+    auto observer = graph.node<"iv.test.graph_jit.state_context.mono_interleaved_consumer">();
+    delayed(source);
+    sink(source, delayed);
+    observer(source);
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -2064,6 +2210,7 @@ IV_NODE("iv.test.graph_jit.state_context.large_history_ramp_source", LargeHistor
 IV_NODE("iv.test.graph_jit.state_context.large_history_consumer", LargeHistoryConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.five_sample_delay", FiveSampleDelay);
 IV_NODE("iv.test.graph_jit.state_context.latency_compensation_probe", LatencyCompensationProbe);
+IV_NODE("iv.test.graph_jit.state_context.interleaved_latency_compensation_probe", InterleavedLatencyCompensationProbe);
 IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
@@ -2082,6 +2229,7 @@ IV_MODULE("iv.test.graph_jit.state_context.stereo_conversion_module", stereo_con
 IV_MODULE("iv.test.graph_jit.state_context.history_fanout_module", history_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.persistent_history_module", persistent_history_module);
 IV_MODULE("iv.test.graph_jit.state_context.latency_compensation_module", latency_compensation_module);
+IV_MODULE("iv.test.graph_jit.state_context.latency_conversion_fanout_module", latency_conversion_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -2148,7 +2296,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         "iv.test.graph_jit.state_context.five_sample_delay"));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.latency_compensation_probe"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.interleaved_latency_compensation_probe"));
     EXPECT_TRUE(has_module_definition(graph_jit_latency_compensation_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_latency_conversion_fanout_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -3014,6 +3165,147 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(latency_probe->slow_last, 120.0f);
     EXPECT_FLOAT_EQ(latency_probe->max_abs_difference, 0.0f);
 
+    auto latency_conversion_fanout_graph = configured_module_graph(
+        *revision, graph_jit_latency_conversion_fanout_module_id);
+    ASSERT_TRUE(latency_conversion_fanout_graph);
+    auto latency_conversion_analysis =
+        iv::graph_jit::detail::build_connection_analysis_plan(
+            *latency_conversion_fanout_graph, 64);
+    ASSERT_TRUE(latency_conversion_analysis.has_value())
+        << (latency_conversion_analysis
+                ? std::string{}
+                : latency_conversion_analysis.error());
+
+    auto latency_source_group = std::ranges::find_if(
+        latency_conversion_analysis->sample_producer_groups,
+        [](auto const& group) { return group.connection_indices.size() == 3; });
+    ASSERT_NE(
+        latency_source_group,
+        latency_conversion_analysis->sample_producer_groups.end());
+    EXPECT_EQ(latency_source_group->requirements.retained_frames, 7u);
+    ASSERT_TRUE(latency_source_group->implementation.has_value());
+    EXPECT_EQ(
+        *latency_source_group->implementation,
+        iv::SampleConnectionImplementationKind::compact_persistent_carry);
+
+    std::size_t converted_read_0 = 0;
+    std::size_t converted_read_7 = 0;
+    for (auto const connection_index : latency_source_group->connection_indices) {
+        auto const& connection =
+            latency_conversion_analysis->sample_connections[connection_index];
+        if (!connection.requires_conversion) continue;
+        if (connection.read_latency == 0) ++converted_read_0;
+        if (connection.read_latency == 7) ++converted_read_7;
+    }
+    EXPECT_EQ(converted_read_0, 1u);
+    EXPECT_EQ(converted_read_7, 1u);
+
+    auto latency_conversion_physical =
+        iv::graph_jit::detail::build_sample_physical_plan(
+            *latency_conversion_analysis, 64);
+    ASSERT_TRUE(latency_conversion_physical.has_value())
+        << (latency_conversion_physical
+                ? std::string{}
+                : latency_conversion_physical.error());
+    auto const latency_source_group_index = static_cast<std::size_t>(
+        latency_source_group
+        - latency_conversion_analysis->sample_producer_groups.begin());
+    ASSERT_LT(
+        latency_source_group_index,
+        latency_conversion_physical->producer_groups.size());
+    ASSERT_TRUE(
+        latency_conversion_physical->producer_groups[latency_source_group_index]
+            .has_value());
+    auto const latency_source_representation =
+        latency_conversion_physical->producer_groups[latency_source_group_index]
+            ->canonical_representation;
+    auto source_conversion = std::ranges::find_if(
+        latency_conversion_physical->materializations,
+        [&](auto const& materialization) {
+            return materialization.source_representation
+                    == latency_source_representation
+                && materialization.target_layout.channel_type
+                    == iv::ChannelTypeId::mono
+                && materialization.target_layout.sample_layout
+                    == iv::SampleStreamLayout::interleaved;
+        });
+    ASSERT_NE(
+        source_conversion,
+        latency_conversion_physical->materializations.end());
+    EXPECT_EQ(source_conversion->retained_before, 7u);
+    EXPECT_EQ(source_conversion->latest_read_latency, 0u);
+
+    auto latency_conversion_fanout =
+        compile_graph(latency_conversion_fanout_graph, 115);
+    ASSERT_TRUE(latency_conversion_fanout.succeeded())
+        << (latency_conversion_fanout.diagnostics.empty()
+                ? ""
+                : latency_conversion_fanout.diagnostics.front().message);
+    ASSERT_EQ(
+        latency_conversion_fanout.compiled_graph->node_layout.nodes.size(), 4u);
+
+    auto latency_conversion_storage =
+        latency_conversion_fanout.compiled_graph->node_layout.create_storage(
+            resources);
+    latency_conversion_storage.initialize();
+    LatencyCompensationProbeStateMirror* interleaved_latency_probe = nullptr;
+    SampleConsumerProbeStateMirror* current_observer = nullptr;
+    for (std::size_t i = 0;
+         i < latency_conversion_fanout.compiled_graph->node_layout.nodes.size();
+         ++i) {
+        auto const& node =
+            latency_conversion_fanout.compiled_graph->node_layout.nodes[i];
+        if (node.state_size == sizeof(LatencyCompensationProbeStateMirror)) {
+            ASSERT_EQ(interleaved_latency_probe, nullptr);
+            interleaved_latency_probe =
+                static_cast<LatencyCompensationProbeStateMirror*>(
+                    latency_conversion_storage.state_ptr(i));
+        } else if (node.state_size == sizeof(SampleConsumerProbeStateMirror)) {
+            ASSERT_EQ(current_observer, nullptr);
+            current_observer = static_cast<SampleConsumerProbeStateMirror*>(
+                latency_conversion_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(interleaved_latency_probe, nullptr);
+    ASSERT_NE(current_observer, nullptr);
+
+    latency_conversion_fanout.compiled_graph->root_operations.tick_block(
+        latency_conversion_storage.buffer().data(), 0, 64);
+    EXPECT_EQ(interleaved_latency_probe->calls, 1u);
+    EXPECT_EQ(interleaved_latency_probe->mismatches, 0u);
+    EXPECT_FLOAT_EQ(interleaved_latency_probe->fast_first, 0.0f);
+    EXPECT_FLOAT_EQ(interleaved_latency_probe->slow_first, 0.0f);
+    EXPECT_FLOAT_EQ(interleaved_latency_probe->fast_last, 56.0f);
+    EXPECT_FLOAT_EQ(interleaved_latency_probe->slow_last, 56.0f);
+    EXPECT_FLOAT_EQ(interleaved_latency_probe->max_abs_difference, 0.0f);
+    EXPECT_EQ(interleaved_latency_probe->marker, 0x1a7e2e0u);
+
+    // This observer shares the same converted interleaved representation as the
+    // compensated fast branch but reads it at zero latency. The materializer
+    // must therefore cover both [-7, +56] and [0, +63], not just the older
+    // compensated window.
+    EXPECT_EQ(current_observer->calls, 1u);
+    EXPECT_EQ(current_observer->last_index, 0u);
+    EXPECT_EQ(current_observer->last_block_size, 64u);
+    EXPECT_FLOAT_EQ(current_observer->first, 0.0f);
+    EXPECT_FLOAT_EQ(current_observer->last, 63.0f);
+    EXPECT_FLOAT_EQ(current_observer->sum, 2016.0f);
+
+    latency_conversion_fanout.compiled_graph->root_operations.tick_block(
+        latency_conversion_storage.buffer().data(), 64, 64);
+    EXPECT_EQ(interleaved_latency_probe->calls, 2u);
+    EXPECT_EQ(interleaved_latency_probe->mismatches, 0u);
+    EXPECT_FLOAT_EQ(interleaved_latency_probe->fast_first, 57.0f);
+    EXPECT_FLOAT_EQ(interleaved_latency_probe->slow_first, 57.0f);
+    EXPECT_FLOAT_EQ(interleaved_latency_probe->fast_last, 120.0f);
+    EXPECT_FLOAT_EQ(interleaved_latency_probe->slow_last, 120.0f);
+    EXPECT_FLOAT_EQ(interleaved_latency_probe->max_abs_difference, 0.0f);
+    EXPECT_EQ(current_observer->calls, 2u);
+    EXPECT_EQ(current_observer->last_index, 64u);
+    EXPECT_FLOAT_EQ(current_observer->first, 64.0f);
+    EXPECT_FLOAT_EQ(current_observer->last, 127.0f);
+    EXPECT_FLOAT_EQ(current_observer->sum, 6112.0f);
+
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);
     ASSERT_TRUE(history_graph);
@@ -3043,7 +3335,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         history_physical->persistent_allocations[0].size_bytes,
         7u * sizeof(iv::Sample));
 
-    auto history = compile_graph(history_graph, 115);
+    auto history = compile_graph(history_graph, 116);
     ASSERT_TRUE(history.succeeded())
         << (history.diagnostics.empty() ? "" : history.diagnostics.front().message);
     ASSERT_EQ(history.compiled_graph->node_layout.nodes.size(), 3u);
@@ -3119,7 +3411,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     // Compile a distinct generation and migrate into its canonical NodeStorage.
     // The connection history lives in compiler-owned raw storage, so this
     // proves it survives independently of primitive State migration.
-    auto history_next = compile_graph(history_graph, 116);
+    auto history_next = compile_graph(history_graph, 117);
     ASSERT_TRUE(history_next.succeeded())
         << (history_next.diagnostics.empty()
                 ? ""
@@ -3171,7 +3463,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
             .requirements.retained_frames,
         5000u);
 
-    auto persistent_history = compile_graph(persistent_history_graph, 117);
+    auto persistent_history = compile_graph(persistent_history_graph, 118);
     ASSERT_TRUE(persistent_history.succeeded())
         << (persistent_history.diagnostics.empty()
                 ? ""
@@ -3215,13 +3507,13 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 
     auto ported_graph = configured_module_graph(*revision, graph_jit_ported_module_id);
     ASSERT_TRUE(ported_graph);
-    auto ported = compile_graph(ported_graph, 118);
+    auto ported = compile_graph(ported_graph, 119);
     expect_lowering_failure(ported, "does not yet support external sample boundaries");
 
     auto disconnected_ported_graph =
         std::make_shared<iv::ConfiguredGraph>(*ported_graph);
     disconnected_ported_graph->connections = {};
-    auto disconnected_ported = compile_graph(disconnected_ported_graph, 119);
+    auto disconnected_ported = compile_graph(disconnected_ported_graph, 120);
     expect_lowering_failure(
         disconnected_ported, "does not yet support external sample boundaries");
 

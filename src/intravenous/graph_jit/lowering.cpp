@@ -856,17 +856,13 @@ std::expected<void, std::string> emit_sample_materialization(
     auto* frame_offset = builder.CreatePHI(
         size_type, 2, "sample.materialize.frame");
     frame_offset->addIncoming(zero, preheader);
-    if (materialization.target_history
-        > std::numeric_limits<std::size_t>::max()
-            - materialization.read_latency) {
+    if (materialization.latest_read_latency > materialization.retained_before) {
         return std::unexpected(
-            "GraphJit sample materialization retained extent overflows size_t");
+            "GraphJit sample materialization has an invalid consumer window");
     }
-    auto const retained_before =
-        materialization.target_history + materialization.read_latency;
     auto* first_frame = builder.CreateSub(
         sample_index,
-        llvm::ConstantInt::get(size_type, retained_before),
+        llvm::ConstantInt::get(size_type, materialization.retained_before),
         "sample.materialize.first");
     auto* absolute_frame = builder.CreateAdd(
         first_frame, frame_offset, "sample.materialize.absolute");
@@ -947,9 +943,11 @@ std::expected<void, std::string> emit_sample_materialization(
         frame_offset,
         llvm::ConstantInt::get(size_type, 1),
         "sample.materialize.next");
+    auto const materialized_prefix = materialization.retained_before
+        - materialization.latest_read_latency;
     auto* materialize_count = builder.CreateAdd(
         block_size,
-        llvm::ConstantInt::get(size_type, materialization.target_history),
+        llvm::ConstantInt::get(size_type, materialized_prefix),
         "sample.materialize.count");
     auto* done = builder.CreateICmpUGE(
         next, materialize_count, "sample.materialize.done");
