@@ -22,7 +22,7 @@ struct BuilderPackage {
     std::vector<PackageDefinition> definitions{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
-    std::vector<BuilderNodeStateStructure> node_state_structures{};
+    std::vector<BuilderNodeStateStructures> node_state_structures{};
 };
 
 struct BuilderConfiguration {
@@ -499,7 +499,7 @@ NodeConfigRelocations capture_node_config(
     return relocations;
 }
 
-std::shared_ptr<NodeStateStructure const> copy_builder_node_state_structure(
+std::shared_ptr<NodeStateStructures const> copy_builder_node_state_structures(
     BuilderSession* session, NodeCodeKey code_key)
 {
     if (!session || !session->configuration
@@ -508,9 +508,9 @@ std::shared_ptr<NodeStateStructure const> copy_builder_node_state_structure(
     }
     auto const& package = session->configuration->packages[session->package_index];
     auto const found = std::ranges::find(
-        package.node_state_structures, code_key, &BuilderNodeStateStructure::code_key);
+        package.node_state_structures, code_key, &BuilderNodeStateStructures::code_key);
     if (found == package.node_state_structures.end()) return {};
-    return std::make_shared<NodeStateStructure const>(found->structure);
+    return std::make_shared<NodeStateStructures const>(found->structures);
 }
 
 } // namespace iv::details

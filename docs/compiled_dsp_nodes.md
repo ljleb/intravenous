@@ -643,15 +643,23 @@ All four need appropriate support for `CompiledState` as well as normal realtime
 machinery, not in a parallel compiled-graph storage/lifecycle system. The same
 `CompiledState` object must be available to sequential `tick_block()` and
 arbitrary-access callbacks, and ordinary `NodeStorage` migration must preserve
-the authored initialize/move/release semantics across graph generations.
+the authored initialize/move/release semantics across graph generations. Source
+introspection publishes the same nominal type identity, definition fingerprint,
+size/alignment, and field-layout metadata for `State` and `CompiledState`; typed
+cross-generation migration requires those definitions to match exactly rather
+than relying on RTTI names or equal byte size.
 
-The optimized whole project may itself masquerade as a zero-input, zero-output
-root node. Its generated `declare()` builds one `NodeLayout` containing both the
-constituent node state and compiler/root-owned storage. The layout builder should
-also offer a low-level aligned raw-region operation for generated code that wants
-a fixed-size region addressed by constant offset rather than through an authored
-`std::span` state field. Such regions are still ordinary `NodeLayout` regions
-and live in the same `NodeStorage`.
+The optimized whole project may itself masquerade semantically as a zero-input,
+zero-output root node, but declaration/layout construction is a compiler-phase
+operation rather than a post-JIT runtime entrypoint. Before final LLVM is emitted,
+lowering invokes the exact accepted native `declare_node` callbacks for the
+constituent nodes, declares compiler/root-owned regions, and finalizes one
+canonical `NodeLayout`. Final `State`, `CompiledState`, and raw-region offsets can
+therefore be embedded as constants in generated LLVM and optimized through by O3.
+The layout builder also offers a low-level aligned raw-region operation for
+generated code that wants a fixed-size region addressed by constant offset rather
+than through an authored `std::span` state field. Such regions are ordinary
+`NodeLayout` regions and live in the same `NodeStorage`.
 
 This describes lifetime/storage requirements without dictating separate heap
 allocations. The compiler remains free to:

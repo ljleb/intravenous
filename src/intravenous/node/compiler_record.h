@@ -11,7 +11,7 @@
 namespace iv {
 
 struct NodeLayoutBuilder;
-struct NodeStateStructure;
+struct NodeStateStructures;
 struct ReflectedNodeTickContext;
 
 namespace details {
@@ -20,7 +20,7 @@ namespace details {
 // transitional executor adapter lives in graph/reflected_node_operations.h.
 struct NodeCompilerOperations {
     std::size_t (*declare_node)(
-        void const*, NodeStateStructure const*, NodeLayoutBuilder&) = nullptr;
+        void const*, NodeStateStructures const*, NodeLayoutBuilder&) = nullptr;
     void (*tick_block)(
         void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
     void (*skip_block)(

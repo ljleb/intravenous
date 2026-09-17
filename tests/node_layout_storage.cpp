@@ -388,6 +388,50 @@ namespace {
             ctx.compiled_state().ticked += static_cast<int>(ctx.block_size);
         }
     };
+
+    struct CompiledStorageProducer {
+        struct CompiledState {
+            std::span<int> values;
+        };
+
+        void declare(iv::DeclarationContext<CompiledStorageProducer> const& ctx) const
+        {
+            auto const& state = ctx.compiled_state();
+            ctx.local_array(state.values, 3);
+            ctx.export_array("compiled-values", state.values);
+        }
+
+        void initialize(
+            iv::InitializationContext<CompiledStorageProducer> const& ctx) const
+        {
+            auto& state = ctx.compiled_state();
+            state.values[0] = 5;
+            state.values[1] = 7;
+            state.values[2] = 11;
+        }
+    };
+
+    struct CompiledStorageConsumer {
+        struct CompiledState {
+            std::span<int> imported;
+            int observed_sum = 0;
+        };
+
+        void declare(iv::DeclarationContext<CompiledStorageConsumer> const& ctx) const
+        {
+            auto const& state = ctx.compiled_state();
+            ctx.import_array("compiled-values", state.imported);
+        }
+
+        void initialize(
+            iv::InitializationContext<CompiledStorageConsumer> const& ctx) const
+        {
+            auto& state = ctx.compiled_state();
+            for (auto const value : state.imported) {
+                state.observed_sum += value;
+            }
+        }
+    };
 }
 
 int main()
@@ -578,6 +622,38 @@ int main()
     }
 
     {
+        iv::NodeLayoutBuilder builder(8);
+        CompiledStorageProducer producer;
+        CompiledStorageConsumer consumer;
+        iv::do_declare(producer, builder);
+        iv::do_declare(consumer, builder);
+
+        auto layout = std::move(builder).build();
+        auto resources = make_resources();
+        auto storage = layout.create_storage(resources);
+        storage.initialize();
+
+        auto& producer_state = *static_cast<CompiledStorageProducer::CompiledState*>(
+            storage.compiled_state_ptr(0));
+        auto& consumer_state = *static_cast<CompiledStorageConsumer::CompiledState*>(
+            storage.compiled_state_ptr(1));
+        iv::test::require(
+            producer_state.values.size() == 3,
+            "local_array declared from CompiledState should be patched");
+        iv::test::require(
+            consumer_state.imported.data() == producer_state.values.data(),
+            "CompiledState import/export bindings should resolve through CompiledState");
+        auto const exported =
+            storage.resolve_exported_array_storage<int>("compiled-values");
+        iv::test::require(
+            exported.data() == producer_state.values.data() && exported.size() == 3,
+            "host export resolution should read CompiledState span fields");
+        iv::test::require(
+            consumer_state.observed_sum == 23,
+            "CompiledState imports should be available during initialize");
+    }
+
+    {
         iv::NodeLayoutBuilder builder(4);
         auto const leading = builder.declare_raw_region(13, 32);
         LocalOnly node;
@@ -639,12 +715,17 @@ int main()
         CompiledLifecycleNode node { .id = "compiled-state" };
         iv::do_declare(node, builder);
         iv::NodeLayout layout = std::move(builder).build();
+        iv::test::require(
+            layout.nodes.front().compiled_state_structure.has_value(),
+            "compiled-state layout should carry ABI metadata");
+        layout.nodes.front().compiled_state_structure->type_identity = {
+            .nominal_id = "test.CompiledLifecycleNode.CompiledState",
+            .definition_fingerprint = "v1",
+            .display_name = "CompiledLifecycleNode::CompiledState",
+        };
         iv::NodeLayout reloaded_layout = layout;
         static int reloaded_node_type_token = 0;
-        static int reloaded_compiled_state_type_token = 0;
         reloaded_layout.nodes.front().node_type = &reloaded_node_type_token;
-        reloaded_layout.nodes.front().compiled_state_type =
-            &reloaded_compiled_state_type_token;
 
         iv::test::require(layout.nodes.size() == 1, "compiled-state layout should contain its node");
         auto const& record = layout.nodes.front();
@@ -679,7 +760,7 @@ int main()
             iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
             iv::test::require(
                 reloaded.can_move_from(original, 0, 0),
-                "same nominal node and CompiledState ABI should remain movable across package-local type-token changes");
+                "same reflected CompiledState definition should remain movable across package generations");
             auto migration = reloaded.prepare_migration_from(original);
             migration.commit();
             auto& reloaded_compiled =

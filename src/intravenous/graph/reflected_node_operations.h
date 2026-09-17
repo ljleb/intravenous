@@ -29,9 +29,9 @@ struct ReflectedNodeTickContext {
 
 struct ReflectedNodeRuntimeOperations {
     void const* node_data = nullptr;
-    NodeStateStructure const* state_structure = nullptr;
+    NodeStateStructures const* state_structures = nullptr;
     std::size_t (*declare_node)(
-        void const*, NodeStateStructure const*, NodeLayoutBuilder&) = nullptr;
+        void const*, NodeStateStructures const*, NodeLayoutBuilder&) = nullptr;
     void (*tick_block)(
         void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
     void (*skip_block)(
@@ -58,11 +58,11 @@ namespace details {
 constexpr ReflectedNodeRuntimeOperations make_runtime_operations(
     NodeCompilerRecord const& record,
     void const* node_data,
-    NodeStateStructure const* state_structure = nullptr)
+    NodeStateStructures const* state_structures = nullptr)
 {
     return {
         .node_data = node_data,
-        .state_structure = state_structure,
+        .state_structures = state_structures,
         .declare_node = record.operations.declare_node,
         .tick_block = record.operations.tick_block,
         .skip_block = record.operations.skip_block,

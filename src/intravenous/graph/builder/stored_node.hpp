@@ -71,7 +71,7 @@ struct ConcreteNode {
   NodePorts ports{};
   ReflectedNodeOperations operations{};
   std::shared_ptr<void const> node_storage{};
-  std::shared_ptr<NodeStateStructure const> state_structure_storage{};
+  std::shared_ptr<NodeStateStructures const> state_structures_storage{};
   NodeConfigRelocations config_relocations{};
   NodeCodeKey code_key{};
   std::optional<RegisteredNodeTypeIdentity> registered_node_type_identity{};

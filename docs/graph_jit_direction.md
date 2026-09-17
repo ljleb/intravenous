@@ -223,25 +223,28 @@ project root
     outputs = {}
 ```
 
-This matches the existing `BlockNodeExecutor` root contract. The lowerer emits a
-specialized root-node implementation whose ordinary node operations cover the
-sequential project behavior:
+This matches the existing `BlockNodeExecutor` root contract. The optimized root
+keeps ordinary node semantics, but declaration is consumed as a compile-time
+layout contract rather than materialized as a runtime JIT entrypoint. Runtime
+behavior is therefore:
 
 ```text
-declare()
-initialize()/move()/release() where the root itself owns lifecycle state
-tick_block()
-skip_block() when legal
+compile time: declare/layout planning
+runtime:      NodeStorage initialize()/move()/release()
+runtime:      generated tick_block()
+runtime:      generated skip_block() when legal
 ```
 
 The constituent nodes retain their own declaration and lifecycle semantics.
-The generated root declaration must register them through the exact accepted
-`declare_node` callbacks, or an equivalent generated declaration operation, so
-`NodeLayout` still records each node's state structure, lifecycle callbacks,
-dependencies, and nested-state relationships. `NodeStorage` remains responsible
-for invoking initialization, move/migration, release, and destruction in the
-order described by the resulting `NodeLayout`. Do not replace that orchestration
-with monolithic generated project initialize/move/release functions.
+Declaration is performed during lowering, before final LLVM emission: the compiler
+invokes each exact accepted native `declare_node` callback into one
+`NodeLayoutBuilder`, adds compiler-owned raw regions, then finalizes the
+`NodeLayout`. This preserves each node's state structures, lifecycle callbacks,
+dependencies, and nested-state relationships while making every final storage
+offset available as a constant to LLVM. `NodeStorage` remains responsible for
+invoking initialization, move/migration, release, and destruction in the order
+described by that layout. Do not replace that orchestration with monolithic
+generated project initialize/move/release functions.
 
 The root node has no compiled output ports, therefore it has no
 `access_block[_batch]()` operation. Compiled outputs inside the project remain
@@ -254,16 +257,24 @@ There is exactly one runtime storage allocation model for an executable graph
 generation: the existing `NodeLayout`/`NodeStorage` machinery.
 
 `GraphJit` must not introduce `CompiledGraphNodeStorageLayout`,
-`GraphKernelStorage`, or another parallel state arena. The generated root's
-`declare()` operation populates one `NodeLayoutBuilder`; the completed
-`NodeLayout` becomes part of `CompiledGraph`, and `GraphExecutor` creates and
-owns the corresponding `NodeStorage`.
+`GraphKernelStorage`, or another parallel state arena. Lowering populates one
+`NodeLayoutBuilder` and finalizes it before emitting final storage accesses into
+LLVM. The completed `NodeLayout` becomes part of `CompiledGraph`, and
+`GraphExecutor` creates and owns the corresponding `NodeStorage`.
 
-The canonical storage must grow to cover `CompiledState` as well as normal
-`State`. That means the ordinary declaration/lifecycle machinery must eventually
-represent both state domains and make the same `CompiledState` object available
-to `tick_block()` and compiled-access callbacks. `initialize()`, `move()`, and
-`release()` semantics apply to both where the node defines them.
+The canonical storage covers `CompiledState` as well as normal `State`. The
+ordinary declaration/lifecycle machinery represents both state domains and makes
+the same `CompiledState` object available to `tick_block()` and compiled-access
+callbacks. `initialize()`, `move()`, and `release()` semantics apply to both where
+the node defines them.
+
+Source introspection publishes symmetric metadata for `State` and
+`CompiledState`: a Clang nominal type identity (USR), a definition fingerprint,
+size/alignment, and reflected field layout. That exact definition identity is the
+cross-package-generation compatibility boundary for typed state migration. A
+same-process type token remains sufficient when both generations use the exact
+same loaded C++ type, but equal RTTI names or equal byte size alone are not a
+safe hot-reload migration contract.
 
 All project-owned memory whose lifetime can cross an execution call or be reused
 between calls should normally be allocated through the same `NodeLayout` and
@@ -405,17 +416,19 @@ current registry state.
 The lowerer produces:
 
 ```text
+canonical finalized NodeLayout
 specialized project-root node LLVM
 compiled-access component executor LLVM
 immutable LLVM globals/tables needed by those programs
 host metadata naming the generated root/component symbols and internal endpoints
 ```
 
-It does **not** return a parallel storage plan. After ORC materialization,
-`GraphJit` resolves the generated root operations and uses the root declaration
-contract to build the canonical `NodeLayout`. The resulting `CompiledGraph`
-therefore derives its storage/lifecycle description from the same declaration
-model used by ordinary nodes.
+It does **not** return a parallel storage plan. Canonical declaration is an early
+phase *inside* lowering: accepted native declaration callbacks and compiler raw
+regions are committed to `NodeLayoutBuilder`, `build()` fixes every offset, and
+only then does final LLVM generation encode those offsets. ORC materialization
+therefore consumes LLVM whose storage addresses already agree exactly with the
+`NodeLayout` returned alongside it.
 
 Source package LLVM modules and temporary `llvm::Function*`/`GlobalVariable*`
 anchors are valid only during lowering. Anything needed after lowering must have
@@ -509,6 +522,13 @@ history / latency / event-window analysis
 connection implementation + liveness/reuse planning
     |
     v
+canonical declaration/layout planning
+    |
+    +--> accepted native declare_node callbacks
+    +--> compiler-owned raw regions
+    +--> finalized NodeLayout + constant offsets
+    |
+    v
 specialized project-root + compiled-access LLVM generation
     |
     v
@@ -521,10 +541,7 @@ ORC materialization
 resolve generated root/component operations
     |
     v
-root declare() -> canonical NodeLayout
-    |
-    v
-CompiledGraph
+CompiledGraph + finalized NodeLayout
 ```
 
 Physical node state, persistent project state, and reusable compiler-selected

@@ -1045,8 +1045,8 @@ namespace iv::details {
             if (node.node_storage) {
                 generated_node_storage.push_back(node.node_storage);
             }
-            if (node.state_structure_storage) {
-                generated_node_storage.push_back(node.state_structure_storage);
+            if (node.state_structures_storage) {
+                generated_node_storage.push_back(node.state_structures_storage);
             }
         }
 

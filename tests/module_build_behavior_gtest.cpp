@@ -59,9 +59,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         auto const has_structural_saw_state = std::ranges::any_of(
             executor.layout().nodes,
             [](iv::NodeLayout::NodeRecord const& record) {
-                if (!record.node_state_structure) return false;
+                if (!record.state_structure) return false;
                 return std::ranges::any_of(
-                    record.node_state_structure->fields,
+                    record.state_structure->fields,
                     [](iv::NodeStateFieldStructure const& field) {
                         return field.name == "phase" && !field.type_name.empty();
                     });

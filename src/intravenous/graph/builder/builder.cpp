@@ -38,12 +38,12 @@ ReflectedNodeDescription materialize_node_build_request(
         request.config_size);
     auto description = details::materialize_node_description(
         request, std::move(storage), std::move(relocations));
-    description.state_structure_storage =
-        details::copy_builder_node_state_structure(
+    description.state_structures_storage =
+        details::copy_builder_node_state_structures(
             session, request.compiler_record->code_key);
-    description.operations.runtime.state_structure =
-        description.state_structure_storage
-            ? description.state_structure_storage.get()
+    description.operations.runtime.state_structures =
+        description.state_structures_storage
+            ? description.state_structures_storage.get()
             : nullptr;
     return description;
 }

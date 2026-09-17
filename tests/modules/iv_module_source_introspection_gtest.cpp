@@ -204,16 +204,39 @@ namespace {
         }
     };
 
+    struct CompiledStatePayload {
+        std::uint64_t epoch = 3;
+        float gain = 0.25f;
+    };
+
+    struct CompiledStateNode {
+        using CompiledState = CompiledStatePayload;
+
+        static constexpr auto outputs()
+        {
+            return std::array<iv::OutputConfig, 1>{};
+        }
+
+        void tick(iv::TickSampleContext<CompiledStateNode> const& ctx) const
+        {
+            auto& state = ctx.compiled_state();
+            ctx.outputs[0].push(state.gain);
+            ++state.epoch;
+        }
+    };
+
     void aliased_state_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const direct = details::configure_concrete_node<AliasedStateNode>(g);
         auto const inherited = details::configure_concrete_node<InheritedStateNode>(g);
         auto const scalar = details::configure_concrete_node<ScalarStateNode>(g);
+        auto const compiled = details::configure_concrete_node<CompiledStateNode>(g);
         g.outputs(
             "direct"_P = direct,
             "inherited"_P = inherited,
-            "scalar"_P = scalar);
+            "scalar"_P = scalar,
+            "compiled"_P = compiled);
     }
 }
 )");
@@ -225,16 +248,18 @@ namespace {
 
     auto structural_state_nodes = 0u;
     for (auto const& record : executor.layout().nodes) {
-        auto const has_phase = record.node_state_structure
+        auto const has_phase = record.state_structure
             && std::ranges::any_of(
-                record.node_state_structure->fields,
+                record.state_structure->fields,
                 [](iv::NodeStateFieldStructure const& field) {
                     return field.name == "phase";
                 });
         if (has_phase) {
             ++structural_state_nodes;
-            ASSERT_EQ(record.node_state_structure->fields.size(), 2u);
-            EXPECT_FALSE(record.node_state_structure->fields.front().type_name.empty());
+            ASSERT_EQ(record.state_structure->fields.size(), 2u);
+            EXPECT_TRUE(record.state_structure->type_identity.valid());
+            EXPECT_FALSE(record.state_structure->type_identity.display_name.empty());
+            EXPECT_FALSE(record.state_structure->fields.front().type_name.empty());
         }
     }
     // NodeState<Node>::Type accepts both a direct alias and an alias found by
@@ -243,14 +268,31 @@ namespace {
 
     auto scalar_state_nodes = 0u;
     for (auto const& record : executor.layout().nodes) {
-        if (!record.node_state_structure
-            || record.node_state_structure->size_bits != sizeof(std::int32_t) * 8
-            || !record.node_state_structure->fields.empty()) {
+        if (!record.state_structure
+            || record.state_structure->size_bits != sizeof(std::int32_t) * 8
+            || !record.state_structure->fields.empty()) {
             continue;
         }
         ++scalar_state_nodes;
     }
     EXPECT_EQ(scalar_state_nodes, 1u);
+
+    auto compiled_state_nodes = 0u;
+    for (auto const& record : executor.layout().nodes) {
+        if (!record.compiled_state_structure) continue;
+        auto const has_epoch = std::ranges::any_of(
+            record.compiled_state_structure->fields,
+            [](iv::NodeStateFieldStructure const& field) {
+                return field.name == "epoch";
+            });
+        if (!has_epoch) continue;
+        ++compiled_state_nodes;
+        EXPECT_TRUE(record.compiled_state_structure->type_identity.valid());
+        EXPECT_FALSE(
+            record.compiled_state_structure->type_identity.display_name.empty());
+        ASSERT_EQ(record.compiled_state_structure->fields.size(), 2u);
+    }
+    EXPECT_EQ(compiled_state_nodes, 1u);
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)

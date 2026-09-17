@@ -44,7 +44,7 @@ class NodeBundle {
     NodePorts ports{};
     ReflectedNodeOperations operations{};
     std::shared_ptr<void const> node_storage{};
-    std::shared_ptr<NodeStateStructure const> state_structure_storage{};
+    std::shared_ptr<NodeStateStructures const> state_structures_storage{};
     NodeConfigRelocations config_relocations{};
     NodeCodeKey code_key{};
     std::optional<RegisteredNodeTypeIdentity> registered_node_type_identity{};
@@ -192,7 +192,7 @@ struct ConfiguredNodeBundleRecord {
   NodePorts ports{};
   ReflectedNodeOperations operations{};
   std::shared_ptr<void const> node_storage{};
-  std::shared_ptr<NodeStateStructure const> state_structure_storage{};
+  std::shared_ptr<NodeStateStructures const> state_structures_storage{};
   NodeCodeKey code_key{};
   std::optional<RegisteredNodeTypeIdentity> registered_node_type_identity{};
   size_t node_size = 0;
@@ -230,7 +230,7 @@ struct ConfiguredNodeBundleView {
   NodePorts const* ports = nullptr;
   ReflectedNodeOperations const* operations = nullptr;
   std::shared_ptr<void const> const* node_storage = nullptr;
-  std::shared_ptr<NodeStateStructure const> const* state_structure_storage = nullptr;
+  std::shared_ptr<NodeStateStructures const> const* state_structures_storage = nullptr;
   NodeConfigRelocations const* config_relocations = nullptr;
   NodeCodeKey const* code_key = nullptr;
   RegisteredNodeTypeIdentity const* registered_node_type_identity = nullptr;
@@ -367,7 +367,7 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
       .ports = std::move(description.ports),
       .operations = description.operations,
       .node_storage = std::move(description.node_storage),
-      .state_structure_storage = std::move(description.state_structure_storage),
+      .state_structures_storage = std::move(description.state_structures_storage),
       .config_relocations = std::move(description.config_relocations),
       .code_key = description.code_key,
       .registered_node_type_identity = std::move(description.registered_node_type_identity),
@@ -396,7 +396,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
       .ports = std::move(lowered.ports),
       .operations = lowered.operations,
       .node_storage = std::move(lowered.node_storage),
-      .state_structure_storage = std::move(lowered.state_structure_storage),
+      .state_structures_storage = std::move(lowered.state_structures_storage),
       .config_relocations = std::move(lowered.config_relocations),
       .code_key = lowered.code_key,
       .registered_node_type_identity = std::move(lowered.registered_node_type_identity),
@@ -471,7 +471,7 @@ constexpr void GraphBuilderNodeBundles::materialize_deferred_detaches() {
     payload.ports = std::move(materialized.ports);
     payload.operations = materialized.operations;
     payload.node_storage = std::move(materialized.node_storage);
-    payload.state_structure_storage = std::move(materialized.state_structure_storage);
+    payload.state_structures_storage = std::move(materialized.state_structures_storage);
     payload.config_relocations = std::move(materialized.config_relocations);
     payload.node_size = materialized.node_size;
     payload.node_alignment = materialized.node_alignment;
@@ -1257,7 +1257,7 @@ GraphBuilderNodeBundles::materialize_concrete_description(
       .ports = payload->ports,
       .operations = payload->operations,
       .node_storage = payload->node_storage,
-      .state_structure_storage = payload->state_structure_storage,
+      .state_structures_storage = payload->state_structures_storage,
       .config_relocations = payload->config_relocations,
       .code_key = payload->code_key,
       .registered_node_type_identity = payload->registered_node_type_identity,
@@ -1353,7 +1353,7 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
         view.ports = &payload.ports;
         view.operations = &payload.operations;
         view.node_storage = &payload.node_storage;
-        view.state_structure_storage = &payload.state_structure_storage;
+        view.state_structures_storage = &payload.state_structures_storage;
         view.config_relocations = &payload.config_relocations;
         view.code_key = &payload.code_key;
         if (payload.registered_node_type_identity) {
@@ -1410,14 +1410,14 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
       // The archive reader owns this structure while reconstructing records.
       // Once the bundle takes its shared ownership, its runtime callback must
       // point at that durable copy rather than the soon-to-be-destroyed record.
-      operations.runtime.state_structure = record.state_structure_storage
-          ? record.state_structure_storage.get()
+      operations.runtime.state_structures = record.state_structures_storage
+          ? record.state_structures_storage.get()
           : nullptr;
       bundle = NodeBundle(NodeBundle::ConcreteNodeBundle{
           .ports = record.ports,
           .operations = operations,
           .node_storage = record.node_storage,
-          .state_structure_storage = record.state_structure_storage,
+          .state_structures_storage = record.state_structures_storage,
           .code_key = record.code_key,
           .registered_node_type_identity = record.registered_node_type_identity,
           .node_size = record.node_size,

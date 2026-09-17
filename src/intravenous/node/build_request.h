@@ -57,14 +57,14 @@ struct NodeBuildRequest {
 template<class Node>
 std::size_t declare_node(
     void const* node_data,
-    NodeStateStructure const* state_structure,
+    NodeStateStructures const* state_structures,
     NodeLayoutBuilder& builder)
 {
     auto const& node = *static_cast<Node const*>(node_data);
     DeclarationContext<Node> ctx(builder, node);
-    if (state_structure) {
-        details::override_node_state_structure(
-            builder, ctx.node_index(), *state_structure);
+    if (state_structures) {
+        details::override_node_state_structures(
+            builder, ctx.node_index(), *state_structures);
     }
     if constexpr (has_declare<Node>) {
         node.declare(ctx);

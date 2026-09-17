@@ -30,6 +30,7 @@
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/TargetParser/Triple.h>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <limits>
@@ -354,6 +355,10 @@ struct CapturedNode {
     std::shared_ptr<PackageRevision const> revision{};
     details::NodeCompilerRecord compiler_record{};
     RegisteredNodeTypeIdentity identity{};
+    void const* node_data = nullptr;
+    NodeStateStructures const* state_structures = nullptr;
+    std::size_t (*declare_node)(
+        void const*, NodeStateStructures const*, NodeLayoutBuilder&) = nullptr;
 };
 
 struct CapturedRelocation {
@@ -488,12 +493,59 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
                                 current_bundle,
                                 identity.node_type_id,
                                 identity.provider_package_root));
+                        } else if (view.operations == nullptr
+                            || view.operations->runtime.declare_node == nullptr) {
+                            result.diagnostics.push_back(diagnostic(
+                                GraphJitDiagnosticStage::input_capture,
+                                "configured node has no declaration callback",
+                                current_bundle,
+                                identity.node_type_id,
+                                identity.provider_package_root));
+                        } else if (view.operations->runtime.declare_node
+                            != leaf->compiler_record.operations.declare_node) {
+                            result.diagnostics.push_back(diagnostic(
+                                GraphJitDiagnosticStage::input_capture,
+                                "configured node declaration callback disagrees with pinned "
+                                "leaf definition",
+                                current_bundle,
+                                identity.node_type_id,
+                                identity.provider_package_root));
                         } else {
+                            auto const expected_state_structures = std::find_if(
+                                revision->second->node_state_structures.begin(),
+                                revision->second->node_state_structures.end(),
+                                [&](details::BuilderNodeStateStructures const& candidate) {
+                                    return candidate.code_key
+                                        == leaf->compiler_record.code_key;
+                                });
+                            auto const* configured_state_structures =
+                                view.operations->runtime.state_structures;
+                            auto const state_structures_match =
+                                expected_state_structures
+                                    == revision->second->node_state_structures.end()
+                                ? configured_state_structures == nullptr
+                                : configured_state_structures != nullptr
+                                    && *configured_state_structures
+                                        == expected_state_structures->structures;
+                            if (!state_structures_match) {
+                                result.diagnostics.push_back(diagnostic(
+                                    GraphJitDiagnosticStage::input_capture,
+                                    "configured node State/CompiledState metadata disagrees "
+                                    "with pinned package revision",
+                                    current_bundle,
+                                    identity.node_type_id,
+                                    identity.provider_package_root));
+                                return;
+                            }
                             result.nodes.push_back(CapturedNode{
                                 .node_bundle = current_bundle,
                                 .revision = revision->second,
                                 .compiler_record = leaf->compiler_record,
                                 .identity = identity,
+                                .node_data = view.operations->runtime.node_data,
+                                .state_structures =
+                                    view.operations->runtime.state_structures,
+                                .declare_node = view.operations->runtime.declare_node,
                             });
                             result.used_revisions.insert(revision->second.get());
                         }
@@ -1055,6 +1107,9 @@ public:
                     .state_alignment = record->second.state_alignment,
                     .compiled_state_size = record->second.compiled_state_size,
                     .compiled_state_alignment = record->second.compiled_state_alignment,
+                    .node_data = captured_node.node_data,
+                    .state_structures = captured_node.state_structures,
+                    .declare_node = captured_node.declare_node,
                     .tick_block = record->second.tick_block,
                     .skip_block = record->second.skip_block,
                     .access_block_batched = record->second.access_block_batched,

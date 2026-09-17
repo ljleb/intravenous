@@ -44,9 +44,10 @@ struct GraphJitDiagnostic {
     std::string package_root{};
 };
 
-// The lowerer owns the concrete offsets. GraphExecutor owns allocations with
-// these requirements. Immutable tables/constants used only by generated code
-// belong in the JIT module rather than in a second host-side object graph.
+// Transitional GraphJit-shell ABI. These parallel storage-plan types are kept
+// only until the next LLVM-IR -> CompiledGraph pass. Canonical executable
+// storage is NodeLayout/NodeStorage; lowering now returns that finalized layout
+// before final LLVM generation. Do not extend these provisional types.
 struct CompiledGraphStorageRequirements {
     std::size_t size = 0;
     std::size_t alignment = 1;
@@ -104,9 +105,11 @@ struct CompiledGraphEntrypoints {
     }
 };
 
-// One immutable native project generation. Generated code and immutable
-// lowering data are pinned by code_lifetime; GraphExecutor owns mutable storage
-// satisfying runtime_plan and invokes only these resolved entrypoints.
+// One immutable native project generation. The runtime_plan/initialize/release
+// fields below are transitional shell state and will be replaced by the
+// lowerer's canonical NodeLayout plus ordinary NodeStorage lifecycle in the
+// next LLVM-IR -> CompiledGraph pass. Generated code remains pinned by
+// code_lifetime.
 struct CompiledGraph {
     std::uint64_t project_generation = 0;
     std::uint64_t definitions_generation = 0;

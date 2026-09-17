@@ -417,6 +417,9 @@ template<class T, class Fn> std::vector<T> read_values(Reader& r, Fn&& read)
 
 inline void write_state(Writer& w, NodeStateStructure const& value)
 {
+    w.string(value.type_identity.nominal_id);
+    w.string(value.type_identity.definition_fingerprint);
+    w.string(value.type_identity.display_name);
     w.size(value.size_bits); w.size(value.alignment_bits);
     w.list(value.fields, [&](NodeStateFieldStructure const& field) {
         w.string(field.name); w.string(field.type_name); w.size(field.bit_offset); w.size(field.size_bits);
@@ -427,7 +430,15 @@ inline void write_state(Writer& w, NodeStateStructure const& value)
 
 inline NodeStateStructure read_state(Reader& r)
 {
-    NodeStateStructure result{.size_bits = r.size(), .alignment_bits = r.size()};
+    NodeStateStructure result{
+        .type_identity = {
+            .nominal_id = r.string(),
+            .definition_fingerprint = r.string(),
+            .display_name = r.string(),
+        },
+        .size_bits = r.size(),
+        .alignment_bits = r.size(),
+    };
     result.fields = read_list<NodeStateFieldStructure>(r, [&] {
         NodeStateFieldStructure field{.name = r.string(), .type_name = r.string(), .bit_offset = r.size(),
             .size_bits = r.size(), .alignment_bits = r.size()};
@@ -500,8 +511,7 @@ inline details::NodeCompilerRecord const& find_type(std::span<details::NodeCompi
 namespace iv {
 
 inline SerializedConfiguredGraph serialize_binary_configured_graph(
-    ConfiguredGraph const& configured,
-    std::span<std::pair<NodeCodeKey, NodeStateStructure> const> state_structures)
+    ConfiguredGraph const& configured)
 {
     using namespace binary_wire_details;
     SerializedConfiguredGraph result;
@@ -549,11 +559,18 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
                 bundles.size(deferred.id);
                 bundles.size(deferred.loop_extra_latency);
             }
-            auto const state = std::find_if(state_structures.begin(), state_structures.end(), [&](auto const& item) {
-                return item.first == *view.code_key;
-            });
-            bundles.flag(state != state_structures.end());
-            if (state != state_structures.end()) write_state(bundles, state->second);
+            auto const has_state_structures = view.state_structures_storage
+                && *view.state_structures_storage;
+            bundles.flag(has_state_structures);
+            if (has_state_structures) {
+                auto const& structures = **view.state_structures_storage;
+                bundles.flag(structures.state.has_value());
+                if (structures.state) write_state(bundles, *structures.state);
+                bundles.flag(structures.compiled_state.has_value());
+                if (structures.compiled_state) {
+                    write_state(bundles, *structures.compiled_state);
+                }
+            }
 
             ConfiguredNodeConfigBytes config;
             config.alignment = view.node_alignment;
@@ -731,8 +748,13 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             if (reader.flag()) record.deferred_detach = DeferredDetachNode{
                 .kind = read_enum<DeferredDetachNodeKind>(reader), .id = reader.size(), .loop_extra_latency = reader.size()};
             if (reader.flag()) {
-                record.state_structure_storage = std::make_shared<NodeStateStructure>(read_state(reader));
-                record.operations.runtime.state_structure = record.state_structure_storage.get();
+                NodeStateStructures structures;
+                if (reader.flag()) structures.state = read_state(reader);
+                if (reader.flag()) structures.compiled_state = read_state(reader);
+                record.state_structures_storage =
+                    std::make_shared<NodeStateStructures const>(std::move(structures));
+                record.operations.runtime.state_structures =
+                    record.state_structures_storage.get();
             }
         } else if (record.kind == ConfiguredNodeBundleKind::tiled) {
             record.tiled_members = read_list<NodeBundleHandle>(reader, [&] { return reader.size(); });

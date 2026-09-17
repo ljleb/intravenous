@@ -23,9 +23,9 @@ namespace details {
 // these views from the IV packages that are loaded for the configuration; the
 // BuilderSession copies the records so nested iv-module calls use one stable
 // lookup set even if other packages are reloaded concurrently.
-struct BuilderNodeStateStructure {
+struct BuilderNodeStateStructures {
     NodeCodeKey code_key{};
-    NodeStateStructure structure{};
+    NodeStateStructures structures{};
 };
 
 struct BuilderPackageView {
@@ -33,7 +33,7 @@ struct BuilderPackageView {
     std::span<PackageDefinition const> definitions{};
     std::span<NodeConfigPointerFieldData const> config_pointer_fields{};
     std::span<RetainedGlobalData const> retained_globals{};
-    std::span<BuilderNodeStateStructure const> node_state_structures{};
+    std::span<BuilderNodeStateStructures const> node_state_structures{};
 };
 
 struct BuilderDefinition {
@@ -80,7 +80,7 @@ void end_builder_module(BuilderSession*) noexcept;
 
 NodeConfigRelocations capture_node_config(
     BuilderSession*, NodeCodeKey, void const*, std::size_t);
-std::shared_ptr<NodeStateStructure const> copy_builder_node_state_structure(
+std::shared_ptr<NodeStateStructures const> copy_builder_node_state_structures(
     BuilderSession*, NodeCodeKey);
 
 // Module-side node constructors request storage from the shared builder and

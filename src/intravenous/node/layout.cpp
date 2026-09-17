@@ -70,13 +70,44 @@ namespace iv {
         (void)node_index;
     }
 
-    void NodeLayoutBuilder::override_node_state_structure(
-        size_t node_index, NodeStateStructure structure)
+    void NodeLayoutBuilder::override_node_state_structures(
+        size_t node_index, NodeStateStructures const& structures)
     {
         if (node_index >= _nodes.size()) {
             throw std::out_of_range("node state structure index out of range");
         }
-        _nodes[node_index].node_state_structure = std::move(structure);
+
+        auto& node = _nodes[node_index];
+        auto validate = [&](
+            std::optional<NodeStateStructure> const& structure,
+            size_t size,
+            size_t alignment,
+            char const* label) {
+            if (!structure) {
+                if (size != 0) {
+                    throw std::invalid_argument(
+                        std::string("missing reflected ") + label + " structure");
+                }
+                return;
+            }
+            if (
+                structure->size_bits != size * 8 ||
+                structure->alignment_bits != alignment * 8
+            ) {
+                throw std::invalid_argument(
+                    std::string("reflected ") + label +
+                    " structure does not match declared ABI");
+            }
+        };
+
+        validate(structures.state, node.state_size, node.state_alignment, "State");
+        validate(
+            structures.compiled_state,
+            node.compiled_state_size,
+            node.compiled_state_alignment,
+            "CompiledState");
+        node.state_structure = structures.state;
+        node.compiled_state_structure = structures.compiled_state;
     }
 
     size_t NodeLayoutBuilder::align_up(size_t value, size_t alignment)
@@ -95,13 +126,11 @@ namespace iv {
             record.node = registration.node;
             record.node_type = registration.node_type;
             record.node_type_name = registration.node_type_name;
-            record.compiled_state_type = registration.compiled_state_type;
-            record.compiled_state_type_name = registration.compiled_state_type_name;
             record.compiled_state_size = registration.compiled_state_size;
             record.compiled_state_alignment = registration.compiled_state_alignment;
             record.lifecycle = registration.lifecycle;
             if (registration.has_state) {
-                record.node_state_structure = NodeStateStructure {
+                record.state_structure = NodeStateStructure {
                     .size_bits = registration.state_size * 8,
                     .alignment_bits = registration.state_alignment * 8,
                 };
@@ -112,6 +141,12 @@ namespace iv {
                 region.size = 0;
                 region.alignment = 1;
                 builder._regions.push_back(region);
+            }
+            if (registration.has_compiled_state) {
+                record.compiled_state_structure = NodeStateStructure {
+                    .size_bits = registration.compiled_state_size * 8,
+                    .alignment_bits = registration.compiled_state_alignment * 8,
+                };
             }
             builder._nodes.push_back(std::move(record));
             return node_index;
@@ -181,6 +216,7 @@ namespace iv {
             NodeLayout::Region region;
             region.kind = NodeLayout::Region::Kind::local_array;
             region.owner_node = declaration.owner_node;
+            region.compiled_state_field = declaration.compiled_state_field;
             region.state_field_offset = declaration.state_field_offset;
             region.size = declaration.element_size * declaration.element_count;
             region.alignment = declaration.element_alignment;
@@ -293,6 +329,7 @@ namespace iv {
             builder._exports.push_back({
                 .owner_node = declaration.owner_node,
                 .id = std::move(id),
+                .compiled_state_field = declaration.compiled_state_field,
                 .state_field_offset = declaration.state_field_offset,
                 .element_type = declaration.element_type,
                 .element_size = declaration.element_size,
@@ -309,6 +346,7 @@ namespace iv {
             builder._imports.push_back({
                 .owner_node = declaration.owner_node,
                 .id = std::move(id),
+                .compiled_state_field = declaration.compiled_state_field,
                 .state_field_offset = declaration.state_field_offset,
                 .element_type = declaration.element_type,
                 .element_size = declaration.element_size,
@@ -361,12 +399,12 @@ namespace iv {
                 });
         }
 
-        void override_node_state_structure(
+        void override_node_state_structures(
             NodeLayoutBuilder& builder,
             size_t node_index,
-            NodeStateStructure const& structure)
+            NodeStateStructures const& structures)
         {
-            builder.override_node_state_structure(node_index, structure);
+            builder.override_node_state_structures(node_index, structures);
         }
 
         size_t node_layout_max_block_size(NodeLayoutBuilder const& builder)
@@ -489,7 +527,9 @@ namespace iv {
 
             void* data = nullptr;
             size_t count = 0;
-            void* export_state = storage.state_ptr(export_it->owner_node);
+            void* export_state = export_it->compiled_state_field
+                ? storage.compiled_state_ptr(export_it->owner_node)
+                : storage.state_ptr(export_it->owner_node);
             export_it->read_span_fn(
                 export_state, export_it->state_field_offset, data, count);
             return {
@@ -698,30 +738,30 @@ namespace iv {
             node.node_type_name && previous_node.node_type_name &&
             std::strcmp(
                 node.node_type_name, previous_node.node_type_name) == 0;
-        auto const same_state_structure =
-            node.node_state_structure == previous_node.node_state_structure;
+        auto const same_reflected_definition = [](
+            std::optional<NodeStateStructure> const& current,
+            std::optional<NodeStateStructure> const& prior,
+            size_t size) {
+            if (size == 0) {
+                return !current && !prior;
+            }
+            return current && prior && current->type_identity.valid() &&
+                prior->type_identity.valid() && *current == *prior;
+        };
+        auto const same_state_definitions =
+            same_reflected_definition(
+                node.state_structure, previous_node.state_structure, node.state_size) &&
+            same_reflected_definition(
+                node.compiled_state_structure,
+                previous_node.compiled_state_structure,
+                node.compiled_state_size);
         auto const same_node_type = node.node_type == previous_node.node_type ||
-            (same_node_name && same_state_structure);
+            (same_node_name && same_state_definitions);
         if (!same_node_type || node.state_size != previous_node.state_size ||
+            node.state_alignment != previous_node.state_alignment ||
             node.compiled_state_size != previous_node.compiled_state_size ||
             node.compiled_state_alignment != previous_node.compiled_state_alignment) {
             return false;
-        }
-        if (node.compiled_state_size != 0) {
-            // Package reload changes the process-local type token. Until the
-            // package metadata carries a reflected CompiledState structure,
-            // use the same nominal-type fallback as other hot-reload ABI
-            // checks after size/alignment have already matched above.
-            auto const same_compiled_state_name =
-                node.compiled_state_type_name &&
-                previous_node.compiled_state_type_name &&
-                std::strcmp(
-                    node.compiled_state_type_name,
-                    previous_node.compiled_state_type_name) == 0;
-            if (node.compiled_state_type != previous_node.compiled_state_type &&
-                !same_compiled_state_name) {
-                return false;
-            }
         }
 
         auto next_region = [](NodeLayout const& layout_ref, size_t owner_node, size_t start_index) -> size_t {
@@ -746,6 +786,8 @@ namespace iv {
 
             if (
                 current_region.kind != previous_region.kind ||
+                current_region.compiled_state_field !=
+                    previous_region.compiled_state_field ||
                 current_region.state_field_offset != previous_region.state_field_offset ||
                 current_region.size != previous_region.size ||
                 current_region.alignment != previous_region.alignment ||
@@ -784,7 +826,9 @@ namespace iv {
                 !region.assign_span_fn) {
                 continue;
             }
-            void* state = storage.state_ptr(region.owner_node);
+            void* state = region.compiled_state_field
+                ? storage.compiled_state_ptr(region.owner_node)
+                : storage.state_ptr(region.owner_node);
             void* data = storage.storage.get() + region.storage_offset;
             region.assign_span_fn(
                 state, region.state_field_offset, data, region.element_count);
@@ -873,12 +917,16 @@ namespace iv {
             size_t count = 0;
             if (export_it != storage.layout->exported_arrays.end() &&
                 export_it->read_span_fn) {
-                void* export_state = storage.state_ptr(export_it->owner_node);
+                void* export_state = export_it->compiled_state_field
+                    ? storage.compiled_state_ptr(export_it->owner_node)
+                    : storage.state_ptr(export_it->owner_node);
                 export_it->read_span_fn(
                     export_state, export_it->state_field_offset, data, count);
             }
             if (import_endpoint.assign_span_fn) {
-                void* import_state = storage.state_ptr(import_endpoint.owner_node);
+                void* import_state = import_endpoint.compiled_state_field
+                    ? storage.compiled_state_ptr(import_endpoint.owner_node)
+                    : storage.state_ptr(import_endpoint.owner_node);
                 import_endpoint.assign_span_fn(
                     import_state,
                     import_endpoint.state_field_offset,

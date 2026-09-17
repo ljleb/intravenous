@@ -40,6 +40,7 @@ namespace iv {
 
             Kind kind = Kind::state;
             size_t owner_node = no_owner_node;
+            bool compiled_state_field = false;
             ptrdiff_t state_field_offset = 0;
             size_t storage_offset = 0;
             size_t size = 0;
@@ -56,6 +57,7 @@ namespace iv {
         struct ArrayBinding {
             size_t owner_node = 0;
             std::string id;
+            bool compiled_state_field = false;
             ptrdiff_t state_field_offset = 0;
             void const* element_type = nullptr;
             size_t element_size = 0;
@@ -71,12 +73,11 @@ namespace iv {
             void const* node = nullptr;
             void const* node_type = nullptr;
             char const* node_type_name = nullptr;
-            std::optional<NodeStateStructure> node_state_structure {};
+            std::optional<NodeStateStructure> state_structure {};
+            std::optional<NodeStateStructure> compiled_state_structure {};
             ptrdiff_t state_offset = 0;
             size_t state_size = 0;
             size_t state_alignment = 1;
-            void const* compiled_state_type = nullptr;
-            char const* compiled_state_type_name = nullptr;
             ptrdiff_t compiled_state_offset = -1;
             size_t compiled_state_size = 0;
             size_t compiled_state_alignment = 1;
@@ -124,8 +125,8 @@ namespace iv {
             NodeLayout::NodeRecord const& record,
             size_t node_index);
 
-        void override_node_state_structure(
-            size_t node_index, NodeStateStructure structure);
+        void override_node_state_structures(
+            size_t node_index, NodeStateStructures const& structures);
 
         template<typename A>
         bool has_import_array(std::string const& id) const

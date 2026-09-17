@@ -20,7 +20,7 @@
 namespace iv {
     struct NodeLayoutBuilder;
     struct NodeStorage;
-    struct NodeStateStructure;
+    struct NodeStateStructures;
 
     struct NodeLifecycleCallbacks {
         void (*move_fn)(
@@ -49,8 +49,6 @@ namespace iv {
             size_t state_size = 0;
             size_t state_alignment = 1;
             bool has_state = false;
-            void const* compiled_state_type = nullptr;
-            char const* compiled_state_type_name = nullptr;
             size_t compiled_state_size = 0;
             size_t compiled_state_alignment = 1;
             bool has_compiled_state = false;
@@ -59,6 +57,7 @@ namespace iv {
 
         struct NodeLayoutArrayDeclaration {
             size_t owner_node = 0;
+            bool compiled_state_field = false;
             ptrdiff_t state_field_offset = 0;
             void const* element_type = nullptr;
             char const* element_type_name = nullptr;
@@ -119,8 +118,8 @@ namespace iv {
             NodeLayoutBuilder const&, std::string const&, void const* element_type);
         bool has_export_array(
             NodeLayoutBuilder const&, std::string const&, void const* element_type);
-        void override_node_state_structure(
-            NodeLayoutBuilder&, size_t node_index, NodeStateStructure const&);
+        void override_node_state_structures(
+            NodeLayoutBuilder&, size_t node_index, NodeStateStructures const&);
         size_t node_layout_max_block_size(NodeLayoutBuilder const&);
         size_t node_layout_event_port_buffer_base_multiplier(
             NodeLayoutBuilder const&);
@@ -200,9 +199,6 @@ namespace iv {
                 !std::is_void_v<typename NodeCompiledState<Node>::Type>;
             if constexpr (!std::is_void_v<typename NodeCompiledState<Node>::Type>) {
                 using CompiledState = typename NodeCompiledState<Node>::Type;
-                registration.compiled_state_type =
-                    node_layout_type_token<CompiledState>();
-                registration.compiled_state_type_name = typeid(CompiledState).name();
                 registration.compiled_state_size = sizeof(CompiledState);
                 registration.compiled_state_alignment = alignof(CompiledState);
             }
@@ -227,9 +223,6 @@ namespace iv {
                 !std::is_void_v<typename NodeCompiledState<Node>::Type>;
             if constexpr (!std::is_void_v<typename NodeCompiledState<Node>::Type>) {
                 using CompiledState = typename NodeCompiledState<Node>::Type;
-                registration.compiled_state_type =
-                    node_layout_type_token<CompiledState>();
-                registration.compiled_state_type_name = typeid(CompiledState).name();
                 registration.compiled_state_size = sizeof(CompiledState);
                 registration.compiled_state_alignment = alignof(CompiledState);
             }
@@ -256,12 +249,46 @@ namespace iv {
         using CompiledState = typename NodeCompiledState<Node>::Type;
 
     private:
+        struct FieldLocation {
+            bool compiled_state = false;
+            ptrdiff_t offset = 0;
+        };
+
         NodeLayoutBuilder* _builder = nullptr;
         size_t _node_index = 0;
         State const* _state_marker = nullptr;
+        CompiledState const* _compiled_state_marker = nullptr;
         mutable std::vector<size_t> _direct_nested_node_indices;
         mutable std::optional<size_t> _nested_nodes_region_index;
         mutable std::optional<size_t> _nested_compiled_nodes_region_index;
+
+        FieldLocation field_location(void const* field) const
+        {
+            auto const address = reinterpret_cast<uintptr_t>(field);
+            if constexpr (!std::is_void_v<State>) {
+                auto const base = reinterpret_cast<uintptr_t>(_state_marker);
+                if (address >= base && address < base + sizeof(State)) {
+                    return {
+                        .compiled_state = false,
+                        .offset = static_cast<ptrdiff_t>(address - base),
+                    };
+                }
+            }
+            if constexpr (!std::is_void_v<CompiledState>) {
+                auto const base =
+                    reinterpret_cast<uintptr_t>(_compiled_state_marker);
+                if (address >= base && address < base + sizeof(CompiledState)) {
+                    return {
+                        .compiled_state = true,
+                        .offset = static_cast<ptrdiff_t>(address - base),
+                    };
+                }
+            }
+            IV_ASSERT(
+                false,
+                "declared storage field must belong to State or CompiledState");
+            return {};
+        }
 
     public:
         explicit DeclarationContext(NodeLayoutBuilder& builder, Node const& node)
@@ -280,6 +307,8 @@ namespace iv {
                     _node_index,
                     sizeof(CompiledState),
                     alignof(CompiledState));
+                _compiled_state_marker = reinterpret_cast<CompiledState const*>(
+                    uintptr_t { 0x10000000 });
             }
         }
 
@@ -305,6 +334,8 @@ namespace iv {
                     _node_index,
                     sizeof(CompiledState),
                     alignof(CompiledState));
+                _compiled_state_marker = reinterpret_cast<CompiledState const*>(
+                    uintptr_t { 0x10000000 });
             }
         }
 
@@ -338,13 +369,21 @@ namespace iv {
             return reinterpret_cast<NoCopy<State> const&>(*_state_marker);
         }
 
+        NoCopy<CompiledState> const& compiled_state() const
+        requires(!std::is_void_v<CompiledState>)
+        {
+            return reinterpret_cast<NoCopy<CompiledState> const&>(
+                *_compiled_state_marker);
+        }
+
         template<typename A>
         void local_array(std::span<A> const& span, size_t count) const
         {
+            auto const location = field_location(&span);
             details::declare_local_array(*_builder, {
                 .owner_node = _node_index,
-                .state_field_offset =
-                    details::node_layout_field_offset(_state_marker, &span),
+                .compiled_state_field = location.compiled_state,
+                .state_field_offset = location.offset,
                 .element_type = details::node_layout_type_token<A>(),
                 .element_type_name = typeid(A).name(),
                 .element_size = sizeof(A),
@@ -362,10 +401,11 @@ namespace iv {
         template<typename A>
         void export_array(std::string id, std::span<A> const& span) const
         {
+            auto const location = field_location(&span);
             details::declare_export_array(*_builder, std::move(id), {
                 .owner_node = _node_index,
-                .state_field_offset = details::node_layout_field_offset(
-                    reinterpret_cast<void const*>(uintptr_t { 0x10000 }), &span),
+                .compiled_state_field = location.compiled_state,
+                .state_field_offset = location.offset,
                 .element_type = details::node_layout_type_token<A>(),
                 .element_type_name = typeid(A).name(),
                 .element_size = sizeof(A),
@@ -384,10 +424,11 @@ namespace iv {
         template<typename A>
         void import_array(std::string id, std::span<A> const& span) const
         {
+            auto const location = field_location(&span);
             details::declare_import_array(*_builder, std::move(id), {
                 .owner_node = _node_index,
-                .state_field_offset = details::node_layout_field_offset(
-                    reinterpret_cast<void const*>(uintptr_t { 0x10000 }), &span),
+                .compiled_state_field = location.compiled_state,
+                .state_field_offset = location.offset,
                 .element_type = details::node_layout_type_token<A>(),
                 .element_type_name = typeid(A).name(),
                 .element_size = sizeof(A),
@@ -453,15 +494,15 @@ namespace iv {
 
         void declare_reflected_child(
             void const* node_data,
-            NodeStateStructure const* state_structure,
+            NodeStateStructures const* state_structures,
             size_t (*declare)(
-                void const*, NodeStateStructure const*, NodeLayoutBuilder&)) const
+                void const*, NodeStateStructures const*, NodeLayoutBuilder&)) const
         {
             IV_ASSERT(node_data, "reflected child node data cannot be null");
             IV_ASSERT(
                 declare, "reflected child declaration callback cannot be null");
             _direct_nested_node_indices.push_back(
-                declare(node_data, state_structure, *_builder));
+                declare(node_data, state_structures, *_builder));
         }
 
         size_t max_block_size() const

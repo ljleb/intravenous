@@ -145,10 +145,13 @@ and per-generation ORC lifetime. The isolated `ConfiguredGraph` + resolved node
 LLVM -> project LLVM lowering function is intentionally still pending. Before
 that lowering body lands, the provisional shell storage/entrypoint contract is
 to be collapsed onto the existing node runtime model: the generated project is a
-zero-input/zero-output root node, its `declare()` builds the canonical
-`NodeLayout`, `GraphExecutor` owns the corresponding `NodeStorage`, and internal
-compiled outputs are reached through specialized compiled-access metadata rather
-than a synthetic project-root `access_block()`. `GraphExecutor` remains
+zero-input/zero-output root node; lowering finalizes the canonical `NodeLayout`
+*before* final LLVM generation by executing the exact accepted declaration
+callbacks and declaring compiler-owned raw regions; `GraphExecutor` owns the
+corresponding `NodeStorage`; and internal compiled outputs are reached through
+specialized compiled-access metadata rather than a synthetic project-root
+`access_block()`. Final layout offsets are therefore compile-time constants in
+the generated LLVM. `GraphExecutor` remains
 unimplemented. Structured connection persistence/JSON-RPC adapters are also still
 pending; the typed project command surface and canonical connection owner now
 exist so those adapters do not need to invent connection semantics. The existing
