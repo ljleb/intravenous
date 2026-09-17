@@ -47,8 +47,14 @@ globals, and owns a persistent project `LLJIT` with independently releasable
 per-generation resources. Generated project LLVM is verified, optimized at O3,
 and materialized synchronously before an immutable `CompiledGraph` is returned.
 
-The deliberately isolated missing implementation is
-`graph_jit::lower_configured_graph_to_llvm`. The shell now uses the generated-root
+The lowering boundary is now executable for the semantic identity case: an empty
+project lowers to an empty canonical `NodeLayout` plus materialized no-op root
+`tick_block`/`skip_block` operations and returns a real `CompiledGraph`. This
+proves the complete lowering -> verification -> O3 -> ORC -> native-operation
+path without introducing special runtime storage or lifecycle machinery.
+
+General non-empty `graph_jit::lower_configured_graph_to_llvm` remains the
+deliberately isolated missing implementation. The shell uses the generated-root
 and canonical `NodeLayout`/`NodeStorage` contract specified in this document:
 `CompiledGraph` carries the finalized `NodeLayout` plus generated root
 `tick_block`/optional `skip_block` operations, while lifecycle remains entirely
