@@ -1080,6 +1080,31 @@ ExecutionRootSnapshot execution_root_snapshot()
     };
 }
 
+TEST(Channels, SamplePortStorageViewConstructsFacadesWithoutSharedPortData)
+{
+    std::array<iv::Sample, 8> samples{};
+    iv::SamplePortStorageView storage{
+        std::span<iv::Sample>{samples},
+        0,
+        iv::mono_planar_channel_layout,
+        8,
+    };
+    // Invocation-local façades may be reconstructed at an arbitrary absolute
+    // sample index; no persistent cursor state is required between calls.
+    iv::OutputPort output(storage, 0, 6);
+    iv::InputPort input(storage, 0, 0, 6);
+
+    for (std::size_t i = 0; i < 4; ++i) {
+        output.push(static_cast<iv::Sample>(i + 1));
+    }
+    auto const block = input.get_block(4);
+    ASSERT_EQ(block.size(), 4u);
+    EXPECT_FLOAT_EQ(block[0], 1.0f);
+    EXPECT_FLOAT_EQ(block[1], 2.0f);
+    EXPECT_FLOAT_EQ(block[2], 3.0f);
+    EXPECT_FLOAT_EQ(block[3], 4.0f);
+}
+
 TEST(Channels, MonoPlanarIdentityConversionPreservesExactSamples)
 {
     auto const samples = std::array<iv::Sample, 5>{

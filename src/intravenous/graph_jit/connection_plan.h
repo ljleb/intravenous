@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/channel_layout.h>
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/realtime_port_planning.h>
 
@@ -48,7 +49,7 @@ struct DependencyEdgePlan {
 
 struct SccRegionPlan {
     std::vector<NodeBundleHandle> nodes{};
-    // Point 9 will replace this provisional deterministic order for cyclic
+    // Point 12 will replace this provisional deterministic order for cyclic
     // regions with the feedback-aware execution schedule. Acyclic singleton
     // regions already have their final order.
     std::vector<NodeBundleHandle> execution_order{};
@@ -72,7 +73,9 @@ struct SampleConnectionPlan {
     ChannelTypeId source_type = ChannelTypeId::mono;
     std::vector<SampleOutputChannelId> source_channels{};
     std::optional<NodeBundlePortId> canonical_source_port{};
+    std::optional<ChannelLayout> canonical_source_layout{};
     ChannelTypeId target_type = ChannelTypeId::mono;
+    ChannelLayout target_layout{};
     std::vector<SampleInputChannelId> target_channels{};
     NodeBundlePortId target_port{};
 
@@ -103,14 +106,24 @@ struct EventConnectionPlan {
     bool feedback = false;
 };
 
+struct ConnectionLiveIntervalPlan {
+    // Positions in SchedulePlan's flattened concrete-node order. Boundary
+    // ingress is represented by 0; boundary egress by execution_count.
+    std::size_t begin = 0;
+    std::size_t end = 0;
+    bool crosses_kernel_invocations = false;
+};
+
 struct SampleProducerGroupPlan {
     ChannelTypeId source_type = ChannelTypeId::mono;
     std::vector<SampleOutputChannelId> source_channels{};
+    std::optional<ChannelLayout> canonical_source_layout{};
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
     bool has_compiled_connections = false;
     SampleConnectionImplementationRequirements requirements{};
     std::optional<SampleConnectionImplementationKind> implementation{};
+    ConnectionLiveIntervalPlan live_interval{};
 };
 
 struct EventProducerGroupPlan {
@@ -123,23 +136,15 @@ struct EventProducerGroupPlan {
     std::optional<EventConnectionImplementationKind> implementation{};
 };
 
-struct ConnectionLiveIntervalPlan {
-    // Positions in SchedulePlan's flattened concrete-node order. Boundary
-    // ingress is represented by 0; boundary egress by execution_count.
-    std::size_t begin = 0;
-    std::size_t end = 0;
-    bool crosses_kernel_invocations = false;
-};
-
 enum class ConnectionStorageLifetime {
     transient,
     persistent,
     external,
 };
 
-// This is a semantic storage request, not an allocated region. Point 7 will
-// assign/reuse transient slots and translate persistent requests into canonical
-// NodeLayout raw regions after implementation selection is stable.
+// This is a semantic storage request, not an allocated region. Sample physical
+// realization consumes these requirements after implementation selection;
+// transient slot allocation is a separate concern from policy choice.
 struct ConnectionStorageRegionRequirement {
     PlannedConnectionPayload payload = PlannedConnectionPayload::sample;
     std::size_t producer_group_index = 0;

@@ -2,11 +2,13 @@
 
 #include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/graph_jit/connection_plan.h>
+#include <intravenous/graph_jit/sample_physical_plan.h>
 #include <intravenous/graph_jit/lowering.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -89,6 +91,27 @@ struct ConfigurationPlan {
     std::vector<NodeConfigurationPlan> nodes{};
 };
 
+
+struct PrimitiveSamplePortPlan {
+    // One optional physical-representation handle per declared sample port
+    // ordinal. Outputs bind to a producer group's canonical representation;
+    // inputs bind to the representation selected for that connection. Point 8
+    // can therefore add converted fanout branches without changing this ABI.
+    std::vector<std::optional<std::size_t>> inputs{};
+    std::vector<std::optional<std::size_t>> outputs{};
+};
+
+struct SamplePortBindingPlan {
+    SamplePhysicalPlan physical{};
+    // Indexed by analyzed concrete primitive.
+    std::vector<PrimitiveSamplePortPlan> primitives{};
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return physical.empty();
+    }
+};
+
 struct PrimitiveExecutionStep {
     std::size_t configuration_index = 0;
     std::size_t storage_index = 0;
@@ -109,13 +132,14 @@ struct ExecutionPlan {
 };
 
 struct LoweringPlan {
-    // Pure graph/topology analysis is part of the stable lowering plan even
-    // while the current realization capability gate still rejects non-empty
-    // port/connection plans. Point 6 consumes this directly.
+    // Pure graph/topology analysis remains part of the stable lowering plan;
+    // sample physical realization consumes it without introducing a parallel
+    // topology or policy model.
     ConnectionAnalysisPlan connections{};
     DeclarationPlan declarations{};
     PackageImportPlan imports{};
     ConfigurationPlan configurations{};
+    SamplePortBindingPlan sample_ports{};
     ExecutionPlan execution{};
 };
 

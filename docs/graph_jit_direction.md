@@ -55,7 +55,10 @@ path without introducing special runtime storage or lifecycle machinery.
 
 The first deliberately narrow non-empty slice has also landed. A flat project
 may contain several registered zero-port primitives, with no connections,
-virtual nodes, nested declarations, or auxiliary declaration-owned regions.
+nested declarations, or auxiliary declaration-owned regions. Configured
+`virtual_nodes` records are treated as source/introspection metadata over the
+already-lowered concrete bundles and endpoints; GraphJit does not instantiate
+them as executable runtime nodes.
 Configuration pointer fields are reconstructed from symbolic retained-global
 relocations: native pointer bytes are discarded during host planning, selected
 immutable retained globals are deduplicated as package import roots, and final
@@ -107,16 +110,85 @@ compiled output never becomes a tick dependency merely because a realtime
 consumer needs it: that edge remains classified for the later compiled-access
 materialization phase. Realtime-to-realtime groups alone enter the realtime
 storage chooser. Block-slice mismatches conservatively require materialization
-until a later scheduler proves a shared subdivision. The current lowering
-capability gate still rejects graphs with ports/connections, so this refactor
-adds no executable port capability by itself.
+until a later scheduler proves a shared subdivision. At the point this refactor landed, the lowering capability gate still rejected
+ports/connections; the sample-edge slice below is the first consumer of this
+analysis.
 
-The next change should consume this plan for the first simple feed-forward sample
-connections and materialize the corresponding primitive port contexts. The
-existing `choose_sample_connection_implementation()` and
+The first sample-edge realization has now landed, but with an important whole-
+project-JIT-specific ABI: canonical `NodeStorage` contains only compiler-selected
+sample backing, never `SharedPortData`, `InputPort`, or `OutputPort` objects.
+GraphJit emits immutable per-node sample binding records containing final storage
+offsets/capacities and passes the canonical storage base to the imported primitive
+wrapper. The wrapper reconstructs short-lived node-API `InputPort`/`OutputPort`
+values for that primitive invocation, anchored to the absolute sample index. Those
+facades have no cross-call identity; after whole-project inlining/O3 they are
+expected to scalarize into address/index arithmetic. The direct and transient
+materialization choices therefore allocate only bounded sample backing. There is
+no realtime heap allocation, lazy initialization, placement construction,
+persistent façade cursor, or `SharedPortData` tax.
+
+The existing `choose_sample_connection_implementation()` and
 `choose_event_connection_implementation()` functions remain the physical-storage
 policy boundary; GraphJit derives their requirement inputs and realizes their
-returned choices rather than creating a competing policy layer.
+returned choices rather than creating a competing policy layer. The old `Graph`
+implementation is reference material only and must not constrain this runtime
+representation. In particular, legacy fanout/cursor/storage objects should not be
+carried forward merely to keep the old executor compiling.
+
+The sample realization now has its own stable physical-plan layer in
+`graph_jit/sample_physical_plan.{h,cpp}`. Primitive bindings refer to immutable
+**sample representation handles**, not raw buffers or producer-group storage
+slots. Every realtime producer group owns a canonical representation; each realized
+realtime connection resolves to a representation handle. At the current point-7
+checkpoint identity realtime branches resolve to that canonical representation,
+while point 8 may map selected fanout branches to derived converted/remapped
+representations without changing the primitive ABI.
+Direct and transient-materialization representations are assigned reusable raw
+transient slots from their inclusive schedule live intervals. Non-overlapping
+representations share one slot even across different channel layouts, sized to the
+maximum assigned representation. Overlapping lifetimes never alias. Final slot
+offsets are declared once into canonical `NodeLayout` and emitted as immutable
+primitive bindings; realtime execution only uses those offsets.
+
+The physical planner consumes the implementation decisions already made by
+`choose_sample_connection_implementation()`; it does not choose policy again.
+Only realtime branches receive realtime representation handles here; compiled
+access branches remain unresolved for the later compiled-access executor. Layout
+conversion is also rejected at this layer until point 8 can give that branch an
+explicit derived representation instead of aliasing the canonical producer data.
+Cross-kernel retained, feedback, and external representations remain rejected at
+this checkpoint rather than being approximated with transient storage.
+
+### Realtime port realization rules
+
+The remaining port work should preserve these invariants:
+
+- **Canonical storage contains data, not API facades.** Persistent/transient sample
+  payloads and genuinely required implementation state belong in `NodeStorage`;
+  `InputPort`/`OutputPort` are invocation-local authored-node API adapters.
+- **Bindings are immutable compiler facts.** Port implementation kind, offsets,
+  capacities, layouts, history/latency parameters, and branch relationships should
+  be emitted as immutable LLVM-visible records whenever possible. Only the
+  `NodeStorage` base and current sample index/block size are dynamic.
+- **No audio-thread setup.** Root execution performs no heap allocation, lazy
+  initialization, ownership changes, or first-call construction. Any bounded
+  invocation-local facade values are ordinary inline/stack/SSA values generated by
+  the imported wrapper and are not lifecycle-managed runtime objects.
+- **Producer groups own physical representations.** Fanout consumers reference one
+  producer-group representation or explicit derived branches; there is no default
+  one-buffer/one-object-per-edge model.
+- **Conversions and fanout materialization are explicit execution steps.** A
+  producer writes its canonical source-layout representation once. Identity branches
+  share it; converted/remapped branches are planned materializations. Conversion is
+  not hidden as mutable state inside `OutputPort`.
+- **Transient and persistent state stay distinct semantically.** Current-block
+  scratch may live in canonical allocation for bounded/reusable memory, but it is
+  not migration state. Compact carry/rings/feedback are separate representations
+  selected only when cross-kernel retention requires them.
+- **Direct is allowed to have backing.** With the authored node API, producer output
+  still needs an addressable current-block representation. `direct` means no extra
+  connection copy/materialization between producer and consumer. A later fusion/SSA
+  optimization may eliminate even that backing where profitable.
 
 The shell continues to use the generated-root and canonical
 `NodeLayout`/`NodeStorage` contract specified in this document: `CompiledGraph`
@@ -154,31 +226,58 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    producer-group/connection temporal facts, sample/event chooser requirements,
    and semantic liveness/storage requests before any package LLVM is consumed.
    Realtime policy selection remains in `choose_*_connection_implementation()`;
-   compiled and mixed-access directions are classified separately.
-6. **Simple feed-forward sample connections.** Materialize the first sample port
-   contexts and exercise direct/transient choices through
-   `choose_sample_connection_implementation()`.
-7. **Sample fanout, history, and latency.** Share producer-group storage, realize
-   compact persistent/ring choices, and add transient liveness/reuse.
-8. **Event connections and bounded realtime windows.** Reuse the connection
-   planning structure while feeding event requirements through
-   `choose_event_connection_implementation()`.
-9. **SCC/feedback execution.** Turn SCC analysis into feedback scheduling,
-   feedback storage, and nonzero reflected `scc_feedback_latency`.
-10. **Remaining declaration/runtime semantics.** Add nested declarations,
+   compiled and mixed-access directions are classified separately. Configured
+   virtual-node records are metadata only: execution planning follows concrete
+   bundles and configured connections directly and never lowers legacy/internal
+   virtual/runtime helper nodes.
+6. **Simple feed-forward sample connections.** **Landed.** Internal whole-port
+   realtime sample edges realize `direct` and `transient_materialization` with
+   bounded sample backing only. Immutable reflected binding records hold canonical
+   storage offsets; imported primitive wrappers reconstruct invocation-local
+   `InputPort`/`OutputPort` facades from the storage base and absolute sample index.
+   No sample facade, cursor object, `SharedPortData`, or raw-region initializer is
+   stored in `NodeStorage`.
+7. **Stable sample-representation realization.** **Landed.** The point-6
+   one-buffer-per-producer realization has been replaced by a producer-group
+   physical plan with immutable representation handles, canonical producer
+   representations, per-connection representation resolution, explicit transient
+   lifetime semantics, and deterministic slot reuse for non-overlapping live
+   intervals. Primitive bindings no longer encode raw buffer identity. No retained
+   representation is faked with transient storage; persistent/feedback/external
+   kinds remain capability-gated for their dedicated later steps.
+8. **Sample fanout and layout conversion.** **Current checkpoint.** Make one canonical producer-layout
+   representation, bind identity consumers directly, and add explicit converted or
+   remapped branch materializations. Do not put fanout lists or conversion state in
+   `OutputPort`.
+9. **Sample history and latency.** Realize `compact_persistent_carry` and
+   `persistent_ring`, including exact cross-kernel retention, absolute-indexed
+   reads/writes, and migration semantics for persistent connection state.
+10. **Event-port realization refactor and simple event flow.** Give events the same
+    immutable-binding/no-facade-storage architecture, then realize direct/transient
+    bounded realtime event windows through `choose_event_connection_implementation()`.
+11. **Event fanout/conversion/retention.** Add converted branches, compact event
+    carry, persistent rings, bounded capacity/workspace policy, and liveness reuse.
+12. **SCC/feedback execution.** Turn existing SCC analysis into feedback-aware
+    scheduling, `feedback_ring` realization for sample/event groups, and nonzero
+    reflected `scc_feedback_latency`.
+13. **External project boundaries.** Define the generated root boundary-binding ABI
+    and realize `external_boundary` without copying through compatibility Graph
+    objects. Keep boundary ownership outside `CompiledGraph` storage.
+14. **Remaining declaration/runtime semantics.** Add nested declarations,
     declaration-owned auxiliary/shared-array regions, activity/TTL, deferred
-    detach, and the corresponding generalized skip semantics through existing
-    plans rather than side paths.
-11. **Compiled DSP access.** Add internal endpoint metadata, compiled-access
+    detach, and generalized skip semantics through existing plans rather than side
+    paths.
+15. **Compiled DSP access.** Add internal endpoint metadata, compiled-access
     component plans/executors, batching, and bounded workspaces after realtime
     connection storage is stable.
-12. **GraphExecutor integration.** Add active/pending generations, canonical
+16. **GraphExecutor integration.** Add active/pending generations, canonical
     `NodeStorage` construction/migration, safe-point activation, root execution,
-    and compiled-access dispatch. `CompiledGraph` remains independently testable
-    before this point.
-13. **Optimization refinements.** Improve liveness reuse, storage cost choices,
-    fusion, direct handling, and target-specific optimization only after the
-    semantic compiler surface is complete.
+    boundary binding, and compiled-access dispatch. `CompiledGraph` remains
+    independently testable before this point.
+17. **Optimization refinements.** Verify generated hot-path assembly and then improve
+    liveness reuse, storage cost choices, fusion/SSA direct forwarding, vectorization,
+    and target-specific optimization only after the semantic compiler surface is
+    complete.
 
 The root-build transaction remains:
 
@@ -417,6 +516,20 @@ The current layout builder packs regions in declaration order while solving
 `initialize_order` separately from dependency information, so lowering can
 co-locate data in approximately the order generated O3 code will access it
 without conflating physical locality with lifecycle ordering.
+
+### No compiler-owned façade initialization path
+
+Compiler-owned raw regions are bytes with semantic storage meaning, not a place
+to persist C++ port façade objects. GraphJit should prefer immutable LLVM binding
+records plus constant NodeStorage offsets over raw-region initializers or pointer
+fixup passes. The final storage base is supplied to generated root code, and the
+imported node wrapper derives invocation-local API views from that base.
+
+If a future physical representation genuinely requires nontrivial persistent
+runtime state, it should be modeled explicitly in the connection/storage plan and
+given ordinary bounded storage/lifecycle semantics. Do not add a generic
+first-call or pre-audio façade-construction mechanism merely because the old Graph
+represented connections as mutable C++ objects.
 
 ### Compiler-owned raw regions
 

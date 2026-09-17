@@ -53,9 +53,52 @@ struct ReflectedSpan {
 static_assert(std::is_standard_layout_v<ReflectedSpan<std::byte>>);
 static_assert(std::is_trivially_copyable_v<ReflectedSpan<std::byte>>);
 
+struct ReflectedSamplePortStorageBinding {
+    // Byte offset from ReflectedNodeTickContext::sample_storage_base. The
+    // backing itself is canonical compiler-owned NodeStorage; façade objects
+    // are invocation-local values created by the imported primitive wrapper.
+    std::size_t storage_offset = 0;
+    std::size_t frame_capacity = 0;
+    std::size_t storage_latency = 0;
+    ChannelLayout channel_layout {
+        .channel_type = ChannelTypeId::mono,
+        .sample_layout = SampleStreamLayout::planar,
+    };
+};
+
+struct ReflectedSampleInputPortBinding {
+    ReflectedSamplePortStorageBinding storage {};
+    std::size_t history = 0;
+    std::size_t read_latency = 0;
+};
+
+struct ReflectedSampleOutputPortBinding {
+    ReflectedSamplePortStorageBinding storage {};
+    std::size_t history = 0;
+};
+
+static_assert(std::is_standard_layout_v<ReflectedSamplePortStorageBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedSamplePortStorageBinding>);
+static_assert(std::is_standard_layout_v<ReflectedSampleInputPortBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedSampleInputPortBinding>);
+static_assert(std::is_standard_layout_v<ReflectedSampleOutputPortBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedSampleOutputPortBinding>);
+
 struct ReflectedNodeTickContext {
+    // Legacy reflected sample façades remain temporarily for the old Graph
+    // implementation. GraphJit does not populate or store these objects.
     ReflectedSpan<InputPort> inputs {};
     ReflectedSpan<OutputPort> outputs {};
+
+    // Whole-project sample bindings are immutable compiler records. Imported
+    // primitive wrappers reconstruct short-lived InputPort/OutputPort values
+    // from these bindings and the current absolute sample index. This avoids
+    // persistent façade/cursor state and makes implementation constants visible
+    // to whole-project O3 after inlining.
+    std::byte* sample_storage_base = nullptr;
+    ReflectedSpan<ReflectedSampleInputPortBinding const> sample_input_bindings {};
+    ReflectedSpan<ReflectedSampleOutputPortBinding const> sample_output_bindings {};
+
     ReflectedSpan<EventInputPort> event_inputs {};
     ReflectedSpan<EventOutputPort> event_outputs {};
     ReflectedSpan<CompiledInputPort const> compiled_inputs {};

@@ -621,8 +621,65 @@ namespace iv {
         }
     };
 
+    // Value-semantic sample-storage descriptor used by InputPort/OutputPort.
+    // Compatibility Graph wiring may still own SharedPortData objects, but the
+    // port facades only require this immutable view of the backing storage.
+    // GraphJit therefore treats InputPort/OutputPort as invocation-local API
+    // facades reconstructed from immutable compiler bindings, never as
+    // persistent connection state or NodeStorage-owned objects.
+    struct SamplePortStorageView {
+        std::span<Sample> buffer;
+        size_t latency = 0;
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
+        size_t frame_capacity = 0;
+
+        constexpr explicit SamplePortStorageView(
+            std::span<Sample> buffer = {},
+            size_t latency = 0,
+            ChannelLayout channel_layout = {
+                .channel_type = ChannelTypeId::mono,
+                .sample_layout = SampleStreamLayout::planar,
+            },
+            size_t frame_capacity = 0
+        ) :
+            buffer(buffer),
+            latency(latency),
+            channel_layout(channel_layout),
+            frame_capacity(frame_capacity == 0
+                ? buffer.size() / channel_count(channel_layout)
+                : frame_capacity)
+        {
+            IV_ASSERT(
+                buffer.size() == sample_storage_size(channel_layout, this->frame_capacity),
+                "port buffer storage does not match channel layout");
+            IV_ASSERT(
+                this->frame_capacity == 0 || is_power_of_2(this->frame_capacity),
+                "port buffer frame capacity should be a power of 2");
+        }
+
+        constexpr explicit SamplePortStorageView(SharedPortData const& shared_data)
+            : SamplePortStorageView(
+                shared_data.buffer,
+                shared_data.latency,
+                shared_data.channel_layout,
+                shared_data.frame_capacity)
+        {}
+
+        constexpr size_t sample_index(size_t frame, size_t channel) const
+        {
+            IV_ASSERT(frame < frame_capacity, "port frame index out of bounds");
+            IV_ASSERT(channel < channel_count(channel_layout), "port channel index out of bounds");
+            return channel_layout.sample_layout == SampleStreamLayout::planar
+                ? channel * frame_capacity + frame
+                : frame * channel_count(channel_layout) + channel;
+        }
+    };
+
     class InputPort {
-        SharedPortData& _shared_data;
+        SamplePortStorageView _storage;
         size_t _history;
         size_t _latency_samples = 0;
         size_t _read_position = 0;
@@ -643,31 +700,43 @@ namespace iv {
 
     public:
         explicit InputPort(
-            SharedPortData& shared_data,
+            SamplePortStorageView storage,
             size_t history,
-            size_t latency_samples = 0
+            size_t latency_samples = 0,
+            SampleIndex index = 0
         ) :
-            _shared_data(shared_data),
+            _storage(storage),
             _history(history),
             _latency_samples(latency_samples)
         {
-            IV_ASSERT(is_power_of_2(_shared_data.frame_capacity), "buffer frame capacity should be a power of 2");
-            IV_ASSERT(_latency_samples < _shared_data.frame_capacity, "input latency must fit its shared ring buffer");
-            _read_position = (_shared_data.frame_capacity - _latency_samples)
-                & (_shared_data.frame_capacity - 1);
+            IV_ASSERT(is_power_of_2(_storage.frame_capacity), "buffer frame capacity should be a power of 2");
+            IV_ASSERT(_latency_samples < _storage.frame_capacity, "input latency must fit its shared ring buffer");
+            auto const mask = _storage.frame_capacity - 1;
+            _read_position = static_cast<size_t>(index & mask);
+            _read_position = (_read_position + _storage.frame_capacity
+                - _latency_samples) & mask;
         }
+
+        explicit InputPort(
+            SharedPortData& shared_data,
+            size_t history,
+            size_t latency_samples = 0,
+            SampleIndex index = 0
+        ) : InputPort(
+            SamplePortStorageView{shared_data}, history, latency_samples, index)
+        {}
 
         IV_FORCEINLINE constexpr Sample get(size_t offset = 0, size_t channel = 0) const
         {
             if (offset > _history) return 0.0f;
             size_t const idx = (current_read_position() + buffer_size() - offset) & (buffer_size() - 1);
-            return _shared_data.buffer[_shared_data.sample_index(idx, channel)];
+            return _storage.buffer[_storage.sample_index(idx, channel)];
         }
 
         IV_FORCEINLINE constexpr Sample get_frame(size_t sample_offset, size_t channel = 0) const
         {
             size_t const sample = (current_read_position() + sample_offset) & (buffer_size() - 1);
-            return _shared_data.buffer[_shared_data.sample_index(sample, channel)];
+            return _storage.buffer[_storage.sample_index(sample, channel)];
         }
 
         IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
@@ -677,7 +746,7 @@ namespace iv {
             }
 
             size_t const start = (current_read_position() + sample_offset) & (buffer_size() - 1);
-            return make_block_view(_shared_data.buffer, start, block_size - sample_offset);
+            return make_block_view(_storage.buffer, start, block_size - sample_offset);
         }
 
         IV_FORCEINLINE constexpr size_t latency() const
@@ -687,17 +756,17 @@ namespace iv {
 
         IV_FORCEINLINE constexpr size_t buffer_size() const
         {
-            return _shared_data.frame_capacity;
+            return _storage.frame_capacity;
         }
 
         IV_FORCEINLINE constexpr ChannelLayout channel_layout() const
         {
-            return _shared_data.channel_layout;
+            return _storage.channel_layout;
         }
     };
 
     class OutputPort {
-        SharedPortData& _shared_data;
+        SamplePortStorageView _storage;
         size_t _history;
         size_t _position = 0;
         size_t _direct_write_extent = 0;
@@ -706,52 +775,81 @@ namespace iv {
 
         IV_FORCEINLINE constexpr void write_target_frame(std::span<Sample const> values, size_t frame_offset)
         {
-            IV_ASSERT(values.size() == channel_count(_shared_data.channel_layout), "output frame does not match target channel layout");
-            size_t const frame = (_position + _shared_data.latency + frame_offset) & (buffer_size() - 1);
+            IV_ASSERT(values.size() == channel_count(_storage.channel_layout), "output frame does not match target channel layout");
+            size_t const frame = (_position + _storage.latency + frame_offset) & (buffer_size() - 1);
             for (size_t channel = 0; channel < values.size(); ++channel) {
-                _shared_data.buffer[_shared_data.sample_index(frame, channel)] = values[channel];
+                _storage.buffer[_storage.sample_index(frame, channel)] = values[channel];
             }
         }
 
     public:
-        explicit OutputPort(SharedPortData& shared_data, size_t history) :
-            _shared_data(shared_data),
-            _history(history)
-            , _source_layout(shared_data.channel_layout)
+        explicit OutputPort(
+            SamplePortStorageView storage,
+            size_t history,
+            SampleIndex index = 0
+        ) :
+            _storage(storage),
+            _history(history),
+            _position(static_cast<size_t>(index & (storage.frame_capacity - 1))),
+            _source_layout(storage.channel_layout)
         {
-            IV_ASSERT(is_power_of_2(_shared_data.frame_capacity), "buffer frame capacity should be a power of 2");
+            IV_ASSERT(is_power_of_2(_storage.frame_capacity), "buffer frame capacity should be a power of 2");
+        }
+
+        explicit OutputPort(
+            SharedPortData& shared_data,
+            size_t history,
+            SampleIndex index = 0
+        ) :
+            OutputPort(SamplePortStorageView{shared_data}, history, index)
+        {}
+
+        explicit OutputPort(
+            SamplePortStorageView storage,
+            size_t history,
+            ChannelLayout source_layout,
+            ChannelConversionPlan conversion,
+            SampleIndex index = 0
+        ) :
+            _storage(storage),
+            _history(history),
+            _position(static_cast<size_t>(index & (storage.frame_capacity - 1))),
+            _source_layout(source_layout),
+            _conversion(conversion)
+        {
+            IV_ASSERT(is_power_of_2(_storage.frame_capacity), "buffer frame capacity should be a power of 2");
+            IV_ASSERT(_conversion && _conversion.source == _source_layout, "sample edge conversion source layout does not match output layout");
+            IV_ASSERT(_conversion.target == _storage.channel_layout, "sample edge conversion target layout does not match output buffer layout");
         }
 
         explicit OutputPort(
             SharedPortData& shared_data,
             size_t history,
             ChannelLayout source_layout,
-            ChannelConversionPlan conversion
-        ) :
-            _shared_data(shared_data),
-            _history(history),
-            _source_layout(source_layout),
-            _conversion(conversion)
-        {
-            IV_ASSERT(is_power_of_2(_shared_data.frame_capacity), "buffer frame capacity should be a power of 2");
-            IV_ASSERT(_conversion && _conversion.source == _source_layout, "sample edge conversion source layout does not match output layout");
-            IV_ASSERT(_conversion.target == _shared_data.channel_layout, "sample edge conversion target layout does not match output buffer layout");
-        }
+            ChannelConversionPlan conversion,
+            SampleIndex index = 0
+        ) : OutputPort(
+            SamplePortStorageView{shared_data},
+            history,
+            source_layout,
+            conversion,
+            index)
+        {}
 
         IV_FORCEINLINE constexpr Sample get(size_t offset = 0, size_t channel = 0) const
         {
-            if (offset > _shared_data.latency + _history) return 0.0f;
+            if (offset > _storage.latency + _history) return 0.0f;
             size_t const idx = (
-                _position + _shared_data.latency + buffer_size() - 1 - offset
+                _position + _storage.latency + buffer_size() - 1 - offset
             ) & (buffer_size() - 1);
-            return _shared_data.buffer[_shared_data.sample_index(idx, channel)];
+            return _storage.buffer[_storage.sample_index(idx, channel)];
         }
 
         IV_FORCEINLINE constexpr void write_frame(size_t frame_offset, size_t channel, Sample value)
         {
-            IV_ASSERT(_source_layout == _shared_data.channel_layout, "direct frame writes require matching source and target channel layouts");
-            size_t const frame = (_position + _shared_data.latency + frame_offset) & (buffer_size() - 1);
-            _shared_data.buffer[_shared_data.sample_index(frame, channel)] = value;
+            IV_ASSERT(_source_layout == _storage.channel_layout, "direct frame writes require matching source and target channel layouts");
+            size_t const frame = (_position + _storage.latency + frame_offset) & (buffer_size() - 1);
+            _storage.buffer[_storage.sample_index(frame, channel)] = value;
             _direct_write_extent = std::max(_direct_write_extent, frame_offset + 1);
         }
 
@@ -761,8 +859,8 @@ namespace iv {
             BlockView<Sample const> const& source
         )
         {
-            IV_ASSERT(_source_layout == _shared_data.channel_layout, "direct block writes require matching source and target channel layouts");
-            IV_ASSERT(channel < channel_count(_shared_data.channel_layout), "output channel index out of bounds");
+            IV_ASSERT(_source_layout == _storage.channel_layout, "direct block writes require matching source and target channel layouts");
+            IV_ASSERT(channel < channel_count(_storage.channel_layout), "output channel index out of bounds");
             IV_ASSERT(frame_offset + source.size() <= buffer_size(), "direct output block write exceeds buffer capacity");
             for (size_t frame = 0; frame < source.size(); ++frame) {
                 write_frame(frame_offset + frame, channel, source[frame]);
@@ -781,13 +879,13 @@ namespace iv {
 
         IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
         {
-            size_t const available = _shared_data.latency + _history + 1;
+            size_t const available = _storage.latency + _history + 1;
             size_t const count = std::min(block_size, available - sample_offset);
             size_t const start = (
-                _position + _shared_data.latency + buffer_size() - (sample_offset + count)
+                _position + _storage.latency + buffer_size() - (sample_offset + count)
             ) & (buffer_size() - 1);
 
-            return make_block_view(_shared_data.buffer, start, count);
+            return make_block_view(_storage.buffer, start, count);
         }
 
         IV_FORCEINLINE constexpr void push(Sample value)
@@ -803,9 +901,9 @@ namespace iv {
             Sample converted[2] {};
             if (_conversion) {
                 _conversion.convert(source.data(), converted, 1);
-                write_target_frame(std::span<Sample const>(converted, channel_count(_shared_data.channel_layout)), 0);
+                write_target_frame(std::span<Sample const>(converted, channel_count(_storage.channel_layout)), 0);
             } else {
-                IV_ASSERT(_source_layout == _shared_data.channel_layout, "sample output requires a channel conversion plan");
+                IV_ASSERT(_source_layout == _storage.channel_layout, "sample output requires a channel conversion plan");
                 write_target_frame(source, 0);
             }
             _position = (_position + 1) & (buffer_size() - 1);
@@ -830,9 +928,9 @@ namespace iv {
         IV_FORCEINLINE constexpr void accumulate_block(std::span<Sample const> samples)
         {
             size_t const start = (
-                _position + _shared_data.latency + buffer_size() - samples.size()
+                _position + _storage.latency + buffer_size() - samples.size()
             ) & (buffer_size() - 1);
-            auto dst = make_block_view(_shared_data.buffer, start, samples.size());
+            auto dst = make_block_view(_storage.buffer, start, samples.size());
             auto src = make_block_view(samples, 0, samples.size());
             for (size_t i = 0; i < samples.size(); ++i) {
                 dst[i] += src[i];
@@ -842,9 +940,9 @@ namespace iv {
         IV_FORCEINLINE constexpr void accumulate_block(BlockView<Sample const> samples)
         {
             size_t const start = (
-                _position + _shared_data.latency + buffer_size() - samples.size()
+                _position + _storage.latency + buffer_size() - samples.size()
             ) & (buffer_size() - 1);
-            auto dst = make_block_view(_shared_data.buffer, start, samples.size());
+            auto dst = make_block_view(_storage.buffer, start, samples.size());
             for (size_t i = 0; i < samples.size(); ++i) {
                 dst[i] += samples[i];
             }
@@ -852,8 +950,8 @@ namespace iv {
 
         IV_FORCEINLINE constexpr void push_silence(size_t block_size)
         {
-            size_t const start = (_position + _shared_data.latency) & (buffer_size() - 1);
-            auto block = make_block_view(_shared_data.buffer, start, block_size);
+            size_t const start = (_position + _storage.latency) & (buffer_size() - 1);
+            auto block = make_block_view(_storage.buffer, start, block_size);
             std::fill(block.first.begin(), block.first.end(), 0.0f);
             std::fill(block.second.begin(), block.second.end(), 0.0f);
             _position = (_position + block_size) & (buffer_size() - 1);
@@ -861,9 +959,9 @@ namespace iv {
 
         IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0)
         {
-            if (offset > _shared_data.latency) return;
-            size_t const idx = (_position + _shared_data.latency + buffer_size() - offset) & (buffer_size() - 1);
-            _shared_data.buffer[idx] = value;
+            if (offset > _storage.latency) return;
+            size_t const idx = (_position + _storage.latency + buffer_size() - offset) & (buffer_size() - 1);
+            _storage.buffer[idx] = value;
         }
 
         IV_FORCEINLINE constexpr size_t position() const
@@ -874,7 +972,7 @@ namespace iv {
         IV_FORCEINLINE constexpr BlockView<Sample const> current_block(size_t block_size) const
         {
             size_t const start = (_position + buffer_size() - block_size) & (buffer_size() - 1);
-            return make_block_view(std::span<Sample const>(_shared_data.buffer), start, block_size);
+            return make_block_view(std::span<Sample const>(_storage.buffer), start, block_size);
         }
 
         // The primary output writes the source-layout ring once.  Converted
@@ -897,8 +995,8 @@ namespace iv {
                     & (buffer_size() - 1);
                 for (size_t channel = 0;
                      channel < channel_count(_source_layout); ++channel) {
-                    frame[channel] = _shared_data.buffer[
-                        _shared_data.sample_index(source_frame, channel)];
+                    frame[channel] = _storage.buffer[
+                        _storage.sample_index(source_frame, channel)];
                 }
                 target.push_frame(std::span<Sample const>(
                     frame, channel_count(_source_layout)));
@@ -907,12 +1005,12 @@ namespace iv {
 
         IV_FORCEINLINE constexpr size_t buffer_size() const
         {
-            return _shared_data.frame_capacity;
+            return _storage.frame_capacity;
         }
 
         IV_FORCEINLINE constexpr ChannelLayout channel_layout() const
         {
-            return _shared_data.channel_layout;
+            return _storage.channel_layout;
         }
 
         IV_FORCEINLINE constexpr ChannelLayout source_layout() const

@@ -12,11 +12,13 @@
 #include <intravenous/node/compiler_record.h>
 #include <intravenous/node/lifecycle.h>
 
+#include <array>
 #include <cstddef>
 #include <concepts>
 #include <memory>
 #include <optional>
 #include <type_traits>
+#include <utility>
 
 namespace iv {
 struct ReflectedNodeDescription;
@@ -72,6 +74,141 @@ std::size_t declare_node(
     return ctx.node_index();
 }
 
+template<typename Node>
+consteval std::size_t reflected_sample_input_count()
+{
+    if constexpr (has_inputs<Node> && has_constexpr_port_configs<Node>) {
+        return count_sample_ports(Node::inputs());
+    } else {
+        return 0;
+    }
+}
+
+template<typename Node>
+consteval std::size_t reflected_sample_output_count()
+{
+    if constexpr (has_outputs<Node> && has_constexpr_port_configs<Node>) {
+        return count_sample_ports(Node::outputs());
+    } else {
+        return 0;
+    }
+}
+
+template<typename Node>
+inline constexpr std::size_t reflected_sample_input_count_v =
+    reflected_sample_input_count<Node>();
+
+template<typename Node>
+inline constexpr std::size_t reflected_sample_output_count_v =
+    reflected_sample_output_count<Node>();
+
+IV_FORCEINLINE SamplePortStorageView reflected_sample_storage_view(
+    std::byte* storage_base,
+    ReflectedSamplePortStorageBinding const& binding)
+{
+    auto const sample_count = sample_storage_size(
+        binding.channel_layout, binding.frame_capacity);
+    auto* samples = reinterpret_cast<Sample*>(
+        storage_base + binding.storage_offset);
+    return SamplePortStorageView{
+        std::span<Sample>{samples, sample_count},
+        binding.storage_latency,
+        binding.channel_layout,
+        binding.frame_capacity,
+    };
+}
+
+IV_FORCEINLINE InputPort reflected_sample_input_port(
+    std::byte* storage_base,
+    ReflectedSampleInputPortBinding const& binding,
+    SampleIndex index)
+{
+    return InputPort{
+        reflected_sample_storage_view(storage_base, binding.storage),
+        binding.history,
+        binding.read_latency,
+        index,
+    };
+}
+
+IV_FORCEINLINE OutputPort reflected_sample_output_port(
+    std::byte* storage_base,
+    ReflectedSampleOutputPortBinding const& binding,
+    SampleIndex index)
+{
+    return OutputPort{
+        reflected_sample_storage_view(storage_base, binding.storage),
+        binding.history,
+        index,
+    };
+}
+
+template<typename Node, std::size_t... I>
+IV_FORCEINLINE auto reflected_sample_inputs(
+    ReflectedNodeTickContext const& ctx,
+    SampleIndex index,
+    std::index_sequence<I...>)
+{
+    return std::array<InputPort, sizeof...(I)>{
+        reflected_sample_input_port(
+            ctx.sample_storage_base,
+            ctx.sample_input_bindings.pointer[I],
+            index)...
+    };
+}
+
+template<typename Node, std::size_t... I>
+IV_FORCEINLINE auto reflected_sample_outputs(
+    ReflectedNodeTickContext const& ctx,
+    SampleIndex index,
+    std::index_sequence<I...>)
+{
+    return std::array<OutputPort, sizeof...(I)>{
+        reflected_sample_output_port(
+            ctx.sample_storage_base,
+            ctx.sample_output_bindings.pointer[I],
+            index)...
+    };
+}
+
+template<typename Node, typename Fn>
+IV_FORCEINLINE void with_reflected_sample_ports(
+    ReflectedNodeTickContext const& ctx,
+    SampleIndex index,
+    Fn&& fn)
+{
+    if constexpr (!has_constexpr_port_configs<Node>) {
+        std::forward<Fn>(fn)(
+            static_cast<std::span<InputPort>>(ctx.inputs),
+            static_cast<std::span<OutputPort>>(ctx.outputs));
+        return;
+    } else {
+        if (ctx.sample_storage_base == nullptr) {
+            std::forward<Fn>(fn)(
+                static_cast<std::span<InputPort>>(ctx.inputs),
+                static_cast<std::span<OutputPort>>(ctx.outputs));
+            return;
+        }
+
+        constexpr auto input_count = reflected_sample_input_count_v<Node>;
+        constexpr auto output_count = reflected_sample_output_count_v<Node>;
+        IV_ASSERT(
+            ctx.sample_input_bindings.size() == input_count,
+            "reflected sample input binding count does not match node declaration");
+        IV_ASSERT(
+            ctx.sample_output_bindings.size() == output_count,
+            "reflected sample output binding count does not match node declaration");
+
+        auto inputs = reflected_sample_inputs<Node>(
+            ctx, index, std::make_index_sequence<input_count>{});
+        auto outputs = reflected_sample_outputs<Node>(
+            ctx, index, std::make_index_sequence<output_count>{});
+        std::forward<Fn>(fn)(
+            std::span<InputPort>{inputs},
+            std::span<OutputPort>{outputs});
+    }
+}
+
 template<class Node>
 IV_FORCEINLINE void tick_node_block(
     void const* node_data,
@@ -80,22 +217,27 @@ IV_FORCEINLINE void tick_node_block(
     std::size_t block_size)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    do_tick_block(node, TickBlockContext<Node> {
-        TickContext<Node> {
-            .inputs = ctx.inputs,
-            .outputs = ctx.outputs,
-            .event_inputs = ctx.event_inputs,
-            .event_outputs = ctx.event_outputs,
-            .compiled_inputs = ctx.compiled_inputs,
-            .compiled_event_inputs = ctx.compiled_event_inputs,
-            .compiled_state_storage = ctx.compiled_state,
-            .sample_rate = ctx.sample_rate,
-            .scc_feedback_latency = ctx.scc_feedback_latency,
-            .buffer = ctx.state,
-        },
+    with_reflected_sample_ports<Node>(
+        ctx,
         static_cast<SampleIndex>(index),
-        block_size,
-    });
+        [&](std::span<InputPort> inputs, std::span<OutputPort> outputs) {
+            do_tick_block(node, TickBlockContext<Node> {
+                TickContext<Node> {
+                    .inputs = inputs,
+                    .outputs = outputs,
+                    .event_inputs = ctx.event_inputs,
+                    .event_outputs = ctx.event_outputs,
+                    .compiled_inputs = ctx.compiled_inputs,
+                    .compiled_event_inputs = ctx.compiled_event_inputs,
+                    .compiled_state_storage = ctx.compiled_state,
+                    .sample_rate = ctx.sample_rate,
+                    .scc_feedback_latency = ctx.scc_feedback_latency,
+                    .buffer = ctx.state,
+                },
+                static_cast<SampleIndex>(index),
+                block_size,
+            });
+        });
 }
 
 template<class Node>
@@ -106,22 +248,27 @@ IV_FORCEINLINE void skip_node_block(
     std::size_t block_size)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    do_skip_block(node, SkipBlockContext<Node> {
-        TickContext<Node> {
-            .inputs = ctx.inputs,
-            .outputs = ctx.outputs,
-            .event_inputs = ctx.event_inputs,
-            .event_outputs = ctx.event_outputs,
-            .compiled_inputs = ctx.compiled_inputs,
-            .compiled_event_inputs = ctx.compiled_event_inputs,
-            .compiled_state_storage = ctx.compiled_state,
-            .sample_rate = ctx.sample_rate,
-            .scc_feedback_latency = ctx.scc_feedback_latency,
-            .buffer = ctx.state,
-        },
+    with_reflected_sample_ports<Node>(
+        ctx,
         static_cast<SampleIndex>(index),
-        block_size,
-    });
+        [&](std::span<InputPort> inputs, std::span<OutputPort> outputs) {
+            do_skip_block(node, SkipBlockContext<Node> {
+                TickContext<Node> {
+                    .inputs = inputs,
+                    .outputs = outputs,
+                    .event_inputs = ctx.event_inputs,
+                    .event_outputs = ctx.event_outputs,
+                    .compiled_inputs = ctx.compiled_inputs,
+                    .compiled_event_inputs = ctx.compiled_event_inputs,
+                    .compiled_state_storage = ctx.compiled_state,
+                    .sample_rate = ctx.sample_rate,
+                    .scc_feedback_latency = ctx.scc_feedback_latency,
+                    .buffer = ctx.state,
+                },
+                static_cast<SampleIndex>(index),
+                block_size,
+            });
+        });
 }
 
 template<class Node>

@@ -189,6 +189,7 @@ std::expected<void, std::string> inventory_sample_connections(
                     connection.source_type, connection.source_channels);
             auto const target = graph.node_bundles.resolve_sample_input(
                 connection_plan.target_port).config;
+            connection_plan.target_layout = target.channel_layout;
             connection_plan.target_history = realtime_history_or_zero(target);
             auto const target_realtime = is_realtime(target.access);
 
@@ -216,6 +217,7 @@ std::expected<void, std::string> inventory_sample_connections(
                     canonical_source_layout = source.channel_layout;
                 }
             }
+            connection_plan.canonical_source_layout = canonical_source_layout;
             connection_plan.access = connection_access(
                 source_realtime.value_or(true), target_realtime);
             for (auto const source_channel : connection.source_channels) {
@@ -241,7 +243,7 @@ std::expected<void, std::string> inventory_sample_connections(
                 || *canonical_source_layout != target.channel_layout;
             if (connection_plan.requires_conversion) {
                 // Validate now that a semantic sample-layout conversion exists;
-                // point 6 will decide how to realize the returned plan.
+                // later physical realization decides how to realize the returned plan.
                 auto const source_layout = canonical_source_layout.value_or(
                     ChannelLayout{
                         .channel_type = connection.source_type,
@@ -684,6 +686,7 @@ void plan_sample_groups(
             plan.sample_producer_groups.push_back(SampleProducerGroupPlan{
                 .source_type = connection.source_type,
                 .source_channels = connection.source_channels,
+                .canonical_source_layout = connection.canonical_source_layout,
             });
             group = std::prev(plan.sample_producer_groups.end());
         }
@@ -738,6 +741,7 @@ void plan_sample_groups(
         auto live = live_interval_for_sample_group(plan, group);
         live.crosses_kernel_invocations = live.crosses_kernel_invocations
             || group.requirements.retained_frames != 0;
+        group.live_interval = live;
         auto append_storage = [&](ConnectionStorageLifetime lifetime,
                                   std::size_t current_block_frames,
                                   std::size_t retained_extent_value) {
@@ -927,10 +931,6 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     ConnectionAnalysisPlan plan;
     if (auto inventory = inventory_nodes(graph, plan); !inventory) {
         return std::unexpected(std::move(inventory.error()));
-    }
-    if (!graph.virtual_nodes.records().empty()) {
-        return std::unexpected(
-            "connection analysis does not yet support virtual nodes");
     }
     if (auto samples = inventory_sample_connections(graph, plan); !samples) {
         return std::unexpected(std::move(samples.error()));

@@ -27,6 +27,11 @@ constexpr std::string_view root_tick_block_symbol = "__iv_graph_root_tick_block"
 constexpr std::string_view root_skip_block_symbol = "__iv_graph_root_skip_block";
 
 struct ReflectedContextByteOffsets {
+    std::size_t sample_storage_base = 0;
+    std::size_t sample_input_bindings_data = 0;
+    std::size_t sample_input_bindings_size = 0;
+    std::size_t sample_output_bindings_data = 0;
+    std::size_t sample_output_bindings_size = 0;
     std::size_t compiled_state_data = 0;
     std::size_t compiled_state_size = 0;
     std::size_t state_data = 0;
@@ -38,9 +43,33 @@ struct EmittedNodeConfiguration {
     llvm::GlobalVariable* tick_context_template = nullptr;
 };
 
+struct EmittedPrimitiveSamplePorts {
+    llvm::GlobalVariable* input_bindings = nullptr;
+    std::size_t input_count = 0;
+    llvm::GlobalVariable* output_bindings = nullptr;
+    std::size_t output_count = 0;
+};
+
+struct EmittedSamplePortBindings {
+    std::vector<EmittedPrimitiveSamplePorts> primitives{};
+};
+
 constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
 {
     return {
+        .sample_storage_base = offsetof(ReflectedNodeTickContext, sample_storage_base),
+        .sample_input_bindings_data =
+            offsetof(ReflectedNodeTickContext, sample_input_bindings)
+            + offsetof(ReflectedSpan<ReflectedSampleInputPortBinding const>, pointer),
+        .sample_input_bindings_size =
+            offsetof(ReflectedNodeTickContext, sample_input_bindings)
+            + offsetof(ReflectedSpan<ReflectedSampleInputPortBinding const>, extent),
+        .sample_output_bindings_data =
+            offsetof(ReflectedNodeTickContext, sample_output_bindings)
+            + offsetof(ReflectedSpan<ReflectedSampleOutputPortBinding const>, pointer),
+        .sample_output_bindings_size =
+            offsetof(ReflectedNodeTickContext, sample_output_bindings)
+            + offsetof(ReflectedSpan<ReflectedSampleOutputPortBinding const>, extent),
         .compiled_state_data =
             offsetof(ReflectedNodeTickContext, compiled_state)
             + offsetof(ReflectedSpan<std::byte>, pointer),
@@ -382,13 +411,135 @@ std::expected<std::vector<EmittedNodeConfiguration>, std::string> emit_node_conf
     return emitted;
 }
 
-void store_context_span(
+
+llvm::Value* byte_offset_pointer(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* base,
+    std::size_t offset,
+    llvm::Twine const& name)
+{
+    auto* size_type = llvm::IntegerType::get(
+        builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
+    return builder.CreateInBoundsGEP(
+        llvm::Type::getInt8Ty(builder.getContext()),
+        base,
+        llvm::ConstantInt::get(size_type, offset),
+        name);
+}
+
+std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
+    llvm::Module& module,
+    detail::SamplePortBindingPlan const& plan)
+{
+    EmittedSamplePortBindings emitted;
+    emitted.primitives.resize(plan.primitives.size());
+
+    auto storage_binding = [&](std::size_t representation_index)
+        -> std::expected<ReflectedSamplePortStorageBinding, std::string> {
+        if (representation_index >= plan.physical.representations.size()) {
+            return std::unexpected(
+                "GraphJit sample binding references a missing physical representation");
+        }
+        auto const& representation =
+            plan.physical.representations[representation_index];
+        if (representation.transient_slot == detail::no_sample_transient_slot
+            || representation.transient_slot
+                >= plan.physical.transient_slots.size()) {
+            return std::unexpected(
+                "GraphJit sample representation has no realized transient slot");
+        }
+        auto const& slot =
+            plan.physical.transient_slots[representation.transient_slot];
+        return ReflectedSamplePortStorageBinding{
+            .storage_offset = slot.storage_offset,
+            .frame_capacity = representation.frame_capacity,
+            .storage_latency = 0,
+            .channel_layout = representation.channel_layout,
+        };
+    };
+
+    for (std::size_t primitive_index = 0;
+         primitive_index < plan.primitives.size();
+         ++primitive_index) {
+        auto const& primitive = plan.primitives[primitive_index];
+        auto& result = emitted.primitives[primitive_index];
+        result.input_count = primitive.inputs.size();
+        result.output_count = primitive.outputs.size();
+
+        if (!primitive.inputs.empty()) {
+            std::vector<ReflectedSampleInputPortBinding> bindings;
+            bindings.reserve(primitive.inputs.size());
+            for (auto const representation_index : primitive.inputs) {
+                if (!representation_index) {
+                    return std::unexpected(
+                        "GraphJit sample input binding has no physical representation");
+                }
+                auto storage = storage_binding(*representation_index);
+                if (!storage) return std::unexpected(std::move(storage.error()));
+                bindings.push_back(ReflectedSampleInputPortBinding{
+                    .storage = *storage,
+                    .history = 0,
+                    .read_latency = 0,
+                });
+            }
+            result.input_bindings = immutable_bytes_global(
+                module,
+                bindings.data(),
+                bindings.size() * sizeof(ReflectedSampleInputPortBinding),
+                alignof(ReflectedSampleInputPortBinding),
+                "__iv_graph_sample_inputs_" + std::to_string(primitive_index));
+        }
+
+        if (!primitive.outputs.empty()) {
+            std::vector<ReflectedSampleOutputPortBinding> bindings;
+            bindings.reserve(primitive.outputs.size());
+            for (auto const representation_index : primitive.outputs) {
+                if (!representation_index) {
+                    return std::unexpected(
+                        "GraphJit sample output binding has no physical representation");
+                }
+                auto storage = storage_binding(*representation_index);
+                if (!storage) return std::unexpected(std::move(storage.error()));
+                bindings.push_back(ReflectedSampleOutputPortBinding{
+                    .storage = *storage,
+                    .history = 0,
+                });
+            }
+            result.output_bindings = immutable_bytes_global(
+                module,
+                bindings.data(),
+                bindings.size() * sizeof(ReflectedSampleOutputPortBinding),
+                alignof(ReflectedSampleOutputPortBinding),
+                "__iv_graph_sample_outputs_" + std::to_string(primitive_index));
+        }
+    }
+    return emitted;
+}
+
+void store_context_pointer(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* context_storage,
+    std::size_t field_offset,
+    llvm::Value* value)
+{
+    auto& llvm_context = builder.getContext();
+    auto* byte_type = llvm::Type::getInt8Ty(llvm_context);
+    auto* size_type = llvm::IntegerType::get(
+        llvm_context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* slot = builder.CreateInBoundsGEP(
+        byte_type,
+        context_storage,
+        llvm::ConstantInt::get(size_type, field_offset),
+        "context.pointer.slot");
+    builder.CreateStore(value, slot);
+}
+
+void store_context_span_pointer(
     llvm::IRBuilder<>& builder,
     llvm::Value* context_storage,
     std::size_t data_field_offset,
     std::size_t size_field_offset,
-    llvm::Value* storage_base,
-    std::size_t storage_offset,
+    llvm::Value* data,
     std::size_t span_size)
 {
     auto& llvm_context = builder.getContext();
@@ -401,13 +552,30 @@ void store_context_span(
 
     auto* data_slot = builder.CreateInBoundsGEP(
         byte_type, context_storage, offset(data_field_offset), "span.data.slot");
-    auto* data = builder.CreateInBoundsGEP(
-        byte_type, storage_base, offset(storage_offset), "span.data");
     builder.CreateStore(data, data_slot);
-
     auto* size_slot = builder.CreateInBoundsGEP(
         byte_type, context_storage, offset(size_field_offset), "span.size.slot");
     builder.CreateStore(offset(span_size), size_slot);
+}
+
+void store_context_span(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* context_storage,
+    std::size_t data_field_offset,
+    std::size_t size_field_offset,
+    llvm::Value* storage_base,
+    std::size_t storage_offset,
+    std::size_t span_size)
+{
+    auto* data = byte_offset_pointer(
+        builder, storage_base, storage_offset, "span.data");
+    store_context_span_pointer(
+        builder,
+        context_storage,
+        data_field_offset,
+        size_field_offset,
+        data,
+        span_size);
 }
 
 void emit_primitive_call(
@@ -415,6 +583,7 @@ void emit_primitive_call(
     llvm::Function* primitive_callback,
     EmittedNodeConfiguration const& configuration,
     detail::PrimitiveStoragePlan const& storage,
+    EmittedPrimitiveSamplePorts const& sample_ports,
     llvm::Value* storage_base,
     llvm::Value* sample_index,
     llvm::Value* block_size)
@@ -434,6 +603,29 @@ void emit_primitive_call(
         sizeof(ReflectedNodeTickContext));
 
     auto const offsets = reflected_context_byte_offsets();
+    store_context_pointer(
+        builder,
+        context_storage,
+        offsets.sample_storage_base,
+        storage_base);
+    if (sample_ports.input_count != 0) {
+        store_context_span_pointer(
+            builder,
+            context_storage,
+            offsets.sample_input_bindings_data,
+            offsets.sample_input_bindings_size,
+            sample_ports.input_bindings,
+            sample_ports.input_count);
+    }
+    if (sample_ports.output_count != 0) {
+        store_context_span_pointer(
+            builder,
+            context_storage,
+            offsets.sample_output_bindings_data,
+            offsets.sample_output_bindings_size,
+            sample_ports.output_bindings,
+            sample_ports.output_count);
+    }
     if (storage.has_compiled_state) {
         store_context_span(
             builder,
@@ -466,6 +658,7 @@ void emit_sliced_primitive_calls(
     llvm::Function* primitive_callback,
     EmittedNodeConfiguration const& configuration,
     detail::PrimitiveStoragePlan const& storage,
+    EmittedPrimitiveSamplePorts const& sample_ports,
     llvm::Value* storage_base,
     llvm::Value* sample_index,
     llvm::Value* block_size,
@@ -501,6 +694,7 @@ void emit_sliced_primitive_calls(
         primitive_callback,
         configuration,
         storage,
+        sample_ports,
         storage_base,
         slice_index,
         slice_size);
@@ -520,6 +714,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
     std::string_view symbol,
     detail::LoweringPlan const& plan,
     std::vector<EmittedNodeConfiguration> const& configurations,
+    EmittedSamplePortBindings const& sample_bindings,
     bool skip)
 {
     auto* root_type = root_block_operation_type(module.getContext());
@@ -549,6 +744,10 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             return std::unexpected(
                 "GraphJit execution plan references a missing canonical storage plan");
         }
+        if (step.configuration_index >= sample_bindings.primitives.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing sample-port runtime plan");
+        }
 
         auto const& callback_symbol =
             skip ? step.skip_callback_symbol : step.tick_callback_symbol;
@@ -571,6 +770,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 primitive_callback,
                 configurations[step.configuration_index],
                 plan.declarations.primitive_storage[step.storage_index],
+                sample_bindings.primitives[step.configuration_index],
                 storage_base,
                 sample_index,
                 block_size,
@@ -581,6 +781,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 primitive_callback,
                 configurations[step.configuration_index],
                 plan.declarations.primitive_storage[step.storage_index],
+                sample_bindings.primitives[step.configuration_index],
                 storage_base,
                 sample_index,
                 block_size);
@@ -604,11 +805,18 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
         return std::unexpected(std::move(configurations.error()));
     }
 
+    auto sample_bindings = emit_sample_port_bindings(
+        output_module, plan.sample_ports);
+    if (!sample_bindings) {
+        return std::unexpected(std::move(sample_bindings.error()));
+    }
+
     auto tick = define_root_operation(
         output_module,
         root_tick_block_symbol,
         plan,
         *configurations,
+        *sample_bindings,
         false);
     if (!tick) return std::unexpected(std::move(tick.error()));
 
@@ -619,6 +827,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
             root_skip_block_symbol,
             plan,
             *configurations,
+            *sample_bindings,
             true);
         if (!skip) return std::unexpected(std::move(skip.error()));
         skip_symbol = std::string(root_skip_block_symbol);
