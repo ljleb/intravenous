@@ -79,9 +79,9 @@ bool is_structurally_empty(ConfiguredGraph const& graph)
         && boundary.event_output_count() == 0;
 }
 
-bool valid_alignment(std::size_t alignment) noexcept
+bool is_power_of_two(std::size_t value) noexcept
 {
-    return alignment != 0 && (alignment & (alignment - 1)) == 0;
+    return value != 0 && (value & (value - 1)) == 0;
 }
 
 std::expected<std::vector<PrimitiveBundle>, std::string> zero_port_primitives(
@@ -130,7 +130,7 @@ std::expected<std::vector<PrimitiveBundle>, std::string> zero_port_primitives(
                     "zero-port GraphJit lowering slice supports only zero-port primitives";
                 return;
             }
-            if (!valid_alignment(view.node_alignment)) {
+            if (!is_power_of_two(view.node_alignment)) {
                 structural_error =
                     "configured primitive has invalid node configuration alignment";
                 return;
@@ -141,9 +141,9 @@ std::expected<std::vector<PrimitiveBundle>, std::string> zero_port_primitives(
                     "zero-port GraphJit lowering slice does not yet support activity or detach semantics";
                 return;
             }
-            if (view.maximum_block_size < input.specialization.block_size) {
+            if (!is_power_of_two(view.maximum_block_size)) {
                 structural_error =
-                    "zero-port GraphJit lowering slice does not yet split blocks for a primitive maximum block size";
+                    "configured primitive has invalid maximum block size";
                 return;
             }
             primitives.push_back(PrimitiveBundle{
@@ -626,6 +626,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         plan.primitive_steps.push_back(PrimitiveExecutionStep{
             .configuration_index = i,
             .storage_index = i,
+            .maximum_block_size = primitive.bundle.maximum_block_size,
             .tick_callback_symbol = callbacks.tick_block,
             .skip_callback_symbol = callbacks.skip_block,
         });

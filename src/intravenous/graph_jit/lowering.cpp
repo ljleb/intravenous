@@ -461,6 +461,60 @@ void emit_primitive_call(
     call->setCallingConv(primitive_callback->getCallingConv());
 }
 
+void emit_sliced_primitive_calls(
+    llvm::IRBuilder<>& builder,
+    llvm::Function* primitive_callback,
+    EmittedNodeConfiguration const& configuration,
+    detail::PrimitiveStoragePlan const& storage,
+    llvm::Value* storage_base,
+    llvm::Value* sample_index,
+    llvm::Value* block_size,
+    std::size_t maximum_block_size)
+{
+    auto& context = builder.getContext();
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* zero = llvm::ConstantInt::get(size_type, 0);
+    auto* maximum = llvm::ConstantInt::get(size_type, maximum_block_size);
+
+    auto* preheader = builder.GetInsertBlock();
+    auto* loop = llvm::BasicBlock::Create(context, "primitive.slice", function);
+    auto* exit = llvm::BasicBlock::Create(context, "primitive.slice.end", function);
+    auto* nonempty = builder.CreateICmpNE(block_size, zero, "primitive.slice.nonempty");
+    builder.CreateCondBr(nonempty, loop, exit);
+
+    builder.SetInsertPoint(loop);
+    auto* offset = builder.CreatePHI(size_type, 2, "primitive.slice.offset");
+    offset->addIncoming(zero, preheader);
+    auto* remaining = builder.CreateSub(
+        block_size, offset, "primitive.slice.remaining");
+    auto* use_remaining = builder.CreateICmpULT(
+        remaining, maximum, "primitive.slice.tail");
+    auto* slice_size = builder.CreateSelect(
+        use_remaining, remaining, maximum, "primitive.slice.size");
+    auto* slice_index = builder.CreateAdd(
+        sample_index, offset, "primitive.slice.index");
+
+    emit_primitive_call(
+        builder,
+        primitive_callback,
+        configuration,
+        storage,
+        storage_base,
+        slice_index,
+        slice_size);
+
+    auto* next_offset = builder.CreateAdd(
+        offset, slice_size, "primitive.slice.next");
+    auto* done = builder.CreateICmpUGE(
+        next_offset, block_size, "primitive.slice.done");
+    builder.CreateCondBr(done, exit, loop);
+    offset->addIncoming(next_offset, loop);
+
+    builder.SetInsertPoint(exit);
+}
+
 std::expected<llvm::Function*, std::string> define_root_operation(
     llvm::Module& module,
     std::string_view symbol,
@@ -507,14 +561,30 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             return std::unexpected(
                 "GraphJit execution plan references an unmaterialized primitive callback");
         }
-        emit_primitive_call(
-            builder,
-            primitive_callback,
-            configurations[step.configuration_index],
-            plan.declarations.primitive_storage[step.storage_index],
-            storage_base,
-            sample_index,
-            block_size);
+        if (step.maximum_block_size == 0) {
+            return std::unexpected(
+                "GraphJit execution plan contains an invalid primitive maximum block size");
+        }
+        if (step.maximum_block_size < plan.declarations.node_layout.max_block_size) {
+            emit_sliced_primitive_calls(
+                builder,
+                primitive_callback,
+                configurations[step.configuration_index],
+                plan.declarations.primitive_storage[step.storage_index],
+                storage_base,
+                sample_index,
+                block_size,
+                step.maximum_block_size);
+        } else {
+            emit_primitive_call(
+                builder,
+                primitive_callback,
+                configurations[step.configuration_index],
+                plan.declarations.primitive_storage[step.storage_index],
+                storage_base,
+                sample_index,
+                block_size);
+        }
     }
     builder.CreateRetVoid();
     return function;

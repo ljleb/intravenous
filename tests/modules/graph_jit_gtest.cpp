@@ -79,6 +79,15 @@ struct PointerConfiguredProbeStateMirror {
     std::uint16_t tag = 0;
 };
 
+struct LimitedBlockProbeStateMirror {
+    std::uint64_t tick_calls = 0;
+    std::uint64_t skip_calls = 0;
+    std::array<std::uint64_t, 8> tick_indices{};
+    std::array<std::uint64_t, 8> tick_sizes{};
+    std::array<std::uint64_t, 8> skip_indices{};
+    std::array<std::uint64_t, 8> skip_sizes{};
+};
+
 void expect_lowering_failure(
     iv::GraphJitCompileResult const& result,
     std::string_view message_fragment)
@@ -500,6 +509,15 @@ struct PointerConfiguredProbe {
 };
 
 struct LimitedBlockProbe {
+    struct State {
+        std::uint64_t tick_calls = 0;
+        std::uint64_t skip_calls = 0;
+        std::array<std::uint64_t, 8> tick_indices{};
+        std::array<std::uint64_t, 8> tick_sizes{};
+        std::array<std::uint64_t, 8> skip_indices{};
+        std::array<std::uint64_t, 8> skip_sizes{};
+    };
+
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 0>{};
@@ -511,8 +529,27 @@ struct LimitedBlockProbe {
     }
 
     std::size_t max_block_size() const { return 16; }
+    bool can_skip_block() const { return true; }
 
-    void tick_block(iv::TickBlockContext<LimitedBlockProbe> const&) const {}
+    void tick_block(iv::TickBlockContext<LimitedBlockProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = state.tick_calls++;
+        if (slot < state.tick_indices.size()) {
+            state.tick_indices[slot] = ctx.index;
+            state.tick_sizes[slot] = ctx.block_size;
+        }
+    }
+
+    void skip_block(iv::SkipBlockContext<LimitedBlockProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = state.skip_calls++;
+        if (slot < state.skip_indices.size()) {
+            state.skip_indices[slot] = ctx.index;
+            state.skip_sizes[slot] = ctx.block_size;
+        }
+    }
 };
 
 struct PortedProbe {
@@ -943,7 +980,44 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_EQ(pair_state_1->skip_calls, 1u);
 
     auto limited = compile(graph_jit_limited_block_module_id, 108);
-    expect_lowering_failure(limited, "does not yet split blocks");
+    ASSERT_TRUE(limited.succeeded())
+        << (limited.diagnostics.empty() ? "" : limited.diagnostics.front().message);
+    ASSERT_TRUE(limited.compiled_graph->root_operations.can_skip_block());
+    expect_single_node_canonical_regions(
+        limited.compiled_graph->node_layout,
+        sizeof(LimitedBlockProbeStateMirror),
+        0);
+    auto limited_storage = limited.compiled_graph->node_layout.create_storage(resources);
+    limited_storage.initialize();
+    auto* limited_state = static_cast<LimitedBlockProbeStateMirror*>(
+        limited_storage.state_ptr(0));
+    ASSERT_NE(limited_state, nullptr);
+
+    limited.compiled_graph->root_operations.tick_block(
+        limited_storage.buffer().data(), 200, 64);
+    EXPECT_EQ(limited_state->tick_calls, 4u);
+    EXPECT_EQ(
+        limited_state->tick_indices,
+        (std::array<std::uint64_t, 8>{200, 216, 232, 248, 0, 0, 0, 0}));
+    EXPECT_EQ(
+        limited_state->tick_sizes,
+        (std::array<std::uint64_t, 8>{16, 16, 16, 16, 0, 0, 0, 0}));
+
+    limited.compiled_graph->root_operations.tick_block(
+        limited_storage.buffer().data(), 300, 8);
+    EXPECT_EQ(limited_state->tick_calls, 5u);
+    EXPECT_EQ(limited_state->tick_indices[4], 300u);
+    EXPECT_EQ(limited_state->tick_sizes[4], 8u);
+
+    limited.compiled_graph->root_operations.skip_block(
+        limited_storage.buffer().data(), 400, 32);
+    EXPECT_EQ(limited_state->skip_calls, 2u);
+    EXPECT_EQ(
+        limited_state->skip_indices,
+        (std::array<std::uint64_t, 8>{400, 416, 0, 0, 0, 0, 0, 0}));
+    EXPECT_EQ(
+        limited_state->skip_sizes,
+        (std::array<std::uint64_t, 8>{16, 16, 0, 0, 0, 0, 0, 0}));
 
     auto ported_graph = configured_module_graph(*revision, graph_jit_ported_module_id);
     ASSERT_TRUE(ported_graph);
@@ -966,6 +1040,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     pointer_storage = iv::NodeStorage{};
     multiple_storage = iv::NodeStorage{};
     skippable_pair_storage = iv::NodeStorage{};
+    limited_storage = iv::NodeStorage{};
     stateful = {};
     state_only = {};
     compiled_only = {};

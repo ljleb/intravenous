@@ -87,11 +87,17 @@ package modules. Planning must succeed before the output module is mutated or a
 package module is consumed. This is the first anti-monolith landing site for the
 remaining compiler work.
 
-The next capability expansion remains deliberately smaller than full connection
-lowering: primitive block splitting should land on the existing execution plan.
-Only after that should the
-second major landing-site refactor introduce explicit schedule/SCC,
-producer-group/connection, history/latency, liveness, and storage-region plans.
+Primitive maximum-block splitting has now landed on the existing execution
+plan. Each primitive execution step carries its accepted maximum block size, and
+LLVM realization owns the single slicing loop used by both tick and skip: a root
+block is partitioned into consecutive primitive-sized slices with the sample
+index advanced by each slice. This keeps subdivision out of callback/configuration
+planning and gives future port-context materialization one canonical per-slice
+invocation boundary.
+
+The next change should be the second major landing-site refactor: introduce
+explicit schedule/SCC, producer-group/connection, history/latency, liveness, and
+storage-region plans before any sample ports are materialized.
 The existing `choose_sample_connection_implementation()` and
 `choose_event_connection_implementation()` functions remain the physical-storage
 policy boundary; GraphJit is responsible for deriving their requirement inputs
@@ -125,9 +131,9 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    imported as deduplicated package roots, native pointer bytes are zeroed during
    planning, and immutable node configuration LLVM contains symbolic pointers,
    byte addends, and explicit null slots rather than native process addresses.
-4. **Primitive maximum-block splitting.** Centralize primitive invocation and
-   split a root block where a primitive's accepted maximum is smaller than the
-   project specialization block size.
+4. **Primitive maximum-block splitting.** **Landed.** Primitive execution steps
+   carry their accepted maximum block size, and one LLVM-emission path slices
+   both tick and skip invocations while advancing sample indices correctly.
 5. **Stable connection-analysis plans.** Before adding ports, introduce explicit
    node/schedule/SCC, producer-group/connection, history/latency/event-window,
    liveness/reuse, and storage-region planning records. This is the second major

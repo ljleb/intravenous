@@ -91,6 +91,10 @@ struct ConfigurationPlan {
 struct PrimitiveExecutionStep {
     std::size_t configuration_index = 0;
     std::size_t storage_index = 0;
+    // Maximum block size accepted by this primitive. LLVM realization uses
+    // this as the single invocation-slicing boundary for both tick and skip;
+    // future port-context materialization must attach to the same slices.
+    std::size_t maximum_block_size = 0;
     std::string tick_callback_symbol{};
     std::string skip_callback_symbol{};
 };
