@@ -463,7 +463,10 @@ namespace iv {
                         &state.ingress_event_outputs[edge.source.port],
                         const_cast<EventSharedPortData&>(consumer_port_data[0]),
                         _public_event_inputs[edge.source.port].type,
-                        edge.conversion
+                        edge.conversion,
+                        realtime_history_or_zero(
+                            _public_event_inputs[edge.source.port]),
+                        0
                     );
                 }
             }

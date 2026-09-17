@@ -75,9 +75,9 @@ namespace iv {
 
     enum class EventTypeId : unsigned int {
         empty,
-        midi,
         trigger,
         boundary,
+        midi,
         count,
     };
 
@@ -92,6 +92,44 @@ namespace iv {
 
     using EventTime = size_t;
 
+    struct RealtimePortWindow {
+        SampleIndex begin = 0;
+        SampleIndex end = 0; // exclusive
+
+        [[nodiscard]] constexpr bool contains(SampleIndex index) const noexcept
+        {
+            return index >= begin && index < end;
+        }
+
+        constexpr bool operator==(RealtimePortWindow const&) const = default;
+    };
+
+    [[nodiscard]] constexpr SampleIndex saturating_sample_index_add(
+        SampleIndex base, size_t delta) noexcept
+    {
+        auto const max = std::numeric_limits<SampleIndex>::max();
+        if (delta > max - base) {
+            return max;
+        }
+        return base + static_cast<SampleIndex>(delta);
+    }
+
+    [[nodiscard]] constexpr RealtimePortWindow realtime_port_window(
+        SampleIndex block_index,
+        size_t block_size,
+        size_t history,
+        size_t latency) noexcept
+    {
+        SampleIndex const history_samples = history > block_index
+            ? block_index
+            : static_cast<SampleIndex>(history);
+        auto const block_end = saturating_sample_index_add(block_index, block_size);
+        return {
+            .begin = block_index - history_samples,
+            .end = saturating_sample_index_add(block_end, latency),
+        };
+    }
+
     using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent>;
 
     struct TimedEvent {
@@ -100,15 +138,18 @@ namespace iv {
     };
 
     enum class EventConversionStepId : std::uint8_t {
-        midi_to_trigger,
-        midi_to_boundary,
-        midi_to_empty,
-        trigger_to_boundary,
-        trigger_to_midi,
-        trigger_to_empty,
-        boundary_to_trigger,
-        boundary_to_midi,
-        boundary_to_empty,
+        midi_to_trigger = 0,
+        midi_to_boundary = 1,
+        midi_to_empty = 2,
+        // Values 3 and 4 were the former trigger-to-boundary/MIDI conversions.
+        // They intentionally remain unused: a trigger has neither duration nor
+        // MIDI note/channel information, so those conversions have no
+        // objective semantics.
+        trigger_to_empty = 5,
+        boundary_to_trigger = 6,
+        // Value 7 was the former boundary-to-MIDI conversion. Choosing a MIDI
+        // note/channel would be arbitrary, so it is intentionally unavailable.
+        boundary_to_empty = 8,
     };
 
     struct EventConversionPlan {
@@ -157,18 +198,19 @@ namespace iv {
             Score score {};
         };
 
-        static constexpr std::array<Edge, 9> edges() noexcept
+        static constexpr std::array<Edge, 6> edges() noexcept
         {
+            // Only conversions with objective payload semantics belong here.
+            // Trigger and Empty are sink-like event types: information-rich
+            // types may collapse into them, but neither may invent information
+            // required by MIDI/Boundary.
             return {{
                 { EventTypeId::midi, EventTypeId::trigger, EventConversionStepId::midi_to_trigger, { 1, 0, 1 } },
                 { EventTypeId::midi, EventTypeId::boundary, EventConversionStepId::midi_to_boundary, { 1, 0, 1 } },
-                { EventTypeId::midi, EventTypeId::empty, EventConversionStepId::midi_to_empty, { 0, 0, 1 } },
-                { EventTypeId::trigger, EventTypeId::boundary, EventConversionStepId::trigger_to_boundary, { 1, 1, 1 } },
-                { EventTypeId::trigger, EventTypeId::midi, EventConversionStepId::trigger_to_midi, { 1, 1, 1 } },
-                { EventTypeId::trigger, EventTypeId::empty, EventConversionStepId::trigger_to_empty, { 0, 0, 1 } },
+                { EventTypeId::midi, EventTypeId::empty, EventConversionStepId::midi_to_empty, { 1, 0, 1 } },
+                { EventTypeId::trigger, EventTypeId::empty, EventConversionStepId::trigger_to_empty, { 1, 0, 1 } },
                 { EventTypeId::boundary, EventTypeId::trigger, EventConversionStepId::boundary_to_trigger, { 1, 0, 1 } },
-                { EventTypeId::boundary, EventTypeId::midi, EventConversionStepId::boundary_to_midi, { 1, 1, 1 } },
-                { EventTypeId::boundary, EventTypeId::empty, EventConversionStepId::boundary_to_empty, { 0, 0, 1 } },
+                { EventTypeId::boundary, EventTypeId::empty, EventConversionStepId::boundary_to_empty, { 1, 0, 1 } },
             }};
         }
 
@@ -201,16 +243,6 @@ namespace iv {
             return status == 0x80 || (status == 0x90 && midi.bytes[2] == 0);
         }
 
-        static constexpr MidiEvent default_note_on()
-        {
-            return MidiEvent { .bytes = { 0x90, 60, 127 }, .size = 3 };
-        }
-
-        static constexpr MidiEvent default_note_off()
-        {
-            return MidiEvent { .bytes = { 0x80, 60, 0 }, .size = 3 };
-        }
-
         template<typename Emit>
         static constexpr void apply_step(EventConversionStepId step, TimedEvent const& event, Emit&& emit)
         {
@@ -231,31 +263,11 @@ namespace iv {
                 break;
             case EventConversionStepId::midi_to_empty:
                 break;
-            case EventConversionStepId::trigger_to_boundary:
-                if (std::holds_alternative<TriggerEvent>(event.value)) {
-                    emit(TimedEvent { .time = event.time, .value = BoundaryEvent { .is_begin = true } });
-                    emit(TimedEvent { .time = event.time + 1, .value = BoundaryEvent { .is_begin = false } });
-                }
-                break;
-            case EventConversionStepId::trigger_to_midi:
-                if (std::holds_alternative<TriggerEvent>(event.value)) {
-                    emit(TimedEvent { .time = event.time, .value = default_note_on() });
-                    emit(TimedEvent { .time = event.time + 1, .value = default_note_off() });
-                }
-                break;
             case EventConversionStepId::trigger_to_empty:
                 break;
             case EventConversionStepId::boundary_to_trigger:
                 if (auto boundary = std::get_if<BoundaryEvent>(&event.value); boundary && boundary->is_begin) {
                     emit(TimedEvent { .time = event.time, .value = TriggerEvent {} });
-                }
-                break;
-            case EventConversionStepId::boundary_to_midi:
-                if (auto boundary = std::get_if<BoundaryEvent>(&event.value)) {
-                    emit(TimedEvent {
-                        .time = event.time,
-                        .value = boundary->is_begin ? Event(default_note_on()) : Event(default_note_off())
-                    });
                 }
                 break;
             case EventConversionStepId::boundary_to_empty:
@@ -322,7 +334,9 @@ namespace iv {
                         current = i;
                     }
                 }
-                if (current == type_count()) {
+                if (current == type_count()
+                    || best_scores[current].loss
+                        == std::numeric_limits<int>::max()) {
                     break;
                 }
                 visited[current] = true;
@@ -986,60 +1000,159 @@ namespace iv {
     class EventOutputPort {
         EventSharedPortData* _shared_data = nullptr;
         EventTypeId _source_type {};
+        size_t _history = 0;
+        size_t _latency = 0;
         bool _has_conversion = false;
         EventConversionPlan _conversion {};
+        std::optional<RealtimePortWindow> _active_window {};
+
+        [[nodiscard]] RealtimePortWindow window_for(
+            SampleIndex block_index, size_t block_size) const noexcept
+        {
+            return realtime_port_window(
+                block_index, block_size, _history, _latency);
+        }
+
+        static void validate_time(
+            TimedEvent const& event, RealtimePortWindow window)
+        {
+            auto const time = static_cast<SampleIndex>(event.time);
+            if (!window.contains(time)) {
+                throw std::logic_error(
+                    "realtime event output timestamp is outside the current "
+                    "block + history + latency window");
+            }
+        }
+
+        void push_in_window(
+            TimedEvent const& timed_event, RealtimePortWindow window) const
+        {
+            // Validate the final converted event as well as the source event.
+            // Current built-in conversions preserve timestamps, but keeping the
+            // check here makes that a validated property rather than an
+            // assumption of the compatibility runtime.
+            validate_time(timed_event, window);
+
+            if (!_shared_data || _shared_data->buffer.empty()) {
+                return;
+            }
+
+            auto append = [&](TimedEvent const& appended) {
+                validate_time(appended, window);
+                size_t const available =
+                    _shared_data->write_index - _shared_data->read_index;
+                if (available >= _shared_data->buffer.size()) {
+                    return;
+                }
+                _shared_data->buffer[
+                    _shared_data->write_index
+                    & (_shared_data->buffer.size() - 1)] = appended;
+                ++_shared_data->write_index;
+            };
+            if (_has_conversion) {
+                EventConversionRegistry::instance().convert(
+                    _conversion, timed_event,
+                    [&](TimedEvent const& converted) { append(converted); });
+            } else {
+                append(timed_event);
+            }
+        }
 
     public:
         EventOutputPort() = default;
 
         explicit EventOutputPort(
             EventSharedPortData& shared_data,
-            EventTypeId source_type
+            EventTypeId source_type,
+            size_t history = 0,
+            size_t latency = 0
         ) :
             _shared_data(&shared_data),
-            _source_type(source_type)
-        {}
+            _source_type(source_type),
+            _history(history),
+            _latency(latency)
+        {
+            if (_shared_data->type != _source_type) {
+                throw std::logic_error(
+                    "event output source type does not match target storage type");
+            }
+        }
 
         explicit EventOutputPort(
             EventSharedPortData& shared_data,
             EventTypeId source_type,
-            EventConversionPlan const& conversion
+            EventConversionPlan const& conversion,
+            size_t history = 0,
+            size_t latency = 0
         ) :
             _shared_data(&shared_data),
             _source_type(source_type),
+            _history(history),
+            _latency(latency),
             _has_conversion(true),
             _conversion(conversion)
-        {}
-
-        void push(Event event, size_t sample_offset, size_t block_index, size_t block_size) const
         {
-            (void)block_size;
-            push(TimedEvent{
-                .time = block_index + sample_offset,
-                .value = std::move(event)
-            });
+            if (_conversion.source_type != _source_type
+                || _conversion.target_type != _shared_data->type) {
+                throw std::logic_error(
+                    "event conversion plan does not match output/storage types");
+            }
+        }
+
+        void begin_block(SampleIndex block_index, size_t block_size)
+        {
+            _active_window = window_for(block_index, block_size);
+        }
+
+        void end_block() noexcept
+        {
+            _active_window.reset();
+        }
+
+        void push(
+            Event event,
+            size_t sample_offset,
+            size_t block_index,
+            size_t block_size) const
+        {
+            auto const time = saturating_sample_index_add(
+                static_cast<SampleIndex>(block_index), sample_offset);
+            push_in_window(
+                TimedEvent{
+                    .time = static_cast<EventTime>(time),
+                    .value = std::move(event),
+                },
+                window_for(static_cast<SampleIndex>(block_index), block_size));
+        }
+
+        void push(
+            TimedEvent const& timed_event,
+            size_t block_index,
+            size_t block_size) const
+        {
+            push_in_window(
+                timed_event,
+                window_for(static_cast<SampleIndex>(block_index), block_size));
         }
 
         void push(TimedEvent const& timed_event) const
         {
-            if (!_shared_data || _shared_data->buffer.empty()) {
-                return;
+            if (!_active_window) {
+                throw std::logic_error(
+                    "realtime event output push requires an active block window");
             }
+            push_in_window(timed_event, *_active_window);
+        }
 
-            auto append = [&](TimedEvent const& appended) {
-                size_t const available = _shared_data->write_index - _shared_data->read_index;
-                if (available >= _shared_data->buffer.size()) {
-                    return;
-                }
-                _shared_data->buffer[_shared_data->write_index & (_shared_data->buffer.size() - 1)] = appended;
-                ++_shared_data->write_index;
-            };
-            if (_has_conversion) {
-                EventConversionRegistry::instance().convert(_conversion, timed_event, [&](TimedEvent const& converted) {
-                    append(converted);
-                });
-            } else {
-                append(timed_event);
+        void push_block(
+            BlockView<TimedEvent const> events,
+            size_t block_index,
+            size_t block_size) const
+        {
+            auto const window = window_for(
+                static_cast<SampleIndex>(block_index), block_size);
+            for (TimedEvent const& event : events) {
+                push_in_window(event, window);
             }
         }
 
@@ -1065,7 +1178,9 @@ namespace iv {
             if (!_shared_data) {
                 return true;
             }
-            return EventInputPort(*_shared_data).get_block(block_index, block_size).size() == 0;
+            return EventInputPort(*_shared_data)
+                .get_block(block_index, block_size)
+                .size() == 0;
         }
     };
 

@@ -168,14 +168,36 @@ This stage answers correctness questions such as:
 - what is the pass-local live interval?
 - what temporal window is legal for realtime event production/consumption?
 
-Then choose among the legal representations using an explicit cost model:
+Then choose among the legal representations using two explicit pure policy
+functions, one per payload class:
 
 ```cpp
-ConnectionImplementationPlan
- choose_connection_implementation(
-     ConnectionStorageRequirements const&,
-     ConnectionCostModel const&);
+SampleConnectionImplementationKind
+choose_sample_connection_implementation(
+    SampleConnectionImplementationRequirements const&,
+    SampleConnectionCostModel const&);
+
+EventConnectionImplementationKind
+choose_event_connection_implementation(
+    EventConnectionImplementationRequirements const&,
+    EventConnectionCostModel const&);
 ```
+
+The initial policy is deliberately conservative rather than pretending there is
+one globally optimal threshold:
+
+- a zero-retention connection uses direct/fused handling when analysis proves it
+  legal, otherwise transient materialization;
+- feedback uses a persistent ring;
+- retained sample payloads use compact carry below a configurable byte budget
+  and a ring above it;
+- retained event payloads use compact carry only when an explicit retained-event
+  estimate is known and below a configurable count budget; unknown density uses
+  the conservative ring representation; and
+- graph/device boundary handling remains a distinct implementation kind.
+
+These crossovers are heuristic policy only. They are intentionally isolated so
+benchmarking can change them without changing graph semantics or LLVM lowering.
 
 The heuristic may consider:
 
@@ -230,6 +252,34 @@ The important properties are:
   semantically persistent between calls; and
 - the compiler may order regions to improve locality in the generated hot path.
 
+
+## Event conversions are directional semantic conversions
+
+Event conversion planning must fail when producing the target payload would
+require inventing information. The built-in conversion graph is therefore
+directional rather than a best-effort complete graph.
+
+The intended built-in relations are:
+
+```text
+MIDI     -> Boundary, Trigger, Empty
+Boundary -> Trigger, Empty
+Trigger  -> Empty
+Empty    -> (nothing except identity)
+```
+
+`Trigger -> Boundary` is invalid because a trigger carries no duration/end
+semantics. `Trigger -> MIDI` and `Boundary -> MIDI` are invalid because a note,
+channel, velocity, and related MIDI details cannot be chosen objectively.
+Conversely, information-rich event types may collapse into `Trigger`, and any
+event type may be discarded into `Empty`.
+
+This rule also removes the old conversions which synthesized a second event at
+`t + 1`; current built-in conversions never invent a later timestamp. Realtime
+window validation nevertheless checks converted events at the point they are
+emitted, so future conversion additions cannot silently escape the legal
+window.
+
 ## Realtime event ports need bounded time windows
 
 Realtime event outputs must have a statically predictable temporal window just
@@ -242,9 +292,17 @@ port's declared history and declared/corrected latency. In other words, realtime
 event production is constrained by the same `current block + history + latency`
 semantic extent used to make realtime sample access predictable.
 
-The precise inclusive/exclusive coordinate convention should match the sample
-port model, but the compiler must be able to prove a finite window for every
-realtime event output invocation.
+For a callback beginning at global sample index `B`, block size `N`, output
+history `H`, and effective/corrected output latency `L`, the legal realtime event
+output extent is the half-open interval:
+
+```text
+[max(0, B - H), B + N + L)
+```
+
+The compatibility runtime enforces this exact half-open convention. Lowering
+may remove redundant checks when authored/generated accesses are statically
+proved to stay inside the same extent.
 
 The compatibility runtime should validate this constraint. The whole-project
 JIT may then specialize it away when the authored access is statically valid.

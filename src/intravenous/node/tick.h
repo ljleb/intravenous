@@ -217,7 +217,10 @@ namespace iv {
 
             void push(TimedEvent const& event) const
             {
-                _port.push(event);
+                _port.push(
+                    event,
+                    static_cast<std::size_t>(_index),
+                    _block_size);
             }
 
             operator EventOutputPort&() const { return _port; }

@@ -230,7 +230,10 @@ namespace iv {
     )
     {
         for (size_t i = 0; i < public_inputs.size(); ++i) {
-            private_outputs[i].push_block(public_inputs[i].get_block(block_index, block_size));
+            private_outputs[i].push_block(
+                public_inputs[i].get_block(block_index, block_size),
+                block_index,
+                block_size);
         }
     }
 
@@ -242,7 +245,10 @@ namespace iv {
     )
     {
         for (size_t i = 0; i < public_outputs.size(); ++i) {
-            public_outputs[i].push_block(private_inputs[i].get_block(block_index, block_size));
+            public_outputs[i].push_block(
+                private_inputs[i].get_block(block_index, block_size),
+                block_index,
+                block_size);
         }
     }
 }
