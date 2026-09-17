@@ -70,6 +70,7 @@ struct SchedulePlan {
 
 struct SampleSourceChannelTimingPlan {
     SampleOutputChannelId source{};
+    ChannelLayout source_layout{};
     std::size_t source_history = 0;
     std::size_t source_latency = 0;
     // Effective latency for this particular source channel after feed-forward
@@ -134,6 +135,9 @@ struct ConnectionLiveIntervalPlan {
 };
 
 struct SampleProducerGroupPlan {
+    // Physical producer identity is the declared output port, not the
+    // connection's possibly-composed semantic source channel set.
+    std::optional<NodeBundlePortId> source_port{};
     ChannelTypeId source_type = ChannelTypeId::mono;
     std::vector<SampleOutputChannelId> source_channels{};
     std::optional<ChannelLayout> canonical_source_layout{};

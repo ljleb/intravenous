@@ -219,6 +219,7 @@ std::expected<void, std::string> inventory_sample_connections(
                 connection_plan.source_channel_timings.push_back(
                     SampleSourceChannelTimingPlan{
                         .source = source_channel,
+                        .source_layout = source.channel_layout,
                         .source_history = source_history,
                         .source_latency = source_latency,
                         .read_latency = source_latency,
@@ -760,20 +761,21 @@ ConnectionLiveIntervalPlan live_interval_for_sample_group(
         .end = 0,
     };
     bool saw_endpoint = false;
+
+    if (group.source_port) {
+        saw_endpoint = true;
+        auto const source_bundle = group.source_port->node_bundle_handle;
+        if (source_bundle == plan.boundary_bundle) {
+            live.begin = 0;
+        } else if (source_bundle < plan.schedule.bundle_execution_position.size()
+            && plan.schedule.bundle_execution_position[source_bundle]) {
+            live.begin = *plan.schedule.bundle_execution_position[source_bundle];
+        }
+    }
+
     for (auto const connection_index : group.connection_indices) {
         auto const& connection = plan.sample_connections[connection_index];
         if (!uses_realtime_storage(connection.access)) continue;
-        for (auto const source : connection.source_channels) {
-            saw_endpoint = true;
-            if (source.bundle == plan.boundary_bundle) {
-                live.begin = 0;
-            } else if (source.bundle < plan.schedule.bundle_execution_position.size()
-                && plan.schedule.bundle_execution_position[source.bundle]) {
-                live.begin = std::min(
-                    live.begin,
-                    *plan.schedule.bundle_execution_position[source.bundle]);
-            }
-        }
         auto const target = connection.target_port.node_bundle_handle;
         saw_endpoint = true;
         if (target == plan.boundary_bundle) {
@@ -841,35 +843,73 @@ void plan_sample_groups(
     ConnectionAnalysisPlan& plan,
     std::size_t kernel_block_size)
 {
+    auto source_port_for = [](SampleOutputChannelId channel) {
+        return NodeBundlePortId{
+            channel.bundle, PortKind::sample, channel.port};
+    };
+
     for (std::size_t i = 0; i < plan.sample_connections.size(); ++i) {
         auto& connection = plan.sample_connections[i];
-        if (uses_realtime_storage(connection.access)
-            && connection.canonical_source_port) {
-            connection.requires_block_materialization =
-                effective_block_size(
-                    plan,
-                    connection.canonical_source_port->node_bundle_handle,
-                    kernel_block_size)
-                != effective_block_size(
-                    plan,
-                    connection.target_port.node_bundle_handle,
-                    kernel_block_size);
+        if (connection.source_channel_timings.size()
+            != connection.source_channels.size()) {
+            continue;
         }
-        auto group = std::ranges::find_if(
-            plan.sample_producer_groups,
-            [&](SampleProducerGroupPlan const& candidate) {
-                return candidate.source_type == connection.source_type
-                    && candidate.source_channels == connection.source_channels;
-            });
-        if (group == plan.sample_producer_groups.end()) {
-            plan.sample_producer_groups.push_back(SampleProducerGroupPlan{
-                .source_type = connection.source_type,
-                .source_channels = connection.source_channels,
-                .canonical_source_layout = connection.canonical_source_layout,
-            });
-            group = std::prev(plan.sample_producer_groups.end());
+
+        if (uses_realtime_storage(connection.access)) {
+            auto const target_block = effective_block_size(
+                plan,
+                connection.target_port.node_bundle_handle,
+                kernel_block_size);
+            for (auto const& channel : connection.source_channel_timings) {
+                if (effective_block_size(
+                        plan, channel.source.bundle, kernel_block_size)
+                    != target_block) {
+                    connection.requires_block_materialization = true;
+                    break;
+                }
+            }
         }
-        group->connection_indices.push_back(i);
+
+        for (auto const& channel : connection.source_channel_timings) {
+            auto const source_port = source_port_for(channel.source);
+            auto group = std::ranges::find_if(
+                plan.sample_producer_groups,
+                [&](SampleProducerGroupPlan const& candidate) {
+                    return candidate.source_port
+                        && *candidate.source_port == source_port;
+                });
+            if (group == plan.sample_producer_groups.end()) {
+                std::vector<SampleOutputChannelId> source_channels;
+                auto const channel_total = channel_count(channel.source_layout);
+                source_channels.reserve(channel_total);
+                for (std::size_t source_channel = 0;
+                     source_channel < channel_total;
+                     ++source_channel) {
+                    source_channels.push_back(SampleOutputChannelId{
+                        .bundle = channel.source.bundle,
+                        .port = channel.source.port,
+                        .channel = source_channel,
+                    });
+                }
+                plan.sample_producer_groups.push_back(SampleProducerGroupPlan{
+                    .source_port = source_port,
+                    .source_type = channel.source_layout.channel_type,
+                    .source_channels = std::move(source_channels),
+                    .canonical_source_layout = channel.source_layout,
+                });
+                group = std::prev(plan.sample_producer_groups.end());
+            } else if (!group->canonical_source_layout
+                || *group->canonical_source_layout != channel.source_layout) {
+                // inventory_sample_connections() resolves one immutable output
+                // declaration per source port, so disagreement here means the
+                // semantic plan has already lost producer identity.
+                continue;
+            }
+            if (std::ranges::find(group->connection_indices, i)
+                == group->connection_indices.end()) {
+                group->connection_indices.push_back(i);
+            }
+        }
     }
 
     for (std::size_t group_index = 0;
@@ -889,15 +929,36 @@ void plan_sample_groups(
             group.has_realtime_connections = true;
             feedback = feedback || connection.feedback;
             external = external || connection.external_boundary;
-            requires_materialization = requires_materialization
+
+            auto const canonical_branch = group.source_port
+                && connection.canonical_source_port
+                && *connection.canonical_source_port == *group.source_port;
+            auto const branch_requires_materialization =
+                !canonical_branch
                 || connection.requires_conversion
                 || connection.requires_block_materialization;
-            auto const connection_retained = retained_extent(
-                connection.source_history,
-                connection.read_latency,
-                connection.target_history);
+            requires_materialization = requires_materialization
+                || branch_requires_materialization;
+
+            std::size_t connection_retained = 0;
+            bool saw_group_channel = false;
+            for (auto const& channel : connection.source_channel_timings) {
+                if (!group.source_port
+                    || source_port_for(channel.source) != *group.source_port) {
+                    continue;
+                }
+                saw_group_channel = true;
+                connection_retained = std::max(
+                    connection_retained,
+                    retained_extent(
+                        channel.source_history,
+                        channel.read_latency,
+                        connection.target_history));
+            }
+            if (!saw_group_channel) continue;
             retained = std::max(retained, connection_retained);
             direct = direct
+                && canonical_branch
                 && !connection.requires_conversion
                 && !connection.requires_block_materialization
                 && !connection.feedback
@@ -910,7 +971,9 @@ void plan_sample_groups(
             .feedback = feedback,
             .external_boundary = external,
             .retained_frames = retained,
-            .channel_count = channel_count(group.source_type),
+            .channel_count = group.canonical_source_layout
+                ? channel_count(*group.canonical_source_layout)
+                : channel_count(group.source_type),
             .value_size_bytes = sizeof(Sample),
         };
         if (!group.has_realtime_connections) continue;

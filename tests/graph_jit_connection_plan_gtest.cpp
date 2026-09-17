@@ -1,5 +1,6 @@
 #include <intravenous/dsl.h>
 #include <intravenous/graph_jit/connection_plan.h>
+#include <intravenous/graph_jit/sample_physical_plan.h>
 
 #include <gtest/gtest.h>
 
@@ -417,6 +418,59 @@ TEST(GraphJitConnectionPlan, EqualizesChannelsInsideComposedSampleInput)
     // the per-channel timings above instead of applying this value uniformly.
     EXPECT_EQ(connection->source_latency, 2u);
     EXPECT_EQ(connection->read_latency, 7u);
+
+    auto const source_group = std::ranges::find_if(
+        plan->sample_producer_groups,
+        [&](graph_jit::detail::SampleProducerGroupPlan const& group) {
+            return group.source_port
+                && group.source_port->node_bundle_handle == source_handle;
+        });
+    auto const latent_group = std::ranges::find_if(
+        plan->sample_producer_groups,
+        [&](graph_jit::detail::SampleProducerGroupPlan const& group) {
+            return group.source_port
+                && group.source_port->node_bundle_handle == latent_handle;
+        });
+    ASSERT_NE(source_group, plan->sample_producer_groups.end());
+    ASSERT_NE(latent_group, plan->sample_producer_groups.end());
+    EXPECT_EQ(source_group->requirements.retained_frames, 7u);
+    EXPECT_EQ(latent_group->requirements.retained_frames, 2u);
+
+    auto physical = graph_jit::detail::build_sample_physical_plan(*plan, 64);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->compositions.size(), 1u);
+    ASSERT_LT(
+        static_cast<std::size_t>(std::distance(
+            plan->sample_connections.begin(), connection)),
+        physical->connection_representations.size());
+    auto const connection_index = static_cast<std::size_t>(std::distance(
+        plan->sample_connections.begin(), connection));
+    ASSERT_TRUE(physical->connection_representations[connection_index].has_value());
+
+    auto const& composition = physical->compositions.front();
+    EXPECT_EQ(composition.connection_index, connection_index);
+    EXPECT_EQ(composition.target_layout, connection->target_layout);
+    EXPECT_EQ(composition.target_history, connection->target_history);
+    EXPECT_EQ(composition.target_representation,
+        *physical->connection_representations[connection_index]);
+    ASSERT_EQ(composition.sources.size(), 2u);
+    EXPECT_NE(
+        composition.sources[0].source_representation,
+        composition.sources[1].source_representation);
+    EXPECT_EQ(composition.sources[0].source_channel, 0u);
+    EXPECT_EQ(composition.sources[0].target_channel, 0u);
+    EXPECT_EQ(composition.sources[0].read_latency, 7u);
+    EXPECT_EQ(composition.sources[1].source_channel, 0u);
+    EXPECT_EQ(composition.sources[1].target_channel, 1u);
+    EXPECT_EQ(composition.sources[1].read_latency, 2u);
+
+    auto const& target_representation =
+        physical->representations[composition.target_representation];
+    EXPECT_FALSE(target_representation.canonical_producer_representation);
+    EXPECT_EQ(target_representation.producer_group_index,
+        graph_jit::detail::no_sample_producer_group);
+    EXPECT_EQ(target_representation.channel_layout, connection->target_layout);
 }
 
 TEST(GraphJitConnectionPlan, PropagatesAlignedLatencyAcrossMultipleConvergences)

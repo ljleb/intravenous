@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <utility>
@@ -110,6 +111,33 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             return *connections.schedule.bundle_execution_position[bundle];
         }
         return fallback.end;
+    };
+
+    auto source_position = [&](NodeBundlePortId source_port,
+                               ConnectionLiveIntervalPlan const& fallback) {
+        auto const bundle = source_port.node_bundle_handle;
+        if (bundle == connections.boundary_bundle) return std::size_t{0};
+        if (bundle < connections.schedule.bundle_execution_position.size()
+            && connections.schedule.bundle_execution_position[bundle]) {
+            return *connections.schedule.bundle_execution_position[bundle];
+        }
+        return fallback.begin;
+    };
+
+    auto composition_position = [&](SampleConnectionPlan const& connection,
+                                    ConnectionLiveIntervalPlan const& fallback) {
+        auto position = fallback.begin;
+        for (auto const& channel : connection.source_channel_timings) {
+            position = std::max(
+                position,
+                source_position(
+                    NodeBundlePortId{
+                        channel.source.bundle,
+                        PortKind::sample,
+                        channel.source.port},
+                    fallback));
+        }
+        return position;
     };
 
     auto append_representation = [&](SampleRepresentationPlan representation) {
@@ -217,28 +245,30 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 "GraphJit transient sample storage cannot satisfy cross-kernel retained storage");
         }
 
-        auto producer_position = group.live_interval.begin;
-        std::optional<NodeBundleHandle> producer_bundle;
+        auto producer_position = group.source_port
+            ? source_position(*group.source_port, group.live_interval)
+            : group.live_interval.begin;
         for (auto const connection_index : group.connection_indices) {
             if (connection_index >= connections.sample_connections.size()) {
                 return std::unexpected(
                     "GraphJit sample producer group references an invalid connection");
             }
             auto const& connection = connections.sample_connections[connection_index];
-            if (connection.access != PlannedConnectionAccess::realtime_to_realtime
-                || !connection.canonical_source_port) {
+            if (connection.access != PlannedConnectionAccess::realtime_to_realtime) {
                 continue;
             }
-            auto const bundle = connection.canonical_source_port->node_bundle_handle;
-            if (producer_bundle && *producer_bundle != bundle) {
+            auto const belongs_to_group = !group.source_port
+                || std::ranges::any_of(
+                    connection.source_channel_timings,
+                    [&](SampleSourceChannelTimingPlan const& channel) {
+                        return channel.source.bundle
+                                == group.source_port->node_bundle_handle
+                            && channel.source.port
+                                == group.source_port->port_ordinal;
+                    });
+            if (!belongs_to_group) {
                 return std::unexpected(
-                    "GraphJit canonical sample producer group spans multiple source bundles");
-            }
-            producer_bundle = bundle;
-            if (bundle < connections.schedule.bundle_execution_position.size()
-                && connections.schedule.bundle_execution_position[bundle]) {
-                producer_position =
-                    *connections.schedule.bundle_execution_position[bundle];
+                    "GraphJit sample producer group contains a foreign source port");
             }
         }
 
@@ -254,9 +284,16 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             if (connection.access != PlannedConnectionAccess::realtime_to_realtime) {
                 continue;
             }
-            if (!connection.requires_conversion) {
+            auto const canonical_branch = !group.source_port
+                || (connection.canonical_source_port
+                    && *connection.canonical_source_port == *group.source_port);
+            if (canonical_branch && !connection.requires_conversion) {
                 canonical_live.end = std::max(
                     canonical_live.end, target_position(connection, group.live_interval));
+            } else if (!canonical_branch) {
+                canonical_live.end = std::max(
+                    canonical_live.end,
+                    composition_position(connection, group.live_interval));
             }
         }
 
@@ -354,6 +391,11 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             if (plan.connection_representations[connection_index]) {
                 return std::unexpected(
                     "GraphJit sample connection belongs to multiple producer groups");
+            }
+            if (group.source_port
+                && (!connection.canonical_source_port
+                    || *connection.canonical_source_port != *group.source_port)) {
+                continue;
             }
             if (connection.canonical_source_layout
                 && *connection.canonical_source_layout
@@ -456,6 +498,130 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             }
             plan.connection_representations[connection_index] = branch->representation;
         }
+    }
+
+    // Connections that do not resolve to one canonical whole output port are
+    // physical channel compositions. Each actual producer owns its own
+    // canonical representation and retention; this synthetic transient value
+    // gathers those channels only after all contributing producers have run.
+    for (std::size_t connection_index = 0;
+         connection_index < connections.sample_connections.size();
+         ++connection_index) {
+        auto const& connection = connections.sample_connections[connection_index];
+        if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+            || connection.canonical_source_port
+            || connection.source_channel_timings.empty()) {
+            continue;
+        }
+        if (plan.connection_representations[connection_index]) {
+            return std::unexpected(
+                "GraphJit composed sample connection already owns a physical representation");
+        }
+        if (connection.feedback || connection.external_boundary) {
+            return std::unexpected(
+                "GraphJit point-9 sample composition does not yet realize feedback or external storage");
+        }
+        if (connection.source_channel_timings.size()
+                != connection.source_channels.size()
+            || connection.source_channels.size() != connection.target_channels.size()
+            || connection.source_type != connection.target_type
+            || connection.source_channels.size()
+                != channel_count(connection.target_layout)) {
+            return std::unexpected(
+                "GraphJit sample composition currently requires one source channel per target channel without channel-count conversion");
+        }
+        for (std::size_t channel = 0;
+             channel < connection.target_channels.size(); ++channel) {
+            auto const& target = connection.target_channels[channel];
+            if (target.bundle != connection.target_port.node_bundle_handle
+                || target.port != connection.target_port.port_ordinal
+                || target.channel != channel) {
+                return std::unexpected(
+                    "GraphJit sample composition currently requires canonical target-channel ordering");
+            }
+        }
+
+        auto capacity = working_ring_capacity(
+            kernel_block_size, connection.target_history);
+        if (!capacity) return std::unexpected(std::move(capacity.error()));
+        auto const begin = composition_position(
+            connection,
+            ConnectionLiveIntervalPlan{
+                .begin = 0,
+                .end = target_position(
+                    connection, ConnectionLiveIntervalPlan{}),
+            });
+        auto const end = target_position(
+            connection,
+            ConnectionLiveIntervalPlan{.begin = begin, .end = begin});
+        auto target_representation = append_transient_representation(
+            SampleRepresentationPlan{
+                .producer_group_index = no_sample_producer_group,
+                .canonical_producer_representation = false,
+                .implementation = SampleConnectionImplementationKind::transient_materialization,
+                .channel_layout = connection.target_layout,
+                .frame_capacity = *capacity,
+                .live_interval = ConnectionLiveIntervalPlan{
+                    .begin = begin,
+                    .end = std::max(begin, end),
+                    .crosses_kernel_invocations = false,
+                },
+            });
+        if (!target_representation) {
+            return std::unexpected(std::move(target_representation.error()));
+        }
+
+        SampleCompositionPlan composition{
+            .connection_index = connection_index,
+            .target_representation = *target_representation,
+            .after_execution_position = begin,
+            .target_layout = connection.target_layout,
+            .target_history = connection.target_history,
+        };
+        composition.sources.reserve(connection.source_channel_timings.size());
+        for (std::size_t channel_index = 0;
+             channel_index < connection.source_channel_timings.size();
+             ++channel_index) {
+            auto const& channel = connection.source_channel_timings[channel_index];
+            NodeBundlePortId const source_port{
+                channel.source.bundle,
+                PortKind::sample,
+                channel.source.port,
+            };
+            auto const group = std::ranges::find_if(
+                connections.sample_producer_groups,
+                [&](SampleProducerGroupPlan const& candidate) {
+                    return candidate.source_port
+                        && *candidate.source_port == source_port;
+                });
+            if (group == connections.sample_producer_groups.end()) {
+                return std::unexpected(
+                    "GraphJit sample composition lost a source producer group");
+            }
+            auto const group_index = static_cast<std::size_t>(
+                std::distance(connections.sample_producer_groups.begin(), group));
+            if (group_index >= plan.producer_groups.size()
+                || !plan.producer_groups[group_index]) {
+                return std::unexpected(
+                    "GraphJit sample composition lost a source physical representation");
+            }
+            auto const source_representation =
+                plan.producer_groups[group_index]->canonical_representation;
+            if (source_representation >= plan.representations.size()
+                || channel.source.channel
+                    >= channel_count(plan.representations[source_representation].channel_layout)) {
+                return std::unexpected(
+                    "GraphJit sample composition source channel is outside its producer representation");
+            }
+            composition.sources.push_back(SampleCompositionSourcePlan{
+                .source_representation = source_representation,
+                .source_channel = channel.source.channel,
+                .target_channel = connection.target_channels[channel_index].channel,
+                .read_latency = channel.read_latency,
+            });
+        }
+        plan.compositions.push_back(std::move(composition));
+        plan.connection_representations[connection_index] = *target_representation;
     }
 
     auto arena = plan_transient_arena(transient_requests);

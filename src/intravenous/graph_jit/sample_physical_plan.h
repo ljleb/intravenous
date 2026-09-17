@@ -15,6 +15,8 @@ namespace iv::graph_jit::detail {
 
 inline constexpr std::size_t no_sample_representation =
     std::numeric_limits<std::size_t>::max();
+inline constexpr std::size_t no_sample_producer_group =
+    std::numeric_limits<std::size_t>::max();
 inline constexpr std::size_t no_sample_transient_allocation =
     std::numeric_limits<std::size_t>::max();
 inline constexpr std::size_t no_sample_persistent_allocation =
@@ -59,6 +61,27 @@ struct SampleMaterializationPlan {
     // target_history + read_latency and read_latency respectively.
     std::size_t retained_before = 0;
     std::size_t latest_read_latency = 0;
+};
+
+struct SampleCompositionSourcePlan {
+    std::size_t source_representation = no_sample_representation;
+    std::size_t source_channel = 0;
+    std::size_t target_channel = 0;
+    std::size_t read_latency = 0;
+};
+
+// A composed connection gathers independently-timed channels from canonical
+// producer representations into one transient target-layout representation.
+// The gathered representation is timestamp-aligned, so its eventual InputPort
+// binding reads with zero additional latency; target history is reconstructed
+// from the producer histories while the composition runs.
+struct SampleCompositionPlan {
+    std::size_t connection_index = 0;
+    std::vector<SampleCompositionSourcePlan> sources{};
+    std::size_t target_representation = no_sample_representation;
+    std::size_t after_execution_position = 0;
+    ChannelLayout target_layout{};
+    std::size_t target_history = 0;
 };
 
 // Exact transient byte range assigned to one representation. Ranges may overlap
@@ -123,6 +146,7 @@ struct SamplePhysicalPlan {
     // the source producer and before every consumer bound to the target
     // representation.
     std::vector<SampleMaterializationPlan> materializations{};
+    std::vector<SampleCompositionPlan> compositions{};
     std::vector<SampleCarryOperationPlan> carry_operations{};
 
     // One exact range per transient representation. The arena high-water mark
