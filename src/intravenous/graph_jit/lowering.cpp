@@ -1,6 +1,5 @@
 #include <intravenous/graph_jit/lowering.h>
-
-#include <intravenous/graph/reflected_node_operations.h>
+#include <intravenous/graph_jit/lowering_plan.h>
 
 #include <llvm/ADT/StringRef.h>
 #include <llvm/IR/BasicBlock.h>
@@ -16,42 +15,27 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <optional>
+#include <expected>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace iv::graph_jit {
 namespace {
 constexpr std::string_view root_tick_block_symbol = "__iv_graph_root_tick_block";
 constexpr std::string_view root_skip_block_symbol = "__iv_graph_root_skip_block";
-constexpr std::string_view primitive_tick_import_symbol =
-    "__iv_graph_primitive_0_tick_block";
-constexpr std::string_view primitive_skip_import_symbol =
-    "__iv_graph_primitive_0_skip_block";
-
-struct PrimitiveBundle {
-    std::size_t node_bundle = 0;
-    std::size_t node_size = 0;
-    std::size_t node_alignment = 1;
-    std::size_t maximum_block_size = 0;
-    bool block_skippable = false;
-};
-
-struct PrimitiveStorageContext {
-    bool has_state = false;
-    std::size_t state_offset = 0;
-    std::size_t state_size = 0;
-    bool has_compiled_state = false;
-    std::size_t compiled_state_offset = 0;
-    std::size_t compiled_state_size = 0;
-};
 
 struct ReflectedContextByteOffsets {
     std::size_t compiled_state_data = 0;
     std::size_t compiled_state_size = 0;
     std::size_t state_data = 0;
     std::size_t state_size = 0;
+};
+
+struct EmittedNodeConfiguration {
+    llvm::GlobalVariable* node_config = nullptr;
+    llvm::GlobalVariable* tick_context_template = nullptr;
 };
 
 constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
@@ -68,123 +52,6 @@ constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
         .state_size = offsetof(ReflectedNodeTickContext, state)
             + offsetof(ReflectedSpan<std::byte>, extent),
     };
-}
-
-bool is_structurally_empty(ConfiguredGraph const& graph)
-{
-    if (!graph.connections.configured_sample_connections().empty()
-        || !graph.connections.configured_event_connections().empty()
-        || !graph.virtual_nodes.records().empty()) {
-        return false;
-    }
-
-    if (graph.node_bundles.size() == 0) return true;
-    if (graph.node_bundles.size() != 1) return false;
-
-    auto const& boundary = graph.node_bundles.bundle(0);
-    return boundary.is_boundary()
-        && graph.public_ports.boundary_handle() == 0
-        && boundary.sample_input_count() == 0
-        && boundary.sample_output_count() == 0
-        && boundary.event_input_count() == 0
-        && boundary.event_output_count() == 0;
-}
-
-bool valid_alignment(std::size_t alignment) noexcept
-{
-    return alignment != 0 && (alignment & (alignment - 1)) == 0;
-}
-
-std::expected<PrimitiveBundle, std::string> single_zero_port_primitive(
-    LoweringInput const& input)
-{
-    if (!input.graph.connections.configured_sample_connections().empty()
-        || !input.graph.connections.configured_event_connections().empty()) {
-        return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet support graph connections");
-    }
-    if (!input.graph.virtual_nodes.records().empty()) {
-        return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet support virtual nodes");
-    }
-    if (!input.config_relocations.empty()) {
-        return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet support node configuration pointer relocations");
-    }
-
-    std::optional<PrimitiveBundle> primitive;
-    std::string structural_error;
-    std::size_t boundary_count = 0;
-    std::size_t node_bundle = 0;
-    input.graph.node_bundles.for_each_configured_bundle(
-        [&](ConfiguredNodeBundleView const& view) {
-            auto const current_bundle = node_bundle++;
-            if (!structural_error.empty()) return;
-
-            auto const has_ports = view.ports != nullptr
-                && (view.ports->sample_input_count() != 0
-                    || view.ports->sample_output_count() != 0
-                    || view.ports->event_input_count() != 0
-                    || view.ports->event_output_count() != 0);
-
-            if (view.kind == ConfiguredNodeBundleKind::boundary) {
-                ++boundary_count;
-                if (has_ports || boundary_count != 1
-                    || current_bundle != input.graph.public_ports.boundary_handle()) {
-                    structural_error =
-                        "single-primitive GraphJit lowering slice requires exactly one zero-port project boundary";
-                }
-                return;
-            }
-            if (view.kind != ConfiguredNodeBundleKind::concrete) {
-                structural_error =
-                    "single-primitive GraphJit lowering slice supports only flat concrete primitives";
-                return;
-            }
-            if (has_ports) {
-                structural_error =
-                    "single-primitive GraphJit lowering slice supports only zero-port primitives";
-                return;
-            }
-            if (primitive) {
-                structural_error =
-                    "single-primitive GraphJit lowering slice supports exactly one concrete primitive";
-                return;
-            }
-            if (!valid_alignment(view.node_alignment)) {
-                structural_error =
-                    "configured primitive has invalid node configuration alignment";
-                return;
-            }
-            if ((view.lifetime && view.lifetime->ttl_samples)
-                || (view.deferred_detach && view.deferred_detach->has_value())) {
-                structural_error =
-                    "single-primitive GraphJit lowering slice does not yet support activity or detach semantics";
-                return;
-            }
-            primitive = PrimitiveBundle{
-                .node_bundle = current_bundle,
-                .node_size = view.node_size,
-                .node_alignment = view.node_alignment,
-                .maximum_block_size = view.maximum_block_size,
-                .block_skippable = view.block_skippable,
-            };
-        });
-
-    if (!structural_error.empty()) return std::unexpected(std::move(structural_error));
-    if (boundary_count != 1) {
-        return std::unexpected(
-            "single-primitive GraphJit lowering slice requires exactly one project boundary");
-    }
-    if (!primitive) {
-        return std::unexpected(
-            "single-primitive GraphJit lowering slice found no concrete primitive");
-    }
-    if (primitive->maximum_block_size < input.specialization.block_size) {
-        return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet split blocks for a primitive maximum block size");
-    }
-    return *primitive;
 }
 
 llvm::FunctionType* root_block_operation_type(llvm::LLVMContext& context)
@@ -207,24 +74,6 @@ llvm::FunctionType* primitive_block_operation_type(llvm::LLVMContext& context)
         llvm::Type::getVoidTy(context),
         {pointer, pointer, size_type, size_type},
         false);
-}
-
-llvm::Function* define_noop_root_operation(
-    llvm::Module& module,
-    llvm::FunctionType* type,
-    std::string_view symbol)
-{
-    auto* function = llvm::Function::Create(
-        type,
-        llvm::GlobalValue::ExternalLinkage,
-        llvm::StringRef(symbol.data(), symbol.size()),
-        module);
-    function->setCallingConv(llvm::CallingConv::C);
-
-    auto* entry = llvm::BasicBlock::Create(module.getContext(), "entry", function);
-    llvm::IRBuilder<> builder(entry);
-    builder.CreateRetVoid();
-    return function;
 }
 
 llvm::GlobalVariable* immutable_bytes_global(
@@ -284,11 +133,9 @@ std::expected<llvm::Function*, std::string> prepare_primitive_callback_import(
 
     // Callback wrappers instantiated for package-local node types may have
     // local/linkonce linkage. Such a definition cannot satisfy an external
-    // declaration in the destination module under LinkOnlyNeeded: LLVM keeps
-    // the local source definition private and leaves the destination anchor as
-    // a declaration. Promote only the selected callback root in the clone,
-    // under a GraphJit-owned name. Its transitive closure remains package-local
-    // and is pulled by LinkOnlyNeeded as usual.
+    // declaration in the destination module under LinkOnlyNeeded. Promote only
+    // each selected root, under a GraphJit-owned name. Package import planning
+    // collects every root first so each package module is consumed exactly once.
     source->setName(import_name);
     source->setLinkage(llvm::GlobalValue::ExternalLinkage);
     source->setVisibility(llvm::GlobalValue::DefaultVisibility);
@@ -303,6 +150,81 @@ std::expected<llvm::Function*, std::string> prepare_primitive_callback_import(
     declaration->setCallingConv(source->getCallingConv());
     declaration->setAttributes(source->getAttributes());
     return declaration;
+}
+
+std::expected<void, std::string> emit_package_imports(
+    LoweringInput& input,
+    detail::PackageImportPlan const& plan,
+    llvm::Module& output_module)
+{
+    auto* primitive_type = primitive_block_operation_type(output_module.getContext());
+    for (auto const& package_plan : plan.packages) {
+        if (package_plan.package_index >= input.packages.size()
+            || !input.packages[package_plan.package_index].module) {
+            return std::unexpected(
+                "planned package LLVM is not available for lowering consumption");
+        }
+
+        // Package modules are parsed specifically for this GraphJit compilation.
+        // Promote all selected callback roots in place, then consume the module
+        // once. LinkOnlyNeeded keeps only their transitive closures without a
+        // full CloneModule copy.
+        auto source_module =
+            std::move(input.packages[package_plan.package_index].module);
+        for (auto const& callback : package_plan.callbacks) {
+            auto imported = prepare_primitive_callback_import(
+                output_module,
+                *source_module,
+                callback.source_symbol,
+                primitive_type,
+                callback.import_symbol,
+                callback.role);
+            if (!imported) return std::unexpected(std::move(imported.error()));
+        }
+
+        if (llvm::Linker::linkModules(
+                output_module,
+                std::move(source_module),
+                llvm::Linker::Flags::LinkOnlyNeeded)) {
+            return std::unexpected(
+                "failed to import selected primitive LLVM callback closure into the project module");
+        }
+
+        for (auto const& callback : package_plan.callbacks) {
+            auto* imported = output_module.getFunction(callback.import_symbol);
+            if (!imported || imported->isDeclaration()) {
+                return std::unexpected(
+                    "selected primitive " + callback.role
+                    + " closure was not imported into the project module");
+            }
+        }
+    }
+    return {};
+}
+
+std::vector<EmittedNodeConfiguration> emit_node_configurations(
+    detail::ConfigurationPlan const& plan,
+    llvm::Module& output_module)
+{
+    std::vector<EmittedNodeConfiguration> emitted;
+    emitted.reserve(plan.nodes.size());
+    for (auto const& node : plan.nodes) {
+        emitted.push_back(EmittedNodeConfiguration{
+            .node_config = immutable_bytes_global(
+                output_module,
+                node.bytes.data(),
+                node.bytes.size(),
+                node.alignment,
+                node.node_global_symbol),
+            .tick_context_template = immutable_bytes_global(
+                output_module,
+                &node.tick_context_template,
+                sizeof(node.tick_context_template),
+                alignof(ReflectedNodeTickContext),
+                node.tick_context_global_symbol),
+        });
+    }
+    return emitted;
 }
 
 void store_context_span(
@@ -333,15 +255,65 @@ void store_context_span(
     builder.CreateStore(offset(span_size), size_slot);
 }
 
-llvm::Function* define_single_primitive_root_operation(
-    llvm::Module& module,
-    llvm::FunctionType* root_type,
-    std::string_view symbol,
+void emit_primitive_call(
+    llvm::IRBuilder<>& builder,
     llvm::Function* primitive_callback,
-    llvm::GlobalVariable* node_config,
-    llvm::GlobalVariable* tick_context_template,
-    PrimitiveStorageContext const& storage_context)
+    EmittedNodeConfiguration const& configuration,
+    detail::PrimitiveStoragePlan const& storage,
+    llvm::Value* storage_base,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
 {
+    auto* size_type = llvm::IntegerType::get(
+        builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* context_storage = builder.CreateAlloca(
+        llvm::Type::getInt8Ty(builder.getContext()),
+        llvm::ConstantInt::get(size_type, sizeof(ReflectedNodeTickContext)),
+        "tick_context");
+    context_storage->setAlignment(llvm::Align(alignof(ReflectedNodeTickContext)));
+    builder.CreateMemCpy(
+        context_storage,
+        llvm::Align(alignof(ReflectedNodeTickContext)),
+        configuration.tick_context_template,
+        llvm::Align(alignof(ReflectedNodeTickContext)),
+        sizeof(ReflectedNodeTickContext));
+
+    auto const offsets = reflected_context_byte_offsets();
+    if (storage.has_compiled_state) {
+        store_context_span(
+            builder,
+            context_storage,
+            offsets.compiled_state_data,
+            offsets.compiled_state_size,
+            storage_base,
+            storage.compiled_state_offset,
+            storage.compiled_state_size);
+    }
+    if (storage.has_state) {
+        store_context_span(
+            builder,
+            context_storage,
+            offsets.state_data,
+            offsets.state_size,
+            storage_base,
+            storage.state_offset,
+            storage.state_size);
+    }
+
+    auto* call = builder.CreateCall(
+        primitive_callback,
+        {configuration.node_config, context_storage, sample_index, block_size});
+    call->setCallingConv(primitive_callback->getCallingConv());
+}
+
+std::expected<llvm::Function*, std::string> define_root_operation(
+    llvm::Module& module,
+    std::string_view symbol,
+    detail::LoweringPlan const& plan,
+    std::vector<EmittedNodeConfiguration> const& configurations,
+    bool skip)
+{
+    auto* root_type = root_block_operation_type(module.getContext());
     auto* function = llvm::Function::Create(
         root_type,
         llvm::GlobalValue::ExternalLinkage,
@@ -359,267 +331,76 @@ llvm::Function* define_single_primitive_root_operation(
 
     auto* entry = llvm::BasicBlock::Create(module.getContext(), "entry", function);
     llvm::IRBuilder<> builder(entry);
+    for (auto const& step : plan.execution.primitive_steps) {
+        if (step.configuration_index >= configurations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing node configuration");
+        }
+        if (step.storage_index >= plan.declarations.primitive_storage.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing canonical storage plan");
+        }
 
-    auto* size_type = llvm::IntegerType::get(
-        module.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
-    auto* context_storage = builder.CreateAlloca(
-        llvm::Type::getInt8Ty(module.getContext()),
-        llvm::ConstantInt::get(size_type, sizeof(ReflectedNodeTickContext)),
-        "tick_context");
-    context_storage->setAlignment(llvm::Align(alignof(ReflectedNodeTickContext)));
-    builder.CreateMemCpy(
-        context_storage,
-        llvm::Align(alignof(ReflectedNodeTickContext)),
-        tick_context_template,
-        llvm::Align(alignof(ReflectedNodeTickContext)),
-        sizeof(ReflectedNodeTickContext));
-
-    auto const offsets = reflected_context_byte_offsets();
-    if (storage_context.has_compiled_state) {
-        store_context_span(
+        auto const& callback_symbol =
+            skip ? step.skip_callback_symbol : step.tick_callback_symbol;
+        if (callback_symbol.empty()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing primitive callback");
+        }
+        auto* primitive_callback = module.getFunction(callback_symbol);
+        if (!primitive_callback || primitive_callback->isDeclaration()) {
+            return std::unexpected(
+                "GraphJit execution plan references an unmaterialized primitive callback");
+        }
+        emit_primitive_call(
             builder,
-            context_storage,
-            offsets.compiled_state_data,
-            offsets.compiled_state_size,
+            primitive_callback,
+            configurations[step.configuration_index],
+            plan.declarations.primitive_storage[step.storage_index],
             storage_base,
-            storage_context.compiled_state_offset,
-            storage_context.compiled_state_size);
+            sample_index,
+            block_size);
     }
-    if (storage_context.has_state) {
-        store_context_span(
-            builder,
-            context_storage,
-            offsets.state_data,
-            offsets.state_size,
-            storage_base,
-            storage_context.state_offset,
-            storage_context.state_size);
-    }
-
-    auto* call = builder.CreateCall(
-        primitive_callback,
-        {node_config, context_storage, sample_index, block_size});
-    call->setCallingConv(primitive_callback->getCallingConv());
     builder.CreateRetVoid();
     return function;
 }
 
-std::expected<LoweringOutput, std::string> lower_single_zero_port_primitive(
+std::expected<LoweringOutput, std::string> emit_lowering_plan(
     LoweringInput& input,
+    detail::LoweringPlan&& plan,
     llvm::Module& output_module)
 {
-    auto primitive = single_zero_port_primitive(input);
-    if (!primitive) return std::unexpected(std::move(primitive.error()));
+    auto imported = emit_package_imports(input, plan.imports, output_module);
+    if (!imported) return std::unexpected(std::move(imported.error()));
 
-    NodeImplementation const* implementation = nullptr;
-    for (auto const& candidate : input.node_implementations) {
-        if (candidate.node_bundle != primitive->node_bundle) continue;
-        if (implementation) {
-            return std::unexpected(
-                "GraphJit lowering received duplicate implementations for one primitive bundle");
-        }
-        implementation = &candidate;
-    }
-    if (!implementation) {
-        return std::unexpected(
-            "GraphJit lowering has no resolved implementation for the concrete primitive");
-    }
-    if (input.node_implementations.size() != 1) {
-        return std::unexpected(
-            "single-primitive GraphJit lowering slice requires exactly one resolved primitive implementation");
-    }
-    if (!implementation->package_module || !implementation->tick_block
-        || !implementation->declare_node || !implementation->node_data) {
-        return std::unexpected(
-            "resolved primitive implementation is incomplete at the GraphJit lowering boundary");
-    }
-    if (implementation->tick_block->getParent() != implementation->package_module
-        || (implementation->skip_block
-            && implementation->skip_block->getParent() != implementation->package_module)) {
-        return std::unexpected(
-            "resolved primitive callbacks do not belong to the selected package LLVM module");
-    }
-    if (primitive->node_size == 0) {
-        return std::unexpected("configured primitive has empty node configuration storage");
-    }
+    auto configurations =
+        emit_node_configurations(plan.configurations, output_module);
 
-    NodeLayoutBuilder layout_builder(input.specialization.block_size);
-    auto const node_index = implementation->declare_node(
-        implementation->node_data,
-        implementation->state_structures,
-        layout_builder);
-    auto node_layout = std::move(layout_builder).build();
-    if (node_index != 0 || node_layout.nodes.size() != 1) {
-        return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet support nested node declarations");
-    }
-    if (!node_layout.imported_arrays.empty() || !node_layout.exported_arrays.empty()) {
-        return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet support declared shared-array bindings");
-    }
-    for (auto const& region : node_layout.regions) {
-        if (region.kind != NodeLayout::Region::Kind::state
-            && region.kind != NodeLayout::Region::Kind::compiled_state) {
-            return std::unexpected(
-                "single-primitive GraphJit lowering slice does not yet support declaration-owned auxiliary storage regions");
-        }
-    }
-
-    auto const& node_record = node_layout.nodes.front();
-    if (node_record.state_size != implementation->state_size
-        || node_record.state_alignment != implementation->state_alignment
-        || node_record.compiled_state_size != implementation->compiled_state_size
-        || node_record.compiled_state_alignment
-            != implementation->compiled_state_alignment) {
-        return std::unexpected(
-            "declared primitive State/CompiledState layout disagrees with finalized compiler metadata");
-    }
-    if (node_record.state_size != 0 && node_record.state_offset < 0) {
-        return std::unexpected(
-            "declared primitive State has no canonical NodeLayout storage offset");
-    }
-    if (node_record.compiled_state_size != 0
-        && node_record.compiled_state_offset < 0) {
-        return std::unexpected(
-            "declared primitive CompiledState has no canonical NodeLayout storage offset");
-    }
-
-    PrimitiveStorageContext storage_context;
-    if (node_record.state_size != 0) {
-        storage_context.has_state = true;
-        storage_context.state_offset =
-            static_cast<std::size_t>(node_record.state_offset);
-        if (storage_context.state_offset > node_layout.storage_size
-            || node_record.state_size
-                > node_layout.storage_size - storage_context.state_offset) {
-            return std::unexpected(
-                "declared primitive State lies outside canonical NodeStorage");
-        }
-        storage_context.state_size = node_record.state_size;
-    }
-    if (node_record.compiled_state_size != 0) {
-        storage_context.has_compiled_state = true;
-        storage_context.compiled_state_offset =
-            static_cast<std::size_t>(node_record.compiled_state_offset);
-        if (storage_context.compiled_state_offset > node_layout.storage_size
-            || node_record.compiled_state_size
-                > node_layout.storage_size - storage_context.compiled_state_offset) {
-            return std::unexpected(
-                "declared primitive CompiledState lies outside canonical NodeStorage");
-        }
-        storage_context.compiled_state_size = node_record.compiled_state_size;
-    }
-
-    PackageModule* selected_package = nullptr;
-    for (auto& package : input.packages) {
-        if (package.module.get() != implementation->package_module) continue;
-        if (selected_package) {
-            return std::unexpected(
-                "GraphJit lowering received duplicate ownership for one package LLVM module");
-        }
-        selected_package = &package;
-    }
-    if (!selected_package || !selected_package->module) {
-        return std::unexpected(
-            "resolved primitive package LLVM is not available for lowering consumption");
-    }
-
-    // This package module was parsed specifically for this GraphJit compilation.
-    // Promote the selected roots in place, then hand the module directly to the
-    // linker. LinkOnlyNeeded keeps only the selected callback closure while
-    // avoiding a full CloneModule copy of the package IR.
-    auto source_module = std::move(selected_package->module);
-    auto* primitive_type = primitive_block_operation_type(output_module.getContext());
-    auto tick_callback = prepare_primitive_callback_import(
+    auto tick = define_root_operation(
         output_module,
-        *source_module,
-        implementation->tick_block->getName(),
-        primitive_type,
-        primitive_tick_import_symbol,
-        "tick_block");
-    if (!tick_callback) return std::unexpected(std::move(tick_callback.error()));
-
-    llvm::Function* skip_callback = nullptr;
-    if (primitive->block_skippable) {
-        auto skip = prepare_primitive_callback_import(
-            output_module,
-            *source_module,
-            implementation->skip_block->getName(),
-            primitive_type,
-            primitive_skip_import_symbol,
-            "skip_block");
-        if (!skip) return std::unexpected(std::move(skip.error()));
-        skip_callback = *skip;
-    }
-
-    auto* node_config = immutable_bytes_global(
-        output_module,
-        implementation->node_data,
-        primitive->node_size,
-        primitive->node_alignment,
-        "iv.graph.node_config.0");
-
-    ReflectedNodeTickContext context_template{
-        .sample_rate = input.specialization.sample_rate,
-        .scc_feedback_latency = 0,
-    };
-    auto* tick_context_template = immutable_bytes_global(
-        output_module,
-        &context_template,
-        sizeof(context_template),
-        alignof(ReflectedNodeTickContext),
-        "iv.graph.tick_context.0");
-
-    auto* root_type = root_block_operation_type(output_module.getContext());
-    define_single_primitive_root_operation(
-        output_module,
-        root_type,
         root_tick_block_symbol,
-        *tick_callback,
-        node_config,
-        tick_context_template,
-        storage_context);
-    if (skip_callback) {
-        define_single_primitive_root_operation(
+        plan,
+        configurations,
+        false);
+    if (!tick) return std::unexpected(std::move(tick.error()));
+
+    std::string skip_symbol;
+    if (plan.execution.root_skippable) {
+        auto skip = define_root_operation(
             output_module,
-            root_type,
             root_skip_block_symbol,
-            skip_callback,
-            node_config,
-            tick_context_template,
-            storage_context);
-    }
-
-    if (llvm::Linker::linkModules(
-            output_module,
-            std::move(source_module),
-            llvm::Linker::Flags::LinkOnlyNeeded)) {
-        return std::unexpected(
-            "failed to import selected primitive LLVM callback closure into the project module");
-    }
-
-    auto* imported_tick = output_module.getFunction(llvm::StringRef(
-        primitive_tick_import_symbol.data(), primitive_tick_import_symbol.size()));
-    if (!imported_tick || imported_tick->isDeclaration()) {
-        return std::unexpected(
-            "selected primitive tick_block closure was not imported into the project module");
-    }
-    if (primitive->block_skippable) {
-        auto* imported_skip = output_module.getFunction(llvm::StringRef(
-            primitive_skip_import_symbol.data(), primitive_skip_import_symbol.size()));
-        if (!imported_skip || imported_skip->isDeclaration()) {
-            return std::unexpected(
-                "selected primitive skip_block closure was not imported into the project module");
-        }
+            plan,
+            configurations,
+            true);
+        if (!skip) return std::unexpected(std::move(skip.error()));
+        skip_symbol = std::string(root_skip_block_symbol);
     }
 
     return LoweringOutput{
-        .node_layout = std::move(node_layout),
+        .node_layout = std::move(plan.declarations.node_layout),
         .root_symbols = {
             .tick_block = std::string(root_tick_block_symbol),
-            .skip_block = primitive->block_skippable
-                ? std::string(root_skip_block_symbol)
-                : std::string{},
+            .skip_block = std::move(skip_symbol),
         },
     };
 }
@@ -635,30 +416,12 @@ std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
             "ConfiguredGraph -> LLVM IR lowering output module already contains reserved root symbols");
     }
 
-    // Keep the semantic identity path explicit. Besides making empty projects
-    // valid executable generations, it remains the baseline for the complete
-    // lowering/materialization seam.
-    if (is_structurally_empty(input.graph)) {
-        NodeLayoutBuilder layout_builder(input.specialization.block_size);
-        auto node_layout = std::move(layout_builder).build();
+    // Host-side graph/declaration/import/configuration/execution planning must
+    // succeed before output LLVM is mutated or a compile-local package module is
+    // consumed. The emitter then realizes that immutable plan in one direction.
+    auto plan = detail::build_lowering_plan(input);
+    if (!plan) return std::unexpected(std::move(plan.error()));
 
-        auto* block_type = root_block_operation_type(output_module.getContext());
-        define_noop_root_operation(output_module, block_type, root_tick_block_symbol);
-        define_noop_root_operation(output_module, block_type, root_skip_block_symbol);
-
-        return LoweringOutput{
-            .node_layout = std::move(node_layout),
-            .root_symbols = {
-                .tick_block = std::string(root_tick_block_symbol),
-                .skip_block = std::string(root_skip_block_symbol),
-            },
-        };
-    }
-
-    // First non-empty executable slice. It deliberately requires a shape whose
-    // complete semantics fit without sample/event physical planning: one flat
-    // zero-port primitive. Canonical State/CompiledState storage is addressed
-    // from finalized NodeLayout offsets in the generated reflected tick context.
-    return lower_single_zero_port_primitive(input, output_module);
+    return emit_lowering_plan(input, std::move(*plan), output_module);
 }
 } // namespace iv::graph_jit

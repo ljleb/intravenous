@@ -68,17 +68,85 @@ port-context lowering can use the same mechanism safely. The root exposes
 Unsupported shapes still fail explicitly at the lowering boundary; they are
 never compiled as no-ops.
 
-General graph lowering remains the deliberately isolated compiler work. The next
-expansion should introduce sample/event connection planning and materialize the
-realtime/compiled port context from the already-finalized storage plan rather
-than widening this temporary single-primitive shape with ad-hoc buffers. The
-shell continues to use the generated-root and canonical
+General graph lowering remains the deliberately isolated compiler work. The
+current lowerer is intentionally split at a stable internal phase boundary:
+`lowering_plan.cpp` performs host-side graph inventory/validation, canonical
+declaration/layout planning, package callback-import planning, immutable node
+configuration planning, and root execution planning; `lowering.cpp` only
+realizes that completed plan into LLVM and consumes the selected compile-local
+package modules. Planning must succeed before the output module is mutated or a
+package module is consumed. This is the first anti-monolith landing site for the
+remaining compiler work.
+
+The next capability expansion is deliberately smaller than full connection
+lowering: support several zero-port primitives through the same plan/emitter
+boundary, including collecting all callback roots per package before consuming
+that package once. Configuration relocations and primitive block splitting then
+land on those same node/configuration/execution plans. Only after that should the
+second major landing-site refactor introduce explicit schedule/SCC,
+producer-group/connection, history/latency, liveness, and storage-region plans.
+The existing `choose_sample_connection_implementation()` and
+`choose_event_connection_implementation()` functions remain the physical-storage
+policy boundary; GraphJit is responsible for deriving their requirement inputs
+and realizing their returned choices, not for creating a competing policy layer.
+
+The shell continues to use the generated-root and canonical
 `NodeLayout`/`NodeStorage` contract specified in this document: `CompiledGraph`
 carries the finalized `NodeLayout` plus generated root `tick_block`/optional
 `skip_block` operations, while lifecycle remains entirely in ordinary
 `NodeStorage`. Whole-project lowering must not reintroduce a second node-storage
 layout, a second lifecycle system, or a synthetic project-wide `access_block()`
 merely to expose compiled outputs.
+
+### Ordered implementation sequence
+
+The implementation order is intentional. Each structural refactor should land
+before the feature family that depends on it, so whole-graph lowering does not
+accumulate one-off paths that must be disentangled later.
+This is a hint, not a hard constraint. Use your own good judgement if ever in doubt.
+
+1. **Stable node-lowering phases.** Separate host-side inventory/analysis,
+   declaration/layout planning, package callback-import planning, configuration
+   planning, execution planning, and LLVM realization without widening the
+   accepted graph shapes.
+2. **Multiple zero-port primitives.** Add deterministic execution order,
+   multiple canonical declarations/configurations, callbacks from several
+   packages, and several selected callbacks from one package. Derive root
+   `skip_block` legality across the sequence.
+3. **Configuration relocations.** Reconstruct configured pointer fields from the
+   already-resolved retained-global relocation records instead of embedding
+   native addresses.
+4. **Primitive maximum-block splitting.** Centralize primitive invocation and
+   split a root block where a primitive's accepted maximum is smaller than the
+   project specialization block size.
+5. **Stable connection-analysis plans.** Before adding ports, introduce explicit
+   node/schedule/SCC, producer-group/connection, history/latency/event-window,
+   liveness/reuse, and storage-region planning records. This is the second major
+   anti-monolith landing site.
+6. **Simple feed-forward sample connections.** Materialize the first sample port
+   contexts and exercise direct/transient choices through
+   `choose_sample_connection_implementation()`.
+7. **Sample fanout, history, and latency.** Share producer-group storage, realize
+   compact persistent/ring choices, and add transient liveness/reuse.
+8. **Event connections and bounded realtime windows.** Reuse the connection
+   planning structure while feeding event requirements through
+   `choose_event_connection_implementation()`.
+9. **SCC/feedback execution.** Turn SCC analysis into feedback scheduling,
+   feedback storage, and nonzero reflected `scc_feedback_latency`.
+10. **Remaining declaration/runtime semantics.** Add nested declarations,
+    declaration-owned auxiliary/shared-array regions, activity/TTL, deferred
+    detach, and the corresponding generalized skip semantics through existing
+    plans rather than side paths.
+11. **Compiled DSP access.** Add internal endpoint metadata, compiled-access
+    component plans/executors, batching, and bounded workspaces after realtime
+    connection storage is stable.
+12. **GraphExecutor integration.** Add active/pending generations, canonical
+    `NodeStorage` construction/migration, safe-point activation, root execution,
+    and compiled-access dispatch. `CompiledGraph` remains independently testable
+    before this point.
+13. **Optimization refinements.** Improve liveness reuse, storage cost choices,
+    fusion, direct handling, and target-specific optimization only after the
+    semantic compiler surface is complete.
 
 The root-build transaction remains:
 
@@ -145,10 +213,10 @@ The first JIT executes configuration code. The second JIT compiles the DSP
 program described by that configuration.
 
 The native DSP output of the first JIT is **not** the preferred code-generation
-input to the second JIT. `GraphJit` imports/clones the retained primitive node
-LLVM associated with the exact providers used by the configured graph so
-whole-project inlining and optimization remain possible. The accepted native
-node declaration/lifecycle callbacks remain useful for the canonical
+input to the second JIT. `GraphJit` imports the required callback closures from
+the retained primitive node LLVM associated with the exact providers used by the
+configured graph so whole-project inlining and optimization remain possible. The
+accepted native node declaration/lifecycle callbacks remain useful for the canonical
 `NodeLayout`/`NodeStorage` contract and must stay pinned by the exact accepted
 package revisions.
 
