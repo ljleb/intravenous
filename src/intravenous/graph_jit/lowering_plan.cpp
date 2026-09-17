@@ -700,7 +700,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         std::size_t target_primitive = 0;
         std::size_t target_port = 0;
         std::size_t source_history = 0;
-        std::size_t source_latency = 0;
+        std::size_t read_latency = 0;
         std::size_t target_history = 0;
     };
     std::vector<ValidatedSampleEdge> validated_edges;
@@ -859,7 +859,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 .target_primitive = *target_primitive,
                 .target_port = target_port.port_ordinal,
                 .source_history = connection.source_history,
-                .source_latency = connection.source_latency,
+                .read_latency = connection.read_latency,
                 .target_history = connection.target_history,
             });
         }
@@ -915,7 +915,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         source_binding.history = edge.source_history;
         target_binding.representation = input_representation;
         target_binding.history = edge.target_history;
-        target_binding.read_latency = edge.source_latency;
+        target_binding.read_latency = edge.read_latency;
     }
 
     for (auto const& primitive : plan.primitives) {

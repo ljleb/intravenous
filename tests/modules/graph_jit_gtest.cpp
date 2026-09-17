@@ -1024,6 +1024,7 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedRetentionMaterializesHistoricalWindow)
     converted.target_layout = stereo;
     converted.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
     converted.source_latency = 2;
+    converted.read_latency = 2;
     converted.target_history = 5;
     converted.requires_conversion = true;
     connections.sample_connections.push_back(converted);

@@ -81,6 +81,11 @@ struct SampleConnectionPlan {
 
     std::size_t source_history = 0;
     std::size_t source_latency = 0;
+    // Effective InputPort latency after whole-graph feed-forward path
+    // equalization. This is at least source_latency; the difference is the
+    // compiler-inserted compensation for a faster path converging with a
+    // slower sibling path.
+    std::size_t read_latency = 0;
     std::size_t target_history = 0;
     PlannedConnectionAccess access = PlannedConnectionAccess::realtime_to_realtime;
     bool requires_conversion = false;

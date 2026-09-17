@@ -385,12 +385,12 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 [&](DerivedBranch const& candidate) { return candidate.key == key; });
             if (connection.target_history
                 > std::numeric_limits<std::size_t>::max()
-                    - connection.source_latency) {
+                    - connection.read_latency) {
                 return std::unexpected(
                     "GraphJit converted sample retention overflows size_t");
             }
             auto const retained_before = connection.target_history
-                + connection.source_latency;
+                + connection.read_latency;
             auto derived_capacity = working_ring_capacity(
                 kernel_block_size, retained_before);
             if (!derived_capacity) {
@@ -422,7 +422,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     .source_layout = *group.canonical_source_layout,
                     .target_layout = connection.target_layout,
                     .target_history = connection.target_history,
-                    .read_latency = connection.source_latency,
+                    .read_latency = connection.read_latency,
                 });
                 derived.push_back(DerivedBranch{
                     .key = key,
@@ -439,7 +439,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 materialization.target_history = std::max(
                     materialization.target_history, connection.target_history);
                 materialization.read_latency = std::max(
-                    materialization.read_latency, connection.source_latency);
+                    materialization.read_latency, connection.read_latency);
                 if (materialization.target_history
                     > std::numeric_limits<std::size_t>::max()
                         - materialization.read_latency) {

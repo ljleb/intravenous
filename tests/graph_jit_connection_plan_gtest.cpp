@@ -142,6 +142,40 @@ struct RealtimeSink {
     void tick_block(iv::TickBlockContext<RealtimeSink> const&) const {}
 };
 
+struct LatentSamplePass {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input("in")};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, iv::RealtimeOutputConfig{.latency = 2})};
+    }
+
+    constexpr std::size_t internal_latency() const { return 5; }
+
+    void tick_block(iv::TickBlockContext<LatentSamplePass> const&) const {}
+};
+
+struct TwoInputSink {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_sample_input("fast"),
+            iv::realtime_sample_input("slow"),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<TwoInputSink> const&) const {}
+};
+
 } // namespace
 
 TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolicy)
@@ -187,6 +221,7 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
     ASSERT_NE(internal, plan->sample_connections.end());
     EXPECT_EQ(internal->source_history, 3u);
     EXPECT_EQ(internal->source_latency, 2u);
+    EXPECT_EQ(internal->read_latency, 2u);
     EXPECT_EQ(internal->target_history, 5u);
     EXPECT_EQ(
         internal->access,
@@ -234,6 +269,68 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
                     == graph_jit::detail::ConnectionStorageLifetime::transient
                 && region.current_block_frames == 64u;
         }));
+}
+
+TEST(GraphJitConnectionPlan, EqualizesFeedForwardSamplePathsAtConvergence)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<MonoSource>(graph);
+    auto latent = details::configure_concrete_node<LatentSamplePass>(graph);
+    auto sink = details::configure_concrete_node<TwoInputSink>(graph);
+    auto const source_handle = source.node_bundle_handle();
+    auto const latent_handle = latent.node_bundle_handle();
+    auto const sink_handle = sink.node_bundle_handle();
+
+    latent(source);
+    sink("fast"_P = source, "slow"_P = latent);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    auto connection_to = [&](NodeBundleHandle source_bundle,
+                             std::size_t target_port)
+        -> graph_jit::detail::SampleConnectionPlan const* {
+        auto const found = std::ranges::find_if(
+            plan->sample_connections,
+            [&](graph_jit::detail::SampleConnectionPlan const& connection) {
+                return connection.target_port.node_bundle_handle == sink_handle
+                    && connection.target_port.port_ordinal == target_port
+                    && connection.canonical_source_port
+                    && connection.canonical_source_port->node_bundle_handle
+                        == source_bundle;
+            });
+        return found == plan->sample_connections.end() ? nullptr : &*found;
+    };
+
+    auto const* fast = connection_to(source_handle, 0);
+    auto const* slow = connection_to(latent_handle, 1);
+    ASSERT_NE(fast, nullptr);
+    ASSERT_NE(slow, nullptr);
+
+    // The slow path reaches the sink at 5 samples of node latency plus the
+    // latent node's authored 2-sample output latency. The direct sibling must
+    // therefore read seven samples behind while the slow path keeps only its
+    // authored output latency.
+    EXPECT_EQ(fast->source_latency, 0u);
+    EXPECT_EQ(fast->read_latency, 7u);
+    EXPECT_EQ(slow->source_latency, 2u);
+    EXPECT_EQ(slow->read_latency, 2u);
+
+    auto const source_group = std::ranges::find_if(
+        plan->sample_producer_groups,
+        [&](graph_jit::detail::SampleProducerGroupPlan const& group) {
+            return !group.source_channels.empty()
+                && group.source_channels.front().bundle == source_handle;
+        });
+    ASSERT_NE(source_group, plan->sample_producer_groups.end());
+    EXPECT_EQ(source_group->requirements.retained_frames, 7u);
+    ASSERT_TRUE(source_group->implementation.has_value());
+    EXPECT_EQ(
+        *source_group->implementation,
+        SampleConnectionImplementationKind::compact_persistent_carry);
 }
 
 TEST(GraphJitConnectionPlan, MarksCyclicProducerGroupsAsFeedback)
