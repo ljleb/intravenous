@@ -15,7 +15,7 @@ namespace iv::graph_jit::detail {
 
 inline constexpr std::size_t no_sample_representation =
     std::numeric_limits<std::size_t>::max();
-inline constexpr std::size_t no_sample_transient_slot =
+inline constexpr std::size_t no_sample_transient_allocation =
     std::numeric_limits<std::size_t>::max();
 
 // One compiler-visible physical sample representation. Node API facades are
@@ -31,26 +31,26 @@ struct SampleRepresentationPlan {
     std::size_t frame_capacity = 0;
     ConnectionLiveIntervalPlan live_interval{};
 
-    // direct/transient_materialization currently use a reusable transient slot.
-    // Future retained/ring implementations can point at persistent storage
-    // instead without changing primitive bindings.
-    std::size_t transient_slot = no_sample_transient_slot;
+    // direct/transient_materialization currently use an exact byte-range in the
+    // compile-time transient arena. Future retained/ring implementations can
+    // point at persistent storage instead without changing primitive bindings.
+    std::size_t transient_allocation = no_sample_transient_allocation;
 };
 
 struct SampleProducerPhysicalPlan {
     std::size_t canonical_representation = no_sample_representation;
 };
 
-// Physical scratch slot shared by sample representations whose inclusive
-// schedule live intervals do not overlap. The slot is raw sample bytes only;
-// it has no façade/cursor/lifecycle object.
-struct SampleTransientSlotPlan {
+// Exact transient byte range assigned to one representation. Ranges may overlap
+// iff their inclusive schedule live intervals do not overlap. There is no
+// runtime slot object or allocator metadata.
+struct SampleTransientAllocationPlan {
+    std::size_t representation_index = no_sample_representation;
     std::size_t size_bytes = 0;
     std::size_t alignment = alignof(Sample);
-    std::vector<std::size_t> representations{};
-
-    // Assigned during canonical NodeLayout declaration/finalization.
     std::size_t region_relative_offset = 0;
+
+    // Assigned after canonical NodeLayout finalization.
     std::size_t storage_offset = 0;
 };
 
@@ -63,7 +63,12 @@ struct SamplePhysicalPlan {
     // currently resolve to the producer's canonical representation; point 8 may
     // instead resolve selected connections to derived materialized branches.
     std::vector<std::optional<std::size_t>> connection_representations{};
-    std::vector<SampleTransientSlotPlan> transient_slots{};
+
+    // One exact range per currently-transient representation. The arena high
+    // water mark is independent of any individual representation's maximum size.
+    std::vector<SampleTransientAllocationPlan> transient_allocations{};
+    std::size_t transient_arena_size = 0;
+    std::size_t transient_arena_alignment = 1;
     NodeLayout::RegionHandle transient_region{};
 
     [[nodiscard]] bool empty() const noexcept
@@ -80,9 +85,10 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     ConnectionAnalysisPlan const& connections,
     std::size_t kernel_block_size);
 
-// Reserve compiler-owned canonical NodeStorage for all reusable transient slots.
-// No initializer is registered because this is payload scratch, not C++ object
-// state. Final absolute offsets are filled by finalize_sample_physical_storage().
+// Reserve one compiler-owned canonical NodeStorage arena for all transient byte
+// ranges. No initializer is registered because this is payload scratch, not C++
+// object state. Final absolute offsets are filled by
+// finalize_sample_physical_storage().
 std::expected<void, std::string> declare_sample_physical_storage(
     NodeLayoutBuilder& builder,
     SamplePhysicalPlan& plan);

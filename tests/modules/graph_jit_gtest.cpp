@@ -3,6 +3,7 @@
 #include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/graph_jit/connection_plan.h>
 #include <intravenous/graph_jit/sample_physical_plan.h>
+#include <intravenous/graph_jit/transient_arena_plan.h>
 #include <intravenous/node/resources.h>
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/graph_jit.h>
@@ -42,7 +43,7 @@ constexpr char graph_jit_limited_block_module_id[] = "iv.test.graph_jit.state_co
 constexpr char graph_jit_ported_module_id[] = "iv.test.graph_jit.state_context.ported_module";
 constexpr char graph_jit_direct_sample_module_id[] = "iv.test.graph_jit.state_context.direct_sample_module";
 constexpr char graph_jit_transient_sample_module_id[] = "iv.test.graph_jit.state_context.transient_sample_module";
-constexpr char graph_jit_reused_sample_slots_module_id[] = "iv.test.graph_jit.state_context.reused_sample_slots_module";
+constexpr char graph_jit_reused_sample_arena_module_id[] = "iv.test.graph_jit.state_context.reused_sample_arena_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -291,7 +292,287 @@ TEST(GraphJitReflectedAbi, ReflectedSpanRoundTripsPointerAndExactExtent)
     EXPECT_TRUE(empty.empty());
 }
 
-TEST(GraphJitSamplePhysicalPlan, ReusesOnlyNonOverlappingTransientProducerStorage)
+TEST(GraphJitTransientArenaPlan, PartitionsOneDeadLargeRangeAmongLaterSmallRanges)
+{
+    using namespace iv::graph_jit::detail;
+
+    std::array requests{
+        TransientArenaAllocationRequest{
+            .size_bytes = 1024,
+            .alignment = 64,
+            .live_interval = {.begin = 0, .end = 0},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 256,
+            .alignment = 64,
+            .live_interval = {.begin = 1, .end = 2},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 256,
+            .alignment = 64,
+            .live_interval = {.begin = 1, .end = 2},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 256,
+            .alignment = 64,
+            .live_interval = {.begin = 1, .end = 2},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 256,
+            .alignment = 64,
+            .live_interval = {.begin = 1, .end = 2},
+        },
+    };
+
+    auto plan = plan_transient_arena(requests);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->allocations.size(), requests.size());
+    EXPECT_EQ(plan->allocations[0].offset, 0u);
+    EXPECT_EQ(plan->allocations[1].offset, 0u);
+    EXPECT_EQ(plan->allocations[2].offset, 256u);
+    EXPECT_EQ(plan->allocations[3].offset, 512u);
+    EXPECT_EQ(plan->allocations[4].offset, 768u);
+    // The old 1024-byte range is partitioned among the four later values;
+    // historical slot width does not add another 3 * 256 bytes.
+    EXPECT_EQ(plan->size_bytes, 1024u);
+}
+
+TEST(GraphJitTransientArenaPlan, ReusesAlignedHoleBetweenStillLiveRanges)
+{
+    using namespace iv::graph_jit::detail;
+
+    std::array requests{
+        TransientArenaAllocationRequest{
+            .size_bytes = 16,
+            .alignment = 64,
+            .live_interval = {.begin = 0, .end = 2},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 16,
+            .alignment = 64,
+            .live_interval = {.begin = 0, .end = 2},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 32,
+            .alignment = 16,
+            .live_interval = {.begin = 1, .end = 1},
+        },
+    };
+
+    auto plan = plan_transient_arena(requests);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->allocations.size(), requests.size());
+    EXPECT_EQ(plan->allocations[0].offset, 0u);
+    EXPECT_EQ(plan->allocations[1].offset, 64u);
+    // The third allocation fits in the alignment hole [16, 64) while both
+    // surrounding ranges are still live; a whole-slot allocator would append.
+    EXPECT_EQ(plan->allocations[2].offset, 16u);
+    EXPECT_EQ(plan->size_bytes, 80u);
+    EXPECT_EQ(plan->alignment, 64u);
+}
+
+TEST(GraphJitTransientArenaPlan, CoalescesAllExpiredByteRangesImplicitly)
+{
+    using namespace iv::graph_jit::detail;
+
+    std::array requests{
+        TransientArenaAllocationRequest{
+            .size_bytes = 64,
+            .alignment = 64,
+            .live_interval = {.begin = 0, .end = 0},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 64,
+            .alignment = 64,
+            .live_interval = {.begin = 0, .end = 0},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 128,
+            .alignment = 64,
+            .live_interval = {.begin = 1, .end = 1},
+        },
+    };
+
+    auto plan = plan_transient_arena(requests);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->allocations.size(), requests.size());
+    EXPECT_EQ(plan->allocations[0].offset, 0u);
+    EXPECT_EQ(plan->allocations[1].offset, 64u);
+    // Both adjacent ranges have expired, so the later 128-byte allocation
+    // reuses their combined [0, 128) range without explicit free-list merging.
+    EXPECT_EQ(plan->allocations[2].offset, 0u);
+    EXPECT_EQ(plan->size_bytes, 128u);
+}
+
+TEST(GraphJitTransientArenaPlan, InclusiveLifetimeEndpointsNeverAlias)
+{
+    using namespace iv::graph_jit::detail;
+
+    std::array requests{
+        TransientArenaAllocationRequest{
+            .size_bytes = 64,
+            .alignment = 16,
+            .live_interval = {.begin = 0, .end = 1},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 64,
+            .alignment = 16,
+            .live_interval = {.begin = 1, .end = 2},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 64,
+            .alignment = 16,
+            .live_interval = {.begin = 2, .end = 3},
+        },
+    };
+
+    auto plan = plan_transient_arena(requests);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    EXPECT_EQ(plan->allocations[0].offset, 0u);
+    EXPECT_EQ(plan->allocations[1].offset, 64u);
+    // Request 0 is dead by begin=2 and can be reused, while request 1 still
+    // overlaps request 2 at schedule position 2.
+    EXPECT_EQ(plan->allocations[2].offset, 0u);
+    EXPECT_EQ(plan->size_bytes, 128u);
+}
+
+TEST(GraphJitTransientArenaPlan, EqualStartRequestsPlaceLargestFirst)
+{
+    using namespace iv::graph_jit::detail;
+
+    std::array requests{
+        TransientArenaAllocationRequest{
+            .size_bytes = 16,
+            .alignment = 16,
+            .live_interval = {.begin = 0, .end = 1},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 64,
+            .alignment = 64,
+            .live_interval = {.begin = 0, .end = 1},
+        },
+    };
+
+    auto plan = plan_transient_arena(requests);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    // Size/alignment-first ordering avoids placing the 64-byte range at offset
+    // 64 after a small allocation and therefore keeps the high-water mark 80.
+    EXPECT_EQ(plan->allocations[1].offset, 0u);
+    EXPECT_EQ(plan->allocations[0].offset, 64u);
+    EXPECT_EQ(plan->size_bytes, 80u);
+}
+
+TEST(GraphJitTransientArenaPlan, IsDeterministicAndRejectsPersistentLifetime)
+{
+    using namespace iv::graph_jit::detail;
+
+    std::array requests{
+        TransientArenaAllocationRequest{
+            .size_bytes = 96,
+            .alignment = 32,
+            .live_interval = {.begin = 3, .end = 5},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 24,
+            .alignment = 8,
+            .live_interval = {.begin = 0, .end = 2},
+        },
+        TransientArenaAllocationRequest{
+            .size_bytes = 40,
+            .alignment = 16,
+            .live_interval = {.begin = 3, .end = 4},
+        },
+    };
+    auto first = plan_transient_arena(requests);
+    auto second = plan_transient_arena(requests);
+    ASSERT_TRUE(first.has_value()) << (first ? std::string{} : first.error());
+    ASSERT_TRUE(second.has_value()) << (second ? std::string{} : second.error());
+    EXPECT_EQ(*first, *second);
+
+    requests[0].live_interval.crosses_kernel_invocations = true;
+    auto persistent = plan_transient_arena(requests);
+    ASSERT_FALSE(persistent.has_value());
+    EXPECT_NE(persistent.error().find("cross-kernel"), std::string::npos);
+}
+
+TEST(GraphJitTransientArenaPlan, RejectsMalformedRequestsAndAcceptsEmptyArena)
+{
+    using namespace iv::graph_jit::detail;
+
+    std::array<TransientArenaAllocationRequest, 0> empty_requests{};
+    auto empty = plan_transient_arena(empty_requests);
+    ASSERT_TRUE(empty.has_value()) << (empty ? std::string{} : empty.error());
+    EXPECT_TRUE(empty->allocations.empty());
+    EXPECT_EQ(empty->size_bytes, 0u);
+    EXPECT_EQ(empty->alignment, 1u);
+
+    std::array malformed{
+        TransientArenaAllocationRequest{
+            .size_bytes = 0,
+            .alignment = 8,
+            .live_interval = {.begin = 0, .end = 0},
+        },
+    };
+    EXPECT_FALSE(plan_transient_arena(malformed).has_value());
+
+    malformed[0].size_bytes = 8;
+    malformed[0].alignment = 3;
+    EXPECT_FALSE(plan_transient_arena(malformed).has_value());
+
+    malformed[0].alignment = 8;
+    malformed[0].live_interval = {.begin = 2, .end = 1};
+    EXPECT_FALSE(plan_transient_arena(malformed).has_value());
+}
+
+TEST(GraphJitTransientArenaPlan, ComplexPackingPreservesAllSafetyInvariants)
+{
+    using namespace iv::graph_jit::detail;
+
+    std::array requests{
+        TransientArenaAllocationRequest{64, 64, {.begin = 0, .end = 2}},
+        TransientArenaAllocationRequest{24, 8, {.begin = 0, .end = 0}},
+        TransientArenaAllocationRequest{48, 16, {.begin = 1, .end = 3}},
+        TransientArenaAllocationRequest{80, 32, {.begin = 3, .end = 4}},
+        TransientArenaAllocationRequest{16, 16, {.begin = 1, .end = 1}},
+        TransientArenaAllocationRequest{96, 32, {.begin = 5, .end = 6}},
+        TransientArenaAllocationRequest{32, 8, {.begin = 4, .end = 5}},
+    };
+
+    auto plan = plan_transient_arena(requests);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->allocations.size(), requests.size());
+
+    std::size_t observed_high_water = 0;
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        auto const& allocation = plan->allocations[i];
+        EXPECT_EQ(allocation.size_bytes, requests[i].size_bytes);
+        EXPECT_EQ(allocation.alignment, requests[i].alignment);
+        EXPECT_EQ(allocation.offset % allocation.alignment, 0u);
+        ASSERT_LE(allocation.offset, plan->size_bytes);
+        ASSERT_LE(allocation.size_bytes, plan->size_bytes - allocation.offset);
+        observed_high_water = std::max(
+            observed_high_water, allocation.offset + allocation.size_bytes);
+
+        for (std::size_t j = i + 1; j < requests.size(); ++j) {
+            auto const& a_live = requests[i].live_interval;
+            auto const& b_live = requests[j].live_interval;
+            auto const lifetimes_overlap =
+                !(a_live.end < b_live.begin || b_live.end < a_live.begin);
+            if (!lifetimes_overlap) continue;
+
+            auto const& other = plan->allocations[j];
+            auto const byte_ranges_overlap =
+                !(allocation.offset + allocation.size_bytes <= other.offset
+                    || other.offset + other.size_bytes <= allocation.offset);
+            EXPECT_FALSE(byte_ranges_overlap)
+                << "overlapping lifetimes " << i << " and " << j
+                << " were assigned overlapping arena bytes";
+        }
+    }
+    EXPECT_EQ(plan->size_bytes, observed_high_water);
+}
+
+TEST(GraphJitSamplePhysicalPlan, PacksExactTransientByteRangesAcrossLifetimes)
 {
     using namespace iv::graph_jit::detail;
 
@@ -304,13 +585,12 @@ TEST(GraphJitSamplePhysicalPlan, ReusesOnlyNonOverlappingTransientProducerStorag
         .sample_layout = iv::SampleStreamLayout::interleaved,
     };
     auto group = [](iv::ChannelLayout layout,
-                    iv::SampleConnectionImplementationKind implementation,
                     std::size_t begin,
                     std::size_t end) {
         SampleProducerGroupPlan result;
         result.canonical_source_layout = layout;
         result.has_realtime_connections = true;
-        result.implementation = implementation;
+        result.implementation = iv::SampleConnectionImplementationKind::direct;
         result.live_interval = ConnectionLiveIntervalPlan{
             .begin = begin,
             .end = end,
@@ -319,51 +599,50 @@ TEST(GraphJitSamplePhysicalPlan, ReusesOnlyNonOverlappingTransientProducerStorag
     };
 
     ConnectionAnalysisPlan connections;
-    connections.sample_producer_groups.push_back(group(
-        mono, iv::SampleConnectionImplementationKind::direct, 0, 1));
-    connections.sample_producer_groups.push_back(group(
-        mono,
-        iv::SampleConnectionImplementationKind::transient_materialization,
-        2,
-        3));
-    connections.sample_producer_groups.push_back(group(
-        mono, iv::SampleConnectionImplementationKind::direct, 1, 2));
-    connections.sample_producer_groups.push_back(group(
-        stereo, iv::SampleConnectionImplementationKind::direct, 4, 5));
+    // A large early value, followed by two simultaneous half-sized values. The
+    // latter should split the dead large range instead of reserving one large
+    // historical slot plus a second small slot.
+    connections.sample_producer_groups.push_back(group(stereo, 0, 0));
+    connections.sample_producer_groups.push_back(group(mono, 1, 2));
+    connections.sample_producer_groups.push_back(group(mono, 1, 2));
 
     auto physical = build_sample_physical_plan(connections, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
-    ASSERT_EQ(physical->producer_groups.size(), 4u);
-    ASSERT_EQ(physical->transient_slots.size(), 2u);
+    ASSERT_EQ(physical->representations.size(), 3u);
+    ASSERT_EQ(physical->transient_allocations.size(), 3u);
+
     for (auto const& producer : physical->producer_groups) {
         ASSERT_TRUE(producer.has_value());
-        ASSERT_NE(
-            producer->canonical_representation, no_sample_representation);
         ASSERT_LT(
-            producer->canonical_representation, physical->representations.size());
+            producer->canonical_representation,
+            physical->representations.size());
+        auto const allocation = physical->representations[
+            producer->canonical_representation].transient_allocation;
+        ASSERT_NE(allocation, no_sample_transient_allocation);
+        ASSERT_LT(allocation, physical->transient_allocations.size());
     }
-
-    auto slot_for_group = [&](std::size_t group_index) {
+    auto allocation_for_group = [&](std::size_t group_index)
+        -> SampleTransientAllocationPlan const& {
         auto const representation =
             physical->producer_groups[group_index]->canonical_representation;
-        return physical->representations[representation].transient_slot;
+        auto const allocation =
+            physical->representations[representation].transient_allocation;
+        return physical->transient_allocations[allocation];
     };
-    auto const slot0 = slot_for_group(0);
-    auto const slot1 = slot_for_group(1);
-    auto const overlapping = slot_for_group(2);
-    auto const later_stereo = slot_for_group(3);
-    EXPECT_EQ(slot0, slot1);
-    EXPECT_EQ(slot0, later_stereo);
-    EXPECT_NE(slot0, overlapping);
-    ASSERT_LT(slot0, physical->transient_slots.size());
-    ASSERT_LT(overlapping, physical->transient_slots.size());
-    EXPECT_EQ(
-        physical->transient_slots[slot0].size_bytes,
-        64u * 2u * sizeof(iv::Sample));
-    EXPECT_EQ(
-        physical->transient_slots[overlapping].size_bytes,
-        64u * sizeof(iv::Sample));
+    auto const& large = allocation_for_group(0);
+    auto const& small_a = allocation_for_group(1);
+    auto const& small_b = allocation_for_group(2);
+    auto const mono_bytes = 64u * sizeof(iv::Sample);
+    auto const stereo_bytes = 2u * mono_bytes;
+
+    EXPECT_EQ(large.size_bytes, stereo_bytes);
+    EXPECT_EQ(large.region_relative_offset, 0u);
+    EXPECT_EQ(small_a.size_bytes, mono_bytes);
+    EXPECT_EQ(small_b.size_bytes, mono_bytes);
+    EXPECT_EQ(small_a.region_relative_offset, 0u);
+    EXPECT_EQ(small_b.region_relative_offset, mono_bytes);
+    EXPECT_EQ(physical->transient_arena_size, stereo_bytes);
 
     iv::NodeLayoutBuilder builder(64);
     auto declared = declare_sample_physical_storage(builder, *physical);
@@ -377,15 +656,10 @@ TEST(GraphJitSamplePhysicalPlan, ReusesOnlyNonOverlappingTransientProducerStorag
     ASSERT_LT(physical->transient_region.index, layout.regions.size());
     auto const& region = layout.regions[physical->transient_region.index];
     EXPECT_EQ(region.kind, iv::NodeLayout::Region::Kind::raw);
-    EXPECT_EQ(region.size, 64u * 3u * sizeof(iv::Sample));
-    EXPECT_EQ(
-        physical->transient_slots[slot0].storage_offset,
-        region.storage_offset
-            + physical->transient_slots[slot0].region_relative_offset);
-    EXPECT_EQ(
-        physical->transient_slots[overlapping].storage_offset,
-        region.storage_offset
-            + physical->transient_slots[overlapping].region_relative_offset);
+    EXPECT_EQ(region.size, stereo_bytes);
+    EXPECT_EQ(large.storage_offset, region.storage_offset);
+    EXPECT_EQ(small_a.storage_offset, region.storage_offset);
+    EXPECT_EQ(small_b.storage_offset, region.storage_offset + mono_bytes);
 }
 
 TEST(GraphJitSamplePhysicalPlan, LeavesCompiledAccessBranchesUnresolved)
@@ -933,7 +1207,7 @@ void transient_sample_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
-void reused_sample_slots_module(iv::GraphBuilder& graph)
+void reused_sample_arena_module(iv::GraphBuilder& graph)
 {
     auto source_a = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
     auto sink_a = graph.node<"iv.test.graph_jit.state_context.sample_consumer">();
@@ -972,7 +1246,7 @@ IV_MODULE("iv.test.graph_jit.state_context.skippable_pair_module", skippable_pai
 IV_MODULE("iv.test.graph_jit.state_context.limited_block_module", limited_block_module);
 IV_MODULE("iv.test.graph_jit.state_context.direct_sample_module", direct_sample_module);
 IV_MODULE("iv.test.graph_jit.state_context.transient_sample_module", transient_sample_module);
-IV_MODULE("iv.test.graph_jit.state_context.reused_sample_slots_module", reused_sample_slots_module);
+IV_MODULE("iv.test.graph_jit.state_context.reused_sample_arena_module", reused_sample_arena_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -1487,48 +1761,66 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(transient_state->last, 531.0f);
     EXPECT_FLOAT_EQ(transient_state->sum, 16496.0f);
 
-    auto reused_slots_graph = configured_module_graph(
-        *revision, graph_jit_reused_sample_slots_module_id);
-    ASSERT_TRUE(reused_slots_graph);
-    auto reused_slots_analysis =
+    auto reused_arena_graph = configured_module_graph(
+        *revision, graph_jit_reused_sample_arena_module_id);
+    ASSERT_TRUE(reused_arena_graph);
+    auto reused_arena_analysis =
         iv::graph_jit::detail::build_connection_analysis_plan(
-            *reused_slots_graph, 64);
-    ASSERT_TRUE(reused_slots_analysis.has_value())
-        << (reused_slots_analysis
+            *reused_arena_graph, 64);
+    ASSERT_TRUE(reused_arena_analysis.has_value())
+        << (reused_arena_analysis
                 ? std::string{}
-                : reused_slots_analysis.error());
-    auto reused_slots_physical =
+                : reused_arena_analysis.error());
+    auto reused_arena_physical =
         iv::graph_jit::detail::build_sample_physical_plan(
-            *reused_slots_analysis, 64);
-    ASSERT_TRUE(reused_slots_physical.has_value())
-        << (reused_slots_physical
+            *reused_arena_analysis, 64);
+    ASSERT_TRUE(reused_arena_physical.has_value())
+        << (reused_arena_physical
                 ? std::string{}
-                : reused_slots_physical.error());
-    ASSERT_EQ(reused_slots_physical->representations.size(), 2u);
-    ASSERT_EQ(reused_slots_physical->transient_slots.size(), 1u);
+                : reused_arena_physical.error());
+    ASSERT_EQ(reused_arena_physical->representations.size(), 2u);
+    ASSERT_EQ(reused_arena_physical->transient_allocations.size(), 2u);
+    auto const first_arena_allocation =
+        reused_arena_physical->representations[0].transient_allocation;
+    auto const second_arena_allocation =
+        reused_arena_physical->representations[1].transient_allocation;
+    ASSERT_LT(
+        first_arena_allocation,
+        reused_arena_physical->transient_allocations.size());
+    ASSERT_LT(
+        second_arena_allocation,
+        reused_arena_physical->transient_allocations.size());
+    EXPECT_EQ(
+        reused_arena_physical->transient_allocations[first_arena_allocation]
+            .region_relative_offset,
+        reused_arena_physical->transient_allocations[second_arena_allocation]
+            .region_relative_offset);
+    EXPECT_EQ(
+        reused_arena_physical->transient_arena_size,
+        64u * sizeof(iv::Sample));
 
-    auto reused_slots = compile_graph(reused_slots_graph, 111);
-    ASSERT_TRUE(reused_slots.succeeded())
-        << (reused_slots.diagnostics.empty()
+    auto reused_arena = compile_graph(reused_arena_graph, 111);
+    ASSERT_TRUE(reused_arena.succeeded())
+        << (reused_arena.diagnostics.empty()
                 ? ""
-                : reused_slots.diagnostics.front().message);
-    ASSERT_EQ(reused_slots.compiled_graph->node_layout.nodes.size(), 4u);
-    ASSERT_EQ(count_raw_regions(reused_slots.compiled_graph->node_layout), 1u);
+                : reused_arena.diagnostics.front().message);
+    ASSERT_EQ(reused_arena.compiled_graph->node_layout.nodes.size(), 4u);
+    ASSERT_EQ(count_raw_regions(reused_arena.compiled_graph->node_layout), 1u);
     auto const reused_raw = std::ranges::find_if(
-        reused_slots.compiled_graph->node_layout.regions,
+        reused_arena.compiled_graph->node_layout.regions,
         [](iv::NodeLayout::Region const& region) {
             return region.kind == iv::NodeLayout::Region::Kind::raw;
         });
-    ASSERT_NE(reused_raw, reused_slots.compiled_graph->node_layout.regions.end());
+    ASSERT_NE(reused_raw, reused_arena.compiled_graph->node_layout.regions.end());
     EXPECT_EQ(reused_raw->size, 64u * sizeof(iv::Sample));
 
     auto reused_storage =
-        reused_slots.compiled_graph->node_layout.create_storage(resources);
+        reused_arena.compiled_graph->node_layout.create_storage(resources);
     reused_storage.initialize();
     std::vector<SampleConsumerProbeStateMirror*> reused_consumer_states;
     for (std::size_t i = 0;
-         i < reused_slots.compiled_graph->node_layout.nodes.size(); ++i) {
-        if (reused_slots.compiled_graph->node_layout.nodes[i].state_size
+         i < reused_arena.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (reused_arena.compiled_graph->node_layout.nodes[i].state_size
             == sizeof(SampleConsumerProbeStateMirror)) {
             reused_consumer_states.push_back(
                 static_cast<SampleConsumerProbeStateMirror*>(
@@ -1536,7 +1828,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         }
     }
     ASSERT_EQ(reused_consumer_states.size(), 2u);
-    reused_slots.compiled_graph->root_operations.tick_block(
+    reused_arena.compiled_graph->root_operations.tick_block(
         reused_storage.buffer().data(), 700, 64);
     for (auto const* state : reused_consumer_states) {
         ASSERT_NE(state, nullptr);
@@ -1585,7 +1877,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     limited = {};
     direct = {};
     transient = {};
-    reused_slots = {};
+    reused_arena = {};
     ported = {};
     disconnected_ported = {};
     definitions.reset();

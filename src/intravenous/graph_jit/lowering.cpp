@@ -442,16 +442,21 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
         }
         auto const& representation =
             plan.physical.representations[representation_index];
-        if (representation.transient_slot == detail::no_sample_transient_slot
-            || representation.transient_slot
-                >= plan.physical.transient_slots.size()) {
+        if (representation.transient_allocation
+                == detail::no_sample_transient_allocation
+            || representation.transient_allocation
+                >= plan.physical.transient_allocations.size()) {
             return std::unexpected(
-                "GraphJit sample representation has no realized transient slot");
+                "GraphJit sample representation has no realized transient allocation");
         }
-        auto const& slot =
-            plan.physical.transient_slots[representation.transient_slot];
+        auto const& allocation = plan.physical.transient_allocations[
+            representation.transient_allocation];
+        if (allocation.representation_index != representation_index) {
+            return std::unexpected(
+                "GraphJit sample transient allocation points at the wrong representation");
+        }
         return ReflectedSamplePortStorageBinding{
-            .storage_offset = slot.storage_offset,
+            .storage_offset = allocation.storage_offset,
             .frame_capacity = representation.frame_capacity,
             .storage_latency = 0,
             .channel_layout = representation.channel_layout,

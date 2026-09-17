@@ -302,6 +302,7 @@ add_library(intravenous_graph_jit OBJECT
     graph_jit/lowering.cpp
     graph_jit/lowering_plan.cpp
     graph_jit/sample_physical_plan.cpp
+    graph_jit/transient_arena_plan.cpp
 )
 iv_configure_intravenous_target(intravenous_graph_jit PUBLIC)
 target_include_directories(intravenous_graph_jit PRIVATE ${LLVM_INCLUDE_DIRS})

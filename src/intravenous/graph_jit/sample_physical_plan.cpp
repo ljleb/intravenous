@@ -1,53 +1,15 @@
 #include <intravenous/graph_jit/sample_physical_plan.h>
 
+#include <intravenous/graph_jit/transient_arena_plan.h>
 #include <intravenous/sample.h>
 
 #include <algorithm>
+#include <exception>
 #include <limits>
-#include <stdexcept>
 #include <utility>
 
 namespace iv::graph_jit::detail {
 namespace {
-
-std::size_t align_up(std::size_t value, std::size_t alignment)
-{
-    if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
-        throw std::invalid_argument(
-            "GraphJit sample physical alignment must be a non-zero power of two");
-    }
-    if (value > std::numeric_limits<std::size_t>::max() - (alignment - 1)) {
-        throw std::overflow_error("GraphJit sample physical layout overflows size_t");
-    }
-    return (value + alignment - 1) & ~(alignment - 1);
-}
-
-bool live_intervals_overlap(
-    ConnectionLiveIntervalPlan const& a,
-    ConnectionLiveIntervalPlan const& b) noexcept
-{
-    // Transient slots must never be reused across a value that survives a root
-    // invocation. Such groups are rejected by the point-7 capability gate, but
-    // keeping the allocator conservative makes this invariant local.
-    if (a.crosses_kernel_invocations || b.crosses_kernel_invocations) return true;
-    return !(a.end < b.begin || b.end < a.begin);
-}
-
-bool slot_is_available(
-    SampleTransientSlotPlan const& slot,
-    std::vector<SampleRepresentationPlan> const& representations,
-    ConnectionLiveIntervalPlan const& requested)
-{
-    for (auto const representation_index : slot.representations) {
-        if (representation_index >= representations.size()) return false;
-        if (live_intervals_overlap(
-                representations[representation_index].live_interval,
-                requested)) {
-            return false;
-        }
-    }
-    return true;
-}
 
 std::expected<std::size_t, std::string> sample_bytes(
     ChannelLayout layout,
@@ -87,6 +49,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     SamplePhysicalPlan plan;
     plan.producer_groups.resize(connections.sample_producer_groups.size());
     plan.connection_representations.resize(connections.sample_connections.size());
+
+    std::vector<TransientArenaAllocationRequest> transient_requests;
+    std::vector<std::size_t> transient_representations;
 
     for (std::size_t group_index = 0;
          group_index < connections.sample_producer_groups.size(); ++group_index) {
@@ -148,29 +113,12 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             .frame_capacity = kernel_block_size,
             .live_interval = group.live_interval,
         });
-
-        std::size_t slot_index = no_sample_transient_slot;
-        for (std::size_t candidate = 0;
-             candidate < plan.transient_slots.size(); ++candidate) {
-            if (!slot_is_available(
-                    plan.transient_slots[candidate],
-                    plan.representations,
-                    group.live_interval)) {
-                continue;
-            }
-            slot_index = candidate;
-            break;
-        }
-        if (slot_index == no_sample_transient_slot) {
-            slot_index = plan.transient_slots.size();
-            plan.transient_slots.push_back(SampleTransientSlotPlan{});
-        }
-
-        auto& slot = plan.transient_slots[slot_index];
-        slot.size_bytes = std::max(slot.size_bytes, *bytes);
-        slot.alignment = std::max(slot.alignment, alignof(Sample));
-        slot.representations.push_back(representation_index);
-        plan.representations[representation_index].transient_slot = slot_index;
+        transient_requests.push_back(TransientArenaAllocationRequest{
+            .size_bytes = *bytes,
+            .alignment = alignof(Sample),
+            .live_interval = group.live_interval,
+        });
+        transient_representations.push_back(representation_index);
         plan.producer_groups[group_index] = SampleProducerPhysicalPlan{
             .canonical_representation = representation_index,
         };
@@ -192,6 +140,31 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         }
     }
 
+    auto arena = plan_transient_arena(transient_requests);
+    if (!arena) return std::unexpected(std::move(arena.error()));
+    if (arena->allocations.size() != transient_representations.size()) {
+        return std::unexpected(
+            "GraphJit transient arena lost sample representation allocations");
+    }
+
+    plan.transient_arena_size = arena->size_bytes;
+    plan.transient_arena_alignment = arena->alignment;
+    plan.transient_allocations.reserve(arena->allocations.size());
+    for (std::size_t request_index = 0;
+         request_index < arena->allocations.size(); ++request_index) {
+        auto const representation_index = transient_representations[request_index];
+        auto const& allocation = arena->allocations[request_index];
+        auto const allocation_index = plan.transient_allocations.size();
+        plan.transient_allocations.push_back(SampleTransientAllocationPlan{
+            .representation_index = representation_index,
+            .size_bytes = allocation.size_bytes,
+            .alignment = allocation.alignment,
+            .region_relative_offset = allocation.offset,
+        });
+        plan.representations[representation_index].transient_allocation =
+            allocation_index;
+    }
+
     return plan;
 }
 
@@ -200,26 +173,35 @@ std::expected<void, std::string> declare_sample_physical_storage(
     SamplePhysicalPlan& plan)
 {
     try {
-        if (plan.transient_slots.empty()) return {};
-
-        std::size_t cursor = 0;
-        std::size_t region_alignment = 1;
-        for (auto& slot : plan.transient_slots) {
-            if (slot.size_bytes == 0 || slot.alignment == 0
-                || (slot.alignment & (slot.alignment - 1)) != 0) {
+        if (plan.transient_allocations.empty()) {
+            if (plan.transient_arena_size != 0) {
                 return std::unexpected(
-                    "GraphJit sample transient slot has invalid size/alignment");
+                    "GraphJit empty transient sample plan has a non-zero arena size");
             }
-            cursor = align_up(cursor, slot.alignment);
-            slot.region_relative_offset = cursor;
-            if (slot.size_bytes > std::numeric_limits<std::size_t>::max() - cursor) {
-                return std::unexpected(
-                    "GraphJit sample transient storage layout overflows size_t");
-            }
-            cursor += slot.size_bytes;
-            region_alignment = std::max(region_alignment, slot.alignment);
+            return {};
         }
-        plan.transient_region = builder.declare_raw_region(cursor, region_alignment);
+        if (plan.transient_arena_size == 0
+            || plan.transient_arena_alignment == 0
+            || (plan.transient_arena_alignment
+                    & (plan.transient_arena_alignment - 1)) != 0) {
+            return std::unexpected(
+                "GraphJit sample transient arena has invalid size/alignment");
+        }
+        for (auto const& allocation : plan.transient_allocations) {
+            if (allocation.representation_index >= plan.representations.size()
+                || allocation.size_bytes == 0 || allocation.alignment == 0
+                || (allocation.alignment & (allocation.alignment - 1)) != 0
+                || allocation.region_relative_offset % allocation.alignment != 0
+                || allocation.alignment > plan.transient_arena_alignment
+                || allocation.region_relative_offset > plan.transient_arena_size
+                || allocation.size_bytes
+                    > plan.transient_arena_size - allocation.region_relative_offset) {
+                return std::unexpected(
+                    "GraphJit sample transient allocation lies outside its arena");
+            }
+        }
+        plan.transient_region = builder.declare_raw_region(
+            plan.transient_arena_size, plan.transient_arena_alignment);
         return {};
     } catch (std::exception const& e) {
         return std::unexpected(
@@ -232,7 +214,7 @@ std::expected<void, std::string> finalize_sample_physical_storage(
     NodeLayout const& layout,
     SamplePhysicalPlan& plan)
 {
-    if (plan.transient_slots.empty()) {
+    if (plan.transient_allocations.empty()) {
         if (plan.transient_region.valid()) {
             return std::unexpected(
                 "GraphJit empty sample physical plan unexpectedly owns a raw region");
@@ -249,13 +231,22 @@ std::expected<void, std::string> finalize_sample_physical_storage(
         return std::unexpected(
             "GraphJit sample transient storage was not finalized as raw storage");
     }
-    for (auto& slot : plan.transient_slots) {
-        if (slot.region_relative_offset > region.size
-            || slot.size_bytes > region.size - slot.region_relative_offset) {
+    if (region.size != plan.transient_arena_size) {
+        return std::unexpected(
+            "GraphJit finalized sample transient arena changed size");
+    }
+    for (auto& allocation : plan.transient_allocations) {
+        if (allocation.region_relative_offset > region.size
+            || allocation.size_bytes > region.size - allocation.region_relative_offset) {
             return std::unexpected(
-                "GraphJit sample transient slot lies outside its raw region");
+                "GraphJit sample transient allocation lies outside its raw region");
         }
-        slot.storage_offset = region.storage_offset + slot.region_relative_offset;
+        allocation.storage_offset =
+            region.storage_offset + allocation.region_relative_offset;
+        if (allocation.storage_offset % allocation.alignment != 0) {
+            return std::unexpected(
+                "GraphJit finalized sample transient allocation lost alignment");
+        }
     }
     return {};
 }

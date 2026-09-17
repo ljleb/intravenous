@@ -137,18 +137,28 @@ carried forward merely to keep the old executor compiling.
 
 The sample realization now has its own stable physical-plan layer in
 `graph_jit/sample_physical_plan.{h,cpp}`. Primitive bindings refer to immutable
-**sample representation handles**, not raw buffers or producer-group storage
-slots. Every realtime producer group owns a canonical representation; each realized
+**sample representation handles**, not raw buffer identities or producer-group
+storage objects. Every realtime producer group owns a canonical representation;
+each realized
 realtime connection resolves to a representation handle. At the current point-7
 checkpoint identity realtime branches resolve to that canonical representation,
 while point 8 may map selected fanout branches to derived converted/remapped
 representations without changing the primitive ABI.
-Direct and transient-materialization representations are assigned reusable raw
-transient slots from their inclusive schedule live intervals. Non-overlapping
-representations share one slot even across different channel layouts, sized to the
-maximum assigned representation. Overlapping lifetimes never alias. Final slot
-offsets are declared once into canonical `NodeLayout` and emitted as immutable
-primitive bindings; realtime execution only uses those offsets.
+Direct and transient-materialization representations are assigned exact byte ranges
+inside one compile-time transient arena from their inclusive schedule live
+intervals. The offline allocator tracks only currently-live ranges and places each
+new representation in the lowest aligned free gap, so dead ranges can be split,
+combined, and partially reused rather than leaving a historical whole-slot size
+reserved. Equal-start allocations are considered size/alignment-first to reduce
+fragmentation. Overlapping lifetimes never alias. The arena high-water mark and
+all representation offsets are finalized before `NodeLayout` declaration and are
+emitted as immutable primitive bindings; realtime execution only uses those
+constant offsets and contains no allocator bookkeeping. The current packer is a
+deterministic lowest-gap heuristic rather than a globally optimal interval-packing
+solver; correctness and sub-range reuse are contractual, while globally minimal
+arena size remains an optimization opportunity if measurements justify it. The
+generic transient-arena planner is intentionally reusable by later event/workspace
+planning.
 
 The physical planner consumes the implementation decisions already made by
 `choose_sample_connection_implementation()`; it does not choose policy again.
@@ -241,8 +251,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    one-buffer-per-producer realization has been replaced by a producer-group
    physical plan with immutable representation handles, canonical producer
    representations, per-connection representation resolution, explicit transient
-   lifetime semantics, and deterministic slot reuse for non-overlapping live
-   intervals. Primitive bindings no longer encode raw buffer identity. No retained
+   lifetime semantics, and deterministic aligned byte-range packing in one
+   transient arena. Dead ranges are reusable at sub-range granularity, including
+   partial holes left by differently-sized representations. Primitive bindings no
+   longer encode raw buffer identity. No retained
    representation is faked with transient storage; persistent/feedback/external
    kinds remain capability-gated for their dedicated later steps.
 8. **Sample fanout and layout conversion.** **Current checkpoint.** Make one canonical producer-layout
@@ -508,7 +520,7 @@ stored in the same `NodeStorage`, including for example:
 - persistent event storage;
 - root/compiler-owned activity state;
 - bounded reusable compiled-access workspaces;
-- statically sized reusable transient slots selected by liveness analysis;
+- one statically packed transient arena with compile-time byte ranges selected by liveness analysis;
 - other fixed-size compiler-selected project regions.
 
 This gives the whole-project compiler control over physical declaration order.

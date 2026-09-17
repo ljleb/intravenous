@@ -144,7 +144,7 @@ enum class ConnectionStorageLifetime {
 
 // This is a semantic storage request, not an allocated region. Sample physical
 // realization consumes these requirements after implementation selection;
-// transient slot allocation is a separate concern from policy choice.
+// transient byte-range arena allocation is a separate concern from policy choice.
 struct ConnectionStorageRegionRequirement {
     PlannedConnectionPayload payload = PlannedConnectionPayload::sample;
     std::size_t producer_group_index = 0;
