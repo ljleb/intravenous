@@ -1284,13 +1284,28 @@ void plan_event_groups(
                 && !connection.external_boundary
                 && connection_retained == 0;
         }
+        std::optional<std::size_t> estimated_retained_events;
+        if (retained != 0 && retained <= kernel_block_size) {
+            auto const producer_capacity = calculate_event_port_buffer_capacity(
+                DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER, group.source_type);
+            // A compact carry may contain events restored from the prior root
+            // invocation plus events authored by the current invocation whose
+            // history/latency windows overlap the retained interval. Two bounded
+            // producer sequences are therefore the conservative small-window
+            // estimate. Wider windows deliberately fall back to persistent_ring.
+            if (producer_capacity != 0
+                && producer_capacity
+                    <= std::numeric_limits<std::size_t>::max() / 2) {
+                estimated_retained_events = producer_capacity * 2;
+            }
+        }
         group.requirements = EventConnectionImplementationRequirements{
             .direct_implementation_legal = direct,
             .requires_materialization = requires_materialization,
             .feedback = feedback,
             .external_boundary = external,
             .retained_window_samples = retained,
-            .estimated_retained_events = std::nullopt,
+            .estimated_retained_events = estimated_retained_events,
         };
         if (!group.has_realtime_connections) continue;
         group.implementation = choose_event_connection_implementation(

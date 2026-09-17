@@ -1,5 +1,6 @@
 #include <intravenous/graph_jit/lowering.h>
 #include <intravenous/graph_jit/event_conversion_runtime.h>
+#include <intravenous/graph_jit/event_retention_runtime.h>
 #include <intravenous/graph_jit/lowering_plan.h>
 
 #include <llvm/ADT/StringRef.h>
@@ -1421,6 +1422,112 @@ std::expected<void, std::string> emit_sample_carry_operation(
 }
 
 
+std::expected<void, std::string> emit_event_carry_operation(
+    llvm::IRBuilder<>& builder,
+    detail::EventPortBindingPlan const& event_ports,
+    detail::EventCarryPlan const& carry,
+    llvm::Value* storage_base,
+    llvm::Value* sample_index,
+    llvm::Value* block_size,
+    bool restore)
+{
+    if (carry.working_representation >= event_ports.representations.size()
+        || carry.persistent_representation >= event_ports.representations.size()) {
+        return std::unexpected(
+            "GraphJit event carry references a missing representation");
+    }
+    auto const& working =
+        event_ports.representations[carry.working_representation];
+    auto const& persistent =
+        event_ports.representations[carry.persistent_representation];
+    if (!working.region.valid() || !persistent.region.valid()
+        || working.persistent || !persistent.persistent
+        || working.type != persistent.type) {
+        return std::unexpected(
+            "GraphJit event carry has inconsistent physical representations");
+    }
+
+    auto& context = builder.getContext();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* working_count_pointer = byte_offset_pointer(
+        builder,
+        storage_base,
+        working.count_storage_offset,
+        restore ? "event.carry.restore.working.count"
+                : "event.carry.commit.working.count");
+    auto* persistent_count_pointer = byte_offset_pointer(
+        builder,
+        storage_base,
+        persistent.count_storage_offset,
+        restore ? "event.carry.restore.persist.count"
+                : "event.carry.commit.persist.count");
+    auto* working_events = byte_offset_pointer(
+        builder,
+        storage_base,
+        working.events_storage_offset,
+        restore ? "event.carry.restore.working.events"
+                : "event.carry.commit.working.events");
+    auto* persistent_events = byte_offset_pointer(
+        builder,
+        storage_base,
+        persistent.events_storage_offset,
+        restore ? "event.carry.restore.persist.events"
+                : "event.carry.commit.persist.events");
+
+    if (restore) {
+        auto* persistent_count = builder.CreateLoad(
+            size_type,
+            persistent_count_pointer,
+            "event.carry.restore.persist.count.value");
+        auto* helper_type = llvm::FunctionType::get(
+            size_type,
+            {pointer_type, size_type, pointer_type, size_type},
+            false);
+        auto* module = builder.GetInsertBlock()->getModule();
+        auto helper = module->getOrInsertFunction(
+            detail::event_carry_restore_symbol, helper_type);
+        auto* restored_count = builder.CreateCall(
+            helper,
+            {persistent_events,
+             persistent_count,
+             working_events,
+             llvm::ConstantInt::get(size_type, working.event_capacity)},
+            "event.carry.restore.count");
+        builder.CreateStore(restored_count, working_count_pointer);
+        return {};
+    }
+
+    auto* working_count = builder.CreateLoad(
+        size_type,
+        working_count_pointer,
+        "event.carry.commit.working.count.value");
+    auto* helper_type = llvm::FunctionType::get(
+        size_type,
+        {pointer_type, size_type, size_type, size_type, size_type, size_type,
+         pointer_type, size_type},
+        false);
+    auto* module = builder.GetInsertBlock()->getModule();
+    auto helper = module->getOrInsertFunction(
+        detail::event_carry_commit_symbol, helper_type);
+    auto* committed_count = builder.CreateCall(
+        helper,
+        {working_events,
+         working_count,
+         sample_index,
+         block_size,
+         llvm::ConstantInt::get(
+             size_type, carry.retained_history_samples),
+         llvm::ConstantInt::get(
+             size_type, carry.retained_latency_samples),
+         persistent_events,
+         llvm::ConstantInt::get(size_type, persistent.event_capacity)},
+        "event.carry.commit.count");
+    builder.CreateStore(committed_count, persistent_count_pointer);
+    return {};
+}
+
 std::expected<void, std::string> emit_event_sequence_reset(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
@@ -1631,6 +1738,24 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             }
         }
 
+        for (auto const carry_index : step.event_carry_restores_before) {
+            if (carry_index >= plan.event_ports.carry_operations.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing event carry restore");
+            }
+            auto restored = emit_event_carry_operation(
+                builder,
+                plan.event_ports,
+                plan.event_ports.carry_operations[carry_index],
+                storage_base,
+                sample_index,
+                block_size,
+                true);
+            if (!restored) {
+                return std::unexpected(std::move(restored.error()));
+            }
+        }
+
         for (auto const carry_index : step.sample_carry_restores_before) {
             if (carry_index >= plan.sample_ports.physical.carry_operations.size()) {
                 return std::unexpected(
@@ -1702,6 +1827,24 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 storage_base);
             if (!materialized) {
                 return std::unexpected(std::move(materialized.error()));
+            }
+        }
+
+        for (auto const carry_index : step.event_carry_commits_after) {
+            if (carry_index >= plan.event_ports.carry_operations.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing event carry commit");
+            }
+            auto committed = emit_event_carry_operation(
+                builder,
+                plan.event_ports,
+                plan.event_ports.carry_operations[carry_index],
+                storage_base,
+                sample_index,
+                block_size,
+                false);
+            if (!committed) {
+                return std::unexpected(std::move(committed.error()));
             }
         }
 

@@ -274,7 +274,9 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     }
     for (auto& representation : event_ports.representations) {
         representation.region = layout_builder.declare_raw_region(
-            representation.size_bytes, representation.alignment);
+            representation.size_bytes,
+            representation.alignment,
+            representation.persistent ? representation.migration_identity : std::string{});
     }
 
     auto node_layout = std::move(layout_builder).build();
@@ -345,6 +347,10 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         if (region.kind != NodeLayout::Region::Kind::raw
             || region.size != representation.size_bytes
             || region.alignment != representation.alignment
+            || region.migration_identity
+                != (representation.persistent
+                        ? representation.migration_identity
+                        : std::string{})
             || representation.count_relative_offset > region.size
             || representation.events_relative_offset > region.size) {
             return std::unexpected(
@@ -1111,13 +1117,19 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         }
         return (value + mask) & ~mask;
     };
-    auto append_representation = [&](std::size_t group_index, EventTypeId type)
+    auto append_representation = [&] (
+        std::size_t group_index,
+        EventTypeId type,
+        std::optional<std::size_t> capacity_override = std::nullopt,
+        bool persistent = false,
+        std::string migration_identity = {})
         -> std::expected<std::size_t, std::string> {
-        auto const capacity = calculate_event_port_buffer_capacity(
-            DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER, type);
+        auto const capacity = capacity_override.value_or(
+            calculate_event_port_buffer_capacity(
+                DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER, type));
         auto const events_relative = align_up(
             sizeof(std::size_t), alignof(TimedEvent));
-        if (!events_relative
+        if (!events_relative || capacity == 0
             || capacity > (std::numeric_limits<std::size_t>::max()
                     - *events_relative) / sizeof(TimedEvent)) {
             return std::unexpected(
@@ -1128,6 +1140,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             .producer_group_index = group_index,
             .type = type,
             .event_capacity = capacity,
+            .persistent = persistent,
+            .migration_identity = std::move(migration_identity),
             .count_relative_offset = 0,
             .events_relative_offset = *events_relative,
             .size_bytes = *events_relative + capacity * sizeof(TimedEvent),
@@ -1154,13 +1168,16 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         }
         auto const implementation = *group.implementation;
         if (implementation != EventConnectionImplementationKind::direct
-            && implementation
-                != EventConnectionImplementationKind::transient_sequence) {
+            && implementation != EventConnectionImplementationKind::transient_sequence
+            && implementation != EventConnectionImplementationKind::compact_persistent_carry) {
             return std::unexpected(
-                "GraphJit event flow does not yet support retained, feedback, or external event storage");
+                "GraphJit event flow does not yet support persistent-ring, feedback, or external event storage");
         }
-        auto const materialized =
+        auto const transient_materialized =
             implementation == EventConnectionImplementationKind::transient_sequence;
+        auto const compact_carry =
+            implementation == EventConnectionImplementationKind::compact_persistent_carry;
+        auto const aggregate_sequence = transient_materialized || compact_carry;
         if (group.sources.size() != 1) {
             return std::unexpected(
                 "GraphJit event flow requires exactly one producer output per event group");
@@ -1172,7 +1189,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             return std::unexpected(
                 "GraphJit event flow requires an internal concrete producer");
         }
-        if (!materialized
+        if (!aggregate_sequence
             && analysis.primitives[*source_primitive].bundle.maximum_block_size
                 < input.specialization.block_size) {
             return std::unexpected(
@@ -1192,12 +1209,76 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 "GraphJit event producer ordinal is outside primitive metadata");
         }
 
+        auto base_capacity = calculate_event_port_buffer_capacity(
+            DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER, group.source_type);
+        std::size_t retained_history = 0;
+        std::size_t retained_latency = 0;
+        for (auto const connection_index : group.connection_indices) {
+            if (connection_index >= connections.event_connections.size()) {
+                return std::unexpected(
+                    "GraphJit event producer group references an invalid connection");
+            }
+            auto const& connection = connections.event_connections[connection_index];
+            retained_history = std::max(
+                retained_history,
+                std::max(connection.source_history, connection.target_history));
+            retained_latency = std::max(retained_latency, connection.source_latency);
+        }
+
+        std::optional<std::size_t> working_capacity;
+        std::optional<std::size_t> carry_capacity;
+        if (compact_carry) {
+            if (!group.requirements.estimated_retained_events
+                || *group.requirements.estimated_retained_events == 0) {
+                return std::unexpected(
+                    "GraphJit compact event carry lost its bounded retained-event estimate");
+            }
+            carry_capacity = *group.requirements.estimated_retained_events;
+            if (base_capacity > std::numeric_limits<std::size_t>::max() - *carry_capacity) {
+                return std::unexpected(
+                    "GraphJit compact event carry working capacity overflows size_t");
+            }
+            working_capacity = next_power_of_2(base_capacity + *carry_capacity);
+            if (*working_capacity < base_capacity + *carry_capacity
+                || !is_power_of_2(*working_capacity)) {
+                return std::unexpected(
+                    "GraphJit compact event carry exceeds representable working capacity");
+            }
+        }
+
         auto source_representation = append_representation(
-            group_index, group.source_type);
+            group_index, group.source_type, working_capacity);
         if (!source_representation) {
             return std::unexpected(std::move(source_representation.error()));
         }
         plan.producer_group_representations[group_index] = *source_representation;
+
+        if (compact_carry) {
+            std::string migration_identity =
+                "graphjit.event:" + std::to_string(static_cast<unsigned>(group.source_type))
+                + ':' + std::to_string(source_id.bundle) + '.'
+                + std::to_string(source_id.port)
+                + ":kind=compact_carry:history=" + std::to_string(retained_history)
+                + ":latency=" + std::to_string(retained_latency)
+                + ":capacity=" + std::to_string(*carry_capacity);
+            auto persistent_representation = append_representation(
+                group_index,
+                group.source_type,
+                carry_capacity,
+                true,
+                std::move(migration_identity));
+            if (!persistent_representation) {
+                return std::unexpected(
+                    std::move(persistent_representation.error()));
+            }
+            plan.carry_operations.push_back(EventCarryPlan{
+                .working_representation = *source_representation,
+                .persistent_representation = *persistent_representation,
+                .producer_execution_position = group.live_interval.begin,
+                .retained_history_samples = retained_history,
+                .retained_latency_samples = retained_latency,
+            });
+        }
 
         auto& source_binding =
             plan.primitives[*source_primitive].outputs[source_id.port];
@@ -1210,34 +1291,38 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             .source_type = group.source_type,
             .history = realtime_history(source),
             .latency = realtime_latency(source),
-            .append_existing = materialized,
+            .append_existing = aggregate_sequence,
         };
 
         for (auto const connection_index : group.connection_indices) {
-            if (connection_index >= connections.event_connections.size()) {
-                return std::unexpected(
-                    "GraphJit event producer group references an invalid connection");
-            }
             auto const& connection = connections.event_connections[connection_index];
+            auto const retained_connection =
+                connection.source_history != 0
+                || connection.source_latency != 0
+                || connection.target_history != 0;
             if (connection.access != PlannedConnectionAccess::realtime_to_realtime
                 || connection.external_boundary
                 || connection.feedback
-                || connection.source_history != 0
-                || connection.source_latency != 0
-                || connection.target_history != 0
                 || connection.sources.size() != 1
                 || connection.sources.front().bundle != source_id.bundle
                 || connection.sources.front().port != source_id.port
                 || connection.source_type != group.source_type
                 || connection.conversion.source_type != connection.source_type
-                || connection.conversion.target_type != connection.target_type) {
+                || connection.conversion.target_type != connection.target_type
+                || (retained_connection && !compact_carry)) {
                 return std::unexpected(
-                    "GraphJit event connection requires retention, feedback, external, or source-composition semantics that are not yet realized");
+                    "GraphJit event connection requires unsupported retention, feedback, external, or source-composition semantics");
+            }
+            if (compact_carry
+                && (connection.requires_conversion
+                    || connection.requires_block_materialization)) {
+                return std::unexpected(
+                    "GraphJit compact event carry does not yet combine retention with conversion or block materialization");
             }
             auto target_representation = *source_representation;
             if (connection.requires_conversion
                 || connection.requires_block_materialization) {
-                if (!materialized) {
+                if (!transient_materialized) {
                     return std::unexpected(
                         "GraphJit event implementation lost required transient materialization");
                 }
@@ -1280,7 +1365,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                     return std::unexpected(
                         "GraphJit event flow requires internal concrete consumers");
                 }
-                if (!materialized
+                if (!aggregate_sequence
                     && analysis.primitives[*target_primitive]
                             .bundle.maximum_block_size
                         < input.specialization.block_size) {
@@ -1436,6 +1521,19 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             .sample_compositions_after.push_back(composition_index);
     }
 
+    for (std::size_t carry_index = 0;
+         carry_index < event_ports.carry_operations.size();
+         ++carry_index) {
+        auto const& carry = event_ports.carry_operations[carry_index];
+        if (carry.producer_execution_position >= plan.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit event carry operation references an invalid execution position");
+        }
+        auto& step = plan.primitive_steps[carry.producer_execution_position];
+        step.event_carry_restores_before.push_back(carry_index);
+        step.event_carry_commits_after.push_back(carry_index);
+    }
+
     for (std::size_t materialization_index = 0;
          materialization_index < event_ports.materializations.size();
          ++materialization_index) {
@@ -1447,10 +1545,17 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         }
         auto& step = plan.primitive_steps[materialization.after_execution_position];
         step.event_materializations_after.push_back(materialization_index);
-        if (std::ranges::find(
-                step.event_sequence_resets_before,
-                materialization.source_representation)
-            == step.event_sequence_resets_before.end()) {
+        auto const carry_source = std::ranges::any_of(
+            event_ports.carry_operations,
+            [&](EventCarryPlan const& carry) {
+                return carry.working_representation
+                    == materialization.source_representation;
+            });
+        if (!carry_source
+            && std::ranges::find(
+                   step.event_sequence_resets_before,
+                   materialization.source_representation)
+                == step.event_sequence_resets_before.end()) {
             step.event_sequence_resets_before.push_back(
                 materialization.source_representation);
         }

@@ -215,6 +215,7 @@ add_library(intravenous_graph_builder OBJECT
     graph/builder/state.cpp
     graph/reflected_node_description.cpp
     graph_jit/event_conversion_runtime.cpp
+    graph_jit/event_retention_runtime.cpp
     module/builder_session.cpp
     module/package_definitions.cpp
     module/source_annotations.cpp

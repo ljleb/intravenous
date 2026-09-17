@@ -122,16 +122,19 @@ struct SamplePortBindingPlan {
     }
 };
 
-// Point 10 realizes direct and transient realtime event flow. Each producer
-// group owns one bounded raw event sequence; block-size adaptation and event
-// conversion can add deduplicated consumer-facing transient sequences. The
-// count word and TimedEvent payload bytes live in canonical NodeStorage;
-// primitive callbacks receive only immutable bindings and reconstruct
-// invocation-local EventInputPort/EventOutputPort facades.
+// Points 10-11 realize direct/transient realtime event flow plus bounded
+// compact carry. Each producer group owns one raw working sequence; block-size
+// adaptation and event conversion can add deduplicated consumer-facing
+// transient sequences, while small retained windows add a migration-identified
+// persistent carry sequence. Count words and TimedEvent payload bytes live in
+// canonical NodeStorage; primitive callbacks receive only immutable bindings
+// and reconstruct invocation-local EventInputPort/EventOutputPort facades.
 struct EventRepresentationPlan {
     std::size_t producer_group_index = 0;
     EventTypeId type = EventTypeId::empty;
     std::size_t event_capacity = 0;
+    bool persistent = false;
+    std::string migration_identity{};
     std::size_t count_relative_offset = 0;
     std::size_t events_relative_offset = 0;
     std::size_t size_bytes = 0;
@@ -162,6 +165,14 @@ struct EventMaterializationPlan {
     std::size_t after_execution_position = 0;
 };
 
+struct EventCarryPlan {
+    std::size_t working_representation = 0;
+    std::size_t persistent_representation = 0;
+    std::size_t producer_execution_position = 0;
+    std::size_t retained_history_samples = 0;
+    std::size_t retained_latency_samples = 0;
+};
+
 struct PrimitiveEventPortPlan {
     std::vector<PrimitiveEventInputBindingPlan> inputs{};
     std::vector<PrimitiveEventOutputBindingPlan> outputs{};
@@ -172,6 +183,7 @@ struct EventPortBindingPlan {
     std::vector<std::optional<std::size_t>> producer_group_representations{};
     std::vector<EventRepresentationPlan> representations{};
     std::vector<EventMaterializationPlan> materializations{};
+    std::vector<EventCarryPlan> carry_operations{};
     // Indexed by analyzed concrete primitive.
     std::vector<PrimitiveEventPortPlan> primitives{};
 };
@@ -196,7 +208,9 @@ struct PrimitiveExecutionStep {
     // all of its slices, then materializes a consumer-facing sequence after
     // the complete producer step.
     std::vector<std::size_t> event_sequence_resets_before{};
+    std::vector<std::size_t> event_carry_restores_before{};
     std::vector<std::size_t> event_materializations_after{};
+    std::vector<std::size_t> event_carry_commits_after{};
 };
 
 struct ExecutionPlan {

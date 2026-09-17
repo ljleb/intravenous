@@ -56,6 +56,7 @@ constexpr char graph_jit_projected_composition_module_id[] = "iv.test.graph_jit.
 constexpr char graph_jit_direct_event_module_id[] = "iv.test.graph_jit.state_context.direct_event_module";
 constexpr char graph_jit_transient_event_module_id[] = "iv.test.graph_jit.state_context.transient_event_module";
 constexpr char graph_jit_converted_event_fanout_module_id[] = "iv.test.graph_jit.state_context.converted_event_fanout_module";
+constexpr char graph_jit_retained_event_module_id[] = "iv.test.graph_jit.state_context.retained_event_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -192,6 +193,15 @@ struct SlicedEventConsumerProbeStateMirror {
     std::array<std::uint64_t, 4> trigger_counts{};
     std::array<std::uint64_t, 4> first_times{};
     std::array<std::uint64_t, 4> last_times{};
+};
+
+struct RetainedEventConsumerProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::array<std::uint64_t, 3> indices{};
+    std::array<std::uint64_t, 3> event_counts{};
+    std::array<std::uint64_t, 3> first_times{};
+    std::array<std::uint64_t, 3> second_times{};
+    std::array<std::uint64_t, 3> last_times{};
 };
 
 void expect_lowering_failure(
@@ -2216,6 +2226,82 @@ struct LimitedTriggerEventConsumer {
     }
 };
 
+struct RetainedTriggerEventSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::realtime_event_output(
+                "trigger",
+                iv::EventTypeId::trigger,
+                iv::RealtimeOutputConfig{.latency = 8}),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<RetainedTriggerEventSource> const& ctx) const
+    {
+        if (ctx.block_size < 8) return;
+        ctx.event_outputs[0].push(
+            iv::TriggerEvent{}, 5, ctx.index, ctx.block_size);
+        ctx.event_outputs[0].push(
+            iv::TriggerEvent{}, ctx.block_size - 3, ctx.index, ctx.block_size);
+        // Authored output latency permits publishing a future event that must
+        // remain visible to the next root invocation.
+        ctx.event_outputs[0].push(
+            iv::TriggerEvent{}, ctx.block_size + 3, ctx.index, ctx.block_size);
+    }
+};
+
+struct RetainedTriggerEventConsumer {
+    struct State {
+        std::uint64_t calls = 0;
+        std::array<std::uint64_t, 3> indices{};
+        std::array<std::uint64_t, 3> event_counts{};
+        std::array<std::uint64_t, 3> first_times{};
+        std::array<std::uint64_t, 3> second_times{};
+        std::array<std::uint64_t, 3> last_times{};
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input(
+                "trigger",
+                iv::EventTypeId::trigger,
+                iv::RealtimeInputConfig{.history = 8}),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<RetainedTriggerEventConsumer> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = state.calls++;
+        if (slot >= state.indices.size()) return;
+        auto const history = ctx.index < 8 ? ctx.index : std::size_t{8};
+        auto const events = ctx.event_inputs[0].get_block(
+            ctx.index - history,
+            ctx.block_size + history);
+        state.indices[slot] = ctx.index;
+        state.event_counts[slot] = events.size();
+        if (!events.empty()) {
+            state.first_times[slot] = events[0].time;
+            state.last_times[slot] = events[events.size() - 1].time;
+        }
+        if (events.size() > 1) {
+            state.second_times[slot] = events[1].time;
+        }
+    }
+};
+
 struct PortedProbe {
     static constexpr auto inputs()
     {
@@ -2444,6 +2530,14 @@ void converted_event_fanout_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void retained_event_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.retained_trigger_event_source">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.retained_trigger_event_consumer">();
+    sink.connect_event_input(0, source.event_port());
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -2477,6 +2571,8 @@ IV_NODE("iv.test.graph_jit.state_context.midi_event_source", MidiEventSource);
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_source", LimitedTriggerEventSource);
 IV_NODE("iv.test.graph_jit.state_context.trigger_event_consumer", TriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_consumer", LimitedTriggerEventConsumer);
+IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_source", RetainedTriggerEventSource);
+IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_consumer", RetainedTriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
@@ -2502,6 +2598,7 @@ IV_MODULE("iv.test.graph_jit.state_context.projected_composition_module", projec
 IV_MODULE("iv.test.graph_jit.state_context.direct_event_module", direct_event_module);
 IV_MODULE("iv.test.graph_jit.state_context.transient_event_module", transient_event_module);
 IV_MODULE("iv.test.graph_jit.state_context.converted_event_fanout_module", converted_event_fanout_module);
+IV_MODULE("iv.test.graph_jit.state_context.retained_event_module", retained_event_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -2586,6 +2683,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_TRUE(has_module_definition(graph_jit_direct_event_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_transient_event_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_converted_event_fanout_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_retained_event_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -4132,6 +4230,106 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         EXPECT_EQ(probe->first_time, 69u);
         EXPECT_EQ(probe->last_time, 81u);
     }
+
+    // Small retained event windows use a compact persistent carry. The
+    // producer may publish into its authored future-latency window, while the
+    // consumer asks for eight samples of history on the following root call.
+    auto retained_event_graph = configured_module_graph(
+        *revision, graph_jit_retained_event_module_id);
+    ASSERT_TRUE(retained_event_graph);
+    auto retained_event_analysis =
+        iv::graph_jit::detail::build_connection_analysis_plan(
+            *retained_event_graph, 64);
+    ASSERT_TRUE(retained_event_analysis.has_value())
+        << (retained_event_analysis
+                ? std::string{}
+                : retained_event_analysis.error());
+    ASSERT_EQ(retained_event_analysis->event_connections.size(), 1u);
+    ASSERT_EQ(retained_event_analysis->event_producer_groups.size(), 1u);
+    auto const& retained_event_connection =
+        retained_event_analysis->event_connections.front();
+    EXPECT_EQ(retained_event_connection.source_latency, 8u);
+    EXPECT_EQ(retained_event_connection.target_history, 8u);
+    auto const& retained_event_group =
+        retained_event_analysis->event_producer_groups.front();
+    ASSERT_TRUE(retained_event_group.implementation.has_value());
+    EXPECT_EQ(
+        *retained_event_group.implementation,
+        iv::EventConnectionImplementationKind::compact_persistent_carry);
+    EXPECT_EQ(retained_event_group.requirements.retained_window_samples, 16u);
+    ASSERT_TRUE(retained_event_group.requirements.estimated_retained_events);
+    EXPECT_LE(
+        *retained_event_group.requirements.estimated_retained_events,
+        iv::EventConnectionCostModel{}.compact_carry_max_events);
+
+    auto retained_event = compile_graph(retained_event_graph, 126);
+    ASSERT_TRUE(retained_event.succeeded())
+        << (retained_event.diagnostics.empty()
+                ? ""
+                : retained_event.diagnostics.front().message);
+    ASSERT_EQ(retained_event.compiled_graph->node_layout.nodes.size(), 2u);
+    // Transient working sequence + persistent compact carry sequence.
+    ASSERT_EQ(count_raw_regions(retained_event.compiled_graph->node_layout), 2u);
+    auto retained_persistent_region = std::ranges::find_if(
+        retained_event.compiled_graph->node_layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.kind == iv::NodeLayout::Region::Kind::raw
+                && !region.migration_identity.empty();
+        });
+    ASSERT_NE(
+        retained_persistent_region,
+        retained_event.compiled_graph->node_layout.regions.end());
+    EXPECT_NE(
+        retained_persistent_region->migration_identity.find(
+            "graphjit.event:"),
+        std::string::npos);
+
+    auto retained_event_storage =
+        retained_event.compiled_graph->node_layout.create_storage(resources);
+    retained_event_storage.initialize();
+    RetainedEventConsumerProbeStateMirror* retained_event_probe = nullptr;
+    for (std::size_t i = 0;
+         i < retained_event.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (retained_event.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(RetainedEventConsumerProbeStateMirror)) {
+            ASSERT_EQ(retained_event_probe, nullptr);
+            retained_event_probe =
+                static_cast<RetainedEventConsumerProbeStateMirror*>(
+                    retained_event_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(retained_event_probe, nullptr);
+
+    retained_event.compiled_graph->root_operations.tick_block(
+        retained_event_storage.buffer().data(), 0, 64);
+    ASSERT_EQ(retained_event_probe->calls, 1u);
+    EXPECT_EQ(retained_event_probe->indices[0], 0u);
+    EXPECT_EQ(retained_event_probe->event_counts[0], 2u);
+    EXPECT_EQ(retained_event_probe->first_times[0], 5u);
+    EXPECT_EQ(retained_event_probe->last_times[0], 61u);
+
+    // The compact carry committed [56, 72): timestamp 61 is historical input
+    // on the next call and timestamp 67 was authored ahead by output latency.
+    // Current-call events 69 and 125 are appended after the restored carry.
+    retained_event.compiled_graph->root_operations.tick_block(
+        retained_event_storage.buffer().data(), 64, 64);
+    ASSERT_EQ(retained_event_probe->calls, 2u);
+    EXPECT_EQ(retained_event_probe->indices[1], 64u);
+    EXPECT_EQ(retained_event_probe->event_counts[1], 4u);
+    EXPECT_EQ(retained_event_probe->first_times[1], 61u);
+    EXPECT_EQ(retained_event_probe->second_times[1], 67u);
+    EXPECT_EQ(retained_event_probe->last_times[1], 125u);
+
+    // The next retained window is [120, 136), proving stale events from the
+    // first call were trimmed rather than accumulating indefinitely.
+    retained_event.compiled_graph->root_operations.tick_block(
+        retained_event_storage.buffer().data(), 128, 64);
+    ASSERT_EQ(retained_event_probe->calls, 3u);
+    EXPECT_EQ(retained_event_probe->indices[2], 128u);
+    EXPECT_EQ(retained_event_probe->event_counts[2], 4u);
+    EXPECT_EQ(retained_event_probe->first_times[2], 125u);
+    EXPECT_EQ(retained_event_probe->second_times[2], 131u);
+    EXPECT_EQ(retained_event_probe->last_times[2], 189u);
 
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);
