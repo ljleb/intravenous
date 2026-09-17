@@ -102,6 +102,34 @@ template<typename Node>
 inline constexpr std::size_t reflected_sample_output_count_v =
     reflected_sample_output_count<Node>();
 
+template<typename Node>
+consteval std::size_t reflected_event_input_count()
+{
+    if constexpr (has_inputs<Node> && has_constexpr_port_configs<Node>) {
+        return count_event_ports(Node::inputs());
+    } else {
+        return 0;
+    }
+}
+
+template<typename Node>
+consteval std::size_t reflected_event_output_count()
+{
+    if constexpr (has_outputs<Node> && has_constexpr_port_configs<Node>) {
+        return count_event_ports(Node::outputs());
+    } else {
+        return 0;
+    }
+}
+
+template<typename Node>
+inline constexpr std::size_t reflected_event_input_count_v =
+    reflected_event_input_count<Node>();
+
+template<typename Node>
+inline constexpr std::size_t reflected_event_output_count_v =
+    reflected_event_output_count<Node>();
+
 IV_FORCEINLINE SamplePortStorageView reflected_sample_storage_view(
     std::byte* storage_base,
     ReflectedSamplePortStorageBinding const& binding)
@@ -209,6 +237,137 @@ IV_FORCEINLINE void with_reflected_sample_ports(
     }
 }
 
+template<std::size_t N>
+struct ReflectedEventInputPorts {
+    std::array<EventSharedPortData, N> shared{};
+    std::array<EventInputPort, N> ports{};
+};
+
+template<std::size_t N>
+struct ReflectedEventOutputPorts {
+    std::array<EventSharedPortData, N> shared{};
+    std::array<EventOutputPort, N> ports{};
+    std::array<std::size_t*, N> counts{};
+};
+
+IV_FORCEINLINE std::span<TimedEvent> reflected_event_buffer(
+    std::byte* storage_base,
+    ReflectedEventPortStorageBinding const& binding)
+{
+    auto* events = reinterpret_cast<TimedEvent*>(
+        storage_base + binding.events_offset);
+    return {events, binding.event_capacity};
+}
+
+IV_FORCEINLINE std::size_t* reflected_event_count(
+    std::byte* storage_base,
+    ReflectedEventPortStorageBinding const& binding)
+{
+    return reinterpret_cast<std::size_t*>(
+        storage_base + binding.count_offset);
+}
+
+template<std::size_t... I>
+IV_FORCEINLINE auto reflected_event_inputs(
+    ReflectedNodeTickContext const& ctx,
+    std::index_sequence<I...>)
+{
+    ReflectedEventInputPorts<sizeof...(I)> result;
+    (([&] {
+        auto const& binding = ctx.event_input_bindings.pointer[I].storage;
+        auto* count = reflected_event_count(ctx.event_storage_base, binding);
+        result.shared[I] = EventSharedPortData{
+            reflected_event_buffer(ctx.event_storage_base, binding),
+            0,
+            *count,
+            binding.type,
+        };
+        result.ports[I] = EventInputPort{result.shared[I]};
+    }()), ...);
+    return result;
+}
+
+template<std::size_t... I>
+IV_FORCEINLINE auto reflected_event_outputs(
+    ReflectedNodeTickContext const& ctx,
+    SampleIndex index,
+    std::size_t block_size,
+    std::index_sequence<I...>)
+{
+    ReflectedEventOutputPorts<sizeof...(I)> result;
+    (([&] {
+        auto const& binding = ctx.event_output_bindings.pointer[I];
+        auto* count = reflected_event_count(
+            ctx.event_storage_base, binding.storage);
+        *count = 0;
+        result.counts[I] = count;
+        result.shared[I] = EventSharedPortData{
+            reflected_event_buffer(ctx.event_storage_base, binding.storage),
+            0,
+            0,
+            binding.storage.type,
+        };
+        result.ports[I] = EventOutputPort{
+            result.shared[I],
+            binding.source_type,
+            binding.history,
+            binding.latency,
+        };
+        result.ports[I].begin_block(index, block_size);
+    }()), ...);
+    return result;
+}
+
+template<std::size_t N>
+IV_FORCEINLINE void commit_reflected_event_outputs(
+    ReflectedEventOutputPorts<N>& outputs)
+{
+    for (std::size_t i = 0; i < N; ++i) {
+        *outputs.counts[i] = outputs.shared[i].write_index;
+        outputs.ports[i].end_block();
+    }
+}
+
+template<typename Node, typename Fn>
+IV_FORCEINLINE void with_reflected_event_ports(
+    ReflectedNodeTickContext const& ctx,
+    SampleIndex index,
+    std::size_t block_size,
+    Fn&& fn)
+{
+    if constexpr (!has_constexpr_port_configs<Node>) {
+        std::forward<Fn>(fn)(
+            static_cast<std::span<EventInputPort>>(ctx.event_inputs),
+            static_cast<std::span<EventOutputPort>>(ctx.event_outputs));
+        return;
+    } else {
+        if (ctx.event_storage_base == nullptr) {
+            std::forward<Fn>(fn)(
+                static_cast<std::span<EventInputPort>>(ctx.event_inputs),
+                static_cast<std::span<EventOutputPort>>(ctx.event_outputs));
+            return;
+        }
+
+        constexpr auto input_count = reflected_event_input_count_v<Node>;
+        constexpr auto output_count = reflected_event_output_count_v<Node>;
+        IV_ASSERT(
+            ctx.event_input_bindings.size() == input_count,
+            "reflected event input binding count does not match node declaration");
+        IV_ASSERT(
+            ctx.event_output_bindings.size() == output_count,
+            "reflected event output binding count does not match node declaration");
+
+        auto inputs = reflected_event_inputs(
+            ctx, std::make_index_sequence<input_count>{});
+        auto outputs = reflected_event_outputs(
+            ctx, index, block_size, std::make_index_sequence<output_count>{});
+        std::forward<Fn>(fn)(
+            std::span<EventInputPort>{inputs.ports},
+            std::span<EventOutputPort>{outputs.ports});
+        commit_reflected_event_outputs(outputs);
+    }
+}
+
 template<class Node>
 IV_FORCEINLINE void tick_node_block(
     void const* node_data,
@@ -221,22 +380,29 @@ IV_FORCEINLINE void tick_node_block(
         ctx,
         static_cast<SampleIndex>(index),
         [&](std::span<InputPort> inputs, std::span<OutputPort> outputs) {
-            do_tick_block(node, TickBlockContext<Node> {
-                TickContext<Node> {
-                    .inputs = inputs,
-                    .outputs = outputs,
-                    .event_inputs = ctx.event_inputs,
-                    .event_outputs = ctx.event_outputs,
-                    .compiled_inputs = ctx.compiled_inputs,
-                    .compiled_event_inputs = ctx.compiled_event_inputs,
-                    .compiled_state_storage = ctx.compiled_state,
-                    .sample_rate = ctx.sample_rate,
-                    .scc_feedback_latency = ctx.scc_feedback_latency,
-                    .buffer = ctx.state,
-                },
+            with_reflected_event_ports<Node>(
+                ctx,
                 static_cast<SampleIndex>(index),
                 block_size,
-            });
+                [&](std::span<EventInputPort> event_inputs,
+                    std::span<EventOutputPort> event_outputs) {
+                    do_tick_block(node, TickBlockContext<Node> {
+                        TickContext<Node> {
+                            .inputs = inputs,
+                            .outputs = outputs,
+                            .event_inputs = event_inputs,
+                            .event_outputs = event_outputs,
+                            .compiled_inputs = ctx.compiled_inputs,
+                            .compiled_event_inputs = ctx.compiled_event_inputs,
+                            .compiled_state_storage = ctx.compiled_state,
+                            .sample_rate = ctx.sample_rate,
+                            .scc_feedback_latency = ctx.scc_feedback_latency,
+                            .buffer = ctx.state,
+                        },
+                        static_cast<SampleIndex>(index),
+                        block_size,
+                    });
+                });
         });
 }
 
@@ -252,22 +418,29 @@ IV_FORCEINLINE void skip_node_block(
         ctx,
         static_cast<SampleIndex>(index),
         [&](std::span<InputPort> inputs, std::span<OutputPort> outputs) {
-            do_skip_block(node, SkipBlockContext<Node> {
-                TickContext<Node> {
-                    .inputs = inputs,
-                    .outputs = outputs,
-                    .event_inputs = ctx.event_inputs,
-                    .event_outputs = ctx.event_outputs,
-                    .compiled_inputs = ctx.compiled_inputs,
-                    .compiled_event_inputs = ctx.compiled_event_inputs,
-                    .compiled_state_storage = ctx.compiled_state,
-                    .sample_rate = ctx.sample_rate,
-                    .scc_feedback_latency = ctx.scc_feedback_latency,
-                    .buffer = ctx.state,
-                },
+            with_reflected_event_ports<Node>(
+                ctx,
                 static_cast<SampleIndex>(index),
                 block_size,
-            });
+                [&](std::span<EventInputPort> event_inputs,
+                    std::span<EventOutputPort> event_outputs) {
+                    do_skip_block(node, SkipBlockContext<Node> {
+                        TickContext<Node> {
+                            .inputs = inputs,
+                            .outputs = outputs,
+                            .event_inputs = event_inputs,
+                            .event_outputs = event_outputs,
+                            .compiled_inputs = ctx.compiled_inputs,
+                            .compiled_event_inputs = ctx.compiled_event_inputs,
+                            .compiled_state_storage = ctx.compiled_state,
+                            .sample_rate = ctx.sample_rate,
+                            .scc_feedback_latency = ctx.scc_feedback_latency,
+                            .buffer = ctx.state,
+                        },
+                        static_cast<SampleIndex>(index),
+                        block_size,
+                    });
+                });
         });
 }
 

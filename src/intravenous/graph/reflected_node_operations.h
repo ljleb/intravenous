@@ -77,12 +77,43 @@ struct ReflectedSampleOutputPortBinding {
     std::size_t history = 0;
 };
 
+// Immutable compiler-owned event storage binding. The raw region contains one
+// event-count word followed by a bounded TimedEvent array. EventInputPort and
+// EventOutputPort remain invocation-local facades reconstructed by the imported
+// primitive wrapper; no facade/cursor objects persist in NodeStorage.
+static_assert(std::is_trivially_copyable_v<TimedEvent>,
+    "GraphJit raw event storage requires TimedEvent to remain byte-storable");
+
+struct ReflectedEventPortStorageBinding {
+    std::size_t count_offset = 0;
+    std::size_t events_offset = 0;
+    std::size_t event_capacity = 0;
+    EventTypeId type = EventTypeId::empty;
+};
+
+struct ReflectedEventInputPortBinding {
+    ReflectedEventPortStorageBinding storage {};
+};
+
+struct ReflectedEventOutputPortBinding {
+    ReflectedEventPortStorageBinding storage {};
+    EventTypeId source_type = EventTypeId::empty;
+    std::size_t history = 0;
+    std::size_t latency = 0;
+};
+
 static_assert(std::is_standard_layout_v<ReflectedSamplePortStorageBinding>);
 static_assert(std::is_trivially_copyable_v<ReflectedSamplePortStorageBinding>);
 static_assert(std::is_standard_layout_v<ReflectedSampleInputPortBinding>);
 static_assert(std::is_trivially_copyable_v<ReflectedSampleInputPortBinding>);
 static_assert(std::is_standard_layout_v<ReflectedSampleOutputPortBinding>);
 static_assert(std::is_trivially_copyable_v<ReflectedSampleOutputPortBinding>);
+static_assert(std::is_standard_layout_v<ReflectedEventPortStorageBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedEventPortStorageBinding>);
+static_assert(std::is_standard_layout_v<ReflectedEventInputPortBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedEventInputPortBinding>);
+static_assert(std::is_standard_layout_v<ReflectedEventOutputPortBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedEventOutputPortBinding>);
 
 struct ReflectedNodeTickContext {
     // Legacy reflected sample façades remain temporarily for the old Graph
@@ -99,6 +130,12 @@ struct ReflectedNodeTickContext {
     ReflectedSpan<ReflectedSampleInputPortBinding const> sample_input_bindings {};
     ReflectedSpan<ReflectedSampleOutputPortBinding const> sample_output_bindings {};
 
+    // GraphJit event bindings mirror the sample binding architecture. Legacy
+    // reflected event facade spans remain as the compatibility fallback when
+    // event_storage_base is null.
+    std::byte* event_storage_base = nullptr;
+    ReflectedSpan<ReflectedEventInputPortBinding const> event_input_bindings {};
+    ReflectedSpan<ReflectedEventOutputPortBinding const> event_output_bindings {};
     ReflectedSpan<EventInputPort> event_inputs {};
     ReflectedSpan<EventOutputPort> event_outputs {};
     ReflectedSpan<CompiledInputPort const> compiled_inputs {};

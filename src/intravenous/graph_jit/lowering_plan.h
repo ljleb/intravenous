@@ -122,6 +122,47 @@ struct SamplePortBindingPlan {
     }
 };
 
+// Point 10 starts with direct realtime event flow. Each producer group owns one
+// bounded raw event sequence. The count word and TimedEvent payload bytes live
+// in canonical NodeStorage; primitive callbacks receive only immutable bindings
+// and reconstruct invocation-local EventInputPort/EventOutputPort facades.
+struct EventRepresentationPlan {
+    std::size_t producer_group_index = 0;
+    EventTypeId type = EventTypeId::empty;
+    std::size_t event_capacity = 0;
+    std::size_t count_relative_offset = 0;
+    std::size_t events_relative_offset = 0;
+    std::size_t size_bytes = 0;
+    std::size_t alignment = 1;
+    NodeLayout::RegionHandle region{};
+    std::size_t count_storage_offset = 0;
+    std::size_t events_storage_offset = 0;
+};
+
+struct PrimitiveEventInputBindingPlan {
+    std::optional<std::size_t> representation{};
+};
+
+struct PrimitiveEventOutputBindingPlan {
+    std::optional<std::size_t> representation{};
+    EventTypeId source_type = EventTypeId::empty;
+    std::size_t history = 0;
+    std::size_t latency = 0;
+};
+
+struct PrimitiveEventPortPlan {
+    std::vector<PrimitiveEventInputBindingPlan> inputs{};
+    std::vector<PrimitiveEventOutputBindingPlan> outputs{};
+};
+
+struct EventPortBindingPlan {
+    // Indexed by ConnectionAnalysisPlan::event_producer_groups.
+    std::vector<std::optional<std::size_t>> producer_group_representations{};
+    std::vector<EventRepresentationPlan> representations{};
+    // Indexed by analyzed concrete primitive.
+    std::vector<PrimitiveEventPortPlan> primitives{};
+};
+
 struct PrimitiveExecutionStep {
     std::size_t configuration_index = 0;
     std::size_t storage_index = 0;
@@ -156,6 +197,7 @@ struct LoweringPlan {
     PackageImportPlan imports{};
     ConfigurationPlan configurations{};
     SamplePortBindingPlan sample_ports{};
+    EventPortBindingPlan event_ports{};
     ExecutionPlan execution{};
 };
 

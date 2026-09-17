@@ -36,6 +36,11 @@ struct ReflectedContextByteOffsets {
     std::size_t sample_input_bindings_size = 0;
     std::size_t sample_output_bindings_data = 0;
     std::size_t sample_output_bindings_size = 0;
+    std::size_t event_storage_base = 0;
+    std::size_t event_input_bindings_data = 0;
+    std::size_t event_input_bindings_size = 0;
+    std::size_t event_output_bindings_data = 0;
+    std::size_t event_output_bindings_size = 0;
     std::size_t compiled_state_data = 0;
     std::size_t compiled_state_size = 0;
     std::size_t state_data = 0;
@@ -58,6 +63,17 @@ struct EmittedSamplePortBindings {
     std::vector<EmittedPrimitiveSamplePorts> primitives{};
 };
 
+struct EmittedPrimitiveEventPorts {
+    llvm::GlobalVariable* input_bindings = nullptr;
+    std::size_t input_count = 0;
+    llvm::GlobalVariable* output_bindings = nullptr;
+    std::size_t output_count = 0;
+};
+
+struct EmittedEventPortBindings {
+    std::vector<EmittedPrimitiveEventPorts> primitives{};
+};
+
 constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
 {
     return {
@@ -74,6 +90,19 @@ constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
         .sample_output_bindings_size =
             offsetof(ReflectedNodeTickContext, sample_output_bindings)
             + offsetof(ReflectedSpan<ReflectedSampleOutputPortBinding const>, extent),
+        .event_storage_base = offsetof(ReflectedNodeTickContext, event_storage_base),
+        .event_input_bindings_data =
+            offsetof(ReflectedNodeTickContext, event_input_bindings)
+            + offsetof(ReflectedSpan<ReflectedEventInputPortBinding const>, pointer),
+        .event_input_bindings_size =
+            offsetof(ReflectedNodeTickContext, event_input_bindings)
+            + offsetof(ReflectedSpan<ReflectedEventInputPortBinding const>, extent),
+        .event_output_bindings_data =
+            offsetof(ReflectedNodeTickContext, event_output_bindings)
+            + offsetof(ReflectedSpan<ReflectedEventOutputPortBinding const>, pointer),
+        .event_output_bindings_size =
+            offsetof(ReflectedNodeTickContext, event_output_bindings)
+            + offsetof(ReflectedSpan<ReflectedEventOutputPortBinding const>, extent),
         .compiled_state_data =
             offsetof(ReflectedNodeTickContext, compiled_state)
             + offsetof(ReflectedSpan<std::byte>, pointer),
@@ -554,6 +583,90 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
     return emitted;
 }
 
+std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
+    llvm::Module& module,
+    detail::EventPortBindingPlan const& plan)
+{
+    EmittedEventPortBindings emitted;
+    emitted.primitives.resize(plan.primitives.size());
+
+    auto storage_binding = [&](std::size_t representation_index)
+        -> std::expected<ReflectedEventPortStorageBinding, std::string> {
+        if (representation_index >= plan.representations.size()) {
+            return std::unexpected(
+                "GraphJit event binding references a missing physical representation");
+        }
+        auto const& representation = plan.representations[representation_index];
+        if (!representation.region.valid()) {
+            return std::unexpected(
+                "GraphJit event representation has no finalized raw storage region");
+        }
+        return ReflectedEventPortStorageBinding{
+            .count_offset = representation.count_storage_offset,
+            .events_offset = representation.events_storage_offset,
+            .event_capacity = representation.event_capacity,
+            .type = representation.type,
+        };
+    };
+
+    for (std::size_t primitive_index = 0;
+         primitive_index < plan.primitives.size();
+         ++primitive_index) {
+        auto const& primitive = plan.primitives[primitive_index];
+        auto& result = emitted.primitives[primitive_index];
+        result.input_count = primitive.inputs.size();
+        result.output_count = primitive.outputs.size();
+
+        if (!primitive.inputs.empty()) {
+            std::vector<ReflectedEventInputPortBinding> bindings;
+            bindings.reserve(primitive.inputs.size());
+            for (auto const& input : primitive.inputs) {
+                if (!input.representation) {
+                    return std::unexpected(
+                        "GraphJit event input binding has no physical representation");
+                }
+                auto storage = storage_binding(*input.representation);
+                if (!storage) return std::unexpected(std::move(storage.error()));
+                bindings.push_back(ReflectedEventInputPortBinding{
+                    .storage = *storage,
+                });
+            }
+            result.input_bindings = immutable_bytes_global(
+                module,
+                bindings.data(),
+                bindings.size() * sizeof(ReflectedEventInputPortBinding),
+                alignof(ReflectedEventInputPortBinding),
+                "__iv_graph_event_inputs_" + std::to_string(primitive_index));
+        }
+
+        if (!primitive.outputs.empty()) {
+            std::vector<ReflectedEventOutputPortBinding> bindings;
+            bindings.reserve(primitive.outputs.size());
+            for (auto const& output : primitive.outputs) {
+                if (!output.representation) {
+                    return std::unexpected(
+                        "GraphJit event output binding has no physical representation");
+                }
+                auto storage = storage_binding(*output.representation);
+                if (!storage) return std::unexpected(std::move(storage.error()));
+                bindings.push_back(ReflectedEventOutputPortBinding{
+                    .storage = *storage,
+                    .source_type = output.source_type,
+                    .history = output.history,
+                    .latency = output.latency,
+                });
+            }
+            result.output_bindings = immutable_bytes_global(
+                module,
+                bindings.data(),
+                bindings.size() * sizeof(ReflectedEventOutputPortBinding),
+                alignof(ReflectedEventOutputPortBinding),
+                "__iv_graph_event_outputs_" + std::to_string(primitive_index));
+        }
+    }
+    return emitted;
+}
+
 void store_context_pointer(
     llvm::IRBuilder<>& builder,
     llvm::Value* context_storage,
@@ -622,6 +735,7 @@ void emit_primitive_call(
     EmittedNodeConfiguration const& configuration,
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
+    EmittedPrimitiveEventPorts const& event_ports,
     llvm::Value* storage_base,
     llvm::Value* sample_index,
     llvm::Value* block_size)
@@ -664,6 +778,29 @@ void emit_primitive_call(
             sample_ports.output_bindings,
             sample_ports.output_count);
     }
+    store_context_pointer(
+        builder,
+        context_storage,
+        offsets.event_storage_base,
+        storage_base);
+    if (event_ports.input_count != 0) {
+        store_context_span_pointer(
+            builder,
+            context_storage,
+            offsets.event_input_bindings_data,
+            offsets.event_input_bindings_size,
+            event_ports.input_bindings,
+            event_ports.input_count);
+    }
+    if (event_ports.output_count != 0) {
+        store_context_span_pointer(
+            builder,
+            context_storage,
+            offsets.event_output_bindings_data,
+            offsets.event_output_bindings_size,
+            event_ports.output_bindings,
+            event_ports.output_count);
+    }
     if (storage.has_compiled_state) {
         store_context_span(
             builder,
@@ -697,6 +834,7 @@ void emit_sliced_primitive_calls(
     EmittedNodeConfiguration const& configuration,
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
+    EmittedPrimitiveEventPorts const& event_ports,
     llvm::Value* storage_base,
     llvm::Value* sample_index,
     llvm::Value* block_size,
@@ -733,6 +871,7 @@ void emit_sliced_primitive_calls(
         configuration,
         storage,
         sample_ports,
+        event_ports,
         storage_base,
         slice_index,
         slice_size);
@@ -1285,6 +1424,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
     detail::LoweringPlan const& plan,
     std::vector<EmittedNodeConfiguration> const& configurations,
     EmittedSamplePortBindings const& sample_bindings,
+    EmittedEventPortBindings const& event_bindings,
     bool skip)
 {
     auto* root_type = root_block_operation_type(module.getContext());
@@ -1317,6 +1457,10 @@ std::expected<llvm::Function*, std::string> define_root_operation(
         if (step.configuration_index >= sample_bindings.primitives.size()) {
             return std::unexpected(
                 "GraphJit execution plan references a missing sample-port runtime plan");
+        }
+        if (step.configuration_index >= event_bindings.primitives.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing event-port runtime plan");
         }
 
         for (auto const carry_index : step.sample_carry_restores_before) {
@@ -1359,6 +1503,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 configurations[step.configuration_index],
                 plan.declarations.primitive_storage[step.storage_index],
                 sample_bindings.primitives[step.configuration_index],
+                event_bindings.primitives[step.configuration_index],
                 storage_base,
                 sample_index,
                 block_size,
@@ -1370,6 +1515,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 configurations[step.configuration_index],
                 plan.declarations.primitive_storage[step.storage_index],
                 sample_bindings.primitives[step.configuration_index],
+                event_bindings.primitives[step.configuration_index],
                 storage_base,
                 sample_index,
                 block_size);
@@ -1452,6 +1598,11 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
     if (!sample_bindings) {
         return std::unexpected(std::move(sample_bindings.error()));
     }
+    auto event_bindings = emit_event_port_bindings(
+        output_module, plan.event_ports);
+    if (!event_bindings) {
+        return std::unexpected(std::move(event_bindings.error()));
+    }
 
     auto tick = define_root_operation(
         output_module,
@@ -1459,6 +1610,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
         plan,
         *configurations,
         *sample_bindings,
+        *event_bindings,
         false);
     if (!tick) return std::unexpected(std::move(tick.error()));
 
@@ -1470,6 +1622,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
             plan,
             *configurations,
             *sample_bindings,
+            *event_bindings,
             true);
         if (!skip) return std::unexpected(std::move(skip.error()));
         skip_symbol = std::string(root_skip_block_symbol);

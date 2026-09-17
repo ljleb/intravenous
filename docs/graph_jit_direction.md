@@ -284,13 +284,19 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    modes use absolute sample-index addressing. Persistent compiler-owned raw regions
    carry stable migration identities and exact-shape `NodeStorage` migration copies
    their bytes across generations; transient arenas never migrate. This point covers
-   declared output latency and input/output history. Whole-graph path-latency
-   equalization across independently-latent branches remains a separate scheduling
-   analysis concern and must land before latency-sensitive multi-input graphs are
-   considered complete.
-10. **Event-port realization refactor and simple event flow.** **Current checkpoint.** Give events the same
-    immutable-binding/no-facade-storage architecture, then realize direct/transient
-    bounded realtime event windows through `choose_event_connection_implementation()`.
+   declared output latency and input/output history. Feed-forward whole-graph
+   path-latency equalization is also landed: cumulative node/internal/output latency
+   propagates through the schedule, faster branches receive compiler-owned read
+   compensation, and that timing survives conversion, fanout, channel composition,
+   history, and target-channel projection/permutation. Feedback/SCC latency remains
+   deferred to point 12.
+10. **Event-port realization refactor and simple event flow.** **In progress: direct flow landed.**
+    Events now use immutable compiler bindings over bounded raw `NodeStorage`;
+    imported primitive wrappers reconstruct invocation-local event facades rather
+    than persisting `EventSharedPortData`/port objects. Exact-type, zero-retention,
+    unsliced realtime producer groups realize `direct` bounded sequences. The next
+    sub-step is `transient_sequence` materialization for block-size adaptation and
+    event conversion before retained event storage is added.
 11. **Event fanout/conversion/retention.** Add converted branches, compact event
     carry, persistent rings, bounded capacity/workspace policy, and liveness reuse.
 12. **SCC/feedback execution.** Turn existing SCC analysis into feedback-aware

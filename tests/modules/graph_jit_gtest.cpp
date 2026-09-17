@@ -53,6 +53,7 @@ constexpr char graph_jit_latency_conversion_fanout_module_id[] = "iv.test.graph_
 constexpr char graph_jit_composed_latency_module_id[] = "iv.test.graph_jit.state_context.composed_latency_module";
 constexpr char graph_jit_composed_history_module_id[] = "iv.test.graph_jit.state_context.composed_history_module";
 constexpr char graph_jit_projected_composition_module_id[] = "iv.test.graph_jit.state_context.projected_composition_module";
+constexpr char graph_jit_direct_event_module_id[] = "iv.test.graph_jit.state_context.direct_event_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -167,6 +168,17 @@ struct LatencyCompensationProbeStateMirror {
     float fast_last = 0.0f;
     float slow_last = 0.0f;
     float max_abs_difference = 0.0f;
+    std::uint32_t marker = 0;
+};
+
+struct EventConsumerProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t last_index = 0;
+    std::uint64_t last_block_size = 0;
+    std::uint64_t event_count = 0;
+    std::uint64_t trigger_count = 0;
+    std::uint64_t first_time = 0;
+    std::uint64_t last_time = 0;
     std::uint32_t marker = 0;
 };
 
@@ -2015,6 +2027,75 @@ struct InterleavedLatencyCompensationProbe {
     }
 };
 
+struct TriggerEventSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::realtime_event_output("trigger", iv::EventTypeId::trigger),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<TriggerEventSource> const& ctx) const
+    {
+        if (ctx.block_size == 0) return;
+        ctx.event_outputs[0].push(
+            iv::TriggerEvent{}, 3, ctx.index, ctx.block_size);
+        ctx.event_outputs[0].push(
+            iv::TriggerEvent{}, ctx.block_size - 1, ctx.index, ctx.block_size);
+    }
+};
+
+struct TriggerEventConsumer {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t last_index = 0;
+        std::uint64_t last_block_size = 0;
+        std::uint64_t event_count = 0;
+        std::uint64_t trigger_count = 0;
+        std::uint64_t first_time = 0;
+        std::uint64_t last_time = 0;
+        std::uint32_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input("trigger", iv::EventTypeId::trigger),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<TriggerEventConsumer> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        ++state.calls;
+        state.last_index = ctx.index;
+        state.last_block_size = ctx.block_size;
+        state.event_count = events.size();
+        state.trigger_count = 0;
+        state.marker = 0xe71e17u;
+        if (!events.empty()) {
+            state.first_time = events[0].time;
+            state.last_time = events[events.size() - 1].time;
+        }
+        for (auto const& event : events) {
+            if (std::holds_alternative<iv::TriggerEvent>(event.value)) {
+                ++state.trigger_count;
+            }
+        }
+    }
+};
+
 struct PortedProbe {
     static constexpr auto inputs()
     {
@@ -2217,6 +2298,14 @@ void projected_composition_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void direct_event_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.trigger_event_source">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.trigger_event_consumer">();
+    sink.connect_event_input(0, source.event_port());
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -2245,6 +2334,8 @@ IV_NODE("iv.test.graph_jit.state_context.large_history_consumer", LargeHistoryCo
 IV_NODE("iv.test.graph_jit.state_context.five_sample_delay", FiveSampleDelay);
 IV_NODE("iv.test.graph_jit.state_context.latency_compensation_probe", LatencyCompensationProbe);
 IV_NODE("iv.test.graph_jit.state_context.interleaved_latency_compensation_probe", InterleavedLatencyCompensationProbe);
+IV_NODE("iv.test.graph_jit.state_context.trigger_event_source", TriggerEventSource);
+IV_NODE("iv.test.graph_jit.state_context.trigger_event_consumer", TriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
@@ -2267,6 +2358,7 @@ IV_MODULE("iv.test.graph_jit.state_context.latency_conversion_fanout_module", la
 IV_MODULE("iv.test.graph_jit.state_context.composed_latency_module", composed_latency_module);
 IV_MODULE("iv.test.graph_jit.state_context.composed_history_module", composed_history_module);
 IV_MODULE("iv.test.graph_jit.state_context.projected_composition_module", projected_composition_module);
+IV_MODULE("iv.test.graph_jit.state_context.direct_event_module", direct_event_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -2340,6 +2432,11 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_TRUE(has_module_definition(graph_jit_composed_latency_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_composed_history_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_projected_composition_module_id));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.trigger_event_source"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.trigger_event_consumer"));
+    EXPECT_TRUE(has_module_definition(graph_jit_direct_event_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -3659,6 +3756,73 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(projected_probe->sum_left, 69664.0f);
     EXPECT_FLOAT_EQ(projected_probe->sum_right, 5664.0f);
 
+    auto direct_event_graph = configured_module_graph(
+        *revision, graph_jit_direct_event_module_id);
+    ASSERT_TRUE(direct_event_graph);
+    auto direct_event_analysis =
+        iv::graph_jit::detail::build_connection_analysis_plan(
+            *direct_event_graph, 64);
+    ASSERT_TRUE(direct_event_analysis.has_value())
+        << (direct_event_analysis
+                ? std::string{}
+                : direct_event_analysis.error());
+    ASSERT_EQ(direct_event_analysis->event_connections.size(), 1u);
+    ASSERT_EQ(direct_event_analysis->event_producer_groups.size(), 1u);
+    auto const& direct_event_group =
+        direct_event_analysis->event_producer_groups.front();
+    ASSERT_TRUE(direct_event_group.implementation.has_value());
+    EXPECT_EQ(
+        *direct_event_group.implementation,
+        iv::EventConnectionImplementationKind::direct);
+    EXPECT_EQ(direct_event_group.sources.size(), 1u);
+    EXPECT_EQ(direct_event_group.connection_indices.size(), 1u);
+
+    auto direct_event = compile_graph(direct_event_graph, 123);
+    ASSERT_TRUE(direct_event.succeeded())
+        << (direct_event.diagnostics.empty()
+                ? ""
+                : direct_event.diagnostics.front().message);
+    ASSERT_EQ(direct_event.compiled_graph->node_layout.nodes.size(), 2u);
+    ASSERT_EQ(count_raw_regions(direct_event.compiled_graph->node_layout), 1u);
+
+    auto direct_event_storage =
+        direct_event.compiled_graph->node_layout.create_storage(resources);
+    direct_event_storage.initialize();
+    EventConsumerProbeStateMirror* direct_event_probe = nullptr;
+    for (std::size_t i = 0;
+         i < direct_event.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (direct_event.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(EventConsumerProbeStateMirror)) {
+            ASSERT_EQ(direct_event_probe, nullptr);
+            direct_event_probe = static_cast<EventConsumerProbeStateMirror*>(
+                direct_event_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(direct_event_probe, nullptr);
+
+    direct_event.compiled_graph->root_operations.tick_block(
+        direct_event_storage.buffer().data(), 0, 64);
+    EXPECT_EQ(direct_event_probe->calls, 1u);
+    EXPECT_EQ(direct_event_probe->last_index, 0u);
+    EXPECT_EQ(direct_event_probe->last_block_size, 64u);
+    EXPECT_EQ(direct_event_probe->event_count, 2u);
+    EXPECT_EQ(direct_event_probe->trigger_count, 2u);
+    EXPECT_EQ(direct_event_probe->first_time, 3u);
+    EXPECT_EQ(direct_event_probe->last_time, 63u);
+    EXPECT_EQ(direct_event_probe->marker, 0xe71e17u);
+
+    // Direct event storage is per-root-invocation scratch: the producer clears
+    // the previous bounded sequence before publishing this block, and the
+    // consumer observes only timestamps in the new block.
+    direct_event.compiled_graph->root_operations.tick_block(
+        direct_event_storage.buffer().data(), 64, 64);
+    EXPECT_EQ(direct_event_probe->calls, 2u);
+    EXPECT_EQ(direct_event_probe->last_index, 64u);
+    EXPECT_EQ(direct_event_probe->event_count, 2u);
+    EXPECT_EQ(direct_event_probe->trigger_count, 2u);
+    EXPECT_EQ(direct_event_probe->first_time, 67u);
+    EXPECT_EQ(direct_event_probe->last_time, 127u);
+
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);
     ASSERT_TRUE(history_graph);
@@ -3888,6 +4052,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     stereo_conversion_storage = iv::NodeStorage{};
     latency_storage = iv::NodeStorage{};
     composed_history_storage = iv::NodeStorage{};
+    direct_event_storage = iv::NodeStorage{};
     history_storage = iv::NodeStorage{};
     history_next_storage = iv::NodeStorage{};
     persistent_history_storage = iv::NodeStorage{};
@@ -3907,6 +4072,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     stereo_conversion = {};
     latency_compensation = {};
     composed_history = {};
+    direct_event = {};
     history = {};
     history_next = {};
     persistent_history = {};

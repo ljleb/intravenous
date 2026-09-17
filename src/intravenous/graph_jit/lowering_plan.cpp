@@ -86,13 +86,8 @@ bool is_power_of_two(std::size_t value) noexcept
 }
 
 std::expected<std::vector<PrimitiveBundle>, std::string> supported_primitives(
-    LoweringInput const& input,
-    ConnectionAnalysisPlan const& connections)
+    LoweringInput const& input)
 {
-    if (!connections.event_connections.empty()) {
-        return std::unexpected(
-            "GraphJit lowering does not yet support event connections");
-    }
     std::vector<PrimitiveBundle> primitives;
     std::string structural_error;
     std::size_t boundary_count = 0;
@@ -119,12 +114,6 @@ std::expected<std::vector<PrimitiveBundle>, std::string> supported_primitives(
             if (!view.ports) {
                 structural_error =
                     "GraphJit sample-edge slice requires concrete primitive port metadata";
-                return;
-            }
-            if (view.ports->event_input_count() != 0
-                || view.ports->event_output_count() != 0) {
-                structural_error =
-                    "GraphJit sample-edge slice does not yet support primitive event ports";
                 return;
             }
             if (!is_power_of_two(view.node_alignment)) {
@@ -165,14 +154,13 @@ std::expected<std::vector<PrimitiveBundle>, std::string> supported_primitives(
 }
 
 std::expected<GraphAnalysis, std::string> analyze_graph(
-    LoweringInput const& input,
-    ConnectionAnalysisPlan const& connections)
+    LoweringInput const& input)
 {
     if (is_structurally_empty(input.graph)) {
         return GraphAnalysis{.empty = true};
     }
 
-    auto primitive_bundles = supported_primitives(input, connections);
+    auto primitive_bundles = supported_primitives(input);
     if (!primitive_bundles) {
         return std::unexpected(std::move(primitive_bundles.error()));
     }
@@ -229,7 +217,8 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
 std::expected<DeclarationPlan, std::string> plan_declarations(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
-    SamplePortBindingPlan& sample_ports)
+    SamplePortBindingPlan& sample_ports,
+    EventPortBindingPlan& event_ports)
 {
     NodeLayoutBuilder layout_builder(input.specialization.block_size);
     if (analysis.empty) {
@@ -263,10 +252,29 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         }
     }
 
+    for (auto const& primitive : event_ports.primitives) {
+        for (auto const& binding : primitive.inputs) {
+            if (!binding.representation) {
+                return std::unexpected(
+                    "GraphJit event runtime declaration has an unbound input port");
+            }
+        }
+        for (auto const& binding : primitive.outputs) {
+            if (!binding.representation) {
+                return std::unexpected(
+                    "GraphJit event runtime declaration has an unbound output port");
+            }
+        }
+    }
+
     auto declared_sample_storage = declare_sample_physical_storage(
         layout_builder, sample_ports.physical);
     if (!declared_sample_storage) {
         return std::unexpected(std::move(declared_sample_storage.error()));
+    }
+    for (auto& representation : event_ports.representations) {
+        representation.region = layout_builder.declare_raw_region(
+            representation.size_bytes, representation.alignment);
     }
 
     auto node_layout = std::move(layout_builder).build();
@@ -307,18 +315,45 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             || region.kind == NodeLayout::Region::Kind::compiled_state) {
             continue;
         }
+        auto const event_physical_owns_region = std::ranges::any_of(
+            event_ports.representations,
+            [&](EventRepresentationPlan const& representation) {
+                return representation.region.valid()
+                    && representation.region.index == region_index;
+            });
         if (region.kind == NodeLayout::Region::Kind::raw
-            && sample_physical_owns_region(region_index)) {
+            && (sample_physical_owns_region(region_index)
+                || event_physical_owns_region)) {
             continue;
         }
         return std::unexpected(
-            "GraphJit sample-edge slice does not yet support declaration-owned auxiliary storage regions");
+            "GraphJit lowering does not yet support declaration-owned auxiliary storage regions");
     }
 
     auto finalized_sample_storage = finalize_sample_physical_storage(
         node_layout, sample_ports.physical);
     if (!finalized_sample_storage) {
         return std::unexpected(std::move(finalized_sample_storage.error()));
+    }
+    for (auto& representation : event_ports.representations) {
+        if (!representation.region.valid()
+            || representation.region.index >= node_layout.regions.size()) {
+            return std::unexpected(
+                "GraphJit event physical storage lost its raw region");
+        }
+        auto const& region = node_layout.regions[representation.region.index];
+        if (region.kind != NodeLayout::Region::Kind::raw
+            || region.size != representation.size_bytes
+            || region.alignment != representation.alignment
+            || representation.count_relative_offset > region.size
+            || representation.events_relative_offset > region.size) {
+            return std::unexpected(
+                "GraphJit event physical storage disagrees with finalized NodeLayout");
+        }
+        representation.count_storage_offset =
+            region.storage_offset + representation.count_relative_offset;
+        representation.events_storage_offset =
+            region.storage_offset + representation.events_relative_offset;
     }
 
 
@@ -657,10 +692,6 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 {
     SamplePortBindingPlan plan;
     if (analysis.empty) return plan;
-    if (!connections.event_connections.empty()) {
-        return std::unexpected(
-            "GraphJit sample-edge slice does not yet support event connections");
-    }
     if (connections.boundary_bundle < input.graph.node_bundles.size()) {
         auto const& boundary = input.graph.node_bundles.bundle(
             connections.boundary_bundle);
@@ -719,10 +750,6 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
         plan.primitives[i].inputs.resize(node->sample_input_count);
         plan.primitives[i].outputs.resize(node->sample_output_count);
-        if (node->event_input_count != 0 || node->event_output_count != 0) {
-            return std::unexpected(
-                "GraphJit sample-edge slice does not yet support primitive event ports");
-        }
     }
 
     for (auto const& group : connections.sample_producer_groups) {
@@ -1025,6 +1052,227 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     return plan;
 }
 
+std::expected<EventPortBindingPlan, std::string> plan_event_ports(
+    LoweringInput const& input,
+    GraphAnalysis const& analysis,
+    ConnectionAnalysisPlan const& connections)
+{
+    EventPortBindingPlan plan;
+    if (analysis.empty) return plan;
+
+    if (connections.boundary_bundle < input.graph.node_bundles.size()) {
+        auto const& boundary = input.graph.node_bundles.bundle(
+            connections.boundary_bundle);
+        if (boundary.event_input_count() != 0
+            || boundary.event_output_count() != 0) {
+            return std::unexpected(
+                "GraphJit direct event flow does not yet support external event boundaries");
+        }
+    }
+
+    auto primitive_index_for_bundle = [&](NodeBundleHandle bundle)
+        -> std::optional<std::size_t> {
+        for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
+            if (analysis.primitives[i].bundle.node_bundle == bundle) return i;
+        }
+        return std::nullopt;
+    };
+    auto planned_node_for_bundle = [&](NodeBundleHandle bundle)
+        -> PlannedGraphNode const* {
+        auto const found = std::ranges::find_if(
+            connections.nodes,
+            [&](PlannedGraphNode const& node) { return node.bundle == bundle; });
+        return found == connections.nodes.end() ? nullptr : &*found;
+    };
+
+    plan.primitives.resize(analysis.primitives.size());
+    for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
+        auto const* node = planned_node_for_bundle(
+            analysis.primitives[i].bundle.node_bundle);
+        if (!node) {
+            return std::unexpected(
+                "GraphJit event planning lost concrete-node port metadata");
+        }
+        plan.primitives[i].inputs.resize(node->event_input_count);
+        plan.primitives[i].outputs.resize(node->event_output_count);
+    }
+
+    plan.producer_group_representations.resize(
+        connections.event_producer_groups.size());
+
+    auto align_up = [](std::size_t value, std::size_t alignment)
+        -> std::optional<std::size_t> {
+        if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
+            return std::nullopt;
+        }
+        auto const mask = alignment - 1;
+        if (value > std::numeric_limits<std::size_t>::max() - mask) {
+            return std::nullopt;
+        }
+        return (value + mask) & ~mask;
+    };
+
+    for (std::size_t group_index = 0;
+         group_index < connections.event_producer_groups.size();
+         ++group_index) {
+        auto const& group = connections.event_producer_groups[group_index];
+        if (!group.has_realtime_connections) {
+            return std::unexpected(
+                "GraphJit direct event flow does not yet support compiled-only event connections");
+        }
+        if (group.has_compiled_connections) {
+            return std::unexpected(
+                "GraphJit direct event flow does not yet support mixed realtime/compiled event fanout");
+        }
+        if (!group.implementation) {
+            return std::unexpected(
+                "GraphJit event planning lost its realtime implementation choice");
+        }
+        if (*group.implementation != EventConnectionImplementationKind::direct) {
+            return std::unexpected(
+                "GraphJit direct event flow does not yet support event materialization, retention, feedback, or external storage");
+        }
+        if (group.sources.size() != 1) {
+            return std::unexpected(
+                "GraphJit direct event flow requires exactly one producer output per event group");
+        }
+
+        auto const source_id = group.sources.front();
+        auto const source_primitive = primitive_index_for_bundle(source_id.bundle);
+        if (!source_primitive) {
+            return std::unexpected(
+                "GraphJit direct event flow requires an internal concrete producer");
+        }
+        if (analysis.primitives[*source_primitive].bundle.maximum_block_size
+            < input.specialization.block_size) {
+            return std::unexpected(
+                "GraphJit direct event flow does not yet support sliced event producers");
+        }
+        NodeBundlePortId const source_port{
+            source_id.bundle, PortKind::event, source_id.port};
+        auto const source = input.graph.node_bundles
+            .resolve_event_output(source_port).config;
+        if (!is_realtime(source.access)
+            || source.type != group.source_type) {
+            return std::unexpected(
+                "GraphJit direct event producer disagrees with its declaration");
+        }
+        if (source_id.port >= plan.primitives[*source_primitive].outputs.size()) {
+            return std::unexpected(
+                "GraphJit direct event producer ordinal is outside primitive metadata");
+        }
+
+        auto const capacity = calculate_event_port_buffer_capacity(
+            DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER, group.source_type);
+        auto const events_relative = align_up(
+            sizeof(std::size_t), alignof(TimedEvent));
+        if (!events_relative
+            || capacity > (std::numeric_limits<std::size_t>::max()
+                    - *events_relative) / sizeof(TimedEvent)) {
+            return std::unexpected(
+                "GraphJit direct event storage size overflows size_t");
+        }
+        auto const representation_index = plan.representations.size();
+        plan.representations.push_back(EventRepresentationPlan{
+            .producer_group_index = group_index,
+            .type = group.source_type,
+            .event_capacity = capacity,
+            .count_relative_offset = 0,
+            .events_relative_offset = *events_relative,
+            .size_bytes = *events_relative + capacity * sizeof(TimedEvent),
+            .alignment = std::max(alignof(std::size_t), alignof(TimedEvent)),
+        });
+        plan.producer_group_representations[group_index] = representation_index;
+
+        auto& source_binding =
+            plan.primitives[*source_primitive].outputs[source_id.port];
+        if (source_binding.representation) {
+            return std::unexpected(
+                "GraphJit event output belongs to more than one producer group");
+        }
+        source_binding = PrimitiveEventOutputBindingPlan{
+            .representation = representation_index,
+            .source_type = group.source_type,
+            .history = realtime_history(source),
+            .latency = realtime_latency(source),
+        };
+
+        for (auto const connection_index : group.connection_indices) {
+            if (connection_index >= connections.event_connections.size()) {
+                return std::unexpected(
+                    "GraphJit event producer group references an invalid connection");
+            }
+            auto const& connection = connections.event_connections[connection_index];
+            if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+                || connection.external_boundary
+                || connection.feedback
+                || connection.requires_conversion
+                || connection.requires_block_materialization
+                || connection.source_history != 0
+                || connection.source_latency != 0
+                || connection.target_history != 0
+                || connection.sources.size() != 1
+                || connection.sources.front().bundle != source_id.bundle
+                || connection.sources.front().port != source_id.port
+                || connection.source_type != group.source_type
+                || connection.target_type != group.source_type) {
+                return std::unexpected(
+                    "GraphJit direct event flow received a connection requiring later event realization semantics");
+            }
+
+            for (auto const target_id : connection.targets) {
+                auto const target_primitive = primitive_index_for_bundle(
+                    target_id.bundle);
+                if (!target_primitive) {
+                    return std::unexpected(
+                        "GraphJit direct event flow requires internal concrete consumers");
+                }
+                if (analysis.primitives[*target_primitive].bundle.maximum_block_size
+                    < input.specialization.block_size) {
+                    return std::unexpected(
+                        "GraphJit direct event flow does not yet support sliced event consumers");
+                }
+                NodeBundlePortId const target_port{
+                    target_id.bundle, PortKind::event, target_id.port};
+                auto const target = input.graph.node_bundles
+                    .resolve_event_input(target_port).config;
+                if (!is_realtime(target.access)
+                    || target.type != connection.target_type
+                    || target_id.port
+                        >= plan.primitives[*target_primitive].inputs.size()) {
+                    return std::unexpected(
+                        "GraphJit direct event consumer disagrees with its declaration");
+                }
+                auto& target_binding =
+                    plan.primitives[*target_primitive].inputs[target_id.port];
+                if (target_binding.representation) {
+                    return std::unexpected(
+                        "GraphJit event input has more than one realized connection");
+                }
+                target_binding.representation = representation_index;
+            }
+        }
+    }
+
+    for (auto const& primitive : plan.primitives) {
+        if (!std::ranges::all_of(
+                primitive.inputs,
+                [](auto const& binding) {
+                    return binding.representation.has_value();
+                })
+            || !std::ranges::all_of(
+                primitive.outputs,
+                [](auto const& binding) {
+                    return binding.representation.has_value();
+                })) {
+            return std::unexpected(
+                "GraphJit direct event flow requires every primitive event port to be connected exactly once");
+        }
+    }
+
+    return plan;
+}
+
 std::expected<ExecutionPlan, std::string> plan_execution(
     GraphAnalysis const& analysis,
     ConnectionAnalysisPlan const& connections,
@@ -1147,13 +1395,17 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         return std::unexpected(std::move(connections.error()));
     }
 
-    auto analysis = analyze_graph(input, *connections);
+    auto analysis = analyze_graph(input);
     if (!analysis) return std::unexpected(std::move(analysis.error()));
 
     auto sample_ports = plan_sample_ports(input, *analysis, *connections);
     if (!sample_ports) return std::unexpected(std::move(sample_ports.error()));
 
-    auto declarations = plan_declarations(input, *analysis, *sample_ports);
+    auto event_ports = plan_event_ports(input, *analysis, *connections);
+    if (!event_ports) return std::unexpected(std::move(event_ports.error()));
+
+    auto declarations = plan_declarations(
+        input, *analysis, *sample_ports, *event_ports);
     if (!declarations) return std::unexpected(std::move(declarations.error()));
 
     auto imports = plan_package_imports(input, *analysis);
@@ -1174,6 +1426,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         .imports = std::move(*imports),
         .configurations = std::move(*configurations),
         .sample_ports = std::move(*sample_ports),
+        .event_ports = std::move(*event_ports),
         .execution = std::move(*execution),
     };
 }
