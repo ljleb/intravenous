@@ -29,6 +29,8 @@ namespace iv {
         void (*release_fn)(void const*, size_t, NodeStorage&) = nullptr;
         void (*default_construct_state_fn)(void*) = nullptr;
         void (*destroy_state_fn)(void*) = nullptr;
+        void (*default_construct_compiled_state_fn)(void*) = nullptr;
+        void (*destroy_compiled_state_fn)(void*) = nullptr;
         std::string (*identity_fn)(void const*) = nullptr;
     };
 
@@ -47,6 +49,11 @@ namespace iv {
             size_t state_size = 0;
             size_t state_alignment = 1;
             bool has_state = false;
+            void const* compiled_state_type = nullptr;
+            char const* compiled_state_type_name = nullptr;
+            size_t compiled_state_size = 0;
+            size_t compiled_state_alignment = 1;
+            bool has_compiled_state = false;
             NodeLifecycleCallbacks lifecycle {};
         };
 
@@ -88,9 +95,13 @@ namespace iv {
             NodeLayoutBuilder&, NodeLayoutNodeRegistration const&);
         void allocate_node_state(
             NodeLayoutBuilder&, size_t node_index, size_t size, size_t alignment);
+        void allocate_node_compiled_state(
+            NodeLayoutBuilder&, size_t node_index, size_t size, size_t alignment);
         void declare_local_array(
             NodeLayoutBuilder&, NodeLayoutArrayDeclaration const&);
         size_t declare_nested_node_states(
+            NodeLayoutBuilder&, size_t node_index, ptrdiff_t state_field_offset);
+        size_t declare_nested_node_compiled_states(
             NodeLayoutBuilder&, size_t node_index, ptrdiff_t state_field_offset);
         void finalize_nested_node_states(
             NodeLayoutBuilder&, size_t region_index,
@@ -115,6 +126,8 @@ namespace iv {
             NodeLayoutBuilder const&);
 
         void* node_storage_state_ptr(NodeStorage const&, size_t node_index);
+        void* node_storage_compiled_state_ptr(
+            NodeStorage const&, size_t node_index);
         ResourceContext const& node_storage_resources(NodeStorage const&);
         size_t node_storage_max_block_size(NodeStorage const&);
         size_t node_storage_default_silence_ttl_samples(NodeStorage const&);
@@ -183,6 +196,16 @@ namespace iv {
                 registration.state_size = sizeof(State);
                 registration.state_alignment = alignof(State);
             }
+            registration.has_compiled_state =
+                !std::is_void_v<typename NodeCompiledState<Node>::Type>;
+            if constexpr (!std::is_void_v<typename NodeCompiledState<Node>::Type>) {
+                using CompiledState = typename NodeCompiledState<Node>::Type;
+                registration.compiled_state_type =
+                    node_layout_type_token<CompiledState>();
+                registration.compiled_state_type_name = typeid(CompiledState).name();
+                registration.compiled_state_size = sizeof(CompiledState);
+                registration.compiled_state_alignment = alignof(CompiledState);
+            }
             registration.lifecycle = make_lifecycle_callbacks<Node>();
             return registration;
         }
@@ -199,6 +222,16 @@ namespace iv {
                 using State = typename NodeState<Node>::Type;
                 registration.state_size = sizeof(State);
                 registration.state_alignment = alignof(State);
+            }
+            registration.has_compiled_state =
+                !std::is_void_v<typename NodeCompiledState<Node>::Type>;
+            if constexpr (!std::is_void_v<typename NodeCompiledState<Node>::Type>) {
+                using CompiledState = typename NodeCompiledState<Node>::Type;
+                registration.compiled_state_type =
+                    node_layout_type_token<CompiledState>();
+                registration.compiled_state_type_name = typeid(CompiledState).name();
+                registration.compiled_state_size = sizeof(CompiledState);
+                registration.compiled_state_alignment = alignof(CompiledState);
             }
             registration.lifecycle = make_reflected_lifecycle_callbacks<NodeValue>();
             return registration;
@@ -220,6 +253,7 @@ namespace iv {
         friend struct DeclarationContext;
 
         using State = typename NodeState<Node>::Type;
+        using CompiledState = typename NodeCompiledState<Node>::Type;
 
     private:
         NodeLayoutBuilder* _builder = nullptr;
@@ -227,6 +261,7 @@ namespace iv {
         State const* _state_marker = nullptr;
         mutable std::vector<size_t> _direct_nested_node_indices;
         mutable std::optional<size_t> _nested_nodes_region_index;
+        mutable std::optional<size_t> _nested_compiled_nodes_region_index;
 
     public:
         explicit DeclarationContext(NodeLayoutBuilder& builder, Node const& node)
@@ -238,6 +273,13 @@ namespace iv {
                 details::allocate_node_state(
                     builder, _node_index, sizeof(State), alignof(State));
                 _state_marker = reinterpret_cast<State const*>(uintptr_t { 0x10000 });
+            }
+            if constexpr (!std::is_void_v<CompiledState>) {
+                details::allocate_node_compiled_state(
+                    builder,
+                    _node_index,
+                    sizeof(CompiledState),
+                    alignof(CompiledState));
             }
         }
 
@@ -257,6 +299,13 @@ namespace iv {
                     builder, _node_index, sizeof(State), alignof(State));
                 _state_marker = reinterpret_cast<State const*>(uintptr_t { 0x10000 });
             }
+            if constexpr (!std::is_void_v<CompiledState>) {
+                details::allocate_node_compiled_state(
+                    builder,
+                    _node_index,
+                    sizeof(CompiledState),
+                    alignof(CompiledState));
+            }
         }
 
         ~DeclarationContext()
@@ -265,6 +314,12 @@ namespace iv {
                 details::finalize_nested_node_states(
                     *_builder,
                     *_nested_nodes_region_index,
+                    _direct_nested_node_indices);
+            }
+            if (_nested_compiled_nodes_region_index) {
+                details::finalize_nested_node_states(
+                    *_builder,
+                    *_nested_compiled_nodes_region_index,
                     std::move(_direct_nested_node_indices));
             }
         }
@@ -383,6 +438,19 @@ namespace iv {
                 details::node_layout_field_offset(_state_marker, &nodes));
         }
 
+        void nested_node_compiled_states(
+            std::span<std::span<std::byte>> const& nodes) const
+        {
+            IV_ASSERT(
+                !_nested_compiled_nodes_region_index.has_value(),
+                "nested_node_compiled_states must only be declared once per node");
+            _nested_compiled_nodes_region_index =
+                details::declare_nested_node_compiled_states(
+                    *_builder,
+                    _node_index,
+                    details::node_layout_field_offset(_state_marker, &nodes));
+        }
+
         void declare_reflected_child(
             void const* node_data,
             NodeStateStructure const* state_structure,
@@ -424,18 +492,24 @@ namespace iv {
         friend struct InitializationContext;
 
         using State = typename NodeState<Node>::Type;
+        using CompiledState = typename NodeCompiledState<Node>::Type;
 
     private:
         NodeStorage* _storage = nullptr;
         void* _state = nullptr;
+        void* _compiled_state = nullptr;
 
     public:
         ResourceContext const& resources;
 
         explicit InitializationContext(
-            NodeStorage& storage, void* state, ResourceContext const& resources_)
+            NodeStorage& storage,
+            void* state,
+            void* compiled_state,
+            ResourceContext const& resources_)
             : _storage(&storage)
             , _state(state)
+            , _compiled_state(compiled_state)
             , resources(resources_)
         {}
 
@@ -443,6 +517,7 @@ namespace iv {
         InitializationContext(InitializationContext<Node2> const& ctx)
             : _storage(ctx._storage)
             , _state(ctx._state)
+            , _compiled_state(ctx._compiled_state)
             , resources(ctx.resources)
         {}
 
@@ -450,6 +525,12 @@ namespace iv {
         requires(!std::is_void_v<State>)
         {
             return *static_cast<State*>(_state);
+        }
+
+        std::add_lvalue_reference_t<CompiledState> compiled_state() const
+        requires(!std::is_void_v<CompiledState>)
+        {
+            return *static_cast<CompiledState*>(_compiled_state);
         }
 
         NodeStorage& storage() const
@@ -483,18 +564,24 @@ namespace iv {
         friend struct ReleaseContext;
 
         using State = typename NodeState<Node>::Type;
+        using CompiledState = typename NodeCompiledState<Node>::Type;
 
     private:
         NodeStorage* _storage = nullptr;
         void* _state = nullptr;
+        void* _compiled_state = nullptr;
 
     public:
         ResourceContext const& resources;
 
         explicit ReleaseContext(
-            NodeStorage& storage, void* state, ResourceContext const& resources_)
+            NodeStorage& storage,
+            void* state,
+            void* compiled_state,
+            ResourceContext const& resources_)
             : _storage(&storage)
             , _state(state)
+            , _compiled_state(compiled_state)
             , resources(resources_)
         {}
 
@@ -502,6 +589,7 @@ namespace iv {
         ReleaseContext(ReleaseContext<Node2> const& ctx)
             : _storage(ctx._storage)
             , _state(ctx._state)
+            , _compiled_state(ctx._compiled_state)
             , resources(ctx.resources)
         {}
 
@@ -509,6 +597,12 @@ namespace iv {
         requires(!std::is_void_v<State>)
         {
             return *static_cast<State*>(_state);
+        }
+
+        std::add_lvalue_reference_t<CompiledState> compiled_state() const
+        requires(!std::is_void_v<CompiledState>)
+        {
+            return *static_cast<CompiledState*>(_compiled_state);
         }
     };
 
@@ -518,12 +612,15 @@ namespace iv {
         friend struct MoveContext;
 
         using State = typename NodeState<Node>::Type;
+        using CompiledState = typename NodeCompiledState<Node>::Type;
 
     private:
         NodeStorage* _storage = nullptr;
         void* _state = nullptr;
+        void* _compiled_state = nullptr;
         NodeStorage const* _previous_storage = nullptr;
         void* _previous_state = nullptr;
+        void* _previous_compiled_state = nullptr;
 
     public:
         ResourceContext const& resources;
@@ -531,13 +628,17 @@ namespace iv {
         explicit MoveContext(
             NodeStorage& storage,
             void* state,
+            void* compiled_state,
             NodeStorage const& previous_storage,
             void* previous_state,
+            void* previous_compiled_state,
             ResourceContext const& resources_)
             : _storage(&storage)
             , _state(state)
+            , _compiled_state(compiled_state)
             , _previous_storage(&previous_storage)
             , _previous_state(previous_state)
+            , _previous_compiled_state(previous_compiled_state)
             , resources(resources_)
         {}
 
@@ -545,8 +646,10 @@ namespace iv {
         MoveContext(MoveContext<Node2> const& ctx)
             : _storage(ctx._storage)
             , _state(ctx._state)
+            , _compiled_state(ctx._compiled_state)
             , _previous_storage(ctx._previous_storage)
             , _previous_state(ctx._previous_state)
+            , _previous_compiled_state(ctx._previous_compiled_state)
             , resources(ctx.resources)
         {}
 
@@ -560,6 +663,18 @@ namespace iv {
         requires(!std::is_void_v<State>)
         {
             return *static_cast<State*>(_previous_state);
+        }
+
+        std::add_lvalue_reference_t<CompiledState> compiled_state() const
+        requires(!std::is_void_v<CompiledState>)
+        {
+            return *static_cast<CompiledState*>(_compiled_state);
+        }
+
+        std::add_lvalue_reference_t<CompiledState> previous_compiled_state() const
+        requires(!std::is_void_v<CompiledState>)
+        {
+            return *static_cast<CompiledState*>(_previous_compiled_state);
         }
     };
 
@@ -582,6 +697,19 @@ namespace iv {
                 };
             }
 
+            if constexpr (!std::is_void_v<typename NodeCompiledState<Node>::Type>) {
+                using CompiledState = typename NodeCompiledState<Node>::Type;
+                static_assert(
+                    std::is_default_constructible_v<CompiledState>,
+                    "Node::CompiledState must be default constructible");
+                callbacks.default_construct_compiled_state_fn = [](void* ptr) {
+                    new (ptr) CompiledState();
+                };
+                callbacks.destroy_compiled_state_fn = [](void* ptr) {
+                    std::destroy_at(static_cast<CompiledState*>(ptr));
+                };
+            }
+
             if constexpr (has_move<Node>) {
                 callbacks.move_fn = [](
                     void const* node_ptr,
@@ -590,24 +718,33 @@ namespace iv {
                     NodeStorage& storage,
                     NodeStorage const& previous_storage) {
                     void* state = node_storage_state_ptr(storage, node_index);
+                    void* compiled_state =
+                        node_storage_compiled_state_ptr(storage, node_index);
                     void* previous_state =
                         node_storage_state_ptr(previous_storage, previous_node_index);
+                    void* previous_compiled_state =
+                        node_storage_compiled_state_ptr(
+                            previous_storage, previous_node_index);
                     if constexpr (std::is_empty_v<Node>) {
                         (void)node_ptr;
                         Node node {};
                         node.move(MoveContext<Node>(
                             storage,
                             state,
+                            compiled_state,
                             previous_storage,
                             previous_state,
+                            previous_compiled_state,
                             node_storage_resources(storage)));
                     } else {
                         auto const& node = *static_cast<Node const*>(node_ptr);
                         node.move(MoveContext<Node>(
                             storage,
                             state,
+                            compiled_state,
                             previous_storage,
                             previous_state,
+                            previous_compiled_state,
                             node_storage_resources(storage)));
                     }
                 };
@@ -632,15 +769,23 @@ namespace iv {
                 callbacks.initialize_fn = [](
                     void const* node_ptr, size_t node_index, NodeStorage& storage) {
                     void* state = node_storage_state_ptr(storage, node_index);
+                    void* compiled_state =
+                        node_storage_compiled_state_ptr(storage, node_index);
                     if constexpr (std::is_empty_v<Node>) {
                         (void)node_ptr;
                         Node node {};
                         node.initialize(InitializationContext<Node>(
-                            storage, state, node_storage_resources(storage)));
+                            storage,
+                            state,
+                            compiled_state,
+                            node_storage_resources(storage)));
                     } else {
                         static_cast<Node const*>(node_ptr)->initialize(
                             InitializationContext<Node>(
-                                storage, state, node_storage_resources(storage)));
+                                storage,
+                            state,
+                            compiled_state,
+                            node_storage_resources(storage)));
                     }
                 };
             }
@@ -649,15 +794,23 @@ namespace iv {
                 callbacks.release_fn = [](
                     void const* node_ptr, size_t node_index, NodeStorage& storage) {
                     void* state = node_storage_state_ptr(storage, node_index);
+                    void* compiled_state =
+                        node_storage_compiled_state_ptr(storage, node_index);
                     if constexpr (std::is_empty_v<Node>) {
                         (void)node_ptr;
                         Node node {};
                         node.release(ReleaseContext<Node>(
-                            storage, state, node_storage_resources(storage)));
+                            storage,
+                            state,
+                            compiled_state,
+                            node_storage_resources(storage)));
                     } else {
                         static_cast<Node const*>(node_ptr)->release(
                             ReleaseContext<Node>(
-                                storage, state, node_storage_resources(storage)));
+                                storage,
+                            state,
+                            compiled_state,
+                            node_storage_resources(storage)));
                     }
                 };
             }
@@ -684,6 +837,19 @@ namespace iv {
                 };
             }
 
+            if constexpr (!std::is_void_v<typename NodeCompiledState<Node>::Type>) {
+                using CompiledState = typename NodeCompiledState<Node>::Type;
+                static_assert(
+                    std::is_default_constructible_v<CompiledState>,
+                    "Node::CompiledState must be default constructible");
+                callbacks.default_construct_compiled_state_fn = [](void* ptr) {
+                    new (ptr) CompiledState();
+                };
+                callbacks.destroy_compiled_state_fn = [](void* ptr) {
+                    std::destroy_at(static_cast<CompiledState*>(ptr));
+                };
+            }
+
             if constexpr (requires(MoveContext<Node> ctx) {
                 NodeValue.move(ctx);
             }) {
@@ -696,8 +862,11 @@ namespace iv {
                     NodeValue.move(MoveContext<Node>(
                         storage,
                         node_storage_state_ptr(storage, node_index),
+                        node_storage_compiled_state_ptr(storage, node_index),
                         previous_storage,
                         node_storage_state_ptr(
+                            previous_storage, previous_node_index),
+                        node_storage_compiled_state_ptr(
                             previous_storage, previous_node_index),
                         node_storage_resources(storage)));
                 };
@@ -719,6 +888,7 @@ namespace iv {
                     NodeValue.initialize(InitializationContext<Node>(
                         storage,
                         node_storage_state_ptr(storage, node_index),
+                        node_storage_compiled_state_ptr(storage, node_index),
                         node_storage_resources(storage)));
                 };
             }
@@ -731,6 +901,7 @@ namespace iv {
                     NodeValue.release(ReleaseContext<Node>(
                         storage,
                         node_storage_state_ptr(storage, node_index),
+                        node_storage_compiled_state_ptr(storage, node_index),
                         node_storage_resources(storage)));
                 };
             }

@@ -2,6 +2,7 @@
 #include <intravenous/node/layout.h>
 #include "module_test_utils.h"
 #include <intravenous/basic_nodes/type_erased.h>
+#include <intravenous/basic_nodes/weak_type_erased.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/node.h>
 #include <intravenous/graph/node_wrapper.h>
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -186,6 +188,10 @@ namespace {
         struct State {
             int marker = 17;
         };
+
+        struct CompiledState {
+            int marker = 23;
+        };
     };
 
     struct IdentifiedMovable {
@@ -292,6 +298,7 @@ namespace {
     struct NestedParent {
         struct State {
             std::span<std::span<std::byte>> nested;
+            std::span<std::span<std::byte>> nested_compiled;
         };
 
         void declare(iv::DeclarationContext<NestedParent> const& ctx) const
@@ -302,6 +309,59 @@ namespace {
             do_declare(a, ctx);
             do_declare(b, ctx);
             ctx.nested_node_states(state.nested);
+            ctx.nested_node_compiled_states(state.nested_compiled);
+        }
+    };
+
+    struct CompiledLifecycleNode {
+        std::string id;
+
+        struct CompiledState {
+            static inline int live_instances = 0;
+
+            int initialized = 0;
+            int moved = 0;
+            int released = 0;
+            int value = 0;
+
+            CompiledState()
+            {
+                ++live_instances;
+            }
+
+            ~CompiledState()
+            {
+                --live_instances;
+            }
+        };
+
+        std::string identity() const
+        {
+            return id;
+        }
+
+        void initialize(
+            iv::InitializationContext<CompiledLifecycleNode> const& ctx) const
+        {
+            auto& state = ctx.compiled_state();
+            ++state.initialized;
+            state.value = 17;
+        }
+
+        void move(iv::MoveContext<CompiledLifecycleNode> const& ctx) const
+        {
+            auto& state = ctx.compiled_state();
+            auto const& previous = ctx.previous_compiled_state();
+            state.initialized = previous.initialized;
+            state.moved = previous.moved + 1;
+            state.released = previous.released;
+            state.value = previous.value;
+        }
+
+        void release(
+            iv::ReleaseContext<CompiledLifecycleNode> const& ctx) const
+        {
+            ++ctx.compiled_state().released;
         }
     };
 
@@ -311,14 +371,21 @@ namespace {
             int ticked = 0;
         };
 
+        struct CompiledState {
+            int initialized = 0;
+            int ticked = 0;
+        };
+
         void initialize(iv::InitializationContext<StatefulTickingNode> const& ctx) const
         {
             ctx.state().initialized += 1;
+            ctx.compiled_state().initialized += 1;
         }
 
         void tick_block(iv::TickBlockContext<StatefulTickingNode> const& ctx) const
         {
             ctx.state().ticked += static_cast<int>(ctx.block_size);
+            ctx.compiled_state().ticked += static_cast<int>(ctx.block_size);
         }
     };
 }
@@ -512,6 +579,138 @@ int main()
 
     {
         iv::NodeLayoutBuilder builder(4);
+        auto const leading = builder.declare_raw_region(13, 32);
+        LocalOnly node;
+        iv::do_declare(node, builder);
+        auto const trailing = builder.declare_raw_region(7, 8);
+
+        iv::NodeLayout layout = std::move(builder).build();
+        iv::test::require(leading.valid(), "raw region handle should be valid");
+        iv::test::require(trailing.valid(), "second raw region handle should be valid");
+        iv::test::require(
+            layout.regions[leading.index].kind == iv::NodeLayout::Region::Kind::raw,
+            "raw region should remain part of the canonical node layout");
+        iv::test::require(
+            layout.regions[leading.index].owner_node == iv::NodeLayout::no_owner_node,
+            "raw region should not require a node owner");
+        iv::test::require(
+            layout.regions[leading.index].storage_offset % 32 == 0,
+            "raw region storage should honor requested alignment");
+        iv::test::require(
+            layout.regions[trailing.index].storage_offset >
+                layout.regions[leading.index].storage_offset,
+            "raw regions should participate in declaration-order packing");
+
+        auto resources = make_resources();
+        iv::NodeStorage storage = layout.create_storage(resources);
+        auto leading_bytes = storage.region_bytes(leading);
+        auto trailing_bytes = storage.region_bytes(trailing);
+        iv::test::require(leading_bytes.size() == 13, "raw region size should survive layout");
+        iv::test::require(trailing_bytes.size() == 7, "second raw region size should survive layout");
+        iv::test::require(
+            reinterpret_cast<std::uintptr_t>(leading_bytes.data()) % 32 == 0,
+            "raw region address should satisfy requested alignment");
+        leading_bytes[3] = std::byte { 0x5a };
+        iv::test::require(
+            storage.buffer()[layout.regions[leading.index].storage_offset + 3] ==
+                std::byte { 0x5a },
+            "raw region should be backed by the same NodeStorage allocation");
+    }
+
+    {
+        bool rejected = false;
+        try {
+            iv::NodeLayoutBuilder builder(4);
+            (void)builder.declare_raw_region(8, 3);
+        } catch (std::invalid_argument const&) {
+            rejected = true;
+        }
+        iv::test::require(
+            rejected,
+            "raw region declarations should reject non-power-of-two alignment");
+    }
+
+    {
+        iv::test::require(
+            CompiledLifecycleNode::CompiledState::live_instances == 0,
+            "compiled-state lifecycle test should start without live objects");
+
+        iv::NodeLayoutBuilder builder(4);
+        CompiledLifecycleNode node { .id = "compiled-state" };
+        iv::do_declare(node, builder);
+        iv::NodeLayout layout = std::move(builder).build();
+        iv::NodeLayout reloaded_layout = layout;
+        static int reloaded_node_type_token = 0;
+        static int reloaded_compiled_state_type_token = 0;
+        reloaded_layout.nodes.front().node_type = &reloaded_node_type_token;
+        reloaded_layout.nodes.front().compiled_state_type =
+            &reloaded_compiled_state_type_token;
+
+        iv::test::require(layout.nodes.size() == 1, "compiled-state layout should contain its node");
+        auto const& record = layout.nodes.front();
+        iv::test::require(record.state_size == 0, "test node should have no sequential State");
+        iv::test::require(
+            record.compiled_state_size == sizeof(CompiledLifecycleNode::CompiledState),
+            "layout should record CompiledState size");
+        iv::test::require(
+            record.compiled_state_alignment == alignof(CompiledLifecycleNode::CompiledState),
+            "layout should record CompiledState alignment");
+        iv::test::require(
+            record.compiled_state_offset >= 0,
+            "layout should assign CompiledState storage");
+        iv::test::require(
+            static_cast<size_t>(record.compiled_state_offset) %
+                    alignof(CompiledLifecycleNode::CompiledState) ==
+                0,
+            "CompiledState offset should satisfy its alignment");
+
+        auto resources = make_resources();
+        {
+            iv::NodeStorage original = layout.create_storage(resources);
+            original.initialize();
+            auto& original_compiled =
+                *static_cast<CompiledLifecycleNode::CompiledState*>(
+                    original.compiled_state_ptr(0));
+            iv::test::require(
+                original_compiled.initialized == 1,
+                "initialize should receive the default-constructed CompiledState");
+            original_compiled.value = 91;
+
+            iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
+            iv::test::require(
+                reloaded.can_move_from(original, 0, 0),
+                "same nominal node and CompiledState ABI should remain movable across package-local type-token changes");
+            auto migration = reloaded.prepare_migration_from(original);
+            migration.commit();
+            auto& reloaded_compiled =
+                *static_cast<CompiledLifecycleNode::CompiledState*>(
+                    reloaded.compiled_state_ptr(0));
+            iv::test::require(
+                reloaded_compiled.initialized == 1,
+                "move should preserve CompiledState initialization data");
+            iv::test::require(
+                reloaded_compiled.moved == 1,
+                "move should receive current and previous CompiledState objects");
+            iv::test::require(
+                reloaded_compiled.value == 91,
+                "move should be able to transfer CompiledState contents");
+            iv::test::require(
+                original.initialized_nodes.empty(),
+                "successful compiled-state migration should transfer release ownership");
+
+            reloaded.release();
+            iv::test::require(
+                reloaded_compiled.released == 1,
+                "release should receive the same mutable CompiledState object");
+        }
+
+        iv::test::require(
+            CompiledLifecycleNode::CompiledState::live_instances == 0,
+            "NodeStorage destruction should destroy every constructed CompiledState");
+    }
+
+    {
+        iv::NodeLayoutBuilder builder(4);
         NestedParent node;
         iv::do_declare(node, builder);
 
@@ -522,12 +721,19 @@ int main()
 
         auto& state = *static_cast<NestedParent::State*>(storage.state_ptr(0));
         iv::test::require(state.nested.size() == 2, "nested_node_states should record directly declared child nodes");
+        iv::test::require(state.nested_compiled.size() == 2, "nested_node_compiled_states should record the same directly declared child nodes");
         iv::test::require(state.nested[0].data() != nullptr, "first nested node state pointer should be patched");
         iv::test::require(state.nested[1].data() != nullptr, "second nested node state pointer should be patched");
+        iv::test::require(state.nested_compiled[0].size() == sizeof(NestedLeaf::CompiledState), "first nested compiled-state span should have the exact CompiledState size");
+        iv::test::require(state.nested_compiled[1].size() == sizeof(NestedLeaf::CompiledState), "second nested compiled-state span should have the exact CompiledState size");
         auto& first = *reinterpret_cast<NestedLeaf::State*>(state.nested[0].data());
         auto& second = *reinterpret_cast<NestedLeaf::State*>(state.nested[1].data());
+        auto& first_compiled = *reinterpret_cast<NestedLeaf::CompiledState*>(state.nested_compiled[0].data());
+        auto& second_compiled = *reinterpret_cast<NestedLeaf::CompiledState*>(state.nested_compiled[1].data());
         iv::test::require(first.marker == 17, "first nested node state should be addressable");
         iv::test::require(second.marker == 17, "second nested node state should be addressable");
+        iv::test::require(first_compiled.marker == 23, "first nested CompiledState should be addressable");
+        iv::test::require(second_compiled.marker == 23, "second nested CompiledState should be addressable");
     }
 
     {
@@ -542,7 +748,9 @@ int main()
 
         auto& erased_state = *static_cast<iv::TypeErasedNode::State*>(storage.state_ptr(0));
         iv::test::require(erased_state.nested_node_states.size() == 1, "type-erased node should record exactly one nested child");
+        iv::test::require(erased_state.nested_node_compiled_states.size() == 1, "type-erased node should record exactly one nested compiled child state");
         iv::test::require(erased_state.nested_node_states[0].data() != nullptr, "type-erased nested child state pointer should be patched");
+        iv::test::require(erased_state.nested_node_compiled_states[0].size() == sizeof(StatefulTickingNode::CompiledState), "type-erased nested CompiledState should be patched");
 
         node.tick_block({
             iv::TickContext<iv::TypeErasedNode> {
@@ -557,8 +765,52 @@ int main()
         });
 
         auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(erased_state.nested_node_states[0].data());
+        auto& nested_compiled_state = *reinterpret_cast<StatefulTickingNode::CompiledState*>(erased_state.nested_node_compiled_states[0].data());
         iv::test::require(nested_state.initialized == 1, "type-erased nested child should initialize once");
         iv::test::require(nested_state.ticked == 8, "type-erased nested child should tick through nested state");
+        iv::test::require(nested_compiled_state.initialized == 1, "type-erased nested child CompiledState should initialize once");
+        iv::test::require(nested_compiled_state.ticked == 8, "type-erased nested child should tick through nested CompiledState");
+    }
+
+    {
+        StatefulTickingNode concrete;
+        iv::WeakTypeErasedNode node = concrete;
+        iv::NodeLayoutBuilder builder(8);
+        iv::do_declare(node, builder);
+
+        iv::NodeLayout layout = std::move(builder).build();
+        auto resources = make_resources();
+        iv::NodeStorage storage = layout.create_storage(resources);
+        storage.initialize();
+
+        auto& erased_state = *static_cast<iv::WeakTypeErasedNode::State*>(
+            storage.state_ptr(0));
+        iv::test::require(
+            erased_state.nested_node_states.size() == 1,
+            "weak type-erased node should record exactly one nested child");
+        iv::test::require(
+            erased_state.nested_node_compiled_states.size() == 1,
+            "weak type-erased node should record exactly one nested compiled child state");
+
+        node.tick_block({
+            iv::TickContext<iv::WeakTypeErasedNode> {
+                .buffer = storage.buffer(),
+            },
+            0,
+            8,
+        });
+
+        auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(
+            erased_state.nested_node_states[0].data());
+        auto& nested_compiled_state =
+            *reinterpret_cast<StatefulTickingNode::CompiledState*>(
+                erased_state.nested_node_compiled_states[0].data());
+        iv::test::require(
+            nested_state.ticked == 8,
+            "weak type-erased child should tick through nested State");
+        iv::test::require(
+            nested_compiled_state.ticked == 8,
+            "weak type-erased child should tick through nested CompiledState");
     }
 
     {
@@ -578,7 +830,25 @@ int main()
 
         auto& wrapper_state = *static_cast<iv::GraphNodeWrapper::State*>(storage.state_ptr(0));
         iv::test::require(wrapper_state.nested_node_states.size() == 1, "standalone wrapper without inputs should expose one nested executable child");
+        iv::test::require(wrapper_state.nested_node_compiled_states.size() == 1, "standalone wrapper should expose one nested executable child CompiledState");
         iv::test::require(wrapper_state.nested_node_states[0].data() != nullptr, "standalone wrapper nested executable child state should be patched");
+        iv::test::require(wrapper_state.nested_node_compiled_states[0].size() == sizeof(StatefulTickingNode::CompiledState), "standalone wrapper nested executable child CompiledState should be patched");
+
+        wrapper.tick({
+            iv::TickContext<iv::GraphNodeWrapper> {
+                .buffer = storage.buffer(),
+            },
+            0,
+            8,
+        });
+
+        auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(
+            wrapper_state.nested_node_states[0].data());
+        auto& nested_compiled_state =
+            *reinterpret_cast<StatefulTickingNode::CompiledState*>(
+                wrapper_state.nested_node_compiled_states[0].data());
+        iv::test::require(nested_state.ticked == 8, "graph wrapper should tick nested State");
+        iv::test::require(nested_compiled_state.ticked == 8, "graph wrapper should tick nested CompiledState");
     }
 
     return 0;

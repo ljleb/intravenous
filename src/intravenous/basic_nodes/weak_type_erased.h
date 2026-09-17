@@ -4,6 +4,7 @@
 
 #include <concepts>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <typeinfo>
 #include <vector>
@@ -31,6 +32,11 @@ namespace iv {
         }
 
     public:
+        struct State {
+            std::span<std::span<std::byte>> nested_node_states;
+            std::span<std::span<std::byte>> nested_node_compiled_states;
+        };
+
         WeakTypeErasedNode() = default;
         WeakTypeErasedNode(WeakTypeErasedNode const&) = default;
         WeakTypeErasedNode& operator=(WeakTypeErasedNode const&) = default;
@@ -71,9 +77,14 @@ namespace iv {
                 "node max_block_size() must be a power of 2");
 
             _declare_fn = [](void const* node_ptr, DeclarationContext<WeakTypeErasedNode> const& ctx) {
+                auto const& state = ctx.state();
                 do_declare(*static_cast<Node const*>(node_ptr), ctx);
+                ctx.nested_node_states(state.nested_node_states);
+                ctx.nested_node_compiled_states(
+                    state.nested_node_compiled_states);
             };
             _tick_fn = [](void const* node_ptr, TickSampleContext<WeakTypeErasedNode> const& ctx) {
+                auto& state = ctx.state();
                 do_tick(*static_cast<Node const*>(node_ptr), TickSampleContext<Node> {
                     TickContext<Node> {
                         .inputs = ctx.inputs,
@@ -82,15 +93,17 @@ namespace iv {
                         .event_outputs = ctx.event_outputs,
                         .compiled_inputs = ctx.compiled_inputs,
                         .compiled_event_inputs = ctx.compiled_event_inputs,
-                        .compiled_state_storage = ctx.compiled_state_storage,
+                        .compiled_state_storage =
+                            state.nested_node_compiled_states[0],
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
-                        .buffer = ctx.buffer
+                        .buffer = state.nested_node_states[0]
                     },
                     ctx.index,
                 });
             };
             _tick_block_fn = [](void const* node_ptr, TickBlockContext<WeakTypeErasedNode> const& ctx) {
+                auto& state = ctx.state();
                 do_tick_block(*static_cast<Node const*>(node_ptr), TickBlockContext<Node> {
                     TickContext<Node> {
                         .inputs = ctx.inputs,
@@ -99,16 +112,18 @@ namespace iv {
                         .event_outputs = ctx.event_outputs,
                         .compiled_inputs = ctx.compiled_inputs,
                         .compiled_event_inputs = ctx.compiled_event_inputs,
-                        .compiled_state_storage = ctx.compiled_state_storage,
+                        .compiled_state_storage =
+                            state.nested_node_compiled_states[0],
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
-                        .buffer = ctx.buffer
+                        .buffer = state.nested_node_states[0]
                     },
                     ctx.index,
                     ctx.block_size,
                 });
             };
             _skip_block_fn = [](void const* node_ptr, SkipBlockContext<WeakTypeErasedNode> const& ctx) {
+                auto& state = ctx.state();
                 do_skip_block(*static_cast<Node const*>(node_ptr), SkipBlockContext<Node> {
                     TickContext<Node> {
                         .inputs = ctx.inputs,
@@ -117,10 +132,11 @@ namespace iv {
                         .event_outputs = ctx.event_outputs,
                         .compiled_inputs = ctx.compiled_inputs,
                         .compiled_event_inputs = ctx.compiled_event_inputs,
-                        .compiled_state_storage = ctx.compiled_state_storage,
+                        .compiled_state_storage =
+                            state.nested_node_compiled_states[0],
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
-                        .buffer = ctx.buffer
+                        .buffer = state.nested_node_states[0]
                     },
                     ctx.index,
                     ctx.block_size,

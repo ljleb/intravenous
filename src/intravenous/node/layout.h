@@ -15,15 +15,31 @@
 
 namespace iv {
     struct NodeLayout {
+        static constexpr size_t no_owner_node = std::numeric_limits<size_t>::max();
+
+        struct RegionHandle {
+            size_t index = std::numeric_limits<size_t>::max();
+
+            constexpr bool valid() const noexcept
+            {
+                return index != std::numeric_limits<size_t>::max();
+            }
+
+            constexpr bool operator==(RegionHandle const&) const = default;
+        };
+
         struct Region {
             enum class Kind {
                 state,
+                compiled_state,
                 local_array,
                 nested_node_states,
+                nested_node_compiled_states,
+                raw,
             };
 
             Kind kind = Kind::state;
-            size_t owner_node = 0;
+            size_t owner_node = no_owner_node;
             ptrdiff_t state_field_offset = 0;
             size_t storage_offset = 0;
             size_t size = 0;
@@ -59,6 +75,11 @@ namespace iv {
             ptrdiff_t state_offset = 0;
             size_t state_size = 0;
             size_t state_alignment = 1;
+            void const* compiled_state_type = nullptr;
+            char const* compiled_state_type_name = nullptr;
+            ptrdiff_t compiled_state_offset = -1;
+            size_t compiled_state_size = 0;
+            size_t compiled_state_alignment = 1;
             std::vector<size_t> dependencies;
             NodeLifecycleCallbacks lifecycle;
         };
@@ -88,6 +109,9 @@ namespace iv {
         size_t max_block_size() const;
         size_t default_silence_ttl_samples() const;
         size_t event_port_buffer_base_multiplier() const;
+
+        NodeLayout::RegionHandle declare_raw_region(
+            size_t size, size_t alignment = 1);
 
         template<typename A>
         static void const* array_type_token()
@@ -136,9 +160,13 @@ namespace iv {
             NodeLayoutBuilder&, details::NodeLayoutNodeRegistration const&);
         friend void details::allocate_node_state(
             NodeLayoutBuilder&, size_t, size_t, size_t);
+        friend void details::allocate_node_compiled_state(
+            NodeLayoutBuilder&, size_t, size_t, size_t);
         friend void details::declare_local_array(
             NodeLayoutBuilder&, details::NodeLayoutArrayDeclaration const&);
         friend size_t details::declare_nested_node_states(
+            NodeLayoutBuilder&, size_t, ptrdiff_t);
+        friend size_t details::declare_nested_node_compiled_states(
             NodeLayoutBuilder&, size_t, ptrdiff_t);
         friend void details::finalize_nested_node_states(
             NodeLayoutBuilder&, size_t, std::vector<size_t>);
@@ -178,6 +206,7 @@ namespace iv {
         ResourceContext const* resources = nullptr;
         std::unique_ptr<std::byte[], StorageDeleter> storage;
         std::vector<size_t> constructed_nodes;
+        std::vector<size_t> constructed_compiled_states;
         std::vector<size_t> initialized_nodes;
 
         NodeStorage();
@@ -191,6 +220,8 @@ namespace iv {
         std::span<std::byte> buffer() const;
         size_t max_block_size() const;
         void* state_ptr(size_t node_index) const;
+        void* compiled_state_ptr(size_t node_index) const;
+        std::span<std::byte> region_bytes(NodeLayout::RegionHandle region) const;
 
         template<typename A>
         std::span<A const> resolve_exported_array_storage(

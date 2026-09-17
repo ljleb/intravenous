@@ -33,6 +33,7 @@ namespace iv {
     public:
         struct State {
             std::span<std::span<std::byte>> nested_node_states;
+            std::span<std::span<std::byte>> nested_node_compiled_states;
         };
 
         TypeErasedNode() = default;
@@ -63,6 +64,8 @@ namespace iv {
                     auto const& state = ctx.state();
                     do_declare(Node{}, ctx);
                     ctx.nested_node_states(state.nested_node_states);
+                    ctx.nested_node_compiled_states(
+                        state.nested_node_compiled_states);
                 };
                 _tick_fn = [](void*, TickSampleContext<TypeErasedNode> const& ctx) {
                     auto& state = ctx.state();
@@ -74,7 +77,8 @@ namespace iv {
                             .event_outputs = ctx.event_outputs,
                             .compiled_inputs = ctx.compiled_inputs,
                             .compiled_event_inputs = ctx.compiled_event_inputs,
-                            .compiled_state_storage = ctx.compiled_state_storage,
+                            .compiled_state_storage =
+                                state.nested_node_compiled_states[0],
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
@@ -92,7 +96,8 @@ namespace iv {
                             .event_outputs = ctx.event_outputs,
                             .compiled_inputs = ctx.compiled_inputs,
                             .compiled_event_inputs = ctx.compiled_event_inputs,
-                            .compiled_state_storage = ctx.compiled_state_storage,
+                            .compiled_state_storage =
+                                state.nested_node_compiled_states[0],
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
@@ -111,7 +116,8 @@ namespace iv {
                             .event_outputs = ctx.event_outputs,
                             .compiled_inputs = ctx.compiled_inputs,
                             .compiled_event_inputs = ctx.compiled_event_inputs,
-                            .compiled_state_storage = ctx.compiled_state_storage,
+                            .compiled_state_storage =
+                                state.nested_node_compiled_states[0],
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
@@ -130,6 +136,8 @@ namespace iv {
                     auto const& state = ctx.state();
                     do_declare(*static_cast<Node*>(node), ctx);
                     ctx.nested_node_states(state.nested_node_states);
+                    ctx.nested_node_compiled_states(
+                        state.nested_node_compiled_states);
                 };
                 _tick_fn = [](void* node, TickSampleContext<TypeErasedNode> const& ctx) {
                     auto& state = ctx.state();
@@ -141,7 +149,8 @@ namespace iv {
                             .event_outputs = ctx.event_outputs,
                             .compiled_inputs = ctx.compiled_inputs,
                             .compiled_event_inputs = ctx.compiled_event_inputs,
-                            .compiled_state_storage = ctx.compiled_state_storage,
+                            .compiled_state_storage =
+                                state.nested_node_compiled_states[0],
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
@@ -159,7 +168,8 @@ namespace iv {
                             .event_outputs = ctx.event_outputs,
                             .compiled_inputs = ctx.compiled_inputs,
                             .compiled_event_inputs = ctx.compiled_event_inputs,
-                            .compiled_state_storage = ctx.compiled_state_storage,
+                            .compiled_state_storage =
+                                state.nested_node_compiled_states[0],
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
@@ -178,7 +188,8 @@ namespace iv {
                             .event_outputs = ctx.event_outputs,
                             .compiled_inputs = ctx.compiled_inputs,
                             .compiled_event_inputs = ctx.compiled_event_inputs,
-                            .compiled_state_storage = ctx.compiled_state_storage,
+                            .compiled_state_storage =
+                                state.nested_node_compiled_states[0],
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]

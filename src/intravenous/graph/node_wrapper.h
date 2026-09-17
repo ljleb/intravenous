@@ -274,6 +274,7 @@ namespace iv {
 
         struct State {
             std::span<std::span<std::byte>> nested_node_states;
+            std::span<std::span<std::byte>> nested_node_compiled_states;
             std::span<InputPort> inputs;
             std::span<OutputPort> outputs;
             std::span<OutputPort> fanout_outputs;
@@ -305,6 +306,7 @@ namespace iv {
             auto const num_event_outputs = _event_output_types.size();
 
             ctx.nested_node_states(state.nested_node_states);
+            ctx.nested_node_compiled_states(state.nested_node_compiled_states);
             ctx.local_array(state.inputs, num_inputs);
             ctx.local_array(state.outputs, num_outputs);
             ctx.local_array(state.fanout_outputs, _fanout_targets.size());
@@ -473,6 +475,7 @@ namespace iv {
                     .outputs = state.outputs,
                     .event_inputs = state.event_inputs,
                     .event_outputs = state.event_outputs,
+                    .compiled_state = state.nested_node_compiled_states.back(),
                     .sample_rate = ctx.sample_rate,
                     .scc_feedback_latency = ctx.scc_feedback_latency,
                     .state = state.nested_node_states.back(),
@@ -493,6 +496,7 @@ namespace iv {
                     .outputs = state.outputs,
                     .event_inputs = state.event_inputs,
                     .event_outputs = state.event_outputs,
+                    .compiled_state = state.nested_node_compiled_states.back(),
                     .sample_rate = ctx.sample_rate,
                     .scc_feedback_latency = ctx.scc_feedback_latency,
                     .state = state.nested_node_states.back(),
