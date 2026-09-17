@@ -267,12 +267,13 @@ IV_FORCEINLINE std::size_t* reflected_event_count(
         storage_base + binding.count_offset);
 }
 
-template<std::size_t... I>
-IV_FORCEINLINE auto reflected_event_inputs(
+template<std::size_t N, std::size_t... I>
+IV_FORCEINLINE void initialize_reflected_event_inputs(
+    ReflectedEventInputPorts<N>& result,
     ReflectedNodeTickContext const& ctx,
     std::index_sequence<I...>)
 {
-    ReflectedEventInputPorts<sizeof...(I)> result;
+    static_assert(N == sizeof...(I));
     (([&] {
         auto const& binding = ctx.event_input_bindings.pointer[I].storage;
         auto* count = reflected_event_count(ctx.event_storage_base, binding);
@@ -284,27 +285,30 @@ IV_FORCEINLINE auto reflected_event_inputs(
         };
         result.ports[I] = EventInputPort{result.shared[I]};
     }()), ...);
-    return result;
 }
 
-template<std::size_t... I>
-IV_FORCEINLINE auto reflected_event_outputs(
+template<std::size_t N, std::size_t... I>
+IV_FORCEINLINE void initialize_reflected_event_outputs(
+    ReflectedEventOutputPorts<N>& result,
     ReflectedNodeTickContext const& ctx,
     SampleIndex index,
     std::size_t block_size,
     std::index_sequence<I...>)
 {
-    ReflectedEventOutputPorts<sizeof...(I)> result;
+    static_assert(N == sizeof...(I));
     (([&] {
         auto const& binding = ctx.event_output_bindings.pointer[I];
         auto* count = reflected_event_count(
             ctx.event_storage_base, binding.storage);
-        *count = 0;
+        auto const initial_write = binding.append_existing ? *count : 0;
+        if (!binding.append_existing) {
+            *count = 0;
+        }
         result.counts[I] = count;
         result.shared[I] = EventSharedPortData{
             reflected_event_buffer(ctx.event_storage_base, binding.storage),
             0,
-            0,
+            initial_write,
             binding.storage.type,
         };
         result.ports[I] = EventOutputPort{
@@ -315,7 +319,6 @@ IV_FORCEINLINE auto reflected_event_outputs(
         };
         result.ports[I].begin_block(index, block_size);
     }()), ...);
-    return result;
 }
 
 template<std::size_t N>
@@ -357,10 +360,13 @@ IV_FORCEINLINE void with_reflected_event_ports(
             ctx.event_output_bindings.size() == output_count,
             "reflected event output binding count does not match node declaration");
 
-        auto inputs = reflected_event_inputs(
-            ctx, std::make_index_sequence<input_count>{});
-        auto outputs = reflected_event_outputs(
-            ctx, index, block_size, std::make_index_sequence<output_count>{});
+        ReflectedEventInputPorts<input_count> inputs;
+        ReflectedEventOutputPorts<output_count> outputs;
+        initialize_reflected_event_inputs(
+            inputs, ctx, std::make_index_sequence<input_count>{});
+        initialize_reflected_event_outputs(
+            outputs, ctx, index, block_size,
+            std::make_index_sequence<output_count>{});
         std::forward<Fn>(fn)(
             std::span<EventInputPort>{inputs.ports},
             std::span<EventOutputPort>{outputs.ports});

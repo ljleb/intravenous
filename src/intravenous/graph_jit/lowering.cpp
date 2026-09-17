@@ -654,6 +654,7 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                     .source_type = output.source_type,
                     .history = output.history,
                     .latency = output.latency,
+                    .append_existing = output.append_existing,
                 });
             }
             result.output_bindings = immutable_bytes_global(
@@ -1418,6 +1419,104 @@ std::expected<void, std::string> emit_sample_carry_operation(
     return {};
 }
 
+
+std::expected<void, std::string> emit_event_sequence_reset(
+    llvm::IRBuilder<>& builder,
+    detail::EventPortBindingPlan const& event_ports,
+    std::size_t representation_index,
+    llvm::Value* storage_base)
+{
+    if (representation_index >= event_ports.representations.size()) {
+        return std::unexpected(
+            "GraphJit event sequence reset references a missing representation");
+    }
+    auto const& representation = event_ports.representations[representation_index];
+    if (!representation.region.valid()) {
+        return std::unexpected(
+            "GraphJit event sequence reset references unfinalized storage");
+    }
+    auto* size_type = llvm::IntegerType::get(
+        builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* count = byte_offset_pointer(
+        builder,
+        storage_base,
+        representation.count_storage_offset,
+        "event.reset.count");
+    builder.CreateStore(llvm::ConstantInt::get(size_type, 0), count);
+    return {};
+}
+
+std::expected<void, std::string> emit_event_materialization(
+    llvm::IRBuilder<>& builder,
+    detail::EventPortBindingPlan const& event_ports,
+    detail::EventMaterializationPlan const& materialization,
+    llvm::Value* storage_base)
+{
+    if (materialization.source_representation >= event_ports.representations.size()
+        || materialization.target_representation >= event_ports.representations.size()) {
+        return std::unexpected(
+            "GraphJit event materialization references a missing representation");
+    }
+    auto const& source =
+        event_ports.representations[materialization.source_representation];
+    auto const& target =
+        event_ports.representations[materialization.target_representation];
+    if (!source.region.valid() || !target.region.valid()) {
+        return std::unexpected(
+            "GraphJit event materialization references unfinalized storage");
+    }
+    if (source.type != target.type
+        || target.event_capacity < source.event_capacity) {
+        return std::unexpected(
+            "GraphJit transient event materialization requires compatible bounded sequences");
+    }
+
+    auto& context = builder.getContext();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* source_count_pointer = byte_offset_pointer(
+        builder,
+        storage_base,
+        source.count_storage_offset,
+        "event.materialize.source.count");
+    auto* target_count_pointer = byte_offset_pointer(
+        builder,
+        storage_base,
+        target.count_storage_offset,
+        "event.materialize.target.count");
+    auto* count = builder.CreateLoad(
+        size_type, source_count_pointer, "event.materialize.count");
+    auto* capacity = llvm::ConstantInt::get(size_type, target.event_capacity);
+    auto* bounded_count = builder.CreateSelect(
+        builder.CreateICmpULE(count, capacity, "event.materialize.in.bounds"),
+        count,
+        capacity,
+        "event.materialize.bounded.count");
+
+    auto* source_events = byte_offset_pointer(
+        builder,
+        storage_base,
+        source.events_storage_offset,
+        "event.materialize.source.events");
+    auto* target_events = byte_offset_pointer(
+        builder,
+        storage_base,
+        target.events_storage_offset,
+        "event.materialize.target.events");
+    auto* byte_count = builder.CreateMul(
+        bounded_count,
+        llvm::ConstantInt::get(size_type, sizeof(TimedEvent)),
+        "event.materialize.bytes");
+    builder.CreateMemCpy(
+        target_events,
+        llvm::Align(alignof(TimedEvent)),
+        source_events,
+        llvm::Align(alignof(TimedEvent)),
+        byte_count);
+    builder.CreateStore(bounded_count, target_count_pointer);
+    return {};
+}
+
 std::expected<llvm::Function*, std::string> define_root_operation(
     llvm::Module& module,
     std::string_view symbol,
@@ -1461,6 +1560,17 @@ std::expected<llvm::Function*, std::string> define_root_operation(
         if (step.configuration_index >= event_bindings.primitives.size()) {
             return std::unexpected(
                 "GraphJit execution plan references a missing event-port runtime plan");
+        }
+
+        for (auto const representation_index : step.event_sequence_resets_before) {
+            auto reset = emit_event_sequence_reset(
+                builder,
+                plan.event_ports,
+                representation_index,
+                storage_base);
+            if (!reset) {
+                return std::unexpected(std::move(reset.error()));
+            }
         }
 
         for (auto const carry_index : step.sample_carry_restores_before) {
@@ -1519,6 +1629,22 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 storage_base,
                 sample_index,
                 block_size);
+        }
+
+        for (auto const materialization_index :
+             step.event_materializations_after) {
+            if (materialization_index >= plan.event_ports.materializations.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing event materialization");
+            }
+            auto materialized = emit_event_materialization(
+                builder,
+                plan.event_ports,
+                plan.event_ports.materializations[materialization_index],
+                storage_base);
+            if (!materialized) {
+                return std::unexpected(std::move(materialized.error()));
+            }
         }
 
         for (auto const materialization_index :

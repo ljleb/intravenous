@@ -1220,6 +1220,13 @@ void plan_event_groups(
             auto observe = [&](NodeBundleHandle bundle) {
                 auto const current =
                     effective_block_size(plan, bundle, kernel_block_size);
+                // Event sequences are invocation-oriented rather than
+                // absolute-indexed sample rings. Any primitive slicing therefore
+                // needs a root-block materialized sequence even when producer
+                // and consumer happen to use the same smaller slice size.
+                if (current != kernel_block_size) {
+                    connection.requires_block_materialization = true;
+                }
                 if (block_size && *block_size != current) {
                     connection.requires_block_materialization = true;
                 } else {
@@ -1292,6 +1299,7 @@ void plan_event_groups(
         auto live = live_interval_for_event_group(plan, group);
         live.crosses_kernel_invocations = live.crosses_kernel_invocations
             || group.requirements.retained_window_samples != 0;
+        group.live_interval = live;
         auto append_storage = [&](ConnectionStorageLifetime lifetime,
                                   std::size_t current_block_frames,
                                   std::size_t retained_extent_value) {

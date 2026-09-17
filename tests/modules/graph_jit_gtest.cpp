@@ -54,6 +54,7 @@ constexpr char graph_jit_composed_latency_module_id[] = "iv.test.graph_jit.state
 constexpr char graph_jit_composed_history_module_id[] = "iv.test.graph_jit.state_context.composed_history_module";
 constexpr char graph_jit_projected_composition_module_id[] = "iv.test.graph_jit.state_context.projected_composition_module";
 constexpr char graph_jit_direct_event_module_id[] = "iv.test.graph_jit.state_context.direct_event_module";
+constexpr char graph_jit_transient_event_module_id[] = "iv.test.graph_jit.state_context.transient_event_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -180,6 +181,16 @@ struct EventConsumerProbeStateMirror {
     std::uint64_t first_time = 0;
     std::uint64_t last_time = 0;
     std::uint32_t marker = 0;
+};
+
+struct SlicedEventConsumerProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::array<std::uint64_t, 4> indices{};
+    std::array<std::uint64_t, 4> block_sizes{};
+    std::array<std::uint64_t, 4> event_counts{};
+    std::array<std::uint64_t, 4> trigger_counts{};
+    std::array<std::uint64_t, 4> first_times{};
+    std::array<std::uint64_t, 4> last_times{};
 };
 
 void expect_lowering_failure(
@@ -2050,6 +2061,31 @@ struct TriggerEventSource {
     }
 };
 
+struct LimitedTriggerEventSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::realtime_event_output("trigger", iv::EventTypeId::trigger),
+        };
+    }
+
+    std::size_t max_block_size() const { return 16; }
+
+    void tick_block(iv::TickBlockContext<LimitedTriggerEventSource> const& ctx) const
+    {
+        if (ctx.block_size == 0) return;
+        ctx.event_outputs[0].push(
+            iv::TriggerEvent{}, 3, ctx.index, ctx.block_size);
+        ctx.event_outputs[0].push(
+            iv::TriggerEvent{}, ctx.block_size - 1, ctx.index, ctx.block_size);
+    }
+};
+
 struct TriggerEventConsumer {
     struct State {
         std::uint64_t calls = 0;
@@ -2091,6 +2127,53 @@ struct TriggerEventConsumer {
         for (auto const& event : events) {
             if (std::holds_alternative<iv::TriggerEvent>(event.value)) {
                 ++state.trigger_count;
+            }
+        }
+    }
+};
+
+struct LimitedTriggerEventConsumer {
+    struct State {
+        std::uint64_t calls = 0;
+        std::array<std::uint64_t, 4> indices{};
+        std::array<std::uint64_t, 4> block_sizes{};
+        std::array<std::uint64_t, 4> event_counts{};
+        std::array<std::uint64_t, 4> trigger_counts{};
+        std::array<std::uint64_t, 4> first_times{};
+        std::array<std::uint64_t, 4> last_times{};
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input("trigger", iv::EventTypeId::trigger),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    std::size_t max_block_size() const { return 32; }
+
+    void tick_block(iv::TickBlockContext<LimitedTriggerEventConsumer> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = state.calls++;
+        if (slot >= state.indices.size()) return;
+        auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        state.indices[slot] = ctx.index;
+        state.block_sizes[slot] = ctx.block_size;
+        state.event_counts[slot] = events.size();
+        state.trigger_counts[slot] = 0;
+        if (!events.empty()) {
+            state.first_times[slot] = events[0].time;
+            state.last_times[slot] = events[events.size() - 1].time;
+        }
+        for (auto const& event : events) {
+            if (std::holds_alternative<iv::TriggerEvent>(event.value)) {
+                ++state.trigger_counts[slot];
             }
         }
     }
@@ -2306,6 +2389,14 @@ void direct_event_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void transient_event_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.limited_trigger_event_source">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.limited_trigger_event_consumer">();
+    sink.connect_event_input(0, source.event_port());
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -2335,7 +2426,9 @@ IV_NODE("iv.test.graph_jit.state_context.five_sample_delay", FiveSampleDelay);
 IV_NODE("iv.test.graph_jit.state_context.latency_compensation_probe", LatencyCompensationProbe);
 IV_NODE("iv.test.graph_jit.state_context.interleaved_latency_compensation_probe", InterleavedLatencyCompensationProbe);
 IV_NODE("iv.test.graph_jit.state_context.trigger_event_source", TriggerEventSource);
+IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_source", LimitedTriggerEventSource);
 IV_NODE("iv.test.graph_jit.state_context.trigger_event_consumer", TriggerEventConsumer);
+IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_consumer", LimitedTriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
@@ -2359,6 +2452,7 @@ IV_MODULE("iv.test.graph_jit.state_context.composed_latency_module", composed_la
 IV_MODULE("iv.test.graph_jit.state_context.composed_history_module", composed_history_module);
 IV_MODULE("iv.test.graph_jit.state_context.projected_composition_module", projected_composition_module);
 IV_MODULE("iv.test.graph_jit.state_context.direct_event_module", direct_event_module);
+IV_MODULE("iv.test.graph_jit.state_context.transient_event_module", transient_event_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -2435,8 +2529,13 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.trigger_event_source"));
     EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.limited_trigger_event_source"));
+    EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.trigger_event_consumer"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.limited_trigger_event_consumer"));
     EXPECT_TRUE(has_module_definition(graph_jit_direct_event_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_transient_event_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -3822,6 +3921,89 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_EQ(direct_event_probe->trigger_count, 2u);
     EXPECT_EQ(direct_event_probe->first_time, 67u);
     EXPECT_EQ(direct_event_probe->last_time, 127u);
+
+    auto transient_event_graph = configured_module_graph(
+        *revision, graph_jit_transient_event_module_id);
+    ASSERT_TRUE(transient_event_graph);
+    auto transient_event_analysis =
+        iv::graph_jit::detail::build_connection_analysis_plan(
+            *transient_event_graph, 64);
+    ASSERT_TRUE(transient_event_analysis.has_value())
+        << (transient_event_analysis
+                ? std::string{}
+                : transient_event_analysis.error());
+    ASSERT_EQ(transient_event_analysis->event_connections.size(), 1u);
+    ASSERT_EQ(transient_event_analysis->event_producer_groups.size(), 1u);
+    EXPECT_TRUE(
+        transient_event_analysis->event_connections[0]
+            .requires_block_materialization);
+    auto const& transient_event_group =
+        transient_event_analysis->event_producer_groups.front();
+    ASSERT_TRUE(transient_event_group.implementation.has_value());
+    EXPECT_EQ(
+        *transient_event_group.implementation,
+        iv::EventConnectionImplementationKind::transient_sequence);
+
+    auto transient_event = compile_graph(transient_event_graph, 124);
+    ASSERT_TRUE(transient_event.succeeded())
+        << (transient_event.diagnostics.empty()
+                ? ""
+                : transient_event.diagnostics.front().message);
+    ASSERT_EQ(transient_event.compiled_graph->node_layout.nodes.size(), 2u);
+    // One producer sequence accumulates all 16-frame source slices; a second
+    // transient sequence is materialized once for the sliced consumer.
+    ASSERT_EQ(count_raw_regions(transient_event.compiled_graph->node_layout), 2u);
+
+    auto transient_event_storage =
+        transient_event.compiled_graph->node_layout.create_storage(resources);
+    transient_event_storage.initialize();
+    SlicedEventConsumerProbeStateMirror* transient_event_probe = nullptr;
+    for (std::size_t i = 0;
+         i < transient_event.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (transient_event.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(SlicedEventConsumerProbeStateMirror)) {
+            ASSERT_EQ(transient_event_probe, nullptr);
+            transient_event_probe =
+                static_cast<SlicedEventConsumerProbeStateMirror*>(
+                    transient_event_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(transient_event_probe, nullptr);
+
+    transient_event.compiled_graph->root_operations.tick_block(
+        transient_event_storage.buffer().data(), 0, 64);
+    ASSERT_EQ(transient_event_probe->calls, 2u);
+    EXPECT_EQ(transient_event_probe->indices[0], 0u);
+    EXPECT_EQ(transient_event_probe->indices[1], 32u);
+    EXPECT_EQ(transient_event_probe->block_sizes[0], 32u);
+    EXPECT_EQ(transient_event_probe->block_sizes[1], 32u);
+    EXPECT_EQ(transient_event_probe->event_counts[0], 4u);
+    EXPECT_EQ(transient_event_probe->event_counts[1], 4u);
+    EXPECT_EQ(transient_event_probe->trigger_counts[0], 4u);
+    EXPECT_EQ(transient_event_probe->trigger_counts[1], 4u);
+    EXPECT_EQ(transient_event_probe->first_times[0], 3u);
+    EXPECT_EQ(transient_event_probe->last_times[0], 31u);
+    EXPECT_EQ(transient_event_probe->first_times[1], 35u);
+    EXPECT_EQ(transient_event_probe->last_times[1], 63u);
+
+    // A short root block produces three 16-frame source slices and a 32+16
+    // consumer split. The transient producer sequence is cleared once at the
+    // root boundary, then all source slices append before materialization.
+    transient_event.compiled_graph->root_operations.tick_block(
+        transient_event_storage.buffer().data(), 64, 48);
+    ASSERT_EQ(transient_event_probe->calls, 4u);
+    EXPECT_EQ(transient_event_probe->indices[2], 64u);
+    EXPECT_EQ(transient_event_probe->indices[3], 96u);
+    EXPECT_EQ(transient_event_probe->block_sizes[2], 32u);
+    EXPECT_EQ(transient_event_probe->block_sizes[3], 16u);
+    EXPECT_EQ(transient_event_probe->event_counts[2], 4u);
+    EXPECT_EQ(transient_event_probe->event_counts[3], 2u);
+    EXPECT_EQ(transient_event_probe->trigger_counts[2], 4u);
+    EXPECT_EQ(transient_event_probe->trigger_counts[3], 2u);
+    EXPECT_EQ(transient_event_probe->first_times[2], 67u);
+    EXPECT_EQ(transient_event_probe->last_times[2], 95u);
+    EXPECT_EQ(transient_event_probe->first_times[3], 99u);
+    EXPECT_EQ(transient_event_probe->last_times[3], 111u);
 
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);

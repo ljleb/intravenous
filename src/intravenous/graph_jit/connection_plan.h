@@ -157,6 +157,7 @@ struct EventProducerGroupPlan {
     bool has_compiled_connections = false;
     EventConnectionImplementationRequirements requirements{};
     std::optional<EventConnectionImplementationKind> implementation{};
+    ConnectionLiveIntervalPlan live_interval{};
 };
 
 enum class ConnectionStorageLifetime {

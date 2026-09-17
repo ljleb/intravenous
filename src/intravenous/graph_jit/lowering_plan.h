@@ -122,10 +122,12 @@ struct SamplePortBindingPlan {
     }
 };
 
-// Point 10 starts with direct realtime event flow. Each producer group owns one
-// bounded raw event sequence. The count word and TimedEvent payload bytes live
-// in canonical NodeStorage; primitive callbacks receive only immutable bindings
-// and reconstruct invocation-local EventInputPort/EventOutputPort facades.
+// Point 10 realizes direct and transient realtime event flow. Each producer
+// group owns one bounded raw event sequence; block-size adaptation can add a
+// consumer-facing transient sequence. The count word and TimedEvent payload
+// bytes live in canonical NodeStorage; primitive callbacks receive only
+// immutable bindings and reconstruct invocation-local EventInputPort/
+// EventOutputPort facades.
 struct EventRepresentationPlan {
     std::size_t producer_group_index = 0;
     EventTypeId type = EventTypeId::empty;
@@ -148,6 +150,15 @@ struct PrimitiveEventOutputBindingPlan {
     EventTypeId source_type = EventTypeId::empty;
     std::size_t history = 0;
     std::size_t latency = 0;
+    bool append_existing = false;
+};
+
+struct EventMaterializationPlan {
+    std::size_t source_representation = 0;
+    std::size_t target_representation = 0;
+    // Schedule position of the producer. The producer has completed all of its
+    // root-invocation slices before this operation runs.
+    std::size_t after_execution_position = 0;
 };
 
 struct PrimitiveEventPortPlan {
@@ -159,6 +170,7 @@ struct EventPortBindingPlan {
     // Indexed by ConnectionAnalysisPlan::event_producer_groups.
     std::vector<std::optional<std::size_t>> producer_group_representations{};
     std::vector<EventRepresentationPlan> representations{};
+    std::vector<EventMaterializationPlan> materializations{};
     // Indexed by analyzed concrete primitive.
     std::vector<PrimitiveEventPortPlan> primitives{};
 };
@@ -178,6 +190,12 @@ struct PrimitiveExecutionStep {
     std::vector<std::size_t> sample_materializations_after{};
     std::vector<std::size_t> sample_compositions_after{};
     std::vector<std::size_t> sample_carry_commits_after{};
+
+    // Event transient-sequence flow clears the producer sequence once before
+    // all of its slices, then materializes a consumer-facing sequence after
+    // the complete producer step.
+    std::vector<std::size_t> event_sequence_resets_before{};
+    std::vector<std::size_t> event_materializations_after{};
 };
 
 struct ExecutionPlan {
