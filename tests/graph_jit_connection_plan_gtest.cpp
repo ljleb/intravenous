@@ -176,6 +176,43 @@ struct TwoInputSink {
     void tick_block(iv::TickBlockContext<TwoInputSink> const&) const {}
 };
 
+struct LatentTwoInputPass {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_sample_input("fast"),
+            iv::realtime_sample_input("slow"),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, iv::RealtimeOutputConfig{.latency = 4})};
+    }
+
+    constexpr std::size_t internal_latency() const { return 3; }
+
+    void tick_block(iv::TickBlockContext<LatentTwoInputPass> const&) const {}
+};
+
+struct MediumLatencySamplePass {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input("in")};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, iv::RealtimeOutputConfig{.latency = 1})};
+    }
+
+    constexpr std::size_t internal_latency() const { return 9; }
+
+    void tick_block(iv::TickBlockContext<MediumLatencySamplePass> const&) const {}
+};
+
 } // namespace
 
 TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolicy)
@@ -330,6 +367,91 @@ TEST(GraphJitConnectionPlan, EqualizesFeedForwardSamplePathsAtConvergence)
     ASSERT_TRUE(source_group->implementation.has_value());
     EXPECT_EQ(
         *source_group->implementation,
+        SampleConnectionImplementationKind::compact_persistent_carry);
+}
+
+TEST(GraphJitConnectionPlan, PropagatesAlignedLatencyAcrossMultipleConvergences)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<MonoSource>(graph);
+    auto first_slow = details::configure_concrete_node<LatentSamplePass>(graph);
+    auto first_join = details::configure_concrete_node<LatentTwoInputPass>(graph);
+    auto second_path = details::configure_concrete_node<MediumLatencySamplePass>(graph);
+    auto sink = details::configure_concrete_node<TwoInputSink>(graph);
+
+    auto const source_handle = source.node_bundle_handle();
+    auto const first_slow_handle = first_slow.node_bundle_handle();
+    auto const first_join_handle = first_join.node_bundle_handle();
+    auto const second_path_handle = second_path.node_bundle_handle();
+    auto const sink_handle = sink.node_bundle_handle();
+
+    first_slow(source);
+    first_join("fast"_P = source, "slow"_P = first_slow);
+    second_path(source);
+    sink("fast"_P = second_path, "slow"_P = first_join);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    auto connection_to = [&](NodeBundleHandle target_bundle,
+                             std::size_t target_port,
+                             NodeBundleHandle source_bundle)
+        -> graph_jit::detail::SampleConnectionPlan const* {
+        auto const found = std::ranges::find_if(
+            plan->sample_connections,
+            [&](graph_jit::detail::SampleConnectionPlan const& connection) {
+                return connection.target_port.node_bundle_handle == target_bundle
+                    && connection.target_port.port_ordinal == target_port
+                    && connection.canonical_source_port
+                    && connection.canonical_source_port->node_bundle_handle
+                        == source_bundle;
+            });
+        return found == plan->sample_connections.end() ? nullptr : &*found;
+    };
+
+    auto const* first_fast = connection_to(first_join_handle, 0, source_handle);
+    auto const* first_slow_connection =
+        connection_to(first_join_handle, 1, first_slow_handle);
+    auto const* second_fast = connection_to(sink_handle, 0, second_path_handle);
+    auto const* second_slow = connection_to(sink_handle, 1, first_join_handle);
+    ASSERT_NE(first_fast, nullptr);
+    ASSERT_NE(first_slow_connection, nullptr);
+    ASSERT_NE(second_fast, nullptr);
+    ASSERT_NE(second_slow, nullptr);
+
+    // First convergence: the LatentSamplePass path arrives at 5 internal + 2
+    // authored output = 7 samples, so the direct source is delayed by 7.
+    EXPECT_EQ(first_fast->source_latency, 0u);
+    EXPECT_EQ(first_fast->read_latency, 7u);
+    EXPECT_EQ(first_slow_connection->source_latency, 2u);
+    EXPECT_EQ(first_slow_connection->read_latency, 2u);
+
+    // The aligned first join therefore starts at path latency 7, adds its own
+    // 3 samples of internal latency, then its authored output contributes 4
+    // more at the second convergence: 7 + 3 + 4 = 14. The independent path
+    // arrives at 9 internal + 1 authored output = 10, so only that path needs
+    // four additional samples of compensation. Crucially, this proves the
+    // first join propagates its aligned latency rather than resetting to its
+    // local internal/output latency.
+    EXPECT_EQ(second_slow->source_latency, 4u);
+    EXPECT_EQ(second_slow->read_latency, 4u);
+    EXPECT_EQ(second_fast->source_latency, 1u);
+    EXPECT_EQ(second_fast->read_latency, 5u);
+
+    auto const second_path_group = std::ranges::find_if(
+        plan->sample_producer_groups,
+        [&](graph_jit::detail::SampleProducerGroupPlan const& group) {
+            return !group.source_channels.empty()
+                && group.source_channels.front().bundle == second_path_handle;
+        });
+    ASSERT_NE(second_path_group, plan->sample_producer_groups.end());
+    EXPECT_EQ(second_path_group->requirements.retained_frames, 5u);
+    ASSERT_TRUE(second_path_group->implementation.has_value());
+    EXPECT_EQ(
+        *second_path_group->implementation,
         SampleConnectionImplementationKind::compact_persistent_carry);
 }
 
