@@ -95,13 +95,28 @@ index advanced by each slice. This keeps subdivision out of callback/configurati
 planning and gives future port-context materialization one canonical per-slice
 invocation boundary.
 
-The next change should be the second major landing-site refactor: introduce
-explicit schedule/SCC, producer-group/connection, history/latency, liveness, and
-storage-region plans before any sample ports are materialized.
-The existing `choose_sample_connection_implementation()` and
+The second major landing-site refactor has now landed. Pure host-side connection
+analysis lives in `graph_jit/connection_plan.{h,cpp}` and is intentionally usable
+before LLVM/package realization. It inventories concrete nodes, classifies
+connection access direction, derives sequential tick dependencies, computes
+deterministic SCC/region ordering, records per-edge history/latency/conversion/
+boundary/feedback facts, groups fanout by producer, derives the requirement
+records consumed by the existing sample/event physical-storage choosers, and
+emits semantic transient/persistent/external storage and liveness requests. A
+compiled output never becomes a tick dependency merely because a realtime
+consumer needs it: that edge remains classified for the later compiled-access
+materialization phase. Realtime-to-realtime groups alone enter the realtime
+storage chooser. Block-slice mismatches conservatively require materialization
+until a later scheduler proves a shared subdivision. The current lowering
+capability gate still rejects graphs with ports/connections, so this refactor
+adds no executable port capability by itself.
+
+The next change should consume this plan for the first simple feed-forward sample
+connections and materialize the corresponding primitive port contexts. The
+existing `choose_sample_connection_implementation()` and
 `choose_event_connection_implementation()` functions remain the physical-storage
-policy boundary; GraphJit is responsible for deriving their requirement inputs
-and realizing their returned choices, not for creating a competing policy layer.
+policy boundary; GraphJit derives their requirement inputs and realizes their
+returned choices rather than creating a competing policy layer.
 
 The shell continues to use the generated-root and canonical
 `NodeLayout`/`NodeStorage` contract specified in this document: `CompiledGraph`
@@ -134,10 +149,12 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
 4. **Primitive maximum-block splitting.** **Landed.** Primitive execution steps
    carry their accepted maximum block size, and one LLVM-emission path slices
    both tick and skip invocations while advancing sample indices correctly.
-5. **Stable connection-analysis plans.** Before adding ports, introduce explicit
-   node/schedule/SCC, producer-group/connection, history/latency/event-window,
-   liveness/reuse, and storage-region planning records. This is the second major
-   anti-monolith landing site.
+5. **Stable connection-analysis plans.** **Landed.** Pure host-side planning now
+   records node/dependency topology, deterministic SCC/region scheduling,
+   producer-group/connection temporal facts, sample/event chooser requirements,
+   and semantic liveness/storage requests before any package LLVM is consumed.
+   Realtime policy selection remains in `choose_*_connection_implementation()`;
+   compiled and mixed-access directions are classified separately.
 6. **Simple feed-forward sample connections.** Materialize the first sample port
    contexts and exercise direct/transient choices through
    `choose_sample_connection_implementation()`.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/reflected_node_operations.h>
+#include <intravenous/graph_jit/connection_plan.h>
 #include <intravenous/graph_jit/lowering.h>
 
 #include <cstddef>
@@ -108,6 +109,10 @@ struct ExecutionPlan {
 };
 
 struct LoweringPlan {
+    // Pure graph/topology analysis is part of the stable lowering plan even
+    // while the current realization capability gate still rejects non-empty
+    // port/connection plans. Point 6 consumes this directly.
+    ConnectionAnalysisPlan connections{};
     DeclarationPlan declarations{};
     PackageImportPlan imports{};
     ConfigurationPlan configurations{};

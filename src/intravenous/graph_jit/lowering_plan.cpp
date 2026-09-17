@@ -85,10 +85,11 @@ bool is_power_of_two(std::size_t value) noexcept
 }
 
 std::expected<std::vector<PrimitiveBundle>, std::string> zero_port_primitives(
-    LoweringInput const& input)
+    LoweringInput const& input,
+    ConnectionAnalysisPlan const& connections)
 {
-    if (!input.graph.connections.configured_sample_connections().empty()
-        || !input.graph.connections.configured_event_connections().empty()) {
+    if (!connections.sample_connections.empty()
+        || !connections.event_connections.empty()) {
         return std::unexpected(
             "zero-port GraphJit lowering slice does not yet support graph connections");
     }
@@ -167,13 +168,15 @@ std::expected<std::vector<PrimitiveBundle>, std::string> zero_port_primitives(
     return primitives;
 }
 
-std::expected<GraphAnalysis, std::string> analyze_graph(LoweringInput const& input)
+std::expected<GraphAnalysis, std::string> analyze_graph(
+    LoweringInput const& input,
+    ConnectionAnalysisPlan const& connections)
 {
     if (is_structurally_empty(input.graph)) {
         return GraphAnalysis{.empty = true};
     }
 
-    auto primitive_bundles = zero_port_primitives(input);
+    auto primitive_bundles = zero_port_primitives(input, connections);
     if (!primitive_bundles) {
         return std::unexpected(std::move(primitive_bundles.error()));
     }
@@ -600,6 +603,7 @@ std::expected<ConfigurationPlan, std::string> plan_node_configurations(
 
 std::expected<ExecutionPlan, std::string> plan_execution(
     GraphAnalysis const& analysis,
+    ConnectionAnalysisPlan const& connections,
     DeclarationPlan const& declarations,
     PackageImportPlan const& imports)
 {
@@ -619,17 +623,49 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         .root_skippable = true,
     };
     plan.primitive_steps.reserve(analysis.primitives.size());
-    for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
-        auto const& primitive = analysis.primitives[i];
-        auto const& callbacks = imports.primitive_callbacks[i];
-        plan.root_skippable = plan.root_skippable && primitive.bundle.block_skippable;
-        plan.primitive_steps.push_back(PrimitiveExecutionStep{
-            .configuration_index = i,
-            .storage_index = i,
-            .maximum_block_size = primitive.bundle.maximum_block_size,
-            .tick_callback_symbol = callbacks.tick_block,
-            .skip_callback_symbol = callbacks.skip_block,
-        });
+
+    // Consume the explicit schedule even for the current disconnected slice.
+    // Today this preserves configured-bundle order; point 6 can therefore add
+    // dependencies without changing the execution-plan/LLVM boundary again.
+    std::vector<bool> scheduled(analysis.primitives.size(), false);
+    for (auto const region_index : connections.schedule.region_order) {
+        if (region_index >= connections.schedule.regions.size()) {
+            return std::unexpected(
+                "GraphJit connection schedule contains an invalid region index");
+        }
+        for (auto const bundle :
+             connections.schedule.regions[region_index].execution_order) {
+            auto const primitive = std::ranges::find_if(
+                analysis.primitives,
+                [&](PrimitiveAnalysis const& candidate) {
+                    return candidate.bundle.node_bundle == bundle;
+                });
+            if (primitive == analysis.primitives.end()) {
+                return std::unexpected(
+                    "GraphJit connection schedule contains a non-primitive bundle");
+            }
+            auto const i = static_cast<std::size_t>(
+                std::distance(analysis.primitives.begin(), primitive));
+            if (scheduled[i]) {
+                return std::unexpected(
+                    "GraphJit connection schedule contains a primitive more than once");
+            }
+            scheduled[i] = true;
+            auto const& callbacks = imports.primitive_callbacks[i];
+            plan.root_skippable =
+                plan.root_skippable && primitive->bundle.block_skippable;
+            plan.primitive_steps.push_back(PrimitiveExecutionStep{
+                .configuration_index = i,
+                .storage_index = i,
+                .maximum_block_size = primitive->bundle.maximum_block_size,
+                .tick_callback_symbol = callbacks.tick_block,
+                .skip_callback_symbol = callbacks.skip_block,
+            });
+        }
+    }
+    if (!std::ranges::all_of(scheduled, [](bool value) { return value; })) {
+        return std::unexpected(
+            "GraphJit connection schedule omitted a concrete primitive");
     }
     return plan;
 }
@@ -638,7 +674,16 @@ std::expected<ExecutionPlan, std::string> plan_execution(
 std::expected<LoweringPlan, std::string> build_lowering_plan(
     LoweringInput const& input)
 {
-    auto analysis = analyze_graph(input);
+    // Build the pure connection/schedule plan before the current capability
+    // gate. This keeps point 5 independently testable and lets point 6 widen
+    // realization without another graph-analysis rewrite.
+    auto connections = build_connection_analysis_plan(
+        input.graph, input.specialization.block_size);
+    if (!connections) {
+        return std::unexpected(std::move(connections.error()));
+    }
+
+    auto analysis = analyze_graph(input, *connections);
     if (!analysis) return std::unexpected(std::move(analysis.error()));
 
     auto declarations = plan_declarations(input, *analysis);
@@ -652,10 +697,12 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         return std::unexpected(std::move(configurations.error()));
     }
 
-    auto execution = plan_execution(*analysis, *declarations, *imports);
+    auto execution = plan_execution(
+        *analysis, *connections, *declarations, *imports);
     if (!execution) return std::unexpected(std::move(execution.error()));
 
     return LoweringPlan{
+        .connections = std::move(*connections),
         .declarations = std::move(*declarations),
         .imports = std::move(*imports),
         .configurations = std::move(*configurations),
