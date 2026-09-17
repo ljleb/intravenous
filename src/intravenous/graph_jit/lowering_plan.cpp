@@ -1222,7 +1222,6 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             if (connection.access != PlannedConnectionAccess::realtime_to_realtime
                 || connection.external_boundary
                 || connection.feedback
-                || connection.requires_conversion
                 || connection.source_history != 0
                 || connection.source_latency != 0
                 || connection.target_history != 0
@@ -1230,27 +1229,48 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 || connection.sources.front().bundle != source_id.bundle
                 || connection.sources.front().port != source_id.port
                 || connection.source_type != group.source_type
-                || connection.target_type != group.source_type) {
+                || connection.conversion.source_type != connection.source_type
+                || connection.conversion.target_type != connection.target_type) {
                 return std::unexpected(
-                    "GraphJit event connection requires conversion, retention, feedback, or external semantics that are not yet realized");
+                    "GraphJit event connection requires retention, feedback, external, or source-composition semantics that are not yet realized");
             }
             auto target_representation = *source_representation;
-            if (connection.requires_block_materialization) {
+            if (connection.requires_conversion
+                || connection.requires_block_materialization) {
                 if (!materialized) {
                     return std::unexpected(
-                        "GraphJit event implementation lost required block materialization");
+                        "GraphJit event implementation lost required transient materialization");
                 }
-                auto derived = append_representation(
-                    group_index, connection.target_type);
-                if (!derived) {
-                    return std::unexpected(std::move(derived.error()));
+
+                auto const existing = std::ranges::find_if(
+                    plan.materializations,
+                    [&](EventMaterializationPlan const& candidate) {
+                        return candidate.source_representation
+                                == *source_representation
+                            && candidate.conversion == connection.conversion
+                            && candidate.target_representation
+                                < plan.representations.size()
+                            && plan.representations[
+                                   candidate.target_representation]
+                                   .type
+                                == connection.target_type;
+                    });
+                if (existing != plan.materializations.end()) {
+                    target_representation = existing->target_representation;
+                } else {
+                    auto derived = append_representation(
+                        group_index, connection.target_type);
+                    if (!derived) {
+                        return std::unexpected(std::move(derived.error()));
+                    }
+                    target_representation = *derived;
+                    plan.materializations.push_back(EventMaterializationPlan{
+                        .source_representation = *source_representation,
+                        .target_representation = target_representation,
+                        .conversion = connection.conversion,
+                        .after_execution_position = group.live_interval.begin,
+                    });
                 }
-                target_representation = *derived;
-                plan.materializations.push_back(EventMaterializationPlan{
-                    .source_representation = *source_representation,
-                    .target_representation = target_representation,
-                    .after_execution_position = group.live_interval.begin,
-                });
             }
 
             for (auto const target_id : connection.targets) {

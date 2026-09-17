@@ -1,4 +1,5 @@
 #include <intravenous/graph_jit/lowering.h>
+#include <intravenous/graph_jit/event_conversion_runtime.h>
 #include <intravenous/graph_jit/lowering_plan.h>
 
 #include <llvm/ADT/StringRef.h>
@@ -1465,10 +1466,12 @@ std::expected<void, std::string> emit_event_materialization(
         return std::unexpected(
             "GraphJit event materialization references unfinalized storage");
     }
-    if (source.type != target.type
-        || target.event_capacity < source.event_capacity) {
+    if (materialization.conversion.source_type != source.type
+        || materialization.conversion.target_type != target.type
+        || materialization.conversion.step_count
+            > EventConversionPlan::max_steps) {
         return std::unexpected(
-            "GraphJit transient event materialization requires compatible bounded sequences");
+            "GraphJit transient event materialization has an invalid conversion plan");
     }
 
     auto& context = builder.getContext();
@@ -1486,12 +1489,14 @@ std::expected<void, std::string> emit_event_materialization(
         "event.materialize.target.count");
     auto* count = builder.CreateLoad(
         size_type, source_count_pointer, "event.materialize.count");
-    auto* capacity = llvm::ConstantInt::get(size_type, target.event_capacity);
-    auto* bounded_count = builder.CreateSelect(
-        builder.CreateICmpULE(count, capacity, "event.materialize.in.bounds"),
+    auto* source_capacity = llvm::ConstantInt::get(
+        size_type, source.event_capacity);
+    auto* bounded_source_count = builder.CreateSelect(
+        builder.CreateICmpULE(
+            count, source_capacity, "event.materialize.source.in.bounds"),
         count,
-        capacity,
-        "event.materialize.bounded.count");
+        source_capacity,
+        "event.materialize.source.bounded.count");
 
     auto* source_events = byte_offset_pointer(
         builder,
@@ -1503,17 +1508,70 @@ std::expected<void, std::string> emit_event_materialization(
         storage_base,
         target.events_storage_offset,
         "event.materialize.target.events");
-    auto* byte_count = builder.CreateMul(
-        bounded_count,
-        llvm::ConstantInt::get(size_type, sizeof(TimedEvent)),
-        "event.materialize.bytes");
-    builder.CreateMemCpy(
-        target_events,
-        llvm::Align(alignof(TimedEvent)),
-        source_events,
-        llvm::Align(alignof(TimedEvent)),
-        byte_count);
-    builder.CreateStore(bounded_count, target_count_pointer);
+
+    if (materialization.conversion.step_count == 0) {
+        if (source.type != target.type) {
+            return std::unexpected(
+                "GraphJit identity event materialization changes event type");
+        }
+        auto* target_capacity = llvm::ConstantInt::get(
+            size_type, target.event_capacity);
+        auto* bounded_count = builder.CreateSelect(
+            builder.CreateICmpULE(
+                bounded_source_count,
+                target_capacity,
+                "event.materialize.target.in.bounds"),
+            bounded_source_count,
+            target_capacity,
+            "event.materialize.bounded.count");
+        auto* byte_count = builder.CreateMul(
+            bounded_count,
+            llvm::ConstantInt::get(size_type, sizeof(TimedEvent)),
+            "event.materialize.bytes");
+        builder.CreateMemCpy(
+            target_events,
+            llvm::Align(alignof(TimedEvent)),
+            source_events,
+            llvm::Align(alignof(TimedEvent)),
+            byte_count);
+        builder.CreateStore(bounded_count, target_count_pointer);
+        return {};
+    }
+
+    auto* plan_word_type = llvm::Type::getInt32Ty(context);
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* helper_type = llvm::FunctionType::get(
+        size_type,
+        {plan_word_type, plan_word_type, plan_word_type, plan_word_type,
+         plan_word_type, size_type, pointer_type, size_type, pointer_type,
+         size_type},
+        false);
+    auto* module = builder.GetInsertBlock()->getModule();
+    auto helper = module->getOrInsertFunction(
+        detail::event_sequence_conversion_symbol, helper_type);
+
+    auto step = [&](std::size_t index) -> llvm::Constant* {
+        auto const value = index < materialization.conversion.step_count
+            ? static_cast<std::underlying_type_t<EventConversionStepId>>(
+                  materialization.conversion.steps[index])
+            : 0;
+        return llvm::ConstantInt::get(plan_word_type, value);
+    };
+    auto* converted_count = builder.CreateCall(
+        helper,
+        {llvm::ConstantInt::get(
+             plan_word_type,
+             static_cast<std::underlying_type_t<EventTypeId>>(source.type)),
+         llvm::ConstantInt::get(
+             plan_word_type,
+             static_cast<std::underlying_type_t<EventTypeId>>(target.type)),
+         step(0), step(1), step(2),
+         llvm::ConstantInt::get(
+             size_type, materialization.conversion.step_count),
+         source_events, bounded_source_count, target_events,
+         llvm::ConstantInt::get(size_type, target.event_capacity)},
+        "event.materialize.converted.count");
+    builder.CreateStore(converted_count, target_count_pointer);
     return {};
 }
 

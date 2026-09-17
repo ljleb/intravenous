@@ -543,11 +543,11 @@ std::expected<void, std::string> inventory_event_connections(
                     [&](EventInputPortId target) {
                         return target.bundle == plan.boundary_bundle;
                     });
-            connection_plan.requires_conversion =
-                connection.source_type != connection.target_type
-                || connection.sources.size() != 1;
-            (void)EventConversionRegistry::instance().plan(
+            connection_plan.conversion = EventConversionRegistry::instance().plan(
                 connection.source_type, connection.target_type);
+            connection_plan.requires_conversion =
+                connection_plan.conversion.size() != 0
+                || connection.sources.size() != 1;
         } catch (std::exception const& e) {
             return std::unexpected(
                 "event connection analysis failed: " + std::string(e.what()));

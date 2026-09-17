@@ -115,6 +115,7 @@ struct EventConnectionPlan {
     std::vector<EventOutputPortId> sources{};
     EventTypeId target_type = EventTypeId::empty;
     std::vector<EventInputPortId> targets{};
+    EventConversionPlan conversion{};
 
     std::size_t source_history = 0;
     std::size_t source_latency = 0;

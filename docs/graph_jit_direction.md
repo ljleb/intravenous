@@ -290,18 +290,19 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    compensation, and that timing survives conversion, fanout, channel composition,
    history, and target-channel projection/permutation. Feedback/SCC latency remains
    deferred to point 12.
-10. **Event-port realization refactor and simple event flow.** **In progress: direct and transient block adaptation landed.**
-    Events now use immutable compiler bindings over bounded raw `NodeStorage`;
-    imported primitive wrappers reconstruct invocation-local event facades rather
-    than persisting `EventSharedPortData`/port objects. Exact-type, zero-retention,
+10. **Event-port realization refactor and simple event flow.** **Landed for direct, transient block adaptation, conversion, and feed-forward fanout.**
+    Events use immutable compiler bindings over bounded raw `NodeStorage`; imported
+    primitive wrappers reconstruct invocation-local event facades rather than
+    persisting `EventSharedPortData`/port objects. Exact-type, zero-retention,
     unsliced realtime producer groups realize `direct` bounded sequences. Sliced
     producers/consumers realize `transient_sequence`: the producer sequence is
-    cleared once per root invocation, producer slices append into it, and one
+    cleared once per root invocation, producer slices append into it, and a
     consumer-facing sequence is materialized after the complete producer step.
-    The next sub-step is event conversion/fanout before retained event storage is
-    added.
-11. **Event fanout/conversion/retention.** Add converted branches, compact event
-    carry, persistent rings, bounded capacity/workspace policy, and liveness reuse.
+    Event conversion plans are preserved by semantic analysis and realized as
+    explicit transient sequence operations; identical converted fanout branches
+    share one derived representation/materialization.
+11. **Event retention.** Add compact event carry, persistent rings, retained-window
+    filtering, bounded capacity/workspace policy, and liveness reuse.
 12. **SCC/feedback execution.** Turn existing SCC analysis into feedback-aware
     scheduling, `feedback_ring` realization for sample/event groups, and nonzero
     reflected `scc_feedback_latency`.

@@ -123,11 +123,11 @@ struct SamplePortBindingPlan {
 };
 
 // Point 10 realizes direct and transient realtime event flow. Each producer
-// group owns one bounded raw event sequence; block-size adaptation can add a
-// consumer-facing transient sequence. The count word and TimedEvent payload
-// bytes live in canonical NodeStorage; primitive callbacks receive only
-// immutable bindings and reconstruct invocation-local EventInputPort/
-// EventOutputPort facades.
+// group owns one bounded raw event sequence; block-size adaptation and event
+// conversion can add deduplicated consumer-facing transient sequences. The
+// count word and TimedEvent payload bytes live in canonical NodeStorage;
+// primitive callbacks receive only immutable bindings and reconstruct
+// invocation-local EventInputPort/EventOutputPort facades.
 struct EventRepresentationPlan {
     std::size_t producer_group_index = 0;
     EventTypeId type = EventTypeId::empty;
@@ -156,6 +156,7 @@ struct PrimitiveEventOutputBindingPlan {
 struct EventMaterializationPlan {
     std::size_t source_representation = 0;
     std::size_t target_representation = 0;
+    EventConversionPlan conversion{};
     // Schedule position of the producer. The producer has completed all of its
     // root-invocation slices before this operation runs.
     std::size_t after_execution_position = 0;
