@@ -51,6 +51,7 @@ constexpr char graph_jit_persistent_history_module_id[] = "iv.test.graph_jit.sta
 constexpr char graph_jit_latency_compensation_module_id[] = "iv.test.graph_jit.state_context.latency_compensation_module";
 constexpr char graph_jit_latency_conversion_fanout_module_id[] = "iv.test.graph_jit.state_context.latency_conversion_fanout_module";
 constexpr char graph_jit_composed_latency_module_id[] = "iv.test.graph_jit.state_context.composed_latency_module";
+constexpr char graph_jit_composed_history_module_id[] = "iv.test.graph_jit.state_context.composed_history_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -2194,6 +2195,16 @@ void composed_latency_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void composed_history_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.stereo_history_consumer">();
+    delayed(source);
+    sink(graph.tile<iv::stereo>(source, delayed));
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -2242,6 +2253,7 @@ IV_MODULE("iv.test.graph_jit.state_context.persistent_history_module", persisten
 IV_MODULE("iv.test.graph_jit.state_context.latency_compensation_module", latency_compensation_module);
 IV_MODULE("iv.test.graph_jit.state_context.latency_conversion_fanout_module", latency_conversion_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.composed_latency_module", composed_latency_module);
+IV_MODULE("iv.test.graph_jit.state_context.composed_history_module", composed_history_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -2313,6 +2325,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_TRUE(has_module_definition(graph_jit_latency_compensation_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_latency_conversion_fanout_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_composed_latency_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_composed_history_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -3391,6 +3404,139 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(composed_probe->sum_left, 5664.0f);
     EXPECT_FLOAT_EQ(composed_probe->sum_right, 5664.0f);
 
+    // A composed input with history must extend each producer's retention by
+    // the target history before gathering the independently delayed channels.
+    // The direct channel therefore needs 5 + 7 frames while the delayed
+    // channel needs 5 + 2. The synthetic stereo representation itself is
+    // timestamp-aligned and exposes those five historical frames at latency 0.
+    auto composed_history_graph = configured_module_graph(
+        *revision, graph_jit_composed_history_module_id);
+    ASSERT_TRUE(composed_history_graph);
+    auto composed_history_analysis =
+        iv::graph_jit::detail::build_connection_analysis_plan(
+            *composed_history_graph, 64);
+    ASSERT_TRUE(composed_history_analysis.has_value())
+        << (composed_history_analysis
+                ? std::string{}
+                : composed_history_analysis.error());
+
+    auto composed_history_connection = std::ranges::find_if(
+        composed_history_analysis->sample_connections,
+        [](auto const& connection) {
+            return !connection.canonical_source_port
+                && connection.source_channel_timings.size() == 2;
+        });
+    ASSERT_NE(
+        composed_history_connection,
+        composed_history_analysis->sample_connections.end());
+    ASSERT_EQ(composed_history_connection->source_channel_timings.size(), 2u);
+    EXPECT_EQ(composed_history_connection->target_history, 5u);
+    EXPECT_EQ(
+        composed_history_connection->source_channel_timings[0].read_latency,
+        7u);
+    EXPECT_EQ(
+        composed_history_connection->source_channel_timings[1].read_latency,
+        2u);
+
+    auto producer_group_for = [&](auto const& channel) {
+        auto const source_port = iv::NodeBundlePortId{
+            channel.source.bundle,
+            iv::PortKind::sample,
+            channel.source.port,
+        };
+        return std::ranges::find_if(
+            composed_history_analysis->sample_producer_groups,
+            [&](auto const& group) {
+                return group.source_port && *group.source_port == source_port;
+            });
+    };
+    auto direct_history_group = producer_group_for(
+        composed_history_connection->source_channel_timings[0]);
+    auto delayed_history_group = producer_group_for(
+        composed_history_connection->source_channel_timings[1]);
+    ASSERT_NE(
+        direct_history_group,
+        composed_history_analysis->sample_producer_groups.end());
+    ASSERT_NE(
+        delayed_history_group,
+        composed_history_analysis->sample_producer_groups.end());
+    EXPECT_EQ(direct_history_group->requirements.retained_frames, 12u);
+    EXPECT_EQ(delayed_history_group->requirements.retained_frames, 7u);
+
+    auto composed_history_physical =
+        iv::graph_jit::detail::build_sample_physical_plan(
+            *composed_history_analysis, 64);
+    ASSERT_TRUE(composed_history_physical.has_value())
+        << (composed_history_physical
+                ? std::string{}
+                : composed_history_physical.error());
+    ASSERT_EQ(composed_history_physical->compositions.size(), 1u);
+    EXPECT_EQ(composed_history_physical->compositions[0].target_history, 5u);
+    auto const composed_history_representation =
+        composed_history_physical->compositions[0].target_representation;
+    ASSERT_LT(
+        composed_history_representation,
+        composed_history_physical->representations.size());
+    EXPECT_EQ(
+        composed_history_physical->representations[composed_history_representation]
+            .frame_capacity,
+        128u);
+
+    auto composed_history = compile_graph(composed_history_graph, 121);
+    ASSERT_TRUE(composed_history.succeeded())
+        << (composed_history.diagnostics.empty()
+                ? ""
+                : composed_history.diagnostics.front().message);
+    ASSERT_EQ(composed_history.compiled_graph->node_layout.nodes.size(), 3u);
+
+    auto composed_history_storage =
+        composed_history.compiled_graph->node_layout.create_storage(resources);
+    composed_history_storage.initialize();
+    StereoHistoryConsumerStateMirror* composed_history_probe = nullptr;
+    for (std::size_t i = 0;
+         i < composed_history.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (composed_history.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(StereoHistoryConsumerStateMirror)) {
+            ASSERT_EQ(composed_history_probe, nullptr);
+            composed_history_probe =
+                static_cast<StereoHistoryConsumerStateMirror*>(
+                    composed_history_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(composed_history_probe, nullptr);
+
+    composed_history.compiled_graph->root_operations.tick_block(
+        composed_history_storage.buffer().data(), 0, 64);
+    EXPECT_EQ(composed_history_probe->calls, 1u);
+    EXPECT_EQ(composed_history_probe->last_index, 0u);
+    EXPECT_FLOAT_EQ(composed_history_probe->current_left, 0.0f);
+    EXPECT_FLOAT_EQ(composed_history_probe->current_right, 0.0f);
+    EXPECT_FLOAT_EQ(composed_history_probe->history_5_left, 0.0f);
+    EXPECT_FLOAT_EQ(composed_history_probe->history_5_right, 0.0f);
+
+    // At absolute index 64 both channels represent source frame 57 after path
+    // equalization, and get(5) must reconstruct source frame 52 on each side.
+    composed_history.compiled_graph->root_operations.tick_block(
+        composed_history_storage.buffer().data(), 64, 64);
+    EXPECT_EQ(composed_history_probe->calls, 2u);
+    EXPECT_EQ(composed_history_probe->last_index, 64u);
+    EXPECT_FLOAT_EQ(composed_history_probe->current_left, 57.0f);
+    EXPECT_FLOAT_EQ(composed_history_probe->current_right, 57.0f);
+    EXPECT_FLOAT_EQ(composed_history_probe->history_5_left, 52.0f);
+    EXPECT_FLOAT_EQ(composed_history_probe->history_5_right, 52.0f);
+    EXPECT_EQ(composed_history_probe->marker, 0xa1b2c3d4e5f60718ull);
+
+    // A short third block catches composition code that accidentally assumes
+    // the kernel's configured block size while reconstructing target history.
+    composed_history.compiled_graph->root_operations.tick_block(
+        composed_history_storage.buffer().data(), 128, 4);
+    EXPECT_EQ(composed_history_probe->calls, 3u);
+    EXPECT_EQ(composed_history_probe->last_index, 128u);
+    EXPECT_FLOAT_EQ(composed_history_probe->current_left, 121.0f);
+    EXPECT_FLOAT_EQ(composed_history_probe->current_right, 121.0f);
+    EXPECT_FLOAT_EQ(composed_history_probe->history_5_left, 116.0f);
+    EXPECT_FLOAT_EQ(composed_history_probe->history_5_right, 116.0f);
+
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);
     ASSERT_TRUE(history_graph);
@@ -3619,6 +3765,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     fanout_storage = iv::NodeStorage{};
     stereo_conversion_storage = iv::NodeStorage{};
     latency_storage = iv::NodeStorage{};
+    composed_history_storage = iv::NodeStorage{};
     history_storage = iv::NodeStorage{};
     history_next_storage = iv::NodeStorage{};
     persistent_history_storage = iv::NodeStorage{};
@@ -3637,6 +3784,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     fanout = {};
     stereo_conversion = {};
     latency_compensation = {};
+    composed_history = {};
     history = {};
     history_next = {};
     persistent_history = {};
