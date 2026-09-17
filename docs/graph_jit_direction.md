@@ -47,20 +47,36 @@ globals, and owns a persistent project `LLJIT` with independently releasable
 per-generation resources. Generated project LLVM is verified, optimized at O3,
 and materialized synchronously before an immutable `CompiledGraph` is returned.
 
-The lowering boundary is now executable for the semantic identity case: an empty
+The lowering boundary is executable for the semantic identity case: an empty
 project lowers to an empty canonical `NodeLayout` plus materialized no-op root
 `tick_block`/`skip_block` operations and returns a real `CompiledGraph`. This
 proves the complete lowering -> verification -> O3 -> ORC -> native-operation
 path without introducing special runtime storage or lifecycle machinery.
 
-General non-empty `graph_jit::lower_configured_graph_to_llvm` remains the
-deliberately isolated missing implementation. The shell uses the generated-root
-and canonical `NodeLayout`/`NodeStorage` contract specified in this document:
-`CompiledGraph` carries the finalized `NodeLayout` plus generated root
-`tick_block`/optional `skip_block` operations, while lifecycle remains entirely
-in ordinary `NodeStorage`. Whole-project lowering must not reintroduce a second
-node-storage layout, a second lifecycle system, or a synthetic project-wide
-`access_block()` merely to expose compiled outputs.
+The first deliberately narrow non-empty slice has also landed. A flat project
+containing exactly one registered zero-port primitive with no `State`,
+`CompiledState`, connections, virtual nodes, or configuration-pointer
+relocations now invokes its exact accepted native `declare_node` callback,
+finalizes the canonical `NodeLayout`, embeds the trivially-copyable node
+configuration and zero-port tick context as immutable LLVM globals, imports the
+selected package callback closure with LLVM `LinkOnlyNeeded`, and dispatches it
+from the generated project-root `tick_block`. The root exposes `skip_block` only
+when the configured primitive is declared block-skippable. Unsupported shapes
+still fail explicitly at the lowering boundary; they are never compiled as
+no-ops.
+
+General graph lowering remains the deliberately isolated compiler work. The next
+expansion should remove the zero-state restriction by materializing per-node
+`ReflectedNodeTickContext` state/`CompiledState` spans from finalized
+`NodeLayout` offsets, then introduce sample/event connection planning rather
+than widening this temporary single-primitive shape with ad-hoc buffers. The
+shell continues to use the generated-root and canonical
+`NodeLayout`/`NodeStorage` contract specified in this document: `CompiledGraph`
+carries the finalized `NodeLayout` plus generated root `tick_block`/optional
+`skip_block` operations, while lifecycle remains entirely in ordinary
+`NodeStorage`. Whole-project lowering must not reintroduce a second node-storage
+layout, a second lifecycle system, or a synthetic project-wide `access_block()`
+merely to expose compiled outputs.
 
 The root-build transaction remains:
 

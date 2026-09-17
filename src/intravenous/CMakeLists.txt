@@ -310,12 +310,14 @@ llvm_map_components_to_libnames(IV_GRAPH_JIT_LLVM_LIBS
     bitreader
     core
     executionengine
+    linker
     native
     nativecodegen
     orcjit
     passes
     support
-    target)
+    target
+    transformutils)
 target_link_libraries(intravenous_graph_jit PRIVATE
     ${IV_GRAPH_JIT_LLVM_LIBS}
 )
