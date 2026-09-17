@@ -18,6 +18,7 @@
 #include <expected>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -427,41 +428,42 @@ llvm::Value* byte_offset_pointer(
         name);
 }
 
+std::expected<ReflectedSamplePortStorageBinding, std::string>
+sample_storage_binding(
+    detail::SamplePhysicalPlan const& plan,
+    std::size_t representation_index)
+{
+    if (representation_index >= plan.representations.size()) {
+        return std::unexpected(
+            "GraphJit sample binding references a missing physical representation");
+    }
+    auto const& representation = plan.representations[representation_index];
+    if (representation.transient_allocation
+            == detail::no_sample_transient_allocation
+        || representation.transient_allocation >= plan.transient_allocations.size()) {
+        return std::unexpected(
+            "GraphJit sample representation has no realized transient allocation");
+    }
+    auto const& allocation =
+        plan.transient_allocations[representation.transient_allocation];
+    if (allocation.representation_index != representation_index) {
+        return std::unexpected(
+            "GraphJit sample transient allocation points at the wrong representation");
+    }
+    return ReflectedSamplePortStorageBinding{
+        .storage_offset = allocation.storage_offset,
+        .frame_capacity = representation.frame_capacity,
+        .storage_latency = 0,
+        .channel_layout = representation.channel_layout,
+    };
+}
+
 std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
     llvm::Module& module,
     detail::SamplePortBindingPlan const& plan)
 {
     EmittedSamplePortBindings emitted;
     emitted.primitives.resize(plan.primitives.size());
-
-    auto storage_binding = [&](std::size_t representation_index)
-        -> std::expected<ReflectedSamplePortStorageBinding, std::string> {
-        if (representation_index >= plan.physical.representations.size()) {
-            return std::unexpected(
-                "GraphJit sample binding references a missing physical representation");
-        }
-        auto const& representation =
-            plan.physical.representations[representation_index];
-        if (representation.transient_allocation
-                == detail::no_sample_transient_allocation
-            || representation.transient_allocation
-                >= plan.physical.transient_allocations.size()) {
-            return std::unexpected(
-                "GraphJit sample representation has no realized transient allocation");
-        }
-        auto const& allocation = plan.physical.transient_allocations[
-            representation.transient_allocation];
-        if (allocation.representation_index != representation_index) {
-            return std::unexpected(
-                "GraphJit sample transient allocation points at the wrong representation");
-        }
-        return ReflectedSamplePortStorageBinding{
-            .storage_offset = allocation.storage_offset,
-            .frame_capacity = representation.frame_capacity,
-            .storage_latency = 0,
-            .channel_layout = representation.channel_layout,
-        };
-    };
 
     for (std::size_t primitive_index = 0;
          primitive_index < plan.primitives.size();
@@ -479,7 +481,7 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                     return std::unexpected(
                         "GraphJit sample input binding has no physical representation");
                 }
-                auto storage = storage_binding(*representation_index);
+                auto storage = sample_storage_binding(plan.physical, *representation_index);
                 if (!storage) return std::unexpected(std::move(storage.error()));
                 bindings.push_back(ReflectedSampleInputPortBinding{
                     .storage = *storage,
@@ -503,7 +505,7 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                     return std::unexpected(
                         "GraphJit sample output binding has no physical representation");
                 }
-                auto storage = storage_binding(*representation_index);
+                auto storage = sample_storage_binding(plan.physical, *representation_index);
                 if (!storage) return std::unexpected(std::move(storage.error()));
                 bindings.push_back(ReflectedSampleOutputPortBinding{
                     .storage = *storage,
@@ -714,6 +716,203 @@ void emit_sliced_primitive_calls(
     builder.SetInsertPoint(exit);
 }
 
+
+llvm::Value* sample_element_pointer(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* storage_base,
+    ReflectedSamplePortStorageBinding const& binding,
+    llvm::Value* absolute_frame,
+    std::size_t channel,
+    llvm::Twine const& name)
+{
+    auto& context = builder.getContext();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* sample_type = llvm::Type::getFloatTy(context);
+    auto const channels = channel_count(binding.channel_layout);
+    auto* frame = builder.CreateAnd(
+        absolute_frame,
+        llvm::ConstantInt::get(size_type, binding.frame_capacity - 1),
+        name + ".frame");
+    llvm::Value* element = nullptr;
+    if (binding.channel_layout.sample_layout == SampleStreamLayout::planar) {
+        element = builder.CreateAdd(
+            frame,
+            llvm::ConstantInt::get(
+                size_type, channel * binding.frame_capacity),
+            name + ".element");
+    } else {
+        element = builder.CreateAdd(
+            builder.CreateMul(
+                frame,
+                llvm::ConstantInt::get(size_type, channels),
+                name + ".frame.base"),
+            llvm::ConstantInt::get(size_type, channel),
+            name + ".element");
+    }
+    auto* base = byte_offset_pointer(
+        builder, storage_base, binding.storage_offset, name + ".base");
+    return builder.CreateInBoundsGEP(sample_type, base, element, name + ".ptr");
+}
+
+std::expected<void, std::string> emit_sample_materialization(
+    llvm::IRBuilder<>& builder,
+    detail::SamplePhysicalPlan const& physical,
+    detail::SampleMaterializationPlan const& materialization,
+    llvm::Value* storage_base,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
+{
+    static_assert(sizeof(Sample) == sizeof(Sample::storage));
+    static_assert(alignof(Sample) == alignof(Sample::storage));
+    static_assert(std::is_same_v<Sample::storage, float>);
+
+    if (materialization.source_representation >= physical.representations.size()
+        || materialization.target_representation >= physical.representations.size()) {
+        return std::unexpected(
+            "GraphJit sample materialization references a missing representation");
+    }
+    auto const& source_representation =
+        physical.representations[materialization.source_representation];
+    auto const& target_representation =
+        physical.representations[materialization.target_representation];
+    if (source_representation.channel_layout != materialization.source_layout
+        || target_representation.channel_layout != materialization.target_layout) {
+        return std::unexpected(
+            "GraphJit sample materialization layout disagrees with its representations");
+    }
+    auto source = sample_storage_binding(
+        physical, materialization.source_representation);
+    if (!source) return std::unexpected(std::move(source.error()));
+    auto target = sample_storage_binding(
+        physical, materialization.target_representation);
+    if (!target) return std::unexpected(std::move(target.error()));
+    if (source->frame_capacity != target->frame_capacity
+        || source->frame_capacity == 0
+        || !is_power_of_2(source->frame_capacity)) {
+        return std::unexpected(
+            "GraphJit sample materialization requires matching bounded frame capacities");
+    }
+
+    // Validate against the semantic conversion registry, then emit the tiny
+    // mono/stereo conversion directly so no host function pointer or runtime
+    // converter object enters the audio-thread ABI.
+    try {
+        (void)ChannelConversionRegistry::plan(
+            materialization.source_layout, materialization.target_layout);
+    } catch (std::exception const& e) {
+        return std::unexpected(
+            "GraphJit sample materialization conversion is unsupported: "
+            + std::string(e.what()));
+    }
+
+    auto& context = builder.getContext();
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* sample_type = llvm::Type::getFloatTy(context);
+    auto* zero = llvm::ConstantInt::get(size_type, 0);
+    auto* preheader = builder.GetInsertBlock();
+    auto* loop = llvm::BasicBlock::Create(
+        context, "sample.materialize", function);
+    auto* exit = llvm::BasicBlock::Create(
+        context, "sample.materialize.end", function);
+    builder.CreateCondBr(
+        builder.CreateICmpNE(block_size, zero, "sample.materialize.nonempty"),
+        loop,
+        exit);
+
+    builder.SetInsertPoint(loop);
+    auto* frame_offset = builder.CreatePHI(
+        size_type, 2, "sample.materialize.frame");
+    frame_offset->addIncoming(zero, preheader);
+    auto* absolute_frame = builder.CreateAdd(
+        sample_index, frame_offset, "sample.materialize.absolute");
+
+    auto load_source = [&](std::size_t channel, llvm::Twine const& name) {
+        return builder.CreateLoad(
+            sample_type,
+            sample_element_pointer(
+                builder,
+                storage_base,
+                *source,
+                absolute_frame,
+                channel,
+                name),
+            name + ".value");
+    };
+    auto store_target = [&](std::size_t channel,
+                            llvm::Value* value,
+                            llvm::Twine const& name) {
+        builder.CreateStore(
+            value,
+            sample_element_pointer(
+                builder,
+                storage_base,
+                *target,
+                absolute_frame,
+                channel,
+                name));
+    };
+
+    switch (materialization.source_layout.channel_type) {
+    case ChannelTypeId::mono: {
+        auto* mono = load_source(0, "sample.materialize.mono");
+        switch (materialization.target_layout.channel_type) {
+        case ChannelTypeId::mono:
+            store_target(0, mono, "sample.materialize.out.mono");
+            break;
+        case ChannelTypeId::stereo:
+            store_target(0, mono, "sample.materialize.out.left");
+            store_target(1, mono, "sample.materialize.out.right");
+            break;
+        case ChannelTypeId::count:
+            return std::unexpected(
+                "GraphJit sample materialization has an invalid target channel type");
+        }
+        break;
+    }
+    case ChannelTypeId::stereo: {
+        auto* left = load_source(0, "sample.materialize.left");
+        auto* right = load_source(1, "sample.materialize.right");
+        switch (materialization.target_layout.channel_type) {
+        case ChannelTypeId::mono: {
+            auto* sum = builder.CreateFAdd(
+                left, right, "sample.materialize.stereo.sum");
+            auto* mono = builder.CreateFMul(
+                sum,
+                llvm::ConstantFP::get(sample_type, 0.5),
+                "sample.materialize.stereo.average");
+            store_target(0, mono, "sample.materialize.out.mono");
+            break;
+        }
+        case ChannelTypeId::stereo:
+            store_target(0, left, "sample.materialize.out.left");
+            store_target(1, right, "sample.materialize.out.right");
+            break;
+        case ChannelTypeId::count:
+            return std::unexpected(
+                "GraphJit sample materialization has an invalid target channel type");
+        }
+        break;
+    }
+    case ChannelTypeId::count:
+        return std::unexpected(
+            "GraphJit sample materialization has an invalid source channel type");
+    }
+
+    auto* next = builder.CreateAdd(
+        frame_offset,
+        llvm::ConstantInt::get(size_type, 1),
+        "sample.materialize.next");
+    auto* done = builder.CreateICmpUGE(
+        next, block_size, "sample.materialize.done");
+    builder.CreateCondBr(done, exit, loop);
+    frame_offset->addIncoming(next, loop);
+    builder.SetInsertPoint(exit);
+    return {};
+}
+
 std::expected<llvm::Function*, std::string> define_root_operation(
     llvm::Module& module,
     std::string_view symbol,
@@ -790,6 +989,25 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 storage_base,
                 sample_index,
                 block_size);
+        }
+
+        for (auto const materialization_index :
+             step.sample_materializations_after) {
+            if (materialization_index
+                >= plan.sample_ports.physical.materializations.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing sample materialization");
+            }
+            auto materialized = emit_sample_materialization(
+                builder,
+                plan.sample_ports.physical,
+                plan.sample_ports.physical.materializations[materialization_index],
+                storage_base,
+                sample_index,
+                block_size);
+            if (!materialized) {
+                return std::unexpected(std::move(materialized.error()));
+            }
         }
     }
     builder.CreateRetVoid();

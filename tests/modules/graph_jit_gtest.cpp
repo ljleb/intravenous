@@ -44,6 +44,8 @@ constexpr char graph_jit_ported_module_id[] = "iv.test.graph_jit.state_context.p
 constexpr char graph_jit_direct_sample_module_id[] = "iv.test.graph_jit.state_context.direct_sample_module";
 constexpr char graph_jit_transient_sample_module_id[] = "iv.test.graph_jit.state_context.transient_sample_module";
 constexpr char graph_jit_reused_sample_arena_module_id[] = "iv.test.graph_jit.state_context.reused_sample_arena_module";
+constexpr char graph_jit_sample_fanout_conversion_module_id[] = "iv.test.graph_jit.state_context.sample_fanout_conversion_module";
+constexpr char graph_jit_stereo_conversion_module_id[] = "iv.test.graph_jit.state_context.stereo_conversion_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -101,6 +103,18 @@ struct SampleConsumerProbeStateMirror {
     float first = 0.0f;
     float last = 0.0f;
     float sum = 0.0f;
+};
+
+struct StereoSampleConsumerProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t last_index = 0;
+    std::uint64_t last_block_size = 0;
+    float first_left = 0.0f;
+    float first_right = 0.0f;
+    float last_left = 0.0f;
+    float last_right = 0.0f;
+    float sum_left = 0.0f;
+    float sum_right = 0.0f;
 };
 
 void expect_lowering_failure(
@@ -669,6 +683,10 @@ TEST(GraphJitSamplePhysicalPlan, LeavesCompiledAccessBranchesUnresolved)
     ConnectionAnalysisPlan connections;
     SampleConnectionPlan realtime;
     realtime.access = PlannedConnectionAccess::realtime_to_realtime;
+    realtime.target_layout = iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
     connections.sample_connections.push_back(std::move(realtime));
     SampleConnectionPlan compiled;
     compiled.access = PlannedConnectionAccess::realtime_to_compiled;
@@ -702,36 +720,115 @@ TEST(GraphJitSamplePhysicalPlan, LeavesCompiledAccessBranchesUnresolved)
         physical->producer_groups[0]->canonical_representation);
 }
 
-TEST(GraphJitSamplePhysicalPlan, DefersConvertedBranchesToDerivedRepresentations)
+TEST(GraphJitSamplePhysicalPlan, BuildsAndDeduplicatesDerivedConvertedFanout)
 {
     using namespace iv::graph_jit::detail;
 
-    ConnectionAnalysisPlan connections;
-    SampleConnectionPlan connection;
-    connection.access = PlannedConnectionAccess::realtime_to_realtime;
-    connection.requires_conversion = true;
-    connections.sample_connections.push_back(std::move(connection));
-
-    SampleProducerGroupPlan group;
-    group.canonical_source_layout = iv::ChannelLayout{
+    iv::ChannelLayout const mono{
         .channel_type = iv::ChannelTypeId::mono,
         .sample_layout = iv::SampleStreamLayout::planar,
     };
-    group.connection_indices.push_back(0);
+    iv::ChannelLayout const stereo_interleaved{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::interleaved,
+    };
+
+    ConnectionAnalysisPlan connections;
+    SampleConnectionPlan identity;
+    identity.access = PlannedConnectionAccess::realtime_to_realtime;
+    identity.canonical_source_layout = mono;
+    identity.target_layout = mono;
+    identity.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
+    connections.sample_connections.push_back(identity);
+
+    SampleConnectionPlan converted_a;
+    converted_a.access = PlannedConnectionAccess::realtime_to_realtime;
+    converted_a.canonical_source_layout = mono;
+    converted_a.target_layout = stereo_interleaved;
+    converted_a.target_port = iv::NodeBundlePortId{3, iv::PortKind::sample, 0};
+    converted_a.requires_conversion = true;
+    connections.sample_connections.push_back(converted_a);
+
+    auto converted_b = converted_a;
+    converted_b.target_port = iv::NodeBundlePortId{4, iv::PortKind::sample, 0};
+    connections.sample_connections.push_back(converted_b);
+
+    connections.schedule.bundle_execution_position.resize(5);
+    connections.schedule.bundle_execution_position[1] = 0;
+    connections.schedule.bundle_execution_position[2] = 1;
+    connections.schedule.bundle_execution_position[3] = 2;
+    connections.schedule.bundle_execution_position[4] = 3;
+
+    SampleProducerGroupPlan group;
+    group.canonical_source_layout = mono;
+    group.connection_indices = {0, 1, 2};
     group.has_realtime_connections = true;
     group.implementation =
         iv::SampleConnectionImplementationKind::transient_materialization;
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
-        .end = 1,
+        .end = 3,
     };
     connections.sample_producer_groups.push_back(std::move(group));
 
     auto physical = build_sample_physical_plan(connections, 64);
-    ASSERT_FALSE(physical.has_value());
-    EXPECT_NE(
-        physical.error().find("derived converted sample representations"),
-        std::string::npos);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->representations.size(), 2u);
+    ASSERT_EQ(physical->materializations.size(), 1u);
+    ASSERT_EQ(physical->connection_representations.size(), 3u);
+    ASSERT_TRUE(physical->producer_groups[0].has_value());
+    auto const canonical =
+        physical->producer_groups[0]->canonical_representation;
+    ASSERT_TRUE(physical->connection_representations[0].has_value());
+    ASSERT_TRUE(physical->connection_representations[1].has_value());
+    ASSERT_TRUE(physical->connection_representations[2].has_value());
+    auto const derived = *physical->connection_representations[1];
+    EXPECT_EQ(*physical->connection_representations[0], canonical);
+    EXPECT_EQ(*physical->connection_representations[2], derived);
+    EXPECT_NE(derived, canonical);
+    EXPECT_TRUE(physical->representations[canonical]
+                    .canonical_producer_representation);
+    EXPECT_FALSE(physical->representations[derived]
+                     .canonical_producer_representation);
+    EXPECT_EQ(physical->representations[canonical].channel_layout, mono);
+    EXPECT_EQ(
+        physical->representations[derived].channel_layout,
+        stereo_interleaved);
+    EXPECT_EQ(physical->representations[canonical].live_interval.begin, 0u);
+    EXPECT_EQ(physical->representations[canonical].live_interval.end, 1u);
+    EXPECT_EQ(physical->representations[derived].live_interval.begin, 0u);
+    EXPECT_EQ(physical->representations[derived].live_interval.end, 3u);
+
+    auto const& materialization = physical->materializations.front();
+    EXPECT_EQ(materialization.source_representation, canonical);
+    EXPECT_EQ(materialization.target_representation, derived);
+    EXPECT_EQ(materialization.after_execution_position, 0u);
+    EXPECT_EQ(materialization.source_layout, mono);
+    EXPECT_EQ(materialization.target_layout, stereo_interleaved);
+
+    // Source and derived values overlap at the conversion point and therefore
+    // must occupy distinct byte ranges. Two consumers of the same converted
+    // layout share the one derived representation rather than duplicating it.
+    auto const canonical_allocation = physical->representations[canonical]
+        .transient_allocation;
+    auto const derived_allocation = physical->representations[derived]
+        .transient_allocation;
+    ASSERT_LT(canonical_allocation, physical->transient_allocations.size());
+    ASSERT_LT(derived_allocation, physical->transient_allocations.size());
+    auto const& canonical_range =
+        physical->transient_allocations[canonical_allocation];
+    auto const& derived_range =
+        physical->transient_allocations[derived_allocation];
+    auto const canonical_end = canonical_range.region_relative_offset
+        + canonical_range.size_bytes;
+    auto const derived_end = derived_range.region_relative_offset
+        + derived_range.size_bytes;
+    EXPECT_TRUE(canonical_end <= derived_range.region_relative_offset
+        || derived_end <= canonical_range.region_relative_offset);
+    EXPECT_EQ(
+        physical->transient_arena_size,
+        3u * 64u * sizeof(iv::Sample));
 }
 
 TEST(GraphJitSamplePhysicalPlan, RejectsTransientStorageThatCrossesKernelCalls)
@@ -1111,6 +1208,177 @@ struct SampleConsumerProbe {
     }
 };
 
+struct MonoInterleavedConsumerProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t last_index = 0;
+        std::uint64_t last_block_size = 0;
+        float first = 0.0f;
+        float last = 0.0f;
+        float sum = 0.0f;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in",
+            {.channel_layout = {
+                .channel_type = iv::ChannelTypeId::mono,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            }})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<MonoInterleavedConsumerProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const block = ctx.inputs[0].get_block(ctx.block_size);
+        ++state.calls;
+        state.last_index = ctx.index;
+        state.last_block_size = ctx.block_size;
+        state.first = block.empty() ? 0.0f : static_cast<float>(block[0]);
+        state.last = block.empty()
+            ? 0.0f
+            : static_cast<float>(block[block.size() - 1]);
+        state.sum = 0.0f;
+        for (auto const sample : block) state.sum += sample;
+    }
+};
+
+struct StereoRampSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out",
+            {.channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            }})};
+    }
+
+    void tick_block(iv::TickBlockContext<StereoRampSource> const& ctx) const
+    {
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            std::array<iv::Sample, 2> frame{
+                static_cast<iv::Sample>(ctx.index + i),
+                static_cast<iv::Sample>(ctx.index + i + 1000),
+            };
+            ctx.outputs[0].push_frame(frame);
+        }
+    }
+};
+
+struct StereoPlanarConsumerProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t last_index = 0;
+        std::uint64_t last_block_size = 0;
+        float first_left = 0.0f;
+        float first_right = 0.0f;
+        float last_left = 0.0f;
+        float last_right = 0.0f;
+        float sum_left = 0.0f;
+        float sum_right = 0.0f;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in",
+            {.channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            }})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<StereoPlanarConsumerProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        ++state.calls;
+        state.last_index = ctx.index;
+        state.last_block_size = ctx.block_size;
+        state.sum_left = 0.0f;
+        state.sum_right = 0.0f;
+        if (ctx.block_size != 0) {
+            state.first_left = static_cast<float>(ctx.inputs[0].get_frame(0, 0));
+            state.first_right = static_cast<float>(ctx.inputs[0].get_frame(0, 1));
+            state.last_left = static_cast<float>(
+                ctx.inputs[0].get_frame(ctx.block_size - 1, 0));
+            state.last_right = static_cast<float>(
+                ctx.inputs[0].get_frame(ctx.block_size - 1, 1));
+        }
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            state.sum_left += static_cast<float>(ctx.inputs[0].get_frame(i, 0));
+            state.sum_right += static_cast<float>(ctx.inputs[0].get_frame(i, 1));
+        }
+    }
+};
+
+struct StereoSampleConsumerProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t last_index = 0;
+        std::uint64_t last_block_size = 0;
+        float first_left = 0.0f;
+        float first_right = 0.0f;
+        float last_left = 0.0f;
+        float last_right = 0.0f;
+        float sum_left = 0.0f;
+        float sum_right = 0.0f;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in",
+            {.channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            }})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<StereoSampleConsumerProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        ++state.calls;
+        state.last_index = ctx.index;
+        state.last_block_size = ctx.block_size;
+        state.sum_left = 0.0f;
+        state.sum_right = 0.0f;
+        if (ctx.block_size != 0) {
+            state.first_left = static_cast<float>(ctx.inputs[0].get_frame(0, 0));
+            state.first_right = static_cast<float>(ctx.inputs[0].get_frame(0, 1));
+            state.last_left = static_cast<float>(
+                ctx.inputs[0].get_frame(ctx.block_size - 1, 0));
+            state.last_right = static_cast<float>(
+                ctx.inputs[0].get_frame(ctx.block_size - 1, 1));
+        }
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            state.sum_left += static_cast<float>(ctx.inputs[0].get_frame(i, 0));
+            state.sum_right += static_cast<float>(ctx.inputs[0].get_frame(i, 1));
+        }
+    }
+};
+
 struct PortedProbe {
     static constexpr auto inputs()
     {
@@ -1218,6 +1486,30 @@ void reused_sample_arena_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void sample_fanout_conversion_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto mono_sink = graph.node<"iv.test.graph_jit.state_context.sample_consumer">();
+    auto mono_interleaved_sink = graph.node<"iv.test.graph_jit.state_context.mono_interleaved_consumer">();
+    auto stereo_sink_a = graph.node<"iv.test.graph_jit.state_context.stereo_sample_consumer">();
+    auto stereo_sink_b = graph.node<"iv.test.graph_jit.state_context.stereo_sample_consumer">();
+    mono_sink(source);
+    mono_interleaved_sink(source);
+    stereo_sink_a(source);
+    stereo_sink_b(source);
+    graph.outputs();
+}
+
+void stereo_conversion_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.stereo_ramp_source">();
+    auto mono_sink = graph.node<"iv.test.graph_jit.state_context.sample_consumer">();
+    auto stereo_planar_sink = graph.node<"iv.test.graph_jit.state_context.stereo_planar_consumer">();
+    mono_sink(source);
+    stereo_planar_sink(source);
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -1234,6 +1526,10 @@ IV_NODE("iv.test.graph_jit.state_context.limited_block", LimitedBlockProbe);
 IV_NODE("iv.test.graph_jit.state_context.sample_ramp_source", SampleRampSource);
 IV_NODE("iv.test.graph_jit.state_context.limited_sample_ramp_source", LimitedSampleRampSource);
 IV_NODE("iv.test.graph_jit.state_context.sample_consumer", SampleConsumerProbe);
+IV_NODE("iv.test.graph_jit.state_context.mono_interleaved_consumer", MonoInterleavedConsumerProbe);
+IV_NODE("iv.test.graph_jit.state_context.stereo_ramp_source", StereoRampSource);
+IV_NODE("iv.test.graph_jit.state_context.stereo_planar_consumer", StereoPlanarConsumerProbe);
+IV_NODE("iv.test.graph_jit.state_context.stereo_sample_consumer", StereoSampleConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
@@ -1247,6 +1543,8 @@ IV_MODULE("iv.test.graph_jit.state_context.limited_block_module", limited_block_
 IV_MODULE("iv.test.graph_jit.state_context.direct_sample_module", direct_sample_module);
 IV_MODULE("iv.test.graph_jit.state_context.transient_sample_module", transient_sample_module);
 IV_MODULE("iv.test.graph_jit.state_context.reused_sample_arena_module", reused_sample_arena_module);
+IV_MODULE("iv.test.graph_jit.state_context.sample_fanout_conversion_module", sample_fanout_conversion_module);
+IV_MODULE("iv.test.graph_jit.state_context.stereo_conversion_module", stereo_conversion_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -1273,8 +1571,30 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
             std::move(package_request.result.revisions.front()));
     }
     ASSERT_TRUE(revision);
-    ASSERT_EQ(revision->leaf_definitions.size(), 11u);
-    ASSERT_EQ(revision->module_definitions.size(), 13u);
+    auto has_leaf_definition = [&](std::string_view definition_id) {
+        return std::ranges::any_of(
+            revision->leaf_definitions,
+            [&](auto const& definition) {
+                return definition.definition_id == definition_id;
+            });
+    };
+    auto has_module_definition = [&](std::string_view definition_id) {
+        return std::ranges::any_of(
+            revision->module_definitions,
+            [&](auto const& definition) {
+                return definition.definition_id == definition_id;
+            });
+    };
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.mono_interleaved_consumer"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.stereo_ramp_source"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.stereo_planar_consumer"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.stereo_sample_consumer"));
+    EXPECT_TRUE(has_module_definition(graph_jit_sample_fanout_conversion_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_stereo_conversion_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -1840,15 +2160,262 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         EXPECT_FLOAT_EQ(state->sum, 46816.0f);
     }
 
+    auto fanout_graph = configured_module_graph(
+        *revision, graph_jit_sample_fanout_conversion_module_id);
+    ASSERT_TRUE(fanout_graph);
+    auto fanout_analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *fanout_graph, 64);
+    ASSERT_TRUE(fanout_analysis.has_value())
+        << (fanout_analysis ? std::string{} : fanout_analysis.error());
+    ASSERT_EQ(fanout_analysis->sample_producer_groups.size(), 1u);
+    ASSERT_EQ(fanout_analysis->sample_producer_groups[0].connection_indices.size(), 4u);
+    ASSERT_TRUE(fanout_analysis->sample_producer_groups[0].implementation.has_value());
+    EXPECT_EQ(
+        *fanout_analysis->sample_producer_groups[0].implementation,
+        iv::SampleConnectionImplementationKind::transient_materialization);
+
+    auto fanout_physical = iv::graph_jit::detail::build_sample_physical_plan(
+        *fanout_analysis, 64);
+    ASSERT_TRUE(fanout_physical.has_value())
+        << (fanout_physical ? std::string{} : fanout_physical.error());
+    ASSERT_EQ(fanout_physical->producer_groups.size(), 1u);
+    ASSERT_TRUE(fanout_physical->producer_groups[0].has_value());
+    ASSERT_EQ(fanout_physical->representations.size(), 3u);
+    ASSERT_EQ(fanout_physical->materializations.size(), 2u);
+    ASSERT_EQ(fanout_physical->connection_representations.size(), 4u);
+    auto const fanout_canonical =
+        fanout_physical->producer_groups[0]->canonical_representation;
+    std::size_t canonical_connection_count = 0;
+    std::optional<std::size_t> mono_interleaved_representation;
+    std::optional<std::size_t> stereo_representation;
+    std::size_t mono_interleaved_connection_count = 0;
+    std::size_t stereo_connection_count = 0;
+    for (auto const representation : fanout_physical->connection_representations) {
+        ASSERT_TRUE(representation.has_value());
+        if (*representation == fanout_canonical) {
+            ++canonical_connection_count;
+            continue;
+        }
+        auto const layout = fanout_physical->representations[*representation]
+            .channel_layout;
+        if (layout.channel_type == iv::ChannelTypeId::mono) {
+            if (mono_interleaved_representation) {
+                EXPECT_EQ(*representation, *mono_interleaved_representation);
+            }
+            mono_interleaved_representation = *representation;
+            ++mono_interleaved_connection_count;
+        } else {
+            ASSERT_EQ(layout.channel_type, iv::ChannelTypeId::stereo);
+            if (stereo_representation) {
+                EXPECT_EQ(*representation, *stereo_representation);
+            }
+            stereo_representation = *representation;
+            ++stereo_connection_count;
+        }
+    }
+    EXPECT_EQ(canonical_connection_count, 1u);
+    EXPECT_EQ(mono_interleaved_connection_count, 1u);
+    EXPECT_EQ(stereo_connection_count, 2u);
+    ASSERT_TRUE(mono_interleaved_representation.has_value());
+    ASSERT_TRUE(stereo_representation.has_value());
+    EXPECT_EQ(
+        fanout_physical->representations[*mono_interleaved_representation]
+            .channel_layout,
+        (iv::ChannelLayout{
+            .channel_type = iv::ChannelTypeId::mono,
+            .sample_layout = iv::SampleStreamLayout::interleaved,
+        }));
+    EXPECT_EQ(
+        fanout_physical->representations[*stereo_representation].channel_layout,
+        (iv::ChannelLayout{
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::interleaved,
+        }));
+    EXPECT_EQ(
+        std::ranges::count_if(
+            fanout_physical->materializations,
+            [&](auto const& materialization) {
+                return materialization.source_representation == fanout_canonical;
+            }),
+        2);
+
+    auto fanout = compile_graph(fanout_graph, 112);
+    ASSERT_TRUE(fanout.succeeded())
+        << (fanout.diagnostics.empty() ? "" : fanout.diagnostics.front().message);
+    ASSERT_EQ(fanout.compiled_graph->node_layout.nodes.size(), 5u);
+    ASSERT_EQ(count_raw_regions(fanout.compiled_graph->node_layout), 1u);
+    auto const fanout_raw = std::ranges::find_if(
+        fanout.compiled_graph->node_layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.kind == iv::NodeLayout::Region::Kind::raw;
+        });
+    ASSERT_NE(fanout_raw, fanout.compiled_graph->node_layout.regions.end());
+    EXPECT_EQ(fanout_raw->size, 4u * 64u * sizeof(iv::Sample));
+
+    auto fanout_storage =
+        fanout.compiled_graph->node_layout.create_storage(resources);
+    fanout_storage.initialize();
+    std::vector<SampleConsumerProbeStateMirror*> fanout_mono_states;
+    std::vector<StereoSampleConsumerProbeStateMirror*> fanout_stereo_states;
+    for (std::size_t i = 0; i < fanout.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size = fanout.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(SampleConsumerProbeStateMirror)) {
+            fanout_mono_states.push_back(
+                static_cast<SampleConsumerProbeStateMirror*>(
+                    fanout_storage.state_ptr(i)));
+        } else if (state_size == sizeof(StereoSampleConsumerProbeStateMirror)) {
+            fanout_stereo_states.push_back(
+                static_cast<StereoSampleConsumerProbeStateMirror*>(
+                    fanout_storage.state_ptr(i)));
+        }
+    }
+    ASSERT_EQ(fanout_mono_states.size(), 2u);
+    ASSERT_EQ(fanout_stereo_states.size(), 2u);
+
+    // 37..100 crosses the 64-frame physical ring boundary. Conversion must use
+    // absolute-index addressing rather than treating the representation as one
+    // contiguous block. Both converted consumers share the same derived block.
+    fanout.compiled_graph->root_operations.tick_block(
+        fanout_storage.buffer().data(), 37, 64);
+    for (auto const* state : fanout_mono_states) {
+        ASSERT_NE(state, nullptr);
+        EXPECT_EQ(state->calls, 1u);
+        EXPECT_FLOAT_EQ(state->first, 37.0f);
+        EXPECT_FLOAT_EQ(state->last, 100.0f);
+        EXPECT_FLOAT_EQ(state->sum, 4384.0f);
+    }
+    for (auto const* state : fanout_stereo_states) {
+        ASSERT_NE(state, nullptr);
+        EXPECT_EQ(state->calls, 1u);
+        EXPECT_EQ(state->last_index, 37u);
+        EXPECT_EQ(state->last_block_size, 64u);
+        EXPECT_FLOAT_EQ(state->first_left, 37.0f);
+        EXPECT_FLOAT_EQ(state->first_right, 37.0f);
+        EXPECT_FLOAT_EQ(state->last_left, 100.0f);
+        EXPECT_FLOAT_EQ(state->last_right, 100.0f);
+        EXPECT_FLOAT_EQ(state->sum_left, 4384.0f);
+        EXPECT_FLOAT_EQ(state->sum_right, 4384.0f);
+    }
+
+    fanout.compiled_graph->root_operations.tick_block(
+        fanout_storage.buffer().data(), 205, 16);
+    for (auto const* state : fanout_mono_states) {
+        EXPECT_EQ(state->calls, 2u);
+        EXPECT_FLOAT_EQ(state->first, 205.0f);
+        EXPECT_FLOAT_EQ(state->last, 220.0f);
+        EXPECT_FLOAT_EQ(state->sum, 3400.0f);
+    }
+    for (auto const* state : fanout_stereo_states) {
+        EXPECT_EQ(state->calls, 2u);
+        EXPECT_EQ(state->last_index, 205u);
+        EXPECT_EQ(state->last_block_size, 16u);
+        EXPECT_FLOAT_EQ(state->first_left, 205.0f);
+        EXPECT_FLOAT_EQ(state->first_right, 205.0f);
+        EXPECT_FLOAT_EQ(state->last_left, 220.0f);
+        EXPECT_FLOAT_EQ(state->last_right, 220.0f);
+        EXPECT_FLOAT_EQ(state->sum_left, 3400.0f);
+        EXPECT_FLOAT_EQ(state->sum_right, 3400.0f);
+    }
+
+    auto stereo_conversion_graph = configured_module_graph(
+        *revision, graph_jit_stereo_conversion_module_id);
+    ASSERT_TRUE(stereo_conversion_graph);
+    auto stereo_conversion_analysis =
+        iv::graph_jit::detail::build_connection_analysis_plan(
+            *stereo_conversion_graph, 64);
+    ASSERT_TRUE(stereo_conversion_analysis.has_value())
+        << (stereo_conversion_analysis
+                ? std::string{}
+                : stereo_conversion_analysis.error());
+    ASSERT_EQ(stereo_conversion_analysis->sample_producer_groups.size(), 1u);
+    ASSERT_EQ(
+        stereo_conversion_analysis->sample_producer_groups[0]
+            .connection_indices.size(),
+        2u);
+    ASSERT_TRUE(
+        stereo_conversion_analysis->sample_producer_groups[0]
+            .implementation.has_value());
+    EXPECT_EQ(
+        *stereo_conversion_analysis->sample_producer_groups[0].implementation,
+        iv::SampleConnectionImplementationKind::transient_materialization);
+    auto stereo_conversion_physical =
+        iv::graph_jit::detail::build_sample_physical_plan(
+            *stereo_conversion_analysis, 64);
+    ASSERT_TRUE(stereo_conversion_physical.has_value())
+        << (stereo_conversion_physical
+                ? std::string{}
+                : stereo_conversion_physical.error());
+    EXPECT_EQ(stereo_conversion_physical->representations.size(), 3u);
+    EXPECT_EQ(stereo_conversion_physical->materializations.size(), 2u);
+
+    auto stereo_conversion = compile_graph(stereo_conversion_graph, 113);
+    ASSERT_TRUE(stereo_conversion.succeeded())
+        << (stereo_conversion.diagnostics.empty()
+                ? ""
+                : stereo_conversion.diagnostics.front().message);
+    ASSERT_EQ(stereo_conversion.compiled_graph->node_layout.nodes.size(), 3u);
+    ASSERT_EQ(count_raw_regions(stereo_conversion.compiled_graph->node_layout), 1u);
+    auto const stereo_conversion_raw = std::ranges::find_if(
+        stereo_conversion.compiled_graph->node_layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.kind == iv::NodeLayout::Region::Kind::raw;
+        });
+    ASSERT_NE(
+        stereo_conversion_raw,
+        stereo_conversion.compiled_graph->node_layout.regions.end());
+    EXPECT_EQ(
+        stereo_conversion_raw->size,
+        5u * 64u * sizeof(iv::Sample));
+
+    auto stereo_conversion_storage =
+        stereo_conversion.compiled_graph->node_layout.create_storage(resources);
+    stereo_conversion_storage.initialize();
+    SampleConsumerProbeStateMirror* stereo_to_mono_state = nullptr;
+    StereoSampleConsumerProbeStateMirror* stereo_to_planar_state = nullptr;
+    for (std::size_t i = 0;
+         i < stereo_conversion.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size =
+            stereo_conversion.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(SampleConsumerProbeStateMirror)) {
+            stereo_to_mono_state = static_cast<SampleConsumerProbeStateMirror*>(
+                stereo_conversion_storage.state_ptr(i));
+        } else if (state_size == sizeof(StereoSampleConsumerProbeStateMirror)) {
+            stereo_to_planar_state =
+                static_cast<StereoSampleConsumerProbeStateMirror*>(
+                    stereo_conversion_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(stereo_to_mono_state, nullptr);
+    ASSERT_NE(stereo_to_planar_state, nullptr);
+
+    stereo_conversion.compiled_graph->root_operations.tick_block(
+        stereo_conversion_storage.buffer().data(), 51, 32);
+    EXPECT_EQ(stereo_to_mono_state->calls, 1u);
+    EXPECT_EQ(stereo_to_mono_state->last_index, 51u);
+    EXPECT_EQ(stereo_to_mono_state->last_block_size, 32u);
+    EXPECT_FLOAT_EQ(stereo_to_mono_state->first, 551.0f);
+    EXPECT_FLOAT_EQ(stereo_to_mono_state->last, 582.0f);
+    EXPECT_FLOAT_EQ(stereo_to_mono_state->sum, 18128.0f);
+
+    EXPECT_EQ(stereo_to_planar_state->calls, 1u);
+    EXPECT_EQ(stereo_to_planar_state->last_index, 51u);
+    EXPECT_EQ(stereo_to_planar_state->last_block_size, 32u);
+    EXPECT_FLOAT_EQ(stereo_to_planar_state->first_left, 51.0f);
+    EXPECT_FLOAT_EQ(stereo_to_planar_state->first_right, 1051.0f);
+    EXPECT_FLOAT_EQ(stereo_to_planar_state->last_left, 82.0f);
+    EXPECT_FLOAT_EQ(stereo_to_planar_state->last_right, 1082.0f);
+    EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_left, 2128.0f);
+    EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_right, 34128.0f);
+
     auto ported_graph = configured_module_graph(*revision, graph_jit_ported_module_id);
     ASSERT_TRUE(ported_graph);
-    auto ported = compile_graph(ported_graph, 112);
+    auto ported = compile_graph(ported_graph, 114);
     expect_lowering_failure(ported, "does not yet support external sample boundaries");
 
     auto disconnected_ported_graph =
         std::make_shared<iv::ConfiguredGraph>(*ported_graph);
     disconnected_ported_graph->connections = {};
-    auto disconnected_ported = compile_graph(disconnected_ported_graph, 113);
+    auto disconnected_ported = compile_graph(disconnected_ported_graph, 115);
     expect_lowering_failure(
         disconnected_ported, "does not yet support external sample boundaries");
 
@@ -1866,6 +2433,8 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     direct_storage = iv::NodeStorage{};
     transient_storage = iv::NodeStorage{};
     reused_storage = iv::NodeStorage{};
+    fanout_storage = iv::NodeStorage{};
+    stereo_conversion_storage = iv::NodeStorage{};
     stateful = {};
     state_only = {};
     compiled_only = {};
@@ -1878,6 +2447,8 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     direct = {};
     transient = {};
     reused_arena = {};
+    fanout = {};
+    stereo_conversion = {};
     ported = {};
     disconnected_ported = {};
     definitions.reset();

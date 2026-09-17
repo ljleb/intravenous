@@ -20,7 +20,7 @@ inline constexpr std::size_t no_sample_transient_allocation =
 
 // One compiler-visible physical sample representation. Node API facades are
 // reconstructed from these immutable facts and never become persistent graph
-// objects. Point 8 can add derived branch representations without changing
+// objects. Derived fanout representations extend this indirection without changing
 // primitive binding identity.
 struct SampleRepresentationPlan {
     std::size_t producer_group_index = 0;
@@ -41,6 +41,18 @@ struct SampleProducerPhysicalPlan {
     std::size_t canonical_representation = no_sample_representation;
 };
 
+// One explicit post-producer transformation from a canonical/derived sample
+// representation into another transient representation. The operation is
+// scheduled immediately after the producer execution position and is emitted
+// directly into whole-project LLVM; it is not hidden inside OutputPort.
+struct SampleMaterializationPlan {
+    std::size_t source_representation = no_sample_representation;
+    std::size_t target_representation = no_sample_representation;
+    std::size_t after_execution_position = 0;
+    ChannelLayout source_layout{};
+    ChannelLayout target_layout{};
+};
+
 // Exact transient byte range assigned to one representation. Ranges may overlap
 // iff their inclusive schedule live intervals do not overlap. There is no
 // runtime slot object or allocator metadata.
@@ -59,10 +71,16 @@ struct SamplePhysicalPlan {
     std::vector<std::optional<SampleProducerPhysicalPlan>> producer_groups{};
     // Indexed by physical representation handle.
     std::vector<SampleRepresentationPlan> representations{};
-    // Indexed by ConnectionAnalysisPlan::sample_connections. Identity branches
-    // currently resolve to the producer's canonical representation; point 8 may
-    // instead resolve selected connections to derived materialized branches.
+    // Indexed by ConnectionAnalysisPlan::sample_connections. Identity fanout
+    // branches resolve to the producer's canonical representation; converted
+    // branches resolve to a shared derived representation when their static
+    // transformation is identical.
     std::vector<std::optional<std::size_t>> connection_representations{};
+
+    // Explicit conversion/materialization operations. These are scheduled after
+    // the source producer and before every consumer bound to the target
+    // representation.
+    std::vector<SampleMaterializationPlan> materializations{};
 
     // One exact range per currently-transient representation. The arena high
     // water mark is independent of any individual representation's maximum size.
@@ -79,8 +97,9 @@ struct SamplePhysicalPlan {
 
 // Pure host-side physical-representation planning. This consumes already-made
 // choose_sample_connection_implementation() decisions; it does not duplicate
-// policy. Point 7 intentionally realizes only direct/transient groups, but the
-// representation indirection is the stable seam for fanout/history/rings.
+// policy. Direct/transient canonical and whole-port converted fanout branches are
+// realized here; the representation indirection remains the stable seam for
+// history/rings and future channel-projection transforms.
 std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     ConnectionAnalysisPlan const& connections,
     std::size_t kernel_block_size);

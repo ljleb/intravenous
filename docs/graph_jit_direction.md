@@ -140,10 +140,11 @@ The sample realization now has its own stable physical-plan layer in
 **sample representation handles**, not raw buffer identities or producer-group
 storage objects. Every realtime producer group owns a canonical representation;
 each realized
-realtime connection resolves to a representation handle. At the current point-7
-checkpoint identity realtime branches resolve to that canonical representation,
-while point 8 may map selected fanout branches to derived converted/remapped
-representations without changing the primitive ABI.
+realtime connection resolves to a representation handle. Identity realtime
+fanout branches resolve to that canonical representation. Point 8 adds explicit
+derived transient representations for whole-port channel/layout conversions;
+identical converted fanout branches share one derived representation and one
+post-producer materialization operation without changing the primitive ABI.
 Direct and transient-materialization representations are assigned exact byte ranges
 inside one compile-time transient arena from their inclusive schedule live
 intervals. The offline allocator tracks only currently-live ranges and places each
@@ -163,11 +164,14 @@ planning.
 The physical planner consumes the implementation decisions already made by
 `choose_sample_connection_implementation()`; it does not choose policy again.
 Only realtime branches receive realtime representation handles here; compiled
-access branches remain unresolved for the later compiled-access executor. Layout
-conversion is also rejected at this layer until point 8 can give that branch an
-explicit derived representation instead of aliasing the canonical producer data.
-Cross-kernel retained, feedback, and external representations remain rejected at
-this checkpoint rather than being approximated with transient storage.
+access branches remain unresolved for the later compiled-access executor. Whole-
+port layout/channel-type conversion is represented by explicit derived branches
+and generated materialization operations. Arbitrary semantic channel projection
+or permutation across physical output/input channels is still capability-gated;
+it should be added as another explicit materialization transform rather than by
+reintroducing connection helper nodes. Cross-kernel retained, feedback, and
+external representations remain rejected at this checkpoint rather than being
+approximated with transient storage.
 
 ### Realtime port realization rules
 
@@ -257,11 +261,16 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    longer encode raw buffer identity. No retained
    representation is faked with transient storage; persistent/feedback/external
    kinds remain capability-gated for their dedicated later steps.
-8. **Sample fanout and layout conversion.** **Current checkpoint.** Make one canonical producer-layout
-   representation, bind identity consumers directly, and add explicit converted or
-   remapped branch materializations. Do not put fanout lists or conversion state in
-   `OutputPort`.
-9. **Sample history and latency.** Realize `compact_persistent_carry` and
+8. **Sample fanout and layout conversion.** **Landed for whole-port branches.**
+   One canonical producer-layout representation is written once; identity
+   consumers share it directly, while converted consumers bind explicit derived
+   transient representations. Identical converted fanout branches are deduplicated
+   to one representation/materialization. Materialization is generated whole-
+   project LLVM using absolute-indexed physical storage and contains no runtime
+   converter object, heap allocation, or `OutputPort` conversion state. Arbitrary
+   channel projection/permutation remains a later explicit transform rather than a
+   compatibility connection node.
+9. **Sample history and latency.** **Current checkpoint.** Realize `compact_persistent_carry` and
    `persistent_ring`, including exact cross-kernel retention, absolute-indexed
    reads/writes, and migration semantics for persistent connection state.
 10. **Event-port realization refactor and simple event flow.** Give events the same

@@ -53,6 +53,34 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     std::vector<TransientArenaAllocationRequest> transient_requests;
     std::vector<std::size_t> transient_representations;
 
+    auto target_position = [&](SampleConnectionPlan const& connection,
+                               ConnectionLiveIntervalPlan const& fallback) {
+        auto const bundle = connection.target_port.node_bundle_handle;
+        if (bundle == connections.boundary_bundle && !connections.nodes.empty()) {
+            return connections.nodes.size();
+        }
+        if (bundle < connections.schedule.bundle_execution_position.size()
+            && connections.schedule.bundle_execution_position[bundle]) {
+            return *connections.schedule.bundle_execution_position[bundle];
+        }
+        return fallback.end;
+    };
+
+    auto append_transient_representation = [&](SampleRepresentationPlan representation)
+        -> std::expected<std::size_t, std::string> {
+        auto bytes = sample_bytes(representation.channel_layout, representation.frame_capacity);
+        if (!bytes) return std::unexpected(std::move(bytes.error()));
+        auto const index = plan.representations.size();
+        plan.representations.push_back(std::move(representation));
+        transient_requests.push_back(TransientArenaAllocationRequest{
+            .size_bytes = *bytes,
+            .alignment = alignof(Sample),
+            .live_interval = plan.representations.back().live_interval,
+        });
+        transient_representations.push_back(index);
+        return index;
+    };
+
     for (std::size_t group_index = 0;
          group_index < connections.sample_producer_groups.size(); ++group_index) {
         auto const& group = connections.sample_producer_groups[group_index];
@@ -67,7 +95,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         }
         if (group.live_interval.crosses_kernel_invocations) {
             return std::unexpected(
-                "GraphJit point-7 sample physical plan does not yet realize cross-kernel retained storage");
+                "GraphJit point-8 sample physical plan does not yet realize cross-kernel retained storage");
         }
 
         switch (*group.implementation) {
@@ -79,13 +107,43 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         case SampleConnectionImplementationKind::feedback_ring:
         case SampleConnectionImplementationKind::external_boundary:
             return std::unexpected(
-                "GraphJit point-7 sample physical plan does not yet realize retained, feedback, or external storage");
+                "GraphJit point-8 sample physical plan does not yet realize retained, feedback, or external storage");
         }
 
-        // Point 7 realizes only canonical realtime producer representations.
-        // Compiled-access branches intentionally have no realtime physical
-        // representation here, and layout-converted realtime branches require
-        // a derived representation that point 8 will add explicitly.
+        // The canonical producer representation must overlap every identity
+        // consumer and every immediate post-producer materialization. Converted
+        // consumers do not extend its lifetime beyond the producer itself.
+        auto producer_position = group.live_interval.begin;
+        std::optional<NodeBundleHandle> producer_bundle;
+        for (auto const connection_index : group.connection_indices) {
+            if (connection_index >= connections.sample_connections.size()) {
+                return std::unexpected(
+                    "GraphJit sample producer group references an invalid connection");
+            }
+            auto const& connection = connections.sample_connections[connection_index];
+            if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+                || !connection.canonical_source_port) {
+                continue;
+            }
+            auto const bundle = connection.canonical_source_port->node_bundle_handle;
+            if (producer_bundle && *producer_bundle != bundle) {
+                return std::unexpected(
+                    "GraphJit canonical sample producer group spans multiple source bundles");
+            }
+            producer_bundle = bundle;
+            if (bundle < connections.schedule.bundle_execution_position.size()
+                && connections.schedule.bundle_execution_position[bundle]) {
+                producer_position =
+                    *connections.schedule.bundle_execution_position[bundle];
+            }
+        }
+        ConnectionLiveIntervalPlan canonical_live{
+            .begin = producer_position,
+            .end = group.connection_indices.empty()
+                ? group.live_interval.end
+                : producer_position,
+            .crosses_kernel_invocations = false,
+        };
         for (auto const connection_index : group.connection_indices) {
             if (connection_index >= connections.sample_connections.size()) {
                 return std::unexpected(
@@ -95,33 +153,35 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             if (connection.access != PlannedConnectionAccess::realtime_to_realtime) {
                 continue;
             }
-            if (connection.requires_conversion) {
-                return std::unexpected(
-                    "GraphJit point-7 sample physical plan does not yet realize derived converted sample representations");
+            if (!connection.requires_conversion) {
+                canonical_live.end = std::max(
+                    canonical_live.end, target_position(connection, group.live_interval));
             }
         }
 
-        auto bytes = sample_bytes(*group.canonical_source_layout, kernel_block_size);
-        if (!bytes) return std::unexpected(std::move(bytes.error()));
-
-        auto const representation_index = plan.representations.size();
-        plan.representations.push_back(SampleRepresentationPlan{
+        auto canonical = append_transient_representation(SampleRepresentationPlan{
             .producer_group_index = group_index,
             .canonical_producer_representation = true,
             .implementation = *group.implementation,
             .channel_layout = *group.canonical_source_layout,
             .frame_capacity = kernel_block_size,
-            .live_interval = group.live_interval,
+            .live_interval = canonical_live,
         });
-        transient_requests.push_back(TransientArenaAllocationRequest{
-            .size_bytes = *bytes,
-            .alignment = alignof(Sample),
-            .live_interval = group.live_interval,
-        });
-        transient_representations.push_back(representation_index);
+        if (!canonical) return std::unexpected(std::move(canonical.error()));
         plan.producer_groups[group_index] = SampleProducerPhysicalPlan{
-            .canonical_representation = representation_index,
+            .canonical_representation = *canonical,
         };
+
+        struct DerivedKey {
+            ChannelLayout target_layout{};
+            bool operator==(DerivedKey const&) const = default;
+        };
+        struct DerivedBranch {
+            DerivedKey key{};
+            std::size_t representation = no_sample_representation;
+            std::size_t materialization = 0;
+        };
+        std::vector<DerivedBranch> derived;
 
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = connections.sample_connections[connection_index];
@@ -132,11 +192,85 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 return std::unexpected(
                     "GraphJit sample connection belongs to multiple producer groups");
             }
-            // Point 7 has no derived branches yet. Every realized realtime
-            // connection is an identity view of its producer's canonical
-            // representation. Compiled-access branches remain unresolved here.
-            plan.connection_representations[connection_index] =
-                representation_index;
+            if (connection.canonical_source_layout
+                && *connection.canonical_source_layout
+                    != *group.canonical_source_layout) {
+                return std::unexpected(
+                    "GraphJit sample connection disagrees with its producer canonical layout");
+            }
+            if (!connection.requires_conversion) {
+                if (connection.target_layout != *group.canonical_source_layout) {
+                    return std::unexpected(
+                        "GraphJit identity sample branch changed channel layout without a conversion");
+                }
+                plan.connection_representations[connection_index] = *canonical;
+                continue;
+            }
+
+            try {
+                (void)ChannelConversionRegistry::plan(
+                    *group.canonical_source_layout, connection.target_layout);
+            } catch (std::exception const& e) {
+                return std::unexpected(
+                    "GraphJit sample physical plan could not resolve a channel conversion: "
+                    + std::string(e.what()));
+            }
+
+            DerivedKey const key{.target_layout = connection.target_layout};
+            auto branch = std::ranges::find_if(
+                derived,
+                [&](DerivedBranch const& candidate) { return candidate.key == key; });
+            if (branch == derived.end()) {
+                auto const end = target_position(connection, group.live_interval);
+                auto representation = append_transient_representation(
+                    SampleRepresentationPlan{
+                        .producer_group_index = group_index,
+                        .canonical_producer_representation = false,
+                        .implementation = SampleConnectionImplementationKind::transient_materialization,
+                        .channel_layout = connection.target_layout,
+                        .frame_capacity = kernel_block_size,
+                        .live_interval = ConnectionLiveIntervalPlan{
+                            .begin = canonical_live.begin,
+                            .end = std::max(canonical_live.begin, end),
+                            .crosses_kernel_invocations = false,
+                        },
+                    });
+                if (!representation) {
+                    return std::unexpected(std::move(representation.error()));
+                }
+                auto const materialization_index = plan.materializations.size();
+                plan.materializations.push_back(SampleMaterializationPlan{
+                    .source_representation = *canonical,
+                    .target_representation = *representation,
+                    .after_execution_position = canonical_live.begin,
+                    .source_layout = *group.canonical_source_layout,
+                    .target_layout = connection.target_layout,
+                });
+                derived.push_back(DerivedBranch{
+                    .key = key,
+                    .representation = *representation,
+                    .materialization = materialization_index,
+                });
+                branch = std::prev(derived.end());
+            } else {
+                auto& representation = plan.representations[branch->representation];
+                representation.live_interval.end = std::max(
+                    representation.live_interval.end,
+                    target_position(connection, group.live_interval));
+                auto const allocation_request_index = static_cast<std::size_t>(
+                    std::distance(
+                        transient_representations.begin(),
+                        std::ranges::find(
+                            transient_representations,
+                            branch->representation)));
+                if (allocation_request_index >= transient_requests.size()) {
+                    return std::unexpected(
+                        "GraphJit derived sample representation lost its transient request");
+                }
+                transient_requests[allocation_request_index].live_interval =
+                    representation.live_interval;
+            }
+            plan.connection_representations[connection_index] = branch->representation;
         }
     }
 
