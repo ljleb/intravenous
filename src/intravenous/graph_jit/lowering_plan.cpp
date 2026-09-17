@@ -25,9 +25,9 @@ struct PrimitiveAnalysis {
 
 struct GraphAnalysis {
     bool empty = false;
-    // Stable primitive inventory consumed by all later phases. The current
-    // accepted non-empty shape contains one element; multi-node lowering can
-    // widen analysis without changing declaration/import/config/execution APIs.
+    // Stable primitive inventory consumed by all later phases. For the current
+    // disconnected zero-port slice this is configured-bundle order; later
+    // schedule/SCC planning may choose a different execution order.
     std::vector<PrimitiveAnalysis> primitives{};
 };
 
@@ -74,24 +74,24 @@ bool valid_alignment(std::size_t alignment) noexcept
     return alignment != 0 && (alignment & (alignment - 1)) == 0;
 }
 
-std::expected<PrimitiveBundle, std::string> single_zero_port_primitive(
+std::expected<std::vector<PrimitiveBundle>, std::string> zero_port_primitives(
     LoweringInput const& input)
 {
     if (!input.graph.connections.configured_sample_connections().empty()
         || !input.graph.connections.configured_event_connections().empty()) {
         return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet support graph connections");
+            "zero-port GraphJit lowering slice does not yet support graph connections");
     }
     if (!input.graph.virtual_nodes.records().empty()) {
         return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet support virtual nodes");
+            "zero-port GraphJit lowering slice does not yet support virtual nodes");
     }
     if (!input.config_relocations.empty()) {
         return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet support node configuration pointer relocations");
+            "zero-port GraphJit lowering slice does not yet support node configuration pointer relocations");
     }
 
-    std::optional<PrimitiveBundle> primitive;
+    std::vector<PrimitiveBundle> primitives;
     std::string structural_error;
     std::size_t boundary_count = 0;
     std::size_t node_bundle = 0;
@@ -111,23 +111,18 @@ std::expected<PrimitiveBundle, std::string> single_zero_port_primitive(
                 if (has_ports || boundary_count != 1
                     || current_bundle != input.graph.public_ports.boundary_handle()) {
                     structural_error =
-                        "single-primitive GraphJit lowering slice requires exactly one zero-port project boundary";
+                        "zero-port GraphJit lowering slice requires exactly one zero-port project boundary";
                 }
                 return;
             }
             if (view.kind != ConfiguredNodeBundleKind::concrete) {
                 structural_error =
-                    "single-primitive GraphJit lowering slice supports only flat concrete primitives";
+                    "zero-port GraphJit lowering slice supports only flat concrete primitives";
                 return;
             }
             if (has_ports) {
                 structural_error =
-                    "single-primitive GraphJit lowering slice supports only zero-port primitives";
-                return;
-            }
-            if (primitive) {
-                structural_error =
-                    "single-primitive GraphJit lowering slice supports exactly one concrete primitive";
+                    "zero-port GraphJit lowering slice supports only zero-port primitives";
                 return;
             }
             if (!valid_alignment(view.node_alignment)) {
@@ -138,32 +133,33 @@ std::expected<PrimitiveBundle, std::string> single_zero_port_primitive(
             if ((view.lifetime && view.lifetime->ttl_samples)
                 || (view.deferred_detach && view.deferred_detach->has_value())) {
                 structural_error =
-                    "single-primitive GraphJit lowering slice does not yet support activity or detach semantics";
+                    "zero-port GraphJit lowering slice does not yet support activity or detach semantics";
                 return;
             }
-            primitive = PrimitiveBundle{
+            if (view.maximum_block_size < input.specialization.block_size) {
+                structural_error =
+                    "zero-port GraphJit lowering slice does not yet split blocks for a primitive maximum block size";
+                return;
+            }
+            primitives.push_back(PrimitiveBundle{
                 .node_bundle = current_bundle,
                 .node_size = view.node_size,
                 .node_alignment = view.node_alignment,
                 .maximum_block_size = view.maximum_block_size,
                 .block_skippable = view.block_skippable,
-            };
+            });
         });
 
     if (!structural_error.empty()) return std::unexpected(std::move(structural_error));
     if (boundary_count != 1) {
         return std::unexpected(
-            "single-primitive GraphJit lowering slice requires exactly one project boundary");
+            "zero-port GraphJit lowering slice requires exactly one project boundary");
     }
-    if (!primitive) {
+    if (primitives.empty()) {
         return std::unexpected(
-            "single-primitive GraphJit lowering slice found no concrete primitive");
+            "zero-port GraphJit lowering slice found no concrete primitive");
     }
-    if (primitive->maximum_block_size < input.specialization.block_size) {
-        return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet split blocks for a primitive maximum block size");
-    }
-    return *primitive;
+    return primitives;
 }
 
 std::expected<GraphAnalysis, std::string> analyze_graph(LoweringInput const& input)
@@ -172,46 +168,57 @@ std::expected<GraphAnalysis, std::string> analyze_graph(LoweringInput const& inp
         return GraphAnalysis{.empty = true};
     }
 
-    auto primitive = single_zero_port_primitive(input);
-    if (!primitive) return std::unexpected(std::move(primitive.error()));
-
-    NodeImplementation const* implementation = nullptr;
-    for (auto const& candidate : input.node_implementations) {
-        if (candidate.node_bundle != primitive->node_bundle) continue;
-        if (implementation) {
-            return std::unexpected(
-                "GraphJit lowering received duplicate implementations for one primitive bundle");
-        }
-        implementation = &candidate;
-    }
-    if (!implementation) {
-        return std::unexpected(
-            "GraphJit lowering has no resolved implementation for the concrete primitive");
-    }
-    if (input.node_implementations.size() != 1) {
-        return std::unexpected(
-            "single-primitive GraphJit lowering slice requires exactly one resolved primitive implementation");
-    }
-    if (!implementation->package_module || !implementation->tick_block
-        || !implementation->declare_node || !implementation->node_data) {
-        return std::unexpected(
-            "resolved primitive implementation is incomplete at the GraphJit lowering boundary");
-    }
-    if (implementation->tick_block->getParent() != implementation->package_module
-        || (implementation->skip_block
-            && implementation->skip_block->getParent() != implementation->package_module)) {
-        return std::unexpected(
-            "resolved primitive callbacks do not belong to the selected package LLVM module");
-    }
-    if (primitive->node_size == 0) {
-        return std::unexpected("configured primitive has empty node configuration storage");
+    auto primitive_bundles = zero_port_primitives(input);
+    if (!primitive_bundles) {
+        return std::unexpected(std::move(primitive_bundles.error()));
     }
 
     GraphAnalysis analysis;
-    analysis.primitives.push_back(PrimitiveAnalysis{
-        .bundle = *primitive,
-        .implementation = implementation,
-    });
+    analysis.primitives.reserve(primitive_bundles->size());
+    for (auto const& primitive : *primitive_bundles) {
+        NodeImplementation const* implementation = nullptr;
+        for (auto const& candidate : input.node_implementations) {
+            if (candidate.node_bundle != primitive.node_bundle) continue;
+            if (implementation) {
+                return std::unexpected(
+                    "GraphJit lowering received duplicate implementations for one primitive bundle");
+            }
+            implementation = &candidate;
+        }
+        if (!implementation) {
+            return std::unexpected(
+                "GraphJit lowering has no resolved implementation for a concrete primitive");
+        }
+        if (!implementation->package_module || !implementation->tick_block
+            || !implementation->declare_node || !implementation->node_data) {
+            return std::unexpected(
+                "resolved primitive implementation is incomplete at the GraphJit lowering boundary");
+        }
+        if (primitive.block_skippable && !implementation->skip_block) {
+            return std::unexpected(
+                "block-skippable primitive has no resolved skip_block implementation");
+        }
+        if (implementation->tick_block->getParent() != implementation->package_module
+            || (implementation->skip_block
+                && implementation->skip_block->getParent()
+                    != implementation->package_module)) {
+            return std::unexpected(
+                "resolved primitive callbacks do not belong to the selected package LLVM module");
+        }
+        if (primitive.node_size == 0) {
+            return std::unexpected("configured primitive has empty node configuration storage");
+        }
+
+        analysis.primitives.push_back(PrimitiveAnalysis{
+            .bundle = primitive,
+            .implementation = implementation,
+        });
+    }
+
+    if (input.node_implementations.size() != analysis.primitives.size()) {
+        return std::unexpected(
+            "zero-port GraphJit lowering slice requires one resolved implementation per concrete primitive");
+    }
     return analysis;
 }
 
@@ -239,23 +246,23 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     auto node_layout = std::move(layout_builder).build();
     if (node_layout.nodes.size() != analysis.primitives.size()) {
         return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet support nested node declarations");
+            "zero-port GraphJit lowering slice does not yet support nested node declarations");
     }
     for (std::size_t i = 0; i < declared_node_indices.size(); ++i) {
         if (declared_node_indices[i] != i) {
             return std::unexpected(
-                "single-primitive GraphJit lowering slice does not yet support nested node declarations");
+                "zero-port GraphJit lowering slice does not yet support nested node declarations");
         }
     }
     if (!node_layout.imported_arrays.empty() || !node_layout.exported_arrays.empty()) {
         return std::unexpected(
-            "single-primitive GraphJit lowering slice does not yet support declared shared-array bindings");
+            "zero-port GraphJit lowering slice does not yet support declared shared-array bindings");
     }
     for (auto const& region : node_layout.regions) {
         if (region.kind != NodeLayout::Region::Kind::state
             && region.kind != NodeLayout::Region::Kind::compiled_state) {
             return std::unexpected(
-                "single-primitive GraphJit lowering slice does not yet support declaration-owned auxiliary storage regions");
+                "zero-port GraphJit lowering slice does not yet support declaration-owned auxiliary storage regions");
         }
     }
 

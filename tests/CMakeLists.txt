@@ -142,7 +142,7 @@ add_iv_gtest(
     intravenous_graph_jit_tests
     modules/graph_jit_gtest.cpp
     IV_MODULE_COMPILATION_TESTS
-        GraphJit.SinglePrimitiveStateContextsUseCanonicalExactSpans)
+        GraphJit.ZeroPortPrimitiveStateContextsAndMultiNodeExecution)
 add_iv_gtest(
     intravenous_node_instances_configuration_tests
     modules/node_instances_configuration_gtest.cpp)

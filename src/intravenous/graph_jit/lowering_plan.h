@@ -79,9 +79,9 @@ struct PrimitiveExecutionStep {
 };
 
 struct ExecutionPlan {
-    // Ordered root execution sequence. The current supported non-empty slice
-    // has one element; multi-node lowering will extend this without changing
-    // the LLVM-emission boundary.
+    // Ordered root execution sequence. For disconnected zero-port primitives this
+    // is configured-bundle order; connection-aware scheduling will later replace
+    // that provisional order without changing the LLVM-emission boundary.
     std::vector<PrimitiveExecutionStep> primitive_steps{};
     bool root_skippable = false;
 };

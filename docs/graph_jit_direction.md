@@ -54,17 +54,22 @@ proves the complete lowering -> verification -> O3 -> ORC -> native-operation
 path without introducing special runtime storage or lifecycle machinery.
 
 The first deliberately narrow non-empty slice has also landed. A flat project
-containing exactly one registered zero-port primitive, with no connections,
+may contain several registered zero-port primitives, with no connections,
 virtual nodes, configuration-pointer relocations, nested declarations, or
-auxiliary declaration-owned regions, now invokes its exact accepted native
-`declare_node` callback and finalizes the canonical `NodeLayout`. `State` and
-`CompiledState` are ordinary canonical `NodeStorage` regions: generated root
-operations materialize the reflected callback context from final layout offsets
-and dispatch the selected package LLVM against those live bytes. The reflected
-compiler callback ABI uses explicit pointer/count span records rather than
-assuming an implementation-specific `std::span` object representation, so later
-port-context lowering can use the same mechanism safely. The root exposes
-`skip_block` only when the configured primitive is declared block-skippable.
+auxiliary declaration-owned regions. Each primitive invokes its exact accepted
+native `declare_node` callback into the one canonical `NodeLayoutBuilder`.
+`State` and `CompiledState` are ordinary canonical `NodeStorage` regions:
+generated root operations materialize each reflected callback context from final
+layout offsets and dispatch the selected package LLVM against those live bytes.
+For this disconnected slice, root execution order is configured-bundle order;
+connection-aware scheduling will replace that provisional order when explicit
+schedule/SCC planning lands. Callback imports are grouped per package before a
+compile-local package module is consumed once, and repeated uses of one package
+callback share one imported root while still receiving distinct node
+configuration/storage contexts. The reflected compiler callback ABI uses
+explicit pointer/count span records rather than assuming an
+implementation-specific `std::span` object representation. Root `skip_block`
+is emitted only when every primitive in the execution sequence is block-skippable.
 Unsupported shapes still fail explicitly at the lowering boundary; they are
 never compiled as no-ops.
 
@@ -78,11 +83,9 @@ package modules. Planning must succeed before the output module is mutated or a
 package module is consumed. This is the first anti-monolith landing site for the
 remaining compiler work.
 
-The next capability expansion is deliberately smaller than full connection
-lowering: support several zero-port primitives through the same plan/emitter
-boundary, including collecting all callback roots per package before consuming
-that package once. Configuration relocations and primitive block splitting then
-land on those same node/configuration/execution plans. Only after that should the
+The next capability expansion remains deliberately smaller than full connection
+lowering: configuration relocations and primitive block splitting should land on
+the existing node/configuration/execution plans. Only after that should the
 second major landing-site refactor introduce explicit schedule/SCC,
 producer-group/connection, history/latency, liveness, and storage-region plans.
 The existing `choose_sample_connection_implementation()` and
@@ -105,11 +108,11 @@ before the feature family that depends on it, so whole-graph lowering does not
 accumulate one-off paths that must be disentangled later.
 This is a hint, not a hard constraint. Use your own good judgement if ever in doubt.
 
-1. **Stable node-lowering phases.** Separate host-side inventory/analysis,
+1. **Stable node-lowering phases.** **Landed.** Separate host-side inventory/analysis,
    declaration/layout planning, package callback-import planning, configuration
    planning, execution planning, and LLVM realization without widening the
    accepted graph shapes.
-2. **Multiple zero-port primitives.** Add deterministic execution order,
+2. **Multiple zero-port primitives.** **Landed.** Add deterministic execution order,
    multiple canonical declarations/configurations, callbacks from several
    packages, and several selected callbacks from one package. Derive root
    `skip_block` legality across the sequence.
