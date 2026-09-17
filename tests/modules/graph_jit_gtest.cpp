@@ -48,6 +48,7 @@ constexpr char graph_jit_sample_fanout_conversion_module_id[] = "iv.test.graph_j
 constexpr char graph_jit_stereo_conversion_module_id[] = "iv.test.graph_jit.state_context.stereo_conversion_module";
 constexpr char graph_jit_history_fanout_module_id[] = "iv.test.graph_jit.state_context.history_fanout_module";
 constexpr char graph_jit_persistent_history_module_id[] = "iv.test.graph_jit.state_context.persistent_history_module";
+constexpr char graph_jit_latency_compensation_module_id[] = "iv.test.graph_jit.state_context.latency_compensation_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -150,6 +151,19 @@ struct LargeHistoryConsumerStateMirror {
     float current = 0.0f;
     float history_1 = 0.0f;
     float history_5000 = 0.0f;
+};
+
+struct LatencyCompensationProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t last_index = 0;
+    std::uint64_t last_block_size = 0;
+    std::uint64_t mismatches = 0;
+    float fast_first = 0.0f;
+    float slow_first = 0.0f;
+    float fast_last = 0.0f;
+    float slow_last = 0.0f;
+    float max_abs_difference = 0.0f;
+    std::uint32_t marker = 0;
 };
 
 void expect_lowering_failure(
@@ -1780,6 +1794,90 @@ struct LargeHistoryConsumerProbe {
     }
 };
 
+struct FiveSampleDelay {
+    struct State {
+        std::array<iv::Sample, 8> memory{};
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input("in")};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, {.latency = 2})};
+    }
+
+    constexpr std::size_t internal_latency() const { return 5; }
+
+    void tick_block(iv::TickBlockContext<FiveSampleDelay> const& ctx) const
+    {
+        auto const input = ctx.inputs[0].get_block(ctx.block_size);
+        auto& memory = ctx.state().memory;
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            auto const index = static_cast<std::size_t>(ctx.index + i);
+            auto const delayed = memory[index & 7u];
+            memory[(index + 5u) & 7u] = input[i];
+            ctx.outputs[0].push(delayed);
+        }
+    }
+};
+
+struct LatencyCompensationProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t last_index = 0;
+        std::uint64_t last_block_size = 0;
+        std::uint64_t mismatches = 0;
+        float fast_first = 0.0f;
+        float slow_first = 0.0f;
+        float fast_last = 0.0f;
+        float slow_last = 0.0f;
+        float max_abs_difference = 0.0f;
+        std::uint32_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_sample_input("fast"),
+            iv::realtime_sample_input("slow"),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<LatencyCompensationProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const fast = ctx.inputs[0].get_block(ctx.block_size);
+        auto const slow = ctx.inputs[1].get_block(ctx.block_size);
+        ++state.calls;
+        state.last_index = ctx.index;
+        state.last_block_size = ctx.block_size;
+        state.marker = 0x71ac0deu;
+        if (ctx.block_size != 0) {
+            state.fast_first = fast[0];
+            state.slow_first = slow[0];
+            state.fast_last = fast[ctx.block_size - 1];
+            state.slow_last = slow[ctx.block_size - 1];
+        }
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            auto difference = static_cast<float>(fast[i] - slow[i]);
+            if (difference < 0.0f) difference = -difference;
+            if (difference != 0.0f) ++state.mismatches;
+            if (difference > state.max_abs_difference) {
+                state.max_abs_difference = difference;
+            }
+        }
+    }
+};
+
 struct PortedProbe {
     static constexpr auto inputs()
     {
@@ -1929,6 +2027,16 @@ void persistent_history_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void latency_compensation_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.latency_compensation_probe">();
+    delayed(source);
+    sink(source, delayed);
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -1954,6 +2062,8 @@ IV_NODE("iv.test.graph_jit.state_context.history_consumer", HistoryConsumerProbe
 IV_NODE("iv.test.graph_jit.state_context.stereo_history_consumer", StereoHistoryConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.large_history_ramp_source", LargeHistoryRampSource);
 IV_NODE("iv.test.graph_jit.state_context.large_history_consumer", LargeHistoryConsumerProbe);
+IV_NODE("iv.test.graph_jit.state_context.five_sample_delay", FiveSampleDelay);
+IV_NODE("iv.test.graph_jit.state_context.latency_compensation_probe", LatencyCompensationProbe);
 IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
@@ -1971,6 +2081,7 @@ IV_MODULE("iv.test.graph_jit.state_context.sample_fanout_conversion_module", sam
 IV_MODULE("iv.test.graph_jit.state_context.stereo_conversion_module", stereo_conversion_module);
 IV_MODULE("iv.test.graph_jit.state_context.history_fanout_module", history_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.persistent_history_module", persistent_history_module);
+IV_MODULE("iv.test.graph_jit.state_context.latency_compensation_module", latency_compensation_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -2033,6 +2144,11 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         "iv.test.graph_jit.state_context.large_history_consumer"));
     EXPECT_TRUE(has_module_definition(graph_jit_history_fanout_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_persistent_history_module_id));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.five_sample_delay"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.latency_compensation_probe"));
+    EXPECT_TRUE(has_module_definition(graph_jit_latency_compensation_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -2845,6 +2961,59 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_left, 2128.0f);
     EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_right, 34128.0f);
 
+    auto latency_compensation_graph = configured_module_graph(
+        *revision, graph_jit_latency_compensation_module_id);
+    ASSERT_TRUE(latency_compensation_graph);
+    auto latency_compensation = compile_graph(latency_compensation_graph, 114);
+    ASSERT_TRUE(latency_compensation.succeeded())
+        << (latency_compensation.diagnostics.empty()
+                ? ""
+                : latency_compensation.diagnostics.front().message);
+    ASSERT_EQ(latency_compensation.compiled_graph->node_layout.nodes.size(), 3u);
+
+    auto latency_storage =
+        latency_compensation.compiled_graph->node_layout.create_storage(resources);
+    latency_storage.initialize();
+    LatencyCompensationProbeStateMirror* latency_probe = nullptr;
+    for (std::size_t i = 0;
+         i < latency_compensation.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const& node = latency_compensation.compiled_graph->node_layout.nodes[i];
+        if (node.state_size == sizeof(LatencyCompensationProbeStateMirror)) {
+            ASSERT_EQ(latency_probe, nullptr);
+            latency_probe = static_cast<LatencyCompensationProbeStateMirror*>(
+                latency_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(latency_probe, nullptr);
+
+    latency_compensation.compiled_graph->root_operations.tick_block(
+        latency_storage.buffer().data(), 0, 64);
+    EXPECT_EQ(latency_probe->calls, 1u);
+    EXPECT_EQ(latency_probe->last_index, 0u);
+    EXPECT_EQ(latency_probe->last_block_size, 64u);
+    EXPECT_EQ(latency_probe->mismatches, 0u);
+    EXPECT_FLOAT_EQ(latency_probe->fast_first, 0.0f);
+    EXPECT_FLOAT_EQ(latency_probe->slow_first, 0.0f);
+    EXPECT_FLOAT_EQ(latency_probe->fast_last, 56.0f);
+    EXPECT_FLOAT_EQ(latency_probe->slow_last, 56.0f);
+    EXPECT_FLOAT_EQ(latency_probe->max_abs_difference, 0.0f);
+    EXPECT_EQ(latency_probe->marker, 0x71ac0deu);
+
+    // The second kernel call requires the fast branch to restore the source's
+    // compiler-owned seven-frame carry while the slow branch restores its own
+    // two-frame output carry. Both must still address the same logical sample.
+    latency_compensation.compiled_graph->root_operations.tick_block(
+        latency_storage.buffer().data(), 64, 64);
+    EXPECT_EQ(latency_probe->calls, 2u);
+    EXPECT_EQ(latency_probe->last_index, 64u);
+    EXPECT_EQ(latency_probe->last_block_size, 64u);
+    EXPECT_EQ(latency_probe->mismatches, 0u);
+    EXPECT_FLOAT_EQ(latency_probe->fast_first, 57.0f);
+    EXPECT_FLOAT_EQ(latency_probe->slow_first, 57.0f);
+    EXPECT_FLOAT_EQ(latency_probe->fast_last, 120.0f);
+    EXPECT_FLOAT_EQ(latency_probe->slow_last, 120.0f);
+    EXPECT_FLOAT_EQ(latency_probe->max_abs_difference, 0.0f);
+
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);
     ASSERT_TRUE(history_graph);
@@ -2874,7 +3043,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         history_physical->persistent_allocations[0].size_bytes,
         7u * sizeof(iv::Sample));
 
-    auto history = compile_graph(history_graph, 114);
+    auto history = compile_graph(history_graph, 115);
     ASSERT_TRUE(history.succeeded())
         << (history.diagnostics.empty() ? "" : history.diagnostics.front().message);
     ASSERT_EQ(history.compiled_graph->node_layout.nodes.size(), 3u);
@@ -2950,7 +3119,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     // Compile a distinct generation and migrate into its canonical NodeStorage.
     // The connection history lives in compiler-owned raw storage, so this
     // proves it survives independently of primitive State migration.
-    auto history_next = compile_graph(history_graph, 115);
+    auto history_next = compile_graph(history_graph, 116);
     ASSERT_TRUE(history_next.succeeded())
         << (history_next.diagnostics.empty()
                 ? ""
@@ -3002,7 +3171,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
             .requirements.retained_frames,
         5000u);
 
-    auto persistent_history = compile_graph(persistent_history_graph, 116);
+    auto persistent_history = compile_graph(persistent_history_graph, 117);
     ASSERT_TRUE(persistent_history.succeeded())
         << (persistent_history.diagnostics.empty()
                 ? ""
@@ -3046,13 +3215,13 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 
     auto ported_graph = configured_module_graph(*revision, graph_jit_ported_module_id);
     ASSERT_TRUE(ported_graph);
-    auto ported = compile_graph(ported_graph, 117);
+    auto ported = compile_graph(ported_graph, 118);
     expect_lowering_failure(ported, "does not yet support external sample boundaries");
 
     auto disconnected_ported_graph =
         std::make_shared<iv::ConfiguredGraph>(*ported_graph);
     disconnected_ported_graph->connections = {};
-    auto disconnected_ported = compile_graph(disconnected_ported_graph, 118);
+    auto disconnected_ported = compile_graph(disconnected_ported_graph, 119);
     expect_lowering_failure(
         disconnected_ported, "does not yet support external sample boundaries");
 
@@ -3072,6 +3241,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     reused_storage = iv::NodeStorage{};
     fanout_storage = iv::NodeStorage{};
     stereo_conversion_storage = iv::NodeStorage{};
+    latency_storage = iv::NodeStorage{};
     history_storage = iv::NodeStorage{};
     history_next_storage = iv::NodeStorage{};
     persistent_history_storage = iv::NodeStorage{};
@@ -3089,6 +3259,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     reused_arena = {};
     fanout = {};
     stereo_conversion = {};
+    latency_compensation = {};
     history = {};
     history_next = {};
     persistent_history = {};
