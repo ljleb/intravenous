@@ -32,8 +32,12 @@ constexpr char graph_jit_stateful_module_id[] = "iv.test.graph_jit.state_context
 constexpr char graph_jit_state_only_module_id[] = "iv.test.graph_jit.state_context.state_only_module";
 constexpr char graph_jit_compiled_only_module_id[] = "iv.test.graph_jit.state_context.compiled_only_module";
 constexpr char graph_jit_stateless_module_id[] = "iv.test.graph_jit.state_context.stateless_module";
+constexpr char graph_jit_configured_module_id[] = "iv.test.graph_jit.state_context.configured_module";
+constexpr char graph_jit_multiple_module_id[] = "iv.test.graph_jit.state_context.multiple_module";
+constexpr char graph_jit_limited_block_module_id[] = "iv.test.graph_jit.state_context.limited_block_module";
+constexpr char graph_jit_ported_module_id[] = "iv.test.graph_jit.state_context.ported_module";
 
-struct StatefulProbeStateMirror {
+struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
     std::uint64_t skip_calls = 0;
     std::uint64_t last_index = 0;
@@ -43,7 +47,7 @@ struct StatefulProbeStateMirror {
     std::uint64_t observed_compiled_extent = 0;
 };
 
-struct StatefulProbeCompiledStateMirror {
+struct alignas(128) StatefulProbeCompiledStateMirror {
     std::uint64_t tick_calls = 0;
     std::uint64_t skip_calls = 0;
     std::uint64_t last_index = 0;
@@ -57,6 +61,26 @@ struct SingleSpanProbeMirror {
     std::uint64_t observed_state_extent = 0;
     std::uint64_t observed_compiled_extent = 0;
 };
+
+struct ConfiguredProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::size_t first = 0;
+    std::size_t second = 0;
+};
+
+void expect_lowering_failure(
+    iv::GraphJitCompileResult const& result,
+    std::string_view message_fragment)
+{
+    EXPECT_TRUE(result.attempted);
+    EXPECT_FALSE(result.succeeded());
+    ASSERT_EQ(result.diagnostics.size(), 1u);
+    EXPECT_EQ(result.diagnostics.front().stage, iv::GraphJitDiagnosticStage::lowering);
+    EXPECT_NE(
+        result.diagnostics.front().message.find(message_fragment),
+        std::string::npos)
+        << result.diagnostics.front().message;
+}
 
 std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_graph_jit_snapshot(
     std::shared_ptr<iv::PackageRevision const> revision,
@@ -245,7 +269,7 @@ TEST(GraphJit, SinglePrimitiveStateContextsUseCanonicalExactSpans)
 
 namespace {
 struct StatefulProbe {
-    struct State {
+    struct alignas(64) State {
         std::uint64_t tick_calls = 0;
         std::uint64_t skip_calls = 0;
         std::uint64_t last_index = 0;
@@ -255,7 +279,7 @@ struct StatefulProbe {
         std::uint64_t observed_compiled_extent = 0;
     };
 
-    struct CompiledState {
+    struct alignas(128) CompiledState {
         std::uint64_t tick_calls = 0;
         std::uint64_t skip_calls = 0;
         std::uint64_t last_index = 0;
@@ -377,6 +401,72 @@ struct StatelessProbe {
     void tick_block(iv::TickBlockContext<StatelessProbe> const&) const {}
 };
 
+struct ConfiguredProbe {
+    std::size_t first = 0;
+    std::size_t second = 0;
+
+    struct State {
+        std::uint64_t calls = 0;
+        std::size_t first = 0;
+        std::size_t second = 0;
+    };
+
+    constexpr ConfiguredProbe(std::size_t first_, std::size_t second_)
+        : first(first_), second(second_)
+    {}
+
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<ConfiguredProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        ++state.calls;
+        state.first = first;
+        state.second = second;
+    }
+};
+
+struct LimitedBlockProbe {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    std::size_t max_block_size() const { return 16; }
+
+    void tick_block(iv::TickBlockContext<LimitedBlockProbe> const&) const {}
+};
+
+struct PortedProbe {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 1>{};
+    }
+
+    void tick(iv::TickSampleContext<PortedProbe> const& ctx) const
+    {
+        ctx.outputs[0].push(iv::Sample{0.25f});
+    }
+};
+
 void stateful_module(iv::GraphBuilder& graph)
 {
     (void)graph.node<"iv.test.graph_jit.state_context.stateful">();
@@ -400,55 +490,98 @@ void stateless_module(iv::GraphBuilder& graph)
     (void)graph.node<"iv.test.graph_jit.state_context.stateless">();
     graph.outputs();
 }
+
+void configured_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.state_context.configured">(
+        std::size_t{0x12345678u}, std::size_t{0xabcdef01u});
+    graph.outputs();
+}
+
+void multiple_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.state_context.stateless">();
+    (void)graph.node<"iv.test.graph_jit.state_context.configured">(
+        std::size_t{1}, std::size_t{2});
+    graph.outputs();
+}
+
+void limited_block_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.state_context.limited_block">();
+    graph.outputs();
+}
+
+void ported_module(iv::GraphBuilder& graph)
+{
+    graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
+}
 } // namespace
 
 IV_NODE("iv.test.graph_jit.state_context.stateful", StatefulProbe);
 IV_NODE("iv.test.graph_jit.state_context.state_only", StateOnlyProbe);
 IV_NODE("iv.test.graph_jit.state_context.compiled_only", CompiledOnlyProbe);
 IV_NODE("iv.test.graph_jit.state_context.stateless", StatelessProbe);
+IV_NODE("iv.test.graph_jit.state_context.configured", ConfiguredProbe);
+IV_NODE("iv.test.graph_jit.state_context.limited_block", LimitedBlockProbe);
+IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
 IV_MODULE("iv.test.graph_jit.state_context.compiled_only_module", compiled_only_module);
 IV_MODULE("iv.test.graph_jit.state_context.stateless_module", stateless_module);
+IV_MODULE("iv.test.graph_jit.state_context.configured_module", configured_module);
+IV_MODULE("iv.test.graph_jit.state_context.multiple_module", multiple_module);
+IV_MODULE("iv.test.graph_jit.state_context.limited_block_module", limited_block_module);
+IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
     auto const canonical_workspace = std::filesystem::weakly_canonical(workspace);
-    iv::StartupConfig startup_config(canonical_workspace, iv::test::repo_root(), {});
-    iv::PackageJit package_jit(
-        startup_config.initialize(),
-        iv::ModuleLoader::OptimizationLevel::O0);
-    iv::PackageJitBatchRequest package_request{
-        .declarations = {iv::IvPackageDeclaration{
-            .package_id = graph_jit_state_package_id,
-            .package_root = canonical_workspace,
-        }},
-    };
-    package_jit.handle_build_request(package_request);
+    std::shared_ptr<iv::PackageRevision const> revision;
+    {
+        iv::StartupConfig startup_config(canonical_workspace, iv::test::repo_root(), {});
+        iv::PackageJit package_jit(
+            startup_config.initialize(),
+            iv::ModuleLoader::OptimizationLevel::O0);
+        iv::PackageJitBatchRequest package_request{
+            .declarations = {iv::IvPackageDeclaration{
+                .package_id = graph_jit_state_package_id,
+                .package_root = canonical_workspace,
+            }},
+        };
+        package_jit.handle_build_request(package_request);
 
-    if (!package_request.result.failed.empty()) {
-        FAIL() << package_request.result.failed.front().message;
+        if (!package_request.result.failed.empty()) {
+            FAIL() << package_request.result.failed.front().message;
+        }
+        ASSERT_EQ(package_request.result.revisions.size(), 1u);
+        revision = std::make_shared<iv::PackageRevision const>(
+            std::move(package_request.result.revisions.front()));
     }
-    ASSERT_EQ(package_request.result.revisions.size(), 1u);
-    auto revision = std::make_shared<iv::PackageRevision const>(
-        std::move(package_request.result.revisions.front()));
-    ASSERT_EQ(revision->leaf_definitions.size(), 4u);
-    ASSERT_EQ(revision->module_definitions.size(), 4u);
+    ASSERT_TRUE(revision);
+    ASSERT_EQ(revision->leaf_definitions.size(), 7u);
+    ASSERT_EQ(revision->module_definitions.size(), 8u);
 
+    auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
-    iv::GraphJit jit(iv::GraphJitConfig{
+    auto jit = std::make_unique<iv::GraphJit>(iv::GraphJitConfig{
         .sample_rate = 88200,
         .block_size = 64,
     });
     iv::ResourceContext resources;
 
-    auto compile = [&](std::string_view module_id, std::uint64_t generation) {
-        auto graph = configured_module_graph(*revision, module_id);
+    auto compile_graph = [&](
+                             std::shared_ptr<iv::ConfiguredGraph const> graph,
+                             std::uint64_t generation) {
         EXPECT_NE(graph, nullptr);
-        return jit.compile(iv::GraphJitCompileRequest{
+        return jit->compile(iv::GraphJitCompileRequest{
             .project_generation = generation,
             .graph = std::move(graph),
             .definitions = definitions,
         });
+    };
+    auto compile = [&](std::string_view module_id, std::uint64_t generation) {
+        return compile_graph(
+            configured_module_graph(*revision, module_id), generation);
     };
 
     auto stateful = compile(graph_jit_stateful_module_id, 100);
@@ -456,6 +589,7 @@ IV_MODULE("iv.test.graph_jit.state_context.stateless_module", stateless_module);
         << (stateful.diagnostics.empty() ? "" : stateful.diagnostics.front().message);
     ASSERT_TRUE(stateful.compiled_graph->root_operations.valid());
     ASSERT_TRUE(stateful.compiled_graph->root_operations.can_skip_block());
+    auto stateful_survivor = stateful.compiled_graph;
     expect_single_node_canonical_regions(
         stateful.compiled_graph->node_layout,
         sizeof(StatefulProbeStateMirror),
@@ -469,14 +603,26 @@ IV_MODULE("iv.test.graph_jit.state_context.stateless_module", stateless_module);
         stateful_storage.compiled_state_ptr(0));
     ASSERT_NE(state, nullptr);
     ASSERT_NE(compiled, nullptr);
+    auto const& stateful_node = stateful.compiled_graph->node_layout.nodes.front();
+    EXPECT_EQ(stateful_node.state_alignment, alignof(StatefulProbeStateMirror));
+    EXPECT_EQ(
+        stateful_node.compiled_state_alignment,
+        alignof(StatefulProbeCompiledStateMirror));
+    EXPECT_EQ(
+        reinterpret_cast<std::uintptr_t>(state) % alignof(StatefulProbeStateMirror),
+        0u);
+    EXPECT_EQ(
+        reinterpret_cast<std::uintptr_t>(compiled)
+            % alignof(StatefulProbeCompiledStateMirror),
+        0u);
     EXPECT_EQ(
         static_cast<std::byte*>(static_cast<void*>(state)),
         stateful_storage.buffer().data()
-            + stateful.compiled_graph->node_layout.nodes.front().state_offset);
+            + stateful_node.state_offset);
     EXPECT_EQ(
         static_cast<std::byte*>(static_cast<void*>(compiled)),
         stateful_storage.buffer().data()
-            + stateful.compiled_graph->node_layout.nodes.front().compiled_state_offset);
+            + stateful_node.compiled_state_offset);
 
     stateful.compiled_graph->root_operations.tick_block(
         stateful_storage.buffer().data(), 17, 32);
@@ -513,6 +659,17 @@ IV_MODULE("iv.test.graph_jit.state_context.stateless_module", stateless_module);
     EXPECT_EQ(compiled->skip_calls, 1u);
     EXPECT_EQ(compiled->last_index, 41u);
     EXPECT_EQ(compiled->last_block_size, 16u);
+
+    stateful.compiled_graph->root_operations.tick_block(
+        stateful_storage.buffer().data(), 73, 64);
+    EXPECT_EQ(state->tick_calls, 2u);
+    EXPECT_EQ(state->skip_calls, 1u);
+    EXPECT_EQ(state->last_index, 73u);
+    EXPECT_EQ(state->last_block_size, 64u);
+    EXPECT_EQ(compiled->tick_calls, 2u);
+    EXPECT_EQ(compiled->skip_calls, 1u);
+    EXPECT_EQ(compiled->last_index, 73u);
+    EXPECT_EQ(compiled->last_block_size, 64u);
 
     auto state_only = compile(graph_jit_state_only_module_id, 101);
     ASSERT_TRUE(state_only.succeeded())
@@ -563,6 +720,91 @@ IV_MODULE("iv.test.graph_jit.state_context.stateless_module", stateless_module);
     expect_single_node_canonical_regions(stateless.compiled_graph->node_layout, 0, 0);
     EXPECT_EQ(stateless.compiled_graph->node_layout.storage_size, 0u);
     EXPECT_NO_THROW(stateless.compiled_graph->root_operations.tick_block(nullptr, 9, 32));
+
+    auto configured_graph = configured_module_graph(*revision, graph_jit_configured_module_id);
+    ASSERT_TRUE(configured_graph);
+    auto configured = jit->compile(iv::GraphJitCompileRequest{
+        .project_generation = 104,
+        .graph = configured_graph,
+        .definitions = definitions,
+    });
+    ASSERT_TRUE(configured.succeeded())
+        << (configured.diagnostics.empty() ? "" : configured.diagnostics.front().message);
+    EXPECT_EQ(configured.compiled_graph->project_generation, 104u);
+    EXPECT_EQ(configured.compiled_graph->definitions_generation, 91u);
+    EXPECT_EQ(configured.compiled_graph->configured_graph, configured_graph);
+    ASSERT_EQ(configured.compiled_graph->package_revisions.size(), 1u);
+    EXPECT_EQ(configured.compiled_graph->package_revisions.front(), revision);
+    expect_single_node_canonical_regions(
+        configured.compiled_graph->node_layout,
+        sizeof(ConfiguredProbeStateMirror),
+        0);
+    auto configured_storage = configured.compiled_graph->node_layout.create_storage(resources);
+    configured_storage.initialize();
+    auto* configured_state = static_cast<ConfiguredProbeStateMirror*>(
+        configured_storage.state_ptr(0));
+    ASSERT_NE(configured_state, nullptr);
+    configured.compiled_graph->root_operations.tick_block(
+        configured_storage.buffer().data(), 11, 32);
+    EXPECT_EQ(configured_state->calls, 1u);
+    EXPECT_EQ(configured_state->first, std::size_t{0x12345678u});
+    EXPECT_EQ(configured_state->second, std::size_t{0xabcdef01u});
+
+    auto multiple_graph = configured_module_graph(
+        *revision, graph_jit_multiple_module_id);
+    ASSERT_TRUE(multiple_graph);
+    auto disconnected_multiple_graph =
+        std::make_shared<iv::ConfiguredGraph>(*multiple_graph);
+    disconnected_multiple_graph->connections = {};
+    auto multiple = compile_graph(disconnected_multiple_graph, 105);
+    expect_lowering_failure(multiple, "exactly one concrete primitive");
+
+    auto limited = compile(graph_jit_limited_block_module_id, 106);
+    expect_lowering_failure(limited, "does not yet split blocks");
+
+    auto ported_graph = configured_module_graph(*revision, graph_jit_ported_module_id);
+    ASSERT_TRUE(ported_graph);
+    auto ported = compile_graph(ported_graph, 107);
+    expect_lowering_failure(ported, "does not yet support graph connections");
+
+    auto disconnected_ported_graph =
+        std::make_shared<iv::ConfiguredGraph>(*ported_graph);
+    disconnected_ported_graph->connections = {};
+    auto disconnected_ported = compile_graph(disconnected_ported_graph, 108);
+    expect_lowering_failure(disconnected_ported, "zero-port project boundary");
+
+    // A CompiledGraph must keep both the project ORC domain and its package
+    // revision alive independently of GraphJit, the definitions snapshot, and
+    // newer generations. Drop every external owner and execute the oldest
+    // generation again through the storage/layout it owns.
+    state_only_storage = iv::NodeStorage{};
+    compiled_only_storage = iv::NodeStorage{};
+    configured_storage = iv::NodeStorage{};
+    stateful = {};
+    state_only = {};
+    compiled_only = {};
+    stateless = {};
+    configured = {};
+    multiple = {};
+    limited = {};
+    ported = {};
+    disconnected_ported = {};
+    definitions.reset();
+    revision.reset();
+    jit.reset();
+    EXPECT_FALSE(revision_weak.expired());
+    ASSERT_EQ(stateful_survivor->package_revisions.size(), 1u);
+
+    stateful_survivor->root_operations.tick_block(
+        stateful_storage.buffer().data(), 137, 32);
+    EXPECT_EQ(state->tick_calls, 3u);
+    EXPECT_EQ(state->skip_calls, 1u);
+    EXPECT_EQ(state->last_index, 137u);
+    EXPECT_EQ(state->last_block_size, 32u);
+    EXPECT_EQ(compiled->tick_calls, 3u);
+    EXPECT_EQ(compiled->skip_calls, 1u);
+    EXPECT_EQ(compiled->last_index, 137u);
+    EXPECT_EQ(compiled->last_block_size, 32u);
 }
 
 TEST(GraphJitProjectGraphBridge, EmptyRootGenerationCompilesSuccessfully)
