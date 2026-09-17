@@ -370,6 +370,55 @@ TEST(GraphJitConnectionPlan, EqualizesFeedForwardSamplePathsAtConvergence)
         SampleConnectionImplementationKind::compact_persistent_carry);
 }
 
+TEST(GraphJitConnectionPlan, EqualizesChannelsInsideComposedSampleInput)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<MonoSource>(graph);
+    auto latent = details::configure_concrete_node<LatentSamplePass>(graph);
+    auto sink = details::configure_concrete_node<StereoSink>(graph);
+    auto const source_handle = source.node_bundle_handle();
+    auto const latent_handle = latent.node_bundle_handle();
+    auto const sink_handle = sink.node_bundle_handle();
+
+    latent(source);
+    sink(graph.tile<stereo>(source, latent));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    auto const connection = std::ranges::find_if(
+        plan->sample_connections,
+        [&](graph_jit::detail::SampleConnectionPlan const& candidate) {
+            return candidate.target_port.node_bundle_handle == sink_handle;
+        });
+    ASSERT_NE(connection, plan->sample_connections.end());
+    EXPECT_FALSE(connection->canonical_source_port.has_value());
+    ASSERT_EQ(connection->source_channel_timings.size(), 2u);
+
+    auto const& fast = connection->source_channel_timings[0];
+    auto const& slow = connection->source_channel_timings[1];
+    EXPECT_EQ(fast.source.bundle, source_handle);
+    EXPECT_EQ(slow.source.bundle, latent_handle);
+
+    // The left channel comes directly from the zero-latency source. The right
+    // channel comes from a node with 5 samples of internal latency and 2
+    // samples of authored output latency. Both channels belong to one stereo
+    // input connection, but they still require independent temporal reads.
+    EXPECT_EQ(fast.source_latency, 0u);
+    EXPECT_EQ(fast.read_latency, 7u);
+    EXPECT_EQ(slow.source_latency, 2u);
+    EXPECT_EQ(slow.read_latency, 2u);
+
+    // The scalar is only a conservative compatibility value for the current
+    // whole-port storage planner. Physical channel composition must consume
+    // the per-channel timings above instead of applying this value uniformly.
+    EXPECT_EQ(connection->source_latency, 2u);
+    EXPECT_EQ(connection->read_latency, 7u);
+}
+
 TEST(GraphJitConnectionPlan, PropagatesAlignedLatencyAcrossMultipleConvergences)
 {
     using namespace iv;

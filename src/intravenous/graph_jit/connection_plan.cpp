@@ -207,17 +207,26 @@ std::expected<void, std::string> inventory_sample_connections(
 
             std::optional<ChannelLayout> canonical_source_layout;
             std::optional<bool> source_realtime;
+            connection_plan.source_channel_timings.reserve(
+                connection.source_channels.size());
             for (auto const source_channel : connection.source_channels) {
                 NodeBundlePortId const source_port{
                     source_channel.bundle, PortKind::sample, source_channel.port};
                 auto const source =
                     graph.node_bundles.resolve_sample_output(source_port).config;
+                auto const source_history = realtime_history_or_zero(source);
+                auto const source_latency = realtime_latency_or_zero(source);
+                connection_plan.source_channel_timings.push_back(
+                    SampleSourceChannelTimingPlan{
+                        .source = source_channel,
+                        .source_history = source_history,
+                        .source_latency = source_latency,
+                        .read_latency = source_latency,
+                    });
                 connection_plan.source_history = std::max(
-                    connection_plan.source_history,
-                    realtime_history_or_zero(source));
+                    connection_plan.source_history, source_history);
                 connection_plan.source_latency = std::max(
-                    connection_plan.source_latency,
-                    realtime_latency_or_zero(source));
+                    connection_plan.source_latency, source_latency);
                 auto const this_source_realtime = is_realtime(source.access);
                 if (source_realtime && *source_realtime != this_source_realtime) {
                     return std::unexpected(
@@ -606,6 +615,9 @@ std::expected<void, std::string> plan_sample_latency_compensation(
     // cyclic regions whose feedback latency belongs to point 12).
     for (auto& connection : plan.sample_connections) {
         connection.read_latency = connection.source_latency;
+        for (auto& channel : connection.source_channel_timings) {
+            channel.read_latency = channel.source_latency;
+        }
     }
 
     for (auto const region_index : plan.schedule.region_order) {
@@ -637,6 +649,7 @@ std::expected<void, std::string> plan_sample_latency_compensation(
 
             struct IncomingPath {
                 std::size_t connection_index = 0;
+                std::size_t source_channel_index = 0;
                 std::size_t arrival_latency = 0;
             };
             std::vector<IncomingPath> incoming;
@@ -652,43 +665,75 @@ std::expected<void, std::string> plan_sample_latency_compensation(
                     || connection.target_port.node_bundle_handle != bundle) {
                     continue;
                 }
-
-                std::size_t upstream_latency = 0;
-                for (auto const source : connection.source_channels) {
-                    if (source.bundle == plan.boundary_bundle) continue;
-                    if (source.bundle >= node_output_latency.size()
-                        || !node_output_latency[source.bundle]) {
-                        return std::unexpected(
-                            "sample latency compensation encountered a source before its producer");
-                    }
-                    upstream_latency = std::max(
-                        upstream_latency, *node_output_latency[source.bundle]);
+                if (connection.source_channel_timings.size()
+                    != connection.source_channels.size()) {
+                    return std::unexpected(
+                        "sample latency compensation lost source-channel timing metadata");
                 }
 
-                auto arrival = checked_latency_add(
-                    upstream_latency,
-                    connection.source_latency,
-                    "sample path latency");
-                if (!arrival) return std::unexpected(std::move(arrival.error()));
-                aligned_input_latency = std::max(aligned_input_latency, *arrival);
-                incoming.push_back(IncomingPath{
-                    .connection_index = connection_index,
-                    .arrival_latency = *arrival,
-                });
+                for (std::size_t source_channel_index = 0;
+                     source_channel_index < connection.source_channel_timings.size();
+                     ++source_channel_index) {
+                    auto const& channel =
+                        connection.source_channel_timings[source_channel_index];
+                    std::size_t upstream_latency = 0;
+                    if (channel.source.bundle != plan.boundary_bundle) {
+                        if (channel.source.bundle >= node_output_latency.size()
+                            || !node_output_latency[channel.source.bundle]) {
+                            return std::unexpected(
+                                "sample latency compensation encountered a source before its producer");
+                        }
+                        upstream_latency = *node_output_latency[channel.source.bundle];
+                    }
+
+                    auto arrival = checked_latency_add(
+                        upstream_latency,
+                        channel.source_latency,
+                        "sample channel path latency");
+                    if (!arrival) {
+                        return std::unexpected(std::move(arrival.error()));
+                    }
+                    aligned_input_latency = std::max(
+                        aligned_input_latency, *arrival);
+                    incoming.push_back(IncomingPath{
+                        .connection_index = connection_index,
+                        .source_channel_index = source_channel_index,
+                        .arrival_latency = *arrival,
+                    });
+                }
             }
 
             for (auto const& path : incoming) {
                 auto& connection = plan.sample_connections[path.connection_index];
+                auto& channel =
+                    connection.source_channel_timings[path.source_channel_index];
                 auto const compensation =
                     aligned_input_latency - path.arrival_latency;
                 auto read_latency = checked_latency_add(
-                    connection.source_latency,
+                    channel.source_latency,
                     compensation,
-                    "sample compensated read latency");
+                    "sample compensated channel read latency");
                 if (!read_latency) {
                     return std::unexpected(std::move(read_latency.error()));
                 }
-                connection.read_latency = *read_latency;
+                channel.read_latency = *read_latency;
+            }
+
+            // Whole-port sources necessarily share one producer path and one
+            // authored port latency, so every channel has the same effective
+            // read latency. For composed sources retain a conservative scalar
+            // maximum for the existing storage planner; explicit channel
+            // composition will consume source_channel_timings directly.
+            for (auto& connection : plan.sample_connections) {
+                if (connection.target_port.node_bundle_handle != bundle
+                    || connection.source_channel_timings.empty()) {
+                    continue;
+                }
+                connection.read_latency = 0;
+                for (auto const& channel : connection.source_channel_timings) {
+                    connection.read_latency = std::max(
+                        connection.read_latency, channel.read_latency);
+                }
             }
 
             auto output_latency = checked_latency_add(

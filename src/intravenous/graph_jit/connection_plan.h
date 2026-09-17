@@ -68,10 +68,22 @@ struct SchedulePlan {
     std::vector<std::optional<std::size_t>> bundle_execution_position{};
 };
 
+struct SampleSourceChannelTimingPlan {
+    SampleOutputChannelId source{};
+    std::size_t source_history = 0;
+    std::size_t source_latency = 0;
+    // Effective latency for this particular source channel after feed-forward
+    // path equalization. Composed sample inputs may require a different delay
+    // per source channel even though a canonical whole-port source always has
+    // one common value.
+    std::size_t read_latency = 0;
+};
+
 struct SampleConnectionPlan {
     std::size_t configured_connection_index = 0;
     ChannelTypeId source_type = ChannelTypeId::mono;
     std::vector<SampleOutputChannelId> source_channels{};
+    std::vector<SampleSourceChannelTimingPlan> source_channel_timings{};
     std::optional<NodeBundlePortId> canonical_source_port{};
     std::optional<ChannelLayout> canonical_source_layout{};
     ChannelTypeId target_type = ChannelTypeId::mono;
@@ -79,12 +91,14 @@ struct SampleConnectionPlan {
     std::vector<SampleInputChannelId> target_channels{};
     NodeBundlePortId target_port{};
 
+    // Conservative aggregate values retained for whole-port planning. The
+    // per-channel timing vector above is authoritative when source_channels
+    // compose channels from different producer ports.
     std::size_t source_history = 0;
     std::size_t source_latency = 0;
-    // Effective InputPort latency after whole-graph feed-forward path
-    // equalization. This is at least source_latency; the difference is the
-    // compiler-inserted compensation for a faster path converging with a
-    // slower sibling path.
+    // For a canonical whole-port source this is the common effective InputPort
+    // latency. For a composed source it is the maximum per-channel read
+    // latency until physical channel composition is lowered explicitly.
     std::size_t read_latency = 0;
     std::size_t target_history = 0;
     PlannedConnectionAccess access = PlannedConnectionAccess::realtime_to_realtime;
