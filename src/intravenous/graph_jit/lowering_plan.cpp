@@ -906,7 +906,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                     || source_channel.port != source_port.port_ordinal
                     || source_channel.channel != channel) {
                     return std::unexpected(
-                        "GraphJit sample fanout does not yet support source-channel projection/remapping");
+                        "GraphJit canonical sample source channels lost canonical ordering");
                 }
             }
             if (connection.requires_conversion) {
@@ -924,9 +924,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             }
             target_read_latency = connection.read_latency;
         } else {
-            // Physical composition currently gathers one semantic channel per
-            // target channel. Conversion/projection beyond that remains a
-            // separate materialization feature.
+            // Projection/permutation has already normalized to one semantic
+            // source per target channel. Channel-count conversion remains a
+            // separate whole-port materialization feature.
             if (connection.canonical_source_layout
                 || connection.source_type != connection.target_type
                 || connection.source_channels.size() != target_channel_total) {

@@ -166,12 +166,14 @@ The physical planner consumes the implementation decisions already made by
 Only realtime branches receive realtime representation handles here; compiled
 access branches remain unresolved for the later compiled-access executor. Whole-
 port layout/channel-type conversion is represented by explicit derived branches
-and generated materialization operations. Arbitrary semantic channel projection
-or permutation across physical output/input channels is still capability-gated;
-it should be added as another explicit materialization transform rather than by
-reintroducing connection helper nodes. Cross-kernel retained, feedback, and
-external representations remain rejected at this checkpoint rather than being
-approximated with transient storage.
+and generated materialization operations. Semantic channel projection and
+permutation are represented by explicit sample compositions: source channels keep
+their physical producer identity and independent read latency, complete sets of
+per-channel target contributions normalize into canonical target order, and one
+transient target-layout representation is gathered before the consumer. This does
+not reintroduce connection helper nodes. Feedback and external representations
+remain rejected at this checkpoint rather than being approximated with transient
+storage.
 
 ### Realtime port realization rules
 
@@ -261,15 +263,17 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    longer encode raw buffer identity. No retained
    representation is faked with transient storage; persistent/feedback/external
    kinds remain capability-gated for their dedicated later steps.
-8. **Sample fanout and layout conversion.** **Landed for whole-port branches.**
-   One canonical producer-layout representation is written once; identity
-   consumers share it directly, while converted consumers bind explicit derived
-   transient representations. Identical converted fanout branches are deduplicated
-   to one representation/materialization. Materialization is generated whole-
-   project LLVM using absolute-indexed physical storage and contains no runtime
-   converter object, heap allocation, or `OutputPort` conversion state. Arbitrary
-   channel projection/permutation remains a later explicit transform rather than a
-   compatibility connection node.
+8. **Sample fanout, layout conversion, and channel composition.** **Landed for
+   feed-forward realtime branches.** One canonical producer-layout representation
+   is written once; identity consumers share it directly, while converted consumers
+   bind explicit derived transient representations. Identical converted fanout
+   branches are deduplicated to one representation/materialization. Semantic
+   channel projection/permutation uses explicit composition materialization,
+   including complete sets of separately configured target-channel contributions;
+   each source channel retains its producer storage and independent read latency.
+   Materialization is generated whole-project LLVM using absolute-indexed physical
+   storage and contains no runtime converter object, heap allocation, or
+   `OutputPort` conversion state.
 9. **Sample history and latency.** **Landed for declared realtime sample history/latency.**
    `compact_persistent_carry` uses one transient absolute-indexed working ring plus
    exactly the retained tail in persistent raw `NodeStorage`; the tail is restored

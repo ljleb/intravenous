@@ -259,21 +259,34 @@ std::expected<void, std::string> inventory_sample_connections(
                     [&](SampleOutputChannelId source) {
                         return source.bundle == plan.boundary_bundle;
                     });
+            auto const canonical_target_channels =
+                graph.node_bundles.sample_input_channels(connection_plan.target_port);
+            auto const whole_target =
+                connection.target_type == target.channel_layout.channel_type
+                && std::ranges::equal(
+                    connection.target_channels, canonical_target_channels);
+            auto const semantic_target_layout = whole_target
+                ? target.channel_layout
+                : ChannelLayout{
+                    .channel_type = connection.target_type,
+                    .sample_layout = SampleStreamLayout::planar,
+                };
             connection_plan.requires_conversion =
                 !connection_plan.canonical_source_port
                 || connection.source_type != connection.target_type
                 || !canonical_source_layout
-                || *canonical_source_layout != target.channel_layout;
+                || *canonical_source_layout != semantic_target_layout;
             if (connection_plan.requires_conversion) {
-                // Validate now that a semantic sample-layout conversion exists;
-                // later physical realization decides how to realize the returned plan.
+                // Validate the semantic connection conversion. Partial target
+                // contributions convert into their declared target type first;
+                // target-port assembly is normalized separately below.
                 auto const source_layout = canonical_source_layout.value_or(
                     ChannelLayout{
                         .channel_type = connection.source_type,
                         .sample_layout = SampleStreamLayout::planar,
                     });
                 (void)ChannelConversionRegistry::plan(
-                    source_layout, target.channel_layout);
+                    source_layout, semantic_target_layout);
             }
         } catch (std::exception const& e) {
             return std::unexpected(
@@ -281,6 +294,172 @@ std::expected<void, std::string> inventory_sample_connections(
         }
         plan.sample_connections.push_back(std::move(connection_plan));
     }
+    return {};
+}
+
+std::expected<void, std::string> normalize_sample_target_projections(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan& plan)
+{
+    if (plan.sample_connections.empty()) return {};
+
+    std::vector<SampleConnectionPlan> normalized;
+    normalized.reserve(plan.sample_connections.size());
+    std::vector<bool> consumed(plan.sample_connections.size(), false);
+
+    for (std::size_t first_index = 0;
+         first_index < plan.sample_connections.size(); ++first_index) {
+        if (consumed[first_index]) continue;
+        auto const target_port =
+            plan.sample_connections[first_index].target_port;
+
+        std::vector<std::size_t> group_indices;
+        for (std::size_t i = first_index;
+             i < plan.sample_connections.size(); ++i) {
+            if (!consumed[i]
+                && plan.sample_connections[i].target_port == target_port) {
+                group_indices.push_back(i);
+            }
+        }
+
+        auto const target = graph.node_bundles.resolve_sample_input(target_port).config;
+        auto const canonical_targets =
+            graph.node_bundles.sample_input_channels(target_port);
+        auto covers_whole_target = [&](SampleConnectionPlan const& connection) {
+            return connection.target_type == target.channel_layout.channel_type
+                && std::ranges::equal(
+                    connection.target_channels, canonical_targets);
+        };
+
+        if (group_indices.size() == 1
+            && covers_whole_target(plan.sample_connections[first_index])) {
+            consumed[first_index] = true;
+            normalized.push_back(std::move(plan.sample_connections[first_index]));
+            continue;
+        }
+
+        auto const target_channel_total = canonical_targets.size();
+        std::vector<std::optional<SampleOutputChannelId>> sources(
+            target_channel_total);
+        std::vector<std::optional<SampleSourceChannelTimingPlan>> timings(
+            target_channel_total);
+
+        auto const& first = plan.sample_connections[first_index];
+        auto access = first.access;
+        auto target_history = first.target_history;
+        bool external_boundary = false;
+        bool requires_block_materialization = false;
+
+        for (auto const connection_index : group_indices) {
+            auto const& connection = plan.sample_connections[connection_index];
+            if (connection.target_layout != target.channel_layout
+                || connection.target_history != target_history
+                || connection.access != access) {
+                return std::unexpected(
+                    "GraphJit sample target-channel projections disagree on target semantics");
+            }
+            if (connection.source_type != connection.target_type
+                || connection.source_channels.size()
+                    != channel_count(connection.source_type)
+                || connection.target_channels.size()
+                    != channel_count(connection.target_type)
+                || connection.source_channels.size()
+                    != connection.target_channels.size()
+                || connection.source_channel_timings.size()
+                    != connection.source_channels.size()) {
+                return std::unexpected(
+                    "GraphJit sample target-channel projection currently requires identity semantic channel mapping");
+            }
+
+            for (std::size_t channel = 0;
+                 channel < connection.target_channels.size(); ++channel) {
+                auto const target_channel = connection.target_channels[channel];
+                auto const found = std::ranges::find(
+                    canonical_targets, target_channel);
+                if (found == canonical_targets.end()) {
+                    return std::unexpected(
+                        "GraphJit sample target-channel projection references a foreign target channel");
+                }
+                auto const target_ordinal = static_cast<std::size_t>(
+                    std::distance(canonical_targets.begin(), found));
+                if (sources[target_ordinal] || timings[target_ordinal]) {
+                    return std::unexpected(
+                        "GraphJit sample target channel has more than one source");
+                }
+                sources[target_ordinal] = connection.source_channels[channel];
+                timings[target_ordinal] =
+                    connection.source_channel_timings[channel];
+            }
+            external_boundary = external_boundary || connection.external_boundary;
+            requires_block_materialization = requires_block_materialization
+                || connection.requires_block_materialization;
+            consumed[connection_index] = true;
+        }
+
+        if (!std::ranges::all_of(
+                sources, [](auto const& source) { return source.has_value(); })
+            || !std::ranges::all_of(
+                timings, [](auto const& timing) { return timing.has_value(); })) {
+            return std::unexpected(
+                "GraphJit sample target-channel projection does not cover every target channel");
+        }
+
+        SampleConnectionPlan merged{
+            .configured_connection_index = first.configured_connection_index,
+            .source_type = target.channel_layout.channel_type,
+            .target_type = target.channel_layout.channel_type,
+            .target_layout = target.channel_layout,
+            .target_channels = {
+                canonical_targets.begin(), canonical_targets.end()},
+            .target_port = target_port,
+            .target_history = target_history,
+            .access = access,
+            .requires_block_materialization = requires_block_materialization,
+            .external_boundary = external_boundary,
+        };
+        merged.source_channels.reserve(target_channel_total);
+        merged.source_channel_timings.reserve(target_channel_total);
+        for (std::size_t channel = 0; channel < target_channel_total; ++channel) {
+            merged.source_channels.push_back(*sources[channel]);
+            merged.source_channel_timings.push_back(*timings[channel]);
+            merged.source_history = std::max(
+                merged.source_history, timings[channel]->source_history);
+            merged.source_latency = std::max(
+                merged.source_latency, timings[channel]->source_latency);
+        }
+        merged.read_latency = merged.source_latency;
+
+        merged.canonical_source_port =
+            graph.node_bundles.sample_output_port_for_channels(
+                merged.source_type, merged.source_channels);
+        if (merged.canonical_source_port) {
+            auto const source = graph.node_bundles.resolve_sample_output(
+                *merged.canonical_source_port).config;
+            merged.canonical_source_layout = source.channel_layout;
+        }
+        merged.requires_conversion =
+            !merged.canonical_source_port
+            || !merged.canonical_source_layout
+            || *merged.canonical_source_layout != target.channel_layout;
+        if (merged.requires_conversion) {
+            try {
+                auto const source_layout = merged.canonical_source_layout.value_or(
+                    ChannelLayout{
+                        .channel_type = merged.source_type,
+                        .sample_layout = SampleStreamLayout::planar,
+                    });
+                (void)ChannelConversionRegistry::plan(
+                    source_layout, target.channel_layout);
+            } catch (std::exception const& e) {
+                return std::unexpected(
+                    "sample target-channel projection analysis failed: "
+                    + std::string(e.what()));
+            }
+        }
+        normalized.push_back(std::move(merged));
+    }
+
+    plan.sample_connections = std::move(normalized);
     return {};
 }
 
@@ -1176,6 +1355,9 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     }
     if (auto samples = inventory_sample_connections(graph, plan); !samples) {
         return std::unexpected(std::move(samples.error()));
+    }
+    if (auto projections = normalize_sample_target_projections(graph, plan); !projections) {
+        return std::unexpected(std::move(projections.error()));
     }
     if (auto events = inventory_event_connections(graph, plan); !events) {
         return std::unexpected(std::move(events.error()));

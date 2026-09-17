@@ -52,6 +52,7 @@ constexpr char graph_jit_latency_compensation_module_id[] = "iv.test.graph_jit.s
 constexpr char graph_jit_latency_conversion_fanout_module_id[] = "iv.test.graph_jit.state_context.latency_conversion_fanout_module";
 constexpr char graph_jit_composed_latency_module_id[] = "iv.test.graph_jit.state_context.composed_latency_module";
 constexpr char graph_jit_composed_history_module_id[] = "iv.test.graph_jit.state_context.composed_history_module";
+constexpr char graph_jit_projected_composition_module_id[] = "iv.test.graph_jit.state_context.projected_composition_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -2205,6 +2206,17 @@ void composed_history_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void projected_composition_module(iv::GraphBuilder& graph)
+{
+    auto stereo_source = graph.node<"iv.test.graph_jit.state_context.stereo_ramp_source">();
+    auto mono_source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.stereo_sample_consumer">();
+    delayed(mono_source);
+    sink(graph.tile<iv::stereo>(stereo_source[iv::stereo::right], delayed));
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -2254,6 +2266,7 @@ IV_MODULE("iv.test.graph_jit.state_context.latency_compensation_module", latency
 IV_MODULE("iv.test.graph_jit.state_context.latency_conversion_fanout_module", latency_conversion_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.composed_latency_module", composed_latency_module);
 IV_MODULE("iv.test.graph_jit.state_context.composed_history_module", composed_history_module);
+IV_MODULE("iv.test.graph_jit.state_context.projected_composition_module", projected_composition_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -2326,6 +2339,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_TRUE(has_module_definition(graph_jit_latency_conversion_fanout_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_composed_latency_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_composed_history_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_projected_composition_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -3536,6 +3550,114 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(composed_history_probe->current_right, 121.0f);
     EXPECT_FLOAT_EQ(composed_history_probe->history_5_left, 116.0f);
     EXPECT_FLOAT_EQ(composed_history_probe->history_5_right, 116.0f);
+
+    // Split a valid whole-port projected composition into two configured mono
+    // target-channel contributions. Connection analysis must normalize them
+    // back into one full stereo logical input, preserving both the source
+    // permutation (stereo right -> target left) and independent path latency.
+    auto projected_base_graph = configured_module_graph(
+        *revision, graph_jit_projected_composition_module_id);
+    ASSERT_TRUE(projected_base_graph);
+    auto projected_graph = std::make_shared<iv::ConfiguredGraph>(*projected_base_graph);
+    std::vector<iv::ConfiguredSampleConnection> projected_connections;
+    for (auto const& connection :
+         projected_base_graph->connections.configured_sample_connections()) {
+        if (connection.source_type == iv::ChannelTypeId::stereo
+            && connection.target_type == iv::ChannelTypeId::stereo
+            && connection.source_channels.size() == 2
+            && connection.target_channels.size() == 2) {
+            for (std::size_t channel = 0; channel < 2; ++channel) {
+                projected_connections.push_back(iv::ConfiguredSampleConnection{
+                    .source_type = iv::ChannelTypeId::mono,
+                    .source_channels = {connection.source_channels[channel]},
+                    .target_type = iv::ChannelTypeId::mono,
+                    .target_channels = {connection.target_channels[channel]},
+                });
+            }
+        } else {
+            projected_connections.push_back(connection);
+        }
+    }
+    ASSERT_EQ(projected_connections.size(), 3u);
+    projected_graph->connections = iv::GraphBuilderConnections::from_configured_connections(
+        projected_connections,
+        projected_base_graph->connections.configured_event_connections());
+
+    auto projected_analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *projected_graph, 64);
+    ASSERT_TRUE(projected_analysis.has_value())
+        << (projected_analysis ? std::string{} : projected_analysis.error());
+    // The two target-channel contributions normalize into one logical sink
+    // connection, alongside the mono connection feeding FiveSampleDelay.
+    ASSERT_EQ(projected_analysis->sample_connections.size(), 2u);
+    auto projected_connection = std::ranges::find_if(
+        projected_analysis->sample_connections,
+        [](auto const& connection) {
+            return connection.target_type == iv::ChannelTypeId::stereo;
+        });
+    ASSERT_NE(projected_connection, projected_analysis->sample_connections.end());
+    EXPECT_FALSE(projected_connection->canonical_source_port.has_value());
+    ASSERT_EQ(projected_connection->source_channel_timings.size(), 2u);
+    ASSERT_EQ(projected_connection->target_channels.size(), 2u);
+    EXPECT_EQ(projected_connection->source_channel_timings[0].source.channel, 1u);
+    EXPECT_EQ(projected_connection->source_channel_timings[0].read_latency, 7u);
+    EXPECT_EQ(projected_connection->source_channel_timings[1].source.channel, 0u);
+    EXPECT_EQ(projected_connection->source_channel_timings[1].read_latency, 2u);
+    EXPECT_EQ(projected_connection->target_channels[0].channel, 0u);
+    EXPECT_EQ(projected_connection->target_channels[1].channel, 1u);
+
+    auto projected_physical = iv::graph_jit::detail::build_sample_physical_plan(
+        *projected_analysis, 64);
+    ASSERT_TRUE(projected_physical.has_value())
+        << (projected_physical ? std::string{} : projected_physical.error());
+    ASSERT_EQ(projected_physical->compositions.size(), 1u);
+    ASSERT_EQ(projected_physical->compositions[0].sources.size(), 2u);
+    EXPECT_EQ(projected_physical->compositions[0].sources[0].source_channel, 1u);
+    EXPECT_EQ(projected_physical->compositions[0].sources[0].target_channel, 0u);
+    EXPECT_EQ(projected_physical->compositions[0].sources[0].read_latency, 7u);
+    EXPECT_EQ(projected_physical->compositions[0].sources[1].source_channel, 0u);
+    EXPECT_EQ(projected_physical->compositions[0].sources[1].target_channel, 1u);
+    EXPECT_EQ(projected_physical->compositions[0].sources[1].read_latency, 2u);
+
+    auto projected = compile_graph(projected_graph, 122);
+    ASSERT_TRUE(projected.succeeded())
+        << (projected.diagnostics.empty()
+                ? ""
+                : projected.diagnostics.front().message);
+    auto projected_storage =
+        projected.compiled_graph->node_layout.create_storage(resources);
+    projected_storage.initialize();
+    StereoSampleConsumerProbeStateMirror* projected_probe = nullptr;
+    for (std::size_t i = 0;
+         i < projected.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (projected.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(StereoSampleConsumerProbeStateMirror)) {
+            ASSERT_EQ(projected_probe, nullptr);
+            projected_probe = static_cast<StereoSampleConsumerProbeStateMirror*>(
+                projected_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(projected_probe, nullptr);
+
+    projected.compiled_graph->root_operations.tick_block(
+        projected_storage.buffer().data(), 0, 64);
+    EXPECT_EQ(projected_probe->calls, 1u);
+    EXPECT_FLOAT_EQ(projected_probe->first_left, 0.0f);
+    EXPECT_FLOAT_EQ(projected_probe->first_right, 0.0f);
+    EXPECT_FLOAT_EQ(projected_probe->last_left, 1056.0f);
+    EXPECT_FLOAT_EQ(projected_probe->last_right, 56.0f);
+    EXPECT_FLOAT_EQ(projected_probe->sum_left, 58596.0f);
+    EXPECT_FLOAT_EQ(projected_probe->sum_right, 1596.0f);
+
+    projected.compiled_graph->root_operations.tick_block(
+        projected_storage.buffer().data(), 64, 64);
+    EXPECT_EQ(projected_probe->calls, 2u);
+    EXPECT_FLOAT_EQ(projected_probe->first_left, 1057.0f);
+    EXPECT_FLOAT_EQ(projected_probe->first_right, 57.0f);
+    EXPECT_FLOAT_EQ(projected_probe->last_left, 1120.0f);
+    EXPECT_FLOAT_EQ(projected_probe->last_right, 120.0f);
+    EXPECT_FLOAT_EQ(projected_probe->sum_left, 69664.0f);
+    EXPECT_FLOAT_EQ(projected_probe->sum_right, 5664.0f);
 
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);
