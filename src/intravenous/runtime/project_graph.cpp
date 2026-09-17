@@ -47,7 +47,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     root_builder.outputs();
     auto graph = std::make_shared<ConfiguredGraph const>(std::move(root_builder).finish());
     auto generation = std::make_shared<ProjectGraphGeneration>();
-    generation->generation = next_generation_++;
+    generation->generation = next_generation_;
     generation->definitions_generation = definitions_snapshot_->generation;
     generation->definitions = definitions_snapshot_;
     generation->graph = std::move(graph);
@@ -57,7 +57,20 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         std::move(connections_request.result.applied_connection_ids);
     generation->connection_diagnostics =
         std::move(connections_request.result.diagnostics);
+
+    auto graph_jit_result = IV_INVOKE_SINGLETON_EVENT(
+        iv_runtime_project_graph_graph_jit_requested_event,
+        GraphJitCompileRequest{
+            .project_generation = generation->generation,
+            .graph = generation->graph,
+            .definitions = generation->definitions,
+        });
+    generation->graph_jit_attempted = graph_jit_result.attempted;
+    generation->compiled_graph = std::move(graph_jit_result.compiled_graph);
+    generation->graph_jit_diagnostics = std::move(graph_jit_result.diagnostics);
+
     current_generation_ = generation;
+    ++next_generation_;
     return RebuildResult{
         .generation = std::move(generation),
         .created_instance_ids = std::move(request.created_instance_ids),

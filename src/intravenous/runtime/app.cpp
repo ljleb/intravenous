@@ -4,6 +4,7 @@
 #include <intravenous/devices/miniaudio_device.h>
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/graph_connections.h>
+#include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
@@ -31,6 +32,7 @@
 #include <intravenous/runtime/project_persistence_system_audio_devices_bridge.h>
 #include <intravenous/runtime/project_graph.h>
 #include <intravenous/runtime/project_graph_graph_connections_bridge.h>
+#include <intravenous/runtime/project_graph_graph_jit_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/server_options.h>
 #include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
@@ -155,6 +157,10 @@ int run_server_mode(int argc, char** argv)
     NodeDefinitions node_definitions;
     ProjectGraph project_graph;
     GraphConnections graph_connections;
+    GraphJit graph_jit(GraphJitConfig{
+        .sample_rate = startup.execution.sample_rate,
+        .block_size = startup.execution.block_size,
+    });
     PackageWatcher package_watcher;
     PackageJit package_jit(startup);
     PackageDefinitions package_definitions(startup.workspace_root);
@@ -205,6 +211,8 @@ int run_server_mode(int argc, char** argv)
         project_graph_node_instances_bridge::bind(project_graph, node_instances);
     auto project_graph_connections_scope =
         project_graph_graph_connections_bridge::bind(project_graph, graph_connections);
+    auto project_graph_graph_jit_scope =
+        project_graph_graph_jit_bridge::bind(project_graph, graph_jit);
     auto definitions_introspection_scope =
         node_definitions_iv_module_source_introspection_bridge::bind(
             node_definitions, introspection);

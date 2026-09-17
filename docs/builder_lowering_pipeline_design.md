@@ -12,10 +12,14 @@
 > not a requirement that the future whole-project executor retain `Graph` or
 > ring-buffer-backed ports as its final representation. The current target adds
 > `GraphJit`, which consumes the complete root configured graph, performs pure
-> connection/history/latency/storage planning, generates specialized LLVM, and
-> returns an immutable `CompiledGraph`. See
-> [graph_jit_direction.md](./graph_jit_direction.md) and
-> [realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
+> connection/history/latency/storage and compiled-access topology planning,
+> generates a specialized zero-input/zero-output root node plus internal compiled
+> access executors, and returns an immutable `CompiledGraph`. Runtime storage uses
+> the canonical `NodeLayout`/`NodeStorage` model; compiler-owned fixed-size regions
+> are declared into the same layout rather than a parallel project-kernel arena.
+> See [graph_jit_direction.md](./graph_jit_direction.md),
+> [realtime_port_storage_planning.md](./realtime_port_storage_planning.md), and
+> [compiled_dsp_nodes.md](./compiled_dsp_nodes.md).
 
 ## Purpose
 

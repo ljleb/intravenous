@@ -2506,7 +2506,7 @@ The following are treated as strong architectural decisions unless implementatio
 19. **Consecutive sample-wise tick nodes should share graph-level outer loops when legal.**
 20. **TTL/activity should be compiled from graph knowledge rather than rediscovered by scanning every internal audio block.**
 21. **Global-pointer configuration relocation remains supported.**
-22. **The finalizer generates lifecycle/state migration plans; the live host executes migration.**
+22. **The finalizer generates the canonical node declaration/layout contract; the live host executes lifecycle/state migration.** The optimized project masquerades as a zero-input/zero-output root node. Its generated `declare()` builds one `NodeLayout`; `GraphExecutor` owns the corresponding `NodeStorage` and uses the ordinary initialize/move/release machinery for both `State` and `CompiledState`.
 23. **Profiling and LLVM visibility are first-class.** Every important whole-graph compiler stage should be dumpable and timed.
 24. **Lane control-plane deletion is orthogonal to the kernel rewrite.** Once the replacement project ownership and required DSP/module capabilities exist, `Timeline`/`LaneGraph` may be removed before the whole-project kernel. A compatibility execution adapter is optional migration scaffolding, not a prerequisite. The same project graph and connection semantics must later feed the generated kernel without another identity migration.
 25. **Registered constructors/functions are provider-owned.** `IV_NODE` and
@@ -2537,6 +2537,21 @@ The following are treated as strong architectural decisions unless implementatio
     recording edge. A node with a realtime input and compiled output owns any
     recording/source-data semantics; this remains distinct from a
     deterministic-output cache.
+32. **One executable generation has one canonical `NodeStorage`.** Node `State`,
+    `CompiledState`, history/feedback/event carry, root-owned persistent state,
+    and fixed-capacity reusable compiler regions are declared into one
+    `NodeLayout`. Generated code may use low-level raw aligned layout regions and
+    constant offsets when that is more efficient than authored `std::span`
+    fields; this does not create a second storage system.
+33. **The compiled project root has no synthetic compiled-access interface.** It
+    remains a zero-input/zero-output node and therefore has no project-wide
+    `access_block()`. `CompiledGraph` indexes requestable internal compiled output
+    ports into statically planned compiled-access components/executors.
+34. **Compiled-access topology is specialized ahead of time.** Lowering may
+    partition compiled-port connected components and precompute reverse demand
+    and forward evaluation order. A runtime query may target any number of
+    internal compiled-output nodes; all sinks in one component are seeded before
+    reverse propagation so shared upstream demand is coalesced before execution.
 
 ---
 
@@ -2706,6 +2721,6 @@ them with the obsolete timeline execution model.
 
 The key architectural split is now short enough to state directly:
 
-> **Packages provide versioned node definitions and retained implementation LLVM. `NodeInstances` caches configured node instances by definition generation + argument values. `ProjectGraph` composes one complete root `ConfiguredGraph`; `GraphConnections` resolves stable project port matchers before compilation. `GraphJit` then owns whole-project scheduling, temporal/connection storage planning, LLVM generation/optimization, and ORC materialization, while `GraphExecutor` owns mutable runtime storage and safe-boundary activation.**
+> **Packages provide versioned node definitions and retained implementation LLVM. `NodeInstances` caches configured node instances by definition generation + argument values. `ProjectGraph` composes one complete root `ConfiguredGraph`; `GraphConnections` resolves stable project port matchers before compilation. `GraphJit` lowers that project to a specialized zero-port root node plus internal compiled-access executors, builds one canonical `NodeLayout`, optimizes/materializes the LLVM generation, and returns immutable execution metadata. `GraphExecutor` owns the corresponding `NodeStorage`, ordinary lifecycle/migration, request execution, and safe-boundary activation.**
 
 That is the foundation for both fast whole-project graph reload and the later unified project graph.

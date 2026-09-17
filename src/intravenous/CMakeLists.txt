@@ -154,6 +154,7 @@ function(iv_add_host_runtime_objects target)
         iv_builder
         intravenous_module_loader
         intravenous_module_watcher
+        intravenous_graph_jit
         intravenous_runtime_iv_module_instances_events
         intravenous_runtime_node_definitions_events
         intravenous_runtime_project_graph_events
@@ -295,6 +296,31 @@ add_library(intravenous_module_watcher OBJECT
 )
 iv_configure_intravenous_target(intravenous_module_watcher PUBLIC)
 
+add_library(intravenous_graph_jit OBJECT
+    runtime/graph_jit.cpp
+    graph_jit/lowering.cpp
+)
+iv_configure_intravenous_target(intravenous_graph_jit PUBLIC)
+target_include_directories(intravenous_graph_jit PRIVATE ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(intravenous_graph_jit PRIVATE
+    ${LLVM_DEFINITIONS}
+    IV_CONFIGURED_IV_BUILDER_LIBRARY="$<TARGET_FILE:iv_builder>"
+)
+llvm_map_components_to_libnames(IV_GRAPH_JIT_LLVM_LIBS
+    bitreader
+    core
+    executionengine
+    native
+    nativecodegen
+    orcjit
+    passes
+    support
+    target)
+target_link_libraries(intravenous_graph_jit PRIVATE
+    ${IV_GRAPH_JIT_LLVM_LIBS}
+)
+add_dependencies(intravenous_graph_jit iv_builder)
+
 iv_add_linker_event_object(
     intravenous_runtime_iv_module_instances_events
     runtime/iv_module_instances_events.cpp
@@ -363,6 +389,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/graph_connections.cpp
     runtime/project_graph.cpp
     runtime/project_graph_graph_connections_bridge.cpp
+    runtime/project_graph_graph_jit_bridge.cpp
     runtime/project_graph_node_instances_bridge.cpp
     runtime/package_definitions.cpp
     runtime/package_jit.cpp

@@ -6,6 +6,7 @@ Related documents:
 
 - [project_graph_application_architecture.md](./project_graph_application_architecture.md)
 - [realtime_port_storage_planning.md](./realtime_port_storage_planning.md)
+- [compiled_dsp_nodes.md](./compiled_dsp_nodes.md)
 - [builder_lowering_pipeline_design.md](./builder_lowering_pipeline_design.md)
 - [intravenous-llvm-hot-reload-and-whole-graph-design.md](./intravenous-llvm-hot-reload-and-whole-graph-design.md)
 - [event_flows/README.md](./event_flows/README.md)
@@ -28,7 +29,34 @@ It owns the whole-project LLVM/ORC compilation domain. It does **not** own:
 Those responsibilities remain with `ProjectGraph`, `NodeDefinitions`,
 `NodeInstances`, `GraphConnections`, and `GraphExecutor` respectively.
 
-The root-build transaction is therefore:
+The application boundary should remain LLVM-free. Runtime request/result/event
+types and `CompiledGraph` metadata belong in runtime-facing headers; the concrete
+`GraphJit` application-module implementation may include LLVM/ORC privately in
+its own target/header. A PImpl is not required merely to keep LLVM out of
+`ProjectGraph` or event users when the app-module boundary already provides that
+isolation.
+
+### Current implementation checkpoint
+
+The application/compiler shell around whole-graph lowering has landed. `GraphJit`
+now captures one exact `ConfiguredGraph`/`NodeDefinitionsSnapshot` generation,
+resolves registered concrete nodes to the accepted package revisions that created
+them, parses those revisions' finalized O0 bitcode, indexes compiler callbacks by
+`NodeCodeKey`, resolves symbolic configuration-pointer relocations to retained LLVM
+globals, and owns a persistent project `LLJIT` with independently releasable
+per-generation resources. Generated project LLVM is verified, optimized at O3,
+and materialized synchronously before an immutable `CompiledGraph` is returned.
+
+The deliberately isolated missing implementation is
+`graph_jit::lower_configured_graph_to_llvm`. The currently landed shell still
+contains a provisional project-level storage/entrypoint ABI around that stub.
+Before the lowering body is implemented, that provisional ABI should be replaced
+by the root-node and canonical `NodeLayout`/`NodeStorage` contract specified in
+this document. In particular, whole-project compilation must not introduce a
+second node-storage layout, a second lifecycle system, or a synthetic
+project-wide `access_block()` merely to expose compiled outputs.
+
+The root-build transaction remains:
 
 ```text
 ProjectGraph
@@ -80,7 +108,7 @@ ConfiguredGraph
 whole-project lowering and explicit graph analyses
         |
         v
-specialized project LLVM
+specialized root-node LLVM + compiled-access executors
         |
         v
 GraphJit ORC
@@ -92,24 +120,26 @@ native CompiledGraph
 The first JIT executes configuration code. The second JIT compiles the DSP
 program described by that configuration.
 
-The native output of the first JIT is **not** the preferred code-generation
-input to the second JIT. `GraphJit` should import/link the retained primitive
-node LLVM associated with the exact providers used by the configured graph so
-whole-project inlining and optimization remain possible.
+The native DSP output of the first JIT is **not** the preferred code-generation
+input to the second JIT. `GraphJit` imports/clones the retained primitive node
+LLVM associated with the exact providers used by the configured graph so
+whole-project inlining and optimization remain possible. The accepted native
+node declaration/lifecycle callbacks remain useful for the canonical
+`NodeLayout`/`NodeStorage` contract and must stay pinned by the exact accepted
+package revisions.
 
 The two JITs may share non-app-module LLVM utility code, target setup, optimizer
 helpers, object-cache helpers, or memory-manager helpers. They should not share
 application-module ownership merely because both use ORC.
 
-## Current JIT ownership and future graph-JIT ownership
+## Project-JIT ownership
 
-Today `PackageJit` owns the persistent `ModuleLoader` and therefore the shared
+`PackageJit` owns the persistent `ModuleLoader` and therefore the shared
 package/configuration ORC state. A shared package `LLJIT` survives individual
 package revisions, while each accepted `PackageRevision` pins its
-generation-specific package code/resources so callbacks, retained LLVM, and
-configuration data remain valid after later refreshes.
+revision-specific package code/resources and finalized compiler artifact.
 
-The whole-project graph JIT should use the analogous lifetime pattern in its own
+The whole-project graph JIT uses the analogous lifetime pattern in its own
 domain:
 
 ```text
@@ -124,15 +154,13 @@ shared project LLJIT
 ```
 
 A single `LLJIT` owned by `GraphJit` may live for the application lifetime. Each
-compiled project generation should have independently releasable ORC resources,
-preferably through a generation-specific `JITDylib` and/or `ResourceTracker`.
+compiled project generation has independently releasable ORC resources through a
+generation-specific `JITDylib`/`ResourceTracker` lifetime object.
 
 Old and new generations must be able to coexist while `GraphExecutor` finishes a
-pass, prepares state migration, or retains an active/pending generation.
-
-A compiled generation must therefore own/pin its JIT resources through an RAII
-object rather than hand `GraphExecutor` naked function pointers whose lifetime
-is implicit.
+pass, prepares `NodeStorage` migration, or retains active/pending generations.
+A `CompiledGraph` therefore pins its code/resource lifetime rather than exposing
+naked function pointers whose lifetime is implicit.
 
 ## Synchronous compilation is the intended contract
 
@@ -144,20 +172,14 @@ pipeline would add more consistency/lifetime machinery than value. The compiler
 should do graph-specific work before LLVM so the final LLVM module is already
 close to the desired native program.
 
-The synchronous call is conceptually:
+Conceptually:
 
 ```cpp
-CompiledGraph GraphJit::compile(GraphJitRequest const& request);
+GraphJitCompileResult GraphJit::compile(GraphJitCompileRequest const& request);
 ```
 
-and the caller immediately continues with:
-
-```text
-CompiledGraph result = GraphJit(...)
-GraphExecutor(result)
-```
-
-within the same propagation cause.
+and the caller immediately continues with the returned result in the same
+propagation cause.
 
 If whole-project compilation later becomes unexpectedly expensive, treat that
 as a compiler-performance problem to measure first. Do not pre-commit the
@@ -178,40 +200,251 @@ current when compilation begins. Doing so would both create an unwanted
 application-module dependency and make one project transaction vulnerable to a
 mixed definition generation.
 
-The compile input should therefore carry or retain exact provider/code
-provenance. Initially that may mean passing the same immutable
-`NodeDefinitionsSnapshot` used by `NodeInstances`; eventually the configured
-node instances/graph may pin sufficient provider LLVM/module references directly
-so the whole registry snapshot is unnecessary.
+The compile input therefore carries the same immutable definition generation
+used to construct the graph, and configured registered nodes carry exact
+provider/code identity. Each accepted `PackageRevision` pins both its native
+callbacks/lifetime and the finalized O0 bitcode used by the project JIT.
 
 The invariant is:
 
-> One root graph is configured and compiled against one coherent definition
-> world.
+> One root graph is configured, declared, and compiled against one coherent
+> definition world.
+
+## The compiled project masquerades as one root node
+
+The optimized project graph should use the existing root-node execution model
+instead of defining a parallel project-kernel object model.
+
+The generated project root has no public inputs or outputs:
+
+```text
+project root
+    inputs  = {}
+    outputs = {}
+```
+
+This matches the existing `BlockNodeExecutor` root contract. The lowerer emits a
+specialized root-node implementation whose ordinary node operations cover the
+sequential project behavior:
+
+```text
+declare()
+initialize()/move()/release() where the root itself owns lifecycle state
+tick_block()
+skip_block() when legal
+```
+
+The constituent nodes retain their own declaration and lifecycle semantics.
+The generated root declaration must register them through the exact accepted
+`declare_node` callbacks, or an equivalent generated declaration operation, so
+`NodeLayout` still records each node's state structure, lifecycle callbacks,
+dependencies, and nested-state relationships. `NodeStorage` remains responsible
+for invoking initialization, move/migration, release, and destruction in the
+order described by the resulting `NodeLayout`. Do not replace that orchestration
+with monolithic generated project initialize/move/release functions.
+
+The root node has no compiled output ports, therefore it has no
+`access_block[_batch]()` operation. Compiled outputs inside the project remain
+addressable through immutable `CompiledGraph` metadata described below; they are
+not exposed by pretending that the zero-port project root has synthetic outputs.
+
+## One canonical `NodeLayout` and one `NodeStorage`
+
+There is exactly one runtime storage allocation model for an executable graph
+generation: the existing `NodeLayout`/`NodeStorage` machinery.
+
+`GraphJit` must not introduce `CompiledGraphNodeStorageLayout`,
+`GraphKernelStorage`, or another parallel state arena. The generated root's
+`declare()` operation populates one `NodeLayoutBuilder`; the completed
+`NodeLayout` becomes part of `CompiledGraph`, and `GraphExecutor` creates and
+owns the corresponding `NodeStorage`.
+
+The canonical storage must grow to cover `CompiledState` as well as normal
+`State`. That means the ordinary declaration/lifecycle machinery must eventually
+represent both state domains and make the same `CompiledState` object available
+to `tick_block()` and compiled-access callbacks. `initialize()`, `move()`, and
+`release()` semantics apply to both where the node defines them.
+
+All project-owned memory whose lifetime can cross an execution call or be reused
+between calls should normally be allocated through the same `NodeLayout` and
+stored in the same `NodeStorage`, including for example:
+
+- node `State` and `CompiledState`;
+- history/latency/feedback carry;
+- persistent event storage;
+- root/compiler-owned activity state;
+- bounded reusable compiled-access workspaces;
+- statically sized reusable transient slots selected by liveness analysis;
+- other fixed-size compiler-selected project regions.
+
+This gives the whole-project compiler control over physical declaration order.
+The current layout builder packs regions in declaration order while solving
+`initialize_order` separately from dependency information, so lowering can
+co-locate data in approximately the order generated O3 code will access it
+without conflating physical locality with lifecycle ordering.
+
+### Compiler-owned raw regions
+
+The authored `DeclarationContext::local_array()` API associates an allocation
+with a typed `std::span` field in node `State`. Generated project code should not
+be forced to manufacture a C++ state field merely to reserve a compiler-private
+region whose address is known by constant offset.
+
+`NodeLayoutBuilder` should therefore gain a low-level aligned-region declaration
+primitive suitable for compiler-generated root storage. It should produce an
+ordinary `NodeLayout::Region` in the same layout and allocation as every other
+node region. Generated LLVM can then address the resulting storage by constant
+offset after declaration/layout is complete, while `local_array()` remains the
+typed authored convenience API.
+
+This is an extension of `NodeLayout`, not a second storage system.
+
+Truly request-sized caller input/output objects need not be embedded in
+`NodeStorage`; their size may not be bounded at graph-compilation time. But if a
+workspace has a known maximum size or is intentionally reusable across queries,
+the compiler should prefer a root-owned `NodeLayout` region rather than a
+separate project scratch allocation.
+
+## Compiled access is internal to the generated project
+
+A node with at least one compiled **output** must remain requestable through its
+normalized compiled-access operation. The project root itself is not such a
+node, so compiled access is represented separately from the root-node interface.
+
+`CompiledGraph` should carry an immutable index from requestable internal
+compiled output ports to compiler-generated access executors. Conceptually:
+
+```text
+(node bundle, compiled output port)
+        |
+        v
+compiled-access component + sink ordinal
+        |
+        v
+specialized generated component executor
+```
+
+The exact host ABI is implementation work, but it should expose internal
+compiled outputs without inventing project-root output ports.
+
+### Static topology planning belongs in lowering
+
+Most compiled-access graph structure is static and should be specialized by the
+lowerer rather than rediscovered for every query. At minimum lowering can
+precompute:
+
+- which nodes/ports participate in compiled access;
+- connected components/subgraphs formed by compiled-port edges;
+- the mapping from requestable compiled outputs to their component/sink ordinal;
+- reverse dependency order for demand propagation;
+- forward topological evaluation order;
+- fanout/convergence structure;
+- constant port/node/state offsets and callback targets;
+- which nodes have trivial/no-op propagation;
+- fixed-capacity request-set/workspace storage where useful.
+
+The dynamic part of a query is primarily the requested sample grids/event
+intervals and the resulting request-set contents, not discovery of graph
+adjacency.
+
+### One query batches all requested sinks before execution
+
+A caller may request compiled outputs from any number of internal nodes in one
+logical operation; there is no small fixed node-count limit. Requests should be
+grouped by their precomputed compiled-access component. Disconnected components
+may execute independently because they cannot share upstream compiled work.
+
+Within one component the semantic order is fixed:
+
+```text
+seed all requested sink outputs for this query
+        |
+        v
+reverse planning in precomputed reverse order
+        |
+        | union/coalesce requests at converging ports
+        v
+complete component demand
+        |
+        v
+forward evaluation in precomputed topological order
+        |
+        v
+return requested sink results
+```
+
+A node receives the complete accumulated request sets for all of its requested
+compiled outputs when its propagation/access callback runs. Whenever topology
+permits, each implicated node participates once in reverse planning and once in
+forward execution for the complete component query, rather than once per sink
+or downstream path.
+
+The lowerer may inline and specialize these propagation/access callbacks so the
+runtime executor manipulates request sets, not generic graph data structures.
+
+## Lowering boundary
+
+The hard compiler seam remains one operation that receives the complete
+configured graph plus exact resolved primitive implementation information and
+populates one caller-owned LLVM module.
+
+Its inputs include conceptually:
+
+```text
+ConfiguredGraph
+kernel specialization
+exact retained package modules
+resolved primitive tick/skip/access/propagation LLVM callbacks
+exact accepted declaration/lifecycle metadata/callbacks
+resolved configuration-pointer relocations
+```
+
+It must not query `PackageJit`, `ModuleLoader`, live `NodeDefinitions`, or any
+current registry state.
+
+The lowerer produces:
+
+```text
+specialized project-root node LLVM
+compiled-access component executor LLVM
+immutable LLVM globals/tables needed by those programs
+host metadata naming the generated root/component symbols and internal endpoints
+```
+
+It does **not** return a parallel storage plan. After ORC materialization,
+`GraphJit` resolves the generated root operations and uses the root declaration
+contract to build the canonical `NodeLayout`. The resulting `CompiledGraph`
+therefore derives its storage/lifecycle description from the same declaration
+model used by ordinary nodes.
+
+Source package LLVM modules and temporary `llvm::Function*`/`GlobalVariable*`
+anchors are valid only during lowering. Anything needed after lowering must have
+become generated/imported LLVM, immutable host metadata, or canonical
+`NodeLayout` information.
 
 ## `CompiledGraph`
 
-The result of `GraphJit` is an immutable executable generation. Its exact ABI is
-implementation work, but conceptually it contains:
+The result of `GraphJit` is one immutable executable generation. Conceptually it
+contains:
 
 ```text
-project/rebuild revision provenance
-native root graph function interface
-NodeStorage layout requirements
-state/lifecycle metadata
-state-correspondence/migration metadata
-compiled sample/event access entry points as applicable
+project/rebuild + definition-generation provenance
+exact participating PackageRevision pins
+specialized zero-input/zero-output root node operations
+canonical NodeLayout
+compiled-access endpoint index
+specialized compiled-access component entrypoints/metadata
 ORC code/resource lifetime handle
 debug/execution-plan metadata
 ```
 
-The native root object must support the execution modes required by ordinary DSP
-nodes, including sequential realtime execution and compiled sample/event access.
-The execution ABI should continue using node concepts rather than create a
-parallel lane/task vocabulary.
+It does not own mutable `NodeStorage` and does not define a second state-layout
+representation. It also does not need a synthetic project-wide
+`access_block()`; compiled-output requests are routed through the internal
+endpoint/component index.
 
-`CompiledGraph` owns code and immutable planning metadata. `GraphExecutor` owns
-mutable storage and active execution state.
+`CompiledGraph` owns code, layout, and immutable planning metadata.
+`GraphExecutor` owns mutable storage and active execution state.
 
 ## `GraphExecutor` boundary
 
@@ -219,11 +452,13 @@ mutable storage and active execution state.
 It owns:
 
 - active and pending executable generations;
-- live `NodeStorage`;
-- state initialization/release/migration;
+- one live `NodeStorage` per retained executable generation;
+- state/`CompiledState` initialization, migration/move, release, and destruction
+  through the canonical layout/lifecycle machinery;
 - pass-scoped execution state/resources;
-- sequential execution requests;
-- compiled sample/event requests against the active generation;
+- sequential root-node execution requests;
+- compiled sample/event requests routed to the active generation's internal
+  compiled-access components;
 - safe-point activation.
 
 Receiving a new generation does not mutate an in-progress audio pass. Expensive
@@ -265,20 +500,16 @@ logical whole-graph lowering
     v
 dependency / schedule / SCC / region analysis
     |
+    +--> compiled-port component + reverse/forward order analysis
+    |
     v
 history / latency / event-window analysis
     |
     v
-connection implementation planning
+connection implementation + liveness/reuse planning
     |
     v
-transient liveness + scratch reuse
-    |
-    v
-persistent NodeStorage + lifecycle planning
-    |
-    v
-specialized whole-project LLVM generation
+specialized project-root + compiled-access LLVM generation
     |
     v
 graph-specific optimization / -O3 / target optimization
@@ -287,9 +518,22 @@ graph-specific optimization / -O3 / target optimization
 ORC materialization
     |
     v
+resolve generated root/component operations
+    |
+    v
+root declare() -> canonical NodeLayout
+    |
+    v
 CompiledGraph
 ```
 
+Physical node state, persistent project state, and reusable compiler-selected
+regions all become one `NodeLayout`/`NodeStorage`. Pure storage analyses may
+still decide which logical values need regions, their size/alignment, liveness,
+and desirable declaration order before LLVM/declaration generation; they do not
+create a parallel runtime allocation model.
+
 See [realtime_port_storage_planning.md](./realtime_port_storage_planning.md) for
-the rule that logical connections do not imply buffers and for the pure
-connection implementation planner required before LLVM generation.
+the rule that logical connections do not imply buffers, and
+[compiled_dsp_nodes.md](./compiled_dsp_nodes.md) for the globally batched
+compiled-access semantics that lowering specializes.

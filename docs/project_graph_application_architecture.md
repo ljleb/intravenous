@@ -136,16 +136,28 @@ builder, and retains dangling connection intent with diagnostics. `ProjectGraph`
 invokes it exactly once after `NodeInstances` and retains the resulting applied-id
 and diagnostic batch on the immutable root generation.
 
-`GraphJit` and `GraphExecutor` are still unimplemented sibling stages, so the
-current root transaction stops after `ConfiguredGraph`. Structured connection
-persistence/JSON-RPC adapters are also still pending; the typed project command
-surface and canonical connection owner now exist so those adapters do not need to
-invent connection semantics. The existing line-oriented `ProjectPersistence`
-loader still replays legacy node commands one at a time; collapsing those commands
-into the one normalized startup replay batch described below remains a
-persistence-side checkpoint. C++ argument-list expression compilation remains an
-independent internal `NodeInstances` checkpoint; `IvModuleSourceIntrospection`
-remains a later read-model migration checkpoint.
+The `GraphJit` application/compiler shell has now landed as the next sibling
+stage. `ProjectGraph` synchronously offers each completed root generation through
+a singleton request/response event and retains either the resulting immutable
+`CompiledGraph` or structured compile diagnostics. `GraphJit` already owns exact
+package-LLVM provenance resolution, retained-global relocation resolution, O3,
+and per-generation ORC lifetime. The isolated `ConfiguredGraph` + resolved node
+LLVM -> project LLVM lowering function is intentionally still pending. Before
+that lowering body lands, the provisional shell storage/entrypoint contract is
+to be collapsed onto the existing node runtime model: the generated project is a
+zero-input/zero-output root node, its `declare()` builds the canonical
+`NodeLayout`, `GraphExecutor` owns the corresponding `NodeStorage`, and internal
+compiled outputs are reached through specialized compiled-access metadata rather
+than a synthetic project-root `access_block()`. `GraphExecutor` remains
+unimplemented. Structured connection persistence/JSON-RPC adapters are also still
+pending; the typed project command surface and canonical connection owner now
+exist so those adapters do not need to invent connection semantics. The existing
+line-oriented `ProjectPersistence` loader still replays legacy node commands one
+at a time; collapsing those commands into the one normalized startup replay batch
+described below remains a persistence-side checkpoint. C++ argument-list
+expression compilation remains an independent internal `NodeInstances`
+checkpoint; `IvModuleSourceIntrospection` remains a later read-model migration
+checkpoint.
 
 ## `ProjectGraph` is the root-graph transaction coordinator
 
@@ -465,17 +477,35 @@ they may share low-level LLVM helper code.
 
 Compilation is intentionally synchronous inside the `ProjectGraph` root-build
 transaction. The compiler is expected to perform graph-specific scheduling,
-connection, temporal, storage, and lifecycle analysis before generating LLVM so
-the final LLVM program is already small/specialized enough for a fast final
-optimization/codegen pass. Do not introduce an asynchronous graph-JIT generation
-boundary merely to hide avoidable compiler work.
+connection, temporal, storage, and compiled-access topology analysis before
+generating LLVM so the final LLVM program is already small/specialized enough
+for a fast final optimization/codegen pass. Do not introduce an asynchronous
+graph-JIT generation boundary merely to hide avoidable compiler work.
+
+The executable project itself masquerades as an ordinary zero-input/zero-output
+root node. Its generated declaration operation populates one `NodeLayoutBuilder`;
+the resulting canonical `NodeLayout` covers normal `State`, `CompiledState`, and
+root/compiler-owned persistent or bounded reusable regions. The latter may use a
+low-level raw aligned-region declaration when generated code can address storage
+more efficiently by constant offset than through an authored `std::span` field.
+There is no parallel graph-kernel storage arena.
+
+The root has no compiled outputs and therefore no project-wide
+`access_block()`. Whole-project lowering instead partitions internal
+compiled-port topology into static components, precomputes reverse-demand and
+forward-evaluation order, and emits specialized access executors plus immutable
+endpoint metadata. One logical request may target compiled outputs on any number
+of internal nodes; all sinks in a component are seeded before reverse propagation
+so converging demand can be unioned before producers execute.
 
 Logical sample/event connections do not imply buffers. Connection implementation
 selection is an explicit pure compiler-planning phase before LLVM generation;
 see [realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
+Compiled-access semantics and static planning are described in
+[compiled_dsp_nodes.md](./compiled_dsp_nodes.md).
 
-See [graph_jit_direction.md](./graph_jit_direction.md) for ORC ownership,
-`CompiledGraph` lifetime, and the two-JIT compiler model.
+See [graph_jit_direction.md](./graph_jit_direction.md) for the complete root-node,
+`NodeLayout`/`NodeStorage`, ORC-lifetime, and lowering-boundary model.
 
 ## `GraphExecutor`
 
@@ -486,10 +516,14 @@ project generation. It does not own ORC compilation.
 
 - one immutable active `CompiledGraph` generation;
 - optionally one newest pending compiled generation;
-- live `NodeStorage` and pass-scoped execution state/resources;
-- state correspondence/migration information needed to activate a successor;
-- sequential execution and compiled sample/event request handling against the
-  active generation.
+- one live canonical `NodeStorage` for each retained executable generation,
+  created from that generation's `NodeLayout`;
+- ordinary `NodeStorage` initialization/move/release migration state needed to
+  activate a successor, including `CompiledState`;
+- pass-scoped execution state/resources;
+- sequential execution through the generated zero-port root node; and
+- compiled sample/event requests routed through the active generation's internal
+  compiled-access endpoint/component metadata.
 
 Receiving a new `CompiledGraph` does not mutate an in-progress audio pass. Work
 that is safe before the boundary may be prepared immediately, but replacement
@@ -620,11 +654,21 @@ The implementation checkpoints now stand as follows:
    `ProjectNodePortMatcher`s against the complete placement map, applies
    sample/event connections, and preserves dangling matchers with diagnostics.
    Structured persistence and JSON-RPC adapters remain follow-up transport work.
-7. **Next execution-side checkpoint:** introduce pure
-   connection/history/latency/event-window storage planning;
-8. introduce `GraphJit` with synchronous whole-project LLVM/ORC compilation;
-9. introduce `GraphExecutor` ownership of runtime storage, execution requests,
-   state migration, and safe-boundary activation;
+7. **Next lowering checkpoint:** extend canonical `NodeLayout`/`NodeStorage`
+   for `CompiledState` and compiler-owned raw aligned regions, then introduce pure
+   connection/history/latency/event-window storage planning and static
+   compiled-access component/order analysis inside the isolated whole-graph
+   lowering pipeline;
+8. **Landed (compiler shell, ABI cleanup pending):** `GraphJit` synchronously
+   captures exact package LLVM/provenance, resolves compiler anchors/config
+   relocations, verifies and O3 optimizes generated project LLVM, owns the project
+   ORC domain, and returns independently releasable `CompiledGraph` generations.
+   Before implementing the lowering body, replace the shell's provisional
+   project storage/lifecycle ABI with the generated-root + canonical `NodeLayout`
+   model specified above;
+9. introduce `GraphExecutor` ownership of `NodeStorage`, sequential root-node
+   execution, internal compiled-access requests, state migration, and
+   safe-boundary activation;
 10. integrate stable logical `SystemAudioDevices` bindings with ordinary system
     audio leaf node definitions;
 11. add presentation-specific and automatic-device convenience services only

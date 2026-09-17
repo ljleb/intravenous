@@ -67,6 +67,35 @@ materialization when SSA/SROA/loop optimization proves it unnecessary.
 The planner therefore chooses the **minimum correct storage requirement**, not a
 mandatory final machine representation.
 
+## One generation uses one `NodeStorage` allocation model
+
+Physical storage selected by whole-project lowering must feed the existing
+`NodeLayout`/`NodeStorage` machinery rather than create a second graph-kernel
+arena. The generated project behaves as a zero-input, zero-output root node whose
+`declare()` operation declares constituent nodes plus root/compiler-owned
+regions into one `NodeLayoutBuilder`. `GraphExecutor` owns the resulting single
+`NodeStorage`.
+
+Any project-owned data that must survive from one execution call to another, or
+that is intentionally retained as a bounded reusable workspace, should normally
+be represented in that same layout. This includes history/latency carry,
+feedback state, persistent event data, `State`, `CompiledState`, activity state,
+and compiler-selected reusable temporary regions.
+
+The builder should expose a low-level aligned raw-region declaration operation
+for generated root code. Unlike authored `local_array()`, such a region need not
+correspond to a typed `std::span` field; generated LLVM may address it by the
+constant offset fixed by the completed layout. It is still an ordinary
+`NodeLayout` region and participates in the same one-allocation ownership model.
+
+Physical region order is a compiler choice and may be selected for locality of
+the optimized tick/access programs. Lifecycle order remains a separate
+`NodeLayout` concern derived from declaration dependencies.
+
+Truly request-sized caller data whose maximum size is not known at graph compile
+time need not be embedded in `NodeStorage`. This exception does not justify a
+second persistent project storage abstraction.
+
 ## History and latency are semantic windows, not storage classes
 
 Node source should not need different `tick_block()` code merely because a port
@@ -184,14 +213,22 @@ ScratchAllocationPlan
  assign_scratch_slots(span<TransientStorageRequirement const>);
 ```
 
-The physical scratch location need not always be the machine stack. Large graph
-blocks may use one statically sized/preallocated executor scratch area. The
-important properties are:
+The word "scratch" describes lifetime, not a second runtime storage object. A
+small temporary may disappear into SSA/registers or the machine stack. A larger
+fixed-capacity reusable slot should normally become a compiler-owned raw region
+in the root `NodeLayout` and therefore share the same `NodeStorage` allocation
+as persistent node/project state.
+
+The important properties are:
 
 - no realtime heap allocation;
-- offsets/lifetimes are known before execution;
-- unrelated logical connections may reuse storage when their live intervals do
-  not overlap.
+- offsets/lifetimes are known before execution when storage is statically
+  reserved;
+- unrelated logical connections may reuse one physical region when their live
+  intervals do not overlap;
+- placing reusable storage in `NodeStorage` does not make its contents
+  semantically persistent between calls; and
+- the compiler may order regions to improve locality in the generated hot path.
 
 ## Realtime event ports need bounded time windows
 
@@ -373,11 +410,12 @@ derive connection storage requirements
 choose sample/event implementation plans
         |
         v
-transient liveness + scratch allocation
+transient liveness + reusable-region allocation
         |
         v
-persistent NodeStorage / lifecycle layout
+root declaration / canonical NodeLayout planning
         |
+        | one NodeStorage contains persistent + reserved reusable regions
         v
 specialized whole-project LLVM
         |

@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/runtime/graph_connections.h>
+#include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/node_definition_types.h>
 #include <intravenous/runtime/node_instances.h>
 
@@ -38,6 +39,9 @@ struct ProjectGraphGeneration {
     std::vector<NodeInstanceDiagnostic> diagnostics{};
     std::vector<std::string> applied_connection_ids{};
     std::vector<GraphConnectionDiagnostic> connection_diagnostics{};
+    bool graph_jit_attempted = false;
+    std::shared_ptr<CompiledGraph const> compiled_graph{};
+    std::vector<GraphJitDiagnostic> graph_jit_diagnostics{};
 };
 
 // Root-graph transaction coordinator. It deliberately does not own desired
