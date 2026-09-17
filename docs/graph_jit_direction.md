@@ -54,21 +54,23 @@ proves the complete lowering -> verification -> O3 -> ORC -> native-operation
 path without introducing special runtime storage or lifecycle machinery.
 
 The first deliberately narrow non-empty slice has also landed. A flat project
-containing exactly one registered zero-port primitive with no `State`,
-`CompiledState`, connections, virtual nodes, or configuration-pointer
-relocations now invokes its exact accepted native `declare_node` callback,
-finalizes the canonical `NodeLayout`, embeds the trivially-copyable node
-configuration and zero-port tick context as immutable LLVM globals, imports the
-selected package callback closure with LLVM `LinkOnlyNeeded`, and dispatches it
-from the generated project-root `tick_block`. The root exposes `skip_block` only
-when the configured primitive is declared block-skippable. Unsupported shapes
-still fail explicitly at the lowering boundary; they are never compiled as
-no-ops.
+containing exactly one registered zero-port primitive, with no connections,
+virtual nodes, configuration-pointer relocations, nested declarations, or
+auxiliary declaration-owned regions, now invokes its exact accepted native
+`declare_node` callback and finalizes the canonical `NodeLayout`. `State` and
+`CompiledState` are ordinary canonical `NodeStorage` regions: generated root
+operations materialize the reflected callback context from final layout offsets
+and dispatch the selected package LLVM against those live bytes. The reflected
+compiler callback ABI uses explicit pointer/count span records rather than
+assuming an implementation-specific `std::span` object representation, so later
+port-context lowering can use the same mechanism safely. The root exposes
+`skip_block` only when the configured primitive is declared block-skippable.
+Unsupported shapes still fail explicitly at the lowering boundary; they are
+never compiled as no-ops.
 
 General graph lowering remains the deliberately isolated compiler work. The next
-expansion should remove the zero-state restriction by materializing per-node
-`ReflectedNodeTickContext` state/`CompiledState` spans from finalized
-`NodeLayout` offsets, then introduce sample/event connection planning rather
+expansion should introduce sample/event connection planning and materialize the
+realtime/compiled port context from the already-finalized storage plan rather
 than widening this temporary single-primitive shape with ad-hoc buffers. The
 shell continues to use the generated-root and canonical
 `NodeLayout`/`NodeStorage` contract specified in this document: `CompiledGraph`

@@ -138,7 +138,11 @@ add_iv_gtest(intravenous_node_definitions_tests modules/node_definitions_gtest.c
 add_iv_gtest(intravenous_node_instances_tests modules/node_instances_gtest.cpp)
 add_iv_gtest(intravenous_project_graph_tests modules/project_graph_gtest.cpp)
 add_iv_gtest(intravenous_graph_connections_tests modules/graph_connections_gtest.cpp)
-add_iv_gtest(intravenous_graph_jit_tests modules/graph_jit_gtest.cpp)
+add_iv_gtest(
+    intravenous_graph_jit_tests
+    modules/graph_jit_gtest.cpp
+    IV_MODULE_COMPILATION_TESTS
+        GraphJit.SinglePrimitiveStateContextsUseCanonicalExactSpans)
 add_iv_gtest(
     intravenous_node_instances_configuration_tests
     modules/node_instances_configuration_gtest.cpp)

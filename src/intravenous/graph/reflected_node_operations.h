@@ -11,21 +11,63 @@
 
 #include <cstddef>
 #include <span>
+#include <type_traits>
+#include <utility>
 
 namespace iv {
 
+// Compiler-facing span ABI. Whole-project LLVM may materialize these fields
+// directly, so their object representation is explicit rather than inheriting
+// an implementation-defined std::span layout. The implicit conversion keeps
+// the reflected adapter compatible with the ordinary TickContext interface.
+template<typename T>
+struct ReflectedSpan {
+    T* pointer = nullptr;
+    std::size_t extent = 0;
+
+    constexpr ReflectedSpan() noexcept = default;
+    constexpr ReflectedSpan(std::span<T> value) noexcept
+        : pointer(value.data())
+        , extent(value.size())
+    {}
+
+    template<typename Range>
+        requires requires(Range&& range) {
+            std::span<T>(std::forward<Range>(range));
+        }
+    constexpr ReflectedSpan(Range&& range)
+        noexcept(noexcept(std::span<T>(std::forward<Range>(range))))
+        : ReflectedSpan(std::span<T>(std::forward<Range>(range)))
+    {}
+
+    [[nodiscard]] constexpr T* data() const noexcept { return pointer; }
+    [[nodiscard]] constexpr std::size_t size() const noexcept { return extent; }
+    [[nodiscard]] constexpr bool empty() const noexcept { return extent == 0; }
+
+    constexpr operator std::span<T>() const noexcept
+    {
+        return {pointer, extent};
+    }
+};
+
+static_assert(std::is_standard_layout_v<ReflectedSpan<std::byte>>);
+static_assert(std::is_trivially_copyable_v<ReflectedSpan<std::byte>>);
+
 struct ReflectedNodeTickContext {
-    std::span<InputPort> inputs {};
-    std::span<OutputPort> outputs {};
-    std::span<EventInputPort> event_inputs {};
-    std::span<EventOutputPort> event_outputs {};
-    std::span<CompiledInputPort const> compiled_inputs {};
-    std::span<CompiledEventInputPort const> compiled_event_inputs {};
-    std::span<std::byte> compiled_state {};
+    ReflectedSpan<InputPort> inputs {};
+    ReflectedSpan<OutputPort> outputs {};
+    ReflectedSpan<EventInputPort> event_inputs {};
+    ReflectedSpan<EventOutputPort> event_outputs {};
+    ReflectedSpan<CompiledInputPort const> compiled_inputs {};
+    ReflectedSpan<CompiledEventInputPort const> compiled_event_inputs {};
+    ReflectedSpan<std::byte> compiled_state {};
     std::size_t sample_rate = 48000;
     std::size_t scc_feedback_latency = 0;
-    std::span<std::byte> state {};
+    ReflectedSpan<std::byte> state {};
 };
+
+static_assert(std::is_standard_layout_v<ReflectedNodeTickContext>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeTickContext>);
 
 struct ReflectedNodeRuntimeOperations {
     void const* node_data = nullptr;

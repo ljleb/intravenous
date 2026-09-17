@@ -16,7 +16,10 @@
 namespace iv::graph_jit {
 struct PackageModule {
     std::shared_ptr<PackageRevision const> revision{};
-    llvm::Module* module = nullptr;
+    // GraphJit parses package LLVM specifically for one project compilation.
+    // Lowering owns that parse and may consume it exactly once into the final
+    // project module; no CloneModule copy is required.
+    std::unique_ptr<llvm::Module> module{};
     std::span<llvm::GlobalVariable* const> retained_globals{};
 };
 
@@ -59,12 +62,13 @@ struct ConfigRelocation {
 
 // Everything the difficult compiler core is allowed to see. In particular,
 // there is no PackageJit/ModuleLoader/live NodeDefinitions dependency here.
-// Package modules and the caller-owned output module share one LLVMContext, so
-// the lowerer may clone/link the selected implementation closure directly.
+// Package modules and the caller-owned output module share one LLVMContext.
+// Package modules are compile-local lowering inputs and may be consumed directly
+// into output_module, avoiding a whole-module clone before LinkOnlyNeeded.
 struct LoweringInput {
     ConfiguredGraph const& graph;
     GraphJitKernelSpecialization const& specialization;
-    std::span<PackageModule const> packages{};
+    std::span<PackageModule> packages{};
     // One entry for each registered concrete primitive. Synthetic/host graph
     // nodes remain represented by ConfiguredGraph and are lowered structurally.
     std::span<NodeImplementation const> node_implementations{};
@@ -96,6 +100,6 @@ struct LoweringOutput {
 };
 
 std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
-    LoweringInput const& input,
+    LoweringInput& input,
     llvm::Module& output_module);
 } // namespace iv::graph_jit

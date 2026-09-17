@@ -1008,7 +1008,7 @@ public:
         for (auto& parsed : parsed_packages) {
             package_modules.push_back(graph_jit::PackageModule{
                 .revision = parsed.revision,
-                .module = parsed.module.get(),
+                .module = std::move(parsed.module),
                 .retained_globals = parsed.retained_globals,
             });
         }
@@ -1038,7 +1038,7 @@ public:
                     .identity = captured_node.identity,
                     .code_key = captured_node.compiler_record.code_key,
                     .revision = captured_node.revision,
-                    .package_module = parsed.module.get(),
+                    .package_module = package_modules[parsed_index->second].module.get(),
                     .state_size = record->second.state_size,
                     .state_alignment = record->second.state_alignment,
                     .compiled_state_size = record->second.compiled_state_size,
@@ -1134,10 +1134,9 @@ public:
                 package_revisions.push_back(package.revision);
             }
 
-            // Source package modules are no longer needed after lowering. The
-            // accepted revisions above are the only package lifetime/provenance
-            // state carried into the native compiled generation.
-            for (auto& parsed : parsed_packages) parsed.module.reset();
+            // Package LLVM parses are compile-local. Lowering consumes selected
+            // modules directly into the project module; any unused package parses
+            // are released with package_modules after this compilation.
             auto materialized = materialize_project_module(
                 shared_jit_,
                 std::move(output),

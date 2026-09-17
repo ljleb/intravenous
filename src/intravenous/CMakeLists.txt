@@ -316,8 +316,7 @@ llvm_map_components_to_libnames(IV_GRAPH_JIT_LLVM_LIBS
     orcjit
     passes
     support
-    target
-    transformutils)
+    target)
 target_link_libraries(intravenous_graph_jit PRIVATE
     ${IV_GRAPH_JIT_LLVM_LIBS}
 )
