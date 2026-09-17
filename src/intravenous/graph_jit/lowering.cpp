@@ -13,6 +13,7 @@
 #include <llvm/Linker/Linker.h>
 #include <llvm/Support/Alignment.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -958,6 +959,148 @@ std::expected<void, std::string> emit_sample_materialization(
 }
 
 
+std::expected<void, std::string> emit_sample_composition(
+    llvm::IRBuilder<>& builder,
+    detail::SamplePhysicalPlan const& physical,
+    detail::SampleCompositionPlan const& composition,
+    llvm::Value* storage_base,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
+{
+    static_assert(sizeof(Sample) == sizeof(Sample::storage));
+    static_assert(alignof(Sample) == alignof(Sample::storage));
+    static_assert(std::is_same_v<Sample::storage, float>);
+
+    if (composition.target_representation >= physical.representations.size()) {
+        return std::unexpected(
+            "GraphJit sample composition references a missing target representation");
+    }
+    auto const& target_representation =
+        physical.representations[composition.target_representation];
+    if (target_representation.channel_layout != composition.target_layout) {
+        return std::unexpected(
+            "GraphJit sample composition target layout disagrees with its representation");
+    }
+    if (composition.sources.size() != channel_count(composition.target_layout)) {
+        return std::unexpected(
+            "GraphJit sample composition requires exactly one source per target channel");
+    }
+
+    auto target = sample_storage_binding(
+        physical, composition.target_representation);
+    if (!target) return std::unexpected(std::move(target.error()));
+    if (target->frame_capacity == 0
+        || !is_power_of_2(target->frame_capacity)) {
+        return std::unexpected(
+            "GraphJit sample composition requires bounded power-of-two target storage");
+    }
+
+    struct SourceBinding {
+        ReflectedSamplePortStorageBinding storage{};
+        std::size_t source_channel = 0;
+        std::size_t target_channel = 0;
+        std::size_t read_latency = 0;
+    };
+    std::vector<SourceBinding> sources;
+    sources.reserve(composition.sources.size());
+    std::vector<bool> target_channels(
+        channel_count(composition.target_layout), false);
+    for (auto const& source_plan : composition.sources) {
+        if (source_plan.source_representation >= physical.representations.size()) {
+            return std::unexpected(
+                "GraphJit sample composition references a missing source representation");
+        }
+        auto source = sample_storage_binding(
+            physical, source_plan.source_representation);
+        if (!source) return std::unexpected(std::move(source.error()));
+        if (source->frame_capacity == 0
+            || !is_power_of_2(source->frame_capacity)
+            || source_plan.source_channel >= channel_count(source->channel_layout)
+            || source_plan.target_channel >= target_channels.size()
+            || target_channels[source_plan.target_channel]) {
+            return std::unexpected(
+                "GraphJit sample composition contains an invalid channel mapping");
+        }
+        target_channels[source_plan.target_channel] = true;
+        sources.push_back(SourceBinding{
+            .storage = *source,
+            .source_channel = source_plan.source_channel,
+            .target_channel = source_plan.target_channel,
+            .read_latency = source_plan.read_latency,
+        });
+    }
+    if (!std::ranges::all_of(target_channels, [](bool value) { return value; })) {
+        return std::unexpected(
+            "GraphJit sample composition does not populate every target channel");
+    }
+
+    auto& context = builder.getContext();
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* sample_type = llvm::Type::getFloatTy(context);
+    auto* zero = llvm::ConstantInt::get(size_type, 0);
+    auto* history = llvm::ConstantInt::get(
+        size_type, composition.target_history);
+    auto* compose_count = builder.CreateAdd(
+        block_size, history, "sample.compose.count");
+    auto* preheader = builder.GetInsertBlock();
+    auto* has_frames = builder.CreateICmpNE(
+        compose_count, zero, "sample.compose.nonempty");
+    auto* loop = llvm::BasicBlock::Create(
+        context, "sample.compose", function);
+    auto* exit = llvm::BasicBlock::Create(
+        context, "sample.compose.end", function);
+    builder.CreateCondBr(has_frames, loop, exit);
+
+    builder.SetInsertPoint(loop);
+    auto* frame_offset = builder.CreatePHI(
+        size_type, 2, "sample.compose.frame");
+    frame_offset->addIncoming(zero, preheader);
+    auto* first_frame = builder.CreateSub(
+        sample_index, history, "sample.compose.first");
+    auto* target_frame = builder.CreateAdd(
+        first_frame, frame_offset, "sample.compose.absolute");
+
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        auto const& source = sources[i];
+        auto* source_frame = builder.CreateSub(
+            target_frame,
+            llvm::ConstantInt::get(size_type, source.read_latency),
+            "sample.compose.source.frame." + std::to_string(i));
+        auto* source_pointer = sample_element_pointer(
+            builder,
+            storage_base,
+            source.storage,
+            source_frame,
+            source.source_channel,
+            "sample.compose.source." + std::to_string(i));
+        auto* value = builder.CreateLoad(
+            sample_type,
+            source_pointer,
+            "sample.compose.value." + std::to_string(i));
+        auto* target_pointer = sample_element_pointer(
+            builder,
+            storage_base,
+            *target,
+            target_frame,
+            source.target_channel,
+            "sample.compose.target." + std::to_string(i));
+        builder.CreateStore(value, target_pointer);
+    }
+
+    auto* next = builder.CreateAdd(
+        frame_offset,
+        llvm::ConstantInt::get(size_type, 1),
+        "sample.compose.next");
+    auto* done = builder.CreateICmpUGE(
+        next, compose_count, "sample.compose.done");
+    builder.CreateCondBr(done, exit, loop);
+    frame_offset->addIncoming(next, loop);
+    builder.SetInsertPoint(exit);
+    return {};
+}
+
 std::expected<detail::SamplePersistentAllocationPlan const*, std::string>
 compact_carry_allocation(
     detail::SamplePhysicalPlan const& physical,
@@ -1248,6 +1391,23 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 block_size);
             if (!materialized) {
                 return std::unexpected(std::move(materialized.error()));
+            }
+        }
+
+        for (auto const composition_index : step.sample_compositions_after) {
+            if (composition_index >= plan.sample_ports.physical.compositions.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing sample composition");
+            }
+            auto composed = emit_sample_composition(
+                builder,
+                plan.sample_ports.physical,
+                plan.sample_ports.physical.compositions[composition_index],
+                storage_base,
+                sample_index,
+                block_size);
+            if (!composed) {
+                return std::unexpected(std::move(composed.error()));
             }
         }
 

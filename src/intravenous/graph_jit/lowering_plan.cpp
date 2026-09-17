@@ -692,19 +692,23 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         return found == connections.nodes.end() ? nullptr : &*found;
     };
 
-    struct ValidatedSampleEdge {
+    struct ValidatedSampleSourceBinding {
         std::size_t group_index = 0;
-        std::size_t connection_index = 0;
         std::size_t source_primitive = 0;
         std::size_t source_port = 0;
+        std::size_t source_history = 0;
+    };
+    struct ValidatedSampleTargetBinding {
+        std::size_t connection_index = 0;
         std::size_t target_primitive = 0;
         std::size_t target_port = 0;
-        std::size_t source_history = 0;
-        std::size_t read_latency = 0;
         std::size_t target_history = 0;
+        std::size_t read_latency = 0;
     };
-    std::vector<ValidatedSampleEdge> validated_edges;
-    validated_edges.reserve(connections.sample_producer_groups.size());
+    std::vector<ValidatedSampleSourceBinding> validated_sources;
+    std::vector<ValidatedSampleTargetBinding> validated_targets;
+    validated_sources.reserve(connections.sample_producer_groups.size());
+    validated_targets.reserve(connections.sample_connections.size());
 
     for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
         auto const* node = planned_node_for_bundle(
@@ -721,9 +725,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
     }
 
-    for (std::size_t group_index = 0;
-         group_index < connections.sample_producer_groups.size(); ++group_index) {
-        auto const& group = connections.sample_producer_groups[group_index];
+    for (auto const& group : connections.sample_producer_groups) {
         if (!group.has_realtime_connections) {
             return std::unexpected(
                 "GraphJit sample-edge slice does not yet support compiled-only sample connections");
@@ -742,91 +744,169 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             return std::unexpected(
                 "GraphJit sample-edge slice does not yet support feedback or external sample storage");
         }
-        if (!group.canonical_source_layout) {
+        if (!group.source_port || !group.canonical_source_layout) {
             return std::unexpected(
-                "GraphJit sample fanout requires one canonical source output port");
+                "GraphJit sample fanout requires one canonical producer output port");
+        }
+    }
+
+    auto producer_group_index_for_port = [&](NodeBundlePortId const& port)
+        -> std::optional<std::size_t> {
+        for (std::size_t i = 0;
+             i < connections.sample_producer_groups.size(); ++i) {
+            auto const& group = connections.sample_producer_groups[i];
+            if (group.source_port && *group.source_port == port) return i;
+        }
+        return std::nullopt;
+    };
+
+    for (std::size_t connection_index = 0;
+         connection_index < connections.sample_connections.size();
+         ++connection_index) {
+        auto const& connection = connections.sample_connections[connection_index];
+        if (connection.access != PlannedConnectionAccess::realtime_to_realtime) {
+            return std::unexpected(
+                "GraphJit sample-edge slice supports only realtime-to-realtime sample connections");
+        }
+        if (connection.external_boundary) {
+            return std::unexpected(
+                "GraphJit sample-edge slice does not yet support external sample boundaries");
+        }
+        if (connection.feedback) {
+            return std::unexpected(
+                "GraphJit sample-edge slice does not yet support feedback sample connections");
+        }
+        if (connection.source_channel_timings.size()
+            != connection.source_channels.size()) {
+            return std::unexpected(
+                "GraphJit sample-edge planning lost source-channel timing metadata");
+        }
+        if (connection.source_channel_timings.empty()) {
+            return std::unexpected(
+                "GraphJit sample-edge connection has no source channels");
         }
 
-        for (auto const connection_index : group.connection_indices) {
-            if (connection_index >= connections.sample_connections.size()) {
+        auto const target_port = connection.target_port;
+        auto const target_primitive = primitive_index_for_bundle(
+            target_port.node_bundle_handle);
+        if (!target_primitive || target_port.port_kind != PortKind::sample) {
+            return std::unexpected(
+                "GraphJit sample-edge slice requires an internal concrete sample target");
+        }
+        auto const target = input.graph.node_bundles
+            .resolve_sample_input(target_port).config;
+        if (!is_realtime(target.access)) {
+            return std::unexpected(
+                "GraphJit sample-edge slice requires realtime sample port declarations");
+        }
+        if (target.channel_layout != connection.target_layout
+            || connection.target_type != target.channel_layout.channel_type) {
+            return std::unexpected(
+                "GraphJit sample connection target layout disagrees with its declaration");
+        }
+        auto const target_channel_total = channel_count(target.channel_layout);
+        if (connection.target_channels.size() != target_channel_total) {
+            return std::unexpected(
+                "GraphJit sample connection requires every target channel");
+        }
+        for (std::size_t channel = 0; channel < target_channel_total; ++channel) {
+            auto const& target_channel = connection.target_channels[channel];
+            if (target_channel.bundle != target_port.node_bundle_handle
+                || target_channel.port != target_port.port_ordinal
+                || target_channel.channel != channel) {
                 return std::unexpected(
-                    "GraphJit sample-edge plan contains an invalid connection index");
+                    "GraphJit sample composition currently requires canonical target-channel ordering");
             }
-            auto const& connection = connections.sample_connections[connection_index];
-            if (connection.access != PlannedConnectionAccess::realtime_to_realtime) {
-                return std::unexpected(
-                    "GraphJit sample-edge slice supports only realtime-to-realtime sample connections");
-            }
-            if (connection.external_boundary) {
-                return std::unexpected(
-                    "GraphJit sample-edge slice does not yet support external sample boundaries");
-            }
-            if (connection.feedback) {
-                return std::unexpected(
-                    "GraphJit sample-edge slice does not yet support feedback sample connections");
-            }
-            if (!connection.canonical_source_port
-                || !connection.canonical_source_layout) {
-                return std::unexpected(
-                    "GraphJit sample fanout requires one canonical source output port");
-            }
+        }
+        if (target_port.port_ordinal
+            >= plan.primitives[*target_primitive].inputs.size()) {
+            return std::unexpected(
+                "GraphJit sample-edge target ordinal is outside primitive port metadata");
+        }
 
-            auto const source_port = *connection.canonical_source_port;
-            auto const target_port = connection.target_port;
+        // Validate every actual producer port independently. A composed input
+        // can reference several producer groups even though it realizes one
+        // consumer-side physical representation.
+        std::vector<NodeBundlePortId> source_ports_seen;
+        for (std::size_t channel_index = 0;
+             channel_index < connection.source_channel_timings.size();
+             ++channel_index) {
+            auto const& timing = connection.source_channel_timings[channel_index];
+            auto const& source_channel = connection.source_channels[channel_index];
+            if (source_channel.bundle != timing.source.bundle
+                || source_channel.port != timing.source.port
+                || source_channel.channel != timing.source.channel) {
+                return std::unexpected(
+                    "GraphJit sample-edge source timing disagrees with its channel identity");
+            }
+            NodeBundlePortId const source_port{
+                timing.source.bundle,
+                PortKind::sample,
+                timing.source.port,
+            };
             auto const source_primitive = primitive_index_for_bundle(
                 source_port.node_bundle_handle);
-            auto const target_primitive = primitive_index_for_bundle(
-                target_port.node_bundle_handle);
-            if (!source_primitive || !target_primitive) {
+            auto const group_index = producer_group_index_for_port(source_port);
+            if (!source_primitive || !group_index) {
                 return std::unexpected(
-                    "GraphJit sample-edge slice requires internal concrete sample endpoints");
+                    "GraphJit sample-edge slice requires internal concrete sample producers");
             }
-            if (source_port.port_kind != PortKind::sample
-                || target_port.port_kind != PortKind::sample) {
-                return std::unexpected(
-                    "GraphJit sample-edge planning received a non-sample endpoint");
-            }
-
             auto const source = input.graph.node_bundles
                 .resolve_sample_output(source_port).config;
-            auto const target = input.graph.node_bundles
-                .resolve_sample_input(target_port).config;
-            if (!is_realtime(source.access) || !is_realtime(target.access)) {
+            auto const& group = connections.sample_producer_groups[*group_index];
+            if (!is_realtime(source.access)
+                || source.channel_layout != timing.source_layout
+                || !group.canonical_source_layout
+                || *group.canonical_source_layout != source.channel_layout
+                || timing.source.channel >= channel_count(source.channel_layout)) {
                 return std::unexpected(
-                    "GraphJit sample-edge slice requires realtime sample port declarations");
+                    "GraphJit sample producer channel disagrees with its declared output layout");
             }
-            if (source.channel_layout != *group.canonical_source_layout
-                || source.channel_layout != *connection.canonical_source_layout
-                || target.channel_layout != connection.target_layout
-                || connection.source_type != source.channel_layout.channel_type
-                || connection.target_type != target.channel_layout.channel_type) {
+            if (source_port.port_ordinal
+                >= plan.primitives[*source_primitive].outputs.size()) {
                 return std::unexpected(
-                    "GraphJit point-8 sample fanout requires whole-port source/target channel layouts");
+                    "GraphJit sample-edge source ordinal is outside primitive port metadata");
             }
 
-            auto const source_channel_total = channel_count(source.channel_layout);
-            auto const target_channel_total = channel_count(target.channel_layout);
-            if (connection.source_channels.size() != source_channel_total
-                || connection.target_channels.size() != target_channel_total) {
-                return std::unexpected(
-                    "GraphJit point-8 sample fanout requires whole-port sample connections");
+            if (std::ranges::find(source_ports_seen, source_port)
+                == source_ports_seen.end()) {
+                source_ports_seen.push_back(source_port);
+                validated_sources.push_back(ValidatedSampleSourceBinding{
+                    .group_index = *group_index,
+                    .source_primitive = *source_primitive,
+                    .source_port = source_port.port_ordinal,
+                    .source_history = timing.source_history,
+                });
             }
-            for (std::size_t channel = 0; channel < source_channel_total; ++channel) {
+        }
+
+        std::size_t target_read_latency = 0;
+        if (connection.canonical_source_port) {
+            if (!connection.canonical_source_layout) {
+                return std::unexpected(
+                    "GraphJit canonical sample source lost its channel layout");
+            }
+            auto const source_port = *connection.canonical_source_port;
+            auto const source = input.graph.node_bundles
+                .resolve_sample_output(source_port).config;
+            if (source.channel_layout != *connection.canonical_source_layout
+                || connection.source_type != source.channel_layout.channel_type) {
+                return std::unexpected(
+                    "GraphJit sample fanout source layout disagrees with its declaration");
+            }
+            auto const source_channel_total = channel_count(source.channel_layout);
+            if (connection.source_channels.size() != source_channel_total) {
+                return std::unexpected(
+                    "GraphJit whole-port sample connection requires every source channel");
+            }
+            for (std::size_t channel = 0;
+                 channel < source_channel_total; ++channel) {
                 auto const& source_channel = connection.source_channels[channel];
                 if (source_channel.bundle != source_port.node_bundle_handle
                     || source_channel.port != source_port.port_ordinal
                     || source_channel.channel != channel) {
                     return std::unexpected(
-                        "GraphJit point-8 sample fanout does not yet support source-channel projection/remapping");
-                }
-            }
-            for (std::size_t channel = 0; channel < target_channel_total; ++channel) {
-                auto const& target_channel = connection.target_channels[channel];
-                if (target_channel.bundle != target_port.node_bundle_handle
-                    || target_channel.port != target_port.port_ordinal
-                    || target_channel.channel != channel) {
-                    return std::unexpected(
-                        "GraphJit point-8 sample fanout does not yet support target-channel projection/remapping");
+                        "GraphJit sample fanout does not yet support source-channel projection/remapping");
                 }
             }
             if (connection.requires_conversion) {
@@ -842,27 +922,29 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 return std::unexpected(
                     "GraphJit sample connection lost its required layout conversion");
             }
-
-            auto const& source_ports = plan.primitives[*source_primitive].outputs;
-            auto const& target_ports = plan.primitives[*target_primitive].inputs;
-            if (source_port.port_ordinal >= source_ports.size()
-                || target_port.port_ordinal >= target_ports.size()) {
+            target_read_latency = connection.read_latency;
+        } else {
+            // Physical composition currently gathers one semantic channel per
+            // target channel. Conversion/projection beyond that remains a
+            // separate materialization feature.
+            if (connection.canonical_source_layout
+                || connection.source_type != connection.target_type
+                || connection.source_channels.size() != target_channel_total) {
                 return std::unexpected(
-                    "GraphJit sample-edge endpoint ordinal is outside primitive port metadata");
+                    "GraphJit sample composition currently requires one source channel per target channel without channel-count conversion");
             }
-
-            validated_edges.push_back(ValidatedSampleEdge{
-                .group_index = group_index,
-                .connection_index = connection_index,
-                .source_primitive = *source_primitive,
-                .source_port = source_port.port_ordinal,
-                .target_primitive = *target_primitive,
-                .target_port = target_port.port_ordinal,
-                .source_history = connection.source_history,
-                .read_latency = connection.read_latency,
-                .target_history = connection.target_history,
-            });
+            // The synthetic representation is already timestamp-aligned by
+            // its per-channel gather, so the primitive reads it at latency 0.
+            target_read_latency = 0;
         }
+
+        validated_targets.push_back(ValidatedSampleTargetBinding{
+            .connection_index = connection_index,
+            .target_primitive = *target_primitive,
+            .target_port = target_port.port_ordinal,
+            .target_history = connection.target_history,
+            .read_latency = target_read_latency,
+        });
     }
 
     auto physical = build_sample_physical_plan(
@@ -870,52 +952,58 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     if (!physical) return std::unexpected(std::move(physical.error()));
     plan.physical = std::move(*physical);
 
-    for (auto const& edge : validated_edges) {
-        if (edge.group_index >= plan.physical.producer_groups.size()
-            || !plan.physical.producer_groups[edge.group_index]) {
+    for (auto const& source : validated_sources) {
+        if (source.group_index >= plan.physical.producer_groups.size()
+            || !plan.physical.producer_groups[source.group_index]) {
             return std::unexpected(
-                "GraphJit sample edge lost its producer physical representation");
-        }
-        if (edge.connection_index >= plan.physical.connection_representations.size()
-            || !plan.physical.connection_representations[edge.connection_index]) {
-            return std::unexpected(
-                "GraphJit sample edge lost its connection physical representation");
+                "GraphJit sample source lost its producer physical representation");
         }
         auto const output_representation =
-            plan.physical.producer_groups[edge.group_index]
+            plan.physical.producer_groups[source.group_index]
                 ->canonical_representation;
-        auto const input_representation =
-            *plan.physical.connection_representations[edge.connection_index];
         if (output_representation == no_sample_representation
-            || output_representation >= plan.physical.representations.size()
-            || input_representation >= plan.physical.representations.size()) {
+            || output_representation >= plan.physical.representations.size()) {
             return std::unexpected(
-                "GraphJit sample edge references an invalid physical representation");
+                "GraphJit sample source references an invalid physical representation");
         }
-
         auto& source_binding =
-            plan.primitives[edge.source_primitive].outputs[edge.source_port];
-        auto& target_binding =
-            plan.primitives[edge.target_primitive].inputs[edge.target_port];
+            plan.primitives[source.source_primitive].outputs[source.source_port];
         if (source_binding.representation
             && *source_binding.representation != output_representation) {
             return std::unexpected(
                 "GraphJit sample output fanout resolved to conflicting canonical representations");
         }
         if (source_binding.representation
-            && source_binding.history != edge.source_history) {
+            && source_binding.history != source.source_history) {
             return std::unexpected(
                 "GraphJit sample output fanout disagrees on authored output history");
         }
+        source_binding.representation = output_representation;
+        source_binding.history = source.source_history;
+    }
+
+    for (auto const& target : validated_targets) {
+        if (target.connection_index
+                >= plan.physical.connection_representations.size()
+            || !plan.physical.connection_representations[target.connection_index]) {
+            return std::unexpected(
+                "GraphJit sample target lost its connection physical representation");
+        }
+        auto const input_representation =
+            *plan.physical.connection_representations[target.connection_index];
+        if (input_representation >= plan.physical.representations.size()) {
+            return std::unexpected(
+                "GraphJit sample target references an invalid physical representation");
+        }
+        auto& target_binding =
+            plan.primitives[target.target_primitive].inputs[target.target_port];
         if (target_binding.representation) {
             return std::unexpected(
                 "GraphJit sample input has more than one realized connection");
         }
-        source_binding.representation = output_representation;
-        source_binding.history = edge.source_history;
         target_binding.representation = input_representation;
-        target_binding.history = edge.target_history;
-        target_binding.read_latency = edge.read_latency;
+        target_binding.history = target.target_history;
+        target_binding.read_latency = target.read_latency;
     }
 
     for (auto const& primitive : plan.primitives) {
@@ -1029,6 +1117,19 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         }
         plan.primitive_steps[materialization.after_execution_position]
             .sample_materializations_after.push_back(materialization_index);
+    }
+
+    for (std::size_t composition_index = 0;
+         composition_index < sample_ports.physical.compositions.size();
+         ++composition_index) {
+        auto const& composition =
+            sample_ports.physical.compositions[composition_index];
+        if (composition.after_execution_position >= plan.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit sample composition references an invalid execution position");
+        }
+        plan.primitive_steps[composition.after_execution_position]
+            .sample_compositions_after.push_back(composition_index);
     }
     return plan;
 }

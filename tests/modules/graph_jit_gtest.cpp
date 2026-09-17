@@ -50,6 +50,7 @@ constexpr char graph_jit_history_fanout_module_id[] = "iv.test.graph_jit.state_c
 constexpr char graph_jit_persistent_history_module_id[] = "iv.test.graph_jit.state_context.persistent_history_module";
 constexpr char graph_jit_latency_compensation_module_id[] = "iv.test.graph_jit.state_context.latency_compensation_module";
 constexpr char graph_jit_latency_conversion_fanout_module_id[] = "iv.test.graph_jit.state_context.latency_conversion_fanout_module";
+constexpr char graph_jit_composed_latency_module_id[] = "iv.test.graph_jit.state_context.composed_latency_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -2183,6 +2184,16 @@ void latency_conversion_fanout_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void composed_latency_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.stereo_sample_consumer">();
+    delayed(source);
+    sink(graph.tile<iv::stereo>(source, delayed));
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -2230,6 +2241,7 @@ IV_MODULE("iv.test.graph_jit.state_context.history_fanout_module", history_fanou
 IV_MODULE("iv.test.graph_jit.state_context.persistent_history_module", persistent_history_module);
 IV_MODULE("iv.test.graph_jit.state_context.latency_compensation_module", latency_compensation_module);
 IV_MODULE("iv.test.graph_jit.state_context.latency_conversion_fanout_module", latency_conversion_fanout_module);
+IV_MODULE("iv.test.graph_jit.state_context.composed_latency_module", composed_latency_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -2300,6 +2312,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         "iv.test.graph_jit.state_context.interleaved_latency_compensation_probe"));
     EXPECT_TRUE(has_module_definition(graph_jit_latency_compensation_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_latency_conversion_fanout_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_composed_latency_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -3305,6 +3318,78 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(current_observer->first, 64.0f);
     EXPECT_FLOAT_EQ(current_observer->last, 127.0f);
     EXPECT_FLOAT_EQ(current_observer->sum, 6112.0f);
+
+    auto composed_latency_graph = configured_module_graph(
+        *revision, graph_jit_composed_latency_module_id);
+    ASSERT_TRUE(composed_latency_graph);
+    auto composed_latency_analysis =
+        iv::graph_jit::detail::build_connection_analysis_plan(
+            *composed_latency_graph, 64);
+    ASSERT_TRUE(composed_latency_analysis.has_value())
+        << (composed_latency_analysis
+                ? std::string{}
+                : composed_latency_analysis.error());
+    auto composed_connection = std::ranges::find_if(
+        composed_latency_analysis->sample_connections,
+        [](auto const& connection) {
+            return !connection.canonical_source_port
+                && connection.source_channel_timings.size() == 2;
+        });
+    ASSERT_NE(
+        composed_connection,
+        composed_latency_analysis->sample_connections.end());
+    ASSERT_EQ(composed_connection->source_channel_timings.size(), 2u);
+    EXPECT_EQ(composed_connection->source_channel_timings[0].read_latency, 7u);
+    EXPECT_EQ(composed_connection->source_channel_timings[1].read_latency, 2u);
+
+    auto composed_latency = compile_graph(composed_latency_graph, 120);
+    ASSERT_TRUE(composed_latency.succeeded())
+        << (composed_latency.diagnostics.empty()
+                ? ""
+                : composed_latency.diagnostics.front().message);
+    ASSERT_EQ(composed_latency.compiled_graph->node_layout.nodes.size(), 3u);
+
+    auto composed_latency_storage =
+        composed_latency.compiled_graph->node_layout.create_storage(resources);
+    composed_latency_storage.initialize();
+    StereoSampleConsumerProbeStateMirror* composed_probe = nullptr;
+    for (std::size_t i = 0;
+         i < composed_latency.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const& node = composed_latency.compiled_graph->node_layout.nodes[i];
+        if (node.state_size == sizeof(StereoSampleConsumerProbeStateMirror)) {
+            ASSERT_EQ(composed_probe, nullptr);
+            composed_probe = static_cast<StereoSampleConsumerProbeStateMirror*>(
+                composed_latency_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(composed_probe, nullptr);
+
+    composed_latency.compiled_graph->root_operations.tick_block(
+        composed_latency_storage.buffer().data(), 0, 64);
+    EXPECT_EQ(composed_probe->calls, 1u);
+    EXPECT_EQ(composed_probe->last_index, 0u);
+    EXPECT_EQ(composed_probe->last_block_size, 64u);
+    EXPECT_FLOAT_EQ(composed_probe->first_left, 0.0f);
+    EXPECT_FLOAT_EQ(composed_probe->first_right, 0.0f);
+    EXPECT_FLOAT_EQ(composed_probe->last_left, 56.0f);
+    EXPECT_FLOAT_EQ(composed_probe->last_right, 56.0f);
+    EXPECT_FLOAT_EQ(composed_probe->sum_left, 1596.0f);
+    EXPECT_FLOAT_EQ(composed_probe->sum_right, 1596.0f);
+
+    // The second call proves composition reads each producer's independently
+    // restored history (7 frames from the direct source, 2 from the delayed
+    // source) before gathering them into one zero-latency stereo input.
+    composed_latency.compiled_graph->root_operations.tick_block(
+        composed_latency_storage.buffer().data(), 64, 64);
+    EXPECT_EQ(composed_probe->calls, 2u);
+    EXPECT_EQ(composed_probe->last_index, 64u);
+    EXPECT_EQ(composed_probe->last_block_size, 64u);
+    EXPECT_FLOAT_EQ(composed_probe->first_left, 57.0f);
+    EXPECT_FLOAT_EQ(composed_probe->first_right, 57.0f);
+    EXPECT_FLOAT_EQ(composed_probe->last_left, 120.0f);
+    EXPECT_FLOAT_EQ(composed_probe->last_right, 120.0f);
+    EXPECT_FLOAT_EQ(composed_probe->sum_left, 5664.0f);
+    EXPECT_FLOAT_EQ(composed_probe->sum_right, 5664.0f);
 
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);

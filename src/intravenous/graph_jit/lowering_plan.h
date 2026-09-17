@@ -135,6 +135,7 @@ struct PrimitiveExecutionStep {
     // physical-plan indices, not OutputPort behavior or runtime objects.
     std::vector<std::size_t> sample_carry_restores_before{};
     std::vector<std::size_t> sample_materializations_after{};
+    std::vector<std::size_t> sample_compositions_after{};
     std::vector<std::size_t> sample_carry_commits_after{};
 };
 
