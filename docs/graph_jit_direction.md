@@ -55,8 +55,12 @@ path without introducing special runtime storage or lifecycle machinery.
 
 The first deliberately narrow non-empty slice has also landed. A flat project
 may contain several registered zero-port primitives, with no connections,
-virtual nodes, configuration-pointer relocations, nested declarations, or
-auxiliary declaration-owned regions. Each primitive invokes its exact accepted
+virtual nodes, nested declarations, or auxiliary declaration-owned regions.
+Configuration pointer fields are reconstructed from symbolic retained-global
+relocations: native pointer bytes are discarded during host planning, selected
+immutable retained globals are deduplicated as package import roots, and final
+node configuration globals contain LLVM-relocatable pointers plus byte addends
+(or explicit null pointers). Each primitive invokes its exact accepted
 native `declare_node` callback into the one canonical `NodeLayoutBuilder`.
 `State` and `CompiledState` are ordinary canonical `NodeStorage` regions:
 generated root operations materialize each reflected callback context from final
@@ -84,8 +88,8 @@ package module is consumed. This is the first anti-monolith landing site for the
 remaining compiler work.
 
 The next capability expansion remains deliberately smaller than full connection
-lowering: configuration relocations and primitive block splitting should land on
-the existing node/configuration/execution plans. Only after that should the
+lowering: primitive block splitting should land on the existing execution plan.
+Only after that should the
 second major landing-site refactor introduce explicit schedule/SCC,
 producer-group/connection, history/latency, liveness, and storage-region plans.
 The existing `choose_sample_connection_implementation()` and
@@ -116,9 +120,11 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    multiple canonical declarations/configurations, callbacks from several
    packages, and several selected callbacks from one package. Derive root
    `skip_block` legality across the sequence.
-3. **Configuration relocations.** Reconstruct configured pointer fields from the
-   already-resolved retained-global relocation records instead of embedding
-   native addresses.
+3. **Configuration relocations.** **Landed.** Reconstruct configured pointer fields
+   from already-resolved retained-global relocation records. Retained globals are
+   imported as deduplicated package roots, native pointer bytes are zeroed during
+   planning, and immutable node configuration LLVM contains symbolic pointers,
+   byte addends, and explicit null slots rather than native process addresses.
 4. **Primitive maximum-block splitting.** Centralize primitive invocation and
    split a root block where a primitive's accepted maximum is smaller than the
    project specialization block size.

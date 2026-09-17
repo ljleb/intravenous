@@ -1,7 +1,9 @@
 #include <intravenous/graph_jit/lowering_plan.h>
+#include <intravenous/runtime/package_pipeline_types.h>
 
 #include <llvm/IR/Function.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -42,6 +44,14 @@ std::string primitive_callback_import_symbol(
 std::string node_config_global_symbol(std::size_t primitive_index)
 {
     return "iv.graph.node_config." + std::to_string(primitive_index);
+}
+
+std::string retained_global_import_symbol(
+    std::size_t package_index,
+    std::size_t retained_global_index)
+{
+    return "__iv_graph_retained_global_" + std::to_string(package_index) + "_"
+        + std::to_string(retained_global_index);
 }
 
 std::string tick_context_global_symbol(std::size_t primitive_index)
@@ -86,11 +96,6 @@ std::expected<std::vector<PrimitiveBundle>, std::string> zero_port_primitives(
         return std::unexpected(
             "zero-port GraphJit lowering slice does not yet support virtual nodes");
     }
-    if (!input.config_relocations.empty()) {
-        return std::unexpected(
-            "zero-port GraphJit lowering slice does not yet support node configuration pointer relocations");
-    }
-
     std::vector<PrimitiveBundle> primitives;
     std::string structural_error;
     std::size_t boundary_count = 0;
@@ -325,13 +330,17 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
     GraphAnalysis const& analysis)
 {
     PackageImportPlan plan;
-    if (analysis.empty) return plan;
+    if (analysis.empty && input.config_relocations.empty()) return plan;
 
-    auto find_package_index = [&](NodeImplementation const& implementation)
+    auto find_package_index = [&](llvm::Module const* module)
         -> std::expected<std::size_t, std::string> {
+        if (!module) {
+            return std::unexpected(
+                "GraphJit lowering import source has no package LLVM module");
+        }
         std::optional<std::size_t> selected_package_index;
         for (std::size_t i = 0; i < input.packages.size(); ++i) {
-            if (input.packages[i].module.get() != implementation.package_module) continue;
+            if (input.packages[i].module.get() != module) continue;
             if (selected_package_index) {
                 return std::unexpected(
                     "GraphJit lowering received duplicate ownership for one package LLVM module");
@@ -340,7 +349,7 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
         }
         if (!selected_package_index || !input.packages[*selected_package_index].module) {
             return std::unexpected(
-                "resolved primitive package LLVM is not available for lowering consumption");
+                "resolved package LLVM is not available for lowering consumption");
         }
         return *selected_package_index;
     };
@@ -371,11 +380,40 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
         return package.callbacks.back().import_symbol;
     };
 
+    auto add_retained_global = [&](
+                                   std::size_t package_index,
+                                   PackageImportGroup& package,
+                                   llvm::GlobalVariable const& source,
+                                   std::size_t size)
+        -> std::expected<std::string, std::string> {
+        if (source.getName().empty()) {
+            return std::unexpected(
+                "configuration relocation retained LLVM global has no symbol name");
+        }
+        for (auto const& global : package.retained_globals) {
+            if (global.source_symbol == source.getName().str()) {
+                if (global.size != size) {
+                    return std::unexpected(
+                        "configuration relocation retained LLVM global size is inconsistent");
+                }
+                return global.import_symbol;
+            }
+        }
+        auto import_symbol = retained_global_import_symbol(
+            package_index, package.retained_globals.size());
+        package.retained_globals.push_back(RetainedGlobalImportPlan{
+            .source_symbol = source.getName().str(),
+            .import_symbol = import_symbol,
+            .size = size,
+        });
+        return import_symbol;
+    };
+
     plan.primitive_callbacks.reserve(analysis.primitives.size());
     for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
         auto const& primitive = analysis.primitives[i];
         auto const& implementation = *primitive.implementation;
-        auto package_index = find_package_index(implementation);
+        auto package_index = find_package_index(implementation.package_module);
         if (!package_index) return std::unexpected(std::move(package_index.error()));
         auto& package = package_group(*package_index);
 
@@ -394,22 +432,107 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
         }
         plan.primitive_callbacks.push_back(std::move(callbacks));
     }
+
+    for (auto const& relocation : input.config_relocations) {
+        if (!relocation.relocation) {
+            return std::unexpected(
+                "GraphJit lowering received an empty configuration relocation record");
+        }
+        if (!relocation.relocation->retained_global_ordinal) {
+            if (relocation.revision || relocation.retained_global) {
+                return std::unexpected(
+                    "explicit-null configuration relocation unexpectedly names a retained global");
+            }
+            continue;
+        }
+        if (!relocation.revision || !relocation.retained_global) {
+            return std::unexpected(
+                "non-null configuration relocation has no retained package LLVM global");
+        }
+        auto const ordinal = *relocation.relocation->retained_global_ordinal;
+        if (ordinal >= relocation.revision->retained_globals.size()) {
+            return std::unexpected(
+                "configuration relocation retained-global ordinal is out of range at lowering");
+        }
+        auto const& accepted = relocation.revision->retained_globals[ordinal];
+        if (accepted.ordinal != ordinal || accepted.size == 0
+            || relocation.relocation->addend >= accepted.size) {
+            return std::unexpected(
+                "configuration relocation retained-global metadata is invalid at lowering");
+        }
+        auto package_index = find_package_index(relocation.retained_global->getParent());
+        if (!package_index) return std::unexpected(std::move(package_index.error()));
+        auto const& package_input = input.packages[*package_index];
+        if (package_input.revision.get() != relocation.revision.get()) {
+            return std::unexpected(
+                "configuration relocation retained global belongs to the wrong package revision");
+        }
+        if (std::ranges::find(
+                package_input.retained_globals, relocation.retained_global)
+            == package_input.retained_globals.end()) {
+            return std::unexpected(
+                "configuration relocation retained global is absent from package metadata");
+        }
+        if (!relocation.retained_global->isConstant()
+            || relocation.retained_global->isDeclaration()
+            || !relocation.retained_global->hasInitializer()) {
+            return std::unexpected(
+                "configuration relocation target is not an immutable defined LLVM global");
+        }
+
+        auto& package = package_group(*package_index);
+        auto imported = add_retained_global(
+            *package_index, package, *relocation.retained_global, accepted.size);
+        if (!imported) return std::unexpected(std::move(imported.error()));
+    }
     return plan;
 }
 
 std::expected<ConfigurationPlan, std::string> plan_node_configurations(
     LoweringInput const& input,
-    GraphAnalysis const& analysis)
+    GraphAnalysis const& analysis,
+    PackageImportPlan const& imports)
 {
     ConfigurationPlan plan;
-    if (analysis.empty) return plan;
+    if (analysis.empty) {
+        if (!input.config_relocations.empty()) {
+            return std::unexpected(
+                "empty GraphJit graph unexpectedly contains configuration relocations");
+        }
+        return plan;
+    }
+
+    auto imported_global_symbol = [&](ConfigRelocation const& relocation)
+        -> std::expected<std::string, std::string> {
+        if (!relocation.relocation->retained_global_ordinal) return std::string{};
+        if (!relocation.retained_global) {
+            return std::unexpected(
+                "non-null configuration relocation lost its retained LLVM global");
+        }
+        for (auto const& package : imports.packages) {
+            if (package.package_index >= input.packages.size()) continue;
+            auto const& package_input = input.packages[package.package_index];
+            if (package_input.module.get() != relocation.retained_global->getParent()) continue;
+            for (auto const& global : package.retained_globals) {
+                if (global.source_symbol == relocation.retained_global->getName().str()) {
+                    if (relocation.relocation->addend >= global.size) {
+                        return std::unexpected(
+                            "configuration relocation addend lies outside retained LLVM global");
+                    }
+                    return global.import_symbol;
+                }
+            }
+        }
+        return std::unexpected(
+            "configuration relocation has no planned retained-global import");
+    };
 
     plan.nodes.reserve(analysis.primitives.size());
     for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
         auto const& primitive = analysis.primitives[i];
         auto const* first = static_cast<std::byte const*>(
             primitive.implementation->node_data);
-        plan.nodes.push_back(NodeConfigurationPlan{
+        NodeConfigurationPlan node{
             .bytes = std::vector<std::byte>(
                 first,
                 first + primitive.bundle.node_size),
@@ -420,7 +543,57 @@ std::expected<ConfigurationPlan, std::string> plan_node_configurations(
             },
             .node_global_symbol = node_config_global_symbol(i),
             .tick_context_global_symbol = tick_context_global_symbol(i),
-        });
+        };
+
+        for (auto const& relocation : input.config_relocations) {
+            if (!relocation.relocation
+                || relocation.node_bundle != primitive.bundle.node_bundle) {
+                continue;
+            }
+            auto const offset = relocation.relocation->byte_offset;
+            if (offset > node.bytes.size()
+                || sizeof(void*) > node.bytes.size() - offset) {
+                return std::unexpected(
+                    "configuration relocation lies outside planned node bytes");
+            }
+            auto imported = imported_global_symbol(relocation);
+            if (!imported) return std::unexpected(std::move(imported.error()));
+            if (imported->empty() && relocation.relocation->addend != 0) {
+                return std::unexpected(
+                    "explicit-null configuration relocation has a non-zero addend");
+            }
+
+            std::fill_n(node.bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                sizeof(void*), std::byte{0});
+            node.relocations.push_back(NodeConfigurationRelocationPlan{
+                .byte_offset = offset,
+                .addend = relocation.relocation->addend,
+                .retained_global_symbol = std::move(*imported),
+            });
+        }
+        std::ranges::sort(node.relocations, {}, &NodeConfigurationRelocationPlan::byte_offset);
+        for (std::size_t relocation_index = 1;
+             relocation_index < node.relocations.size(); ++relocation_index) {
+            auto const previous_end = node.relocations[relocation_index - 1].byte_offset
+                + sizeof(void*);
+            if (previous_end > node.relocations[relocation_index].byte_offset) {
+                return std::unexpected(
+                    "node configuration contains overlapping pointer relocations");
+            }
+        }
+        plan.nodes.push_back(std::move(node));
+    }
+
+    for (auto const& relocation : input.config_relocations) {
+        auto const found = std::ranges::find_if(
+            analysis.primitives,
+            [&](PrimitiveAnalysis const& primitive) {
+                return primitive.bundle.node_bundle == relocation.node_bundle;
+            });
+        if (found == analysis.primitives.end()) {
+            return std::unexpected(
+                "configuration relocation does not belong to an analyzed concrete primitive");
+        }
     }
     return plan;
 }
@@ -473,7 +646,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     auto imports = plan_package_imports(input, *analysis);
     if (!imports) return std::unexpected(std::move(imports.error()));
 
-    auto configurations = plan_node_configurations(input, *analysis);
+    auto configurations = plan_node_configurations(input, *analysis, *imports);
     if (!configurations) {
         return std::unexpected(std::move(configurations.error()));
     }

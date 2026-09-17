@@ -152,6 +152,64 @@ std::expected<llvm::Function*, std::string> prepare_primitive_callback_import(
     return declaration;
 }
 
+std::expected<llvm::GlobalVariable*, std::string> prepare_retained_global_import(
+    llvm::Module& output_module,
+    llvm::Module& source_module,
+    detail::RetainedGlobalImportPlan const& plan)
+{
+    auto* source = source_module.getNamedGlobal(plan.source_symbol);
+    if (!source || source->isDeclaration() || !source->hasInitializer()
+        || !source->isConstant()) {
+        return std::unexpected(
+            "selected retained LLVM global is not an immutable definition");
+    }
+    if (source->isThreadLocal() || source->getAddressSpace() != 0) {
+        return std::unexpected(
+            "selected retained LLVM global has an unsupported storage class");
+    }
+    auto const source_size = source_module.getDataLayout().getTypeAllocSize(
+        source->getValueType());
+    if (source_size.isScalable() || source_size.getFixedValue() != plan.size) {
+        return std::unexpected(
+            "selected retained LLVM global has the wrong finalized size");
+    }
+
+    auto const import_name = llvm::StringRef(
+        plan.import_symbol.data(), plan.import_symbol.size());
+    if (auto* collision = source_module.getNamedValue(import_name); collision != nullptr
+        && collision != source) {
+        return std::unexpected(
+            "retained LLVM global import symbol collides with a package symbol");
+    }
+    if (output_module.getNamedValue(import_name)) {
+        return std::unexpected(
+            "retained LLVM global import symbol collides with a project symbol");
+    }
+
+    // Retained globals can have private/internal linkage just like package-local
+    // callback wrappers. Promote only the selected immutable root under a
+    // GraphJit-owned name; LinkOnlyNeeded then imports its initializer closure.
+    source->setName(import_name);
+    source->setLinkage(llvm::GlobalValue::ExternalLinkage);
+    source->setVisibility(llvm::GlobalValue::DefaultVisibility);
+    source->setDSOLocal(false);
+    source->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::None);
+    if (source->hasComdat()) source->setComdat(nullptr);
+
+    auto* declaration = new llvm::GlobalVariable(
+        output_module,
+        source->getValueType(),
+        true,
+        llvm::GlobalValue::ExternalLinkage,
+        nullptr,
+        import_name,
+        nullptr,
+        llvm::GlobalValue::NotThreadLocal,
+        source->getAddressSpace());
+    declaration->setAlignment(source->getAlign());
+    return declaration;
+}
+
 std::expected<void, std::string> emit_package_imports(
     LoweringInput& input,
     detail::PackageImportPlan const& plan,
@@ -166,9 +224,9 @@ std::expected<void, std::string> emit_package_imports(
         }
 
         // Package modules are parsed specifically for this GraphJit compilation.
-        // Promote all selected callback roots in place, then consume the module
-        // once. LinkOnlyNeeded keeps only their transitive closures without a
-        // full CloneModule copy.
+        // Promote all selected callback/retained-global roots in place, then
+        // consume the module once. LinkOnlyNeeded keeps only their transitive
+        // closures without a full CloneModule copy.
         auto source_module =
             std::move(input.packages[package_plan.package_index].module);
         for (auto const& callback : package_plan.callbacks) {
@@ -181,13 +239,18 @@ std::expected<void, std::string> emit_package_imports(
                 callback.role);
             if (!imported) return std::unexpected(std::move(imported.error()));
         }
+        for (auto const& global : package_plan.retained_globals) {
+            auto imported = prepare_retained_global_import(
+                output_module, *source_module, global);
+            if (!imported) return std::unexpected(std::move(imported.error()));
+        }
 
         if (llvm::Linker::linkModules(
                 output_module,
                 std::move(source_module),
                 llvm::Linker::Flags::LinkOnlyNeeded)) {
             return std::unexpected(
-                "failed to import selected primitive LLVM callback closure into the project module");
+                "failed to import selected package LLVM roots into the project module");
         }
 
         for (auto const& callback : package_plan.callbacks) {
@@ -198,24 +261,116 @@ std::expected<void, std::string> emit_package_imports(
                     + " closure was not imported into the project module");
             }
         }
+        for (auto const& global : package_plan.retained_globals) {
+            auto* imported = output_module.getNamedGlobal(global.import_symbol);
+            if (!imported || imported->isDeclaration() || !imported->hasInitializer()
+                || !imported->isConstant()) {
+                return std::unexpected(
+                    "selected retained LLVM global was not imported into the project module");
+            }
+        }
     }
     return {};
 }
 
-std::vector<EmittedNodeConfiguration> emit_node_configurations(
+std::expected<llvm::GlobalVariable*, std::string> immutable_node_configuration_global(
+    llvm::Module& module,
+    detail::NodeConfigurationPlan const& node)
+{
+    if (node.relocations.empty()) {
+        return immutable_bytes_global(
+            module,
+            node.bytes.data(),
+            node.bytes.size(),
+            node.alignment,
+            node.node_global_symbol);
+    }
+
+    if (module.getDataLayout().getPointerSize() != sizeof(void*)) {
+        return std::unexpected(
+            "project LLVM pointer size disagrees with node configuration ABI");
+    }
+
+    auto& context = module.getContext();
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* byte_type = llvm::Type::getInt8Ty(context);
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    std::vector<llvm::Constant*> fields;
+    std::vector<llvm::Type*> field_types;
+    auto append_bytes = [&](std::size_t offset, std::size_t size) {
+        if (size == 0) return;
+        auto bytes = llvm::StringRef(
+            reinterpret_cast<char const*>(node.bytes.data() + offset), size);
+        auto* constant = llvm::ConstantDataArray::getString(context, bytes, false);
+        fields.push_back(constant);
+        field_types.push_back(constant->getType());
+    };
+
+    std::size_t cursor = 0;
+    for (auto const& relocation : node.relocations) {
+        if (relocation.byte_offset < cursor
+            || relocation.byte_offset > node.bytes.size()
+            || sizeof(void*) > node.bytes.size() - relocation.byte_offset) {
+            return std::unexpected(
+                "planned node configuration relocation is outside configuration bytes");
+        }
+        append_bytes(cursor, relocation.byte_offset - cursor);
+
+        llvm::Constant* pointer = nullptr;
+        if (relocation.retained_global_symbol.empty()) {
+            pointer = llvm::ConstantPointerNull::get(pointer_type);
+        } else {
+            auto* global = module.getNamedGlobal(relocation.retained_global_symbol);
+            if (!global || global->isDeclaration()) {
+                return std::unexpected(
+                    "planned node configuration relocation references an unmaterialized retained global");
+            }
+            pointer = global;
+            if (relocation.addend != 0) {
+                llvm::Constant* indices[] = {
+                    llvm::ConstantInt::get(size_type, relocation.addend)};
+                pointer = llvm::ConstantExpr::getInBoundsGetElementPtr(
+                    byte_type, global, indices);
+            }
+        }
+        fields.push_back(pointer);
+        field_types.push_back(pointer_type);
+        cursor = relocation.byte_offset + sizeof(void*);
+    }
+    append_bytes(cursor, node.bytes.size() - cursor);
+
+    auto* configuration_type = llvm::StructType::get(context, field_types, true);
+    auto const configuration_size = module.getDataLayout().getTypeAllocSize(
+        configuration_type);
+    if (configuration_size.isScalable()
+        || configuration_size.getFixedValue() != node.bytes.size()) {
+        return std::unexpected(
+            "relocated node configuration LLVM layout disagrees with native configuration size");
+    }
+    auto* initializer = llvm::ConstantStruct::get(configuration_type, fields);
+    auto* global = new llvm::GlobalVariable(
+        module,
+        configuration_type,
+        true,
+        llvm::GlobalValue::PrivateLinkage,
+        initializer,
+        node.node_global_symbol);
+    global->setAlignment(llvm::Align(node.alignment));
+    return global;
+}
+
+std::expected<std::vector<EmittedNodeConfiguration>, std::string> emit_node_configurations(
     detail::ConfigurationPlan const& plan,
     llvm::Module& output_module)
 {
     std::vector<EmittedNodeConfiguration> emitted;
     emitted.reserve(plan.nodes.size());
     for (auto const& node : plan.nodes) {
+        auto node_config = immutable_node_configuration_global(output_module, node);
+        if (!node_config) return std::unexpected(std::move(node_config.error()));
         emitted.push_back(EmittedNodeConfiguration{
-            .node_config = immutable_bytes_global(
-                output_module,
-                node.bytes.data(),
-                node.bytes.size(),
-                node.alignment,
-                node.node_global_symbol),
+            .node_config = *node_config,
             .tick_context_template = immutable_bytes_global(
                 output_module,
                 &node.tick_context_template,
@@ -375,12 +530,15 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
 
     auto configurations =
         emit_node_configurations(plan.configurations, output_module);
+    if (!configurations) {
+        return std::unexpected(std::move(configurations.error()));
+    }
 
     auto tick = define_root_operation(
         output_module,
         root_tick_block_symbol,
         plan,
-        configurations,
+        *configurations,
         false);
     if (!tick) return std::unexpected(std::move(tick.error()));
 
@@ -390,7 +548,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
             output_module,
             root_skip_block_symbol,
             plan,
-            configurations,
+            *configurations,
             true);
         if (!skip) return std::unexpected(std::move(skip.error()));
         skip_symbol = std::string(root_skip_block_symbol);

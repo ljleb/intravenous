@@ -36,9 +36,16 @@ struct CallbackImportPlan {
     std::string role{};
 };
 
+struct RetainedGlobalImportPlan {
+    std::string source_symbol{};
+    std::string import_symbol{};
+    std::size_t size = 0;
+};
+
 struct PackageImportGroup {
     std::size_t package_index = 0;
     std::vector<CallbackImportPlan> callbacks{};
+    std::vector<RetainedGlobalImportPlan> retained_globals{};
 };
 
 struct PrimitiveCallbackPlan {
@@ -47,20 +54,30 @@ struct PrimitiveCallbackPlan {
 };
 
 struct PackageImportPlan {
-    // One group per compile-local package module. All selected callback roots
-    // for a package must be known before that module is consumed exactly once.
+    // One group per compile-local package module. All selected callback and
+    // retained-global roots must be known before that module is consumed once.
     std::vector<PackageImportGroup> packages{};
     // Indexed by analyzed concrete primitive. Several primitives may share one
     // imported callback when they select the same package-local implementation.
     std::vector<PrimitiveCallbackPlan> primitive_callbacks{};
 };
 
+struct NodeConfigurationRelocationPlan {
+    std::size_t byte_offset = 0;
+    std::size_t addend = 0;
+    // Empty means an explicit null pointer slot. Non-empty names the imported
+    // retained LLVM global whose byte-address plus addend reconstructs the
+    // configured pointer value.
+    std::string retained_global_symbol{};
+};
+
 struct NodeConfigurationPlan {
     // Own the configured bytes so LLVM emission does not depend on native
     // configured-object addresses after host-side planning completes. Pointer
-    // slots will later be reconstructed from symbolic relocation plans rather
-    // than copied as native addresses.
+    // slots are zeroed here and reconstructed symbolically during LLVM
+    // emission; native process addresses must never enter project IR.
     std::vector<std::byte> bytes{};
+    std::vector<NodeConfigurationRelocationPlan> relocations{};
     std::size_t alignment = 1;
     ReflectedNodeTickContext tick_context_template{};
     std::string node_global_symbol{};
