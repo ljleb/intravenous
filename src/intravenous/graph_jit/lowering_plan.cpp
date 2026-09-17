@@ -249,14 +249,14 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     }
 
     for (auto const& primitive : sample_ports.primitives) {
-        for (auto const binding : primitive.inputs) {
-            if (!binding) {
+        for (auto const& binding : primitive.inputs) {
+            if (!binding.representation) {
                 return std::unexpected(
                     "GraphJit sample runtime declaration has an unbound input port");
             }
         }
-        for (auto const binding : primitive.outputs) {
-            if (!binding) {
+        for (auto const& binding : primitive.outputs) {
+            if (!binding.representation) {
                 return std::unexpected(
                     "GraphJit sample runtime declaration has an unbound output port");
             }
@@ -284,6 +284,21 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         return std::unexpected(
             "GraphJit sample-edge slice does not yet support declared shared-array bindings");
     }
+    auto sample_physical_owns_region =
+        [&](std::size_t region_index) {
+            if (sample_ports.physical.transient_region.valid()
+                && region_index == sample_ports.physical.transient_region.index) {
+                return true;
+            }
+            return std::any_of(
+                sample_ports.physical.persistent_allocations.begin(),
+                sample_ports.physical.persistent_allocations.end(),
+                [&](SamplePersistentAllocationPlan const& allocation) {
+                    return allocation.region.valid()
+                        && allocation.region.index == region_index;
+                });
+        };
+
     for (std::size_t region_index = 0;
          region_index < node_layout.regions.size();
          ++region_index) {
@@ -292,9 +307,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             || region.kind == NodeLayout::Region::Kind::compiled_state) {
             continue;
         }
-        if (sample_ports.physical.transient_region.valid()
-            && region_index == sample_ports.physical.transient_region.index
-            && region.kind == NodeLayout::Region::Kind::raw) {
+        if (region.kind == NodeLayout::Region::Kind::raw
+            && sample_physical_owns_region(region_index)) {
             continue;
         }
         return std::unexpected(
@@ -685,6 +699,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         std::size_t source_port = 0;
         std::size_t target_primitive = 0;
         std::size_t target_port = 0;
+        std::size_t source_history = 0;
+        std::size_t source_latency = 0;
+        std::size_t target_history = 0;
     };
     std::vector<ValidatedSampleEdge> validated_edges;
     validated_edges.reserve(connections.sample_producer_groups.size());
@@ -719,11 +736,11 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             return std::unexpected(
                 "GraphJit sample-edge planning lost its realtime implementation choice");
         }
-        if (*group.implementation != SampleConnectionImplementationKind::direct
-            && *group.implementation
-                != SampleConnectionImplementationKind::transient_materialization) {
+        if (*group.implementation == SampleConnectionImplementationKind::feedback_ring
+            || *group.implementation
+                == SampleConnectionImplementationKind::external_boundary) {
             return std::unexpected(
-                "GraphJit sample-edge slice does not yet support retained, feedback, or external sample storage");
+                "GraphJit sample-edge slice does not yet support feedback or external sample storage");
         }
         if (!group.canonical_source_layout) {
             return std::unexpected(
@@ -747,11 +764,6 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             if (connection.feedback) {
                 return std::unexpected(
                     "GraphJit sample-edge slice does not yet support feedback sample connections");
-            }
-            if (connection.source_history != 0 || connection.source_latency != 0
-                || connection.target_history != 0) {
-                return std::unexpected(
-                    "GraphJit sample-edge slice does not yet support sample history or latency");
             }
             if (!connection.canonical_source_port
                 || !connection.canonical_source_layout) {
@@ -846,6 +858,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 .source_port = source_port.port_ordinal,
                 .target_primitive = *target_primitive,
                 .target_port = target_port.port_ordinal,
+                .source_history = connection.source_history,
+                .source_latency = connection.source_latency,
+                .target_history = connection.target_history,
             });
         }
     }
@@ -882,25 +897,38 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             plan.primitives[edge.source_primitive].outputs[edge.source_port];
         auto& target_binding =
             plan.primitives[edge.target_primitive].inputs[edge.target_port];
-        if (source_binding && *source_binding != output_representation) {
+        if (source_binding.representation
+            && *source_binding.representation != output_representation) {
             return std::unexpected(
                 "GraphJit sample output fanout resolved to conflicting canonical representations");
         }
-        if (target_binding) {
+        if (source_binding.representation
+            && source_binding.history != edge.source_history) {
+            return std::unexpected(
+                "GraphJit sample output fanout disagrees on authored output history");
+        }
+        if (target_binding.representation) {
             return std::unexpected(
                 "GraphJit sample input has more than one realized connection");
         }
-        source_binding = output_representation;
-        target_binding = input_representation;
+        source_binding.representation = output_representation;
+        source_binding.history = edge.source_history;
+        target_binding.representation = input_representation;
+        target_binding.history = edge.target_history;
+        target_binding.read_latency = edge.source_latency;
     }
 
     for (auto const& primitive : plan.primitives) {
         if (!std::ranges::all_of(
                 primitive.inputs,
-                [](auto const& binding) { return binding.has_value(); })
+                [](auto const& binding) {
+                    return binding.representation.has_value();
+                })
             || !std::ranges::all_of(
                 primitive.outputs,
-                [](auto const& binding) { return binding.has_value(); })) {
+                [](auto const& binding) {
+                    return binding.representation.has_value();
+                })) {
             return std::unexpected(
                 "GraphJit sample-edge slice requires every primitive sample port to be connected exactly once");
         }
@@ -975,6 +1003,19 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     if (!std::ranges::all_of(scheduled, [](bool value) { return value; })) {
         return std::unexpected(
             "GraphJit connection schedule omitted a concrete primitive");
+    }
+
+    for (std::size_t carry_index = 0;
+         carry_index < sample_ports.physical.carry_operations.size();
+         ++carry_index) {
+        auto const& carry = sample_ports.physical.carry_operations[carry_index];
+        if (carry.producer_execution_position >= plan.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit sample carry operation references an invalid execution position");
+        }
+        auto& step = plan.primitive_steps[carry.producer_execution_position];
+        step.sample_carry_restores_before.push_back(carry_index);
+        step.sample_carry_commits_after.push_back(carry_index);
     }
 
     for (std::size_t materialization_index = 0;

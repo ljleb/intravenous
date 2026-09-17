@@ -16,6 +16,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -438,20 +440,46 @@ sample_storage_binding(
             "GraphJit sample binding references a missing physical representation");
     }
     auto const& representation = plan.representations[representation_index];
+
+    std::optional<std::size_t> storage_offset;
     if (representation.transient_allocation
-            == detail::no_sample_transient_allocation
-        || representation.transient_allocation >= plan.transient_allocations.size()) {
-        return std::unexpected(
-            "GraphJit sample representation has no realized transient allocation");
+        != detail::no_sample_transient_allocation) {
+        if (representation.transient_allocation >= plan.transient_allocations.size()) {
+            return std::unexpected(
+                "GraphJit sample representation references a missing transient allocation");
+        }
+        auto const& allocation =
+            plan.transient_allocations[representation.transient_allocation];
+        if (allocation.representation_index != representation_index) {
+            return std::unexpected(
+                "GraphJit sample transient allocation points at the wrong representation");
+        }
+        storage_offset = allocation.storage_offset;
+    } else if (representation.persistent_allocation
+               != detail::no_sample_persistent_allocation) {
+        if (representation.persistent_allocation >= plan.persistent_allocations.size()) {
+            return std::unexpected(
+                "GraphJit sample representation references a missing persistent allocation");
+        }
+        auto const& allocation =
+            plan.persistent_allocations[representation.persistent_allocation];
+        if (allocation.representation_index != representation_index) {
+            return std::unexpected(
+                "GraphJit sample persistent allocation points at the wrong representation");
+        }
+        if (allocation.kind != detail::SamplePersistentStorageKind::ring) {
+            return std::unexpected(
+                "GraphJit compact sample carry must bind through its transient working representation");
+        }
+        storage_offset = allocation.storage_offset;
     }
-    auto const& allocation =
-        plan.transient_allocations[representation.transient_allocation];
-    if (allocation.representation_index != representation_index) {
+
+    if (!storage_offset) {
         return std::unexpected(
-            "GraphJit sample transient allocation points at the wrong representation");
+            "GraphJit sample representation has no realized physical storage");
     }
     return ReflectedSamplePortStorageBinding{
-        .storage_offset = allocation.storage_offset,
+        .storage_offset = *storage_offset,
         .frame_capacity = representation.frame_capacity,
         .storage_latency = 0,
         .channel_layout = representation.channel_layout,
@@ -476,17 +504,18 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
         if (!primitive.inputs.empty()) {
             std::vector<ReflectedSampleInputPortBinding> bindings;
             bindings.reserve(primitive.inputs.size());
-            for (auto const representation_index : primitive.inputs) {
-                if (!representation_index) {
+            for (auto const& input : primitive.inputs) {
+                if (!input.representation) {
                     return std::unexpected(
                         "GraphJit sample input binding has no physical representation");
                 }
-                auto storage = sample_storage_binding(plan.physical, *representation_index);
+                auto storage = sample_storage_binding(
+                    plan.physical, *input.representation);
                 if (!storage) return std::unexpected(std::move(storage.error()));
                 bindings.push_back(ReflectedSampleInputPortBinding{
                     .storage = *storage,
-                    .history = 0,
-                    .read_latency = 0,
+                    .history = input.history,
+                    .read_latency = input.read_latency,
                 });
             }
             result.input_bindings = immutable_bytes_global(
@@ -500,16 +529,17 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
         if (!primitive.outputs.empty()) {
             std::vector<ReflectedSampleOutputPortBinding> bindings;
             bindings.reserve(primitive.outputs.size());
-            for (auto const representation_index : primitive.outputs) {
-                if (!representation_index) {
+            for (auto const& output : primitive.outputs) {
+                if (!output.representation) {
                     return std::unexpected(
                         "GraphJit sample output binding has no physical representation");
                 }
-                auto storage = sample_storage_binding(plan.physical, *representation_index);
+                auto storage = sample_storage_binding(
+                    plan.physical, *output.representation);
                 if (!storage) return std::unexpected(std::move(storage.error()));
                 bindings.push_back(ReflectedSampleOutputPortBinding{
                     .storage = *storage,
-                    .history = 0,
+                    .history = output.history,
                 });
             }
             result.output_bindings = immutable_bytes_global(
@@ -787,11 +817,11 @@ std::expected<void, std::string> emit_sample_materialization(
     auto target = sample_storage_binding(
         physical, materialization.target_representation);
     if (!target) return std::unexpected(std::move(target.error()));
-    if (source->frame_capacity != target->frame_capacity
-        || source->frame_capacity == 0
-        || !is_power_of_2(source->frame_capacity)) {
+    if (source->frame_capacity == 0 || target->frame_capacity == 0
+        || !is_power_of_2(source->frame_capacity)
+        || !is_power_of_2(target->frame_capacity)) {
         return std::unexpected(
-            "GraphJit sample materialization requires matching bounded frame capacities");
+            "GraphJit sample materialization requires bounded power-of-two frame capacities");
     }
 
     // Validate against the semantic conversion registry, then emit the tiny
@@ -826,8 +856,20 @@ std::expected<void, std::string> emit_sample_materialization(
     auto* frame_offset = builder.CreatePHI(
         size_type, 2, "sample.materialize.frame");
     frame_offset->addIncoming(zero, preheader);
+    if (materialization.target_history
+        > std::numeric_limits<std::size_t>::max()
+            - materialization.read_latency) {
+        return std::unexpected(
+            "GraphJit sample materialization retained extent overflows size_t");
+    }
+    auto const retained_before =
+        materialization.target_history + materialization.read_latency;
+    auto* first_frame = builder.CreateSub(
+        sample_index,
+        llvm::ConstantInt::get(size_type, retained_before),
+        "sample.materialize.first");
     auto* absolute_frame = builder.CreateAdd(
-        sample_index, frame_offset, "sample.materialize.absolute");
+        first_frame, frame_offset, "sample.materialize.absolute");
 
     auto load_source = [&](std::size_t channel, llvm::Twine const& name) {
         return builder.CreateLoad(
@@ -905,10 +947,193 @@ std::expected<void, std::string> emit_sample_materialization(
         frame_offset,
         llvm::ConstantInt::get(size_type, 1),
         "sample.materialize.next");
+    auto* materialize_count = builder.CreateAdd(
+        block_size,
+        llvm::ConstantInt::get(size_type, materialization.target_history),
+        "sample.materialize.count");
     auto* done = builder.CreateICmpUGE(
-        next, block_size, "sample.materialize.done");
+        next, materialize_count, "sample.materialize.done");
     builder.CreateCondBr(done, exit, loop);
     frame_offset->addIncoming(next, loop);
+    builder.SetInsertPoint(exit);
+    return {};
+}
+
+
+std::expected<detail::SamplePersistentAllocationPlan const*, std::string>
+compact_carry_allocation(
+    detail::SamplePhysicalPlan const& physical,
+    detail::SampleCarryOperationPlan const& operation)
+{
+    if (operation.representation_index >= physical.representations.size()) {
+        return std::unexpected(
+            "GraphJit sample carry references a missing representation");
+    }
+    if (operation.persistent_allocation >= physical.persistent_allocations.size()) {
+        return std::unexpected(
+            "GraphJit sample carry references a missing persistent allocation");
+    }
+    auto const& representation =
+        physical.representations[operation.representation_index];
+    auto const& allocation =
+        physical.persistent_allocations[operation.persistent_allocation];
+    if (allocation.kind != detail::SamplePersistentStorageKind::compact_carry
+        || allocation.representation_index != operation.representation_index
+        || representation.persistent_allocation != operation.persistent_allocation
+        || representation.transient_allocation
+               == detail::no_sample_transient_allocation
+        || allocation.retained_frames != operation.retained_frames
+        || operation.retained_frames == 0) {
+        return std::unexpected(
+            "GraphJit sample carry plan is inconsistent with its physical representation");
+    }
+    return &allocation;
+}
+
+llvm::Value* compact_carry_element_pointer(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* storage_base,
+    detail::SamplePersistentAllocationPlan const& allocation,
+    llvm::Value* carry_frame,
+    std::size_t channel,
+    llvm::Twine const& name)
+{
+    auto& context = builder.getContext();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* sample_type = llvm::Type::getFloatTy(context);
+    auto const channels = channel_count(allocation.channel_layout);
+    llvm::Value* element = nullptr;
+    if (allocation.channel_layout.sample_layout == SampleStreamLayout::planar) {
+        element = builder.CreateAdd(
+            carry_frame,
+            llvm::ConstantInt::get(
+                size_type, channel * allocation.retained_frames),
+            name + ".element");
+    } else {
+        element = builder.CreateAdd(
+            builder.CreateMul(
+                carry_frame,
+                llvm::ConstantInt::get(size_type, channels),
+                name + ".frame.base"),
+            llvm::ConstantInt::get(size_type, channel),
+            name + ".element");
+    }
+    auto* base = byte_offset_pointer(
+        builder, storage_base, allocation.storage_offset, name + ".base");
+    return builder.CreateInBoundsGEP(sample_type, base, element, name + ".ptr");
+}
+
+std::expected<void, std::string> emit_sample_carry_operation(
+    llvm::IRBuilder<>& builder,
+    detail::SamplePhysicalPlan const& physical,
+    detail::SampleCarryOperationPlan const& operation,
+    llvm::Value* storage_base,
+    llvm::Value* sample_index,
+    llvm::Value* block_size,
+    bool restore)
+{
+    static_assert(sizeof(Sample) == sizeof(Sample::storage));
+    static_assert(std::is_same_v<Sample::storage, float>);
+
+    auto allocation = compact_carry_allocation(physical, operation);
+    if (!allocation) return std::unexpected(std::move(allocation.error()));
+    auto working = sample_storage_binding(physical, operation.representation_index);
+    if (!working) return std::unexpected(std::move(working.error()));
+    if (working->frame_capacity == 0
+        || !is_power_of_2(working->frame_capacity)
+        || working->channel_layout != (*allocation)->channel_layout) {
+        return std::unexpected(
+            "GraphJit sample carry working representation is invalid");
+    }
+
+    auto& context = builder.getContext();
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* sample_type = llvm::Type::getFloatTy(context);
+    auto* zero = llvm::ConstantInt::get(size_type, 0);
+    auto* preheader = builder.GetInsertBlock();
+    auto* loop = llvm::BasicBlock::Create(
+        context,
+        restore ? "sample.carry.restore" : "sample.carry.commit",
+        function);
+    auto* exit = llvm::BasicBlock::Create(
+        context,
+        restore ? "sample.carry.restore.end" : "sample.carry.commit.end",
+        function);
+    builder.CreateCondBr(
+        builder.CreateICmpNE(
+            block_size,
+            zero,
+            restore ? "sample.carry.restore.nonempty"
+                    : "sample.carry.commit.nonempty"),
+        loop,
+        exit);
+
+    builder.SetInsertPoint(loop);
+    auto* carry_frame = builder.CreatePHI(
+        size_type,
+        2,
+        restore ? "sample.carry.restore.frame" : "sample.carry.commit.frame");
+    carry_frame->addIncoming(zero, preheader);
+    auto* retained = llvm::ConstantInt::get(size_type, operation.retained_frames);
+    llvm::Value* first_absolute = nullptr;
+    if (restore) {
+        first_absolute = builder.CreateSub(
+            sample_index, retained, "sample.carry.restore.first");
+    } else {
+        first_absolute = builder.CreateSub(
+            builder.CreateAdd(
+                sample_index, block_size, "sample.carry.commit.end.index"),
+            retained,
+            "sample.carry.commit.first");
+    }
+    auto* absolute_frame = builder.CreateAdd(
+        first_absolute,
+        carry_frame,
+        restore ? "sample.carry.restore.absolute"
+                : "sample.carry.commit.absolute");
+
+    auto const channels = channel_count((*allocation)->channel_layout);
+    for (std::size_t channel = 0; channel < channels; ++channel) {
+        auto* carry_pointer = compact_carry_element_pointer(
+            builder,
+            storage_base,
+            **allocation,
+            carry_frame,
+            channel,
+            restore ? "sample.carry.restore.persist"
+                    : "sample.carry.commit.persist");
+        auto* working_pointer = sample_element_pointer(
+            builder,
+            storage_base,
+            *working,
+            absolute_frame,
+            channel,
+            restore ? "sample.carry.restore.working"
+                    : "sample.carry.commit.working");
+        if (restore) {
+            auto* value = builder.CreateLoad(
+                sample_type, carry_pointer, "sample.carry.restore.value");
+            builder.CreateStore(value, working_pointer);
+        } else {
+            auto* value = builder.CreateLoad(
+                sample_type, working_pointer, "sample.carry.commit.value");
+            builder.CreateStore(value, carry_pointer);
+        }
+    }
+
+    auto* next = builder.CreateAdd(
+        carry_frame,
+        llvm::ConstantInt::get(size_type, 1),
+        restore ? "sample.carry.restore.next" : "sample.carry.commit.next");
+    auto* done = builder.CreateICmpUGE(
+        next,
+        retained,
+        restore ? "sample.carry.restore.done" : "sample.carry.commit.done");
+    builder.CreateCondBr(done, exit, loop);
+    carry_frame->addIncoming(next, loop);
     builder.SetInsertPoint(exit);
     return {};
 }
@@ -951,6 +1176,24 @@ std::expected<llvm::Function*, std::string> define_root_operation(
         if (step.configuration_index >= sample_bindings.primitives.size()) {
             return std::unexpected(
                 "GraphJit execution plan references a missing sample-port runtime plan");
+        }
+
+        for (auto const carry_index : step.sample_carry_restores_before) {
+            if (carry_index >= plan.sample_ports.physical.carry_operations.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing sample carry restore");
+            }
+            auto restored = emit_sample_carry_operation(
+                builder,
+                plan.sample_ports.physical,
+                plan.sample_ports.physical.carry_operations[carry_index],
+                storage_base,
+                sample_index,
+                block_size,
+                true);
+            if (!restored) {
+                return std::unexpected(std::move(restored.error()));
+            }
         }
 
         auto const& callback_symbol =
@@ -1007,6 +1250,24 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 block_size);
             if (!materialized) {
                 return std::unexpected(std::move(materialized.error()));
+            }
+        }
+
+        for (auto const carry_index : step.sample_carry_commits_after) {
+            if (carry_index >= plan.sample_ports.physical.carry_operations.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing sample carry commit");
+            }
+            auto committed = emit_sample_carry_operation(
+                builder,
+                plan.sample_ports.physical,
+                plan.sample_ports.physical.carry_operations[carry_index],
+                storage_base,
+                sample_index,
+                block_size,
+                false);
+            if (!committed) {
+                return std::unexpected(std::move(committed.error()));
             }
         }
     }

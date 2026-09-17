@@ -44,7 +44,7 @@ namespace iv {
     }
 
     NodeLayout::RegionHandle NodeLayoutBuilder::declare_raw_region(
-        size_t size, size_t alignment)
+        size_t size, size_t alignment, std::string migration_identity)
     {
         if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
             throw std::invalid_argument(
@@ -56,6 +56,7 @@ namespace iv {
         region.owner_node = NodeLayout::no_owner_node;
         region.size = size;
         region.alignment = alignment;
+        region.migration_identity = std::move(migration_identity);
 
         _storage_alignment = std::max(_storage_alignment, alignment);
         _regions.push_back(std::move(region));
@@ -879,6 +880,47 @@ namespace iv {
         }
     }
 
+    void migrate_persistent_raw_regions(
+        NodeStorage& current, NodeStorage const& previous)
+    {
+        if (!current.layout || !previous.layout) return;
+
+        auto collect = [](NodeLayout const& layout) {
+            std::unordered_map<std::string, NodeLayout::Region const*> result;
+            for (auto const& region : layout.regions) {
+                if (region.kind != NodeLayout::Region::Kind::raw
+                    || region.migration_identity.empty()) {
+                    continue;
+                }
+                auto [_, inserted] = result.emplace(
+                    region.migration_identity, &region);
+                if (!inserted) {
+                    throw std::runtime_error(
+                        "duplicate raw-region migration identity: "
+                        + region.migration_identity);
+                }
+            }
+            return result;
+        };
+
+        auto const previous_regions = collect(*previous.layout);
+        auto const current_regions = collect(*current.layout);
+        for (auto const& [identity, region] : current_regions) {
+            auto const found = previous_regions.find(identity);
+            if (found == previous_regions.end()) continue;
+            auto const* prior = found->second;
+            if (region->size != prior->size
+                || region->alignment != prior->alignment) {
+                continue;
+            }
+            if (region->size == 0) continue;
+            std::memcpy(
+                current.storage.get() + region->storage_offset,
+                previous.storage.get() + prior->storage_offset,
+                region->size);
+        }
+    }
+
     void construct_node_storage_states(NodeStorage& storage)
     {
         for (size_t node_index = 0;
@@ -1025,6 +1067,7 @@ namespace iv {
         }
 
         construct_node_storage_states(*this);
+        migrate_persistent_raw_regions(*this, previous);
 
         patch_node_storage_regions(*this, [](size_t) { return true; });
 
@@ -1170,6 +1213,9 @@ namespace iv {
         constructed_compiled_states.clear();
         initialized_nodes.clear();
         construct_node_storage_states(*this);
+        if (previous && previous->layout) {
+            migrate_persistent_raw_regions(*this, *previous);
+        }
 
         patch_node_storage_regions(*this, [](size_t) { return true; });
         patch_node_storage_imports(*this);

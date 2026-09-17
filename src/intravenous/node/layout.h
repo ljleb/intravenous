@@ -46,6 +46,11 @@ namespace iv {
             size_t size = 0;
             size_t alignment = 1;
             size_t element_count = 0;
+            // Optional stable identity for compiler-owned raw regions whose
+            // bytes are semantic persistent state rather than scratch. Exact-
+            // shape matches are copied during NodeStorage migration; transient
+            // arenas leave this empty and are always freshly zeroed.
+            std::string migration_identity{};
             void const* element_type = nullptr;
             char const* element_type_name = nullptr;
             void (*assign_span_fn)(
@@ -112,7 +117,9 @@ namespace iv {
         size_t event_port_buffer_base_multiplier() const;
 
         NodeLayout::RegionHandle declare_raw_region(
-            size_t size, size_t alignment = 1);
+            size_t size,
+            size_t alignment = 1,
+            std::string migration_identity = {});
 
         template<typename A>
         static void const* array_type_token()

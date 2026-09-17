@@ -46,6 +46,8 @@ constexpr char graph_jit_transient_sample_module_id[] = "iv.test.graph_jit.state
 constexpr char graph_jit_reused_sample_arena_module_id[] = "iv.test.graph_jit.state_context.reused_sample_arena_module";
 constexpr char graph_jit_sample_fanout_conversion_module_id[] = "iv.test.graph_jit.state_context.sample_fanout_conversion_module";
 constexpr char graph_jit_stereo_conversion_module_id[] = "iv.test.graph_jit.state_context.stereo_conversion_module";
+constexpr char graph_jit_history_fanout_module_id[] = "iv.test.graph_jit.state_context.history_fanout_module";
+constexpr char graph_jit_persistent_history_module_id[] = "iv.test.graph_jit.state_context.persistent_history_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -115,6 +117,39 @@ struct StereoSampleConsumerProbeStateMirror {
     float last_right = 0.0f;
     float sum_left = 0.0f;
     float sum_right = 0.0f;
+};
+
+struct HistoryRampSourceStateMirror {
+    std::uint64_t calls = 0;
+    float previous_output = 0.0f;
+    std::uint32_t marker = 0;
+};
+
+struct HistoryConsumerStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t last_index = 0;
+    float current = 0.0f;
+    float history_1 = 0.0f;
+    float history_5 = 0.0f;
+    std::uint32_t marker = 0;
+};
+
+struct StereoHistoryConsumerStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t last_index = 0;
+    float current_left = 0.0f;
+    float current_right = 0.0f;
+    float history_5_left = 0.0f;
+    float history_5_right = 0.0f;
+    std::uint64_t marker = 0;
+};
+
+struct LargeHistoryConsumerStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t last_index = 0;
+    float current = 0.0f;
+    float history_1 = 0.0f;
+    float history_5000 = 0.0f;
 };
 
 void expect_lowering_failure(
@@ -831,6 +866,218 @@ TEST(GraphJitSamplePhysicalPlan, BuildsAndDeduplicatesDerivedConvertedFanout)
         3u * 64u * sizeof(iv::Sample));
 }
 
+TEST(GraphJitSamplePhysicalPlan, RealizesCompactPersistentCarryExactly)
+{
+    using namespace iv::graph_jit::detail;
+
+    iv::ChannelLayout const mono{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    ConnectionAnalysisPlan connections;
+    SampleProducerGroupPlan group;
+    group.canonical_source_layout = mono;
+    group.has_realtime_connections = true;
+    group.requirements.retained_frames = 7;
+    group.requirements.channel_count = 1;
+    group.requirements.value_size_bytes = sizeof(iv::Sample);
+    group.implementation = iv::SampleConnectionImplementationKind::compact_persistent_carry;
+    group.live_interval = ConnectionLiveIntervalPlan{
+        .begin = 0,
+        .end = 1,
+        .crosses_kernel_invocations = true,
+    };
+    connections.sample_producer_groups.push_back(group);
+
+    auto physical = build_sample_physical_plan(connections, 64);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->representations.size(), 1u);
+    ASSERT_EQ(physical->transient_allocations.size(), 1u);
+    ASSERT_EQ(physical->persistent_allocations.size(), 1u);
+    ASSERT_EQ(physical->carry_operations.size(), 1u);
+    ASSERT_TRUE(physical->producer_groups[0].has_value());
+    auto const representation_index =
+        physical->producer_groups[0]->canonical_representation;
+    auto const& representation = physical->representations[representation_index];
+    EXPECT_EQ(representation.frame_capacity, 128u);
+    EXPECT_NE(
+        representation.transient_allocation,
+        no_sample_transient_allocation);
+    EXPECT_NE(
+        representation.persistent_allocation,
+        no_sample_persistent_allocation);
+
+    auto const& persistent = physical->persistent_allocations[
+        representation.persistent_allocation];
+    EXPECT_EQ(persistent.kind, SamplePersistentStorageKind::compact_carry);
+    EXPECT_EQ(persistent.retained_frames, 7u);
+    EXPECT_EQ(persistent.frame_capacity, 128u);
+    EXPECT_EQ(persistent.size_bytes, 7u * sizeof(iv::Sample));
+    EXPECT_FALSE(persistent.migration_identity.empty());
+    EXPECT_EQ(
+        physical->carry_operations[0].persistent_allocation,
+        representation.persistent_allocation);
+    EXPECT_EQ(physical->carry_operations[0].retained_frames, 7u);
+
+    iv::NodeLayoutBuilder builder(64);
+    auto declared = declare_sample_physical_storage(builder, *physical);
+    ASSERT_TRUE(declared.has_value())
+        << (declared ? std::string{} : declared.error());
+    auto layout = std::move(builder).build();
+    auto finalized = finalize_sample_physical_storage(layout, *physical);
+    ASSERT_TRUE(finalized.has_value())
+        << (finalized ? std::string{} : finalized.error());
+    ASSERT_EQ(layout.regions.size(), 2u);
+    auto const& transient_region = layout.regions[physical->transient_region.index];
+    auto const& persistent_region = layout.regions[persistent.region.index];
+    EXPECT_TRUE(transient_region.migration_identity.empty());
+    EXPECT_EQ(
+        persistent_region.migration_identity,
+        persistent.migration_identity);
+    EXPECT_EQ(persistent_region.size, 7u * sizeof(iv::Sample));
+}
+
+TEST(GraphJitSamplePhysicalPlan, RealizesLargeRetentionAsPersistentRing)
+{
+    using namespace iv::graph_jit::detail;
+
+    iv::ChannelLayout const mono{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    ConnectionAnalysisPlan connections;
+    SampleProducerGroupPlan group;
+    group.canonical_source_layout = mono;
+    group.has_realtime_connections = true;
+    group.requirements.retained_frames = 5000;
+    group.requirements.channel_count = 1;
+    group.requirements.value_size_bytes = sizeof(iv::Sample);
+    group.implementation = iv::SampleConnectionImplementationKind::persistent_ring;
+    group.live_interval = ConnectionLiveIntervalPlan{
+        .begin = 0,
+        .end = 1,
+        .crosses_kernel_invocations = true,
+    };
+    connections.sample_producer_groups.push_back(group);
+
+    auto first = build_sample_physical_plan(connections, 64);
+    auto second = build_sample_physical_plan(connections, 64);
+    ASSERT_TRUE(first.has_value())
+        << (first ? std::string{} : first.error());
+    ASSERT_TRUE(second.has_value())
+        << (second ? std::string{} : second.error());
+    ASSERT_EQ(first->representations.size(), 1u);
+    ASSERT_TRUE(first->transient_allocations.empty());
+    ASSERT_EQ(first->persistent_allocations.size(), 1u);
+    EXPECT_TRUE(first->carry_operations.empty());
+    auto const representation_index =
+        first->producer_groups[0]->canonical_representation;
+    auto const& representation = first->representations[representation_index];
+    EXPECT_EQ(representation.frame_capacity, 8192u);
+    EXPECT_EQ(
+        representation.transient_allocation,
+        no_sample_transient_allocation);
+    ASSERT_NE(
+        representation.persistent_allocation,
+        no_sample_persistent_allocation);
+    auto const& persistent = first->persistent_allocations[
+        representation.persistent_allocation];
+    EXPECT_EQ(persistent.kind, SamplePersistentStorageKind::ring);
+    EXPECT_EQ(persistent.retained_frames, 5000u);
+    EXPECT_EQ(persistent.frame_capacity, 8192u);
+    EXPECT_EQ(persistent.size_bytes, 8192u * sizeof(iv::Sample));
+    EXPECT_EQ(
+        persistent.migration_identity,
+        second->persistent_allocations[0].migration_identity);
+
+    iv::NodeLayoutBuilder builder(64);
+    auto declared = declare_sample_physical_storage(builder, *first);
+    ASSERT_TRUE(declared.has_value())
+        << (declared ? std::string{} : declared.error());
+    auto layout = std::move(builder).build();
+    auto finalized = finalize_sample_physical_storage(layout, *first);
+    ASSERT_TRUE(finalized.has_value())
+        << (finalized ? std::string{} : finalized.error());
+    ASSERT_EQ(layout.regions.size(), 1u);
+    EXPECT_EQ(layout.regions[0].size, 8192u * sizeof(iv::Sample));
+    EXPECT_FALSE(layout.regions[0].migration_identity.empty());
+}
+
+TEST(GraphJitSamplePhysicalPlan, ConvertedRetentionMaterializesHistoricalWindow)
+{
+    using namespace iv::graph_jit::detail;
+
+    iv::ChannelLayout const mono{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    iv::ChannelLayout const stereo{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::interleaved,
+    };
+
+    ConnectionAnalysisPlan connections;
+    SampleConnectionPlan converted;
+    converted.access = PlannedConnectionAccess::realtime_to_realtime;
+    converted.canonical_source_layout = mono;
+    converted.target_layout = stereo;
+    converted.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
+    converted.source_latency = 2;
+    converted.target_history = 5;
+    converted.requires_conversion = true;
+    connections.sample_connections.push_back(converted);
+    connections.schedule.bundle_execution_position.resize(3);
+    connections.schedule.bundle_execution_position[1] = 0;
+    connections.schedule.bundle_execution_position[2] = 1;
+
+    SampleProducerGroupPlan group;
+    group.canonical_source_layout = mono;
+    group.connection_indices = {0};
+    group.has_realtime_connections = true;
+    group.requirements.retained_frames = 7;
+    group.requirements.channel_count = 1;
+    group.requirements.value_size_bytes = sizeof(iv::Sample);
+    group.implementation = iv::SampleConnectionImplementationKind::compact_persistent_carry;
+    group.live_interval = ConnectionLiveIntervalPlan{
+        .begin = 0,
+        .end = 1,
+        .crosses_kernel_invocations = true,
+    };
+    connections.sample_producer_groups.push_back(group);
+
+    auto physical = build_sample_physical_plan(connections, 64);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->representations.size(), 2u);
+    ASSERT_EQ(physical->materializations.size(), 1u);
+    ASSERT_EQ(physical->carry_operations.size(), 1u);
+    auto const canonical =
+        physical->producer_groups[0]->canonical_representation;
+    auto const derived = *physical->connection_representations[0];
+    ASSERT_NE(canonical, derived);
+    EXPECT_EQ(physical->representations[canonical].frame_capacity, 128u);
+    EXPECT_EQ(physical->representations[derived].frame_capacity, 128u);
+    auto const& materialization = physical->materializations[0];
+    EXPECT_EQ(materialization.source_representation, canonical);
+    EXPECT_EQ(materialization.target_representation, derived);
+    EXPECT_EQ(materialization.target_history, 5u);
+    EXPECT_EQ(materialization.read_latency, 2u);
+
+    auto const canonical_allocation = physical->representations[canonical]
+        .transient_allocation;
+    auto const derived_allocation = physical->representations[derived]
+        .transient_allocation;
+    ASSERT_LT(canonical_allocation, physical->transient_allocations.size());
+    ASSERT_LT(derived_allocation, physical->transient_allocations.size());
+    auto const& source_range = physical->transient_allocations[canonical_allocation];
+    auto const& target_range = physical->transient_allocations[derived_allocation];
+    auto const source_end = source_range.region_relative_offset + source_range.size_bytes;
+    auto const target_end = target_range.region_relative_offset + target_range.size_bytes;
+    EXPECT_TRUE(source_end <= target_range.region_relative_offset
+        || target_end <= source_range.region_relative_offset);
+}
+
 TEST(GraphJitSamplePhysicalPlan, RejectsTransientStorageThatCrossesKernelCalls)
 {
     using namespace iv::graph_jit::detail;
@@ -1379,6 +1626,159 @@ struct StereoSampleConsumerProbe {
     }
 };
 
+struct HistoryRampSource {
+    struct State {
+        std::uint64_t calls = 0;
+        float previous_output = 0.0f;
+        std::uint32_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, {.history = 3, .latency = 2})};
+    }
+
+    void tick_block(iv::TickBlockContext<HistoryRampSource> const& ctx) const
+    {
+        auto& state = ctx.state();
+        ++state.calls;
+        state.previous_output = static_cast<float>(ctx.outputs[0].get());
+        state.marker = 0x91a2b3c4u;
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            ctx.outputs[0].push(static_cast<iv::Sample>(ctx.index + i));
+        }
+    }
+};
+
+struct HistoryConsumerProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t last_index = 0;
+        float current = 0.0f;
+        float history_1 = 0.0f;
+        float history_5 = 0.0f;
+        std::uint32_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in", {}, {.history = 5})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<HistoryConsumerProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        ++state.calls;
+        state.last_index = ctx.index;
+        state.current = static_cast<float>(ctx.inputs[0].get(0));
+        state.history_1 = static_cast<float>(ctx.inputs[0].get(1));
+        state.history_5 = static_cast<float>(ctx.inputs[0].get(5));
+        state.marker = 0x5e6f7788u;
+    }
+};
+
+struct StereoHistoryConsumerProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t last_index = 0;
+        float current_left = 0.0f;
+        float current_right = 0.0f;
+        float history_5_left = 0.0f;
+        float history_5_right = 0.0f;
+        std::uint64_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in",
+            {.channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            }},
+            {.history = 5})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<StereoHistoryConsumerProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        ++state.calls;
+        state.last_index = ctx.index;
+        state.current_left = static_cast<float>(ctx.inputs[0].get(0, 0));
+        state.current_right = static_cast<float>(ctx.inputs[0].get(0, 1));
+        state.history_5_left = static_cast<float>(ctx.inputs[0].get(5, 0));
+        state.history_5_right = static_cast<float>(ctx.inputs[0].get(5, 1));
+        state.marker = 0xa1b2c3d4e5f60718ull;
+    }
+};
+
+struct LargeHistoryRampSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output("out")};
+    }
+
+    void tick_block(iv::TickBlockContext<LargeHistoryRampSource> const& ctx) const
+    {
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            ctx.outputs[0].push(static_cast<iv::Sample>(ctx.index + i));
+        }
+    }
+};
+
+struct LargeHistoryConsumerProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t last_index = 0;
+        float current = 0.0f;
+        float history_1 = 0.0f;
+        float history_5000 = 0.0f;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in", {}, {.history = 5000})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<LargeHistoryConsumerProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        ++state.calls;
+        state.last_index = ctx.index;
+        state.current = static_cast<float>(ctx.inputs[0].get(0));
+        state.history_1 = static_cast<float>(ctx.inputs[0].get(1));
+        state.history_5000 = static_cast<float>(ctx.inputs[0].get(5000));
+    }
+};
+
 struct PortedProbe {
     static constexpr auto inputs()
     {
@@ -1510,6 +1910,24 @@ void stereo_conversion_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void history_fanout_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.history_ramp_source">();
+    auto mono_sink = graph.node<"iv.test.graph_jit.state_context.history_consumer">();
+    auto stereo_sink = graph.node<"iv.test.graph_jit.state_context.stereo_history_consumer">();
+    mono_sink(source);
+    stereo_sink(source);
+    graph.outputs();
+}
+
+void persistent_history_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.large_history_ramp_source">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.large_history_consumer">();
+    sink(source);
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -1530,6 +1948,11 @@ IV_NODE("iv.test.graph_jit.state_context.mono_interleaved_consumer", MonoInterle
 IV_NODE("iv.test.graph_jit.state_context.stereo_ramp_source", StereoRampSource);
 IV_NODE("iv.test.graph_jit.state_context.stereo_planar_consumer", StereoPlanarConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.stereo_sample_consumer", StereoSampleConsumerProbe);
+IV_NODE("iv.test.graph_jit.state_context.history_ramp_source", HistoryRampSource);
+IV_NODE("iv.test.graph_jit.state_context.history_consumer", HistoryConsumerProbe);
+IV_NODE("iv.test.graph_jit.state_context.stereo_history_consumer", StereoHistoryConsumerProbe);
+IV_NODE("iv.test.graph_jit.state_context.large_history_ramp_source", LargeHistoryRampSource);
+IV_NODE("iv.test.graph_jit.state_context.large_history_consumer", LargeHistoryConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
@@ -1545,6 +1968,8 @@ IV_MODULE("iv.test.graph_jit.state_context.transient_sample_module", transient_s
 IV_MODULE("iv.test.graph_jit.state_context.reused_sample_arena_module", reused_sample_arena_module);
 IV_MODULE("iv.test.graph_jit.state_context.sample_fanout_conversion_module", sample_fanout_conversion_module);
 IV_MODULE("iv.test.graph_jit.state_context.stereo_conversion_module", stereo_conversion_module);
+IV_MODULE("iv.test.graph_jit.state_context.history_fanout_module", history_fanout_module);
+IV_MODULE("iv.test.graph_jit.state_context.persistent_history_module", persistent_history_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -1595,6 +2020,18 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         "iv.test.graph_jit.state_context.stereo_sample_consumer"));
     EXPECT_TRUE(has_module_definition(graph_jit_sample_fanout_conversion_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_stereo_conversion_module_id));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.history_ramp_source"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.history_consumer"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.stereo_history_consumer"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.large_history_ramp_source"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.large_history_consumer"));
+    EXPECT_TRUE(has_module_definition(graph_jit_history_fanout_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_persistent_history_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -2407,15 +2844,214 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_left, 2128.0f);
     EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_right, 34128.0f);
 
+    auto history_graph = configured_module_graph(
+        *revision, graph_jit_history_fanout_module_id);
+    ASSERT_TRUE(history_graph);
+    auto history_analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *history_graph, 64);
+    ASSERT_TRUE(history_analysis.has_value())
+        << (history_analysis ? std::string{} : history_analysis.error());
+    ASSERT_EQ(history_analysis->sample_producer_groups.size(), 1u);
+    auto const& history_group = history_analysis->sample_producer_groups[0];
+    ASSERT_TRUE(history_group.implementation.has_value());
+    EXPECT_EQ(
+        *history_group.implementation,
+        iv::SampleConnectionImplementationKind::compact_persistent_carry);
+    EXPECT_EQ(history_group.requirements.retained_frames, 7u);
+
+    auto history_physical = iv::graph_jit::detail::build_sample_physical_plan(
+        *history_analysis, 64);
+    ASSERT_TRUE(history_physical.has_value())
+        << (history_physical ? std::string{} : history_physical.error());
+    ASSERT_EQ(history_physical->carry_operations.size(), 1u);
+    ASSERT_EQ(history_physical->persistent_allocations.size(), 1u);
+    ASSERT_EQ(history_physical->materializations.size(), 1u);
+    EXPECT_EQ(
+        history_physical->persistent_allocations[0].kind,
+        iv::graph_jit::detail::SamplePersistentStorageKind::compact_carry);
+    EXPECT_EQ(
+        history_physical->persistent_allocations[0].size_bytes,
+        7u * sizeof(iv::Sample));
+
+    auto history = compile_graph(history_graph, 114);
+    ASSERT_TRUE(history.succeeded())
+        << (history.diagnostics.empty() ? "" : history.diagnostics.front().message);
+    ASSERT_EQ(history.compiled_graph->node_layout.nodes.size(), 3u);
+    ASSERT_EQ(count_raw_regions(history.compiled_graph->node_layout), 2u);
+    auto history_persistent_region = std::ranges::find_if(
+        history.compiled_graph->node_layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.kind == iv::NodeLayout::Region::Kind::raw
+                && !region.migration_identity.empty();
+        });
+    ASSERT_NE(
+        history_persistent_region,
+        history.compiled_graph->node_layout.regions.end());
+    EXPECT_EQ(history_persistent_region->size, 7u * sizeof(iv::Sample));
+
+    auto history_storage =
+        history.compiled_graph->node_layout.create_storage(resources);
+    history_storage.initialize();
+    HistoryRampSourceStateMirror* history_source_state = nullptr;
+    HistoryConsumerStateMirror* history_mono_state = nullptr;
+    StereoHistoryConsumerStateMirror* history_stereo_state = nullptr;
+    for (std::size_t i = 0; i < history.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size = history.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(HistoryRampSourceStateMirror)) {
+            history_source_state = static_cast<HistoryRampSourceStateMirror*>(
+                history_storage.state_ptr(i));
+        } else if (state_size == sizeof(HistoryConsumerStateMirror)) {
+            history_mono_state = static_cast<HistoryConsumerStateMirror*>(
+                history_storage.state_ptr(i));
+        } else if (state_size == sizeof(StereoHistoryConsumerStateMirror)) {
+            history_stereo_state = static_cast<StereoHistoryConsumerStateMirror*>(
+                history_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(history_source_state, nullptr);
+    ASSERT_NE(history_mono_state, nullptr);
+    ASSERT_NE(history_stereo_state, nullptr);
+
+    history.compiled_graph->root_operations.tick_block(
+        history_storage.buffer().data(), 0, 64);
+    EXPECT_FLOAT_EQ(history_source_state->previous_output, 0.0f);
+    EXPECT_FLOAT_EQ(history_mono_state->current, 0.0f);
+    EXPECT_FLOAT_EQ(history_mono_state->history_5, 0.0f);
+    EXPECT_FLOAT_EQ(history_stereo_state->current_left, 0.0f);
+    EXPECT_FLOAT_EQ(history_stereo_state->current_right, 0.0f);
+
+    history.compiled_graph->root_operations.tick_block(
+        history_storage.buffer().data(), 64, 64);
+    EXPECT_FLOAT_EQ(history_source_state->previous_output, 63.0f);
+    EXPECT_EQ(history_mono_state->last_index, 64u);
+    EXPECT_FLOAT_EQ(history_mono_state->current, 62.0f);
+    EXPECT_FLOAT_EQ(history_mono_state->history_1, 61.0f);
+    EXPECT_FLOAT_EQ(history_mono_state->history_5, 57.0f);
+    EXPECT_EQ(history_stereo_state->last_index, 64u);
+    EXPECT_FLOAT_EQ(history_stereo_state->current_left, 62.0f);
+    EXPECT_FLOAT_EQ(history_stereo_state->current_right, 62.0f);
+    EXPECT_FLOAT_EQ(history_stereo_state->history_5_left, 57.0f);
+    EXPECT_FLOAT_EQ(history_stereo_state->history_5_right, 57.0f);
+
+    // A block shorter than the retained tail must combine restored older
+    // samples with newly produced samples when committing the next carry.
+    history.compiled_graph->root_operations.tick_block(
+        history_storage.buffer().data(), 128, 4);
+    EXPECT_FLOAT_EQ(history_source_state->previous_output, 127.0f);
+    EXPECT_FLOAT_EQ(history_mono_state->current, 126.0f);
+    EXPECT_FLOAT_EQ(history_mono_state->history_5, 121.0f);
+    history.compiled_graph->root_operations.tick_block(
+        history_storage.buffer().data(), 132, 4);
+    EXPECT_FLOAT_EQ(history_source_state->previous_output, 131.0f);
+    EXPECT_FLOAT_EQ(history_mono_state->current, 130.0f);
+    EXPECT_FLOAT_EQ(history_mono_state->history_5, 125.0f);
+
+    // Compile a distinct generation and migrate into its canonical NodeStorage.
+    // The connection history lives in compiler-owned raw storage, so this
+    // proves it survives independently of primitive State migration.
+    auto history_next = compile_graph(history_graph, 115);
+    ASSERT_TRUE(history_next.succeeded())
+        << (history_next.diagnostics.empty()
+                ? ""
+                : history_next.diagnostics.front().message);
+    auto history_next_storage =
+        history_next.compiled_graph->node_layout.create_storage(resources);
+    history_next_storage.initialize(&history_storage);
+    HistoryRampSourceStateMirror* migrated_source = nullptr;
+    HistoryConsumerStateMirror* migrated_mono = nullptr;
+    for (std::size_t i = 0;
+         i < history_next.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size = history_next.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(HistoryRampSourceStateMirror)) {
+            migrated_source = static_cast<HistoryRampSourceStateMirror*>(
+                history_next_storage.state_ptr(i));
+        } else if (state_size == sizeof(HistoryConsumerStateMirror)) {
+            migrated_mono = static_cast<HistoryConsumerStateMirror*>(
+                history_next_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(migrated_source, nullptr);
+    ASSERT_NE(migrated_mono, nullptr);
+    history_next.compiled_graph->root_operations.tick_block(
+        history_next_storage.buffer().data(), 136, 4);
+    EXPECT_FLOAT_EQ(migrated_source->previous_output, 135.0f);
+    EXPECT_FLOAT_EQ(migrated_mono->current, 134.0f);
+    EXPECT_FLOAT_EQ(migrated_mono->history_1, 133.0f);
+    EXPECT_FLOAT_EQ(migrated_mono->history_5, 129.0f);
+
+    auto persistent_history_graph = configured_module_graph(
+        *revision, graph_jit_persistent_history_module_id);
+    ASSERT_TRUE(persistent_history_graph);
+    auto persistent_history_analysis =
+        iv::graph_jit::detail::build_connection_analysis_plan(
+            *persistent_history_graph, 64);
+    ASSERT_TRUE(persistent_history_analysis.has_value())
+        << (persistent_history_analysis
+                ? std::string{}
+                : persistent_history_analysis.error());
+    ASSERT_EQ(persistent_history_analysis->sample_producer_groups.size(), 1u);
+    ASSERT_TRUE(
+        persistent_history_analysis->sample_producer_groups[0]
+            .implementation.has_value());
+    EXPECT_EQ(
+        *persistent_history_analysis->sample_producer_groups[0].implementation,
+        iv::SampleConnectionImplementationKind::persistent_ring);
+    EXPECT_EQ(
+        persistent_history_analysis->sample_producer_groups[0]
+            .requirements.retained_frames,
+        5000u);
+
+    auto persistent_history = compile_graph(persistent_history_graph, 116);
+    ASSERT_TRUE(persistent_history.succeeded())
+        << (persistent_history.diagnostics.empty()
+                ? ""
+                : persistent_history.diagnostics.front().message);
+    ASSERT_EQ(count_raw_regions(persistent_history.compiled_graph->node_layout), 1u);
+    auto const persistent_ring_region = std::ranges::find_if(
+        persistent_history.compiled_graph->node_layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.kind == iv::NodeLayout::Region::Kind::raw;
+        });
+    ASSERT_NE(
+        persistent_ring_region,
+        persistent_history.compiled_graph->node_layout.regions.end());
+    EXPECT_EQ(
+        persistent_ring_region->size,
+        8192u * sizeof(iv::Sample));
+    EXPECT_FALSE(persistent_ring_region->migration_identity.empty());
+
+    auto persistent_history_storage =
+        persistent_history.compiled_graph->node_layout.create_storage(resources);
+    persistent_history_storage.initialize();
+    LargeHistoryConsumerStateMirror* large_history_state = nullptr;
+    for (std::size_t i = 0;
+         i < persistent_history.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (persistent_history.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(LargeHistoryConsumerStateMirror)) {
+            large_history_state = static_cast<LargeHistoryConsumerStateMirror*>(
+                persistent_history_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(large_history_state, nullptr);
+    for (std::uint64_t index = 0; index <= 5056; index += 64) {
+        persistent_history.compiled_graph->root_operations.tick_block(
+            persistent_history_storage.buffer().data(), index, 64);
+    }
+    EXPECT_EQ(large_history_state->calls, 80u);
+    EXPECT_EQ(large_history_state->last_index, 5056u);
+    EXPECT_FLOAT_EQ(large_history_state->current, 5056.0f);
+    EXPECT_FLOAT_EQ(large_history_state->history_1, 5055.0f);
+    EXPECT_FLOAT_EQ(large_history_state->history_5000, 56.0f);
+
     auto ported_graph = configured_module_graph(*revision, graph_jit_ported_module_id);
     ASSERT_TRUE(ported_graph);
-    auto ported = compile_graph(ported_graph, 114);
+    auto ported = compile_graph(ported_graph, 117);
     expect_lowering_failure(ported, "does not yet support external sample boundaries");
 
     auto disconnected_ported_graph =
         std::make_shared<iv::ConfiguredGraph>(*ported_graph);
     disconnected_ported_graph->connections = {};
-    auto disconnected_ported = compile_graph(disconnected_ported_graph, 115);
+    auto disconnected_ported = compile_graph(disconnected_ported_graph, 118);
     expect_lowering_failure(
         disconnected_ported, "does not yet support external sample boundaries");
 
@@ -2435,6 +3071,9 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     reused_storage = iv::NodeStorage{};
     fanout_storage = iv::NodeStorage{};
     stereo_conversion_storage = iv::NodeStorage{};
+    history_storage = iv::NodeStorage{};
+    history_next_storage = iv::NodeStorage{};
+    persistent_history_storage = iv::NodeStorage{};
     stateful = {};
     state_only = {};
     compiled_only = {};
@@ -2449,6 +3088,9 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     reused_arena = {};
     fanout = {};
     stereo_conversion = {};
+    history = {};
+    history_next = {};
+    persistent_history = {};
     ported = {};
     disconnected_ported = {};
     definitions.reset();

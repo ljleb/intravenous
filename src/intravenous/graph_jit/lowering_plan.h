@@ -92,13 +92,23 @@ struct ConfigurationPlan {
 };
 
 
+struct PrimitiveSampleInputBindingPlan {
+    std::optional<std::size_t> representation{};
+    std::size_t history = 0;
+    std::size_t read_latency = 0;
+};
+
+struct PrimitiveSampleOutputBindingPlan {
+    std::optional<std::size_t> representation{};
+    std::size_t history = 0;
+};
+
 struct PrimitiveSamplePortPlan {
-    // One optional physical-representation handle per declared sample port
-    // ordinal. Outputs bind to a producer group's canonical representation;
-    // inputs bind to the representation selected for that connection. Point 8
-    // can therefore add converted fanout branches without changing this ABI.
-    std::vector<std::optional<std::size_t>> inputs{};
-    std::vector<std::optional<std::size_t>> outputs{};
+    // One immutable physical-representation binding per declared sample port
+    // ordinal. Temporal API semantics remain per-port even when fanout shares
+    // one physical producer representation.
+    std::vector<PrimitiveSampleInputBindingPlan> inputs{};
+    std::vector<PrimitiveSampleOutputBindingPlan> outputs{};
 };
 
 struct SamplePortBindingPlan {
@@ -121,9 +131,11 @@ struct PrimitiveExecutionStep {
     std::string tick_callback_symbol{};
     std::string skip_callback_symbol{};
 
-    // Explicit post-producer sample operations. These are physical-plan
-    // materialization indices, not OutputPort behavior.
+    // Explicit sample physical operations surrounding this producer. These are
+    // physical-plan indices, not OutputPort behavior or runtime objects.
+    std::vector<std::size_t> sample_carry_restores_before{};
     std::vector<std::size_t> sample_materializations_after{};
+    std::vector<std::size_t> sample_carry_commits_after{};
 };
 
 struct ExecutionPlan {

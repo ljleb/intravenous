@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -437,6 +438,109 @@ namespace {
 int main()
 {
     iv::test::install_crash_handlers();
+
+    {
+        // Compiler-owned persistent raw regions migrate by stable identity, not
+        // by incidental region order/offset. Transient raw storage stays fresh.
+        iv::NodeLayoutBuilder previous_builder(8);
+        auto previous_persistent = previous_builder.declare_raw_region(
+            16, 8, "graphjit.test.persistent");
+        auto previous_transient = previous_builder.declare_raw_region(16, 8);
+        auto previous_layout = std::move(previous_builder).build();
+        auto resources = make_resources();
+        auto previous = previous_layout.create_storage(resources);
+        previous.initialize();
+        std::memset(
+            previous.region_bytes(previous_persistent).data(),
+            0x5a,
+            previous.region_bytes(previous_persistent).size());
+        std::memset(
+            previous.region_bytes(previous_transient).data(),
+            0x33,
+            previous.region_bytes(previous_transient).size());
+
+        iv::NodeLayoutBuilder current_builder(8);
+        auto leading_transient = current_builder.declare_raw_region(7, 1);
+        auto current_persistent = current_builder.declare_raw_region(
+            16, 8, "graphjit.test.persistent");
+        auto current_transient = current_builder.declare_raw_region(16, 8);
+        auto current_layout = std::move(current_builder).build();
+        auto current = current_layout.create_storage(resources);
+        current.initialize(&previous);
+
+        for (auto const byte : current.region_bytes(current_persistent)) {
+            iv::test::require(
+                byte == std::byte{0x5a},
+                "stable persistent raw region should migrate by identity");
+        }
+        for (auto const byte : current.region_bytes(current_transient)) {
+            iv::test::require(
+                byte == std::byte{0},
+                "unidentified transient raw region must not migrate");
+        }
+        for (auto const byte : current.region_bytes(leading_transient)) {
+            iv::test::require(
+                byte == std::byte{0},
+                "new raw storage should remain zero initialized");
+        }
+    }
+
+    {
+        // Exact shape is part of the migration contract. Reusing an identity
+        // with a different byte extent must conservatively start from zero.
+        iv::NodeLayoutBuilder previous_builder(8);
+        auto previous_region = previous_builder.declare_raw_region(
+            16, 8, "graphjit.test.shape");
+        auto previous_layout = std::move(previous_builder).build();
+        auto resources = make_resources();
+        auto previous = previous_layout.create_storage(resources);
+        previous.initialize();
+        std::memset(
+            previous.region_bytes(previous_region).data(),
+            0x6b,
+            previous.region_bytes(previous_region).size());
+
+        iv::NodeLayoutBuilder current_builder(8);
+        auto current_region = current_builder.declare_raw_region(
+            24, 8, "graphjit.test.shape");
+        auto current_layout = std::move(current_builder).build();
+        auto current = current_layout.create_storage(resources);
+        current.initialize(&previous);
+        for (auto const byte : current.region_bytes(current_region)) {
+            iv::test::require(
+                byte == std::byte{0},
+                "shape-mismatched persistent raw region must not migrate");
+        }
+    }
+
+    {
+        // The prepared migration path used for safe-point generation swaps must
+        // preserve the same compiler-owned persistent raw storage contract.
+        iv::NodeLayoutBuilder previous_builder(8);
+        auto previous_region = previous_builder.declare_raw_region(
+            8, 4, "graphjit.test.prepared");
+        auto previous_layout = std::move(previous_builder).build();
+        auto resources = make_resources();
+        auto previous = previous_layout.create_storage(resources);
+        previous.initialize();
+        std::memset(
+            previous.region_bytes(previous_region).data(),
+            0x7c,
+            previous.region_bytes(previous_region).size());
+
+        iv::NodeLayoutBuilder current_builder(8);
+        auto current_region = current_builder.declare_raw_region(
+            8, 4, "graphjit.test.prepared");
+        auto current_layout = std::move(current_builder).build();
+        auto current = current_layout.create_storage(resources);
+        auto migration = current.prepare_migration_from(previous);
+        migration.commit();
+        for (auto const byte : current.region_bytes(current_region)) {
+            iv::test::require(
+                byte == std::byte{0x7c},
+                "prepared migration should preserve persistent raw storage");
+        }
+    }
 
     {
         iv::NodeLayoutBuilder builder(8);

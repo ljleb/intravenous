@@ -270,10 +270,21 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    converter object, heap allocation, or `OutputPort` conversion state. Arbitrary
    channel projection/permutation remains a later explicit transform rather than a
    compatibility connection node.
-9. **Sample history and latency.** **Current checkpoint.** Realize `compact_persistent_carry` and
-   `persistent_ring`, including exact cross-kernel retention, absolute-indexed
-   reads/writes, and migration semantics for persistent connection state.
-10. **Event-port realization refactor and simple event flow.** Give events the same
+9. **Sample history and latency.** **Landed for declared realtime sample history/latency.**
+   `compact_persistent_carry` uses one transient absolute-indexed working ring plus
+   exactly the retained tail in persistent raw `NodeStorage`; the tail is restored
+   before its producer and committed after producer-side materializations. Larger
+   retention uses `persistent_ring`, binding primitives directly to one power-of-two
+   persistent ring. Immutable input bindings carry authored history/read latency,
+   converted branches materialize the complete historical read window, and both
+   modes use absolute sample-index addressing. Persistent compiler-owned raw regions
+   carry stable migration identities and exact-shape `NodeStorage` migration copies
+   their bytes across generations; transient arenas never migrate. This point covers
+   declared output latency and input/output history. Whole-graph path-latency
+   equalization across independently-latent branches remains a separate scheduling
+   analysis concern and must land before latency-sensitive multi-input graphs are
+   considered complete.
+10. **Event-port realization refactor and simple event flow.** **Current checkpoint.** Give events the same
     immutable-binding/no-facade-storage architecture, then realize direct/transient
     bounded realtime event windows through `choose_event_connection_implementation()`.
 11. **Event fanout/conversion/retention.** Add converted branches, compact event
