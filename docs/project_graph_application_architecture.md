@@ -662,13 +662,12 @@ The implementation checkpoints now stand as follows:
    connection/history/latency/event-window storage planning and static
    compiled-access component/order analysis inside the isolated whole-graph
    lowering pipeline;
-8. **Landed (compiler shell, ABI cleanup pending):** `GraphJit` synchronously
-   captures exact package LLVM/provenance, resolves compiler anchors/config
-   relocations, verifies and O3 optimizes generated project LLVM, owns the project
-   ORC domain, and returns independently releasable `CompiledGraph` generations.
-   Before implementing the lowering body, replace the shell's provisional
-   project storage/lifecycle ABI with the generated-root + canonical `NodeLayout`
-   model specified above;
+8. **Landed (compiler shell + storage/lifecycle ABI cleanup):** `GraphJit`
+   synchronously captures exact package LLVM/provenance, resolves compiler
+   anchors/config relocations, verifies and O3 optimizes generated project LLVM,
+   owns the project ORC domain, and returns independently releasable
+   `CompiledGraph` generations carrying the canonical `NodeLayout` plus generated
+   root `tick_block`/optional `skip_block` operations;
 9. introduce `GraphExecutor` ownership of `NodeStorage`, sequential root-node
    execution, internal compiled-access requests, state migration, and
    safe-boundary activation;

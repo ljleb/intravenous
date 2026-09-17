@@ -1,17 +1,16 @@
 #pragma once
 
 #include <intravenous/graph/configured_graph.hpp>
+#include <intravenous/node/layout.h>
 #include <intravenous/runtime/node_definition_types.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
 namespace iv {
-struct ResourceContext;
 
 struct GraphJitConfig {
     std::size_t sample_rate = 48000;
@@ -44,80 +43,41 @@ struct GraphJitDiagnostic {
     std::string package_root{};
 };
 
-// Transitional GraphJit-shell ABI. These parallel storage-plan types are kept
-// only until the next LLVM-IR -> CompiledGraph pass. Canonical executable
-// storage is NodeLayout/NodeStorage; lowering now returns that finalized layout
-// before final LLVM generation. Do not extend these provisional types.
-struct CompiledGraphStorageRequirements {
-    std::size_t size = 0;
-    std::size_t alignment = 1;
-};
-
-// Persistent state correspondence retained outside generated code. This is the
-// minimum host-visible state map needed for future activation/migration logic;
-// all other execution-local layout is private to the lowerer-generated module.
-struct CompiledGraphNodeStorageLayout {
-    std::size_t node_bundle = 0;
-    std::optional<std::size_t> state_offset{};
-    std::size_t state_size = 0;
-    std::size_t state_alignment = 1;
-    std::optional<std::size_t> compiled_state_offset{};
-    std::size_t compiled_state_size = 0;
-    std::size_t compiled_state_alignment = 1;
-};
-
-struct CompiledGraphRuntimePlan {
-    // Mutable bytes retained across calls/generations while this compiled graph
-    // is active. Node State/CompiledState, history, feedback, activity, etc. live
-    // here according to the lowerer's plan.
-    CompiledGraphStorageRequirements persistent_storage{};
-
-    // Caller-owned transient bytes reusable between block calls. They are raw
-    // scratch: no generated initialize/release lifecycle is required.
-    CompiledGraphStorageRequirements scratch_storage{};
-
-    std::vector<CompiledGraphNodeStorageLayout> node_storage{};
-};
-
-// Stable native ABI between GraphExecutor and one generated project module.
-// block_size remains an argument even though GraphJit specializes for its
-// configured maximum/quantum; this keeps final partial-block execution legal.
-using CompiledGraphLifecycleFunction =
-    void (*)(std::byte* persistent_storage, ResourceContext const* resources);
+// Generated zero-input/zero-output root-node execution ABI. Mutable bytes are
+// owned by GraphExecutor through NodeStorage created from CompiledGraph::node_layout.
+// Generated code receives only that storage base plus execution coordinates;
+// lifecycle remains entirely in the ordinary NodeStorage machinery.
 using CompiledGraphBlockFunction =
-    void (*)(
-        std::byte* persistent_storage,
-        std::byte* scratch_storage,
-        ResourceContext const* resources,
-        std::size_t sample_index,
-        std::size_t block_size);
+    void (*)(std::byte* storage_base, std::size_t sample_index, std::size_t block_size);
 
-struct CompiledGraphEntrypoints {
-    CompiledGraphLifecycleFunction initialize = nullptr;
-    CompiledGraphLifecycleFunction release = nullptr;
+struct CompiledGraphRootOperations {
     CompiledGraphBlockFunction tick_block = nullptr;
+    // Null means the generated root cannot legally skip a block.
     CompiledGraphBlockFunction skip_block = nullptr;
 
     [[nodiscard]] bool valid() const noexcept
     {
-        return initialize != nullptr && release != nullptr
-            && tick_block != nullptr && skip_block != nullptr;
+        return tick_block != nullptr;
+    }
+
+    [[nodiscard]] bool can_skip_block() const noexcept
+    {
+        return skip_block != nullptr;
     }
 };
 
-// One immutable native project generation. The runtime_plan/initialize/release
-// fields below are transitional shell state and will be replaced by the
-// lowerer's canonical NodeLayout plus ordinary NodeStorage lifecycle in the
-// next LLVM-IR -> CompiledGraph pass. Generated code remains pinned by
-// code_lifetime.
+// One immutable native project generation. GraphJit owns code/layout/planning
+// metadata only; GraphExecutor creates NodeStorage from node_layout and owns all
+// mutable state plus initialize/move/release lifecycle. Generated code remains
+// pinned by code_lifetime.
 struct CompiledGraph {
     std::uint64_t project_generation = 0;
     std::uint64_t definitions_generation = 0;
     GraphJitKernelSpecialization specialization{};
     std::shared_ptr<ConfiguredGraph const> configured_graph{};
     std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
-    CompiledGraphRuntimePlan runtime_plan{};
-    CompiledGraphEntrypoints entrypoints{};
+    NodeLayout node_layout{};
+    CompiledGraphRootOperations root_operations{};
     std::shared_ptr<void const> code_lifetime{};
 };
 

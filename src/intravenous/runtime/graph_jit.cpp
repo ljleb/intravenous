@@ -669,155 +669,93 @@ bool valid_storage_alignment(std::size_t alignment) noexcept
     return alignment != 0 && (alignment & (alignment - 1)) == 0;
 }
 
-void validate_storage_requirements(
-    CompiledGraphStorageRequirements const& storage,
-    std::string_view name)
+void validate_node_layout(NodeLayout const& layout)
 {
-    if (!valid_storage_alignment(storage.alignment)) {
+    if (!valid_storage_alignment(layout.storage_alignment)) {
         fail(
             GraphJitDiagnosticStage::lowering,
-            "graph lowerer returned a non-power-of-two " + std::string(name)
-                + " alignment");
+            "graph lowerer returned a NodeLayout with non-power-of-two storage alignment");
     }
-}
 
-void validate_storage_region(
-    CompiledGraphStorageRequirements const& storage,
-    std::optional<std::size_t> offset,
-    std::size_t size,
-    std::size_t alignment,
-    std::string_view name,
-    std::size_t node_bundle)
-{
-    if (!valid_storage_alignment(alignment)) {
-        fail(
-            GraphJitDiagnosticStage::lowering,
-            "graph lowerer returned invalid " + std::string(name)
-                + " alignment for node bundle " + std::to_string(node_bundle));
-    }
-    if (!offset) {
-        if (size != 0) {
+    for (std::size_t region_index = 0; region_index < layout.regions.size(); ++region_index) {
+        auto const& region = layout.regions[region_index];
+        if (!valid_storage_alignment(region.alignment)) {
             fail(
                 GraphJitDiagnosticStage::lowering,
-                "graph lowerer omitted " + std::string(name)
-                    + " storage offset for non-empty node bundle "
-                    + std::to_string(node_bundle));
+                "graph lowerer returned a NodeLayout region with invalid alignment at index "
+                    + std::to_string(region_index));
         }
-        return;
-    }
-    if (*offset % alignment != 0 || storage.alignment < alignment) {
-        fail(
-            GraphJitDiagnosticStage::lowering,
-            "graph lowerer returned misaligned " + std::string(name)
-                + " storage for node bundle " + std::to_string(node_bundle));
-    }
-    if (*offset > storage.size || size > storage.size - *offset) {
-        fail(
-            GraphJitDiagnosticStage::lowering,
-            "graph lowerer returned out-of-bounds " + std::string(name)
-                + " storage for node bundle " + std::to_string(node_bundle));
+        if (region.storage_offset % region.alignment != 0
+            || layout.storage_alignment < region.alignment) {
+            fail(
+                GraphJitDiagnosticStage::lowering,
+                "graph lowerer returned a misaligned NodeLayout region at index "
+                    + std::to_string(region_index));
+        }
+        if (region.storage_offset > layout.storage_size
+            || region.size > layout.storage_size - region.storage_offset) {
+            fail(
+                GraphJitDiagnosticStage::lowering,
+                "graph lowerer returned an out-of-bounds NodeLayout region at index "
+                    + std::to_string(region_index));
+        }
     }
 }
 
-llvm::FunctionType* lifecycle_entrypoint_type(llvm::LLVMContext& context)
-{
-    auto* pointer = llvm::PointerType::getUnqual(context);
-    return llvm::FunctionType::get(
-        llvm::Type::getVoidTy(context),
-        {pointer, pointer},
-        false);
-}
-
-llvm::FunctionType* block_entrypoint_type(llvm::LLVMContext& context)
+llvm::FunctionType* root_block_operation_type(llvm::LLVMContext& context)
 {
     auto* pointer = llvm::PointerType::getUnqual(context);
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     return llvm::FunctionType::get(
         llvm::Type::getVoidTy(context),
-        {pointer, pointer, pointer, size_type, size_type},
+        {pointer, size_type, size_type},
         false);
 }
 
-void validate_entrypoint(
+void validate_root_operation(
     llvm::Module const& module,
     std::string const& symbol,
     llvm::FunctionType const* expected_type,
-    std::string_view role)
+    std::string_view role,
+    bool required)
 {
     if (symbol.empty()) {
-        fail(
-            GraphJitDiagnosticStage::lowering,
-            "graph lowerer did not provide a " + std::string(role)
-                + " entrypoint symbol");
+        if (required) {
+            fail(
+                GraphJitDiagnosticStage::lowering,
+                "graph lowerer did not provide a root " + std::string(role)
+                    + " symbol");
+        }
+        return;
     }
     auto const* function = module.getFunction(symbol);
     if (!function || function->isDeclaration() || !function->hasExternalLinkage()) {
         fail(
             GraphJitDiagnosticStage::lowering,
-            "graph lowerer " + std::string(role) + " entrypoint '" + symbol
+            "graph lowerer root " + std::string(role) + " operation '" + symbol
                 + "' is not an externally visible function definition");
     }
     if (function->getCallingConv() != llvm::CallingConv::C
         || function->getFunctionType() != expected_type) {
         fail(
             GraphJitDiagnosticStage::lowering,
-            "graph lowerer " + std::string(role) + " entrypoint '" + symbol
+            "graph lowerer root " + std::string(role) + " operation '" + symbol
                 + "' has the wrong native ABI");
     }
 }
 
 void validate_lowering_output(
     llvm::Module const& module,
-    graph_jit::LoweringOutput const& output,
-    ConfiguredGraph const& graph)
+    graph_jit::LoweringOutput const& output)
 {
-    validate_storage_requirements(
-        output.runtime_plan.persistent_storage, "persistent storage");
-    validate_storage_requirements(
-        output.runtime_plan.scratch_storage, "scratch storage");
+    validate_node_layout(output.node_layout);
 
-    std::unordered_set<std::size_t> node_bundles;
-    for (auto const& node : output.runtime_plan.node_storage) {
-        if (node.node_bundle >= graph.node_bundles.size()) {
-            fail(
-                GraphJitDiagnosticStage::lowering,
-                "graph lowerer returned storage metadata for invalid node bundle "
-                    + std::to_string(node.node_bundle));
-        }
-        if (!node_bundles.insert(node.node_bundle).second) {
-            fail(
-                GraphJitDiagnosticStage::lowering,
-                "graph lowerer returned duplicate storage metadata for node bundle "
-                    + std::to_string(node.node_bundle));
-        }
-        validate_storage_region(
-            output.runtime_plan.persistent_storage,
-            node.state_offset,
-            node.state_size,
-            node.state_alignment,
-            "State",
-            node.node_bundle);
-        validate_storage_region(
-            output.runtime_plan.persistent_storage,
-            node.compiled_state_offset,
-            node.compiled_state_size,
-            node.compiled_state_alignment,
-            "CompiledState",
-            node.node_bundle);
-    }
-
-    auto& context = module.getContext();
-    auto* lifecycle_type = lifecycle_entrypoint_type(context);
-    auto* block_type = block_entrypoint_type(context);
-    validate_entrypoint(
-        module, output.entrypoints.initialize, lifecycle_type, "initialize");
-    validate_entrypoint(
-        module, output.entrypoints.release, lifecycle_type, "release");
-    validate_entrypoint(
-        module, output.entrypoints.tick_block, block_type, "tick_block");
-    validate_entrypoint(
-        module, output.entrypoints.skip_block, block_type, "skip_block");
+    auto* block_type = root_block_operation_type(module.getContext());
+    validate_root_operation(
+        module, output.root_symbols.tick_block, block_type, "tick_block", true);
+    validate_root_operation(
+        module, output.root_symbols.skip_block, block_type, "skip_block", false);
 }
 
 void optimize_project_module(llvm::Module& module, llvm::TargetMachine& target_machine)
@@ -884,7 +822,7 @@ struct ProjectCodeLifetime {
 };
 
 struct MaterializedProjectCode {
-    CompiledGraphEntrypoints entrypoints{};
+    CompiledGraphRootOperations root_operations{};
     std::shared_ptr<void const> lifetime{};
 };
 
@@ -893,7 +831,7 @@ MaterializedProjectCode materialize_project_module(
     std::unique_ptr<llvm::Module> module,
     std::unique_ptr<llvm::LLVMContext> context,
     std::span<std::shared_ptr<PackageRevision const> const> package_revisions,
-    graph_jit::LoweredGraphEntrypointSymbols const& entrypoint_symbols,
+    graph_jit::LoweredGraphRootSymbols const& root_symbols,
     std::uint64_t project_generation)
 {
     auto lifetime = std::make_shared<ProjectCodeLifetime>();
@@ -957,23 +895,21 @@ MaterializedProjectCode materialize_project_module(
             return address.template toPtr<Function>();
         };
 
-        CompiledGraphEntrypoints entrypoints{
-            .initialize = symbol.template operator()<CompiledGraphLifecycleFunction>(
-                entrypoint_symbols.initialize, "initialize"),
-            .release = symbol.template operator()<CompiledGraphLifecycleFunction>(
-                entrypoint_symbols.release, "release"),
+        CompiledGraphRootOperations root_operations{
             .tick_block = symbol.template operator()<CompiledGraphBlockFunction>(
-                entrypoint_symbols.tick_block, "tick_block"),
-            .skip_block = symbol.template operator()<CompiledGraphBlockFunction>(
-                entrypoint_symbols.skip_block, "skip_block"),
+                root_symbols.tick_block, "root tick_block"),
+            .skip_block = root_symbols.skip_block.empty()
+                ? nullptr
+                : symbol.template operator()<CompiledGraphBlockFunction>(
+                    root_symbols.skip_block, "root skip_block"),
         };
-        if (!entrypoints.valid()) {
+        if (!root_operations.valid()) {
             fail(
                 GraphJitDiagnosticStage::materialization,
-                "project LLVM resolved an incomplete executable graph ABI");
+                "project LLVM resolved an incomplete root-node execution ABI");
         }
         return MaterializedProjectCode{
-            .entrypoints = entrypoints,
+            .root_operations = root_operations,
             .lifetime = std::shared_ptr<void const>(std::move(lifetime)),
         };
     } catch (...) {
@@ -1181,7 +1117,7 @@ public:
         }
 
         try {
-            validate_lowering_output(*output, *lowering, *request.graph);
+            validate_lowering_output(*output, *lowering);
             verify_module(
                 *output,
                 GraphJitDiagnosticStage::lowering,
@@ -1207,7 +1143,7 @@ public:
                 std::move(output),
                 std::move(context),
                 package_revisions,
-                lowering->entrypoints,
+                lowering->root_symbols,
                 request.project_generation);
             result.compiled_graph = std::make_shared<CompiledGraph>(CompiledGraph{
                 .project_generation = request.project_generation,
@@ -1215,8 +1151,8 @@ public:
                 .specialization = specialization_,
                 .configured_graph = request.graph,
                 .package_revisions = std::move(package_revisions),
-                .runtime_plan = std::move(lowering->runtime_plan),
-                .entrypoints = materialized.entrypoints,
+                .node_layout = std::move(lowering->node_layout),
+                .root_operations = materialized.root_operations,
                 .code_lifetime = std::move(materialized.lifetime),
             });
         } catch (GraphJitCompileError const& error) {

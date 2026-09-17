@@ -74,12 +74,10 @@ struct LoweringInput {
     std::span<ConfigRelocation const> config_relocations{};
 };
 
-// Names of the fixed GraphExecutor <-> generated-module ABI. The lowerer may
-// choose unique symbol names per project generation; GraphJit validates their
-// LLVM types before optimization and resolves all four after ORC materialization.
-struct LoweredGraphEntrypointSymbols {
-    std::string initialize{};
-    std::string release{};
+// Names of the generated zero-input/zero-output root-node operations. The
+// lowerer may choose unique symbol names per project generation. tick_block is
+// required; an empty skip_block means the root is not legally skippable.
+struct LoweredGraphRootSymbols {
     std::string tick_block{};
     std::string skip_block{};
 };
@@ -90,16 +88,11 @@ struct LoweredGraphEntrypointSymbols {
 // accesses into output_module. State, CompiledState, graph-persistent arrays,
 // and bounded compiler workspaces therefore share one NodeStorage allocation,
 // and generated accesses may use final NodeLayout offsets as constants.
-//
-// runtime_plan is transitional compatibility with the current post-lowering
-// materialization shell. The next LLVM-IR -> CompiledGraph pass removes that
-// parallel representation and makes node_layout the sole storage contract.
 // Immutable lowering-shared tables should be emitted as LLVM globals so their
 // lifetime is exactly the materialized ORC generation.
 struct LoweringOutput {
     NodeLayout node_layout{};
-    CompiledGraphRuntimePlan runtime_plan{};
-    LoweredGraphEntrypointSymbols entrypoints{};
+    LoweredGraphRootSymbols root_symbols{};
 };
 
 std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(

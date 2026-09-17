@@ -48,13 +48,13 @@ per-generation resources. Generated project LLVM is verified, optimized at O3,
 and materialized synchronously before an immutable `CompiledGraph` is returned.
 
 The deliberately isolated missing implementation is
-`graph_jit::lower_configured_graph_to_llvm`. The currently landed shell still
-contains a provisional project-level storage/entrypoint ABI around that stub.
-Before the lowering body is implemented, that provisional ABI should be replaced
-by the root-node and canonical `NodeLayout`/`NodeStorage` contract specified in
-this document. In particular, whole-project compilation must not introduce a
-second node-storage layout, a second lifecycle system, or a synthetic
-project-wide `access_block()` merely to expose compiled outputs.
+`graph_jit::lower_configured_graph_to_llvm`. The shell now uses the generated-root
+and canonical `NodeLayout`/`NodeStorage` contract specified in this document:
+`CompiledGraph` carries the finalized `NodeLayout` plus generated root
+`tick_block`/optional `skip_block` operations, while lifecycle remains entirely
+in ordinary `NodeStorage`. Whole-project lowering must not reintroduce a second
+node-storage layout, a second lifecycle system, or a synthetic project-wide
+`access_block()` merely to expose compiled outputs.
 
 The root-build transaction remains:
 
