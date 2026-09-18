@@ -62,6 +62,8 @@ constexpr char graph_jit_converted_event_fanout_module_id[] = "iv.test.graph_jit
 constexpr char graph_jit_retained_event_module_id[] = "iv.test.graph_jit.state_context.retained_event_module";
 constexpr char graph_jit_persistent_event_ring_module_id[] = "iv.test.graph_jit.state_context.persistent_event_ring_module";
 constexpr char graph_jit_retained_converted_event_fanout_module_id[] = "iv.test.graph_jit.state_context.retained_converted_event_fanout_module";
+constexpr char graph_jit_sample_feedback_a_id[] = "iv.test.graph_jit.state_context.sample_feedback_a";
+constexpr char graph_jit_sample_feedback_b_id[] = "iv.test.graph_jit.state_context.sample_feedback_b";
 constexpr char graph_jit_event_feedback_a_id[] = "iv.test.graph_jit.state_context.event_feedback_a";
 constexpr char graph_jit_event_feedback_b_id[] = "iv.test.graph_jit.state_context.event_feedback_b";
 constexpr char graph_jit_event_feedback_burst_a_id[] = "iv.test.graph_jit.state_context.event_feedback_burst_a";
@@ -123,6 +125,27 @@ struct SampleConsumerProbeStateMirror {
     float first = 0.0f;
     float last = 0.0f;
     float sum = 0.0f;
+};
+
+struct SampleFeedbackAStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t scc_feedback_latency = 0;
+    std::array<std::uint64_t, 24> indices{};
+    std::array<std::uint64_t, 24> block_sizes{};
+    std::array<float, 24> first_inputs{};
+    std::array<float, 24> last_inputs{};
+    std::uint32_t marker = 0;
+};
+
+struct SampleFeedbackBStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t scc_feedback_latency = 0;
+    std::array<std::uint64_t, 24> indices{};
+    std::array<std::uint64_t, 24> block_sizes{};
+    std::array<float, 24> first_inputs{};
+    std::array<float, 24> last_inputs{};
+    std::uint64_t marker = 0;
+    std::uint64_t distinct_padding = 0;
 };
 
 struct StereoSampleConsumerProbeStateMirror {
@@ -1223,6 +1246,9 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     EXPECT_EQ(persistent.retained_frames, 5u);
     EXPECT_EQ(persistent.frame_capacity, 128u);
     EXPECT_EQ(persistent.size_bytes, 128u * sizeof(iv::Sample));
+    ASSERT_TRUE(persistent.initialize_value.has_value());
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(*persistent.initialize_value), 0.25f);
     EXPECT_NE(
         persistent.migration_identity.find("graphjit.sample.feedback:"),
         std::string::npos);
@@ -1248,6 +1274,20 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     EXPECT_EQ(
         persistent_region.migration_identity,
         persistent.migration_identity);
+    ASSERT_NE(persistent_region.raw_initialize_fn, nullptr);
+    EXPECT_EQ(persistent_region.raw_initialize_payload.size(), sizeof(iv::Sample));
+
+    iv::ResourceContext resources;
+    auto storage = layout.create_storage(resources);
+    storage.initialize();
+    auto const bytes = storage.region_bytes(persistent.region);
+    ASSERT_EQ(bytes.size(), 128u * sizeof(iv::Sample));
+    auto const initialized = std::span<iv::Sample const>{
+        reinterpret_cast<iv::Sample const*>(bytes.data()),
+        bytes.size() / sizeof(iv::Sample)};
+    for (auto const sample : initialized) {
+        EXPECT_FLOAT_EQ(static_cast<float>(sample), 0.25f);
+    }
 }
 
 TEST(GraphJitSamplePhysicalPlan, ConvertedRetentionMaterializesHistoricalWindow)
@@ -1769,6 +1809,97 @@ struct SampleConsumerProbe {
         state.sum = 0.0f;
         for (auto const sample : block) {
             state.sum += sample;
+        }
+    }
+};
+
+struct SampleFeedbackA {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t scc_feedback_latency = 0;
+        std::array<std::uint64_t, 24> indices{};
+        std::array<std::uint64_t, 24> block_sizes{};
+        std::array<float, 24> first_inputs{};
+        std::array<float, 24> last_inputs{};
+        std::uint32_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input("in")};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output("out")};
+    }
+
+    void tick_block(iv::TickBlockContext<SampleFeedbackA> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const input = ctx.inputs[0].get_block(ctx.block_size);
+        auto const slot = static_cast<std::size_t>(state.calls);
+        if (slot < state.indices.size()) {
+            state.indices[slot] = ctx.index;
+            state.block_sizes[slot] = ctx.block_size;
+            state.first_inputs[slot] = input.empty()
+                ? 0.0f
+                : static_cast<float>(input[0]);
+            state.last_inputs[slot] = input.empty()
+                ? 0.0f
+                : static_cast<float>(input[input.size() - 1]);
+        }
+        ++state.calls;
+        state.scc_feedback_latency = ctx.scc_feedback_latency;
+        state.marker = 0x5a11ce01u;
+        for (auto const sample : input) {
+            ctx.outputs[0].push(sample + 1.0f);
+        }
+    }
+};
+
+struct SampleFeedbackB {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t scc_feedback_latency = 0;
+        std::array<std::uint64_t, 24> indices{};
+        std::array<std::uint64_t, 24> block_sizes{};
+        std::array<float, 24> first_inputs{};
+        std::array<float, 24> last_inputs{};
+        std::uint64_t marker = 0;
+        std::uint64_t distinct_padding = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input("in")};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output("out")};
+    }
+
+    void tick_block(iv::TickBlockContext<SampleFeedbackB> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const input = ctx.inputs[0].get_block(ctx.block_size);
+        auto const slot = static_cast<std::size_t>(state.calls);
+        if (slot < state.indices.size()) {
+            state.indices[slot] = ctx.index;
+            state.block_sizes[slot] = ctx.block_size;
+            state.first_inputs[slot] = input.empty()
+                ? 0.0f
+                : static_cast<float>(input[0]);
+            state.last_inputs[slot] = input.empty()
+                ? 0.0f
+                : static_cast<float>(input[input.size() - 1]);
+        }
+        ++state.calls;
+        state.scc_feedback_latency = ctx.scc_feedback_latency;
+        state.marker = 0x5b22ce02ull;
+        for (auto const sample : input) {
+            ctx.outputs[0].push(sample);
         }
     }
 };
@@ -3058,6 +3189,8 @@ IV_NODE("iv.test.graph_jit.state_context.limited_block", LimitedBlockProbe);
 IV_NODE("iv.test.graph_jit.state_context.sample_ramp_source", SampleRampSource);
 IV_NODE("iv.test.graph_jit.state_context.limited_sample_ramp_source", LimitedSampleRampSource);
 IV_NODE("iv.test.graph_jit.state_context.sample_consumer", SampleConsumerProbe);
+IV_NODE("iv.test.graph_jit.state_context.sample_feedback_a", SampleFeedbackA);
+IV_NODE("iv.test.graph_jit.state_context.sample_feedback_b", SampleFeedbackB);
 IV_NODE("iv.test.graph_jit.state_context.mono_interleaved_consumer", MonoInterleavedConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.stereo_ramp_source", StereoRampSource);
 IV_NODE("iv.test.graph_jit.state_context.stereo_planar_consumer", StereoPlanarConsumerProbe);
@@ -3169,6 +3302,42 @@ std::shared_ptr<iv::PackageRevision const> load_graph_jit_runtime_revision()
     }
     return std::make_shared<iv::PackageRevision const>(
         std::move(request.result.revisions.front()));
+}
+
+std::shared_ptr<iv::ConfiguredGraph const> configured_sample_feedback_graph(
+    iv::PackageRevision const& revision,
+    std::size_t latency = 6,
+    iv::Sample initial_value = iv::Sample{-0.625f})
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create GraphJit sample-feedback builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto first = iv::details::configure_package_definition_provider(
+        graph, graph_jit_sample_feedback_a_id, std::nullopt, {});
+    auto second = iv::details::configure_package_definition_provider(
+        graph, graph_jit_sample_feedback_b_id, std::nullopt, {});
+    first(second);
+    second(static_cast<iv::SamplePortRef>(first).detach(latency, initial_value));
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
 }
 
 
@@ -3355,6 +3524,8 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
         "iv.test.graph_jit.state_context.latency_compensation_probe"));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.interleaved_latency_compensation_probe"));
+    EXPECT_TRUE(has_leaf_definition(graph_jit_sample_feedback_a_id));
+    EXPECT_TRUE(has_leaf_definition(graph_jit_sample_feedback_b_id));
     EXPECT_TRUE(has_module_definition(graph_jit_latency_compensation_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_latency_conversion_fanout_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_composed_latency_module_id));
@@ -4778,6 +4949,137 @@ TEST_F(GraphJitRuntimeFixture, DirectEventFlow)
     EXPECT_EQ(direct_event_probe->first_time, 67u);
     EXPECT_EQ(direct_event_probe->last_time, 127u);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, ExactSampleDetachFeedback)
+{
+    auto feedback_graph = configured_sample_feedback_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    auto const detached = std::ranges::find_if(
+        analysis->sample_connections,
+        [](iv::graph_jit::detail::SampleConnectionPlan const& connection) {
+            return connection.detach.has_value();
+        });
+    ASSERT_NE(detached, analysis->sample_connections.end());
+    ASSERT_TRUE(detached->detach.has_value());
+    EXPECT_EQ(detached->detach->loop_extra_latency, 6u);
+    ASSERT_TRUE(detached->detach_initial_value.has_value());
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(*detached->detach_initial_value), -0.625f);
+    ASSERT_TRUE(detached->detach_region.has_value());
+    ASSERT_LT(*detached->detach_region, analysis->schedule.regions.size());
+    auto const& region = analysis->schedule.regions[*detached->detach_region];
+    ASSERT_TRUE(region.cyclic);
+    EXPECT_EQ(region.maximum_block_size, 4u);
+    EXPECT_EQ(region.scc_feedback_latency, 4u);
+
+    auto compiled = compile_graph(feedback_graph, 122);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_EQ(compiled.compiled_graph->node_layout.nodes.size(), 2u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    SampleFeedbackAStateMirror* state_a = nullptr;
+    SampleFeedbackBStateMirror* state_b = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size =
+            compiled.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(SampleFeedbackAStateMirror)) {
+            ASSERT_EQ(state_a, nullptr);
+            state_a = static_cast<SampleFeedbackAStateMirror*>(
+                storage.state_ptr(i));
+        } else if (state_size == sizeof(SampleFeedbackBStateMirror)) {
+            ASSERT_EQ(state_b, nullptr);
+            state_b = static_cast<SampleFeedbackBStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(state_a, nullptr);
+    ASSERT_NE(state_b, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 13);
+
+    ASSERT_EQ(state_a->calls, 4u);
+    ASSERT_EQ(state_b->calls, 4u);
+    EXPECT_EQ(state_a->scc_feedback_latency, 4u);
+    EXPECT_EQ(state_b->scc_feedback_latency, 4u);
+    EXPECT_EQ(state_a->marker, 0x5a11ce01u);
+    EXPECT_EQ(state_b->marker, 0x5b22ce02ull);
+
+    std::array<std::uint64_t, 4> const expected_indices{0, 4, 8, 12};
+    std::array<std::uint64_t, 4> const expected_sizes{4, 4, 4, 1};
+    std::array<float, 4> const expected_first{-0.625f, -0.625f, 0.375f, 1.375f};
+    std::array<float, 4> const expected_last{-0.625f, 0.375f, 0.375f, 1.375f};
+    for (std::size_t slice = 0; slice < expected_indices.size(); ++slice) {
+        EXPECT_EQ(state_a->indices[slice], expected_indices[slice]);
+        EXPECT_EQ(state_b->indices[slice], expected_indices[slice]);
+        EXPECT_EQ(state_a->block_sizes[slice], expected_sizes[slice]);
+        EXPECT_EQ(state_b->block_sizes[slice], expected_sizes[slice]);
+        EXPECT_FLOAT_EQ(state_a->first_inputs[slice], expected_first[slice]);
+        EXPECT_FLOAT_EQ(state_b->first_inputs[slice], expected_first[slice]);
+        EXPECT_FLOAT_EQ(state_a->last_inputs[slice], expected_last[slice]);
+        EXPECT_FLOAT_EQ(state_b->last_inputs[slice], expected_last[slice]);
+    }
+
+    // The detached branch stores A's produced value at its absolute sample
+    // index and reads it six samples later. Recompile at an awkward boundary:
+    // the next root call must observe A[7..12], proving the feedback ring was
+    // migrated rather than reinitialized to the authored -0.625 value.
+    auto recompiled = compile_graph(feedback_graph, 123);
+    ASSERT_TRUE(recompiled.succeeded())
+        << (recompiled.diagnostics.empty()
+                ? ""
+                : recompiled.diagnostics.front().message);
+    auto migrated_storage =
+        recompiled.compiled_graph->node_layout.create_storage(resources);
+    migrated_storage.initialize(&storage);
+    SampleFeedbackAStateMirror* migrated_a = nullptr;
+    SampleFeedbackBStateMirror* migrated_b = nullptr;
+    for (std::size_t i = 0;
+         i < recompiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size =
+            recompiled.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(SampleFeedbackAStateMirror)) {
+            migrated_a = static_cast<SampleFeedbackAStateMirror*>(
+                migrated_storage.state_ptr(i));
+        } else if (state_size == sizeof(SampleFeedbackBStateMirror)) {
+            migrated_b = static_cast<SampleFeedbackBStateMirror*>(
+                migrated_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(migrated_a, nullptr);
+    ASSERT_NE(migrated_b, nullptr);
+
+    recompiled.compiled_graph->root_operations.tick_block(
+        migrated_storage.buffer().data(), 13, 6);
+    ASSERT_EQ(migrated_a->calls, 2u);
+    ASSERT_EQ(migrated_b->calls, 2u);
+    EXPECT_EQ(migrated_a->indices[0], 13u);
+    EXPECT_EQ(migrated_b->indices[0], 13u);
+    EXPECT_EQ(migrated_a->block_sizes[0], 4u);
+    EXPECT_EQ(migrated_b->block_sizes[0], 4u);
+    EXPECT_FLOAT_EQ(migrated_a->first_inputs[0], 1.375f);
+    EXPECT_FLOAT_EQ(migrated_b->first_inputs[0], 1.375f);
+    EXPECT_FLOAT_EQ(migrated_a->last_inputs[0], 1.375f);
+    EXPECT_FLOAT_EQ(migrated_b->last_inputs[0], 1.375f);
+    EXPECT_EQ(migrated_a->indices[1], 17u);
+    EXPECT_EQ(migrated_b->indices[1], 17u);
+    EXPECT_EQ(migrated_a->block_sizes[1], 2u);
+    EXPECT_EQ(migrated_b->block_sizes[1], 2u);
+    EXPECT_FLOAT_EQ(migrated_a->first_inputs[1], 1.375f);
+    EXPECT_FLOAT_EQ(migrated_b->first_inputs[1], 1.375f);
+    EXPECT_FLOAT_EQ(migrated_a->last_inputs[1], 2.375f);
+    EXPECT_FLOAT_EQ(migrated_b->last_inputs[1], 2.375f);
 }
 
 TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)

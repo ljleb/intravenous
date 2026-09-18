@@ -49,8 +49,15 @@ namespace iv {
             // Optional stable identity for compiler-owned raw regions whose
             // bytes are semantic persistent state rather than scratch. Exact-
             // shape matches are copied during NodeStorage migration; transient
-            // arenas leave this empty and are always freshly zeroed.
+            // arenas leave this empty and are always freshly zeroed. A raw
+            // initializer runs during storage initialization only when this
+            // region was not restored by exact-shape migration.
             std::string migration_identity{};
+            using RawInitializeFn = void (*)(
+                std::span<std::byte> storage,
+                std::span<std::byte const> payload);
+            RawInitializeFn raw_initialize_fn = nullptr;
+            std::vector<std::byte> raw_initialize_payload{};
             void const* element_type = nullptr;
             char const* element_type_name = nullptr;
             void (*assign_span_fn)(
@@ -119,7 +126,9 @@ namespace iv {
         NodeLayout::RegionHandle declare_raw_region(
             size_t size,
             size_t alignment = 1,
-            std::string migration_identity = {});
+            std::string migration_identity = {},
+            NodeLayout::Region::RawInitializeFn initialize_fn = nullptr,
+            std::vector<std::byte> initialize_payload = {});
 
         template<typename A>
         static void const* array_type_token()

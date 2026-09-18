@@ -1254,6 +1254,117 @@ std::expected<void, std::string> emit_sample_composition(
     return {};
 }
 
+std::expected<void, std::string> emit_sample_feedback_copy(
+    llvm::IRBuilder<>& builder,
+    detail::SamplePhysicalPlan const& physical,
+    detail::SampleFeedbackOperationPlan const& operation,
+    llvm::Value* storage_base,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
+{
+    static_assert(sizeof(Sample) == sizeof(Sample::storage));
+    static_assert(std::is_same_v<Sample::storage, float>);
+
+    if (operation.source_representation >= physical.representations.size()
+        || operation.ring_representation >= physical.representations.size()) {
+        return std::unexpected(
+            "GraphJit sample feedback copy references a missing representation");
+    }
+    auto const& source_plan =
+        physical.representations[operation.source_representation];
+    auto const& ring_plan =
+        physical.representations[operation.ring_representation];
+    if (ring_plan.implementation
+            != SampleConnectionImplementationKind::feedback_ring
+        || ring_plan.persistent_allocation
+            == detail::no_sample_persistent_allocation
+        || ring_plan.channel_layout != source_plan.channel_layout
+        || operation.loop_extra_latency == 0
+        || operation.loop_extra_latency >= ring_plan.frame_capacity) {
+        return std::unexpected(
+            "GraphJit sample feedback copy plan is inconsistent with its ring representation");
+    }
+    if (ring_plan.persistent_allocation >= physical.persistent_allocations.size()) {
+        return std::unexpected(
+            "GraphJit sample feedback copy references a missing persistent ring");
+    }
+    auto const& allocation =
+        physical.persistent_allocations[ring_plan.persistent_allocation];
+    if (allocation.kind != detail::SamplePersistentStorageKind::ring
+        || allocation.representation_index != operation.ring_representation
+        || !allocation.initialize_value
+        || static_cast<float>(*allocation.initialize_value)
+            != static_cast<float>(operation.initial_value)) {
+        return std::unexpected(
+            "GraphJit sample feedback persistent ring lost its initialization semantics");
+    }
+
+    auto source = sample_storage_binding(
+        physical, operation.source_representation);
+    if (!source) return std::unexpected(std::move(source.error()));
+    auto ring = sample_storage_binding(
+        physical, operation.ring_representation);
+    if (!ring) return std::unexpected(std::move(ring.error()));
+
+    auto& context = builder.getContext();
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* sample_type = llvm::Type::getFloatTy(context);
+    auto* zero = llvm::ConstantInt::get(size_type, 0);
+    auto* preheader = builder.GetInsertBlock();
+    auto* loop = llvm::BasicBlock::Create(
+        context, "sample.feedback.copy", function);
+    auto* exit = llvm::BasicBlock::Create(
+        context, "sample.feedback.copy.end", function);
+    builder.CreateCondBr(
+        builder.CreateICmpNE(
+            block_size, zero, "sample.feedback.copy.nonempty"),
+        loop,
+        exit);
+
+    builder.SetInsertPoint(loop);
+    auto* frame_offset = builder.CreatePHI(
+        size_type, 2, "sample.feedback.copy.frame");
+    frame_offset->addIncoming(zero, preheader);
+    auto* absolute_frame = builder.CreateAdd(
+        sample_index, frame_offset, "sample.feedback.copy.absolute");
+
+    auto const channels = channel_count(source_plan.channel_layout);
+    for (std::size_t channel = 0; channel < channels; ++channel) {
+        auto* source_pointer = sample_element_pointer(
+            builder,
+            storage_base,
+            *source,
+            absolute_frame,
+            channel,
+            "sample.feedback.source." + std::to_string(channel));
+        auto* value = builder.CreateLoad(
+            sample_type,
+            source_pointer,
+            "sample.feedback.value." + std::to_string(channel));
+        auto* ring_pointer = sample_element_pointer(
+            builder,
+            storage_base,
+            *ring,
+            absolute_frame,
+            channel,
+            "sample.feedback.ring." + std::to_string(channel));
+        builder.CreateStore(value, ring_pointer);
+    }
+
+    auto* next = builder.CreateAdd(
+        frame_offset,
+        llvm::ConstantInt::get(size_type, 1),
+        "sample.feedback.copy.next");
+    auto* done = builder.CreateICmpUGE(
+        next, block_size, "sample.feedback.copy.done");
+    builder.CreateCondBr(done, exit, loop);
+    frame_offset->addIncoming(next, loop);
+    builder.SetInsertPoint(exit);
+    return {};
+}
+
 std::expected<detail::SamplePersistentAllocationPlan const*, std::string>
 compact_carry_allocation(
     detail::SamplePhysicalPlan const& physical,
@@ -2090,6 +2201,23 @@ std::expected<void, std::string> emit_execution_step(
             storage_base,
             sample_index,
             block_size);
+    }
+
+    for (auto const feedback_index : step.sample_feedback_copies_after) {
+        if (feedback_index >= plan.sample_ports.physical.feedback_operations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing sample feedback copy");
+        }
+        auto copied = emit_sample_feedback_copy(
+            builder,
+            plan.sample_ports.physical,
+            plan.sample_ports.physical.feedback_operations[feedback_index],
+            storage_base,
+            sample_index,
+            block_size);
+        if (!copied) {
+            return std::unexpected(std::move(copied.error()));
+        }
     }
 
     for (auto const feedback_index : step.event_feedback_appends_after) {

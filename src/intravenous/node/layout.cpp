@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace iv {
     NodeLayoutBuilder::NodeLayoutBuilder(size_t max_block_size)
@@ -44,7 +45,11 @@ namespace iv {
     }
 
     NodeLayout::RegionHandle NodeLayoutBuilder::declare_raw_region(
-        size_t size, size_t alignment, std::string migration_identity)
+        size_t size,
+        size_t alignment,
+        std::string migration_identity,
+        NodeLayout::Region::RawInitializeFn initialize_fn,
+        std::vector<std::byte> initialize_payload)
     {
         if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
             throw std::invalid_argument(
@@ -57,6 +62,12 @@ namespace iv {
         region.size = size;
         region.alignment = alignment;
         region.migration_identity = std::move(migration_identity);
+        region.raw_initialize_fn = initialize_fn;
+        region.raw_initialize_payload = std::move(initialize_payload);
+        if (!region.raw_initialize_fn && !region.raw_initialize_payload.empty()) {
+            throw std::invalid_argument(
+                "node layout raw-region initialize payload requires a callback");
+        }
 
         _storage_alignment = std::max(_storage_alignment, alignment);
         _regions.push_back(std::move(region));
@@ -880,10 +891,11 @@ namespace iv {
         }
     }
 
-    void migrate_persistent_raw_regions(
+    std::unordered_set<std::string> migrate_persistent_raw_regions(
         NodeStorage& current, NodeStorage const& previous)
     {
-        if (!current.layout || !previous.layout) return;
+        std::unordered_set<std::string> migrated;
+        if (!current.layout || !previous.layout) return migrated;
 
         auto collect = [](NodeLayout const& layout) {
             std::unordered_map<std::string, NodeLayout::Region const*> result;
@@ -913,11 +925,35 @@ namespace iv {
                 || region->alignment != prior->alignment) {
                 continue;
             }
-            if (region->size == 0) continue;
-            std::memcpy(
-                current.storage.get() + region->storage_offset,
-                previous.storage.get() + prior->storage_offset,
-                region->size);
+            if (region->size != 0) {
+                std::memcpy(
+                    current.storage.get() + region->storage_offset,
+                    previous.storage.get() + prior->storage_offset,
+                    region->size);
+            }
+            migrated.insert(identity);
+        }
+        return migrated;
+    }
+
+    void initialize_raw_regions(
+        NodeStorage& storage,
+        std::unordered_set<std::string> const& migrated)
+    {
+        if (!storage.layout) return;
+        for (auto const& region : storage.layout->regions) {
+            if (region.kind != NodeLayout::Region::Kind::raw
+                || !region.raw_initialize_fn) {
+                continue;
+            }
+            if (!region.migration_identity.empty()
+                && migrated.contains(region.migration_identity)) {
+                continue;
+            }
+            auto bytes = storage.buffer();
+            region.raw_initialize_fn(
+                bytes.subspan(region.storage_offset, region.size),
+                region.raw_initialize_payload);
         }
     }
 
@@ -1067,7 +1103,9 @@ namespace iv {
         }
 
         construct_node_storage_states(*this);
-        migrate_persistent_raw_regions(*this, previous);
+        auto const migrated_raw_regions =
+            migrate_persistent_raw_regions(*this, previous);
+        initialize_raw_regions(*this, migrated_raw_regions);
 
         patch_node_storage_regions(*this, [](size_t) { return true; });
 
@@ -1213,9 +1251,11 @@ namespace iv {
         constructed_compiled_states.clear();
         initialized_nodes.clear();
         construct_node_storage_states(*this);
+        std::unordered_set<std::string> migrated_raw_regions;
         if (previous && previous->layout) {
-            migrate_persistent_raw_regions(*this, *previous);
+            migrated_raw_regions = migrate_persistent_raw_regions(*this, *previous);
         }
+        initialize_raw_regions(*this, migrated_raw_regions);
 
         patch_node_storage_regions(*this, [](size_t) { return true; });
         patch_node_storage_imports(*this);

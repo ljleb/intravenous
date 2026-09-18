@@ -829,10 +829,6 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             return std::unexpected(
                 "GraphJit sample-edge slice does not yet support external sample boundaries");
         }
-        if (connection.detach) {
-            return std::unexpected(
-                "GraphJit sample-edge slice does not yet support feedback sample connections");
-        }
         if (connection.source_channel_timings.size()
             != connection.source_channels.size()) {
             return std::unexpected(
@@ -979,7 +975,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 return std::unexpected(
                     "GraphJit sample connection lost its required layout conversion");
             }
-            target_read_latency = connection.read_latency;
+            target_read_latency = connection.detach
+                ? connection.detach->loop_extra_latency
+                : connection.read_latency;
         } else {
             // Projection/permutation has already normalized to one semantic
             // source per target channel. Channel-count conversion remains a
@@ -1892,6 +1890,18 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         step.sample_carry_commits_after.push_back(carry_index);
     }
 
+    for (std::size_t feedback_index = 0;
+         feedback_index < sample_ports.physical.feedback_operations.size();
+         ++feedback_index) {
+        auto const& feedback = sample_ports.physical.feedback_operations[feedback_index];
+        if (feedback.producer_execution_position >= plan.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit sample feedback operation references an invalid execution position");
+        }
+        plan.primitive_steps[feedback.producer_execution_position]
+            .sample_feedback_copies_after.push_back(feedback_index);
+    }
+
     for (std::size_t materialization_index = 0;
          materialization_index < sample_ports.physical.materializations.size();
          ++materialization_index) {
@@ -2043,15 +2053,6 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     if (!connections) {
         return std::unexpected(std::move(connections.error()));
     }
-    if (std::ranges::any_of(
-            connections->sample_connections,
-            [](SampleConnectionPlan const& connection) {
-                return connection.detach.has_value();
-            })) {
-        return std::unexpected(
-            "GraphJit sample detach transport lowering is not yet implemented");
-    }
-
     auto analysis = analyze_graph(input);
     if (!analysis) return std::unexpected(std::move(analysis.error()));
 

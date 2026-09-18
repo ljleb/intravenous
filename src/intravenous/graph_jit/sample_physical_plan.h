@@ -115,6 +115,7 @@ struct SamplePersistentAllocationPlan {
     std::size_t size_bytes = 0;
     std::size_t alignment = alignof(Sample);
     std::string migration_identity{};
+    std::optional<Sample> initialize_value{};
     NodeLayout::RegionHandle region{};
 
     // Assigned after canonical NodeLayout finalization.

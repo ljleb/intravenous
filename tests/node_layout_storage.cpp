@@ -7,6 +7,7 @@
 #include <intravenous/graph/node.h>
 #include <intravenous/graph/node_wrapper.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -482,6 +483,77 @@ int main()
             iv::test::require(
                 byte == std::byte{0},
                 "new raw storage should remain zero initialized");
+        }
+    }
+
+    {
+        // Compiler-owned raw-region initialization runs as part of
+        // NodeStorage::initialize(). Exact-shape migration wins over a new
+        // initializer so persistent graph state is never reset during a
+        // generation swap; shape changes run the new initializer.
+        auto fill_raw_region = +[](
+            std::span<std::byte> storage,
+            std::span<std::byte const> payload) {
+            iv::test::require(
+                payload.size() == 1,
+                "raw-region initializer should receive its declared payload");
+            std::fill(storage.begin(), storage.end(), payload.front());
+        };
+        auto payload = [](std::byte value) {
+            return std::vector<std::byte>{value};
+        };
+
+        iv::NodeLayoutBuilder previous_builder(8);
+        auto previous_region = previous_builder.declare_raw_region(
+            8,
+            4,
+            "graphjit.test.initialized",
+            fill_raw_region,
+            payload(std::byte{0x11}));
+        auto previous_layout = std::move(previous_builder).build();
+        auto resources = make_resources();
+        auto previous = previous_layout.create_storage(resources);
+        previous.initialize();
+        for (auto const byte : previous.region_bytes(previous_region)) {
+            iv::test::require(
+                byte == std::byte{0x11},
+                "fresh raw storage should run its initialize callback");
+        }
+        std::fill(
+            previous.region_bytes(previous_region).begin(),
+            previous.region_bytes(previous_region).end(),
+            std::byte{0x5a});
+
+        iv::NodeLayoutBuilder current_builder(8);
+        auto current_region = current_builder.declare_raw_region(
+            8,
+            4,
+            "graphjit.test.initialized",
+            fill_raw_region,
+            payload(std::byte{0x22}));
+        auto current_layout = std::move(current_builder).build();
+        auto current = current_layout.create_storage(resources);
+        current.initialize(&previous);
+        for (auto const byte : current.region_bytes(current_region)) {
+            iv::test::require(
+                byte == std::byte{0x5a},
+                "migrated raw storage must not rerun its initialize callback");
+        }
+
+        iv::NodeLayoutBuilder reshaped_builder(8);
+        auto reshaped_region = reshaped_builder.declare_raw_region(
+            12,
+            4,
+            "graphjit.test.initialized",
+            fill_raw_region,
+            payload(std::byte{0x33}));
+        auto reshaped_layout = std::move(reshaped_builder).build();
+        auto reshaped = reshaped_layout.create_storage(resources);
+        reshaped.initialize(&current);
+        for (auto const byte : reshaped.region_bytes(reshaped_region)) {
+            iv::test::require(
+                byte == std::byte{0x33},
+                "shape-mismatched raw storage should run its initialize callback");
         }
     }
 

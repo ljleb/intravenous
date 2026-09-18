@@ -7,14 +7,42 @@
 #include <algorithm>
 #include <bit>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <iterator>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace iv::graph_jit::detail {
 namespace {
+
+void initialize_sample_raw_region(
+    std::span<std::byte> storage,
+    std::span<std::byte const> payload)
+{
+    if (payload.size() != sizeof(Sample)
+        || storage.size() % sizeof(Sample) != 0) {
+        throw std::logic_error(
+            "GraphJit sample raw-region initializer received invalid storage");
+    }
+    Sample value{};
+    std::memcpy(&value, payload.data(), sizeof(value));
+    auto samples = std::span<Sample>{
+        reinterpret_cast<Sample*>(storage.data()),
+        storage.size() / sizeof(Sample)};
+    std::ranges::fill(samples, value);
+}
+
+std::vector<std::byte> sample_initialize_payload(Sample value)
+{
+    static_assert(std::is_trivially_copyable_v<Sample>);
+    std::vector<std::byte> payload(sizeof(value));
+    std::memcpy(payload.data(), &value, sizeof(value));
+    return payload;
+}
 
 std::expected<std::size_t, std::string> sample_bytes(
     ChannelLayout layout,
@@ -221,7 +249,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         ChannelLayout layout,
         std::size_t retained_frames,
         std::size_t frame_capacity,
-        std::string migration_identity = {})
+        std::string migration_identity = {},
+        std::optional<Sample> initialize_value = std::nullopt)
         -> std::expected<std::size_t, std::string> {
         auto const storage_frames = kind == SamplePersistentStorageKind::compact_carry
             ? retained_frames
@@ -241,6 +270,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 ? persistent_identity(
                     group, kind, retained_frames, frame_capacity)
                 : std::move(migration_identity),
+            .initialize_value = initialize_value,
         });
         return allocation_index;
     };
@@ -602,7 +632,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     group,
                     connection,
                     *connection.detach_initial_value,
-                    *ring_capacity));
+                    *ring_capacity),
+                *connection.detach_initial_value);
             if (!persistent) {
                 return std::unexpected(std::move(persistent.error()));
             }
@@ -818,7 +849,11 @@ std::expected<void, std::string> declare_sample_physical_storage(
             allocation.region = builder.declare_raw_region(
                 allocation.size_bytes,
                 allocation.alignment,
-                allocation.migration_identity);
+                allocation.migration_identity,
+                allocation.initialize_value ? initialize_sample_raw_region : nullptr,
+                allocation.initialize_value
+                    ? sample_initialize_payload(*allocation.initialize_value)
+                    : std::vector<std::byte>{});
         }
         return {};
     } catch (std::exception const& e) {
@@ -878,7 +913,11 @@ std::expected<void, std::string> finalize_sample_physical_storage(
         if (region.kind != NodeLayout::Region::Kind::raw
             || region.size != allocation.size_bytes
             || region.alignment != allocation.alignment
-            || region.migration_identity != allocation.migration_identity) {
+            || region.migration_identity != allocation.migration_identity
+            || static_cast<bool>(region.raw_initialize_fn)
+                != allocation.initialize_value.has_value()
+            || region.raw_initialize_payload.size()
+                != (allocation.initialize_value ? sizeof(Sample) : 0u)) {
             return std::unexpected(
                 "GraphJit finalized sample persistent region changed semantics");
         }
