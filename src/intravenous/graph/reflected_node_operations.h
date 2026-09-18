@@ -97,6 +97,9 @@ struct ReflectedEventInputPortBinding {
 
 struct ReflectedEventOutputPortBinding {
     ReflectedEventPortStorageBinding storage {};
+    // Per-logical-output producer overflow telemetry. Derived event
+    // representations never allocate or bind their own copy of this counter.
+    std::size_t overflow_count_offset = 0;
     EventTypeId source_type = EventTypeId::empty;
     std::size_t history = 0;
     std::size_t latency = 0;

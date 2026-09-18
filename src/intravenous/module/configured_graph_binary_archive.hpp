@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 0;
+inline constexpr std::uint32_t archive_version = 1;
 
 class Writer {
 public:
@@ -309,6 +309,7 @@ inline void write_event_output(Writer& w, EventOutputConfig const& value)
 {
     w.string(value.name);
     write_enum(w, value.type);
+    w.pod(value.max_events_per_sample);
     write_output_access(w, value.access);
 }
 
@@ -317,6 +318,7 @@ inline EventOutputConfig read_event_output(Reader& r)
     return {
         .name = r.string(),
         .type = read_enum<EventTypeId>(r),
+        .max_events_per_sample = r.pod<double>(),
         .access = read_output_access(r),
     };
 }

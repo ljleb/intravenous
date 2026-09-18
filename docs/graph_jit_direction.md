@@ -300,16 +300,24 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     consumer-facing sequence is materialized after the complete producer step.
     Event conversion plans are preserved by semantic analysis and realized as
     explicit transient sequence operations; identical converted fanout branches
-    share one derived representation/materialization.
+    share one derived representation/materialization. Implicit conversions are
+    intentionally non-expanding: one source event may produce zero or one target
+    event, never synthesize additional events.
 11. **Event retention.** **Compact carry landed for bounded feed-forward identity event flow.**
     Small retained windows use a transient working sequence plus a migration-identified
     persistent raw carry. The carry is restored before the producer, producer slices
     append into the working sequence, and commit filters exactly the next root
     invocation's `[end-history, end+latency)` window while preserving absolute event
-    timestamps. A conservative bounded-event estimate selects compact carry only when
-    the retained window is no wider than one kernel block; wider/unknown retention
-    remains on the `persistent_ring` path. Retention combined with event conversion or
-    block materialization, persistent rings, and liveness reuse remain to land.
+    timestamps. Event outputs now declare a finite nonnegative
+    `max_events_per_sample` static sizing rate in `EventOutputProperties`; GraphJIT
+    combines that rate with each representation's temporal span to derive bounded
+    sequence capacities and uses the retained representation capacity as input to the
+    compact-carry versus persistent-ring cost decision. This is not a runtime
+    per-sample/sliding-window limiter. Each logical event output owns one saturating
+    overflow counter and deterministically drops events only when its bounded producer
+    sequence is full, without allocating. Retention combined with event conversion or block
+    materialization, persistent rings, telemetry surfacing, and liveness reuse remain
+    to land.
 12. **SCC/feedback execution.** Turn existing SCC analysis into feedback-aware
     scheduling, `feedback_ring` realization for sample/event groups, and nonzero
     reflected `scc_feedback_latency`.

@@ -120,6 +120,7 @@ struct EventConnectionPlan {
     std::size_t source_history = 0;
     std::size_t source_latency = 0;
     std::size_t target_history = 0;
+    double max_events_per_sample = 0.0;
     PlannedConnectionAccess access = PlannedConnectionAccess::realtime_to_realtime;
     bool requires_conversion = false;
     bool requires_block_materialization = false;
@@ -153,6 +154,7 @@ struct SampleProducerGroupPlan {
 struct EventProducerGroupPlan {
     EventTypeId source_type = EventTypeId::empty;
     std::vector<EventOutputPortId> sources{};
+    double max_events_per_sample = 0.0;
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
     bool has_compiled_connections = false;

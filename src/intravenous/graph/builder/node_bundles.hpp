@@ -362,6 +362,12 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
       std::span<EventOutputConfig const>(event_outputs),
       description.type_name,
       "event");
+  for (auto const& output : event_outputs) {
+    if (!is_valid_event_buffer_rate(output.max_events_per_sample)) {
+      details::error(std::string(description.type_name)
+          + ": event output max_events_per_sample must be finite and nonnegative");
+    }
+  }
 
   return ConcreteNode{
       .ports = std::move(description.ports),

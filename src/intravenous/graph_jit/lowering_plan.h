@@ -127,20 +127,25 @@ struct SamplePortBindingPlan {
 // adaptation and event conversion can add deduplicated consumer-facing
 // transient sequences, while small retained windows add a migration-identified
 // persistent carry sequence. Count words and TimedEvent payload bytes live in
-// canonical NodeStorage; primitive callbacks receive only immutable bindings
-// and reconstruct invocation-local EventInputPort/EventOutputPort facades.
+// canonical NodeStorage. The canonical producer representation also reserves
+// one overflow counter per logical event output; derived fanout representations
+// never duplicate producer telemetry. Primitive callbacks receive only immutable
+// bindings and reconstruct invocation-local EventInputPort/EventOutputPort facades.
 struct EventRepresentationPlan {
     std::size_t producer_group_index = 0;
     EventTypeId type = EventTypeId::empty;
     std::size_t event_capacity = 0;
     bool persistent = false;
     std::string migration_identity{};
+    bool has_producer_overflow_counter = false;
     std::size_t count_relative_offset = 0;
+    std::size_t overflow_count_relative_offset = 0;
     std::size_t events_relative_offset = 0;
     std::size_t size_bytes = 0;
     std::size_t alignment = 1;
     NodeLayout::RegionHandle region{};
     std::size_t count_storage_offset = 0;
+    std::size_t overflow_count_storage_offset = 0;
     std::size_t events_storage_offset = 0;
 };
 

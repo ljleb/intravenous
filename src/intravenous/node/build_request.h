@@ -311,11 +311,14 @@ IV_FORCEINLINE void initialize_reflected_event_outputs(
             initial_write,
             binding.storage.type,
         };
+        auto* overflow_count = reinterpret_cast<std::uint64_t*>(
+            ctx.event_storage_base + binding.overflow_count_offset);
         result.ports[I] = EventOutputPort{
             result.shared[I],
             binding.source_type,
             binding.history,
             binding.latency,
+            overflow_count,
         };
         result.ports[I].begin_block(index, block_size);
     }()), ...);

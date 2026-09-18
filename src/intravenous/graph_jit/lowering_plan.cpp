@@ -352,12 +352,18 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                         ? representation.migration_identity
                         : std::string{})
             || representation.count_relative_offset > region.size
+            || (representation.has_producer_overflow_counter
+                && representation.overflow_count_relative_offset > region.size)
             || representation.events_relative_offset > region.size) {
             return std::unexpected(
                 "GraphJit event physical storage disagrees with finalized NodeLayout");
         }
         representation.count_storage_offset =
             region.storage_offset + representation.count_relative_offset;
+        if (representation.has_producer_overflow_counter) {
+            representation.overflow_count_storage_offset =
+                region.storage_offset + representation.overflow_count_relative_offset;
+        }
         representation.events_storage_offset =
             region.storage_offset + representation.events_relative_offset;
     }
@@ -1120,16 +1126,30 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
     auto append_representation = [&] (
         std::size_t group_index,
         EventTypeId type,
-        std::optional<std::size_t> capacity_override = std::nullopt,
+        std::size_t capacity,
+        bool producer_telemetry = false,
         bool persistent = false,
         std::string migration_identity = {})
         -> std::expected<std::size_t, std::string> {
-        auto const capacity = capacity_override.value_or(
-            calculate_event_port_buffer_capacity(
-                DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER, type));
-        auto const events_relative = align_up(
-            sizeof(std::size_t), alignof(TimedEvent));
-        if (!events_relative || capacity == 0
+        std::size_t header_end = sizeof(std::size_t);
+        std::size_t overflow_relative = 0;
+        std::size_t alignment = std::max(
+            alignof(std::size_t), alignof(TimedEvent));
+        if (producer_telemetry) {
+            auto const aligned_overflow = align_up(
+                header_end, alignof(std::uint64_t));
+            if (!aligned_overflow
+                || *aligned_overflow > std::numeric_limits<std::size_t>::max()
+                    - sizeof(std::uint64_t)) {
+                return std::unexpected(
+                    "GraphJit event producer telemetry header overflows size_t");
+            }
+            overflow_relative = *aligned_overflow;
+            header_end = overflow_relative + sizeof(std::uint64_t);
+            alignment = std::max(alignment, alignof(std::uint64_t));
+        }
+        auto const events_relative = align_up(header_end, alignof(TimedEvent));
+        if (!events_relative
             || capacity > (std::numeric_limits<std::size_t>::max()
                     - *events_relative) / sizeof(TimedEvent)) {
             return std::unexpected(
@@ -1142,10 +1162,12 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             .event_capacity = capacity,
             .persistent = persistent,
             .migration_identity = std::move(migration_identity),
+            .has_producer_overflow_counter = producer_telemetry,
             .count_relative_offset = 0,
+            .overflow_count_relative_offset = overflow_relative,
             .events_relative_offset = *events_relative,
             .size_bytes = *events_relative + capacity * sizeof(TimedEvent),
-            .alignment = std::max(alignof(std::size_t), alignof(TimedEvent)),
+            .alignment = alignment,
         });
         return representation_index;
     };
@@ -1209,8 +1231,30 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 "GraphJit event producer ordinal is outside primitive metadata");
         }
 
-        auto base_capacity = calculate_event_port_buffer_capacity(
-            DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER, group.source_type);
+        if (source.max_events_per_sample != group.max_events_per_sample) {
+            return std::unexpected(
+                "GraphJit event producer max_events_per_sample disagrees with connection analysis");
+        }
+        auto producer_window_samples = input.specialization.block_size;
+        auto const source_history = realtime_history(source);
+        auto const source_latency = realtime_latency(source);
+        if (source_history > std::numeric_limits<std::size_t>::max()
+                - producer_window_samples
+            || source_latency > std::numeric_limits<std::size_t>::max()
+                - producer_window_samples - source_history) {
+            return std::unexpected(
+                "GraphJit event producer temporal window overflows size_t");
+        }
+        producer_window_samples += source_history + source_latency;
+        auto const base_max_events = event_count_for_sample_span(
+            source.max_events_per_sample, producer_window_samples);
+        auto const base_capacity = event_sequence_capacity_for_sample_span(
+            source.max_events_per_sample, producer_window_samples);
+        if (!base_max_events || !base_capacity) {
+            return std::unexpected(
+                "GraphJit event producer sizing rate/sample span exceeds representable static capacity");
+        }
+
         std::size_t retained_history = 0;
         std::size_t retained_latency = 0;
         for (auto const connection_index : group.connection_indices) {
@@ -1225,29 +1269,49 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             retained_latency = std::max(retained_latency, connection.source_latency);
         }
 
-        std::optional<std::size_t> working_capacity;
-        std::optional<std::size_t> carry_capacity;
+        std::size_t working_capacity = *base_capacity;
+        std::size_t carry_capacity = 0;
         if (compact_carry) {
-            if (!group.requirements.estimated_retained_events
-                || *group.requirements.estimated_retained_events == 0) {
+            if (!group.requirements.retained_event_capacity) {
                 return std::unexpected(
-                    "GraphJit compact event carry lost its bounded retained-event estimate");
+                    "GraphJit compact event carry lost its hard retained-event bound");
             }
-            carry_capacity = *group.requirements.estimated_retained_events;
-            if (base_capacity > std::numeric_limits<std::size_t>::max() - *carry_capacity) {
+            if (retained_latency > std::numeric_limits<std::size_t>::max()
+                    - retained_history) {
                 return std::unexpected(
-                    "GraphJit compact event carry working capacity overflows size_t");
+                    "GraphJit compact event carry retained window overflows size_t");
             }
-            working_capacity = next_power_of_2(base_capacity + *carry_capacity);
-            if (*working_capacity < base_capacity + *carry_capacity
-                || !is_power_of_2(*working_capacity)) {
+            auto const retained_window_samples = retained_history + retained_latency;
+            auto const carry_capacity_bound = event_sequence_capacity_for_sample_span(
+                source.max_events_per_sample, retained_window_samples);
+            if (!carry_capacity_bound) {
                 return std::unexpected(
-                    "GraphJit compact event carry exceeds representable working capacity");
+                    "GraphJit compact event carry exceeds representable static capacity");
+            }
+            carry_capacity = *carry_capacity_bound;
+            auto const carry_max_events = *group.requirements.retained_event_capacity;
+            if (*base_max_events > std::numeric_limits<std::size_t>::max()
+                    - carry_max_events) {
+                return std::unexpected(
+                    "GraphJit compact event carry working event bound overflows size_t");
+            }
+            auto const working_required = *base_max_events + carry_max_events;
+            if (working_required == 0) {
+                working_capacity = 0;
+            } else {
+                constexpr auto highest_power_of_two =
+                    std::size_t{1}
+                    << (std::numeric_limits<std::size_t>::digits - 1);
+                if (working_required > highest_power_of_two) {
+                    return std::unexpected(
+                        "GraphJit compact event carry exceeds representable working capacity");
+                }
+                working_capacity = next_power_of_2(working_required);
             }
         }
 
         auto source_representation = append_representation(
-            group_index, group.source_type, working_capacity);
+            group_index, group.source_type, working_capacity, true);
         if (!source_representation) {
             return std::unexpected(std::move(source_representation.error()));
         }
@@ -1260,11 +1324,12 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 + std::to_string(source_id.port)
                 + ":kind=compact_carry:history=" + std::to_string(retained_history)
                 + ":latency=" + std::to_string(retained_latency)
-                + ":capacity=" + std::to_string(*carry_capacity);
+                + ":capacity=" + std::to_string(carry_capacity);
             auto persistent_representation = append_representation(
                 group_index,
                 group.source_type,
                 carry_capacity,
+                false,
                 true,
                 std::move(migration_identity));
             if (!persistent_representation) {
@@ -1344,7 +1409,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                     target_representation = existing->target_representation;
                 } else {
                     auto derived = append_representation(
-                        group_index, connection.target_type);
+                        group_index,
+                        connection.target_type,
+                        plan.representations[*source_representation].event_capacity);
                     if (!derived) {
                         return std::unexpected(std::move(derived.error()));
                     }

@@ -191,9 +191,9 @@ one globally optimal threshold:
 - feedback uses a persistent ring;
 - retained sample payloads use compact carry below a configurable byte budget
   and a ring above it;
-- retained event payloads use compact carry only when an explicit retained-event
-  estimate is known and below a configurable count budget; unknown density uses
-  the conservative ring representation; and
+- retained event payloads use the `max_events_per_sample` sizing rate to derive
+  the retained representation capacity, then use compact carry below a
+  configurable count budget and a ring above it; and
 - graph/device boundary handling remains a distinct implementation kind.
 
 These crossovers are heuristic policy only. They are intentionally isolated so
@@ -347,6 +347,36 @@ for compiled declarations.
 This makes invalid combinations unrepresentable: a compiled port cannot
 accidentally acquire a finite realtime history or latency.
 
+`EventOutputProperties` additionally carries a static event-buffer sizing rate:
+
+```cpp
+struct EventOutputProperties {
+    EventTypeId type {};
+    double max_events_per_sample = 1.0;
+};
+```
+
+`max_events_per_sample` is used only to derive a maximum static buffer size for
+a known temporal span. For a representation covering `W` sample positions, the
+planner starts from
+
+```text
+ceil(max_events_per_sample * W)
+```
+
+event slots. Fractional values therefore let sparse producers request smaller
+static buffers: for example, `0.24` over a 64-sample representation requests 16
+event slots. This is **not** a runtime rate limiter and does not impose a
+sliding-window constraint on event timestamps; all 16 events may occur at one
+sample position if that timestamp is otherwise legal. The value must be finite
+and nonnegative. `0.0` requests no event payload capacity for that span, so any
+producer attempt necessarily overflows the bounded sequence.
+
+This sizing rate belongs to the event **output payload properties**, not to
+`RealtimeOutputConfig`: history/latency define *when* an output may author data,
+while `max_events_per_sample` lets GraphJIT determine how much static event
+storage to reserve for the selected temporal representation.
+
 ## Compiled ports remain random-access
 
 Do not apply the realtime bounded-window rule to compiled access.
@@ -386,11 +416,40 @@ latency/history/feedback event stream
     -> persistent event retention sufficient for the required window
 ```
 
-Time-window bounds determine lifetime, but not necessarily maximum event count.
-The event planner may initially use an explicit capacity heuristic based on
-value size/block/window information. If later workloads require stronger
-bounds, node definitions may expose event-density/capacity hints. Capacity
-policy remains a physical planning input, not connection semantics.
+A representation's temporal span and the producer sizing rate determine its
+static event capacity. For a representation covering `W` sample positions from
+a producer with `D = max_events_per_sample`, GraphJIT starts from
+`ceil(D * W)` event slots. The current bounded-sequence representation rounds
+that count upward to a power of two because `EventSharedPortData` uses a ring
+mask. Neither calculation constrains the distribution of event timestamps inside
+that representation.
+
+The older `calculate_event_port_buffer_capacity(...)` value-size heuristic is
+therefore no longer the primary GraphJIT capacity calculation. Heuristics and
+cost-model limits remain useful for choosing among static representations such
+as compact carry versus a persistent ring.
+
+Fanout does not multiply the sizing rate: several consumers of one logical
+producer share the same source event stream. A merge of independent producers
+sums their rates for the merged representation. Implicit event conversions are
+required to be **non-expanding**: each source event produces zero or one target
+event, timestamps are preserved, and the conversion may only preserve or discard
+information. Any transformation that can synthesize multiple events belongs in
+an explicit node, whose own output declares its resulting sizing rate.
+
+Each logical event output also owns one saturating overflow counter in its
+canonical producer representation; derived conversion/materialization fanout
+never duplicates that telemetry. If the statically allocated producer sequence
+is full, realtime execution deterministically drops the excess event and
+increments that counter; it does not allocate. There is no per-sample or
+sliding-window policing beyond the ordinary bounded-buffer capacity. Overflow of
+compiler-owned conversion or materialization storage is a GraphJIT sizing
+invariant failure and must not be reported as a producer overflow.
+
+Executor/device telemetry should remain separate when those layers land:
+GraphExecutor can count deadline misses, while the audio-device boundary can
+count actual input overruns/output underruns. Those conditions have different
+causes and should not be collapsed into the event-output overflow metric.
 
 ## Suggested planner facts
 
@@ -419,7 +478,8 @@ For events, additionally include:
 event type size/alignment
 legal produced/consumed time windows
 fanout and conversion requirements
-capacity/density estimate or bound
+producer max-events-per-sample sizing rate
+derived event capacity for each temporal representation
 consumer retention requirements
 ```
 

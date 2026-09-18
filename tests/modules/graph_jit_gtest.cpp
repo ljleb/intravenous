@@ -2237,7 +2237,10 @@ struct RetainedTriggerEventSource {
         return std::array{
             iv::realtime_event_output(
                 "trigger",
-                iv::EventTypeId::trigger,
+                iv::EventOutputProperties{
+                    .type = iv::EventTypeId::trigger,
+                    .max_events_per_sample = 0.5,
+                },
                 iv::RealtimeOutputConfig{.latency = 8}),
         };
     }
@@ -4250,16 +4253,21 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         retained_event_analysis->event_connections.front();
     EXPECT_EQ(retained_event_connection.source_latency, 8u);
     EXPECT_EQ(retained_event_connection.target_history, 8u);
+    EXPECT_DOUBLE_EQ(retained_event_connection.max_events_per_sample, 0.5);
     auto const& retained_event_group =
         retained_event_analysis->event_producer_groups.front();
+    EXPECT_DOUBLE_EQ(retained_event_group.max_events_per_sample, 0.5);
     ASSERT_TRUE(retained_event_group.implementation.has_value());
     EXPECT_EQ(
         *retained_event_group.implementation,
         iv::EventConnectionImplementationKind::compact_persistent_carry);
     EXPECT_EQ(retained_event_group.requirements.retained_window_samples, 16u);
-    ASSERT_TRUE(retained_event_group.requirements.estimated_retained_events);
+    ASSERT_TRUE(retained_event_group.requirements.retained_event_capacity);
+    EXPECT_EQ(
+        *retained_event_group.requirements.retained_event_capacity,
+        8u);
     EXPECT_LE(
-        *retained_event_group.requirements.estimated_retained_events,
+        *retained_event_group.requirements.retained_event_capacity,
         iv::EventConnectionCostModel{}.compact_carry_max_events);
 
     auto retained_event = compile_graph(retained_event_graph, 126);

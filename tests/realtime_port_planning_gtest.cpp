@@ -4,6 +4,8 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <limits>
+#include <optional>
 #include <stdexcept>
 
 namespace {
@@ -18,6 +20,13 @@ TEST(EventConversionRegistry, OnlyObjectiveDirectedConversionsAreAvailable)
     EXPECT_NO_THROW(registry.plan(iv::EventTypeId::boundary, iv::EventTypeId::trigger));
     EXPECT_NO_THROW(registry.plan(iv::EventTypeId::boundary, iv::EventTypeId::empty));
     EXPECT_NO_THROW(registry.plan(iv::EventTypeId::trigger, iv::EventTypeId::empty));
+
+    EXPECT_TRUE(iv::EventConversionRegistry::is_nonexpanding(
+        registry.plan(iv::EventTypeId::midi, iv::EventTypeId::trigger)));
+    EXPECT_TRUE(iv::EventConversionRegistry::is_nonexpanding(
+        registry.plan(iv::EventTypeId::midi, iv::EventTypeId::boundary)));
+    EXPECT_TRUE(iv::EventConversionRegistry::is_nonexpanding(
+        registry.plan(iv::EventTypeId::boundary, iv::EventTypeId::trigger)));
 
     EXPECT_THROW(
         registry.plan(iv::EventTypeId::trigger, iv::EventTypeId::boundary),
@@ -59,6 +68,31 @@ TEST(EventConversionRegistry, AllowedConversionsDoNotInventLaterTimestamps)
     ASSERT_EQ(count, 1u);
     EXPECT_EQ(converted[0].time, 123u);
     EXPECT_TRUE(std::holds_alternative<iv::TriggerEvent>(converted[0].value));
+}
+
+TEST(EventBufferSizing, FractionalRatesProduceDeterministicStaticCapacities)
+{
+    EXPECT_TRUE(iv::is_valid_event_buffer_rate(0.0));
+    EXPECT_TRUE(iv::is_valid_event_buffer_rate(0.24));
+    EXPECT_FALSE(iv::is_valid_event_buffer_rate(-0.01));
+    EXPECT_FALSE(iv::is_valid_event_buffer_rate(
+        std::numeric_limits<double>::infinity()));
+
+    ASSERT_EQ(iv::event_count_for_sample_span(0.25, 64),
+        std::optional<std::size_t>{16});
+    ASSERT_EQ(iv::event_count_for_sample_span(0.24, 64),
+        std::optional<std::size_t>{16});
+    ASSERT_EQ(iv::event_count_for_sample_span(0.5, 3),
+        std::optional<std::size_t>{2});
+    ASSERT_EQ(iv::event_count_for_sample_span(0.0, 4096),
+        std::optional<std::size_t>{0});
+
+    EXPECT_EQ(iv::event_sequence_capacity_for_sample_span(0.25, 64),
+        std::optional<std::size_t>{16});
+    EXPECT_EQ(iv::event_sequence_capacity_for_sample_span(0.24, 64),
+        std::optional<std::size_t>{16});
+    EXPECT_EQ(iv::event_sequence_capacity_for_sample_span(0.5, 3),
+        std::optional<std::size_t>{2});
 }
 
 TEST(RealtimePortWindow, IncludesHistoryAndLatencyWithExclusiveEnd)
@@ -125,6 +159,32 @@ TEST(EventOutputPort, ExplicitBlockPushUsesSameWindow)
         iv::TriggerEvent{}, 9, 100, 8), std::logic_error); // end is 109
 }
 
+TEST(EventOutputPort, CountsProducerSequenceOverflowWithoutAllocating)
+{
+    std::array<iv::TimedEvent, 16> storage{};
+    iv::EventSharedPortData shared(
+        storage, 0, 0, iv::EventTypeId::trigger);
+    std::uint64_t overflow_count = 0;
+    iv::EventOutputPort output(
+        shared,
+        iv::EventTypeId::trigger,
+        0,
+        0,
+        &overflow_count);
+
+    output.begin_block(0, 64);
+    for (std::size_t i = 0; i < 17; ++i) {
+        output.push(iv::TimedEvent{
+            .time = 0,
+            .value = iv::TriggerEvent{},
+        });
+    }
+    output.end_block();
+
+    EXPECT_EQ(shared.write_index, 16u);
+    EXPECT_EQ(overflow_count, 1u);
+}
+
 TEST(SampleConnectionImplementationChooser, UsesSimpleConservativePolicy)
 {
     using Kind = iv::SampleConnectionImplementationKind;
@@ -173,7 +233,7 @@ TEST(SampleConnectionImplementationChooser, CrossoverIsExplicitlyTunable)
         iv::SampleConnectionImplementationKind::persistent_ring);
 }
 
-TEST(EventConnectionImplementationChooser, UsesUnknownDensityConservatively)
+TEST(EventConnectionImplementationChooser, UsesSizedRetainedCapacityForCompactCarry)
 {
     using Kind = iv::EventConnectionImplementationKind;
 
@@ -187,7 +247,7 @@ TEST(EventConnectionImplementationChooser, UsesUnknownDensityConservatively)
 
     EXPECT_EQ(iv::choose_event_connection_implementation({
         .retained_window_samples = 64,
-        .estimated_retained_events = 8,
+        .retained_event_capacity = 8,
     }), Kind::compact_persistent_carry);
 
     EXPECT_EQ(iv::choose_event_connection_implementation({
@@ -203,7 +263,7 @@ TEST(EventConnectionImplementationChooser, CrossoverIsExplicitlyTunable)
 {
     auto requirements = iv::EventConnectionImplementationRequirements{
         .retained_window_samples = 64,
-        .estimated_retained_events = 12,
+        .retained_event_capacity = 12,
     };
 
     EXPECT_EQ(iv::choose_event_connection_implementation(

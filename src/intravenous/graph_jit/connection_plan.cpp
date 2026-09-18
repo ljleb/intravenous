@@ -497,6 +497,15 @@ std::expected<void, std::string> inventory_event_connections(
                 connection_plan.source_latency = std::max(
                     connection_plan.source_latency,
                     realtime_latency_or_zero(source));
+                if (!is_valid_event_buffer_rate(source.max_events_per_sample)) {
+                    return std::unexpected(
+                        "event output max_events_per_sample must be finite and nonnegative");
+                }
+                connection_plan.max_events_per_sample += source.max_events_per_sample;
+                if (!is_valid_event_buffer_rate(connection_plan.max_events_per_sample)) {
+                    return std::unexpected(
+                        "event connection aggregate max_events_per_sample is not representable");
+                }
                 auto const this_source_realtime = is_realtime(source.access);
                 if (source_realtime && *source_realtime != this_source_realtime) {
                     return std::unexpected(
@@ -545,6 +554,11 @@ std::expected<void, std::string> inventory_event_connections(
                     });
             connection_plan.conversion = EventConversionRegistry::instance().plan(
                 connection.source_type, connection.target_type);
+            if (!EventConversionRegistry::is_nonexpanding(
+                    connection_plan.conversion)) {
+                return std::unexpected(
+                    "implicit event conversion must be non-expanding");
+            }
             connection_plan.requires_conversion =
                 connection_plan.conversion.size() != 0
                 || connection.sources.size() != 1;
@@ -1246,6 +1260,7 @@ void plan_event_groups(
             plan.event_producer_groups.push_back(EventProducerGroupPlan{
                 .source_type = connection.source_type,
                 .sources = connection.sources,
+                .max_events_per_sample = connection.max_events_per_sample,
             });
             group = std::prev(plan.event_producer_groups.end());
         }
@@ -1284,20 +1299,10 @@ void plan_event_groups(
                 && !connection.external_boundary
                 && connection_retained == 0;
         }
-        std::optional<std::size_t> estimated_retained_events;
-        if (retained != 0 && retained <= kernel_block_size) {
-            auto const producer_capacity = calculate_event_port_buffer_capacity(
-                DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER, group.source_type);
-            // A compact carry may contain events restored from the prior root
-            // invocation plus events authored by the current invocation whose
-            // history/latency windows overlap the retained interval. Two bounded
-            // producer sequences are therefore the conservative small-window
-            // estimate. Wider windows deliberately fall back to persistent_ring.
-            if (producer_capacity != 0
-                && producer_capacity
-                    <= std::numeric_limits<std::size_t>::max() / 2) {
-                estimated_retained_events = producer_capacity * 2;
-            }
+        std::optional<std::size_t> retained_event_capacity;
+        if (retained != 0) {
+            retained_event_capacity = event_count_for_sample_span(
+                group.max_events_per_sample, retained);
         }
         group.requirements = EventConnectionImplementationRequirements{
             .direct_implementation_legal = direct,
@@ -1305,7 +1310,7 @@ void plan_event_groups(
             .feedback = feedback,
             .external_boundary = external,
             .retained_window_samples = retained,
-            .estimated_retained_events = estimated_retained_events,
+            .retained_event_capacity = retained_event_capacity,
         };
         if (!group.has_realtime_connections) continue;
         group.implementation = choose_event_connection_implementation(

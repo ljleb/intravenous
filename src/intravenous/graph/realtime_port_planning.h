@@ -79,10 +79,10 @@ choose_sample_connection_implementation(
         : SampleConnectionImplementationKind::compact_persistent_carry;
 }
 
-// Event storage choices mirror sample choices, but the temporal window does
-// not imply a semantic maximum event count. The estimate below is explicitly a
-// cost-model input; an unknown estimate therefore selects the conservative
-// persistent-ring representation.
+// Event storage choices mirror sample choices. Realtime event outputs declare
+// a static max-events-per-sample sizing rate. The retained temporal span turns
+// that rate into a concrete event capacity used both for storage sizing and for
+// the compact-carry versus ring cost decision.
 enum class EventConnectionImplementationKind {
     direct,
     transient_sequence,
@@ -100,7 +100,7 @@ struct EventConnectionImplementationRequirements {
 
     // Nonzero when events must remain observable across kernel invocations.
     std::size_t retained_window_samples = 0;
-    std::optional<std::size_t> estimated_retained_events {};
+    std::optional<std::size_t> retained_event_capacity {};
 };
 
 struct EventConnectionCostModel {
@@ -126,8 +126,8 @@ choose_event_connection_implementation(
         return EventConnectionImplementationKind::transient_sequence;
     }
 
-    if (!requirements.estimated_retained_events
-        || *requirements.estimated_retained_events
+    if (!requirements.retained_event_capacity
+        || *requirements.retained_event_capacity
             > cost_model.compact_carry_max_events) {
         return EventConnectionImplementationKind::persistent_ring;
     }

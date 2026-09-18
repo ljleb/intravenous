@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <iterator>
 #include <limits>
@@ -275,6 +276,21 @@ namespace iv {
             }
         }
 
+        static constexpr bool is_nonexpanding_step(
+            EventConversionStepId step) noexcept
+        {
+            switch (step) {
+            case EventConversionStepId::midi_to_trigger:
+            case EventConversionStepId::midi_to_boundary:
+            case EventConversionStepId::midi_to_empty:
+            case EventConversionStepId::trigger_to_empty:
+            case EventConversionStepId::boundary_to_trigger:
+            case EventConversionStepId::boundary_to_empty:
+                return true;
+            }
+            return false;
+        }
+
         template<typename Emit>
         static constexpr void apply_steps_recursive(
             EventConversionPlan const& plan,
@@ -297,6 +313,15 @@ namespace iv {
         static constexpr EventConversionRegistry instance()
         {
             return {};
+        }
+
+        static constexpr bool is_nonexpanding(
+            EventConversionPlan const& plan) noexcept
+        {
+            for (size_t i = 0; i < plan.step_count; ++i) {
+                if (!is_nonexpanding_step(plan.steps[i])) return false;
+            }
+            return true;
         }
 
         static constexpr EventConversionPlan plan(EventTypeId source, EventTypeId target)
@@ -405,6 +430,9 @@ namespace iv {
         return 0;
     }
 
+    // Legacy/value-size capacity heuristic. GraphJIT static event-buffer sizing
+    // uses EventOutputProperties::max_events_per_sample instead; keep this for
+    // compatibility and other heuristic/default-policy decisions.
     inline constexpr size_t calculate_event_port_buffer_capacity(size_t base_multiplier, EventTypeId type)
     {
         size_t const average_size = average_event_size_bytes(type);
@@ -414,6 +442,52 @@ namespace iv {
 
         size_t const budget_bytes = base_multiplier * average_size;
         return next_power_of_2(std::max<size_t>(1, budget_bytes / sizeof(TimedEvent)));
+    }
+
+    inline constexpr double DEFAULT_MAX_EVENTS_PER_SAMPLE = 1.0;
+
+    [[nodiscard]] constexpr bool is_valid_event_buffer_rate(
+        double max_events_per_sample) noexcept
+    {
+        // Both comparisons are false for NaN; +infinity exceeds max().
+        return max_events_per_sample >= 0.0
+            && max_events_per_sample <= std::numeric_limits<double>::max();
+    }
+
+    // Static event-buffer sizing rule. For a representation whose relevant
+    // temporal span is W samples, reserve ceil(max_events_per_sample * W)
+    // event slots before any physical power-of-two sequence rounding. This is
+    // not a runtime constraint on how those events are distributed by timestamp.
+    [[nodiscard]] inline std::optional<size_t> event_count_for_sample_span(
+        double max_events_per_sample,
+        size_t sample_count) noexcept
+    {
+        if (!is_valid_event_buffer_rate(max_events_per_sample)) return std::nullopt;
+        if (max_events_per_sample == 0.0 || sample_count == 0) return size_t{0};
+
+        long double const product = static_cast<long double>(max_events_per_sample)
+            * static_cast<long double>(sample_count);
+        long double const limit = static_cast<long double>(
+            std::numeric_limits<size_t>::max());
+        if (!(product >= 0.0L) || product > limit) return std::nullopt;
+        return static_cast<size_t>(std::ceil(product));
+    }
+
+    // EventSharedPortData uses a power-of-two ring mask. Physical bounded
+    // sequences therefore round the requested event count upward while
+    // preserving zero-capacity declarations exactly.
+    [[nodiscard]] inline std::optional<size_t> event_sequence_capacity_for_sample_span(
+        double max_events_per_sample,
+        size_t sample_count) noexcept
+    {
+        auto const required = event_count_for_sample_span(
+            max_events_per_sample, sample_count);
+        if (!required) return std::nullopt;
+        if (*required == 0) return size_t{0};
+        constexpr size_t highest_power_of_two =
+            size_t{1} << (std::numeric_limits<size_t>::digits - 1);
+        if (*required > highest_power_of_two) return std::nullopt;
+        return next_power_of_2(*required);
     }
 
     inline constexpr size_t MAX_BLOCK_SIZE = size_t(1) << (std::numeric_limits<size_t>::digits - 1);
@@ -1098,6 +1172,7 @@ namespace iv {
     class EventOutputPort {
         EventSharedPortData* _shared_data = nullptr;
         EventTypeId _source_type {};
+        std::uint64_t* _overflow_count = nullptr;
         size_t _history = 0;
         size_t _latency = 0;
         bool _has_conversion = false;
@@ -1122,6 +1197,14 @@ namespace iv {
             }
         }
 
+        void record_overflow() const noexcept
+        {
+            if (_overflow_count
+                && *_overflow_count != std::numeric_limits<std::uint64_t>::max()) {
+                ++*_overflow_count;
+            }
+        }
+
         void push_in_window(
             TimedEvent const& timed_event, RealtimePortWindow window) const
         {
@@ -1131,15 +1214,15 @@ namespace iv {
             // assumption of the compatibility runtime.
             validate_time(timed_event, window);
 
-            if (!_shared_data || _shared_data->buffer.empty()) {
-                return;
-            }
+            if (!_shared_data) return;
 
             auto append = [&](TimedEvent const& appended) {
                 validate_time(appended, window);
                 size_t const available =
                     _shared_data->write_index - _shared_data->read_index;
-                if (available >= _shared_data->buffer.size()) {
+                if (_shared_data->buffer.empty()
+                    || available >= _shared_data->buffer.size()) {
+                    record_overflow();
                     return;
                 }
                 _shared_data->buffer[
@@ -1163,10 +1246,12 @@ namespace iv {
             EventSharedPortData& shared_data,
             EventTypeId source_type,
             size_t history = 0,
-            size_t latency = 0
+            size_t latency = 0,
+            std::uint64_t* overflow_count = nullptr
         ) :
             _shared_data(&shared_data),
             _source_type(source_type),
+            _overflow_count(overflow_count),
             _history(history),
             _latency(latency)
         {
@@ -1181,10 +1266,12 @@ namespace iv {
             EventTypeId source_type,
             EventConversionPlan const& conversion,
             size_t history = 0,
-            size_t latency = 0
+            size_t latency = 0,
+            std::uint64_t* overflow_count = nullptr
         ) :
             _shared_data(&shared_data),
             _source_type(source_type),
+            _overflow_count(overflow_count),
             _history(history),
             _latency(latency),
             _has_conversion(true),
@@ -1323,6 +1410,10 @@ namespace iv {
 
     struct EventOutputProperties {
         EventTypeId type {};
+        // Static storage-sizing rate. For a representation spanning W samples,
+        // GraphJIT reserves ceil(max_events_per_sample * W) event slots. This
+        // does not constrain how events are distributed among sample timestamps.
+        double max_events_per_sample = DEFAULT_MAX_EVENTS_PER_SAMPLE;
     };
 
     struct RealtimeInputConfig {
@@ -1527,6 +1618,15 @@ namespace iv {
             std::move(access)};
     }
 
+    [[nodiscard]] constexpr OutputConfig event_output(
+        std::string name,
+        EventOutputProperties properties,
+        OutputAccessConfig access = RealtimeOutputConfig{})
+    {
+        return OutputConfig{
+            std::move(name), std::move(properties), std::move(access)};
+    }
+
     [[nodiscard]] constexpr InputConfig compiled_sample_input(
         std::string name = {},
         SampleInputProperties properties = {})
@@ -1553,6 +1653,13 @@ namespace iv {
         EventTypeId type = {})
     {
         return event_output(std::move(name), type, compiled_port);
+    }
+
+    [[nodiscard]] constexpr OutputConfig compiled_event_output(
+        std::string name,
+        EventOutputProperties properties)
+    {
+        return event_output(std::move(name), std::move(properties), compiled_port);
     }
 
     [[nodiscard]] constexpr InputConfig realtime_sample_input(
@@ -1587,6 +1694,15 @@ namespace iv {
         return event_output(std::move(name), type, std::move(access));
     }
 
+    [[nodiscard]] constexpr OutputConfig realtime_event_output(
+        std::string name,
+        EventOutputProperties properties,
+        RealtimeOutputConfig access = {})
+    {
+        return event_output(
+            std::move(name), std::move(properties), std::move(access));
+    }
+
     // The configured graph keeps physical sample/event lists because lowering
     // uses separate sample and event collections. It preserves the same access
     // variant instead of flattening compiled ports back into meaningless
@@ -1600,6 +1716,7 @@ namespace iv {
     struct EventOutputConfig {
         std::string name {};
         EventTypeId type {};
+        double max_events_per_sample = DEFAULT_MAX_EVENTS_PER_SAMPLE;
         OutputAccessConfig access {RealtimeOutputConfig{}};
     };
 
@@ -1803,9 +1920,11 @@ namespace iv {
     [[nodiscard]] constexpr EventOutputConfig materialize_event_config(
         OutputConfig const& config)
     {
+        auto const& properties = std::get<EventOutputProperties>(config.kind);
         return {
             .name = config.name,
-            .type = std::get<EventOutputProperties>(config.kind).type,
+            .type = properties.type,
+            .max_events_per_sample = properties.max_events_per_sample,
             .access = config.access,
         };
     }
@@ -1851,7 +1970,10 @@ namespace iv {
     {
         return {
             config.name,
-            EventOutputProperties{.type = config.type},
+            EventOutputProperties{
+                .type = config.type,
+                .max_events_per_sample = config.max_events_per_sample,
+            },
             config.access,
         };
     }

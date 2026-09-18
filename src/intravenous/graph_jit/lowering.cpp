@@ -651,8 +651,16 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                 }
                 auto storage = storage_binding(*output.representation);
                 if (!storage) return std::unexpected(std::move(storage.error()));
+                auto const& representation =
+                    plan.representations[*output.representation];
+                if (!representation.has_producer_overflow_counter) {
+                    return std::unexpected(
+                        "GraphJit event output representation lost producer telemetry");
+                }
                 bindings.push_back(ReflectedEventOutputPortBinding{
                     .storage = *storage,
+                    .overflow_count_offset =
+                        representation.overflow_count_storage_offset,
                     .source_type = output.source_type,
                     .history = output.history,
                     .latency = output.latency,
