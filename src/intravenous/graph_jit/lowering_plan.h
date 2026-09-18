@@ -125,10 +125,12 @@ struct SamplePortBindingPlan {
 // Points 10-11 realize direct/transient realtime event flow plus bounded
 // compact carry and persistent retained rings. Ordinary representations store a
 // count plus a bounded TimedEvent sequence. Large retained windows bind producer
-// and consumers directly to one migration-identified persistent ring carrying
-// monotonic read/write indices, so retained events are expired incrementally
-// rather than copied through a compact tail each root call. The canonical
-// producer representation also reserves one overflow counter per logical event
+// and identity consumers directly to one migration-identified persistent ring
+// carrying monotonic read/write indices, so retained events are expired
+// incrementally rather than copied through a compact tail each root call.
+// Retained canonical representations may also feed windowed transient
+// materializations for sliced/converted consumer branches. The canonical
+// producer representation reserves one overflow counter per logical event
 // output; derived fanout representations never duplicate producer telemetry.
 // Primitive callbacks receive only immutable bindings and reconstruct
 // invocation-local EventInputPort/EventOutputPort facades.
@@ -171,6 +173,14 @@ struct EventMaterializationPlan {
     std::size_t source_representation = 0;
     std::size_t target_representation = 0;
     EventConversionPlan conversion{};
+    // Retained canonical sources may contain history and authored-future
+    // events that this consumer branch does not need during the current root
+    // invocation. Windowed materialization selects
+    // [index-history_samples, index+block_size) before conversion. Target
+    // capacity remains source-capacity-sized because max_events_per_sample is
+    // only a storage-sizing rate, not a runtime density constraint.
+    std::size_t history_samples = 0;
+    bool select_root_window = false;
     // Schedule position of the producer. The producer has completed all of its
     // root-invocation slices before this operation runs.
     std::size_t after_execution_position = 0;

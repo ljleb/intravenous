@@ -319,8 +319,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     decision. This is not a runtime per-sample/sliding-window limiter. Each logical
     event output owns one saturating overflow counter and deterministically drops events
     only when its bounded producer representation is full, without allocating.
-    Retention combined with event conversion or block materialization, feedback rings,
-    telemetry surfacing, and liveness reuse remain to land.
+    Retained canonical representations may now feed transient consumer branches:
+    compact-carry working sequences and persistent rings materialize the current root
+    window plus each branch's declared input history, then apply the existing
+    non-expanding conversion plan. Identical retained converted fanout branches share
+    one transient representation. Derived capacity remains source-capacity-sized
+    because `max_events_per_sample` is only a sizing rate and does not constrain how
+    many resident source events may share one timestamp. Feedback rings, telemetry
+    surfacing, and liveness reuse remain to land.
 12. **SCC/feedback execution.** Turn existing SCC analysis into feedback-aware
     scheduling, `feedback_ring` realization for sample/event groups, and nonzero
     reflected `scc_feedback_latency`.

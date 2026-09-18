@@ -58,6 +58,7 @@ constexpr char graph_jit_transient_event_module_id[] = "iv.test.graph_jit.state_
 constexpr char graph_jit_converted_event_fanout_module_id[] = "iv.test.graph_jit.state_context.converted_event_fanout_module";
 constexpr char graph_jit_retained_event_module_id[] = "iv.test.graph_jit.state_context.retained_event_module";
 constexpr char graph_jit_persistent_event_ring_module_id[] = "iv.test.graph_jit.state_context.persistent_event_ring_module";
+constexpr char graph_jit_retained_converted_event_fanout_module_id[] = "iv.test.graph_jit.state_context.retained_converted_event_fanout_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -211,6 +212,15 @@ struct PersistentEventRingConsumerProbeStateMirror {
     std::array<std::uint64_t, 5> event_counts{};
     std::array<std::uint64_t, 5> first_times{};
     std::array<std::uint64_t, 5> last_times{};
+};
+
+struct RetainedMidiConsumerProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::array<std::uint64_t, 4> indices{};
+    std::array<std::uint64_t, 4> event_counts{};
+    std::array<std::uint64_t, 4> midi_counts{};
+    std::array<std::uint64_t, 4> first_times{};
+    std::array<std::uint64_t, 4> last_times{};
 };
 
 void expect_lowering_failure(
@@ -2188,6 +2198,55 @@ struct TriggerEventConsumer {
     }
 };
 
+struct RetainedMidiEventConsumer {
+    struct State {
+        std::uint64_t calls = 0;
+        std::array<std::uint64_t, 4> indices{};
+        std::array<std::uint64_t, 4> event_counts{};
+        std::array<std::uint64_t, 4> midi_counts{};
+        std::array<std::uint64_t, 4> first_times{};
+        std::array<std::uint64_t, 4> last_times{};
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input(
+                "midi",
+                iv::EventTypeId::midi,
+                iv::RealtimeInputConfig{.history = 160}),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<RetainedMidiEventConsumer> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = state.calls++;
+        if (slot >= state.indices.size()) return;
+        auto const history = ctx.index < 160 ? ctx.index : std::size_t{160};
+        auto const events = ctx.event_inputs[0].get_block(
+            ctx.index - history,
+            ctx.block_size + history);
+        state.indices[slot] = ctx.index;
+        state.event_counts[slot] = events.size();
+        state.midi_counts[slot] = 0;
+        if (!events.empty()) {
+            state.first_times[slot] = events[0].time;
+            state.last_times[slot] = events[events.size() - 1].time;
+        }
+        for (auto const& event : events) {
+            if (std::holds_alternative<iv::MidiEvent>(event.value)) {
+                ++state.midi_counts[slot];
+            }
+        }
+    }
+};
+
 struct LimitedTriggerEventConsumer {
     struct State {
         std::uint64_t calls = 0;
@@ -2630,6 +2689,18 @@ void persistent_event_ring_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void retained_converted_event_fanout_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.midi_event_source">();
+    auto retained = graph.node<"iv.test.graph_jit.state_context.retained_midi_event_consumer">();
+    auto trigger_a = graph.node<"iv.test.graph_jit.state_context.trigger_event_consumer">();
+    auto trigger_b = graph.node<"iv.test.graph_jit.state_context.limited_trigger_event_consumer">();
+    retained.connect_event_input(0, source.event_port());
+    trigger_a.connect_event_input(0, source.event_port());
+    trigger_b.connect_event_input(0, source.event_port());
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -2667,6 +2738,7 @@ IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_source", Retaine
 IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_consumer", RetainedTriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.persistent_event_ring_source", PersistentEventRingSource);
 IV_NODE("iv.test.graph_jit.state_context.persistent_event_ring_consumer", PersistentEventRingConsumer);
+IV_NODE("iv.test.graph_jit.state_context.retained_midi_event_consumer", RetainedMidiEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
@@ -2694,6 +2766,7 @@ IV_MODULE("iv.test.graph_jit.state_context.transient_event_module", transient_ev
 IV_MODULE("iv.test.graph_jit.state_context.converted_event_fanout_module", converted_event_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.retained_event_module", retained_event_module);
 IV_MODULE("iv.test.graph_jit.state_context.persistent_event_ring_module", persistent_event_ring_module);
+IV_MODULE("iv.test.graph_jit.state_context.retained_converted_event_fanout_module", retained_converted_event_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -2783,7 +2856,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         "iv.test.graph_jit.state_context.persistent_event_ring_source"));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.persistent_event_ring_consumer"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.retained_midi_event_consumer"));
     EXPECT_TRUE(has_module_definition(graph_jit_persistent_event_ring_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_retained_converted_event_fanout_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -4555,6 +4631,164 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_EQ(persistent_event_ring_probe->event_counts[4], 96u);
     EXPECT_EQ(persistent_event_ring_probe->first_times[4], 133u);
     EXPECT_EQ(persistent_event_ring_probe->last_times[4], 261u);
+
+    // A retained canonical MIDI ring may simultaneously serve an identity
+    // history consumer and a deduplicated converted trigger fanout. Conversion
+    // materializes only the current consumer window, while target capacity
+    // remains source-capacity-sized because the sizing rate does not constrain
+    // timestamp clustering.
+    auto retained_converted_event_graph = configured_module_graph(
+        *revision, graph_jit_retained_converted_event_fanout_module_id);
+    ASSERT_TRUE(retained_converted_event_graph);
+    auto retained_converted_event_analysis =
+        iv::graph_jit::detail::build_connection_analysis_plan(
+            *retained_converted_event_graph, 64);
+    ASSERT_TRUE(retained_converted_event_analysis.has_value())
+        << (retained_converted_event_analysis
+                ? std::string{}
+                : retained_converted_event_analysis.error());
+    ASSERT_EQ(
+        retained_converted_event_analysis->event_producer_groups.size(),
+        1u);
+    auto const& retained_converted_event_group =
+        retained_converted_event_analysis->event_producer_groups.front();
+    ASSERT_TRUE(retained_converted_event_group.implementation.has_value());
+    EXPECT_EQ(
+        *retained_converted_event_group.implementation,
+        iv::EventConnectionImplementationKind::persistent_ring);
+    EXPECT_EQ(
+        retained_converted_event_group.requirements.retained_window_samples,
+        160u);
+    EXPECT_TRUE(retained_converted_event_group.requirements.requires_materialization);
+    ASSERT_EQ(
+        retained_converted_event_analysis->event_connections.size(),
+        3u);
+    EXPECT_EQ(
+        std::ranges::count_if(
+            retained_converted_event_analysis->event_connections,
+            [](auto const& connection) {
+                return connection.requires_conversion
+                    && connection.target_type == iv::EventTypeId::trigger;
+            }),
+        2);
+
+    EXPECT_EQ(
+        std::ranges::count_if(
+            retained_converted_event_analysis->event_connections,
+            [](auto const& connection) {
+                return connection.requires_block_materialization;
+            }),
+        1);
+
+    auto retained_converted_event = compile_graph(
+        retained_converted_event_graph, 128);
+    ASSERT_TRUE(retained_converted_event.succeeded())
+        << (retained_converted_event.diagnostics.empty()
+                ? ""
+                : retained_converted_event.diagnostics.front().message);
+    ASSERT_EQ(
+        retained_converted_event.compiled_graph->node_layout.nodes.size(),
+        4u);
+    // One persistent canonical MIDI ring + one deduplicated transient trigger
+    // representation shared by both converted consumers.
+    ASSERT_EQ(
+        count_raw_regions(retained_converted_event.compiled_graph->node_layout),
+        2u);
+    auto retained_converted_persistent_region = std::ranges::find_if(
+        retained_converted_event.compiled_graph->node_layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.kind == iv::NodeLayout::Region::Kind::raw
+                && !region.migration_identity.empty();
+        });
+    auto retained_converted_transient_region = std::ranges::find_if(
+        retained_converted_event.compiled_graph->node_layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.kind == iv::NodeLayout::Region::Kind::raw
+                && region.migration_identity.empty();
+        });
+    ASSERT_NE(
+        retained_converted_persistent_region,
+        retained_converted_event.compiled_graph->node_layout.regions.end());
+    ASSERT_NE(
+        retained_converted_transient_region,
+        retained_converted_event.compiled_graph->node_layout.regions.end());
+    EXPECT_NE(
+        retained_converted_persistent_region->migration_identity.find(
+            "kind=persistent_ring"),
+        std::string::npos);
+    auto retained_converted_event_storage =
+        retained_converted_event.compiled_graph->node_layout.create_storage(resources);
+    retained_converted_event_storage.initialize();
+    RetainedMidiConsumerProbeStateMirror* retained_midi_probe = nullptr;
+    EventConsumerProbeStateMirror* retained_trigger_probe = nullptr;
+    SlicedEventConsumerProbeStateMirror* retained_sliced_trigger_probe = nullptr;
+    for (std::size_t i = 0;
+         i < retained_converted_event.compiled_graph->node_layout.nodes.size();
+         ++i) {
+        auto const state_size =
+            retained_converted_event.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(RetainedMidiConsumerProbeStateMirror)) {
+            ASSERT_EQ(retained_midi_probe, nullptr);
+            retained_midi_probe =
+                static_cast<RetainedMidiConsumerProbeStateMirror*>(
+                    retained_converted_event_storage.state_ptr(i));
+        } else if (state_size == sizeof(EventConsumerProbeStateMirror)) {
+            ASSERT_EQ(retained_trigger_probe, nullptr);
+            retained_trigger_probe =
+                static_cast<EventConsumerProbeStateMirror*>(
+                    retained_converted_event_storage.state_ptr(i));
+        } else if (state_size == sizeof(SlicedEventConsumerProbeStateMirror)) {
+            ASSERT_EQ(retained_sliced_trigger_probe, nullptr);
+            retained_sliced_trigger_probe =
+                static_cast<SlicedEventConsumerProbeStateMirror*>(
+                    retained_converted_event_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(retained_midi_probe, nullptr);
+    ASSERT_NE(retained_trigger_probe, nullptr);
+    ASSERT_NE(retained_sliced_trigger_probe, nullptr);
+
+    retained_converted_event.compiled_graph->root_operations.tick_block(
+        retained_converted_event_storage.buffer().data(), 0, 64);
+    ASSERT_EQ(retained_midi_probe->calls, 1u);
+    EXPECT_EQ(retained_midi_probe->event_counts[0], 3u);
+    EXPECT_EQ(retained_midi_probe->midi_counts[0], 3u);
+    EXPECT_EQ(retained_midi_probe->first_times[0], 5u);
+    EXPECT_EQ(retained_midi_probe->last_times[0], 17u);
+    EXPECT_EQ(retained_trigger_probe->calls, 1u);
+    EXPECT_EQ(retained_trigger_probe->event_count, 2u);
+    EXPECT_EQ(retained_trigger_probe->trigger_count, 2u);
+    EXPECT_EQ(retained_trigger_probe->first_time, 5u);
+    EXPECT_EQ(retained_trigger_probe->last_time, 17u);
+    ASSERT_EQ(retained_sliced_trigger_probe->calls, 2u);
+    EXPECT_EQ(retained_sliced_trigger_probe->indices[0], 0u);
+    EXPECT_EQ(retained_sliced_trigger_probe->indices[1], 32u);
+    EXPECT_EQ(retained_sliced_trigger_probe->event_counts[0], 2u);
+    EXPECT_EQ(retained_sliced_trigger_probe->event_counts[1], 0u);
+
+    retained_converted_event.compiled_graph->root_operations.tick_block(
+        retained_converted_event_storage.buffer().data(), 64, 64);
+    ASSERT_EQ(retained_midi_probe->calls, 2u);
+    EXPECT_EQ(retained_midi_probe->event_counts[1], 6u);
+    EXPECT_EQ(retained_midi_probe->midi_counts[1], 6u);
+    EXPECT_EQ(retained_midi_probe->first_times[1], 5u);
+    EXPECT_EQ(retained_midi_probe->last_times[1], 81u);
+    EXPECT_EQ(retained_trigger_probe->calls, 2u);
+    EXPECT_EQ(retained_trigger_probe->event_count, 2u);
+    EXPECT_EQ(retained_trigger_probe->trigger_count, 2u);
+    EXPECT_EQ(retained_trigger_probe->first_time, 69u);
+    EXPECT_EQ(retained_trigger_probe->last_time, 81u);
+    ASSERT_EQ(retained_sliced_trigger_probe->calls, 4u);
+    EXPECT_EQ(retained_sliced_trigger_probe->indices[2], 64u);
+    EXPECT_EQ(retained_sliced_trigger_probe->indices[3], 96u);
+    EXPECT_EQ(retained_sliced_trigger_probe->event_counts[2], 2u);
+    EXPECT_EQ(retained_sliced_trigger_probe->event_counts[3], 0u);
+    // Although the persistent source now contains both root calls, the
+    // converted transient contains only the current root window.
+    auto const* converted_count = reinterpret_cast<std::size_t const*>(
+        retained_converted_event_storage.buffer().data()
+        + retained_converted_transient_region->storage_offset);
+    EXPECT_EQ(*converted_count, 2u);
 
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);

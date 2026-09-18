@@ -448,6 +448,23 @@ event, timestamps are preserved, and the conversion may only preserve or discard
 information. Any transformation that can synthesize multiple events belongs in
 an explicit node, whose own output declares its resulting sizing rate.
 
+Retained canonical event storage and transient conversion are composable rather
+than mutually exclusive. A compact-carry working sequence or persistent ring may
+feed a transient branch that selects the current root interval plus that branch's
+declared input history before applying its conversion. This avoids repeatedly
+converting retained events that the consumer cannot observe during the current
+root invocation, while the canonical retained representation continues to serve
+identity/history consumers directly.
+
+The selected temporal interval does **not** justify shrinking the derived event
+capacity from the source capacity. Since `max_events_per_sample` is only a static
+sizing rate, every event currently resident in the source representation may
+legally share one timestamp inside the selected interval. For a non-expanding
+implicit conversion, source-sized derived capacity is therefore the conservative
+allocation that guarantees materialization cannot overflow merely because events
+are temporally clustered. Identical retained conversion branches may still share
+that one derived representation.
+
 Each logical event output also owns one saturating overflow counter in its
 canonical producer representation; derived conversion/materialization fanout
 never duplicates that telemetry. If the statically allocated producer sequence

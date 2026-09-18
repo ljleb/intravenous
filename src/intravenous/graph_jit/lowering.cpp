@@ -1632,7 +1632,9 @@ std::expected<void, std::string> emit_event_materialization(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
     detail::EventMaterializationPlan const& materialization,
-    llvm::Value* storage_base)
+    llvm::Value* storage_base,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
 {
     if (materialization.source_representation >= event_ports.representations.size()
         || materialization.target_representation >= event_ports.representations.size()) {
@@ -1658,27 +1660,11 @@ std::expected<void, std::string> emit_event_materialization(
     auto& context = builder.getContext();
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
-    auto* source_count_pointer = byte_offset_pointer(
-        builder,
-        storage_base,
-        source.count_storage_offset,
-        "event.materialize.source.count");
     auto* target_count_pointer = byte_offset_pointer(
         builder,
         storage_base,
         target.count_storage_offset,
         "event.materialize.target.count");
-    auto* count = builder.CreateLoad(
-        size_type, source_count_pointer, "event.materialize.count");
-    auto* source_capacity = llvm::ConstantInt::get(
-        size_type, source.event_capacity);
-    auto* bounded_source_count = builder.CreateSelect(
-        builder.CreateICmpULE(
-            count, source_capacity, "event.materialize.source.in.bounds"),
-        count,
-        source_capacity,
-        "event.materialize.source.bounded.count");
-
     auto* source_events = byte_offset_pointer(
         builder,
         storage_base,
@@ -1689,6 +1675,100 @@ std::expected<void, std::string> emit_event_materialization(
         storage_base,
         target.events_storage_offset,
         "event.materialize.target.events");
+
+    if (materialization.select_root_window || source.persistent_ring) {
+        llvm::Value* source_read_index = llvm::ConstantInt::get(size_type, 0);
+        llvm::Value* source_write_index = nullptr;
+        if (source.persistent_ring) {
+            auto* read_index_pointer = byte_offset_pointer(
+                builder,
+                storage_base,
+                source.read_index_storage_offset,
+                "event.materialize.source.read.index");
+            auto* write_index_pointer = byte_offset_pointer(
+                builder,
+                storage_base,
+                source.write_index_storage_offset,
+                "event.materialize.source.write.index");
+            source_read_index = builder.CreateLoad(
+                size_type,
+                read_index_pointer,
+                "event.materialize.source.read");
+            source_write_index = builder.CreateLoad(
+                size_type,
+                write_index_pointer,
+                "event.materialize.source.write");
+        } else {
+            auto* source_count_pointer = byte_offset_pointer(
+                builder,
+                storage_base,
+                source.count_storage_offset,
+                "event.materialize.source.count");
+            source_write_index = builder.CreateLoad(
+                size_type,
+                source_count_pointer,
+                "event.materialize.source.write");
+        }
+
+        auto* plan_word_type = llvm::Type::getInt32Ty(context);
+        auto* pointer_type = llvm::PointerType::getUnqual(context);
+        auto* helper_type = llvm::FunctionType::get(
+            size_type,
+            {plan_word_type, plan_word_type, plan_word_type, plan_word_type,
+             plan_word_type, size_type, pointer_type, size_type, size_type,
+             size_type, sample_index->getType(), size_type, size_type,
+             pointer_type, size_type},
+            false);
+        auto* module = builder.GetInsertBlock()->getModule();
+        auto helper = module->getOrInsertFunction(
+            detail::event_sequence_materialization_symbol, helper_type);
+        auto step = [&](std::size_t index) -> llvm::Constant* {
+            auto const value = index < materialization.conversion.step_count
+                ? static_cast<std::underlying_type_t<EventConversionStepId>>(
+                      materialization.conversion.steps[index])
+                : 0;
+            return llvm::ConstantInt::get(plan_word_type, value);
+        };
+        auto* materialized_count = builder.CreateCall(
+            helper,
+            {llvm::ConstantInt::get(
+                 plan_word_type,
+                 static_cast<std::underlying_type_t<EventTypeId>>(source.type)),
+             llvm::ConstantInt::get(
+                 plan_word_type,
+                 static_cast<std::underlying_type_t<EventTypeId>>(target.type)),
+             step(0), step(1), step(2),
+             llvm::ConstantInt::get(
+                 size_type, materialization.conversion.step_count),
+             source_events,
+             llvm::ConstantInt::get(size_type, source.event_capacity),
+             source_read_index,
+             source_write_index,
+             sample_index,
+             block_size,
+             llvm::ConstantInt::get(size_type, materialization.history_samples),
+             target_events,
+             llvm::ConstantInt::get(size_type, target.event_capacity)},
+            "event.materialize.windowed.count");
+        builder.CreateStore(materialized_count, target_count_pointer);
+        return {};
+    }
+
+    auto* source_count_pointer = byte_offset_pointer(
+        builder,
+        storage_base,
+        source.count_storage_offset,
+        "event.materialize.source.count");
+    auto* count = builder.CreateLoad(
+        size_type, source_count_pointer, "event.materialize.count");
+    auto* source_capacity = llvm::ConstantInt::get(
+        size_type, source.event_capacity);
+    auto* bounded_source_count = builder.CreateSelect(
+        builder.CreateICmpULE(
+            count, source_capacity, "event.materialize.source.in.bounds"),
+        count,
+        source_capacity,
+        "event.materialize.source.bounded.count");
 
     if (materialization.conversion.step_count == 0) {
         if (source.type != target.type) {
@@ -1914,7 +1994,9 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 builder,
                 plan.event_ports,
                 plan.event_ports.materializations[materialization_index],
-                storage_base);
+                storage_base,
+                sample_index,
+                block_size);
             if (!materialized) {
                 return std::unexpected(std::move(materialized.error()));
             }

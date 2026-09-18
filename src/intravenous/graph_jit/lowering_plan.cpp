@@ -1447,21 +1447,15 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 return std::unexpected(
                     "GraphJit event connection requires unsupported retention, feedback, external, or source-composition semantics");
             }
-            if (retained_storage
-                && (connection.requires_conversion
-                    || connection.requires_block_materialization)) {
-                return std::unexpected(
-                    "GraphJit retained event storage does not yet combine retention with conversion or block materialization");
-            }
             auto target_representation = *source_representation;
             if (connection.requires_conversion
                 || connection.requires_block_materialization) {
-                if (!transient_materialized) {
+                if (!transient_materialized && !retained_storage) {
                     return std::unexpected(
                         "GraphJit event implementation lost required transient materialization");
                 }
 
-                auto const existing = std::ranges::find_if(
+                auto existing = std::ranges::find_if(
                     plan.materializations,
                     [&](EventMaterializationPlan const& candidate) {
                         return candidate.source_representation
@@ -1476,7 +1470,16 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                     });
                 if (existing != plan.materializations.end()) {
                     target_representation = existing->target_representation;
+                    existing->history_samples = std::max(
+                        existing->history_samples, connection.target_history);
+                    existing->select_root_window =
+                        existing->select_root_window || retained_storage;
                 } else {
+                    // A narrower consumer window cannot safely imply a smaller
+                    // event-count capacity: max_events_per_sample is only a
+                    // sizing rate, so every source event may legally cluster at
+                    // one timestamp inside that narrower window. Non-expanding
+                    // implicit conversion therefore inherits source capacity.
                     auto derived = append_representation(
                         group_index,
                         connection.target_type,
@@ -1489,6 +1492,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                         .source_representation = *source_representation,
                         .target_representation = target_representation,
                         .conversion = connection.conversion,
+                        .history_samples = connection.target_history,
+                        .select_root_window = retained_storage,
                         .after_execution_position = group.live_interval.begin,
                     });
                 }
@@ -1699,7 +1704,14 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 return carry.working_representation
                     == materialization.source_representation;
             });
+        auto const persistent_ring_source =
+            materialization.source_representation
+                < event_ports.representations.size()
+            && event_ports.representations[
+                   materialization.source_representation]
+                   .persistent_ring;
         if (!carry_source
+            && !persistent_ring_source
             && std::ranges::find(
                    step.event_sequence_resets_before,
                    materialization.source_representation)
