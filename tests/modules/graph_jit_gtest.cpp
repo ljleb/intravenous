@@ -1245,11 +1245,12 @@ TEST(GraphJitSamplePhysicalPlan, RejectsTransientStorageThatCrossesKernelCalls)
         std::string::npos);
 }
 
-TEST(GraphJit, ZeroPortPrimitiveStateContextsAndMultiNodeExecution)
+namespace {
+constexpr char graph_jit_runtime_fixture_name[] = "graph_jit_runtime_shared_package";
+
+std::string_view graph_jit_runtime_package_source()
 {
-    auto const workspace = iv::test_support::make_inline_module_workspace(
-        "graph_jit_single_primitive_state_context",
-        R"cpp(
+    return R"cpp(
 #include <intravenous/dsl.h>
 
 #include <array>
@@ -2768,30 +2769,130 @@ IV_MODULE("iv.test.graph_jit.state_context.retained_event_module", retained_even
 IV_MODULE("iv.test.graph_jit.state_context.persistent_event_ring_module", persistent_event_ring_module);
 IV_MODULE("iv.test.graph_jit.state_context.retained_converted_event_fanout_module", retained_converted_event_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
-)cpp");
+)cpp";
+}
 
-    auto const canonical_workspace = std::filesystem::weakly_canonical(workspace);
-    std::shared_ptr<iv::PackageRevision const> revision;
-    {
-        iv::StartupConfig startup_config(canonical_workspace, iv::test::repo_root(), {});
-        iv::PackageJit package_jit(
-            startup_config.initialize(),
-            iv::ModuleLoader::OptimizationLevel::O0);
-        iv::PackageJitBatchRequest package_request{
-            .declarations = {iv::IvPackageDeclaration{
-                .package_id = graph_jit_state_package_id,
-                .package_root = canonical_workspace,
-            }},
-        };
-        package_jit.handle_build_request(package_request);
-
-        if (!package_request.result.failed.empty()) {
-            FAIL() << package_request.result.failed.front().message;
-        }
-        ASSERT_EQ(package_request.result.revisions.size(), 1u);
-        revision = std::make_shared<iv::PackageRevision const>(
-            std::move(package_request.result.revisions.front()));
+void write_graph_jit_fixture_file_if_changed(
+    std::filesystem::path const& path,
+    std::string_view contents)
+{
+    if (std::filesystem::exists(path)
+        && iv::test::read_text(path) == contents) {
+        return;
     }
+    iv::test::write_text(path, std::string(contents));
+}
+
+std::filesystem::path ensure_graph_jit_runtime_workspace()
+{
+    auto const root = iv::test::shared_test_fixtures_root();
+    auto const token = iv::test::sanitize_test_token(graph_jit_runtime_fixture_name);
+    auto const workspace = root / token;
+    auto const lock = iv::test::ScopedFileLock(root / (token + ".lock"));
+    std::filesystem::create_directories(workspace);
+    if (!std::filesystem::exists(workspace / "iv_project.jsonl")) {
+        iv::test::write_text(workspace / "iv_project.jsonl", "");
+    }
+    write_graph_jit_fixture_file_if_changed(
+        workspace / "iv_package.json",
+        "{\n  \"schema\": 2,\n  \"entry\": \"module.cpp\"\n}\n");
+    write_graph_jit_fixture_file_if_changed(
+        workspace / "module.cpp",
+        graph_jit_runtime_package_source());
+    return workspace;
+}
+
+std::shared_ptr<iv::PackageRevision const> load_graph_jit_runtime_revision()
+{
+    auto const workspace = std::filesystem::weakly_canonical(
+        ensure_graph_jit_runtime_workspace());
+    iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
+    iv::PackageJit package_jit(
+        startup_config.initialize(),
+        iv::ModuleLoader::OptimizationLevel::O0);
+    iv::PackageJitBatchRequest request{
+        .declarations = {iv::IvPackageDeclaration{
+            .package_id = graph_jit_state_package_id,
+            .package_root = workspace,
+        }},
+    };
+    package_jit.handle_build_request(request);
+    if (!request.result.failed.empty()) {
+        throw std::runtime_error(request.result.failed.front().message);
+    }
+    if (request.result.revisions.size() != 1u) {
+        throw std::runtime_error("GraphJit shared runtime fixture did not produce one package revision");
+    }
+    return std::make_shared<iv::PackageRevision const>(
+        std::move(request.result.revisions.front()));
+}
+
+SampleConsumerProbeStateMirror* find_consumer_state(
+    iv::CompiledGraph const& graph,
+    iv::NodeStorage& storage)
+{
+    for (std::size_t i = 0; i < graph.node_layout.nodes.size(); ++i) {
+        if (graph.node_layout.nodes[i].state_size
+            == sizeof(SampleConsumerProbeStateMirror)) {
+            return static_cast<SampleConsumerProbeStateMirror*>(storage.state_ptr(i));
+        }
+    }
+    return nullptr;
+}
+
+std::size_t count_raw_regions(iv::NodeLayout const& layout)
+{
+    return static_cast<std::size_t>(std::ranges::count_if(
+        layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.kind == iv::NodeLayout::Region::Kind::raw;
+        }));
+}
+
+class GraphJitRuntimeFixture : public ::testing::Test {
+protected:
+    std::shared_ptr<iv::PackageRevision const> revision;
+    std::shared_ptr<iv::NodeDefinitionsSnapshot const> definitions;
+    std::unique_ptr<iv::GraphJit> jit;
+    iv::ResourceContext resources;
+
+    void SetUp() override
+    {
+        ASSERT_NO_THROW(revision = load_graph_jit_runtime_revision());
+        ASSERT_TRUE(revision);
+        definitions = make_graph_jit_snapshot(revision, 91);
+        jit = std::make_unique<iv::GraphJit>(iv::GraphJitConfig{
+            .sample_rate = 88200,
+            .block_size = 64,
+        });
+    }
+
+    iv::GraphJitCompileResult compile_graph(
+        std::shared_ptr<iv::ConfiguredGraph const> graph,
+        std::uint64_t generation)
+    {
+        EXPECT_NE(graph, nullptr);
+        return jit->compile(iv::GraphJitCompileRequest{
+            .project_generation = generation,
+            .graph = std::move(graph),
+            .definitions = definitions,
+        });
+    }
+
+    iv::GraphJitCompileResult compile(
+        std::string_view module_id,
+        std::uint64_t generation)
+    {
+        return compile_graph(
+            configured_module_graph(*revision, module_id), generation);
+    }
+};
+} // namespace
+
+TEST(GraphJitSharedRuntimeFixture, BuildPackage)
+{
+    std::shared_ptr<iv::PackageRevision const> revision;
+    ASSERT_NO_THROW(revision = load_graph_jit_runtime_revision());
     ASSERT_TRUE(revision);
     auto has_leaf_definition = [&](std::string_view definition_id) {
         return std::ranges::any_of(
@@ -2860,36 +2961,15 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         "iv.test.graph_jit.state_context.retained_midi_event_consumer"));
     EXPECT_TRUE(has_module_definition(graph_jit_persistent_event_ring_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_retained_converted_event_fanout_module_id));
+}
 
-    auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
-    auto definitions = make_graph_jit_snapshot(revision, 91);
-    auto jit = std::make_unique<iv::GraphJit>(iv::GraphJitConfig{
-        .sample_rate = 88200,
-        .block_size = 64,
-    });
-    iv::ResourceContext resources;
-
-    auto compile_graph = [&](
-                             std::shared_ptr<iv::ConfiguredGraph const> graph,
-                             std::uint64_t generation) {
-        EXPECT_NE(graph, nullptr);
-        return jit->compile(iv::GraphJitCompileRequest{
-            .project_generation = generation,
-            .graph = std::move(graph),
-            .definitions = definitions,
-        });
-    };
-    auto compile = [&](std::string_view module_id, std::uint64_t generation) {
-        return compile_graph(
-            configured_module_graph(*revision, module_id), generation);
-    };
-
+TEST_F(GraphJitRuntimeFixture, StateAndCompiledStateContexts)
+{
     auto stateful = compile(graph_jit_stateful_module_id, 100);
     ASSERT_TRUE(stateful.succeeded())
         << (stateful.diagnostics.empty() ? "" : stateful.diagnostics.front().message);
     ASSERT_TRUE(stateful.compiled_graph->root_operations.valid());
     ASSERT_TRUE(stateful.compiled_graph->root_operations.can_skip_block());
-    auto stateful_survivor = stateful.compiled_graph;
     expect_single_node_canonical_regions(
         stateful.compiled_graph->node_layout,
         sizeof(StatefulProbeStateMirror),
@@ -3021,6 +3101,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_EQ(stateless.compiled_graph->node_layout.storage_size, 0u);
     EXPECT_NO_THROW(stateless.compiled_graph->root_operations.tick_block(nullptr, 9, 32));
 
+}
+
+TEST_F(GraphJitRuntimeFixture, ConfiguredValuesAndPointerRelocations)
+{
     auto configured_graph = configured_module_graph(*revision, graph_jit_configured_module_id);
     ASSERT_TRUE(configured_graph);
     auto configured = jit->compile(iv::GraphJitCompileRequest{
@@ -3086,8 +3170,11 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_EQ(pointer_state->null_seen, 1u);
     EXPECT_EQ(pointer_state->marker, 0x89abcdefu);
     EXPECT_EQ(pointer_state->tag, 0x4567u);
-    auto pointer_survivor = pointer_configured.compiled_graph;
 
+}
+
+TEST_F(GraphJitRuntimeFixture, MultipleNodesSkipAndBlockSlicing)
+{
     auto multiple_graph = configured_module_graph(
         *revision, graph_jit_multiple_module_id);
     ASSERT_TRUE(multiple_graph);
@@ -3196,24 +3283,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         limited_state->skip_sizes,
         (std::array<std::uint64_t, 8>{16, 16, 0, 0, 0, 0, 0, 0}));
 
-    auto find_consumer_state = [](iv::CompiledGraph const& graph, iv::NodeStorage& storage) {
-        for (std::size_t i = 0; i < graph.node_layout.nodes.size(); ++i) {
-            if (graph.node_layout.nodes[i].state_size
-                == sizeof(SampleConsumerProbeStateMirror)) {
-                return static_cast<SampleConsumerProbeStateMirror*>(
-                    storage.state_ptr(i));
-            }
-        }
-        return static_cast<SampleConsumerProbeStateMirror*>(nullptr);
-    };
-    auto count_raw_regions = [](iv::NodeLayout const& layout) {
-        return static_cast<std::size_t>(std::ranges::count_if(
-            layout.regions,
-            [](iv::NodeLayout::Region const& region) {
-                return region.kind == iv::NodeLayout::Region::Kind::raw;
-            }));
-    };
+}
 
+TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)
+{
     auto direct_graph = configured_module_graph(
         *revision, graph_jit_direct_sample_module_id);
     ASSERT_TRUE(direct_graph);
@@ -3274,6 +3347,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(direct_state->last, 215.0f);
     EXPECT_FLOAT_EQ(direct_state->sum, 3320.0f);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, TransientSampleStorage)
+{
     auto transient_graph = configured_module_graph(
         *revision, graph_jit_transient_sample_module_id);
     ASSERT_TRUE(transient_graph);
@@ -3346,6 +3423,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(transient_state->last, 531.0f);
     EXPECT_FLOAT_EQ(transient_state->sum, 16496.0f);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, TransientArenaReuse)
+{
     auto reused_arena_graph = configured_module_graph(
         *revision, graph_jit_reused_sample_arena_module_id);
     ASSERT_TRUE(reused_arena_graph);
@@ -3425,6 +3506,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         EXPECT_FLOAT_EQ(state->sum, 46816.0f);
     }
 
+}
+
+TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
+{
     auto fanout_graph = configured_module_graph(
         *revision, graph_jit_sample_fanout_conversion_module_id);
     ASSERT_TRUE(fanout_graph);
@@ -3582,6 +3667,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         EXPECT_FLOAT_EQ(state->sum_right, 3400.0f);
     }
 
+}
+
+TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
+{
     auto stereo_conversion_graph = configured_module_graph(
         *revision, graph_jit_stereo_conversion_module_id);
     ASSERT_TRUE(stereo_conversion_graph);
@@ -3672,6 +3761,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_left, 2128.0f);
     EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_right, 34128.0f);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, SampleLatencyCompensation)
+{
     auto latency_compensation_graph = configured_module_graph(
         *revision, graph_jit_latency_compensation_module_id);
     ASSERT_TRUE(latency_compensation_graph);
@@ -3725,6 +3818,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(latency_probe->slow_last, 120.0f);
     EXPECT_FLOAT_EQ(latency_probe->max_abs_difference, 0.0f);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, ConvertedFanoutLatencyWindows)
+{
     auto latency_conversion_fanout_graph = configured_module_graph(
         *revision, graph_jit_latency_conversion_fanout_module_id);
     ASSERT_TRUE(latency_conversion_fanout_graph);
@@ -3866,6 +3963,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(current_observer->last, 127.0f);
     EXPECT_FLOAT_EQ(current_observer->sum, 6112.0f);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, ComposedSampleLatency)
+{
     auto composed_latency_graph = configured_module_graph(
         *revision, graph_jit_composed_latency_module_id);
     ASSERT_TRUE(composed_latency_graph);
@@ -3943,6 +4044,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     // The direct channel therefore needs 5 + 7 frames while the delayed
     // channel needs 5 + 2. The synthetic stereo representation itself is
     // timestamp-aligned and exposes those five historical frames at latency 0.
+}
+
+TEST_F(GraphJitRuntimeFixture, ComposedSampleHistory)
+{
     auto composed_history_graph = configured_module_graph(
         *revision, graph_jit_composed_history_module_id);
     ASSERT_TRUE(composed_history_graph);
@@ -4075,6 +4180,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     // target-channel contributions. Connection analysis must normalize them
     // back into one full stereo logical input, preserving both the source
     // permutation (stereo right -> target left) and independent path latency.
+}
+
+TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
+{
     auto projected_base_graph = configured_module_graph(
         *revision, graph_jit_projected_composition_module_id);
     ASSERT_TRUE(projected_base_graph);
@@ -4179,6 +4288,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(projected_probe->sum_left, 69664.0f);
     EXPECT_FLOAT_EQ(projected_probe->sum_right, 5664.0f);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, DirectEventFlow)
+{
     auto direct_event_graph = configured_module_graph(
         *revision, graph_jit_direct_event_module_id);
     ASSERT_TRUE(direct_event_graph);
@@ -4246,6 +4359,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_EQ(direct_event_probe->first_time, 67u);
     EXPECT_EQ(direct_event_probe->last_time, 127u);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, TransientEventSlicing)
+{
     auto transient_event_graph = configured_module_graph(
         *revision, graph_jit_transient_event_module_id);
     ASSERT_TRUE(transient_event_graph);
@@ -4332,6 +4449,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     // Event conversion is a transient physical operation owned by the producer
     // group. Two consumers requesting the same MIDI->trigger branch must share
     // one converted sequence rather than materializing the same fanout twice.
+}
+
+TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
+{
     auto converted_event_graph = configured_module_graph(
         *revision, graph_jit_converted_event_fanout_module_id);
     ASSERT_TRUE(converted_event_graph);
@@ -4410,6 +4531,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     // Small retained event windows use a compact persistent carry. The
     // producer may publish into its authored future-latency window, while the
     // consumer asks for eight samples of history on the following root call.
+}
+
+TEST_F(GraphJitRuntimeFixture, CompactRetainedEvents)
+{
     auto retained_event_graph = configured_module_graph(
         *revision, graph_jit_retained_event_module_id);
     ASSERT_TRUE(retained_event_graph);
@@ -4516,6 +4641,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     // consumer directly to one persistent ring. The ring keeps monotonic
     // read/write indices in NodeStorage and advances only the oldest retained
     // index as the 160-sample history window moves across root calls.
+}
+
+TEST_F(GraphJitRuntimeFixture, PersistentEventRing)
+{
     auto persistent_event_ring_graph = configured_module_graph(
         *revision, graph_jit_persistent_event_ring_module_id);
     ASSERT_TRUE(persistent_event_ring_graph);
@@ -4637,6 +4766,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     // materializes only the current consumer window, while target capacity
     // remains source-capacity-sized because the sizing rate does not constrain
     // timestamp clustering.
+}
+
+TEST_F(GraphJitRuntimeFixture, RetainedConvertedEventFanout)
+{
     auto retained_converted_event_graph = configured_module_graph(
         *revision, graph_jit_retained_converted_event_fanout_module_id);
     ASSERT_TRUE(retained_converted_event_graph);
@@ -4790,6 +4923,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
         + retained_converted_transient_region->storage_offset);
     EXPECT_EQ(*converted_count, 2u);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
+{
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);
     ASSERT_TRUE(history_graph);
@@ -4925,6 +5062,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(migrated_mono->history_1, 133.0f);
     EXPECT_FLOAT_EQ(migrated_mono->history_5, 129.0f);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, PersistentSampleHistory)
+{
     auto persistent_history_graph = configured_module_graph(
         *revision, graph_jit_persistent_history_module_id);
     ASSERT_TRUE(persistent_history_graph);
@@ -4989,6 +5130,10 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_FLOAT_EQ(large_history_state->history_1, 5055.0f);
     EXPECT_FLOAT_EQ(large_history_state->history_5000, 56.0f);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, ExternalSampleBoundariesRejected)
+{
     auto ported_graph = configured_module_graph(*revision, graph_jit_ported_module_id);
     ASSERT_TRUE(ported_graph);
     auto ported = compile_graph(ported_graph, 119);
@@ -5000,51 +5145,41 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     auto disconnected_ported = compile_graph(disconnected_ported_graph, 120);
     expect_lowering_failure(
         disconnected_ported, "does not yet support external sample boundaries");
+}
 
-    // A CompiledGraph must keep both the project ORC domain and its package
-    // revision alive independently of GraphJit, the definitions snapshot, and
-    // newer generations. Drop every external owner and execute the oldest
-    // generation again through the storage/layout it owns.
-    state_only_storage = iv::NodeStorage{};
-    compiled_only_storage = iv::NodeStorage{};
-    configured_storage = iv::NodeStorage{};
-    pointer_storage = iv::NodeStorage{};
-    multiple_storage = iv::NodeStorage{};
-    skippable_pair_storage = iv::NodeStorage{};
-    limited_storage = iv::NodeStorage{};
-    direct_storage = iv::NodeStorage{};
-    transient_storage = iv::NodeStorage{};
-    reused_storage = iv::NodeStorage{};
-    fanout_storage = iv::NodeStorage{};
-    stereo_conversion_storage = iv::NodeStorage{};
-    latency_storage = iv::NodeStorage{};
-    composed_history_storage = iv::NodeStorage{};
-    direct_event_storage = iv::NodeStorage{};
-    history_storage = iv::NodeStorage{};
-    history_next_storage = iv::NodeStorage{};
-    persistent_history_storage = iv::NodeStorage{};
+TEST_F(GraphJitRuntimeFixture, CompiledGraphsRetainPackageAndOrcOwnership)
+{
+    auto stateful = compile(graph_jit_stateful_module_id, 130);
+    ASSERT_TRUE(stateful.succeeded())
+        << (stateful.diagnostics.empty() ? "" : stateful.diagnostics.front().message);
+    auto stateful_survivor = stateful.compiled_graph;
+    auto stateful_storage = stateful_survivor->node_layout.create_storage(resources);
+    stateful_storage.initialize();
+    auto* state = static_cast<StatefulProbeStateMirror*>(stateful_storage.state_ptr(0));
+    auto* compiled = static_cast<StatefulProbeCompiledStateMirror*>(
+        stateful_storage.compiled_state_ptr(0));
+    ASSERT_NE(state, nullptr);
+    ASSERT_NE(compiled, nullptr);
+    stateful_survivor->root_operations.tick_block(
+        stateful_storage.buffer().data(), 17, 32);
+    stateful_survivor->root_operations.skip_block(
+        stateful_storage.buffer().data(), 41, 16);
+    stateful_survivor->root_operations.tick_block(
+        stateful_storage.buffer().data(), 73, 64);
+
+    auto pointer_graph = configured_module_graph(
+        *revision, graph_jit_pointer_configured_module_id);
+    ASSERT_TRUE(pointer_graph);
+    auto pointer_result = compile_graph(pointer_graph, 131);
+    ASSERT_TRUE(pointer_result.succeeded())
+        << (pointer_result.diagnostics.empty()
+                ? ""
+                : pointer_result.diagnostics.front().message);
+    auto pointer_survivor = pointer_result.compiled_graph;
+
+    auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     stateful = {};
-    state_only = {};
-    compiled_only = {};
-    stateless = {};
-    configured = {};
-    pointer_configured = {};
-    multiple = {};
-    skippable_pair = {};
-    limited = {};
-    direct = {};
-    transient = {};
-    reused_arena = {};
-    fanout = {};
-    stereo_conversion = {};
-    latency_compensation = {};
-    composed_history = {};
-    direct_event = {};
-    history = {};
-    history_next = {};
-    persistent_history = {};
-    ported = {};
-    disconnected_ported = {};
+    pointer_result = {};
     definitions.reset();
     revision.reset();
     jit.reset();

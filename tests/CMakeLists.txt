@@ -145,7 +145,24 @@ add_iv_gtest(
     intravenous_graph_jit_tests
     modules/graph_jit_gtest.cpp
     IV_MODULE_COMPILATION_TESTS
-        GraphJit.ZeroPortPrimitiveStateContextsAndMultiNodeExecution)
+        GraphJitSharedRuntimeFixture.BuildPackage)
+
+# The runtime GraphJIT regression package is expensive to compile, while the
+# individual graph compilation/execution scenarios are independent. Build the
+# shared package once, then allow CTest to schedule all scenario tests in
+# parallel against the stable on-disk package artifact.
+get_property(iv_graph_jit_ctests DIRECTORY PROPERTY TESTS)
+foreach(test_name IN LISTS iv_graph_jit_ctests)
+    if(test_name STREQUAL "GraphJitSharedRuntimeFixture.BuildPackage")
+        set_tests_properties(${test_name} PROPERTIES
+            FIXTURES_SETUP graph_jit_runtime_package
+            LABELS "heavy")
+    elseif(test_name MATCHES "^GraphJitRuntimeFixture\\.")
+        set_tests_properties(${test_name} PROPERTIES
+            FIXTURES_REQUIRED graph_jit_runtime_package
+            LABELS "heavy")
+    endif()
+endforeach()
 add_iv_gtest(
     intravenous_node_instances_configuration_tests
     modules/node_instances_configuration_gtest.cpp)
