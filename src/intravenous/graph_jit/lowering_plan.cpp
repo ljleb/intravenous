@@ -1735,6 +1735,11 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     if (!connections) {
         return std::unexpected(std::move(connections.error()));
     }
+    if (!connections->sample_detaches.empty()
+        || !connections->event_detaches.empty()) {
+        return std::unexpected(
+            "GraphJit detach transport lowering is not yet implemented");
+    }
 
     auto analysis = analyze_graph(input);
     if (!analysis) return std::unexpected(std::move(analysis.error()));

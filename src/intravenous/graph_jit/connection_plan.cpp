@@ -11,6 +11,7 @@
 #include <iterator>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -571,6 +572,298 @@ std::expected<void, std::string> inventory_event_connections(
     return {};
 }
 
+
+std::vector<std::vector<std::size_t>> dependency_adjacency(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan const& plan,
+    bool sequential_only)
+{
+    std::vector<std::optional<std::size_t>> bundle_to_node(
+        graph.node_bundles.size());
+    for (std::size_t i = 0; i < plan.nodes.size(); ++i) {
+        bundle_to_node[plan.nodes[i].bundle] = i;
+    }
+
+    std::vector<std::vector<std::size_t>> outgoing(plan.nodes.size());
+    for (auto const& dependency : plan.dependencies) {
+        if (sequential_only && !dependency.sequential_tick_dependency) continue;
+        if (dependency.source_bundle >= bundle_to_node.size()
+            || dependency.target_bundle >= bundle_to_node.size()
+            || !bundle_to_node[dependency.source_bundle]
+            || !bundle_to_node[dependency.target_bundle]) {
+            continue;
+        }
+        outgoing[*bundle_to_node[dependency.source_bundle]].push_back(
+            *bundle_to_node[dependency.target_bundle]);
+    }
+    for (auto& targets : outgoing) {
+        std::ranges::sort(targets);
+        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+    }
+    return outgoing;
+}
+
+bool has_path(
+    std::vector<std::vector<std::size_t>> const& outgoing,
+    std::size_t start,
+    std::size_t goal)
+{
+    if (start == goal) return true;
+    std::vector<bool> seen(outgoing.size(), false);
+    std::vector<std::size_t> queue{start};
+    seen[start] = true;
+    for (std::size_t i = 0; i < queue.size(); ++i) {
+        for (auto const target : outgoing[queue[i]]) {
+            if (target == goal) return true;
+            if (!seen[target]) {
+                seen[target] = true;
+                queue.push_back(target);
+            }
+        }
+    }
+    return false;
+}
+
+std::expected<void, std::string> validate_explicit_graph_is_acyclic(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan const& plan)
+{
+    auto const outgoing = dependency_adjacency(graph, plan, false);
+    std::vector<std::size_t> indegree(outgoing.size(), 0);
+    for (auto const& targets : outgoing) {
+        for (auto const target : targets) ++indegree[target];
+    }
+    std::vector<std::size_t> ready;
+    for (std::size_t node = 0; node < indegree.size(); ++node) {
+        if (indegree[node] == 0) ready.push_back(node);
+    }
+    std::size_t visited = 0;
+    for (std::size_t i = 0; i < ready.size(); ++i) {
+        ++visited;
+        for (auto const target : outgoing[ready[i]]) {
+            if (--indegree[target] == 0) ready.push_back(target);
+        }
+    }
+    if (visited != outgoing.size()) {
+        return std::unexpected(
+            "GraphJit graph contains an implicit cycle; use detach() to break feedback explicitly");
+    }
+    return {};
+}
+
+std::vector<NodeBundleHandle> unique_source_bundles(
+    std::span<SampleOutputChannelId const> sources)
+{
+    std::vector<NodeBundleHandle> bundles;
+    bundles.reserve(sources.size());
+    for (auto const source : sources) bundles.push_back(source.bundle);
+    std::ranges::sort(bundles);
+    bundles.erase(std::unique(bundles.begin(), bundles.end()), bundles.end());
+    return bundles;
+}
+
+std::vector<NodeBundleHandle> unique_source_bundles(
+    std::span<EventOutputPortId const> sources)
+{
+    std::vector<NodeBundleHandle> bundles;
+    bundles.reserve(sources.size());
+    for (auto const source : sources) bundles.push_back(source.bundle);
+    std::ranges::sort(bundles);
+    bundles.erase(std::unique(bundles.begin(), bundles.end()), bundles.end());
+    return bundles;
+}
+
+std::vector<NodeBundleHandle> detach_consumers(
+    ConnectionAnalysisPlan const& plan,
+    NodeBundleHandle reader_bundle,
+    PlannedConnectionPayload payload)
+{
+    std::vector<NodeBundleHandle> consumers;
+    for (auto const& dependency : plan.dependencies) {
+        if (dependency.payload == payload
+            && dependency.source_bundle == reader_bundle) {
+            consumers.push_back(dependency.target_bundle);
+        }
+    }
+    std::ranges::sort(consumers);
+    consumers.erase(std::unique(consumers.begin(), consumers.end()), consumers.end());
+    return consumers;
+}
+
+bool contains_dependency(
+    ConnectionAnalysisPlan const& plan,
+    NodeBundleHandle source,
+    NodeBundleHandle target,
+    PlannedConnectionPayload payload)
+{
+    return std::ranges::any_of(
+        plan.dependencies,
+        [&](DependencyEdgePlan const& dependency) {
+            return dependency.payload == payload
+                && dependency.source_bundle == source
+                && dependency.target_bundle == target;
+        });
+}
+
+std::expected<void, std::string> validate_detach_cycle(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan const& plan,
+    std::span<NodeBundleHandle const> sources,
+    NodeBundleHandle writer_bundle,
+    NodeBundleHandle reader_bundle,
+    std::span<NodeBundleHandle const> consumers,
+    PlannedConnectionPayload payload,
+    std::size_t detach_id)
+{
+    if (sources.empty() || consumers.empty()) {
+        return std::unexpected(
+            "GraphJit detach " + std::to_string(detach_id)
+            + " does not break a cycle");
+    }
+    if (writer_bundle == plan.boundary_bundle || reader_bundle == plan.boundary_bundle) {
+        return std::unexpected(
+            "GraphJit detach endpoints must be concrete graph nodes");
+    }
+    if (writer_bundle >= graph.node_bundles.size()
+        || reader_bundle >= graph.node_bundles.size()) {
+        return std::unexpected("GraphJit detach refers to an invalid bundle");
+    }
+    for (auto const source : sources) {
+        if (source == plan.boundary_bundle
+            || !contains_dependency(plan, source, writer_bundle, payload)) {
+            return std::unexpected(
+                "GraphJit detach writer is not connected to its recorded semantic source");
+        }
+    }
+
+    auto const semantic_outgoing = dependency_adjacency(graph, plan, false);
+    auto const sequential_outgoing = dependency_adjacency(graph, plan, true);
+    std::vector<std::optional<std::size_t>> bundle_to_node(
+        graph.node_bundles.size());
+    for (std::size_t i = 0; i < plan.nodes.size(); ++i) {
+        bundle_to_node[plan.nodes[i].bundle] = i;
+    }
+
+    for (auto const consumer : consumers) {
+        if (consumer >= bundle_to_node.size() || !bundle_to_node[consumer]) {
+            return std::unexpected(
+                "GraphJit detach consumer is not a concrete graph node");
+        }
+        bool closes_semantic_cycle = false;
+        bool closes_sequential_cycle = false;
+        for (auto const source : sources) {
+            if (source >= bundle_to_node.size() || !bundle_to_node[source]) continue;
+            closes_semantic_cycle = closes_semantic_cycle
+                || has_path(
+                    semantic_outgoing,
+                    *bundle_to_node[consumer],
+                    *bundle_to_node[source]);
+            closes_sequential_cycle = closes_sequential_cycle
+                || has_path(
+                    sequential_outgoing,
+                    *bundle_to_node[consumer],
+                    *bundle_to_node[source]);
+        }
+        if (!closes_semantic_cycle) {
+            return std::unexpected(
+                "GraphJit detach " + std::to_string(detach_id)
+                + " breaks an acyclic dependency");
+        }
+        if (!closes_sequential_cycle) {
+            return std::unexpected(
+                "GraphJit detach cycle crosses compiled-access dependencies, which SCC execution does not yet support");
+        }
+    }
+    return {};
+}
+
+std::expected<void, std::string> inventory_and_validate_detaches(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan& plan)
+{
+    plan.sample_detaches.reserve(graph.detach.configured_infos().size());
+    for (auto const& info : graph.detach.configured_infos()) {
+        if (info.loop_extra_latency == 0) {
+            return std::unexpected(
+                "GraphJit sample detach latency must be at least one sample");
+        }
+        if (info.reader_channel.bundle != info.reader_bundle) {
+            return std::unexpected(
+                "GraphJit sample detach reader metadata is inconsistent");
+        }
+        auto const sources = unique_source_bundles(info.source_channels);
+        auto const consumers = detach_consumers(
+            plan, info.reader_bundle, PlannedConnectionPayload::sample);
+        if (auto valid = validate_detach_cycle(
+                graph,
+                plan,
+                sources,
+                info.writer_bundle,
+                info.reader_bundle,
+                consumers,
+                PlannedConnectionPayload::sample,
+                info.detach_id);
+            !valid) {
+            return valid;
+        }
+        plan.sample_detaches.push_back(SampleDetachPlan{
+            .detach_id = info.detach_id,
+            .source_type = info.source_type,
+            .source_channels = info.source_channels,
+            .writer_bundle = info.writer_bundle,
+            .reader_bundle = info.reader_bundle,
+            .reader_channel = info.reader_channel,
+            .consumer_bundles = consumers,
+            .loop_extra_latency = info.loop_extra_latency,
+        });
+    }
+
+    plan.event_detaches.reserve(graph.detach.configured_event_infos().size());
+    for (auto const& info : graph.detach.configured_event_infos()) {
+        if (info.loop_extra_latency == 0) {
+            return std::unexpected(
+                "GraphJit event detach latency must be at least one sample");
+        }
+        if (info.reader_port.bundle != info.reader_bundle) {
+            return std::unexpected(
+                "GraphJit event detach reader metadata is inconsistent");
+        }
+        auto const sources = unique_source_bundles(info.sources);
+        auto const consumers = detach_consumers(
+            plan, info.reader_bundle, PlannedConnectionPayload::event);
+        if (auto valid = validate_detach_cycle(
+                graph,
+                plan,
+                sources,
+                info.writer_bundle,
+                info.reader_bundle,
+                consumers,
+                PlannedConnectionPayload::event,
+                info.detach_id);
+            !valid) {
+            return valid;
+        }
+        plan.event_detaches.push_back(EventDetachPlan{
+            .detach_id = info.detach_id,
+            .source_type = info.source_type,
+            .sources = info.sources,
+            .writer_bundle = info.writer_bundle,
+            .reader_bundle = info.reader_bundle,
+            .reader_port = info.reader_port,
+            .consumer_bundles = consumers,
+            .loop_extra_latency = info.loop_extra_latency,
+        });
+    }
+    return {};
+}
+
+std::size_t floor_power_of_two(std::size_t value) noexcept
+{
+    std::size_t result = 1;
+    while (result <= value / 2) result *= 2;
+    return result;
+}
+
 std::expected<SchedulePlan, std::string> build_schedule(
     ConfiguredGraph const& graph,
     ConnectionAnalysisPlan const& plan)
@@ -586,23 +879,40 @@ std::expected<SchedulePlan, std::string> build_schedule(
         bundle_to_node[plan.nodes[i].bundle] = i;
     }
 
-    std::vector<std::vector<std::size_t>> outgoing(plan.nodes.size());
+    // Ordinary tick dependencies remain acyclic. Restore only the synthetic
+    // writer->reader dependency of each validated detach for SCC formation.
+    auto const explicit_outgoing = dependency_adjacency(graph, plan, true);
+    auto augmented_outgoing = explicit_outgoing;
     std::vector<bool> self_loop(plan.nodes.size(), false);
-    for (auto const& dependency : plan.dependencies) {
-        if (!dependency.sequential_tick_dependency) continue;
-        if (dependency.source_bundle >= bundle_to_node.size()
-            || dependency.target_bundle >= bundle_to_node.size()
-            || !bundle_to_node[dependency.source_bundle]
-            || !bundle_to_node[dependency.target_bundle]) {
+    auto append_detach_dependency = [&](NodeBundleHandle writer,
+                                        NodeBundleHandle reader)
+        -> std::expected<void, std::string> {
+        if (writer >= bundle_to_node.size() || reader >= bundle_to_node.size()
+            || !bundle_to_node[writer] || !bundle_to_node[reader]) {
             return std::unexpected(
-                "connection dependency refers to a non-concrete bundle");
+                "GraphJit detach scheduling refers to a non-concrete bundle");
         }
-        auto const source = *bundle_to_node[dependency.source_bundle];
-        auto const target = *bundle_to_node[dependency.target_bundle];
+        auto const source = *bundle_to_node[writer];
+        auto const target = *bundle_to_node[reader];
         if (source == target) self_loop[source] = true;
-        outgoing[source].push_back(target);
+        augmented_outgoing[source].push_back(target);
+        return {};
+    };
+    for (auto const& detach : plan.sample_detaches) {
+        if (auto added = append_detach_dependency(
+                detach.writer_bundle, detach.reader_bundle);
+            !added) {
+            return std::unexpected(std::move(added.error()));
+        }
     }
-    for (auto& targets : outgoing) {
+    for (auto const& detach : plan.event_detaches) {
+        if (auto added = append_detach_dependency(
+                detach.writer_bundle, detach.reader_bundle);
+            !added) {
+            return std::unexpected(std::move(added.error()));
+        }
+    }
+    for (auto& targets : augmented_outgoing) {
         std::ranges::sort(targets);
         targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
     }
@@ -621,7 +931,7 @@ std::expected<SchedulePlan, std::string> build_schedule(
         ++next_index;
         stack.push_back(v);
         on_stack[v] = true;
-        for (auto const w : outgoing[v]) {
+        for (auto const w : augmented_outgoing[v]) {
             if (index[w] == unvisited) {
                 self(self, w);
                 lowlink[v] = std::min(lowlink[v], lowlink[w]);
@@ -651,18 +961,55 @@ std::expected<SchedulePlan, std::string> build_schedule(
         std::ranges::sort(component, [&](std::size_t a, std::size_t b) {
             return plan.nodes[a].bundle < plan.nodes[b].bundle;
         });
+        auto const region_index = schedule.regions.size();
         SccRegionPlan region;
         region.maximum_block_size = std::numeric_limits<std::size_t>::max();
         for (auto const node : component) {
-            node_to_region[node] = schedule.regions.size();
+            node_to_region[node] = region_index;
             region.nodes.push_back(plan.nodes[node].bundle);
-            region.execution_order.push_back(plan.nodes[node].bundle);
             region.maximum_block_size = std::min(
                 region.maximum_block_size,
                 plan.nodes[node].maximum_block_size);
         }
         region.cyclic = component.size() > 1
             || (component.size() == 1 && self_loop[component.front()]);
+
+        // The synthetic detach dependency is a storage/temporal dependency,
+        // not a same-slice tick dependency. Topologically order each region
+        // using only ordinary sequential dependencies.
+        std::vector<std::size_t> local_indegree(plan.nodes.size(), 0);
+        for (auto const node : component) {
+            for (auto const target : explicit_outgoing[node]) {
+                if (std::ranges::find(component, target) != component.end()) {
+                    ++local_indegree[target];
+                }
+            }
+        }
+        std::vector<std::size_t> ready;
+        for (auto const node : component) {
+            if (local_indegree[node] == 0) ready.push_back(node);
+        }
+        auto by_bundle = [&](std::size_t a, std::size_t b) {
+            return plan.nodes[a].bundle < plan.nodes[b].bundle;
+        };
+        std::ranges::sort(ready, by_bundle);
+        while (!ready.empty()) {
+            auto const node = ready.front();
+            ready.erase(ready.begin());
+            region.execution_order.push_back(plan.nodes[node].bundle);
+            for (auto const target : explicit_outgoing[node]) {
+                if (std::ranges::find(component, target) == component.end()) continue;
+                if (--local_indegree[target] == 0) {
+                    auto const insertion = std::lower_bound(
+                        ready.begin(), ready.end(), target, by_bundle);
+                    ready.insert(insertion, target);
+                }
+            }
+        }
+        if (region.execution_order.size() != component.size()) {
+            return std::unexpected(
+                "GraphJit SCC remains cyclic after detach dependencies are removed");
+        }
         schedule.regions.push_back(std::move(region));
     }
 
@@ -672,8 +1019,8 @@ std::expected<SchedulePlan, std::string> build_schedule(
 
     std::vector<std::vector<std::size_t>> region_outgoing(schedule.regions.size());
     std::vector<std::size_t> indegree(schedule.regions.size(), 0);
-    for (std::size_t source = 0; source < outgoing.size(); ++source) {
-        for (auto const target : outgoing[source]) {
+    for (std::size_t source = 0; source < augmented_outgoing.size(); ++source) {
+        for (auto const target : augmented_outgoing[source]) {
             auto const source_region = node_to_region[source];
             auto const target_region = node_to_region[target];
             if (source_region == target_region) continue;
@@ -722,6 +1069,53 @@ std::expected<SchedulePlan, std::string> build_schedule(
     return schedule;
 }
 
+std::expected<void, std::string> bind_detach_regions(
+    ConnectionAnalysisPlan& plan)
+{
+    auto bind = [&](auto& detach) -> std::expected<void, std::string> {
+        auto const writer = detach.writer_bundle;
+        auto const reader = detach.reader_bundle;
+        if (writer >= plan.schedule.bundle_to_region.size()
+            || reader >= plan.schedule.bundle_to_region.size()
+            || !plan.schedule.bundle_to_region[writer]
+            || !plan.schedule.bundle_to_region[reader]) {
+            return std::unexpected(
+                "GraphJit detach does not map to a concrete execution region");
+        }
+        auto const writer_region = *plan.schedule.bundle_to_region[writer];
+        auto const reader_region = *plan.schedule.bundle_to_region[reader];
+        if (writer_region != reader_region
+            || writer_region >= plan.schedule.regions.size()
+            || !plan.schedule.regions[writer_region].cyclic) {
+            return std::unexpected(
+                "GraphJit validated detach did not form an execution SCC");
+        }
+        detach.region = writer_region;
+        auto& region = plan.schedule.regions[writer_region];
+        region.maximum_block_size = std::min(
+            region.maximum_block_size,
+            floor_power_of_two(detach.loop_extra_latency));
+        return {};
+    };
+
+    for (auto& detach : plan.sample_detaches) {
+        if (auto bound = bind(detach); !bound) {
+            return std::unexpected(std::move(bound.error()));
+        }
+    }
+    for (auto& detach : plan.event_detaches) {
+        if (auto bound = bind(detach); !bound) {
+            return std::unexpected(std::move(bound.error()));
+        }
+    }
+    for (auto& region : plan.schedule.regions) {
+        region.scc_feedback_latency = region.cyclic
+            ? region.maximum_block_size
+            : 0;
+    }
+    return {};
+}
+
 std::size_t effective_block_size(
     ConnectionAnalysisPlan const& plan,
     NodeBundleHandle bundle,
@@ -736,55 +1130,6 @@ std::size_t effective_block_size(
     if (region >= plan.schedule.regions.size()) return kernel_block_size;
     return std::min(
         kernel_block_size, plan.schedule.regions[region].maximum_block_size);
-}
-
-bool is_feedback(
-    SchedulePlan const& schedule,
-    NodeBundleHandle boundary,
-    NodeBundleHandle source,
-    NodeBundleHandle target)
-{
-    if (source == boundary || target == boundary
-        || source >= schedule.bundle_to_region.size()
-        || target >= schedule.bundle_to_region.size()
-        || !schedule.bundle_to_region[source]
-        || !schedule.bundle_to_region[target]) {
-        return false;
-    }
-    auto const source_region = *schedule.bundle_to_region[source];
-    auto const target_region = *schedule.bundle_to_region[target];
-    return source_region == target_region
-        && schedule.regions[source_region].cyclic;
-}
-
-void mark_feedback(ConnectionAnalysisPlan& plan)
-{
-    for (auto& connection : plan.sample_connections) {
-        connection.feedback = std::ranges::any_of(
-            connection.source_channels,
-            [&](SampleOutputChannelId source) {
-                return is_feedback(
-                    plan.schedule,
-                    plan.boundary_bundle,
-                    source.bundle,
-                    connection.target_port.node_bundle_handle);
-            });
-    }
-    for (auto& connection : plan.event_connections) {
-        connection.feedback = std::ranges::any_of(
-            connection.sources,
-            [&](EventOutputPortId source) {
-                return std::ranges::any_of(
-                    connection.targets,
-                    [&](EventInputPortId target) {
-                        return is_feedback(
-                            plan.schedule,
-                            plan.boundary_bundle,
-                            source.bundle,
-                            target.bundle);
-                    });
-            });
-    }
 }
 
 std::expected<void, std::string> plan_sample_latency_compensation(
@@ -1390,10 +1735,18 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto events = inventory_event_connections(graph, plan); !events) {
         return std::unexpected(std::move(events.error()));
     }
+    if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic) {
+        return std::unexpected(std::move(acyclic.error()));
+    }
+    if (auto detaches = inventory_and_validate_detaches(graph, plan); !detaches) {
+        return std::unexpected(std::move(detaches.error()));
+    }
     auto schedule = build_schedule(graph, plan);
     if (!schedule) return std::unexpected(std::move(schedule.error()));
     plan.schedule = std::move(*schedule);
-    mark_feedback(plan);
+    if (auto detach_regions = bind_detach_regions(plan); !detach_regions) {
+        return std::unexpected(std::move(detach_regions.error()));
+    }
     if (auto latency = plan_sample_latency_compensation(plan); !latency) {
         return std::unexpected(std::move(latency.error()));
     }

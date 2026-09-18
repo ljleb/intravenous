@@ -49,12 +49,17 @@ struct DependencyEdgePlan {
 
 struct SccRegionPlan {
     std::vector<NodeBundleHandle> nodes{};
-    // Point 12 will replace this provisional deterministic order for cyclic
-    // regions with the feedback-aware execution schedule. Acyclic singleton
-    // regions already have their final order.
+    // Explicit (non-detached) dependencies remain acyclic. Cyclic regions are
+    // created only by restoring validated detach writer->reader dependencies,
+    // so this order is a deterministic topological order with those synthetic
+    // feedback dependencies omitted.
     std::vector<NodeBundleHandle> execution_order{};
     bool cyclic = false;
     std::size_t maximum_block_size = 0;
+    // Scheduling quantum exposed to callbacks in this region. This is derived
+    // from node block limits and internal detach latencies; it is not the
+    // transport delay of any particular detach.
+    std::size_t scc_feedback_latency = 0;
 };
 
 struct SchedulePlan {
@@ -128,6 +133,31 @@ struct EventConnectionPlan {
     bool feedback = false;
 };
 
+
+struct SampleDetachPlan {
+    std::size_t detach_id = 0;
+    ChannelTypeId source_type = ChannelTypeId::mono;
+    std::vector<SampleOutputChannelId> source_channels{};
+    NodeBundleHandle writer_bundle = 0;
+    NodeBundleHandle reader_bundle = 0;
+    SampleOutputChannelId reader_channel{};
+    std::vector<NodeBundleHandle> consumer_bundles{};
+    std::size_t loop_extra_latency = 1;
+    std::optional<std::size_t> region{};
+};
+
+struct EventDetachPlan {
+    std::size_t detach_id = 0;
+    EventTypeId source_type = EventTypeId::empty;
+    std::vector<EventOutputPortId> sources{};
+    NodeBundleHandle writer_bundle = 0;
+    NodeBundleHandle reader_bundle = 0;
+    EventOutputPortId reader_port{};
+    std::vector<NodeBundleHandle> consumer_bundles{};
+    std::size_t loop_extra_latency = 1;
+    std::optional<std::size_t> region{};
+};
+
 struct ConnectionLiveIntervalPlan {
     // Positions in SchedulePlan's flattened concrete-node order. Boundary
     // ingress is represented by 0; boundary egress by execution_count.
@@ -194,6 +224,8 @@ struct ConnectionAnalysisPlan {
     SchedulePlan schedule{};
     std::vector<SampleConnectionPlan> sample_connections{};
     std::vector<EventConnectionPlan> event_connections{};
+    std::vector<SampleDetachPlan> sample_detaches{};
+    std::vector<EventDetachPlan> event_detaches{};
     std::vector<SampleProducerGroupPlan> sample_producer_groups{};
     std::vector<EventProducerGroupPlan> event_producer_groups{};
     ConnectionStoragePlan storage{};

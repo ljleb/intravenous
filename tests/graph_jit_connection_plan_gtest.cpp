@@ -47,6 +47,27 @@ struct PlainSamplePass {
     void tick_block(iv::TickBlockContext<PlainSamplePass> const&) const {}
 };
 
+struct PlainEventPass {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_event_output(
+            "out",
+            iv::EventOutputProperties{
+                .type = iv::EventTypeId::trigger,
+                .max_events_per_sample = 0.25,
+            })};
+    }
+
+    void tick_block(iv::TickBlockContext<PlainEventPass> const&) const {}
+};
+
 struct MonoSource {
     static constexpr auto inputs()
     {
@@ -558,7 +579,68 @@ TEST(GraphJitConnectionPlan, PropagatesAlignedLatencyAcrossMultipleConvergences)
         SampleConnectionImplementationKind::compact_persistent_carry);
 }
 
-TEST(GraphJitConnectionPlan, MarksCyclicProducerGroupsAsFeedback)
+TEST(GraphJitConnectionPlan, RejectsImplicitCycles)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto first = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto second = details::configure_concrete_node<PlainSamplePass>(graph);
+    first(second);
+    second(first);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_FALSE(plan.has_value());
+    EXPECT_NE(plan.error().find("implicit cycle"), std::string::npos);
+
+    GraphBuilder event_graph;
+    auto event_first = details::configure_concrete_node<PlainEventPass>(event_graph);
+    auto event_second = details::configure_concrete_node<PlainEventPass>(event_graph);
+    event_first.connect_event_input(0, event_second.event_port());
+    event_second.connect_event_input(0, event_first.event_port());
+    event_graph.outputs();
+
+    auto event_configured = std::move(event_graph).finish();
+    auto event_plan = graph_jit::detail::build_connection_analysis_plan(
+        event_configured, 64);
+    ASSERT_FALSE(event_plan.has_value());
+    EXPECT_NE(event_plan.error().find("implicit cycle"), std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan, RejectsDetachThatDoesNotBreakCycle)
+{
+    using namespace iv;
+    GraphBuilder sample_graph;
+    auto sample_source = details::configure_concrete_node<MonoSource>(sample_graph);
+    auto sample_sink = details::configure_concrete_node<RealtimeSink>(sample_graph);
+    sample_sink(static_cast<SamplePortRef>(sample_source).detach(5));
+    sample_graph.outputs();
+
+    auto sample_configured = std::move(sample_graph).finish();
+    auto sample_plan = graph_jit::detail::build_connection_analysis_plan(
+        sample_configured, 64);
+    ASSERT_FALSE(sample_plan.has_value());
+    EXPECT_NE(
+        sample_plan.error().find("breaks an acyclic dependency"),
+        std::string::npos);
+
+    GraphBuilder event_graph;
+    auto event_source = details::configure_concrete_node<PlainEventPass>(event_graph);
+    auto event_sink = details::configure_concrete_node<PlainEventPass>(event_graph);
+    event_sink.connect_event_input(0, event_source.event_port().detach(7));
+    event_graph.outputs();
+
+    auto event_configured = std::move(event_graph).finish();
+    auto event_plan = graph_jit::detail::build_connection_analysis_plan(
+        event_configured, 64);
+    ASSERT_FALSE(event_plan.has_value());
+    EXPECT_NE(
+        event_plan.error().find("breaks an acyclic dependency"),
+        std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)
 {
     using namespace iv;
     GraphBuilder graph;
@@ -567,30 +649,84 @@ TEST(GraphJitConnectionPlan, MarksCyclicProducerGroupsAsFeedback)
     auto const first_handle = first.node_bundle_handle();
     auto const second_handle = second.node_bundle_handle();
     first(second);
-    second(first);
+    second(static_cast<SamplePortRef>(first).detach(6));
     graph.outputs();
 
     auto configured = std::move(graph).finish();
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
-    ASSERT_EQ(plan->schedule.regions.size(), 1u);
-    EXPECT_TRUE(plan->schedule.regions.front().cyclic);
-    EXPECT_EQ(
-        plan->schedule.regions.front().nodes,
-        (std::vector<NodeBundleHandle>{first_handle, second_handle}));
-    ASSERT_EQ(plan->sample_connections.size(), 2u);
-    EXPECT_TRUE(std::ranges::all_of(
+    ASSERT_EQ(plan->sample_detaches.size(), 1u);
+    auto const& detach = plan->sample_detaches.front();
+    EXPECT_EQ(detach.loop_extra_latency, 6u);
+    ASSERT_TRUE(detach.region.has_value());
+    ASSERT_LT(*detach.region, plan->schedule.regions.size());
+    auto const& region = plan->schedule.regions[*detach.region];
+    EXPECT_TRUE(region.cyclic);
+    EXPECT_EQ(region.maximum_block_size, 4u);
+    EXPECT_EQ(region.scc_feedback_latency, 4u);
+    EXPECT_TRUE(std::ranges::contains(region.nodes, first_handle));
+    EXPECT_TRUE(std::ranges::contains(region.nodes, second_handle));
+    EXPECT_TRUE(std::ranges::contains(region.nodes, detach.writer_bundle));
+    EXPECT_TRUE(std::ranges::contains(region.nodes, detach.reader_bundle));
+
+    auto const position = [&](NodeBundleHandle bundle) {
+        auto const found = std::ranges::find(region.execution_order, bundle);
+        EXPECT_NE(found, region.execution_order.end());
+        return static_cast<std::size_t>(
+            std::distance(region.execution_order.begin(), found));
+    };
+    EXPECT_LT(position(detach.reader_bundle), position(second_handle));
+    EXPECT_LT(position(second_handle), position(first_handle));
+    EXPECT_LT(position(first_handle), position(detach.writer_bundle));
+    EXPECT_TRUE(std::ranges::none_of(
         plan->sample_connections,
         &graph_jit::detail::SampleConnectionPlan::feedback));
-    ASSERT_EQ(plan->sample_producer_groups.size(), 2u);
-    for (auto const& group : plan->sample_producer_groups) {
-        ASSERT_TRUE(group.implementation.has_value());
-        EXPECT_EQ(
-            *group.implementation,
-            SampleConnectionImplementationKind::feedback_ring);
-        EXPECT_TRUE(group.requirements.feedback);
-    }
+}
+
+TEST(GraphJitConnectionPlan, DerivesEventDetachExecutionRegion)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto first = details::configure_concrete_node<PlainEventPass>(graph);
+    auto second = details::configure_concrete_node<PlainEventPass>(graph);
+    auto const first_handle = first.node_bundle_handle();
+    auto const second_handle = second.node_bundle_handle();
+    first.connect_event_input(0, second.event_port());
+    second.connect_event_input(0, first.event_port().detach(10));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    ASSERT_EQ(plan->event_detaches.size(), 1u);
+    auto const& detach = plan->event_detaches.front();
+    EXPECT_EQ(detach.source_type, EventTypeId::trigger);
+    EXPECT_EQ(detach.loop_extra_latency, 10u);
+    ASSERT_TRUE(detach.region.has_value());
+    ASSERT_LT(*detach.region, plan->schedule.regions.size());
+    auto const& region = plan->schedule.regions[*detach.region];
+    EXPECT_TRUE(region.cyclic);
+    EXPECT_EQ(region.maximum_block_size, 8u);
+    EXPECT_EQ(region.scc_feedback_latency, 8u);
+    EXPECT_TRUE(std::ranges::contains(region.nodes, first_handle));
+    EXPECT_TRUE(std::ranges::contains(region.nodes, second_handle));
+    EXPECT_TRUE(std::ranges::contains(region.nodes, detach.writer_bundle));
+    EXPECT_TRUE(std::ranges::contains(region.nodes, detach.reader_bundle));
+
+    auto const position = [&](NodeBundleHandle bundle) {
+        auto const found = std::ranges::find(region.execution_order, bundle);
+        EXPECT_NE(found, region.execution_order.end());
+        return static_cast<std::size_t>(
+            std::distance(region.execution_order.begin(), found));
+    };
+    EXPECT_LT(position(detach.reader_bundle), position(second_handle));
+    EXPECT_LT(position(second_handle), position(first_handle));
+    EXPECT_LT(position(first_handle), position(detach.writer_bundle));
+    EXPECT_TRUE(std::ranges::none_of(
+        plan->event_connections,
+        &graph_jit::detail::EventConnectionPlan::feedback));
 }
 
 TEST(GraphJitConnectionPlan, SimpleRealtimeSampleEdgeChoosesDirect)
