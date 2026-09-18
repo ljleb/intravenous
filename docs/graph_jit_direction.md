@@ -303,21 +303,24 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     share one derived representation/materialization. Implicit conversions are
     intentionally non-expanding: one source event may produce zero or one target
     event, never synthesize additional events.
-11. **Event retention.** **Compact carry landed for bounded feed-forward identity event flow.**
+11. **Event retention.** **Compact carry and persistent-ring identity retention landed.**
     Small retained windows use a transient working sequence plus a migration-identified
     persistent raw carry. The carry is restored before the producer, producer slices
     append into the working sequence, and commit filters exactly the next root
     invocation's `[end-history, end+latency)` window while preserving absolute event
-    timestamps. Event outputs now declare a finite nonnegative
-    `max_events_per_sample` static sizing rate in `EventOutputProperties`; GraphJIT
-    combines that rate with each representation's temporal span to derive bounded
-    sequence capacities and uses the retained representation capacity as input to the
-    compact-carry versus persistent-ring cost decision. This is not a runtime
-    per-sample/sliding-window limiter. Each logical event output owns one saturating
-    overflow counter and deterministically drops events only when its bounded producer
-    sequence is full, without allocating. Retention combined with event conversion or block
-    materialization, persistent rings, telemetry surfacing, and liveness reuse remain
-    to land.
+    timestamps. Larger retained windows bind producer and consumers directly to one
+    migration-identified persistent power-of-two ring. The ring stores monotonic
+    read/write indices and expires only events older than the current retained-history
+    boundary before producer execution, so no retained tail is copied at root-call
+    boundaries. Event outputs declare a finite nonnegative `max_events_per_sample`
+    static sizing rate in `EventOutputProperties`; GraphJIT combines that rate with
+    each representation's temporal span to derive static capacities and uses the
+    retained representation capacity as input to the compact-carry versus ring cost
+    decision. This is not a runtime per-sample/sliding-window limiter. Each logical
+    event output owns one saturating overflow counter and deterministically drops events
+    only when its bounded producer representation is full, without allocating.
+    Retention combined with event conversion or block materialization, feedback rings,
+    telemetry surfacing, and liveness reuse remain to land.
 12. **SCC/feedback execution.** Turn existing SCC analysis into feedback-aware
     scheduling, `feedback_ring` realization for sample/event groups, and nonzero
     reflected `scc_feedback_latency`.

@@ -196,6 +196,17 @@ one globally optimal threshold:
   configurable count budget and a ring above it; and
 - graph/device boundary handling remains a distinct implementation kind.
 
+For events, the two retained implementations intentionally have different copy
+behavior. `compact_persistent_carry` keeps a transient producer sequence and copies
+only the bounded retained tail into/out of persistent storage at root-call boundaries.
+`persistent_ring` is itself the canonical producer representation: producer and
+consumers bind directly to one migration-identified power-of-two event ring carrying
+monotonic read/write indices. At the start of each root call GraphJIT advances the
+oldest retained index past events that are older than the required history boundary;
+retained event payloads remain in-place. The ring's static capacity is derived from
+the complete simultaneously-live temporal span (`history + current block + latency`)
+and the producer's sizing rate.
+
 These crossovers are heuristic policy only. They are intentionally isolated so
 benchmarking can change them without changing graph semantics or LLVM lowering.
 

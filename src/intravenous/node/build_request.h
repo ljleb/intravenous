@@ -247,7 +247,7 @@ template<std::size_t N>
 struct ReflectedEventOutputPorts {
     std::array<EventSharedPortData, N> shared{};
     std::array<EventOutputPort, N> ports{};
-    std::array<std::size_t*, N> counts{};
+    std::array<std::size_t*, N> write_indices{};
 };
 
 IV_FORCEINLINE std::span<TimedEvent> reflected_event_buffer(
@@ -267,6 +267,22 @@ IV_FORCEINLINE std::size_t* reflected_event_count(
         storage_base + binding.count_offset);
 }
 
+IV_FORCEINLINE std::size_t* reflected_event_read_index(
+    std::byte* storage_base,
+    ReflectedEventPortStorageBinding const& binding)
+{
+    return reinterpret_cast<std::size_t*>(
+        storage_base + binding.read_index_offset);
+}
+
+IV_FORCEINLINE std::size_t* reflected_event_write_index(
+    std::byte* storage_base,
+    ReflectedEventPortStorageBinding const& binding)
+{
+    return reinterpret_cast<std::size_t*>(
+        storage_base + binding.write_index_offset);
+}
+
 template<std::size_t N, std::size_t... I>
 IV_FORCEINLINE void initialize_reflected_event_inputs(
     ReflectedEventInputPorts<N>& result,
@@ -276,11 +292,16 @@ IV_FORCEINLINE void initialize_reflected_event_inputs(
     static_assert(N == sizeof...(I));
     (([&] {
         auto const& binding = ctx.event_input_bindings.pointer[I].storage;
-        auto* count = reflected_event_count(ctx.event_storage_base, binding);
+        auto const read_index = binding.persistent_ring
+            ? *reflected_event_read_index(ctx.event_storage_base, binding)
+            : std::size_t{0};
+        auto const write_index = binding.persistent_ring
+            ? *reflected_event_write_index(ctx.event_storage_base, binding)
+            : *reflected_event_count(ctx.event_storage_base, binding);
         result.shared[I] = EventSharedPortData{
             reflected_event_buffer(ctx.event_storage_base, binding),
-            0,
-            *count,
+            read_index,
+            write_index,
             binding.type,
         };
         result.ports[I] = EventInputPort{result.shared[I]};
@@ -298,16 +319,20 @@ IV_FORCEINLINE void initialize_reflected_event_outputs(
     static_assert(N == sizeof...(I));
     (([&] {
         auto const& binding = ctx.event_output_bindings.pointer[I];
-        auto* count = reflected_event_count(
-            ctx.event_storage_base, binding.storage);
-        auto const initial_write = binding.append_existing ? *count : 0;
+        auto* write_index = binding.storage.persistent_ring
+            ? reflected_event_write_index(ctx.event_storage_base, binding.storage)
+            : reflected_event_count(ctx.event_storage_base, binding.storage);
+        auto const initial_read = binding.storage.persistent_ring
+            ? *reflected_event_read_index(ctx.event_storage_base, binding.storage)
+            : std::size_t{0};
+        auto const initial_write = binding.append_existing ? *write_index : 0;
         if (!binding.append_existing) {
-            *count = 0;
+            *write_index = 0;
         }
-        result.counts[I] = count;
+        result.write_indices[I] = write_index;
         result.shared[I] = EventSharedPortData{
             reflected_event_buffer(ctx.event_storage_base, binding.storage),
-            0,
+            initial_read,
             initial_write,
             binding.storage.type,
         };
@@ -329,7 +354,7 @@ IV_FORCEINLINE void commit_reflected_event_outputs(
     ReflectedEventOutputPorts<N>& outputs)
 {
     for (std::size_t i = 0; i < N; ++i) {
-        *outputs.counts[i] = outputs.shared[i].write_index;
+        *outputs.write_indices[i] = outputs.shared[i].write_index;
         outputs.ports[i].end_block();
     }
 }

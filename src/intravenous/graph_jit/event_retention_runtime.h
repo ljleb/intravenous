@@ -10,6 +10,8 @@ inline constexpr char event_carry_restore_symbol[] =
     "iv_graph_jit_restore_event_carry";
 inline constexpr char event_carry_commit_symbol[] =
     "iv_graph_jit_commit_event_carry";
+inline constexpr char event_persistent_ring_prune_symbol[] =
+    "iv_graph_jit_prune_event_persistent_ring";
 
 #if defined(_WIN32)
 #define IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT __declspec(dllexport)
@@ -37,6 +39,18 @@ iv_graph_jit_commit_event_carry(
     std::size_t retained_latency_samples,
     void* carry_events,
     std::size_t carry_capacity) noexcept;
+
+// Advance only the persistent ring's oldest retained index. Producer and
+// consumers continue to share the same TimedEvent storage directly; no retained
+// payload bytes are copied at the root-call boundary.
+extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT std::size_t
+iv_graph_jit_prune_event_persistent_ring(
+    void const* ring_events,
+    std::size_t ring_capacity,
+    std::size_t read_index,
+    std::size_t write_index,
+    std::size_t sample_index,
+    std::size_t retained_history_samples) noexcept;
 
 #undef IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT
 

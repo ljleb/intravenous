@@ -52,4 +52,28 @@ extern "C" std::size_t iv_graph_jit_commit_event_carry(
     return written;
 }
 
+extern "C" std::size_t iv_graph_jit_prune_event_persistent_ring(
+    void const* ring_events,
+    std::size_t ring_capacity,
+    std::size_t read_index,
+    std::size_t write_index,
+    std::size_t sample_index,
+    std::size_t retained_history_samples) noexcept
+{
+    if (ring_events == nullptr || ring_capacity == 0) return write_index;
+
+    auto const history = retained_history_samples > sample_index
+        ? sample_index
+        : retained_history_samples;
+    auto const window_begin = sample_index - history;
+    auto const* events = static_cast<TimedEvent const*>(ring_events);
+    auto const mask = ring_capacity - 1;
+    while (read_index != write_index) {
+        auto const& event = events[read_index & mask];
+        if (static_cast<std::size_t>(event.time) >= window_begin) break;
+        ++read_index;
+    }
+    return read_index;
+}
+
 } // namespace iv::graph_jit::detail

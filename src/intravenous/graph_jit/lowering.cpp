@@ -605,9 +605,12 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
         }
         return ReflectedEventPortStorageBinding{
             .count_offset = representation.count_storage_offset,
+            .read_index_offset = representation.read_index_storage_offset,
+            .write_index_offset = representation.write_index_storage_offset,
             .events_offset = representation.events_storage_offset,
             .event_capacity = representation.event_capacity,
             .type = representation.type,
+            .persistent_ring = representation.persistent_ring,
         };
     };
 
@@ -1536,6 +1539,69 @@ std::expected<void, std::string> emit_event_carry_operation(
     return {};
 }
 
+std::expected<void, std::string> emit_event_persistent_ring_prune(
+    llvm::IRBuilder<>& builder,
+    detail::EventPortBindingPlan const& event_ports,
+    detail::EventPersistentRingPlan const& ring,
+    llvm::Value* storage_base,
+    llvm::Value* sample_index)
+{
+    if (ring.representation >= event_ports.representations.size()) {
+        return std::unexpected(
+            "GraphJit persistent event ring references a missing representation");
+    }
+    auto const& representation = event_ports.representations[ring.representation];
+    if (!representation.region.valid()
+        || !representation.persistent
+        || !representation.persistent_ring) {
+        return std::unexpected(
+            "GraphJit persistent event ring has inconsistent physical storage");
+    }
+
+    auto& context = builder.getContext();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* read_index_pointer = byte_offset_pointer(
+        builder,
+        storage_base,
+        representation.read_index_storage_offset,
+        "event.ring.prune.read");
+    auto* write_index_pointer = byte_offset_pointer(
+        builder,
+        storage_base,
+        representation.write_index_storage_offset,
+        "event.ring.prune.write");
+    auto* events = byte_offset_pointer(
+        builder,
+        storage_base,
+        representation.events_storage_offset,
+        "event.ring.prune.events");
+    auto* read_index = builder.CreateLoad(
+        size_type, read_index_pointer, "event.ring.prune.read.value");
+    auto* write_index = builder.CreateLoad(
+        size_type, write_index_pointer, "event.ring.prune.write.value");
+
+    auto* helper_type = llvm::FunctionType::get(
+        size_type,
+        {pointer_type, size_type, size_type, size_type, size_type, size_type},
+        false);
+    auto* module = builder.GetInsertBlock()->getModule();
+    auto helper = module->getOrInsertFunction(
+        detail::event_persistent_ring_prune_symbol, helper_type);
+    auto* pruned_read_index = builder.CreateCall(
+        helper,
+        {events,
+         llvm::ConstantInt::get(size_type, representation.event_capacity),
+         read_index,
+         write_index,
+         sample_index,
+         llvm::ConstantInt::get(size_type, ring.retained_history_samples)},
+        "event.ring.prune.read.next");
+    builder.CreateStore(pruned_read_index, read_index_pointer);
+    return {};
+}
+
 std::expected<void, std::string> emit_event_sequence_reset(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
@@ -1733,6 +1799,22 @@ std::expected<llvm::Function*, std::string> define_root_operation(
         if (step.configuration_index >= event_bindings.primitives.size()) {
             return std::unexpected(
                 "GraphJit execution plan references a missing event-port runtime plan");
+        }
+
+        for (auto const ring_index : step.event_persistent_ring_prunes_before) {
+            if (ring_index >= plan.event_ports.persistent_rings.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing persistent event ring");
+            }
+            auto pruned = emit_event_persistent_ring_prune(
+                builder,
+                plan.event_ports,
+                plan.event_ports.persistent_rings[ring_index],
+                storage_base,
+                sample_index);
+            if (!pruned) {
+                return std::unexpected(std::move(pruned.error()));
+            }
         }
 
         for (auto const representation_index : step.event_sequence_resets_before) {

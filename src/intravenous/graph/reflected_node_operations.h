@@ -77,18 +77,23 @@ struct ReflectedSampleOutputPortBinding {
     std::size_t history = 0;
 };
 
-// Immutable compiler-owned event storage binding. The raw region contains one
-// event-count word followed by a bounded TimedEvent array. EventInputPort and
-// EventOutputPort remain invocation-local facades reconstructed by the imported
-// primitive wrapper; no facade/cursor objects persist in NodeStorage.
+// Immutable compiler-owned event storage binding. Ordinary bounded sequences
+// store one event-count word followed by a TimedEvent array. Persistent event
+// rings instead store monotonic read/write indices followed by the same bounded
+// power-of-two TimedEvent array. EventInputPort and EventOutputPort remain
+// invocation-local facades reconstructed by the imported primitive wrapper; no
+// facade/cursor objects persist in NodeStorage.
 static_assert(std::is_trivially_copyable_v<TimedEvent>,
     "GraphJit raw event storage requires TimedEvent to remain byte-storable");
 
 struct ReflectedEventPortStorageBinding {
     std::size_t count_offset = 0;
+    std::size_t read_index_offset = 0;
+    std::size_t write_index_offset = 0;
     std::size_t events_offset = 0;
     std::size_t event_capacity = 0;
     EventTypeId type = EventTypeId::empty;
+    bool persistent_ring = false;
 };
 
 struct ReflectedEventInputPortBinding {

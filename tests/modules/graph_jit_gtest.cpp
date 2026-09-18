@@ -57,6 +57,7 @@ constexpr char graph_jit_direct_event_module_id[] = "iv.test.graph_jit.state_con
 constexpr char graph_jit_transient_event_module_id[] = "iv.test.graph_jit.state_context.transient_event_module";
 constexpr char graph_jit_converted_event_fanout_module_id[] = "iv.test.graph_jit.state_context.converted_event_fanout_module";
 constexpr char graph_jit_retained_event_module_id[] = "iv.test.graph_jit.state_context.retained_event_module";
+constexpr char graph_jit_persistent_event_ring_module_id[] = "iv.test.graph_jit.state_context.persistent_event_ring_module";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -202,6 +203,14 @@ struct RetainedEventConsumerProbeStateMirror {
     std::array<std::uint64_t, 3> first_times{};
     std::array<std::uint64_t, 3> second_times{};
     std::array<std::uint64_t, 3> last_times{};
+};
+
+struct PersistentEventRingConsumerProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::array<std::uint64_t, 5> indices{};
+    std::array<std::uint64_t, 5> event_counts{};
+    std::array<std::uint64_t, 5> first_times{};
+    std::array<std::uint64_t, 5> last_times{};
 };
 
 void expect_lowering_failure(
@@ -2305,6 +2314,78 @@ struct RetainedTriggerEventConsumer {
     }
 };
 
+struct PersistentEventRingSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::realtime_event_output(
+                "trigger",
+                iv::EventOutputProperties{
+                    .type = iv::EventTypeId::trigger,
+                    .max_events_per_sample = 0.5,
+                }),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<PersistentEventRingSource> const& ctx) const
+    {
+        if (ctx.block_size < 8) return;
+        // Concentrating all events at one timestamp also proves the sizing-rate
+        // field is not interpreted as a per-sample runtime limiter.
+        for (std::size_t i = 0; i < 32; ++i) {
+            ctx.event_outputs[0].push(
+                iv::TriggerEvent{}, 5, ctx.index, ctx.block_size);
+        }
+    }
+};
+
+struct PersistentEventRingConsumer {
+    struct State {
+        std::uint64_t calls = 0;
+        std::array<std::uint64_t, 5> indices{};
+        std::array<std::uint64_t, 5> event_counts{};
+        std::array<std::uint64_t, 5> first_times{};
+        std::array<std::uint64_t, 5> last_times{};
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input(
+                "trigger",
+                iv::EventTypeId::trigger,
+                iv::RealtimeInputConfig{.history = 160}),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<PersistentEventRingConsumer> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = state.calls++;
+        if (slot >= state.indices.size()) return;
+        auto const history = ctx.index < 160 ? ctx.index : std::size_t{160};
+        auto const events = ctx.event_inputs[0].get_block(
+            ctx.index - history,
+            ctx.block_size + history);
+        state.indices[slot] = ctx.index;
+        state.event_counts[slot] = events.size();
+        if (!events.empty()) {
+            state.first_times[slot] = events[0].time;
+            state.last_times[slot] = events[events.size() - 1].time;
+        }
+    }
+};
+
 struct PortedProbe {
     static constexpr auto inputs()
     {
@@ -2541,6 +2622,14 @@ void retained_event_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void persistent_event_ring_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.persistent_event_ring_source">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.persistent_event_ring_consumer">();
+    sink.connect_event_input(0, source.event_port());
+    graph.outputs();
+}
+
 void ported_module(iv::GraphBuilder& graph)
 {
     graph.outputs(graph.node<"iv.test.graph_jit.state_context.ported">());
@@ -2576,6 +2665,8 @@ IV_NODE("iv.test.graph_jit.state_context.trigger_event_consumer", TriggerEventCo
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_consumer", LimitedTriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_source", RetainedTriggerEventSource);
 IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_consumer", RetainedTriggerEventConsumer);
+IV_NODE("iv.test.graph_jit.state_context.persistent_event_ring_source", PersistentEventRingSource);
+IV_NODE("iv.test.graph_jit.state_context.persistent_event_ring_consumer", PersistentEventRingConsumer);
 IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
@@ -2602,6 +2693,7 @@ IV_MODULE("iv.test.graph_jit.state_context.direct_event_module", direct_event_mo
 IV_MODULE("iv.test.graph_jit.state_context.transient_event_module", transient_event_module);
 IV_MODULE("iv.test.graph_jit.state_context.converted_event_fanout_module", converted_event_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.retained_event_module", retained_event_module);
+IV_MODULE("iv.test.graph_jit.state_context.persistent_event_ring_module", persistent_event_ring_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp");
 
@@ -2687,6 +2779,11 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_TRUE(has_module_definition(graph_jit_transient_event_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_converted_event_fanout_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_retained_event_module_id));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.persistent_event_ring_source"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.persistent_event_ring_consumer"));
+    EXPECT_TRUE(has_module_definition(graph_jit_persistent_event_ring_module_id));
 
     auto revision_weak = std::weak_ptr<iv::PackageRevision const>{revision};
     auto definitions = make_graph_jit_snapshot(revision, 91);
@@ -4338,6 +4435,126 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     EXPECT_EQ(retained_event_probe->first_times[2], 125u);
     EXPECT_EQ(retained_event_probe->second_times[2], 131u);
     EXPECT_EQ(retained_event_probe->last_times[2], 189u);
+
+    // Retention larger than the compact-carry budget binds producer and
+    // consumer directly to one persistent ring. The ring keeps monotonic
+    // read/write indices in NodeStorage and advances only the oldest retained
+    // index as the 160-sample history window moves across root calls.
+    auto persistent_event_ring_graph = configured_module_graph(
+        *revision, graph_jit_persistent_event_ring_module_id);
+    ASSERT_TRUE(persistent_event_ring_graph);
+    auto persistent_event_ring_analysis =
+        iv::graph_jit::detail::build_connection_analysis_plan(
+            *persistent_event_ring_graph, 64);
+    ASSERT_TRUE(persistent_event_ring_analysis.has_value())
+        << (persistent_event_ring_analysis
+                ? std::string{}
+                : persistent_event_ring_analysis.error());
+    ASSERT_EQ(persistent_event_ring_analysis->event_producer_groups.size(), 1u);
+    auto const& persistent_event_ring_group =
+        persistent_event_ring_analysis->event_producer_groups.front();
+    ASSERT_TRUE(persistent_event_ring_group.implementation.has_value());
+    EXPECT_EQ(
+        *persistent_event_ring_group.implementation,
+        iv::EventConnectionImplementationKind::persistent_ring);
+    EXPECT_EQ(
+        persistent_event_ring_group.requirements.retained_window_samples,
+        160u);
+    ASSERT_TRUE(
+        persistent_event_ring_group.requirements.retained_event_capacity);
+    EXPECT_EQ(
+        *persistent_event_ring_group.requirements.retained_event_capacity,
+        80u);
+    EXPECT_GT(
+        *persistent_event_ring_group.requirements.retained_event_capacity,
+        iv::EventConnectionCostModel{}.compact_carry_max_events);
+
+    auto persistent_event_ring = compile_graph(
+        persistent_event_ring_graph, 127);
+    ASSERT_TRUE(persistent_event_ring.succeeded())
+        << (persistent_event_ring.diagnostics.empty()
+                ? ""
+                : persistent_event_ring.diagnostics.front().message);
+    ASSERT_EQ(
+        persistent_event_ring.compiled_graph->node_layout.nodes.size(),
+        2u);
+    // The persistent ring is the canonical producer representation: no
+    // transient working copy or compact carry region is required.
+    ASSERT_EQ(
+        count_raw_regions(persistent_event_ring.compiled_graph->node_layout),
+        1u);
+    auto persistent_event_ring_region = std::ranges::find_if(
+        persistent_event_ring.compiled_graph->node_layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.kind == iv::NodeLayout::Region::Kind::raw
+                && !region.migration_identity.empty();
+        });
+    ASSERT_NE(
+        persistent_event_ring_region,
+        persistent_event_ring.compiled_graph->node_layout.regions.end());
+    EXPECT_NE(
+        persistent_event_ring_region->migration_identity.find(
+            "kind=persistent_ring"),
+        std::string::npos);
+
+    auto persistent_event_ring_storage =
+        persistent_event_ring.compiled_graph->node_layout.create_storage(resources);
+    persistent_event_ring_storage.initialize();
+    PersistentEventRingConsumerProbeStateMirror* persistent_event_ring_probe =
+        nullptr;
+    for (std::size_t i = 0;
+         i < persistent_event_ring.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (persistent_event_ring.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(PersistentEventRingConsumerProbeStateMirror)) {
+            ASSERT_EQ(persistent_event_ring_probe, nullptr);
+            persistent_event_ring_probe =
+                static_cast<PersistentEventRingConsumerProbeStateMirror*>(
+                    persistent_event_ring_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(persistent_event_ring_probe, nullptr);
+
+    persistent_event_ring.compiled_graph->root_operations.tick_block(
+        persistent_event_ring_storage.buffer().data(), 0, 64);
+    ASSERT_EQ(persistent_event_ring_probe->calls, 1u);
+    EXPECT_EQ(persistent_event_ring_probe->indices[0], 0u);
+    EXPECT_EQ(persistent_event_ring_probe->event_counts[0], 32u);
+    EXPECT_EQ(persistent_event_ring_probe->first_times[0], 5u);
+    EXPECT_EQ(persistent_event_ring_probe->last_times[0], 5u);
+
+    persistent_event_ring.compiled_graph->root_operations.tick_block(
+        persistent_event_ring_storage.buffer().data(), 64, 64);
+    ASSERT_EQ(persistent_event_ring_probe->calls, 2u);
+    EXPECT_EQ(persistent_event_ring_probe->event_counts[1], 64u);
+    EXPECT_EQ(persistent_event_ring_probe->first_times[1], 5u);
+    EXPECT_EQ(persistent_event_ring_probe->last_times[1], 69u);
+
+    persistent_event_ring.compiled_graph->root_operations.tick_block(
+        persistent_event_ring_storage.buffer().data(), 128, 64);
+    ASSERT_EQ(persistent_event_ring_probe->calls, 3u);
+    EXPECT_EQ(persistent_event_ring_probe->event_counts[2], 96u);
+    EXPECT_EQ(persistent_event_ring_probe->first_times[2], 5u);
+    EXPECT_EQ(persistent_event_ring_probe->last_times[2], 133u);
+
+    // At index 192 the requested history begins at sample 32, so the first
+    // block's 32 co-timestamped events expire in-place. The retained payload
+    // itself is not copied.
+    persistent_event_ring.compiled_graph->root_operations.tick_block(
+        persistent_event_ring_storage.buffer().data(), 192, 64);
+    ASSERT_EQ(persistent_event_ring_probe->calls, 4u);
+    EXPECT_EQ(persistent_event_ring_probe->event_counts[3], 96u);
+    EXPECT_EQ(persistent_event_ring_probe->first_times[3], 69u);
+    EXPECT_EQ(persistent_event_ring_probe->last_times[3], 197u);
+
+    // Advancing by another root block moves the history start to 96, expires
+    // the second block, and appends through the physical end of the 128-slot
+    // ring. The consumer therefore exercises a wrapped BlockView.
+    persistent_event_ring.compiled_graph->root_operations.tick_block(
+        persistent_event_ring_storage.buffer().data(), 256, 64);
+    ASSERT_EQ(persistent_event_ring_probe->calls, 5u);
+    EXPECT_EQ(persistent_event_ring_probe->event_counts[4], 96u);
+    EXPECT_EQ(persistent_event_ring_probe->first_times[4], 133u);
+    EXPECT_EQ(persistent_event_ring_probe->last_times[4], 261u);
 
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);

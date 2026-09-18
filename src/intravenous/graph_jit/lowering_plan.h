@@ -123,28 +123,34 @@ struct SamplePortBindingPlan {
 };
 
 // Points 10-11 realize direct/transient realtime event flow plus bounded
-// compact carry. Each producer group owns one raw working sequence; block-size
-// adaptation and event conversion can add deduplicated consumer-facing
-// transient sequences, while small retained windows add a migration-identified
-// persistent carry sequence. Count words and TimedEvent payload bytes live in
-// canonical NodeStorage. The canonical producer representation also reserves
-// one overflow counter per logical event output; derived fanout representations
-// never duplicate producer telemetry. Primitive callbacks receive only immutable
-// bindings and reconstruct invocation-local EventInputPort/EventOutputPort facades.
+// compact carry and persistent retained rings. Ordinary representations store a
+// count plus a bounded TimedEvent sequence. Large retained windows bind producer
+// and consumers directly to one migration-identified persistent ring carrying
+// monotonic read/write indices, so retained events are expired incrementally
+// rather than copied through a compact tail each root call. The canonical
+// producer representation also reserves one overflow counter per logical event
+// output; derived fanout representations never duplicate producer telemetry.
+// Primitive callbacks receive only immutable bindings and reconstruct
+// invocation-local EventInputPort/EventOutputPort facades.
 struct EventRepresentationPlan {
     std::size_t producer_group_index = 0;
     EventTypeId type = EventTypeId::empty;
     std::size_t event_capacity = 0;
     bool persistent = false;
+    bool persistent_ring = false;
     std::string migration_identity{};
     bool has_producer_overflow_counter = false;
     std::size_t count_relative_offset = 0;
+    std::size_t read_index_relative_offset = 0;
+    std::size_t write_index_relative_offset = 0;
     std::size_t overflow_count_relative_offset = 0;
     std::size_t events_relative_offset = 0;
     std::size_t size_bytes = 0;
     std::size_t alignment = 1;
     NodeLayout::RegionHandle region{};
     std::size_t count_storage_offset = 0;
+    std::size_t read_index_storage_offset = 0;
+    std::size_t write_index_storage_offset = 0;
     std::size_t overflow_count_storage_offset = 0;
     std::size_t events_storage_offset = 0;
 };
@@ -178,6 +184,12 @@ struct EventCarryPlan {
     std::size_t retained_latency_samples = 0;
 };
 
+struct EventPersistentRingPlan {
+    std::size_t representation = 0;
+    std::size_t producer_execution_position = 0;
+    std::size_t retained_history_samples = 0;
+};
+
 struct PrimitiveEventPortPlan {
     std::vector<PrimitiveEventInputBindingPlan> inputs{};
     std::vector<PrimitiveEventOutputBindingPlan> outputs{};
@@ -189,6 +201,7 @@ struct EventPortBindingPlan {
     std::vector<EventRepresentationPlan> representations{};
     std::vector<EventMaterializationPlan> materializations{};
     std::vector<EventCarryPlan> carry_operations{};
+    std::vector<EventPersistentRingPlan> persistent_rings{};
     // Indexed by analyzed concrete primitive.
     std::vector<PrimitiveEventPortPlan> primitives{};
 };
@@ -213,6 +226,7 @@ struct PrimitiveExecutionStep {
     // all of its slices, then materializes a consumer-facing sequence after
     // the complete producer step.
     std::vector<std::size_t> event_sequence_resets_before{};
+    std::vector<std::size_t> event_persistent_ring_prunes_before{};
     std::vector<std::size_t> event_carry_restores_before{};
     std::vector<std::size_t> event_materializations_after{};
     std::vector<std::size_t> event_carry_commits_after{};

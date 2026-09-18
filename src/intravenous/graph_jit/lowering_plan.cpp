@@ -352,6 +352,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                         ? representation.migration_identity
                         : std::string{})
             || representation.count_relative_offset > region.size
+            || representation.read_index_relative_offset > region.size
+            || representation.write_index_relative_offset > region.size
             || (representation.has_producer_overflow_counter
                 && representation.overflow_count_relative_offset > region.size)
             || representation.events_relative_offset > region.size) {
@@ -360,6 +362,10 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         }
         representation.count_storage_offset =
             region.storage_offset + representation.count_relative_offset;
+        representation.read_index_storage_offset =
+            region.storage_offset + representation.read_index_relative_offset;
+        representation.write_index_storage_offset =
+            region.storage_offset + representation.write_index_relative_offset;
         if (representation.has_producer_overflow_counter) {
             representation.overflow_count_storage_offset =
                 region.storage_offset + representation.overflow_count_relative_offset;
@@ -1129,9 +1135,20 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         std::size_t capacity,
         bool producer_telemetry = false,
         bool persistent = false,
-        std::string migration_identity = {})
+        std::string migration_identity = {},
+        bool persistent_ring = false)
         -> std::expected<std::size_t, std::string> {
-        std::size_t header_end = sizeof(std::size_t);
+        if (persistent_ring && !persistent) {
+            return std::unexpected(
+                "GraphJit persistent event ring must use persistent storage");
+        }
+        std::size_t const read_index_relative = 0;
+        std::size_t const write_index_relative = persistent_ring
+            ? sizeof(std::size_t)
+            : 0;
+        std::size_t header_end = persistent_ring
+            ? 2 * sizeof(std::size_t)
+            : sizeof(std::size_t);
         std::size_t overflow_relative = 0;
         std::size_t alignment = std::max(
             alignof(std::size_t), alignof(TimedEvent));
@@ -1161,9 +1178,12 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             .type = type,
             .event_capacity = capacity,
             .persistent = persistent,
+            .persistent_ring = persistent_ring,
             .migration_identity = std::move(migration_identity),
             .has_producer_overflow_counter = producer_telemetry,
             .count_relative_offset = 0,
+            .read_index_relative_offset = read_index_relative,
+            .write_index_relative_offset = write_index_relative,
             .overflow_count_relative_offset = overflow_relative,
             .events_relative_offset = *events_relative,
             .size_bytes = *events_relative + capacity * sizeof(TimedEvent),
@@ -1191,15 +1211,20 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         auto const implementation = *group.implementation;
         if (implementation != EventConnectionImplementationKind::direct
             && implementation != EventConnectionImplementationKind::transient_sequence
-            && implementation != EventConnectionImplementationKind::compact_persistent_carry) {
+            && implementation != EventConnectionImplementationKind::compact_persistent_carry
+            && implementation != EventConnectionImplementationKind::persistent_ring) {
             return std::unexpected(
-                "GraphJit event flow does not yet support persistent-ring, feedback, or external event storage");
+                "GraphJit event flow does not yet support feedback or external event storage");
         }
         auto const transient_materialized =
             implementation == EventConnectionImplementationKind::transient_sequence;
         auto const compact_carry =
             implementation == EventConnectionImplementationKind::compact_persistent_carry;
-        auto const aggregate_sequence = transient_materialized || compact_carry;
+        auto const persistent_ring =
+            implementation == EventConnectionImplementationKind::persistent_ring;
+        auto const retained_storage = compact_carry || persistent_ring;
+        auto const aggregate_sequence =
+            transient_materialized || retained_storage;
         if (group.sources.size() != 1) {
             return std::unexpected(
                 "GraphJit event flow requires exactly one producer output per event group");
@@ -1271,6 +1296,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
 
         std::size_t working_capacity = *base_capacity;
         std::size_t carry_capacity = 0;
+        std::size_t ring_capacity = 0;
         if (compact_carry) {
             if (!group.requirements.retained_event_capacity) {
                 return std::unexpected(
@@ -1308,10 +1334,47 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 }
                 working_capacity = next_power_of_2(working_required);
             }
+        } else if (persistent_ring) {
+            if (retained_history > std::numeric_limits<std::size_t>::max()
+                    - input.specialization.block_size
+                || retained_latency > std::numeric_limits<std::size_t>::max()
+                    - input.specialization.block_size - retained_history) {
+                return std::unexpected(
+                    "GraphJit persistent event ring temporal span overflows size_t");
+            }
+            auto const ring_span_samples =
+                retained_history + input.specialization.block_size + retained_latency;
+            auto const ring_capacity_bound = event_sequence_capacity_for_sample_span(
+                source.max_events_per_sample, ring_span_samples);
+            if (!ring_capacity_bound) {
+                return std::unexpected(
+                    "GraphJit persistent event ring exceeds representable static capacity");
+            }
+            ring_capacity = *ring_capacity_bound;
         }
 
-        auto source_representation = append_representation(
-            group_index, group.source_type, working_capacity, true);
+        auto source_representation = [&]()
+            -> std::expected<std::size_t, std::string> {
+            if (!persistent_ring) {
+                return append_representation(
+                    group_index, group.source_type, working_capacity, true);
+            }
+            std::string migration_identity =
+                "graphjit.event:" + std::to_string(static_cast<unsigned>(group.source_type))
+                + ':' + std::to_string(source_id.bundle) + '.'
+                + std::to_string(source_id.port)
+                + ":kind=persistent_ring:history=" + std::to_string(retained_history)
+                + ":latency=" + std::to_string(retained_latency)
+                + ":capacity=" + std::to_string(ring_capacity);
+            return append_representation(
+                group_index,
+                group.source_type,
+                ring_capacity,
+                true,
+                true,
+                std::move(migration_identity),
+                true);
+        }();
         if (!source_representation) {
             return std::unexpected(std::move(source_representation.error()));
         }
@@ -1342,6 +1405,12 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 .producer_execution_position = group.live_interval.begin,
                 .retained_history_samples = retained_history,
                 .retained_latency_samples = retained_latency,
+            });
+        } else if (persistent_ring) {
+            plan.persistent_rings.push_back(EventPersistentRingPlan{
+                .representation = *source_representation,
+                .producer_execution_position = group.live_interval.begin,
+                .retained_history_samples = retained_history,
             });
         }
 
@@ -1374,15 +1443,15 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 || connection.source_type != group.source_type
                 || connection.conversion.source_type != connection.source_type
                 || connection.conversion.target_type != connection.target_type
-                || (retained_connection && !compact_carry)) {
+                || (retained_connection && !retained_storage)) {
                 return std::unexpected(
                     "GraphJit event connection requires unsupported retention, feedback, external, or source-composition semantics");
             }
-            if (compact_carry
+            if (retained_storage
                 && (connection.requires_conversion
                     || connection.requires_block_materialization)) {
                 return std::unexpected(
-                    "GraphJit compact event carry does not yet combine retention with conversion or block materialization");
+                    "GraphJit retained event storage does not yet combine retention with conversion or block materialization");
             }
             auto target_representation = *source_representation;
             if (connection.requires_conversion
@@ -1586,6 +1655,18 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         }
         plan.primitive_steps[composition.after_execution_position]
             .sample_compositions_after.push_back(composition_index);
+    }
+
+    for (std::size_t ring_index = 0;
+         ring_index < event_ports.persistent_rings.size();
+         ++ring_index) {
+        auto const& ring = event_ports.persistent_rings[ring_index];
+        if (ring.producer_execution_position >= plan.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit persistent event ring references an invalid execution position");
+        }
+        plan.primitive_steps[ring.producer_execution_position]
+            .event_persistent_ring_prunes_before.push_back(ring_index);
     }
 
     for (std::size_t carry_index = 0;
