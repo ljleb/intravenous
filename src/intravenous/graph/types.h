@@ -115,16 +115,6 @@ namespace iv {
         PortBufferPlan plan;
     };
 
-    struct DetachedInfo {
-        size_t detach_id = 0;
-        ConcretePortId original_source;
-        size_t writer_node = std::numeric_limits<size_t>::max();
-        ConcretePortId reader_output;
-        size_t loop_extra_latency = 1;
-
-        bool operator==(DetachedInfo const&) const = default;
-    };
-
     inline constexpr size_t GRAPH_ID = std::numeric_limits<size_t>::max();
 
     struct GraphRegion {

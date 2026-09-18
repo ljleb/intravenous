@@ -296,6 +296,9 @@ public:
   SamplePortRef sample_port_from_output(NodeBundlePortId);
   EventPortRef event_port_from_output(NodeBundlePortId) const;
   SamplePortRef make_sample_port(ChannelTypeId, std::span<SampleOutputChannelId const>);
+  SamplePortRef make_tiled_sample_port(
+      ChannelTypeId, std::span<SamplePortRef const>);
+  SamplePortRef select_sample_port_channel(SamplePortRef const&, size_t);
   std::span<SampleOutputChannelId const> sample_port_channels(SamplePortRef const&) const;
   EventPortRef make_event_port(EventTypeId, std::span<EventOutputPortId const>);
   std::span<EventOutputPortId const> event_port_sources(EventPortRef const&) const;

@@ -29,8 +29,6 @@ struct ExecutableGraphData {
   std::vector<std::string> node_type_identities;
   std::flat_set<GraphEdge> edges;
   std::flat_set<GraphEventEdge> event_edges;
-  std::flat_map<ConcretePortId, DetachedInfo> detached_info_by_source;
-  std::flat_set<ConcretePortId> detached_reader_outputs;
 };
 
 // A closed executable graph. All semantic node/edge synthesis and configured

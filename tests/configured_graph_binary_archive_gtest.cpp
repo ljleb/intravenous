@@ -129,35 +129,53 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_THROW(fixture.decode(trailing), std::runtime_error);
 }
 
-TEST(ConfiguredGraphBinaryArchive, RoundTripsSampleDetachInitialValueOverride)
+TEST(ConfiguredGraphBinaryArchive, RoundTripsConnectionLocalDetachMetadata)
 {
-    iv::ConfiguredGraph configured;
-    std::array sample_detaches{iv::ConfiguredDetachedSamplePortInfo{
-        .detach_id = 3,
+    iv::ConfiguredSampleConnection sample{
         .source_type = iv::ChannelTypeId::mono,
-        .source_channels = {iv::SampleOutputChannelId{.bundle = 4, .port = 1, .channel = 0}},
-        .writer_bundle = 5,
-        .reader_bundle = 6,
-        .reader_channel = iv::SampleOutputChannelId{.bundle = 6, .port = 0, .channel = 0},
-        .loop_extra_latency = 9,
-        .initial_value_override = iv::Sample{-0.375f},
-    }};
-    configured.detach = iv::GraphBuilderDetach::from_configured_infos(
-        4, sample_detaches);
+        .source_channels = {
+            iv::SampleOutputChannelId{.bundle = 4, .port = 1, .channel = 0},
+        },
+        .target_type = iv::ChannelTypeId::mono,
+        .target_channels = {
+            iv::SampleInputChannelId{.bundle = 6, .port = 0, .channel = 0},
+        },
+        .detach = iv::ConfiguredSampleConnectionDetach{
+            .loop_extra_latency = 9,
+            .initial_value_override = iv::Sample{-0.375f},
+        },
+    };
+    iv::ConfiguredEventConnection event{
+        .source_type = iv::EventTypeId::trigger,
+        .sources = {iv::EventOutputPortId{.bundle = 7, .port = 2}},
+        .target_type = iv::EventTypeId::trigger,
+        .targets = {iv::EventInputPortId{.bundle = 8, .port = 3}},
+        .detach = iv::ConfiguredEventConnectionDetach{
+            .loop_extra_latency = 11,
+        },
+    };
+    iv::ConfiguredGraph configured;
+    configured.connections = iv::GraphBuilderConnections::from_configured_connections(
+        std::array{sample}, std::array{event});
 
     auto const archive = iv::serialize_configured_graph(configured);
     auto const decoded = iv::deserialize_configured_graph(
         archive.bytes,
         std::span<iv::details::NodeCompilerRecord const>{},
         archive.node_configs);
-    auto const infos = decoded.detach.configured_infos();
-    ASSERT_EQ(decoded.detach.next_detach_id(), 4u);
-    ASSERT_EQ(infos.size(), 1u);
-    EXPECT_EQ(infos[0].detach_id, 3u);
-    EXPECT_EQ(infos[0].loop_extra_latency, 9u);
-    ASSERT_TRUE(infos[0].initial_value_override.has_value());
+
+    auto const samples = decoded.connections.configured_sample_connections();
+    ASSERT_EQ(samples.size(), 1u);
+    ASSERT_TRUE(samples[0].detach.has_value());
+    EXPECT_EQ(samples[0].detach->loop_extra_latency, 9u);
+    ASSERT_TRUE(samples[0].detach->initial_value_override.has_value());
     EXPECT_FLOAT_EQ(
-        static_cast<float>(*infos[0].initial_value_override), -0.375f);
+        static_cast<float>(*samples[0].detach->initial_value_override), -0.375f);
+
+    auto const events = decoded.connections.configured_event_connections();
+    ASSERT_EQ(events.size(), 1u);
+    ASSERT_TRUE(events[0].detach.has_value());
+    EXPECT_EQ(events[0].detach->loop_extra_latency, 11u);
 }
 
 TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)

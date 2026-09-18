@@ -4,7 +4,6 @@
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/graph/builder/connections.hpp>
-#include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/public_ports.hpp>
 #include <intravenous/graph/builder/virtual_nodes.hpp>
 #include <intravenous/graph/configured_graph.hpp>
@@ -72,14 +71,6 @@ struct LoweredNodeBundleProjection {
   std::optional<size_t> topology_node{};
 };
 
-struct DetachedSamplePortInfo {
-  size_t detach_id = 0;
-  TopologyPortId original_source{};
-  size_t writer_node = std::numeric_limits<size_t>::max();
-  TopologyPortId reader_output{};
-  size_t loop_extra_latency = 1;
-};
-
 struct SampleLoweringPassFacts {
   size_t planned_groups = 0;
   size_t connected_bound_targets = 0;
@@ -114,11 +105,6 @@ struct LoweringWorkspace {
   details::ConstexprHashMap<TopologyPortId, TopologyPortId,
       iv::TopologyPortIdHash>
       subgraph_event_input_of_boundary_source{};
-  details::ConstexprHashMap<TopologyPortId, DetachedSamplePortInfo,
-      iv::TopologyPortIdHash>
-      detached_info_by_source{};
-  details::ConstexprHashSet<TopologyPortId, iv::TopologyPortIdHash>
-      detached_reader_outputs{};
 };
 } // namespace details
 
@@ -1037,56 +1023,6 @@ namespace details {
         return false;
     }
 
-    constexpr void validate_lowered_detached_edges(ExecutableGraphData const& g, std::string_view builder_id)
-    {
-        if (g.detached_info_by_source.empty()) return;
-
-        size_t const num_nodes = g.nodes.size();
-
-        std::vector<std::flat_set<size_t>> explicit_outgoing(num_nodes);
-        details::ConstexprHashMap<ConcretePortId, std::vector<ConcretePortId>,
-            details::ConcretePortIdHash> consumers_of_output;
-
-        for (GraphEdge const& edge : g.edges)
-        {
-            consumers_of_output[edge.source].push_back(edge.target);
-
-            if (edge.source.node == GRAPH_ID) continue;
-            if (edge.target.node == GRAPH_ID) continue;
-
-            explicit_outgoing[edge.source.node].insert(edge.target.node);
-        }
-
-        for (auto const& [_, info] : g.detached_info_by_source)
-        {
-            if (info.original_source.node == GRAPH_ID) {
-                continue;
-            }
-
-            auto const* it = consumers_of_output.find(info.reader_output);
-            if (!it) {
-                continue;
-            }
-
-            for (ConcretePortId target_port : *it)
-            {
-                if (target_port.node == GRAPH_ID) {
-                    continue;
-                }
-
-                size_t const u = info.original_source.node;
-                size_t const v = target_port.node;
-
-                if (!lowered_has_path(explicit_outgoing, v, u)) {
-                    error(
-                        "builder " + std::string(builder_id) + ": detach() on " +
-                        "signal " + std::to_string(info.original_source.node) + ":" + std::to_string(info.original_source.port) +
-                        " breaks an acyclic dependency"
-                    );
-                }
-            }
-        }
-    }
 } // namespace details
 
 class GraphLowerer {
@@ -1102,7 +1038,6 @@ class GraphLowerer {
   GraphBuilderConnections const& connections;
   GraphBuilderPublicPorts const& public_ports;
   GraphBuilderVirtualNodes const& virtuals;
-  GraphBuilderDetach const& detach;
   bool execution_root = false;
   details::LoweringWorkspace& out;
   GraphBuilderVirtualPorts virtual_ports;
@@ -1116,7 +1051,6 @@ class GraphLowerer {
       .node_virtual_ids = {}, .node_source_infos = {},
       .node_construction_order = {}, .node_kinds = {},
       .node_type_identities = {}, .edges = {}, .event_edges = {},
-      .detached_info_by_source = {}, .detached_reader_outputs = {},
   };
   std::vector<size_t> runtime_node_indices;
   details::ConstexprHashMap<TopologyPortId, TopologyPortId, TopologyPortIdHash>
@@ -2004,43 +1938,6 @@ class GraphLowerer {
     }
   }
 
-  constexpr void lower_detach() {
-    if (!detach.configured_event_infos().empty())
-      details::error(
-          "legacy Graph lowering does not yet support event detach semantics");
-    if (detach.configured_infos().empty()) return;
-    // This lookup is meaningful only for detach writers. Building it while
-    // every ordinary sample edge is added made no-detach graphs maintain a
-    // large, repeatedly shifted flat_map for no consumer.
-    auto source_for_target = [&](TopologyPortId target)
-        -> std::optional<TopologyPortId> {
-      for (auto it = out.pending_topology_edges.rbegin();
-           it != out.pending_topology_edges.rend(); ++it) {
-        if (it->target == target) return it->source;
-      }
-      for (auto const& edge : out.topology_edges) {
-        if (edge.target == target) return edge.source;
-      }
-      return std::nullopt;
-    };
-    for(auto const& info:detach.configured_infos()) {
-      auto writer=out.bundle_projections.at(info.writer_bundle).topology_node;
-      if(!writer)details::error("detach writer is not a concrete lowered node");
-      auto const source = source_for_target({*writer, 0});
-      if (!source)
-        details::error("detach writer has no lowered source");
-      auto const reader_channel = resolve_sample_source_channel(info.reader_channel);
-      if (reader_channel.channel != 0 || channel_count(reader_channel.config.channel_layout.channel_type) != 1) details::error("detach reader output must be one concrete channel");
-      auto const reader = reader_channel.port;
-      out.detached_info_by_source.try_emplace(
-          *source,
-          details::DetachedSamplePortInfo{
-          info.detach_id, *source, *writer, reader,
-          info.loop_extra_latency});
-      out.detached_reader_outputs.insert(reader);
-    }
-  }
-
   constexpr TopologyPortId materialize_sample_output_channels(
       ChannelTypeId semantic_type,
       std::span<SampleOutputChannelId const> semantic_channels,
@@ -2473,23 +2370,6 @@ class GraphLowerer {
     }
   }
 
-  constexpr void copy_detach_info() {
-    for (auto const& [source, info] : out.detached_info_by_source) {
-      auto remapped = resolve_sample_source(source);
-      graph.detached_info_by_source.emplace(
-          remapped,
-          DetachedInfo{
-              .detach_id = info.detach_id,
-              .original_source = remapped,
-              .writer_node = runtime_node_indices[info.writer_node],
-              .reader_output = resolve_sample_source(info.reader_output),
-              .loop_extra_latency = info.loop_extra_latency,
-          });
-    }
-    for (auto reader : out.detached_reader_outputs)
-      graph.detached_reader_outputs.insert(resolve_sample_source(reader));
-  }
-
   constexpr iv::LoweredSubgraphSpec::PortRef make_scope_port_ref(
       TopologyPortId port) const {
     if (port.node == GRAPH_ID)
@@ -2706,9 +2586,8 @@ public:
   constexpr GraphLowerer(GraphBuilderIdentity const& identity_,
           GraphBuilderNodeBundles const& b, GraphBuilderConnections const& c,
           GraphBuilderPublicPorts const& p, GraphBuilderVirtualNodes const& v,
-          GraphBuilderDetach const& d, details::LoweringWorkspace& lowered,
-          bool is_execution_root)
-      : identity(identity_), bundles(b),connections(c),public_ports(p),virtuals(v),detach(d),
+          details::LoweringWorkspace& lowered, bool is_execution_root)
+      : identity(identity_), bundles(b),connections(c),public_ports(p),virtuals(v),
         execution_root(is_execution_root), out(lowered),
         virtual_ports(virtuals.ports(bundles)),
         runtime_node_indices(topology_node_count(), GRAPH_ID) {}
@@ -2719,6 +2598,19 @@ public:
       ConfiguredGraph const&, GraphLoweringOptions,
       GraphLoweringProfileStage);
   constexpr void run(bool normalize = true) {
+    if (std::ranges::any_of(
+            connections.configured_sample_connections(),
+            [](ConfiguredSampleConnection const& connection) {
+              return connection.detach.has_value();
+            })
+        || std::ranges::any_of(
+            connections.configured_event_connections(),
+            [](ConfiguredEventConnection const& connection) {
+              return connection.detach.has_value();
+            })) {
+      details::error(
+          "legacy Graph detach lowering was removed; detached graphs require GraphJit");
+    }
     project_bundles();
     index_runtime_sample_bindings();
     auto const sample_plan = plan_sample_lowering();
@@ -2726,7 +2618,6 @@ public:
     lower_vacant_sample_inputs(sample_state);
     bind_subgraph_sample_inputs(sample_state);
     lower_events();
-    lower_detach();
     lower_runtime_output_observers();
     lower_execution_root_ports();
     if (normalize) normalize_topology_edges();
@@ -2739,7 +2630,7 @@ inline size_t GraphLowerer::profile(
   details::LoweringWorkspace lowered;
   GraphLowerer lowerer(
       configured.identity, configured.node_bundles, configured.connections,
-      configured.public_ports, configured.virtual_nodes, configured.detach, lowered,
+      configured.public_ports, configured.virtual_nodes, lowered,
       options.execution_root);
   auto topology_cardinality = [&] {
     return lowerer.out.topology_nodes.size()
@@ -2753,8 +2644,6 @@ inline size_t GraphLowerer::profile(
         + lowerer.out.scope_memberships.size()
         + lowerer.out.subgraph_input_of_boundary_source.size()
         + lowerer.out.subgraph_event_input_of_boundary_source.size()
-        + lowerer.out.detached_info_by_source.size()
-        + lowerer.out.detached_reader_outputs.size()
         + lowerer.subgraph_by_boundary.size()
         + lowerer.materialized_event_output_ports.size()
         + lowerer.runtime_node_indices.size()
@@ -2773,9 +2662,7 @@ inline size_t GraphLowerer::profile(
         + lowerer.graph.node_kinds.size()
         + lowerer.graph.node_type_identities.size()
         + lowerer.graph.edges.size()
-        + lowerer.graph.event_edges.size()
-        + lowerer.graph.detached_info_by_source.size()
-        + lowerer.graph.detached_reader_outputs.size();
+        + lowerer.graph.event_edges.size();
   };
 
   lowerer.run();
@@ -2788,7 +2675,6 @@ inline size_t GraphLowerer::profile(
     lowerer.add_subgraph_default_edges();
     lowerer.canonicalize_sample_edges();
     lowerer.canonicalize_event_edges();
-    lowerer.copy_detach_info();
   if (stage == GraphLoweringProfileStage::materialization)
     return graph_cardinality();
 
@@ -2806,8 +2692,6 @@ inline size_t GraphLowerer::profile(
       lowerer.graph, sample_inputs, sample_outputs);
   details::validate_lowered_graph(
       lowerer.graph, sample_inputs.size(), sample_outputs.size());
-  details::validate_lowered_detached_edges(
-      lowerer.graph, configured.identity.value);
   return graph_cardinality();
 }
 
@@ -2816,7 +2700,7 @@ inline ExecutableGraphIR GraphLowerer::lower(
   details::LoweringWorkspace lowered;
   GraphLowerer lowerer(
       configured.identity, configured.node_bundles, configured.connections,
-      configured.public_ports, configured.virtual_nodes, configured.detach, lowered,
+      configured.public_ports, configured.virtual_nodes, lowered,
       options.execution_root);
   lowerer.run();
   lowerer.begin_materialization();
@@ -2825,7 +2709,6 @@ inline ExecutableGraphIR GraphLowerer::lower(
   lowerer.add_subgraph_default_edges();
   lowerer.canonicalize_sample_edges();
   lowerer.canonicalize_event_edges();
-  lowerer.copy_detach_info();
 
   auto sample_inputs = options.execution_root
       ? std::vector<SampleInputConfig>{}
@@ -2847,7 +2730,6 @@ inline ExecutableGraphIR GraphLowerer::lower(
       lowerer.graph, sample_inputs, sample_outputs);
   details::validate_lowered_graph(lowerer.graph, sample_inputs.size(),
                           sample_outputs.size());
-  details::validate_lowered_detached_edges(lowerer.graph, configured.identity.value);
 
   auto scopes = lowerer.build_lowered_scopes();
   auto virtual_metadata =
@@ -2921,7 +2803,7 @@ struct GraphLowererTestAccess {
     LoweringWorkspace workspace;
     GraphLowerer lowerer(
         configured.identity, configured.node_bundles, configured.connections,
-        configured.public_ports, configured.virtual_nodes, configured.detach,
+        configured.public_ports, configured.virtual_nodes,
         workspace, false);
     lowerer.project_bundles();
     lowerer.index_runtime_sample_bindings();

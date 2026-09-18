@@ -517,7 +517,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             return std::unexpected(
                 "GraphJit composed sample connection already owns a physical representation");
         }
-        if (connection.feedback || connection.external_boundary) {
+        if (connection.detach || connection.external_boundary) {
             return std::unexpected(
                 "GraphJit point-9 sample composition does not yet realize feedback or external storage");
         }

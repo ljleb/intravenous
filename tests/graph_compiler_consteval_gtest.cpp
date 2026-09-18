@@ -20,8 +20,7 @@ bool execution_plan_keeps_deterministic_topological_order()
     graph.edges = edges;
     auto const connectivity = details::build_compiler_connectivity(graph);
 
-    auto const plan = details::build_execution_plan(
-        nodes, connectivity, {});
+    auto const plan = details::build_execution_plan(nodes);
     if (plan.regions.size() != 4 || plan.region_order.size() != 4) {
         return false;
     }
@@ -112,16 +111,6 @@ bool node_permutation_remaps_all_structural_references()
     graph.node_source_infos.resize(3);
     graph.node_construction_order = {0, 1, 2};
     graph.edges.emplace(ConcretePortId{0, 0}, ConcretePortId{1, 0});
-    graph.detached_info_by_source.emplace(
-        ConcretePortId{0, 0},
-        DetachedInfo{
-            .detach_id = 7,
-            .original_source = {0, 0},
-            .writer_node = 0,
-            .reader_output = {2, 0},
-        });
-    graph.detached_reader_outputs.emplace(ConcretePortId{2, 0});
-
     LoweredSubgraphSpec scope;
     scope.member_nodes = {0, 2};
     scope.sample_input_targets = {{{.port = {0, 0}, .valid = true}}};
@@ -133,14 +122,8 @@ bool node_permutation_remaps_all_structural_references()
 
     details::apply_node_permutation(graph, {2, 0, 1}, scopes);
 
-    auto const detached = graph.detached_info_by_source.find({1, 0});
     return graph.node_ids == std::vector<std::string>{"two", "zero", "one"}
         && graph.edges.contains(GraphEdge{{1, 0}, {2, 0}})
-        && detached != graph.detached_info_by_source.end()
-        && detached->second.original_source == ConcretePortId{1, 0}
-        && detached->second.writer_node == 1
-        && detached->second.reader_output == ConcretePortId{0, 0}
-        && graph.detached_reader_outputs.contains({0, 0})
         && scopes[0].member_nodes == std::vector<size_t>{1, 0}
         && scopes[0].sample_input_targets[0][0].port == ConcretePortId{1, 0}
         && scopes[0].sample_output_sources[0].port == ConcretePortId{0, 0}

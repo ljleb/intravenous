@@ -605,19 +605,18 @@ DetachConfiguration configure_detach()
 ChannelTopologySnapshot detach_snapshot()
 {
     auto const configured = configure_detach();
-    auto const built = compile_graph(configured.view);
-    auto const connection_nodes = std::ranges::count_if(
-        built.metadata.concrete_node_type_identities,
-        [](auto const& type) {
-            return std::string_view(type).contains("ConnectionNode");
-        });
+    auto graph = iv::thaw_configured_graph_for_test(configured.view);
+    auto const connections = graph.connections.configured_sample_connections();
     return {
-        .ok = configured.after_detach_handle == configured.right_handle + 3
-            && !has_generated_type(
-                built.metadata.concrete_node_type_identities, "ChannelPack")
-            && !has_generated_type(
-                built.metadata.concrete_node_type_identities, "ChannelUnpack"),
-        .connection_nodes = static_cast<size_t>(connection_nodes),
+        .ok = configured.after_detach_handle == configured.right_handle + 1
+            && graph.node_bundles.size() == 4
+            && connections.size() == 1
+            && connections.front().source_type == iv::ChannelTypeId::stereo
+            && connections.front().source_channels.size() == 2
+            && connections.front().detach.has_value()
+            && connections.front().detach->loop_extra_latency == 1
+            && !connections.front().detach->initial_value_override.has_value(),
+        .connection_nodes = 0,
     };
 }
 
@@ -1401,11 +1400,11 @@ TEST(Channels, ChannelQualifiedPublicOutputsAreProjectedOnlyAtCompletion)
     EXPECT_EQ(snapshot.connection_nodes, 1u);
 }
 
-TEST(Channels, DetachAuthorsOnlyItsExplicitWriterAndReaderNodes)
+TEST(Channels, TiledDetachStaysConnectionMetadata)
 {
     auto snapshot = detach_snapshot();
     EXPECT_TRUE(snapshot.ok);
-    EXPECT_EQ(snapshot.connection_nodes, 1u);
+    EXPECT_EQ(snapshot.connection_nodes, 0u);
 }
 
 bool named_public_inputs_preserve_requested_channel_types()

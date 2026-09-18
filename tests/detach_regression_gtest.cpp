@@ -1,6 +1,7 @@
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
 #include <configured_graph_test_view.h>
+#include <intravenous/graph/builder/embedder.hpp>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/node/block_executor.h>
@@ -8,35 +9,13 @@
 #include <gtest/gtest.h>
 
 #include <array>
-#include <cmath>
 #include <span>
 #include <vector>
 
 namespace {
     using namespace iv;
 
-    enum class RuntimeValueSlot : size_t {
-        dt,
-        noise_a,
-        noise_b,
-    };
-
-    std::array<iv::Sample, 3> runtime_values {};
     std::span<iv::Sample> runtime_output {};
-
-    struct RuntimeValueSource {
-        RuntimeValueSlot slot {};
-
-        static constexpr auto outputs()
-        {
-            return std::array {iv::realtime_sample_output("value")};
-        }
-
-        void tick(iv::TickSampleContext<RuntimeValueSource> const& ctx) const
-        {
-            ctx.outputs[0].push(runtime_values[static_cast<size_t>(slot)]);
-        }
-    };
 
     struct RuntimeBufferSink {
         static constexpr auto inputs()
@@ -81,44 +60,6 @@ namespace {
         void tick_block(iv::TickBlockContext<DetachedEventSink> const&) const {}
     };
 
-    void detached_voice(
-        iv::GraphBuilder& g,
-        iv::SubgraphBuilder& boundary,
-        iv::SamplePortRef dt,
-        iv::SamplePortRef noise,
-        iv::Sample amplitude)
-    {
-        auto const reset = 1.0f;
-        auto const frequency = 220.0f;
-        auto const integrator = details::configure_concrete_node<iv::PhaseIntegrator>(g);
-        auto const warper = details::configure_concrete_node<iv::Warper>(g);
-
-        integrator((warper["aliased"].detach() * reset + frequency * 2.0f) * dt);
-        warper(integrator + noise);
-        boundary.outputs("out"_P = (warper["anti_aliased"] * amplitude));
-    }
-
-    auto build_detached_graph()
-    {
-        iv::GraphBuilder graph;
-        auto const dt = details::configure_concrete_node<RuntimeValueSource>(
-            graph, RuntimeValueSlot::dt);
-        auto const src_a = details::configure_concrete_node<RuntimeValueSource>(
-            graph, RuntimeValueSlot::noise_a);
-        auto const src_b = details::configure_concrete_node<RuntimeValueSource>(
-            graph, RuntimeValueSlot::noise_b);
-        auto const voice_a = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-            detached_voice(graph, boundary, dt, src_a, 0.5f);
-        });
-        auto const voice_b = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-            detached_voice(graph, boundary, dt, src_b, 0.25f);
-        });
-        auto const sink = details::configure_concrete_node<RuntimeBufferSink>(graph);
-
-        sink(voice_a + voice_b);
-        graph.outputs();
-        return iv::freeze_configured_graph_for_test(std::move(graph).finish());
-    }
 
     iv::RuntimeGraphRoot build_runtime_root(
         iv::ConfiguredGraphTestView view,
@@ -129,12 +70,6 @@ namespace {
             iv::GraphLowerer::lower(
                 std::move(configured), {.execution_root = execution_root}));
         return iv::RuntimeGraphRoot(std::move(plan.graph));
-    }
-
-    iv::RuntimeGraphRoot build_detached_runtime_root()
-    {
-        static const auto view = build_detached_graph();
-        return build_runtime_root(view);
     }
 
     auto build_static_dormancy_graph()
@@ -185,80 +120,6 @@ namespace {
         return build_runtime_root(view);
     }
 
-    void tick_executor_direct(
-        iv::BlockNodeExecutor& executor,
-        size_t index,
-        size_t block_size)
-    {
-        iv::validate_block_size(
-            block_size, "test block size must be a power of 2");
-        if (block_size != executor.block_size()) {
-            throw std::logic_error(
-                "test block size must match block executor block size");
-        }
-        executor.tick_block(index);
-    }
-}
-
-TEST(DetachRegression, ProducesFiniteNonZeroOutput)
-{
-    runtime_values[static_cast<size_t>(RuntimeValueSlot::dt)] =
-        iv::Sample{1.0f / 48000.0f};
-    runtime_values[static_cast<size_t>(RuntimeValueSlot::noise_a)] =
-        iv::Sample{0.125f};
-    runtime_values[static_cast<size_t>(RuntimeValueSlot::noise_b)] =
-        iv::Sample{-0.25f};
-
-    std::vector<iv::Sample> output(32, 0.0f);
-    runtime_output = output;
-
-    iv::BlockNodeExecutor executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(build_detached_runtime_root()),
-        output.size());
-    tick_executor_direct(executor, 0, output.size());
-    runtime_output = {};
-
-    bool saw_non_zero = false;
-    for (size_t i = 0; i < output.size(); ++i) {
-        iv::Sample const sample = output[i];
-        if (!std::isfinite(sample)) {
-            FAIL() << "non-finite output at sample " << i << ": " << sample;
-        }
-        if (sample != 0.0f) {
-            saw_non_zero = true;
-        }
-    }
-
-    EXPECT_TRUE(saw_non_zero);
-}
-
-TEST(DetachRegression, RuntimeGraphRootIsDeterministic)
-{
-    runtime_values[static_cast<size_t>(RuntimeValueSlot::dt)] =
-        iv::Sample{1.0f / 48000.0f};
-    runtime_values[static_cast<size_t>(RuntimeValueSlot::noise_a)] =
-        iv::Sample{0.125f};
-    runtime_values[static_cast<size_t>(RuntimeValueSlot::noise_b)] =
-        iv::Sample{-0.25f};
-
-    std::vector<iv::Sample> first_output(32, 0.0f);
-    runtime_output = first_output;
-    auto first_executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(build_detached_runtime_root()), first_output.size());
-    tick_executor_direct(first_executor, 0, first_output.size());
-
-    std::vector<iv::Sample> runtime_root_output(32, 0.0f);
-    runtime_output = runtime_root_output;
-    auto runtime_executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(build_detached_runtime_root()), runtime_root_output.size());
-    tick_executor_direct(runtime_executor, 0, runtime_root_output.size());
-    runtime_output = {};
-
-    ASSERT_EQ(runtime_root_output.size(), first_output.size());
-    for (size_t i = 0; i < first_output.size(); ++i) {
-        EXPECT_EQ(runtime_root_output[i], first_output[i])
-            << "output differs at sample " << i;
-    }
 }
 
 TEST(DetachRegression, RuntimeGraphRootExecutesDormancyGroups)
@@ -291,55 +152,178 @@ TEST(DetachRegression, StaticSubgraphDefaultUsesInitializedConstantStorage)
     }
 }
 
-TEST(DetachRegression, BuilderSessionPreservesSampleAndEventDetachLatency)
+TEST(DetachRegression, BuilderSessionStoresDetachOnConcreteConnections)
 {
     iv::GraphBuilder graph;
 
     auto const sample_source = iv::details::configure_concrete_node<iv::Constant>(
         graph, iv::Sample{0.5f});
-    auto const sample_detached =
-        static_cast<iv::SamplePortRef>(sample_source).detach(5, iv::Sample{0.25f});
-    (void)sample_detached;
-    EXPECT_ANY_THROW(
-        static_cast<iv::SamplePortRef>(sample_source).detach(5, iv::Sample{0.5f}));
+    auto const sample_sink_a = iv::details::configure_concrete_node<
+        iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>(graph);
+    auto const sample_sink_b = iv::details::configure_concrete_node<
+        iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>(graph);
+    sample_sink_a(static_cast<iv::SamplePortRef>(sample_source).detach(
+        5, iv::Sample{0.25f}));
+    sample_sink_b(static_cast<iv::SamplePortRef>(sample_source).detach(
+        9, iv::Sample{-0.5f}));
 
     auto const event_source =
         iv::details::configure_concrete_node<DetachedEventSource>(graph);
-    auto const event_sink =
+    auto const event_sink_a =
         iv::details::configure_concrete_node<DetachedEventSink>(graph);
-    auto const event_port = event_source.event_port();
-    auto const event_sources = event_port.sources();
-    auto const original_event_sources =
-        std::vector<iv::EventOutputPortId>(
-            event_sources.begin(), event_sources.end());
+    auto const event_sink_b =
+        iv::details::configure_concrete_node<DetachedEventSink>(graph);
+    event_sink_a(event_source.event_port().detach(7));
+    event_sink_b(event_source.event_port().detach(11));
 
-    auto const event_detached = event_port.detach(7);
-    auto const event_detached_again = event_detached.detach(7);
-    EXPECT_EQ(
-        std::vector<iv::EventOutputPortId>(
-            event_detached.sources().begin(), event_detached.sources().end()),
-        std::vector<iv::EventOutputPortId>(
-            event_detached_again.sources().begin(),
-            event_detached_again.sources().end()));
-    EXPECT_ANY_THROW(event_source.event_port().detach(8));
-    event_sink(event_detached);
+    auto detached = event_source.event_port().detach(13);
+    EXPECT_ANY_THROW(detached.detach(14));
 
     auto configured = std::move(graph).finish();
-    ASSERT_EQ(configured.detach.next_detach_id(), 2u);
-
-    auto const sample_infos = configured.detach.configured_infos();
-    ASSERT_EQ(sample_infos.size(), 1u);
-    EXPECT_EQ(sample_infos[0].loop_extra_latency, 5u);
-    ASSERT_TRUE(sample_infos[0].initial_value_override.has_value());
+    // Boundary + six authored nodes only: detach no longer materializes hidden
+    // writer/reader node bundles in configured graph state.
+    EXPECT_EQ(configured.node_bundles.size(), 7u);
+    auto const samples = configured.connections.configured_sample_connections();
+    ASSERT_EQ(samples.size(), 2u);
+    ASSERT_TRUE(samples[0].detach.has_value());
+    ASSERT_TRUE(samples[1].detach.has_value());
+    EXPECT_EQ(samples[0].detach->loop_extra_latency, 5u);
+    EXPECT_EQ(samples[1].detach->loop_extra_latency, 9u);
+    ASSERT_TRUE(samples[0].detach->initial_value_override.has_value());
+    ASSERT_TRUE(samples[1].detach->initial_value_override.has_value());
     EXPECT_FLOAT_EQ(
-        static_cast<float>(*sample_infos[0].initial_value_override), 0.25f);
+        static_cast<float>(*samples[0].detach->initial_value_override), 0.25f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(*samples[1].detach->initial_value_override), -0.5f);
 
-    auto const event_infos = configured.detach.configured_event_infos();
-    ASSERT_EQ(event_infos.size(), 1u);
-    EXPECT_EQ(event_infos[0].detach_id, 1u);
-    EXPECT_EQ(event_infos[0].source_type, iv::EventTypeId::trigger);
-    EXPECT_EQ(event_infos[0].sources, original_event_sources);
-    EXPECT_EQ(event_infos[0].loop_extra_latency, 7u);
-    EXPECT_EQ(event_infos[0].reader_port.bundle, event_infos[0].reader_bundle);
-    EXPECT_EQ(event_infos[0].reader_port.port, 0u);
+    auto const events = configured.connections.configured_event_connections();
+    ASSERT_EQ(events.size(), 2u);
+    ASSERT_TRUE(events[0].detach.has_value());
+    ASSERT_TRUE(events[1].detach.has_value());
+    EXPECT_EQ(events[0].detach->loop_extra_latency, 7u);
+    EXPECT_EQ(events[1].detach->loop_extra_latency, 11u);
+
+}
+
+TEST(DetachRegression, ChannelProjectionPreservesDetachMetadata)
+{
+    iv::GraphBuilder graph;
+    auto const input = graph.input<"input", iv::stereo>();
+    auto const detached = static_cast<iv::SamplePortRef>(input).detach(
+        7, iv::Sample{-0.25f});
+
+    constexpr std::size_t projection_count = 64;
+    for (std::size_t i = 0; i < projection_count; ++i) {
+        auto const sink = iv::details::configure_concrete_node<
+            iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>(graph);
+        sink(detached.select_channel(i % 2));
+    }
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto const connections =
+        configured.connections.configured_sample_connections();
+    ASSERT_EQ(connections.size(), projection_count);
+    for (std::size_t i = 0; i < connections.size(); ++i) {
+        auto const& connection = connections[i];
+        ASSERT_TRUE(connection.detach.has_value());
+        EXPECT_EQ(connection.detach->loop_extra_latency, 7u);
+        ASSERT_TRUE(connection.detach->initial_value_override.has_value());
+        EXPECT_FLOAT_EQ(
+            static_cast<float>(*connection.detach->initial_value_override),
+            -0.25f);
+        ASSERT_EQ(connection.source_channels.size(), 1u);
+        EXPECT_EQ(connection.source_channels.front().channel, i % 2);
+    }
+}
+
+TEST(DetachRegression, TilingRequiresMatchingDetachMetadata)
+{
+    iv::GraphBuilder graph;
+    auto const left = iv::details::configure_concrete_node<iv::Constant>(
+        graph, iv::Sample{0.25f});
+    auto const right = iv::details::configure_concrete_node<iv::Constant>(
+        graph, iv::Sample{-0.5f});
+    auto const detached_left = static_cast<iv::SamplePortRef>(left).detach(
+        9, iv::Sample{0.125f});
+    auto const detached_right = static_cast<iv::SamplePortRef>(right).detach(
+        9, iv::Sample{0.125f});
+    auto const tiled = graph.tile<iv::stereo>(detached_left, detached_right);
+    graph.outputs(tiled);
+
+    auto configured = std::move(graph).finish();
+    auto const connections =
+        configured.connections.configured_sample_connections();
+    ASSERT_EQ(connections.size(), 1u);
+    ASSERT_TRUE(connections.front().detach.has_value());
+    EXPECT_EQ(connections.front().detach->loop_extra_latency, 9u);
+    ASSERT_TRUE(
+        connections.front().detach->initial_value_override.has_value());
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(
+            *connections.front().detach->initial_value_override),
+        0.125f);
+
+    iv::GraphBuilder invalid_graph;
+    auto const invalid_left =
+        iv::details::configure_concrete_node<iv::Constant>(
+            invalid_graph, iv::Sample{0.25f});
+    auto const invalid_right =
+        iv::details::configure_concrete_node<iv::Constant>(
+            invalid_graph, iv::Sample{-0.5f});
+    EXPECT_ANY_THROW(invalid_graph.tile<iv::stereo>(
+        static_cast<iv::SamplePortRef>(invalid_left).detach(5),
+        static_cast<iv::SamplePortRef>(invalid_right).detach(7)));
+}
+
+TEST(DetachRegression, ChildImportRemapsDetachedConnectionEndpoints)
+{
+    iv::GraphBuilder parent_builder;
+    iv::details::configure_concrete_node<iv::Constant>(
+        parent_builder, iv::Sample{0.0f});
+    parent_builder.outputs();
+    auto parent = std::move(parent_builder).finish();
+
+    iv::GraphBuilder child_builder;
+    auto const source = iv::details::configure_concrete_node<iv::Constant>(
+        child_builder, iv::Sample{0.5f});
+    auto const sink = iv::details::configure_concrete_node<
+        iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>(child_builder);
+    sink(static_cast<iv::SamplePortRef>(source).detach(
+        6, iv::Sample{-0.75f}));
+    child_builder.outputs();
+    auto child = std::move(child_builder).finish();
+
+    ASSERT_EQ(
+        child.connections.configured_sample_connections().size(), 1u);
+    auto const child_connection =
+        child.connections.configured_sample_connections().front();
+    auto const imported = iv::GraphBuilderChildEmbedder::import(
+        parent.node_bundles,
+        parent.connections,
+        parent.virtual_nodes,
+        child.node_bundles,
+        child.connections,
+        child.virtual_nodes);
+
+    auto const connections =
+        parent.connections.configured_sample_connections();
+    ASSERT_EQ(connections.size(), 1u);
+    auto const& connection = connections.front();
+    ASSERT_EQ(connection.source_channels.size(), 1u);
+    ASSERT_EQ(connection.target_channels.size(), 1u);
+    EXPECT_EQ(
+        connection.source_channels.front().bundle,
+        child_connection.source_channels.front().bundle
+            + imported.bundle_offset);
+    EXPECT_EQ(
+        connection.target_channels.front().bundle,
+        child_connection.target_channels.front().bundle
+            + imported.bundle_offset);
+    ASSERT_TRUE(connection.detach.has_value());
+    EXPECT_EQ(connection.detach->loop_extra_latency, 6u);
+    ASSERT_TRUE(connection.detach->initial_value_override.has_value());
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(*connection.detach->initial_value_override),
+        -0.75f);
 }

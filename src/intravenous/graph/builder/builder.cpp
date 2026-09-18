@@ -376,6 +376,16 @@ SamplePortRef GraphBuilder::make_sample_port(
 {
     return state(*this).make_sample_port(type, channels);
 }
+SamplePortRef GraphBuilder::make_tiled_sample_port(
+    ChannelTypeId type, std::span<SamplePortRef const> members)
+{
+    return state(*this).make_tiled_sample_port(type, members);
+}
+SamplePortRef GraphBuilder::select_sample_port_channel(
+    SamplePortRef const& port, size_t channel)
+{
+    return state(*this).select_sample_port_channel(port, channel);
+}
 std::span<SampleOutputChannelId const>
 GraphBuilder::sample_port_channels(SamplePortRef const& ref) const
 {

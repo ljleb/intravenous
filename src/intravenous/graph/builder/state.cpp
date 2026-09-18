@@ -217,6 +217,51 @@ SamplePortRef GraphBuilderState::make_sample_port(
   return result;
 }
 
+SamplePortRef GraphBuilderState::make_tiled_sample_port(
+    ChannelTypeId type, std::span<SamplePortRef const> members)
+{
+  if (members.empty()) details::error("cannot tile an empty sample output");
+  std::vector<SampleOutputChannelId> channels;
+  channels.reserve(members.size());
+  std::optional<ConfiguredSampleConnectionDetach> detach;
+  bool detach_initialized = false;
+  for (auto const& member : members) {
+    if (member.graph_builder != &facade()
+        || member.handle >= _sample_port_expressions.size())
+      details::error("cannot tile sample outputs from different builders");
+    auto const& expression = _sample_port_expressions[member.handle];
+    if (member.channel_type != ChannelTypeId::mono
+        || expression.channels.size() != 1)
+      details::error("each g.tile channel must be a scalar sample expression");
+    if (!detach_initialized) {
+      detach = expression.detach;
+      detach_initialized = true;
+    } else if (detach != expression.detach) {
+      details::error("g.tile cannot mix different detach semantics");
+    }
+    channels.push_back(expression.channels.front());
+  }
+  auto result = make_sample_port(type, channels);
+  _sample_port_expressions[result.handle].detach = detach;
+  return result;
+}
+
+SamplePortRef GraphBuilderState::select_sample_port_channel(
+    SamplePortRef const& ref, size_t channel)
+{
+  if (ref.graph_builder != &facade()
+      || ref.handle >= _sample_port_expressions.size())
+    details::error("sample port does not belong to this builder");
+  auto const& expression = _sample_port_expressions[ref.handle];
+  if (channel >= expression.channels.size())
+    details::error("sample channel ordinal is out of bounds");
+  std::array<SampleOutputChannelId, 1> channels{expression.channels[channel]};
+  auto detach = expression.detach;
+  auto result = make_sample_port(ChannelTypeId::mono, channels);
+  _sample_port_expressions[result.handle].detach = std::move(detach);
+  return result;
+}
+
 std::span<SampleOutputChannelId const>
 GraphBuilderState::sample_port_channels(SamplePortRef const& ref) const
 {
@@ -426,7 +471,6 @@ ConfiguredGraphEmbedding GraphBuilderState::embed_graph_components(
     GraphBuilderPublicPorts const& child_public_ports,
     GraphBuilderNodeBundles const& child_bundles,
     GraphBuilderConnections const& child_connections,
-    GraphBuilderDetach const& child_detach,
     GraphBuilderVirtualNodes const& child_virtual_nodes,
     std::string_view kind) {
   if (!child_public_ports.sample_outputs_defined())
@@ -434,8 +478,8 @@ ConfiguredGraphEmbedding GraphBuilderState::embed_graph_components(
 
   auto const begin = _node_bundles.size();
   auto imported = GraphBuilderChildEmbedder::import(
-      _node_bundles, _connections, _detach, _virtual_nodes,
-      child_bundles, child_connections, child_detach, child_virtual_nodes);
+      _node_bundles, _connections, _virtual_nodes,
+      child_bundles, child_connections, child_virtual_nodes);
   IV_ASSERT(
       imported.bundle_offset == begin,
       "embedded child bundle offset changed unexpectedly");
@@ -483,7 +527,6 @@ ConfiguredGraphEmbedding GraphBuilderState::embed_subgraph(
       child._public_ports,
       child._node_bundles,
       child._connections,
-      child._detach,
       child._virtual_nodes,
       kind);
 }
@@ -498,7 +541,6 @@ ConfiguredGraphEmbedding GraphBuilderState::embed_configured_graph(
       child.public_ports,
       child.node_bundles,
       child.connections,
-      child.detach,
       child.virtual_nodes,
       kind);
 }
@@ -598,20 +640,34 @@ void GraphBuilderState::record_configured_sample_connection(
     details::error(
         "sample channel source count does not match NodeBundle port layout");
   std::vector<SampleOutputChannelId> channels;
+  std::optional<ConfiguredSampleConnectionDetach> detach;
+  bool detach_initialized = false;
   for (auto const& source : sources) {
     if (source.graph_builder != &facade() ||
         source.channel_type != ChannelTypeId::mono ||
         source.handle >= _sample_port_expressions.size())
       details::error(
           "channel-wise sample connection requires scalar sources");
-    auto const source_channels = source.channels();
-    if (source_channels.size() != 1)
+    auto const& expression = _sample_port_expressions[source.handle];
+    if (expression.channels.size() != 1)
       details::error(
           "channel-wise sample connection requires scalar sources");
-    channels.push_back(source_channels.front());
+    if (!detach_initialized) {
+      detach = expression.detach;
+      detach_initialized = true;
+    } else if (detach != expression.detach) {
+      details::error(
+          "channel-wise sample connection cannot mix different detach semantics");
+    }
+    channels.push_back(expression.channels.front());
   }
-  _connections.record_configured_sample_connection(
-      {type, std::move(channels), type, std::move(targets)});
+  _connections.record_configured_sample_connection({
+      .source_type = type,
+      .source_channels = std::move(channels),
+      .target_type = type,
+      .target_channels = std::move(targets),
+      .detach = detach,
+  });
 }
 
 void GraphBuilderState::record_configured_event_connection(
@@ -623,9 +679,14 @@ void GraphBuilderState::record_configured_event_connection(
   if (sources.empty())
     details::error("invalid configured event connection");
   auto target_type = _node_bundles.resolve_event_input(target).config.type;
+  auto const& expression = _event_port_expressions[source.handle];
   _connections.record_configured_event_connection({
-      source.type, {sources.begin(), sources.end()}, target_type,
-      _node_bundles.event_input_ports(target)});
+      .source_type = source.type,
+      .sources = {expression.sources.begin(), expression.sources.end()},
+      .target_type = target_type,
+      .targets = _node_bundles.event_input_ports(target),
+      .detach = expression.detach,
+  });
 }
 
 void GraphBuilderState::connect_sample_input(

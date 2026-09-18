@@ -5,6 +5,7 @@
 #include <intravenous/sample.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <exception>
 #include <limits>
@@ -204,6 +205,15 @@ std::expected<void, std::string> inventory_sample_connections(
                 connection_plan.target_port).config;
             connection_plan.target_layout = target.channel_layout;
             connection_plan.target_history = realtime_history_or_zero(target);
+            if (connection.detach) {
+                if (connection.detach->loop_extra_latency == 0)
+                    return std::unexpected(
+                        "GraphJit sample detach latency must be at least one sample");
+                connection_plan.detach = connection.detach;
+                connection_plan.detach_initial_value =
+                    connection.detach->initial_value_override.value_or(
+                        target.neutral_value);
+            }
             auto const target_realtime = is_realtime(target.access);
 
             std::optional<ChannelLayout> canonical_source_layout;
@@ -244,14 +254,16 @@ std::expected<void, std::string> inventory_sample_connections(
             connection_plan.read_latency = connection_plan.source_latency;
             connection_plan.access = connection_access(
                 source_realtime.value_or(true), target_realtime);
-            for (auto const source_channel : connection.source_channels) {
-                append_dependency(
-                    plan,
-                    source_channel.bundle,
-                    first_target.bundle,
-                    PlannedConnectionPayload::sample,
-                    connection_plan.access,
-                    i);
+            if (!connection.detach) {
+                for (auto const source_channel : connection.source_channels) {
+                    append_dependency(
+                        plan,
+                        source_channel.bundle,
+                        first_target.bundle,
+                        PlannedConnectionPayload::sample,
+                        connection_plan.access,
+                        i);
+                }
             }
             connection_plan.external_boundary =
                 first_target.bundle == plan.boundary_bundle
@@ -348,6 +360,8 @@ std::expected<void, std::string> normalize_sample_target_projections(
         auto const& first = plan.sample_connections[first_index];
         auto access = first.access;
         auto target_history = first.target_history;
+        auto detach = first.detach;
+        auto detach_initial_value = first.detach_initial_value;
         bool external_boundary = false;
         bool requires_block_materialization = false;
 
@@ -355,7 +369,8 @@ std::expected<void, std::string> normalize_sample_target_projections(
             auto const& connection = plan.sample_connections[connection_index];
             if (connection.target_layout != target.channel_layout
                 || connection.target_history != target_history
-                || connection.access != access) {
+                || connection.access != access
+                || connection.detach != detach) {
                 return std::unexpected(
                     "GraphJit sample target-channel projections disagree on target semantics");
             }
@@ -417,6 +432,8 @@ std::expected<void, std::string> normalize_sample_target_projections(
             .access = access,
             .requires_block_materialization = requires_block_materialization,
             .external_boundary = external_boundary,
+            .detach = detach,
+            .detach_initial_value = detach_initial_value,
         };
         merged.source_channels.reserve(target_channel_total);
         merged.source_channel_timings.reserve(target_channel_total);
@@ -531,15 +548,22 @@ std::expected<void, std::string> inventory_event_connections(
             }
             connection_plan.access = connection_access(
                 source_realtime.value_or(true), target_realtime.value_or(true));
-            for (auto const source_id : connection.sources) {
-                for (auto const target_id : connection.targets) {
-                    append_dependency(
-                        plan,
-                        source_id.bundle,
-                        target_id.bundle,
-                        PlannedConnectionPayload::event,
-                        connection_plan.access,
-                        i);
+            if (connection.detach) {
+                if (connection.detach->loop_extra_latency == 0)
+                    return std::unexpected(
+                        "GraphJit event detach latency must be at least one sample");
+                connection_plan.detach = connection.detach;
+            } else {
+                for (auto const source_id : connection.sources) {
+                    for (auto const target_id : connection.targets) {
+                        append_dependency(
+                            plan,
+                            source_id.bundle,
+                            target_id.bundle,
+                            PlannedConnectionPayload::event,
+                            connection_plan.access,
+                            i);
+                    }
                 }
             }
             connection_plan.external_boundary =
@@ -673,216 +697,83 @@ std::vector<NodeBundleHandle> unique_source_bundles(
     return bundles;
 }
 
-std::vector<NodeBundleHandle> detach_consumers(
-    ConnectionAnalysisPlan const& plan,
-    NodeBundleHandle reader_bundle,
-    PlannedConnectionPayload payload)
-{
-    std::vector<NodeBundleHandle> consumers;
-    for (auto const& dependency : plan.dependencies) {
-        if (dependency.payload == payload
-            && dependency.source_bundle == reader_bundle) {
-            consumers.push_back(dependency.target_bundle);
-        }
-    }
-    std::ranges::sort(consumers);
-    consumers.erase(std::unique(consumers.begin(), consumers.end()), consumers.end());
-    return consumers;
-}
-
-bool contains_dependency(
-    ConnectionAnalysisPlan const& plan,
-    NodeBundleHandle source,
-    NodeBundleHandle target,
-    PlannedConnectionPayload payload)
-{
-    return std::ranges::any_of(
-        plan.dependencies,
-        [&](DependencyEdgePlan const& dependency) {
-            return dependency.payload == payload
-                && dependency.source_bundle == source
-                && dependency.target_bundle == target;
-        });
-}
-
-std::expected<void, std::string> validate_detach_cycle(
+std::expected<void, std::string> validate_detached_connections(
     ConfiguredGraph const& graph,
-    ConnectionAnalysisPlan const& plan,
-    std::span<NodeBundleHandle const> sources,
-    NodeBundleHandle writer_bundle,
-    NodeBundleHandle reader_bundle,
-    std::span<NodeBundleHandle const> consumers,
-    PlannedConnectionPayload payload,
-    std::size_t detach_id)
+    ConnectionAnalysisPlan const& plan)
 {
-    if (sources.empty() || consumers.empty()) {
-        return std::unexpected(
-            "GraphJit detach " + std::to_string(detach_id)
-            + " does not break a cycle");
-    }
-    if (writer_bundle == plan.boundary_bundle || reader_bundle == plan.boundary_bundle) {
-        return std::unexpected(
-            "GraphJit detach endpoints must be concrete graph nodes");
-    }
-    if (writer_bundle >= graph.node_bundles.size()
-        || reader_bundle >= graph.node_bundles.size()) {
-        return std::unexpected("GraphJit detach refers to an invalid bundle");
-    }
-    for (auto const source : sources) {
-        if (source == plan.boundary_bundle
-            || !contains_dependency(plan, source, writer_bundle, payload)) {
-            return std::unexpected(
-                "GraphJit detach writer is not connected to its recorded semantic source");
-        }
-    }
-
     auto const semantic_outgoing = dependency_adjacency(graph, plan, false);
     auto const sequential_outgoing = dependency_adjacency(graph, plan, true);
     std::vector<std::optional<std::size_t>> bundle_to_node(
         graph.node_bundles.size());
-    for (std::size_t i = 0; i < plan.nodes.size(); ++i) {
+    for (std::size_t i = 0; i < plan.nodes.size(); ++i)
         bundle_to_node[plan.nodes[i].bundle] = i;
-    }
 
-    for (auto const consumer : consumers) {
-        if (consumer >= bundle_to_node.size() || !bundle_to_node[consumer]) {
+    auto validate = [&](std::span<NodeBundleHandle const> sources,
+                        std::span<NodeBundleHandle const> targets,
+                        std::string_view kind,
+                        std::size_t configured_connection_index)
+        -> std::expected<void, std::string> {
+        if (sources.empty() || targets.empty())
             return std::unexpected(
-                "GraphJit detach consumer is not a concrete graph node");
+                "GraphJit " + std::string(kind)
+                + " detach has an empty endpoint set");
+        for (auto const target : targets) {
+            if (target >= bundle_to_node.size() || !bundle_to_node[target])
+                return std::unexpected(
+                    "GraphJit detached connection must target a concrete graph node");
+            bool closes_semantic_cycle = false;
+            bool closes_sequential_cycle = false;
+            for (auto const source : sources) {
+                if (source >= bundle_to_node.size() || !bundle_to_node[source])
+                    continue;
+                closes_semantic_cycle = closes_semantic_cycle
+                    || has_path(
+                        semantic_outgoing,
+                        *bundle_to_node[target],
+                        *bundle_to_node[source]);
+                closes_sequential_cycle = closes_sequential_cycle
+                    || has_path(
+                        sequential_outgoing,
+                        *bundle_to_node[target],
+                        *bundle_to_node[source]);
+            }
+            if (!closes_semantic_cycle) {
+                return std::unexpected(
+                    "GraphJit " + std::string(kind) + " detach on connection "
+                    + std::to_string(configured_connection_index)
+                    + " breaks an acyclic dependency");
+            }
+            if (!closes_sequential_cycle) {
+                return std::unexpected(
+                    "GraphJit detach cycle crosses compiled-access dependencies, which SCC execution does not yet support");
+            }
         }
-        bool closes_semantic_cycle = false;
-        bool closes_sequential_cycle = false;
-        for (auto const source : sources) {
-            if (source >= bundle_to_node.size() || !bundle_to_node[source]) continue;
-            closes_semantic_cycle = closes_semantic_cycle
-                || has_path(
-                    semantic_outgoing,
-                    *bundle_to_node[consumer],
-                    *bundle_to_node[source]);
-            closes_sequential_cycle = closes_sequential_cycle
-                || has_path(
-                    sequential_outgoing,
-                    *bundle_to_node[consumer],
-                    *bundle_to_node[source]);
-        }
-        if (!closes_semantic_cycle) {
-            return std::unexpected(
-                "GraphJit detach " + std::to_string(detach_id)
-                + " breaks an acyclic dependency");
-        }
-        if (!closes_sequential_cycle) {
-            return std::unexpected(
-                "GraphJit detach cycle crosses compiled-access dependencies, which SCC execution does not yet support");
-        }
-    }
-    return {};
-}
-
-std::expected<Sample, std::string> sample_detach_initial_value(
-    ConfiguredGraph const& graph,
-    ConnectionAnalysisPlan const& plan,
-    ConfiguredDetachedSamplePortInfo const& info)
-{
-    if (info.initial_value_override) return *info.initial_value_override;
+        return {};
+    };
 
     for (auto const& connection : plan.sample_connections) {
-        if (std::ranges::find(
-                connection.source_channels, info.reader_channel)
-            == connection.source_channels.end()) {
-            continue;
-        }
-        if (connection.target_port.node_bundle_handle >= graph.node_bundles.size()) {
-            continue;
-        }
-        auto const target = graph.node_bundles.resolve_sample_input(
-            connection.target_port).config;
-        return target.neutral_value;
+        if (!connection.detach) continue;
+        auto sources = unique_source_bundles(connection.source_channels);
+        std::array<NodeBundleHandle, 1> targets{
+            connection.target_port.node_bundle_handle};
+        if (auto result = validate(
+                sources, targets, "sample",
+                connection.configured_connection_index);
+            !result) return result;
     }
-    return std::unexpected(
-        "GraphJit sample detach has no connected input from which to derive its initial value");
-}
-
-std::expected<void, std::string> inventory_and_validate_detaches(
-    ConfiguredGraph const& graph,
-    ConnectionAnalysisPlan& plan)
-{
-    plan.sample_detaches.reserve(graph.detach.configured_infos().size());
-    for (auto const& info : graph.detach.configured_infos()) {
-        if (info.loop_extra_latency == 0) {
-            return std::unexpected(
-                "GraphJit sample detach latency must be at least one sample");
-        }
-        if (info.reader_channel.bundle != info.reader_bundle) {
-            return std::unexpected(
-                "GraphJit sample detach reader metadata is inconsistent");
-        }
-        auto const sources = unique_source_bundles(info.source_channels);
-        auto const consumers = detach_consumers(
-            plan, info.reader_bundle, PlannedConnectionPayload::sample);
-        if (auto valid = validate_detach_cycle(
-                graph,
-                plan,
-                sources,
-                info.writer_bundle,
-                info.reader_bundle,
-                consumers,
-                PlannedConnectionPayload::sample,
-                info.detach_id);
-            !valid) {
-            return valid;
-        }
-        auto initial_value = sample_detach_initial_value(graph, plan, info);
-        if (!initial_value) {
-            return std::unexpected(std::move(initial_value.error()));
-        }
-        plan.sample_detaches.push_back(SampleDetachPlan{
-            .detach_id = info.detach_id,
-            .source_type = info.source_type,
-            .source_channels = info.source_channels,
-            .writer_bundle = info.writer_bundle,
-            .reader_bundle = info.reader_bundle,
-            .reader_channel = info.reader_channel,
-            .consumer_bundles = consumers,
-            .loop_extra_latency = info.loop_extra_latency,
-            .initial_value_override = info.initial_value_override,
-            .initial_value = *initial_value,
-        });
-    }
-
-    plan.event_detaches.reserve(graph.detach.configured_event_infos().size());
-    for (auto const& info : graph.detach.configured_event_infos()) {
-        if (info.loop_extra_latency == 0) {
-            return std::unexpected(
-                "GraphJit event detach latency must be at least one sample");
-        }
-        if (info.reader_port.bundle != info.reader_bundle) {
-            return std::unexpected(
-                "GraphJit event detach reader metadata is inconsistent");
-        }
-        auto const sources = unique_source_bundles(info.sources);
-        auto const consumers = detach_consumers(
-            plan, info.reader_bundle, PlannedConnectionPayload::event);
-        if (auto valid = validate_detach_cycle(
-                graph,
-                plan,
-                sources,
-                info.writer_bundle,
-                info.reader_bundle,
-                consumers,
-                PlannedConnectionPayload::event,
-                info.detach_id);
-            !valid) {
-            return valid;
-        }
-        plan.event_detaches.push_back(EventDetachPlan{
-            .detach_id = info.detach_id,
-            .source_type = info.source_type,
-            .sources = info.sources,
-            .writer_bundle = info.writer_bundle,
-            .reader_bundle = info.reader_bundle,
-            .reader_port = info.reader_port,
-            .consumer_bundles = consumers,
-            .loop_extra_latency = info.loop_extra_latency,
-        });
+    for (auto const& connection : plan.event_connections) {
+        if (!connection.detach) continue;
+        auto sources = unique_source_bundles(connection.sources);
+        std::vector<NodeBundleHandle> targets;
+        targets.reserve(connection.targets.size());
+        for (auto const target : connection.targets)
+            targets.push_back(target.bundle);
+        std::ranges::sort(targets);
+        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+        if (auto result = validate(
+                sources, targets, "event",
+                connection.configured_connection_index);
+            !result) return result;
     }
     return {};
 }
@@ -909,37 +800,43 @@ std::expected<SchedulePlan, std::string> build_schedule(
         bundle_to_node[plan.nodes[i].bundle] = i;
     }
 
-    // Ordinary tick dependencies remain acyclic. Restore only the synthetic
-    // writer->reader dependency of each validated detach for SCC formation.
+    // Ordinary tick dependencies remain acyclic. Restore detached semantic
+    // source->consumer edges only for SCC formation. They are temporal/storage
+    // dependencies, not same-slice tick dependencies.
     auto const explicit_outgoing = dependency_adjacency(graph, plan, true);
     auto augmented_outgoing = explicit_outgoing;
     std::vector<bool> self_loop(plan.nodes.size(), false);
-    auto append_detach_dependency = [&](NodeBundleHandle writer,
-                                        NodeBundleHandle reader)
+    auto append_detach_dependency = [&](NodeBundleHandle source_bundle,
+                                        NodeBundleHandle target_bundle)
         -> std::expected<void, std::string> {
-        if (writer >= bundle_to_node.size() || reader >= bundle_to_node.size()
-            || !bundle_to_node[writer] || !bundle_to_node[reader]) {
+        if (source_bundle >= bundle_to_node.size()
+            || target_bundle >= bundle_to_node.size()
+            || !bundle_to_node[source_bundle]
+            || !bundle_to_node[target_bundle]) {
             return std::unexpected(
                 "GraphJit detach scheduling refers to a non-concrete bundle");
         }
-        auto const source = *bundle_to_node[writer];
-        auto const target = *bundle_to_node[reader];
+        auto const source = *bundle_to_node[source_bundle];
+        auto const target = *bundle_to_node[target_bundle];
         if (source == target) self_loop[source] = true;
         augmented_outgoing[source].push_back(target);
         return {};
     };
-    for (auto const& detach : plan.sample_detaches) {
-        if (auto added = append_detach_dependency(
-                detach.writer_bundle, detach.reader_bundle);
-            !added) {
-            return std::unexpected(std::move(added.error()));
+    for (auto const& connection : plan.sample_connections) {
+        if (!connection.detach) continue;
+        for (auto const source : unique_source_bundles(connection.source_channels)) {
+            if (auto added = append_detach_dependency(
+                    source, connection.target_port.node_bundle_handle);
+                !added) return std::unexpected(std::move(added.error()));
         }
     }
-    for (auto const& detach : plan.event_detaches) {
-        if (auto added = append_detach_dependency(
-                detach.writer_bundle, detach.reader_bundle);
-            !added) {
-            return std::unexpected(std::move(added.error()));
+    for (auto const& connection : plan.event_connections) {
+        if (!connection.detach) continue;
+        for (auto const source : unique_source_bundles(connection.sources)) {
+            for (auto const target : connection.targets) {
+                if (auto added = append_detach_dependency(source, target.bundle);
+                    !added) return std::unexpected(std::move(added.error()));
+            }
         }
     }
     for (auto& targets : augmented_outgoing) {
@@ -1004,9 +901,9 @@ std::expected<SchedulePlan, std::string> build_schedule(
         region.cyclic = component.size() > 1
             || (component.size() == 1 && self_loop[component.front()]);
 
-        // The synthetic detach dependency is a storage/temporal dependency,
-        // not a same-slice tick dependency. Topologically order each region
-        // using only ordinary sequential dependencies.
+        // A detached dependency is a storage/temporal dependency, not a
+        // same-slice tick dependency. Topologically order each region using
+        // only ordinary sequential dependencies.
         std::vector<std::size_t> local_indegree(plan.nodes.size(), 0);
         for (auto const node : component) {
             for (auto const target : explicit_outgoing[node]) {
@@ -1090,27 +987,10 @@ std::expected<SchedulePlan, std::string> build_schedule(
         return std::unexpected("connection SCC condensation graph is cyclic");
     }
 
-    auto is_detach_endpoint = [&](NodeBundleHandle bundle) {
-        return std::ranges::any_of(
-                   plan.sample_detaches,
-                   [&](SampleDetachPlan const& detach) {
-                       return detach.writer_bundle == bundle
-                           || detach.reader_bundle == bundle;
-                   })
-            || std::ranges::any_of(
-                   plan.event_detaches,
-                   [&](EventDetachPlan const& detach) {
-                       return detach.writer_bundle == bundle
-                           || detach.reader_bundle == bundle;
-                   });
-    };
-
     std::size_t execution_position = 0;
     for (auto const region_index : schedule.region_order) {
-        for (auto const bundle : schedule.regions[region_index].execution_order) {
-            if (is_detach_endpoint(bundle)) continue;
+        for (auto const bundle : schedule.regions[region_index].execution_order)
             schedule.bundle_execution_position[bundle] = execution_position++;
-        }
     }
     return schedule;
 }
@@ -1118,41 +998,39 @@ std::expected<SchedulePlan, std::string> build_schedule(
 std::expected<void, std::string> bind_detach_regions(
     ConnectionAnalysisPlan& plan)
 {
-    auto bind = [&](auto& detach) -> std::expected<void, std::string> {
-        auto const writer = detach.writer_bundle;
-        auto const reader = detach.reader_bundle;
-        if (writer >= plan.schedule.bundle_to_region.size()
-            || reader >= plan.schedule.bundle_to_region.size()
-            || !plan.schedule.bundle_to_region[writer]
-            || !plan.schedule.bundle_to_region[reader]) {
+    auto bind = [&](auto& connection, NodeBundleHandle target_bundle)
+        -> std::expected<void, std::string> {
+        if (!connection.detach) return {};
+        if (target_bundle >= plan.schedule.bundle_to_region.size()
+            || !plan.schedule.bundle_to_region[target_bundle]) {
             return std::unexpected(
                 "GraphJit detach does not map to a concrete execution region");
         }
-        auto const writer_region = *plan.schedule.bundle_to_region[writer];
-        auto const reader_region = *plan.schedule.bundle_to_region[reader];
-        if (writer_region != reader_region
-            || writer_region >= plan.schedule.regions.size()
-            || !plan.schedule.regions[writer_region].cyclic) {
+        auto const region_index = *plan.schedule.bundle_to_region[target_bundle];
+        if (region_index >= plan.schedule.regions.size()
+            || !plan.schedule.regions[region_index].cyclic) {
             return std::unexpected(
                 "GraphJit validated detach did not form an execution SCC");
         }
-        detach.region = writer_region;
-        auto& region = plan.schedule.regions[writer_region];
+        connection.detach_region = region_index;
+        auto& region = plan.schedule.regions[region_index];
         region.maximum_block_size = std::min(
             region.maximum_block_size,
-            floor_power_of_two(detach.loop_extra_latency));
+            floor_power_of_two(connection.detach->loop_extra_latency));
         return {};
     };
 
-    for (auto& detach : plan.sample_detaches) {
-        if (auto bound = bind(detach); !bound) {
-            return std::unexpected(std::move(bound.error()));
-        }
+    for (auto& connection : plan.sample_connections) {
+        if (auto bound = bind(
+                connection, connection.target_port.node_bundle_handle);
+            !bound) return std::unexpected(std::move(bound.error()));
     }
-    for (auto& detach : plan.event_detaches) {
-        if (auto bound = bind(detach); !bound) {
-            return std::unexpected(std::move(bound.error()));
-        }
+    for (auto& connection : plan.event_connections) {
+        if (!connection.detach) continue;
+        if (connection.targets.empty())
+            return std::unexpected("GraphJit detached event connection has no target");
+        if (auto bound = bind(connection, connection.targets.front().bundle);
+            !bound) return std::unexpected(std::move(bound.error()));
     }
     for (auto& region : plan.schedule.regions) {
         region.scc_feedback_latency = region.cyclic
@@ -1246,7 +1124,7 @@ std::expected<void, std::string> plan_sample_latency_compensation(
                 auto const& connection = plan.sample_connections[connection_index];
                 if (connection.access
                         != PlannedConnectionAccess::realtime_to_realtime
-                    || connection.feedback
+                    || connection.detach
                     || connection.target_port.node_bundle_handle != bundle) {
                     continue;
                 }
@@ -1380,7 +1258,7 @@ ConnectionLiveIntervalPlan live_interval_for_sample_group(
                 *plan.schedule.bundle_execution_position[target]);
         }
         live.crosses_kernel_invocations =
-            live.crosses_kernel_invocations || connection.feedback;
+            live.crosses_kernel_invocations || connection.detach;
     }
     if (!saw_endpoint) live.begin = 0;
     if (live.begin == execution_count && execution_count != 0) live.begin = 0;
@@ -1424,7 +1302,7 @@ ConnectionLiveIntervalPlan live_interval_for_event_group(
             }
         }
         live.crosses_kernel_invocations =
-            live.crosses_kernel_invocations || connection.feedback;
+            live.crosses_kernel_invocations || connection.detach;
     }
     if (!saw_endpoint) live.begin = 0;
     if (live.begin == execution_count && execution_count != 0) live.begin = 0;
@@ -1510,7 +1388,6 @@ void plan_sample_groups(
         auto& group = plan.sample_producer_groups[group_index];
         bool direct = true;
         bool requires_materialization = false;
-        bool feedback = false;
         bool external = false;
         std::size_t retained = 0;
         for (auto const connection_index : group.connection_indices) {
@@ -1520,7 +1397,9 @@ void plan_sample_groups(
                 continue;
             }
             group.has_realtime_connections = true;
-            feedback = feedback || connection.feedback;
+            // Feedback storage is branch-local: the canonical producer group
+            // remains an ordinary aggregate sequence and detached branches
+            // acquire their own persistent rings during physical lowering.
             external = external || connection.external_boundary;
 
             auto const canonical_branch = group.source_port
@@ -1554,14 +1433,14 @@ void plan_sample_groups(
                 && canonical_branch
                 && !connection.requires_conversion
                 && !connection.requires_block_materialization
-                && !connection.feedback
+                && !connection.detach
                 && !connection.external_boundary
                 && connection_retained == 0;
         }
         group.requirements = SampleConnectionImplementationRequirements{
             .direct_implementation_legal = direct,
             .requires_materialization = requires_materialization,
-            .feedback = feedback,
+            .feedback = false,
             .external_boundary = external,
             .retained_frames = retained,
             .channel_count = group.canonical_source_layout
@@ -1691,7 +1570,6 @@ void plan_event_groups(
         auto& group = plan.event_producer_groups[group_index];
         bool direct = true;
         bool requires_materialization = false;
-        bool feedback = false;
         bool external = false;
         std::size_t retained = 0;
         bool source_in_cyclic_region = false;
@@ -1712,7 +1590,9 @@ void plan_event_groups(
                 continue;
             }
             group.has_realtime_connections = true;
-            feedback = feedback || connection.feedback;
+            // Feedback storage is branch-local: the canonical producer group
+            // remains an ordinary aggregate sequence and detached branches
+            // acquire their own persistent rings during physical lowering.
             external = external || connection.external_boundary;
             requires_materialization = requires_materialization
                 || connection.requires_conversion
@@ -1725,7 +1605,7 @@ void plan_event_groups(
             direct = direct
                 && !connection.requires_conversion
                 && !connection.requires_block_materialization
-                && !connection.feedback
+                && !connection.detach
                 && !connection.external_boundary
                 && connection_retained == 0;
         }
@@ -1745,7 +1625,7 @@ void plan_event_groups(
         group.requirements = EventConnectionImplementationRequirements{
             .direct_implementation_legal = direct,
             .requires_materialization = requires_materialization,
-            .feedback = feedback,
+            .feedback = false,
             .external_boundary = external,
             .retained_window_samples = retained,
             .retained_event_capacity = retained_event_capacity,
@@ -1831,7 +1711,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic) {
         return std::unexpected(std::move(acyclic.error()));
     }
-    if (auto detaches = inventory_and_validate_detaches(graph, plan); !detaches) {
+    if (auto detaches = validate_detached_connections(graph, plan); !detaches) {
         return std::unexpected(std::move(detaches.error()));
     }
     auto schedule = build_schedule(graph, plan);

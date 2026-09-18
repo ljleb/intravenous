@@ -25,14 +25,6 @@
 #include <vector>
 
 namespace iv::details {
-    constexpr size_t floor_power_of_2(size_t value)
-    {
-        if (value == 0) {
-            return 0;
-        }
-        return std::bit_floor(value);
-    }
-
     // Private, completed-connectivity analysis for one compiler invocation.
     // It is deliberately not another representation boundary: every entry is
     // derived once from ExecutableGraphIR and consumed by scheduling, buffer
@@ -546,41 +538,6 @@ namespace iv::details {
                 port.node = reverse_sorted[port.node];
             }
         };
-        std::vector<std::pair<ConcretePortId, DetachedInfo>> sorted_detached_info;
-        for (auto const& [original_source, original_info] : g.detached_info_by_source) {
-            ConcretePortId source = original_source;
-            DetachedInfo info = original_info;
-            remap_port(source);
-            if (info.original_source.node != GRAPH_ID) {
-                info.original_source.node = reverse_sorted[info.original_source.node];
-            }
-            if (info.writer_node != GRAPH_ID) {
-                info.writer_node = reverse_sorted[info.writer_node];
-            }
-            if (info.reader_output.node != GRAPH_ID) {
-                info.reader_output.node = reverse_sorted[info.reader_output.node];
-            }
-            sorted_detached_info.emplace_back(source, std::move(info));
-        }
-        std::sort(sorted_detached_info.begin(), sorted_detached_info.end(),
-            [](auto const& a, auto const& b) { return a.first < b.first; });
-        g.detached_info_by_source = std::flat_map<ConcretePortId, DetachedInfo>(
-            std::sorted_unique,
-            sorted_detached_info.begin(), sorted_detached_info.end());
-
-        std::vector<ConcretePortId> sorted_detached_reader_outputs;
-        for (auto reader : g.detached_reader_outputs) {
-            remap_port(reader);
-            sorted_detached_reader_outputs.push_back(reader);
-        }
-        std::sort(sorted_detached_reader_outputs.begin(), sorted_detached_reader_outputs.end());
-        sorted_detached_reader_outputs.erase(
-            std::unique(sorted_detached_reader_outputs.begin(), sorted_detached_reader_outputs.end()),
-            sorted_detached_reader_outputs.end());
-        g.detached_reader_outputs = std::flat_set<ConcretePortId>(
-            std::sorted_unique,
-            sorted_detached_reader_outputs.begin(), sorted_detached_reader_outputs.end());
-
         for (auto& scope : scopes) {
             for (size_t& node : scope.member_nodes) {
                 node = reverse_sorted[node];
@@ -640,248 +597,26 @@ namespace iv::details {
 
 
     constexpr GraphExecutionPlan build_execution_plan(
-        std::vector<ReflectedNodeDescription> const& nodes,
-        CompilerConnectivity const& connectivity,
-        std::vector<DetachedInfo> const& detached
-    )
+        std::vector<ReflectedNodeDescription> const& nodes)
     {
-        size_t const num_nodes = nodes.size();
         GraphExecutionPlan plan;
-        plan.node_to_region.assign(num_nodes, 0);
-        if (num_nodes == 0) {
-            return plan;
-        }
-
-        bool const is_forward_topology = [&] {
-            for (size_t source = 0;
-                 source < connectivity.node_outgoing.size(); ++source) {
-                for (size_t target : connectivity.node_outgoing[source]) {
-                    if (target <= source) return false;
-                }
-            }
-            return true;
-        }();
-        if (detached.empty() && is_forward_topology) {
-            plan.regions.reserve(num_nodes);
-            plan.region_order.reserve(num_nodes);
-            for (size_t node = 0; node < num_nodes; ++node) {
-                plan.node_to_region[node] = node;
-                plan.regions.push_back(GraphRegion{
-                    .nodes = {node},
-                    .execution_order = {node},
-                    .max_block_size = nodes[node].max_block_size(),
-                });
-                plan.region_order.push_back(node);
-            }
-            return plan;
-        }
-
-        auto outgoing = connectivity.node_outgoing;
-        for (auto const& detached_info : detached) {
-            if (detached_info.writer_node == GRAPH_ID
-                || detached_info.reader_output.node == GRAPH_ID) {
-                continue;
-            }
-            outgoing[detached_info.writer_node].push_back(
-                detached_info.reader_output.node);
-        }
-
-        std::vector<size_t> index(num_nodes, std::numeric_limits<size_t>::max());
-        std::vector<size_t> lowlink(num_nodes, 0);
-        std::vector<bool> on_stack(num_nodes, false);
-        std::vector<size_t> stack;
-        size_t next_index = 0;
-        std::vector<std::vector<size_t>> sccs;
-
-        auto strongconnect = [&](auto&& self, size_t v) -> void {
-            index[v] = next_index;
-            lowlink[v] = next_index;
-            ++next_index;
-            stack.push_back(v);
-            on_stack[v] = true;
-
-            for (size_t w : outgoing[v]) {
-                if (index[w] == std::numeric_limits<size_t>::max()) {
-                    self(self, w);
-                    lowlink[v] = std::min(lowlink[v], lowlink[w]);
-                } else if (on_stack[w]) {
-                    lowlink[v] = std::min(lowlink[v], index[w]);
-                }
-            }
-
-            if (lowlink[v] == index[v]) {
-                auto& scc = sccs.emplace_back();
-                while (true) {
-                    size_t w = stack.back();
-                    stack.pop_back();
-                    on_stack[w] = false;
-                    scc.push_back(w);
-                    if (w == v) {
-                        break;
-                    }
-                }
-            }
-        };
-
+        auto const num_nodes = nodes.size();
+        plan.node_to_region.resize(num_nodes);
+        plan.regions.reserve(num_nodes);
+        plan.region_order.reserve(num_nodes);
+        // GraphLowerer/GraphCompiler accepts only an acyclic legacy graph.
+        // sort_nodes_or_error() has already placed concrete nodes in a
+        // deterministic topological order, so each node is its own execution
+        // region and no SCC reconstruction belongs in this compatibility path.
         for (size_t node = 0; node < num_nodes; ++node) {
-            if (index[node] == std::numeric_limits<size_t>::max()) {
-                strongconnect(strongconnect, node);
-            }
+            plan.node_to_region[node] = node;
+            plan.regions.push_back(GraphRegion{
+                .nodes = {node},
+                .execution_order = {node},
+                .max_block_size = nodes[node].max_block_size(),
+            });
+            plan.region_order.push_back(node);
         }
-
-        plan.regions.reserve(sccs.size());
-        for (auto& scc : sccs) {
-            std::sort(scc.begin(), scc.end());
-            GraphRegion region;
-            region.nodes = scc;
-            region.execution_order = scc;
-            region.max_block_size = MAX_BLOCK_SIZE;
-            for (size_t node : scc) {
-                plan.node_to_region[node] = plan.regions.size();
-                region.max_block_size = std::min(region.max_block_size, nodes[node].max_block_size());
-            }
-            plan.regions.push_back(std::move(region));
-        }
-
-        for (auto const& detached_info : detached) {
-            if (detached_info.original_source.node == GRAPH_ID) {
-                continue;
-            }
-            auto const* it = connectivity.sample_targets.find(detached_info.reader_output);
-            if (!it) {
-                continue;
-            }
-            for (GraphEdge const& edge : *it) {
-                ConcretePortId const consumer = edge.target;
-                if (consumer.node == GRAPH_ID) {
-                    continue;
-                }
-                size_t const source_region = plan.node_to_region[detached_info.original_source.node];
-                size_t const consumer_region = plan.node_to_region[consumer.node];
-                if (source_region == consumer_region) {
-                    plan.regions[source_region].max_block_size = std::min(
-                        plan.regions[source_region].max_block_size,
-                        floor_power_of_2(detached_info.loop_extra_latency)
-                    );
-                }
-            }
-        }
-
-        // Construct the explicit in-region graph once. The previous form
-        // rescanned every edge for every SCC and rebuilt flat maps/sets for
-        // each one. Sorting each source's vector preserves the deterministic
-        // target order previously supplied by flat_set.
-        std::vector<std::vector<size_t>> internal_outgoing(num_nodes);
-        auto append_internal_edge = [&](ConcretePortId source,
-                                        ConcretePortId target) {
-            if (source.node == GRAPH_ID || target.node == GRAPH_ID) {
-                return;
-            }
-            if (plan.node_to_region[source.node]
-                != plan.node_to_region[target.node]) {
-                return;
-            }
-            internal_outgoing[source.node].push_back(target.node);
-        };
-        for (size_t source = 0; source < connectivity.node_outgoing.size(); ++source) {
-            for (size_t target : connectivity.node_outgoing[source]) {
-                append_internal_edge({source, 0}, {target, 0});
-            }
-        }
-        for (auto& targets : internal_outgoing) {
-            std::sort(targets.begin(), targets.end());
-            targets.erase(std::unique(targets.begin(), targets.end()),
-                          targets.end());
-        }
-
-        std::vector<size_t> local_indegree(num_nodes, 0);
-        for (GraphRegion& region : plan.regions) {
-            for (size_t node : region.nodes) {
-                local_indegree[node] = 0;
-            }
-            for (size_t node : region.nodes) {
-                for (size_t target : internal_outgoing[node]) {
-                    ++local_indegree[target];
-                }
-            }
-
-            std::vector<size_t> ready;
-            for (size_t node : region.nodes) {
-                if (local_indegree[node] == 0) {
-                    ready.push_back(node);
-                }
-            }
-            std::sort(ready.begin(), ready.end());
-
-            region.execution_order.clear();
-            region.execution_order.reserve(region.nodes.size());
-            while (!ready.empty()) {
-                size_t const node = ready.front();
-                ready.erase(ready.begin());
-                region.execution_order.push_back(node);
-
-                for (size_t target : internal_outgoing[node]) {
-                    if (--local_indegree[target] == 0) {
-                        ready.insert(
-                            std::lower_bound(ready.begin(), ready.end(), target),
-                            target
-                        );
-                    }
-                }
-            }
-
-            if (region.execution_order.size() != region.nodes.size()) {
-                error("graph region remains cyclic after detached edge removal");
-            }
-        }
-
-        // Likewise, materialize the SCC DAG once rather than maintaining a
-        // flat set for every region while scanning the same edge sets again.
-        std::vector<std::vector<size_t>> region_outgoing(plan.regions.size());
-        std::vector<size_t> indegree(plan.regions.size(), 0);
-        auto append_region_edge = [&](ConcretePortId source,
-                                      ConcretePortId target) {
-            if (source.node == GRAPH_ID || target.node == GRAPH_ID) {
-                return;
-            }
-            size_t const source_region = plan.node_to_region[source.node];
-            size_t const target_region = plan.node_to_region[target.node];
-            if (source_region != target_region) {
-                region_outgoing[source_region].push_back(target_region);
-            }
-        };
-        for (size_t source = 0; source < connectivity.node_outgoing.size(); ++source) {
-            for (size_t target : connectivity.node_outgoing[source]) {
-                append_region_edge({source, 0}, {target, 0});
-            }
-        }
-        for (auto& targets : region_outgoing) {
-            std::sort(targets.begin(), targets.end());
-            targets.erase(std::unique(targets.begin(), targets.end()),
-                          targets.end());
-            for (size_t target : targets) {
-                ++indegree[target];
-            }
-        }
-
-        std::vector<size_t> ready;
-        for (size_t region = 0; region < indegree.size(); ++region) {
-            if (indegree[region] == 0) {
-                ready.push_back(region);
-            }
-        }
-
-        size_t ready_index = 0;
-        while (ready_index < ready.size()) {
-            size_t region = ready[ready_index++];
-            plan.region_order.push_back(region);
-            for (size_t target : region_outgoing[region]) {
-                if (--indegree[target] == 0) {
-                    ready.push_back(target);
-                }
-            }
-        }
-
         return plan;
     }
 
@@ -1016,7 +751,6 @@ namespace iv::details {
         std::vector<std::string> node_ids,
         std::flat_set<GraphEdge> edges,
         std::flat_set<GraphEventEdge> event_edges,
-        std::vector<DetachedInfo> detached,
         GraphExecutionPlan execution_plan,
         CompilerConnectivity const& connectivity,
         std::vector<SampleInputConfig> public_inputs,
@@ -1180,7 +914,6 @@ namespace iv::details {
             .generated_node_storage = std::move(generated_node_storage),
             .edges = std::move(edges),
             .event_edges = std::move(event_edges),
-            .detached = std::move(detached),
             .execution_plan = std::move(execution_plan),
             .public_inputs = std::move(public_inputs),
             .public_outputs = std::move(public_outputs),
@@ -1553,12 +1286,8 @@ public:
         }
         auto const connectivity = details::build_compiler_connectivity(executable.graph);
         auto lowered_subgraphs = details::compile_lowered_subgraphs(executable.scopes);
-        std::vector<DetachedInfo> detached;
-        detached.reserve(executable.graph.detached_info_by_source.size());
-        for (auto const& [_, info] : executable.graph.detached_info_by_source)
-            detached.push_back(info);
         auto execution_plan = details::build_execution_plan(
-            executable.graph.nodes, connectivity, detached);
+            executable.graph.nodes);
         auto dormancy_group_plans = details::compile_dormancy_groups(
             executable.graph, lowered_subgraphs, execution_plan, connectivity);
         auto node_source_infos = std::move(executable.graph.node_source_infos);
@@ -1571,7 +1300,7 @@ public:
                 std::move(executable.graph.explicit_ttl_samples),
                 std::move(executable.graph.node_ids),
                 std::move(executable.graph.edges),
-                std::move(executable.graph.event_edges), std::move(detached),
+                std::move(executable.graph.event_edges),
                 std::move(execution_plan),
                 connectivity,
                 std::move(executable.public_inputs),

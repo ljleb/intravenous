@@ -302,7 +302,7 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
         graph_jit::detail::PlannedConnectionAccess::realtime_to_realtime);
     EXPECT_FALSE(internal->requires_conversion);
     EXPECT_FALSE(internal->external_boundary);
-    EXPECT_FALSE(internal->feedback);
+    EXPECT_FALSE(internal->detach.has_value());
 
     auto const group = std::ranges::find_if(
         plan->sample_producer_groups,
@@ -671,21 +671,29 @@ TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
-    ASSERT_EQ(plan->sample_detaches.size(), 1u);
-    auto const& detach = plan->sample_detaches.front();
-    EXPECT_EQ(detach.loop_extra_latency, 6u);
-    EXPECT_FALSE(detach.initial_value_override.has_value());
-    EXPECT_FLOAT_EQ(static_cast<float>(detach.initial_value), 0.375f);
-    ASSERT_TRUE(detach.region.has_value());
-    ASSERT_LT(*detach.region, plan->schedule.regions.size());
-    auto const& region = plan->schedule.regions[*detach.region];
+    auto const detached = std::ranges::find_if(
+        plan->sample_connections,
+        [](graph_jit::detail::SampleConnectionPlan const& connection) { return connection.detach.has_value(); });
+    ASSERT_NE(detached, plan->sample_connections.end());
+    EXPECT_EQ(
+        std::ranges::count_if(
+            plan->sample_connections,
+            [](graph_jit::detail::SampleConnectionPlan const& connection) { return connection.detach.has_value(); }),
+        1);
+    ASSERT_TRUE(detached->detach.has_value());
+    EXPECT_EQ(detached->detach->loop_extra_latency, 6u);
+    EXPECT_FALSE(detached->detach->initial_value_override.has_value());
+    ASSERT_TRUE(detached->detach_initial_value.has_value());
+    EXPECT_FLOAT_EQ(static_cast<float>(*detached->detach_initial_value), 0.375f);
+    ASSERT_TRUE(detached->detach_region.has_value());
+    ASSERT_LT(*detached->detach_region, plan->schedule.regions.size());
+    auto const& region = plan->schedule.regions[*detached->detach_region];
     EXPECT_TRUE(region.cyclic);
     EXPECT_EQ(region.maximum_block_size, 4u);
     EXPECT_EQ(region.scc_feedback_latency, 4u);
+    ASSERT_EQ(region.nodes.size(), 2u);
     EXPECT_TRUE(std::ranges::contains(region.nodes, first_handle));
     EXPECT_TRUE(std::ranges::contains(region.nodes, second_handle));
-    EXPECT_TRUE(std::ranges::contains(region.nodes, detach.writer_bundle));
-    EXPECT_TRUE(std::ranges::contains(region.nodes, detach.reader_bundle));
 
     auto const position = [&](NodeBundleHandle bundle) {
         auto const found = std::ranges::find(region.execution_order, bundle);
@@ -693,12 +701,7 @@ TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)
         return static_cast<std::size_t>(
             std::distance(region.execution_order.begin(), found));
     };
-    EXPECT_LT(position(detach.reader_bundle), position(second_handle));
     EXPECT_LT(position(second_handle), position(first_handle));
-    EXPECT_LT(position(first_handle), position(detach.writer_bundle));
-    EXPECT_TRUE(std::ranges::none_of(
-        plan->sample_connections,
-        &graph_jit::detail::SampleConnectionPlan::feedback));
 }
 
 TEST(GraphJitConnectionPlan, SampleDetachInitialValueOverrideWins)
@@ -714,12 +717,17 @@ TEST(GraphJitConnectionPlan, SampleDetachInitialValueOverrideWins)
     auto configured = std::move(graph).finish();
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
-    ASSERT_EQ(plan->sample_detaches.size(), 1u);
-    auto const& detach = plan->sample_detaches.front();
-    ASSERT_TRUE(detach.initial_value_override.has_value());
+    auto const detached = std::ranges::find_if(
+        plan->sample_connections,
+        [](graph_jit::detail::SampleConnectionPlan const& connection) { return connection.detach.has_value(); });
+    ASSERT_NE(detached, plan->sample_connections.end());
+    ASSERT_TRUE(detached->detach.has_value());
+    ASSERT_TRUE(detached->detach->initial_value_override.has_value());
     EXPECT_FLOAT_EQ(
-        static_cast<float>(*detach.initial_value_override), -0.625f);
-    EXPECT_FLOAT_EQ(static_cast<float>(detach.initial_value), -0.625f);
+        static_cast<float>(*detached->detach->initial_value_override), -0.625f);
+    ASSERT_TRUE(detached->detach_initial_value.has_value());
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(*detached->detach_initial_value), -0.625f);
 }
 
 TEST(GraphJitConnectionPlan, DerivesEventDetachExecutionRegion)
@@ -738,20 +746,27 @@ TEST(GraphJitConnectionPlan, DerivesEventDetachExecutionRegion)
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
-    ASSERT_EQ(plan->event_detaches.size(), 1u);
-    auto const& detach = plan->event_detaches.front();
-    EXPECT_EQ(detach.source_type, EventTypeId::trigger);
-    EXPECT_EQ(detach.loop_extra_latency, 10u);
-    ASSERT_TRUE(detach.region.has_value());
-    ASSERT_LT(*detach.region, plan->schedule.regions.size());
-    auto const& region = plan->schedule.regions[*detach.region];
+    auto const detached = std::ranges::find_if(
+        plan->event_connections,
+        [](graph_jit::detail::EventConnectionPlan const& connection) { return connection.detach.has_value(); });
+    ASSERT_NE(detached, plan->event_connections.end());
+    EXPECT_EQ(
+        std::ranges::count_if(
+            plan->event_connections,
+            [](graph_jit::detail::EventConnectionPlan const& connection) { return connection.detach.has_value(); }),
+        1);
+    EXPECT_EQ(detached->source_type, EventTypeId::trigger);
+    ASSERT_TRUE(detached->detach.has_value());
+    EXPECT_EQ(detached->detach->loop_extra_latency, 10u);
+    ASSERT_TRUE(detached->detach_region.has_value());
+    ASSERT_LT(*detached->detach_region, plan->schedule.regions.size());
+    auto const& region = plan->schedule.regions[*detached->detach_region];
     EXPECT_TRUE(region.cyclic);
     EXPECT_EQ(region.maximum_block_size, 8u);
     EXPECT_EQ(region.scc_feedback_latency, 8u);
+    ASSERT_EQ(region.nodes.size(), 2u);
     EXPECT_TRUE(std::ranges::contains(region.nodes, first_handle));
     EXPECT_TRUE(std::ranges::contains(region.nodes, second_handle));
-    EXPECT_TRUE(std::ranges::contains(region.nodes, detach.writer_bundle));
-    EXPECT_TRUE(std::ranges::contains(region.nodes, detach.reader_bundle));
 
     auto const position = [&](NodeBundleHandle bundle) {
         auto const found = std::ranges::find(region.execution_order, bundle);
@@ -759,12 +774,7 @@ TEST(GraphJitConnectionPlan, DerivesEventDetachExecutionRegion)
         return static_cast<std::size_t>(
             std::distance(region.execution_order.begin(), found));
     };
-    EXPECT_LT(position(detach.reader_bundle), position(second_handle));
     EXPECT_LT(position(second_handle), position(first_handle));
-    EXPECT_LT(position(first_handle), position(detach.writer_bundle));
-    EXPECT_TRUE(std::ranges::none_of(
-        plan->event_connections,
-        &graph_jit::detail::EventConnectionPlan::feedback));
 }
 
 TEST(GraphJitConnectionPlan, SimpleRealtimeSampleEdgeChoosesDirect)

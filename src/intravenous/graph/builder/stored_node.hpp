@@ -44,23 +44,6 @@ struct NodeTypeIdentity {
   std::string value{};
 };
 
-enum class DeferredDetachNodeKind {
-  writer,
-  reader,
-};
-
-// Child builders use local detach IDs. Keep this closed pair of built-ins as
-// semantic records until GraphBuilder::finish(), when every child offset has
-// been resolved and the final executable node values can be reflected once.
-struct DeferredDetachNode {
-  DeferredDetachNodeKind kind = DeferredDetachNodeKind::writer;
-  PortKind port_kind = PortKind::sample;
-  size_t id = 0;
-  size_t loop_extra_latency = 1;
-  EventTypeId event_type = EventTypeId::empty;
-  double max_events_per_sample = DEFAULT_MAX_EVENTS_PER_SAMPLE;
-};
-
 // Configured concrete-node data stays owned by GraphBuilderNodeBundles throughout
 // topology lowering. The workspace carries this lightweight handle instead of
 // copying ports, strings, callbacks, and static values into another graph
@@ -92,7 +75,6 @@ struct ConcreteNode {
   // Static data attached to an configured node survives semantic lowering so
   // later compiler passes can materialize it without a ticking producer.
   std::optional<Sample> static_sample_value{};
-  std::optional<DeferredDetachNode> deferred_detach{};
   GeneratedNodeSpec generated_node{};
 
   constexpr std::vector<InputConfig> const& inputs() const {

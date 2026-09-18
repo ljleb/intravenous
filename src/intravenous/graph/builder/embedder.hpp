@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/graph/builder/connections.hpp>
-#include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/embedding.h>
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/graph/builder/public_ports.hpp>
@@ -24,23 +23,18 @@ public:
   static constexpr GraphBuilderChildImport import(
       GraphBuilderNodeBundles& parent_bundles,
       GraphBuilderConnections& parent_connections,
-      GraphBuilderDetach& parent_detach,
       GraphBuilderVirtualNodes& parent_virtual_nodes,
       GraphBuilderNodeBundles const& child_bundles,
       GraphBuilderConnections const& child_connections,
-      GraphBuilderDetach const& child_detach,
       GraphBuilderVirtualNodes const& child_virtual_nodes)
   {
     auto const expected_bundle_offset = parent_bundles.size();
     auto const root_scope = expected_bundle_offset + child_bundles.size();
-    auto const detach_offset = parent_detach.reserve_child_offset(child_detach);
-    auto const bundle_offset =
-        parent_bundles.import_child(child_bundles, detach_offset);
+    auto const bundle_offset = parent_bundles.import_child(child_bundles);
     IV_ASSERT(
         bundle_offset == expected_bundle_offset,
         "embedded child bundle offset changed unexpectedly");
     parent_connections.import_child(child_connections, bundle_offset);
-    parent_detach.import_child(child_detach, bundle_offset, detach_offset);
     auto virtual_nodes = parent_virtual_nodes.import_child(
         parent_bundles, child_virtual_nodes, bundle_offset, root_scope);
 

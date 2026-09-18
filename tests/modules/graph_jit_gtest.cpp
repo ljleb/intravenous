@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/graph_jit/connection_plan.h>
+#include <intravenous/graph_jit/event_retention_runtime.h>
 #include <intravenous/graph_jit/sample_physical_plan.h>
 #include <intravenous/graph_jit/transient_arena_plan.h>
 #include <intravenous/node/resources.h>
@@ -63,6 +64,8 @@ constexpr char graph_jit_persistent_event_ring_module_id[] = "iv.test.graph_jit.
 constexpr char graph_jit_retained_converted_event_fanout_module_id[] = "iv.test.graph_jit.state_context.retained_converted_event_fanout_module";
 constexpr char graph_jit_event_feedback_a_id[] = "iv.test.graph_jit.state_context.event_feedback_a";
 constexpr char graph_jit_event_feedback_b_id[] = "iv.test.graph_jit.state_context.event_feedback_b";
+constexpr char graph_jit_event_feedback_burst_a_id[] = "iv.test.graph_jit.state_context.event_feedback_burst_a";
+constexpr char graph_jit_event_feedback_fanout_a_id[] = "iv.test.graph_jit.state_context.event_feedback_fanout_a";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -194,20 +197,20 @@ struct EventConsumerProbeStateMirror {
 struct EventFeedbackAStateMirror {
     std::uint64_t calls = 0;
     std::uint64_t scc_feedback_latency = 0;
-    std::array<std::uint64_t, 12> indices{};
-    std::array<std::uint64_t, 12> block_sizes{};
-    std::array<std::uint64_t, 12> input_counts{};
-    std::array<std::uint64_t, 12> first_input_times{};
+    std::array<std::uint64_t, 24> indices{};
+    std::array<std::uint64_t, 24> block_sizes{};
+    std::array<std::uint64_t, 24> input_counts{};
+    std::array<std::uint64_t, 24> first_input_times{};
     std::uint32_t marker = 0;
 };
 
 struct EventFeedbackBStateMirror {
     std::uint64_t calls = 0;
     std::uint64_t scc_feedback_latency = 0;
-    std::array<std::uint64_t, 12> indices{};
-    std::array<std::uint64_t, 12> block_sizes{};
-    std::array<std::uint64_t, 12> input_counts{};
-    std::array<std::uint64_t, 12> first_input_times{};
+    std::array<std::uint64_t, 24> indices{};
+    std::array<std::uint64_t, 24> block_sizes{};
+    std::array<std::uint64_t, 24> input_counts{};
+    std::array<std::uint64_t, 24> first_input_times{};
     std::uint64_t marker = 0;
     std::uint64_t distinct_padding = 0;
 };
@@ -351,6 +354,33 @@ void expect_single_node_canonical_regions(
         static_cast<std::size_t>(node.compiled_state_offset));
 }
 } // namespace
+
+TEST(GraphJitEventFeedbackRuntime, AppendsEachSourceSuffixExactlyOnce)
+{
+    std::array<iv::TimedEvent, 4> const source{
+        iv::TimedEvent{.time = 0, .value = iv::TriggerEvent{}},
+        iv::TimedEvent{.time = 1, .value = iv::TriggerEvent{}},
+        iv::TimedEvent{.time = 4, .value = iv::TriggerEvent{}},
+        iv::TimedEvent{.time = 5, .value = iv::TriggerEvent{}},
+    };
+    std::array<iv::TimedEvent, 8> ring{};
+    std::size_t read_index = 0;
+    std::size_t write_index = 0;
+
+    iv::graph_jit::detail::iv_graph_jit_append_event_feedback(
+        source.data(), 0, 2, 0, 5,
+        ring.data(), ring.size(), &read_index, &write_index);
+    iv::graph_jit::detail::iv_graph_jit_append_event_feedback(
+        source.data(), 2, source.size(), 4, 5,
+        ring.data(), ring.size(), &read_index, &write_index);
+
+    EXPECT_EQ(read_index, 0u);
+    ASSERT_EQ(write_index, source.size());
+    EXPECT_EQ(ring[0].time, 5u);
+    EXPECT_EQ(ring[1].time, 6u);
+    EXPECT_EQ(ring[2].time, 9u);
+    EXPECT_EQ(ring[3].time, 10u);
+}
 
 TEST(GraphJit, SpecializationIsLatchedAtConstruction)
 {
@@ -2183,10 +2213,10 @@ struct EventFeedbackA {
     struct State {
         std::uint64_t calls = 0;
         std::uint64_t scc_feedback_latency = 0;
-        std::array<std::uint64_t, 12> indices{};
-        std::array<std::uint64_t, 12> block_sizes{};
-        std::array<std::uint64_t, 12> input_counts{};
-        std::array<std::uint64_t, 12> first_input_times{};
+        std::array<std::uint64_t, 24> indices{};
+        std::array<std::uint64_t, 24> block_sizes{};
+        std::array<std::uint64_t, 24> input_counts{};
+        std::array<std::uint64_t, 24> first_input_times{};
         std::uint32_t marker = 0;
     };
 
@@ -2229,14 +2259,77 @@ struct EventFeedbackA {
     }
 };
 
+struct EventFeedbackBurstA {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_event_output(
+            "out",
+            iv::EventOutputProperties{
+                .type = iv::EventTypeId::trigger,
+                .max_events_per_sample = 0.25,
+            })};
+    }
+
+    void tick_block(iv::TickBlockContext<EventFeedbackBurstA> const& ctx) const
+    {
+        if (ctx.block_size != 1) return;
+        // max_events_per_sample is a static sizing rate, not a runtime density
+        // limit. Fill the entire 64-frame-specialization sequence at one sample
+        // to stress persistent feedback capacity across tiny root calls.
+        for (std::size_t i = 0; i < 16; ++i) {
+            ctx.event_outputs[0].push(
+                iv::TriggerEvent{}, 0, ctx.index, ctx.block_size);
+        }
+    }
+};
+
+struct EventFeedbackFanoutA {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input("in_a", iv::EventTypeId::trigger),
+            iv::realtime_event_input("in_b", iv::EventTypeId::trigger),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_event_output(
+            "out",
+            iv::EventOutputProperties{
+                .type = iv::EventTypeId::trigger,
+                .max_events_per_sample = 0.25,
+            })};
+    }
+
+    void tick_block(iv::TickBlockContext<EventFeedbackFanoutA> const& ctx) const
+    {
+        // Force both explicit feed-forward dependencies to remain observable to
+        // the package/JIT interfaces even though this probe only needs to emit.
+        (void)ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        (void)ctx.event_inputs[1].get_block(ctx.index, ctx.block_size);
+        if (ctx.block_size == 0) return;
+        auto const offset = std::min<std::size_t>(1, ctx.block_size - 1);
+        ctx.event_outputs[0].push(
+            iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+    }
+};
+
 struct EventFeedbackB {
     struct State {
         std::uint64_t calls = 0;
         std::uint64_t scc_feedback_latency = 0;
-        std::array<std::uint64_t, 12> indices{};
-        std::array<std::uint64_t, 12> block_sizes{};
-        std::array<std::uint64_t, 12> input_counts{};
-        std::array<std::uint64_t, 12> first_input_times{};
+        std::array<std::uint64_t, 24> indices{};
+        std::array<std::uint64_t, 24> block_sizes{};
+        std::array<std::uint64_t, 24> input_counts{};
+        std::array<std::uint64_t, 24> first_input_times{};
         std::uint64_t marker = 0;
         std::uint64_t distinct_padding = 0;
     };
@@ -2862,6 +2955,8 @@ IV_NODE("iv.test.graph_jit.state_context.midi_event_source", MidiEventSource);
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_source", LimitedTriggerEventSource);
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_a", EventFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_b", EventFeedbackB);
+IV_NODE("iv.test.graph_jit.state_context.event_feedback_burst_a", EventFeedbackBurstA);
+IV_NODE("iv.test.graph_jit.state_context.event_feedback_fanout_a", EventFeedbackFanoutA);
 IV_NODE("iv.test.graph_jit.state_context.trigger_event_consumer", TriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_consumer", LimitedTriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_source", RetainedTriggerEventSource);
@@ -2958,7 +3053,8 @@ std::shared_ptr<iv::PackageRevision const> load_graph_jit_runtime_revision()
 
 
 std::shared_ptr<iv::ConfiguredGraph const> configured_event_feedback_graph(
-    iv::PackageRevision const& revision)
+    iv::PackageRevision const& revision,
+    std::string_view first_definition = graph_jit_event_feedback_a_id)
 {
     using Session = std::unique_ptr<iv::details::BuilderSession,
         decltype(&iv::details::iv_builder_session_destroy)>;
@@ -2981,11 +3077,50 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_event_feedback_graph(
 
     iv::GraphBuilder graph(session.get());
     auto first = iv::details::configure_package_definition_provider(
-        graph, graph_jit_event_feedback_a_id, std::nullopt, {});
+        graph, first_definition, std::nullopt, {});
     auto second = iv::details::configure_package_definition_provider(
         graph, graph_jit_event_feedback_b_id, std::nullopt, {});
     first.connect_event_input(0, second.event_port());
     second.connect_event_input(0, first.event_port().detach(10));
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
+std::shared_ptr<iv::ConfiguredGraph const> configured_event_feedback_fanout_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create GraphJit event-feedback fanout builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto source = iv::details::configure_package_definition_provider(
+        graph, graph_jit_event_feedback_fanout_a_id, std::nullopt, {});
+    auto first = iv::details::configure_package_definition_provider(
+        graph, graph_jit_event_feedback_b_id, std::nullopt, {});
+    auto second = iv::details::configure_package_definition_provider(
+        graph, graph_jit_event_feedback_b_id, std::nullopt, {});
+    source.connect_event_input(0, first.event_port());
+    source.connect_event_input(1, second.event_port());
+    auto detached = source.event_port().detach(10);
+    first.connect_event_input(0, detached);
+    second.connect_event_input(0, detached);
     graph.outputs();
     return std::make_shared<iv::ConfiguredGraph const>(
         iv::details::take_built_graph(session.get()));
@@ -4534,12 +4669,15 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
-    ASSERT_EQ(analysis->event_detaches.size(), 1u);
-    auto const& detach = analysis->event_detaches.front();
-    EXPECT_EQ(detach.loop_extra_latency, 10u);
-    ASSERT_TRUE(detach.region.has_value());
-    ASSERT_LT(*detach.region, analysis->schedule.regions.size());
-    auto const& region = analysis->schedule.regions[*detach.region];
+    auto const detached = std::ranges::find_if(
+        analysis->event_connections,
+        [](iv::graph_jit::detail::EventConnectionPlan const& connection) { return connection.detach.has_value(); });
+    ASSERT_NE(detached, analysis->event_connections.end());
+    ASSERT_TRUE(detached->detach.has_value());
+    EXPECT_EQ(detached->detach->loop_extra_latency, 10u);
+    ASSERT_TRUE(detached->detach_region.has_value());
+    ASSERT_LT(*detached->detach_region, analysis->schedule.regions.size());
+    auto const& region = analysis->schedule.regions[*detached->detach_region];
     ASSERT_TRUE(region.cyclic);
     EXPECT_EQ(region.maximum_block_size, 8u);
     EXPECT_EQ(region.scc_feedback_latency, 8u);
@@ -4604,21 +4742,212 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
     }
 
     // The last event emitted by A in the first root call is at 57. Detach adds
-    // 10, so the persistent feedback ring must carry time 67 across the root
-    // boundary. This also proves transport latency (10) is independent of the
-    // SCC scheduling quantum reflected to callbacks (8).
+    // 10, so the persistent feedback ring must carry time 67 across both the
+    // root boundary and a graph-generation migration. This also proves
+    // transport latency (10) is independent of the SCC scheduling quantum (8).
+    auto recompiled = compile_graph(feedback_graph, 125);
+    ASSERT_TRUE(recompiled.succeeded())
+        << (recompiled.diagnostics.empty()
+                ? ""
+                : recompiled.diagnostics.front().message);
+    auto migrated_storage =
+        recompiled.compiled_graph->node_layout.create_storage(resources);
+    migrated_storage.initialize(&storage);
+    EventFeedbackAStateMirror* migrated_a = nullptr;
+    EventFeedbackBStateMirror* migrated_b = nullptr;
+    for (std::size_t i = 0;
+         i < recompiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size =
+            recompiled.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(EventFeedbackAStateMirror)) {
+            migrated_a = static_cast<EventFeedbackAStateMirror*>(
+                migrated_storage.state_ptr(i));
+        } else if (state_size == sizeof(EventFeedbackBStateMirror)) {
+            migrated_b = static_cast<EventFeedbackBStateMirror*>(
+                migrated_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(migrated_a, nullptr);
+    ASSERT_NE(migrated_b, nullptr);
+    recompiled.compiled_graph->root_operations.tick_block(
+        migrated_storage.buffer().data(), 64, 8);
+    ASSERT_EQ(migrated_a->calls, 1u);
+    ASSERT_EQ(migrated_b->calls, 1u);
+    EXPECT_EQ(migrated_a->indices[0], 64u);
+    EXPECT_EQ(migrated_b->indices[0], 64u);
+    EXPECT_EQ(migrated_a->block_sizes[0], 8u);
+    EXPECT_EQ(migrated_b->block_sizes[0], 8u);
+    EXPECT_EQ(migrated_a->input_counts[0], 1u);
+    EXPECT_EQ(migrated_a->first_input_times[0], 66u);
+    EXPECT_EQ(migrated_b->input_counts[0], 1u);
+    EXPECT_EQ(migrated_b->first_input_times[0], 67u);
+
+    // Tail slices and non-quantized root calls must preserve exact absolute
+    // event time. Exercise 13 = 8+5, then 3, then 11 = 8+3.
+    auto tail_storage =
+        compiled.compiled_graph->node_layout.create_storage(resources);
+    tail_storage.initialize();
+    EventFeedbackAStateMirror* tail_a = nullptr;
+    EventFeedbackBStateMirror* tail_b = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size =
+            compiled.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(EventFeedbackAStateMirror)) {
+            tail_a = static_cast<EventFeedbackAStateMirror*>(
+                tail_storage.state_ptr(i));
+        } else if (state_size == sizeof(EventFeedbackBStateMirror)) {
+            tail_b = static_cast<EventFeedbackBStateMirror*>(
+                tail_storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(tail_a, nullptr);
+    ASSERT_NE(tail_b, nullptr);
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 8);
-    ASSERT_EQ(state_a->calls, 9u);
-    ASSERT_EQ(state_b->calls, 9u);
-    EXPECT_EQ(state_a->indices[8], 64u);
-    EXPECT_EQ(state_b->indices[8], 64u);
-    EXPECT_EQ(state_a->block_sizes[8], 8u);
-    EXPECT_EQ(state_b->block_sizes[8], 8u);
-    EXPECT_EQ(state_a->input_counts[8], 1u);
-    EXPECT_EQ(state_a->first_input_times[8], 66u);
-    EXPECT_EQ(state_b->input_counts[8], 1u);
-    EXPECT_EQ(state_b->first_input_times[8], 67u);
+        tail_storage.buffer().data(), 0, 13);
+    compiled.compiled_graph->root_operations.tick_block(
+        tail_storage.buffer().data(), 13, 3);
+    compiled.compiled_graph->root_operations.tick_block(
+        tail_storage.buffer().data(), 16, 11);
+
+    std::array<std::uint64_t, 5> const expected_indices{0, 8, 13, 16, 24};
+    std::array<std::uint64_t, 5> const expected_sizes{8, 5, 3, 8, 3};
+    std::array<std::uint64_t, 5> const expected_a_times{2, 10, 15, 18, 26};
+    std::array<std::uint64_t, 5> const expected_b_counts{0, 1, 0, 1, 1};
+    std::array<std::uint64_t, 5> const expected_b_times{0, 11, 0, 19, 24};
+    ASSERT_EQ(tail_a->calls, 5u);
+    ASSERT_EQ(tail_b->calls, 5u);
+    EXPECT_EQ(tail_a->scc_feedback_latency, 8u);
+    EXPECT_EQ(tail_b->scc_feedback_latency, 8u);
+    for (std::size_t i = 0; i < expected_indices.size(); ++i) {
+        EXPECT_EQ(tail_a->indices[i], expected_indices[i]);
+        EXPECT_EQ(tail_b->indices[i], expected_indices[i]);
+        EXPECT_EQ(tail_a->block_sizes[i], expected_sizes[i]);
+        EXPECT_EQ(tail_b->block_sizes[i], expected_sizes[i]);
+        EXPECT_EQ(tail_a->input_counts[i], 1u);
+        EXPECT_EQ(tail_a->first_input_times[i], expected_a_times[i]);
+        EXPECT_EQ(tail_b->input_counts[i], expected_b_counts[i]);
+        EXPECT_EQ(tail_b->first_input_times[i], expected_b_times[i]);
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, EventDetachFeedbackFanoutSharesDelayedStream)
+{
+    auto feedback_graph = configured_event_feedback_fanout_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto const configured_events =
+        feedback_graph->connections.configured_event_connections();
+    EXPECT_EQ(
+        std::ranges::count_if(
+            configured_events,
+            [](iv::ConfiguredEventConnection const& connection) {
+                return connection.detach.has_value();
+            }),
+        2);
+
+    auto compiled = compile_graph(feedback_graph, 126);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    EXPECT_EQ(
+        std::ranges::count_if(
+            compiled.compiled_graph->node_layout.regions,
+            [](iv::NodeLayout::Region const& region) {
+                return region.migration_identity.find(
+                           "graphjit.event.feedback:")
+                    != std::string::npos;
+            }),
+        1);
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    std::vector<EventFeedbackBStateMirror*> consumers;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(EventFeedbackBStateMirror)) {
+            consumers.push_back(static_cast<EventFeedbackBStateMirror*>(
+                storage.state_ptr(i)));
+        }
+    }
+    ASSERT_EQ(consumers.size(), 2u);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 24);
+    for (auto const* state : consumers) {
+        ASSERT_NE(state, nullptr);
+        ASSERT_EQ(state->calls, 3u);
+        EXPECT_EQ(state->scc_feedback_latency, 8u);
+        EXPECT_EQ(state->indices[0], 0u);
+        EXPECT_EQ(state->indices[1], 8u);
+        EXPECT_EQ(state->indices[2], 16u);
+        EXPECT_EQ(state->input_counts[0], 0u);
+        EXPECT_EQ(state->input_counts[1], 1u);
+        EXPECT_EQ(state->input_counts[2], 1u);
+        EXPECT_EQ(state->first_input_times[1], 11u);
+        EXPECT_EQ(state->first_input_times[2], 19u);
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, EventDetachFeedbackRetainsBurstAcrossTinyBlocks)
+{
+    auto feedback_graph = configured_event_feedback_graph(
+        *revision, graph_jit_event_feedback_burst_a_id);
+    ASSERT_TRUE(feedback_graph);
+
+    auto compiled = compile_graph(feedback_graph, 126);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto const feedback_region = std::ranges::find_if(
+        compiled.compiled_graph->node_layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.migration_identity.find(
+                       "graphjit.event.feedback:")
+                != std::string::npos;
+        });
+    ASSERT_NE(
+        feedback_region,
+        compiled.compiled_graph->node_layout.regions.end());
+    EXPECT_NE(
+        feedback_region->migration_identity.find("capacity=256"),
+        std::string::npos);
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    EventFeedbackBStateMirror* state_b = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(EventFeedbackBStateMirror)) {
+            ASSERT_EQ(state_b, nullptr);
+            state_b = static_cast<EventFeedbackBStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(state_b, nullptr);
+
+    // Each one-sample root call legally fills the entire 16-event producer
+    // sequence at one timestamp. Ten delayed calls can therefore be pending at
+    // once; a capacity derived from 64-frame root windows would silently lose
+    // events here.
+    for (std::size_t index = 0; index < 15; ++index) {
+        compiled.compiled_graph->root_operations.tick_block(
+            storage.buffer().data(), index, 1);
+    }
+
+    ASSERT_EQ(state_b->calls, 15u);
+    EXPECT_EQ(state_b->scc_feedback_latency, 8u);
+    for (std::size_t index = 0; index < 10; ++index) {
+        EXPECT_EQ(state_b->input_counts[index], 0u);
+    }
+    for (std::size_t index = 10; index < 15; ++index) {
+        EXPECT_EQ(state_b->input_counts[index], 16u);
+        EXPECT_EQ(state_b->first_input_times[index], index);
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture, TransientEventSlicing)

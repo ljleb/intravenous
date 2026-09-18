@@ -54,21 +54,22 @@ iv_graph_jit_prune_event_persistent_ring(
     std::size_t sample_index,
     std::size_t retained_history_samples) noexcept;
 
-// Append only the producer events belonging to the current SCC slice into a
-// persistent feedback ring. Timestamps are shifted by the authored detach
-// latency; SCC scheduling latency is deliberately not part of this transport
-// operation. Returns the updated monotonic write index.
-extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT std::size_t
+// Append only the newly-produced suffix of one aggregate SCC event sequence.
+// Before appending, retire feedback events older than the current slice start.
+// Consumers run before the semantic producer in same-slice order and therefore
+// observe the old ring indices; pruning here avoids a separate hot-path helper
+// call without changing their visible window.
+extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT void
 iv_graph_jit_append_event_feedback(
     void const* source_events,
-    std::size_t source_count,
+    std::size_t source_begin_index,
+    std::size_t source_end_index,
     std::size_t sample_index,
-    std::size_t block_size,
     std::size_t loop_extra_latency,
     void* ring_events,
     std::size_t ring_capacity,
-    std::size_t read_index,
-    std::size_t write_index) noexcept;
+    std::size_t* ring_read_index,
+    std::size_t* ring_write_index) noexcept;
 
 #undef IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT
 

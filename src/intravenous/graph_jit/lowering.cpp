@@ -1606,14 +1606,18 @@ std::expected<void, std::string> emit_event_feedback_append(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
     detail::EventFeedbackPlan const& feedback,
+    llvm::Value* feedback_cursor_pointer,
     llvm::Value* storage_base,
-    llvm::Value* sample_index,
-    llvm::Value* block_size)
+    llvm::Value* sample_index)
 {
     if (feedback.source_representation >= event_ports.representations.size()
         || feedback.ring_representation >= event_ports.representations.size()) {
         return std::unexpected(
             "GraphJit event feedback references a missing representation");
+    }
+    if (feedback_cursor_pointer == nullptr) {
+        return std::unexpected(
+            "GraphJit event feedback has no root-call source cursor");
     }
     auto const& source =
         event_ports.representations[feedback.source_representation];
@@ -1648,6 +1652,10 @@ std::expected<void, std::string> emit_event_feedback_append(
         source_count,
         source_capacity,
         "event.feedback.source.count.bounded");
+    auto* source_begin = builder.CreateLoad(
+        size_type,
+        feedback_cursor_pointer,
+        "event.feedback.source.cursor");
     auto* source_events = byte_offset_pointer(
         builder,
         storage_base,
@@ -1668,32 +1676,43 @@ std::expected<void, std::string> emit_event_feedback_append(
         storage_base,
         ring.events_storage_offset,
         "event.feedback.ring.events");
-    auto* read_index = builder.CreateLoad(
-        size_type, ring_read_pointer, "event.feedback.ring.read.value");
-    auto* write_index = builder.CreateLoad(
-        size_type, ring_write_pointer, "event.feedback.ring.write.value");
 
     auto* helper_type = llvm::FunctionType::get(
-        size_type,
+        llvm::Type::getVoidTy(context),
         {pointer_type, size_type, size_type, size_type, size_type,
-         pointer_type, size_type, size_type, size_type},
+         pointer_type, size_type, pointer_type, pointer_type},
         false);
     auto* module = builder.GetInsertBlock()->getModule();
     auto helper = module->getOrInsertFunction(
         detail::event_feedback_append_symbol, helper_type);
-    auto* next_write = builder.CreateCall(
+
+    // Most event slices produce no events. Keep the audio-thread fast path to a
+    // bounded count load/compare and avoid the out-of-line feedback helper
+    // entirely unless this producer appended a new suffix.
+    builder.CreateStore(source_count_bounded, feedback_cursor_pointer);
+    auto* has_new_events = builder.CreateICmpULT(
+        source_begin, source_count_bounded, "event.feedback.has_new_events");
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* append_block = llvm::BasicBlock::Create(
+        context, "event.feedback.append", function);
+    auto* continue_block = llvm::BasicBlock::Create(
+        context, "event.feedback.continue", function);
+    builder.CreateCondBr(has_new_events, append_block, continue_block);
+
+    builder.SetInsertPoint(append_block);
+    builder.CreateCall(
         helper,
         {source_events,
+         source_begin,
          source_count_bounded,
          sample_index,
-         block_size,
          llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
          ring_events,
          llvm::ConstantInt::get(size_type, ring.event_capacity),
-         read_index,
-         write_index},
-        "event.feedback.ring.write.next");
-    builder.CreateStore(next_write, ring_write_pointer);
+         ring_read_pointer,
+         ring_write_pointer});
+    builder.CreateBr(continue_block);
+    builder.SetInsertPoint(continue_block);
     return {};
 }
 
@@ -1939,6 +1958,7 @@ std::expected<void, std::string> emit_execution_step(
     EmittedSamplePortBindings const& sample_bindings,
     EmittedEventPortBindings const& event_bindings,
     detail::PrimitiveExecutionStep const& step,
+    std::vector<llvm::Value*> const& event_feedback_cursors,
     llvm::Value* storage_base,
     llvm::Value* sample_index,
     llvm::Value* block_size,
@@ -2077,13 +2097,17 @@ std::expected<void, std::string> emit_execution_step(
             return std::unexpected(
                 "GraphJit execution plan references a missing event feedback append");
         }
+        if (feedback_index >= event_feedback_cursors.size()) {
+            return std::unexpected(
+                "GraphJit execution plan has no cursor for an event feedback append");
+        }
         auto appended = emit_event_feedback_append(
             builder,
             plan.event_ports,
             plan.event_ports.feedback_operations[feedback_index],
+            event_feedback_cursors[feedback_index],
             storage_base,
-            sample_index,
-            block_size);
+            sample_index);
         if (!appended) {
             return std::unexpected(std::move(appended.error()));
         }
@@ -2207,6 +2231,19 @@ std::expected<llvm::Function*, std::string> define_root_operation(
     auto* entry = llvm::BasicBlock::Create(module.getContext(), "entry", function);
     llvm::IRBuilder<> builder(entry);
 
+    auto* feedback_cursor_type = llvm::IntegerType::get(
+        module.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* feedback_cursor_zero = llvm::ConstantInt::get(feedback_cursor_type, 0);
+    std::vector<llvm::Value*> event_feedback_cursors;
+    event_feedback_cursors.reserve(plan.event_ports.feedback_operations.size());
+    for (std::size_t i = 0; i < plan.event_ports.feedback_operations.size(); ++i) {
+        auto* cursor = builder.CreateAlloca(
+            feedback_cursor_type, nullptr,
+            "event.feedback.cursor." + std::to_string(i));
+        builder.CreateStore(feedback_cursor_zero, cursor);
+        event_feedback_cursors.push_back(cursor);
+    }
+
     for (std::size_t region_index = 0;
          region_index < plan.execution.regions.size(); ++region_index) {
         auto const& region = plan.execution.regions[region_index];
@@ -2224,6 +2261,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                     sample_bindings,
                     event_bindings,
                     plan.execution.primitive_steps[step_index],
+                    event_feedback_cursors,
                     storage_base,
                     sample_index,
                     block_size,
@@ -2246,8 +2284,9 @@ std::expected<llvm::Function*, std::string> define_root_operation(
 
         // Aggregate event producer sequences belong to the complete root call,
         // not an individual SCC slice. Clear each once before entering the
-        // slice-major loop. Feedback rings are pruned per slice below so every
-        // consumer in the slice observes the same reader window.
+        // slice-major loop. Persistent retained rings (when present) are pruned
+        // per slice below; feedback rings retire old events in their producer
+        // append operation after all same-slice consumers have run.
         for (auto const step_index : region.primitive_steps) {
             if (step_index >= plan.execution.primitive_steps.size()) {
                 return std::unexpected(
@@ -2297,10 +2336,9 @@ std::expected<llvm::Function*, std::string> define_root_operation(
         auto* slice_index = builder.CreateAdd(
             sample_index, offset, "scc.slice.index");
 
-        // Prune all feedback rings before any consumer runs. This is stronger
-        // than attaching prune to the semantic producer: detached reader fanout
-        // may contain several consumers at different topological positions, and
-        // they must all observe the same current-slice feedback window.
+        // Retained non-feedback event rings are advanced before the slice's
+        // consumers run. Feedback rings retire their old prefix in the
+        // producer-side append operation after every feedback consumer has run.
         for (auto const step_index : region.primitive_steps) {
             auto const& step = plan.execution.primitive_steps[step_index];
             for (auto const ring_index : step.event_persistent_ring_prunes_before) {
@@ -2334,6 +2372,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 sample_bindings,
                 event_bindings,
                 step,
+                event_feedback_cursors,
                 storage_base,
                 slice_index,
                 slice_size,
