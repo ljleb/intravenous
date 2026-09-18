@@ -392,9 +392,10 @@ GraphBuilder::event_port_sources(EventPortRef const& ref) const
     return state(*this).event_port_sources(ref);
 }
 SamplePortRef GraphBuilder::detach_sample_port(
-    SamplePortRef const& source, size_t latency)
+    SamplePortRef const& source, size_t latency,
+    std::optional<Sample> initial_value)
 {
-    return state(*this).detach_sample_port(source, latency);
+    return state(*this).detach_sample_port(source, latency, initial_value);
 }
 EventPortRef GraphBuilder::detach_event_port(
     EventPortRef const& source, size_t latency)

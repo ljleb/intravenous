@@ -305,7 +305,9 @@ namespace iv {
         TypedNodeRef connect_event_input(size_t input_port, EventPortRef value) const;
         TypedNodeRef connect_event_input(std::string_view input_name, EventPortRef value) const;
 
-        SamplePortRef detach(size_t loop_extra_latency = 1) const;
+        SamplePortRef detach(
+            size_t loop_extra_latency = 1,
+            std::optional<Sample> initial_value = std::nullopt) const;
 
         template<size_t I>
         auto static_output() const

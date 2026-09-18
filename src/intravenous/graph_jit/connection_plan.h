@@ -143,6 +143,8 @@ struct SampleDetachPlan {
     SampleOutputChannelId reader_channel{};
     std::vector<NodeBundleHandle> consumer_bundles{};
     std::size_t loop_extra_latency = 1;
+    std::optional<Sample> initial_value_override{};
+    Sample initial_value = 0.0;
     std::optional<std::size_t> region{};
 };
 

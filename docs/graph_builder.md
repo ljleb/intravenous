@@ -305,7 +305,9 @@ This should definitely be its own class.
 ```cpp
 class DetachManager {
 public:
-    SamplePortRef detach(GraphBuilder&, SamplePortRef source, size_t loop_extra_latency);
+    SamplePortRef detach(
+        GraphBuilder&, SamplePortRef source, size_t loop_extra_latency,
+        std::optional<Sample> initial_value = std::nullopt);
     EventPortRef detach(GraphBuilder&, EventPortRef source, size_t loop_extra_latency);
 
     size_t reserve_child_detach_ids(size_t child_count);

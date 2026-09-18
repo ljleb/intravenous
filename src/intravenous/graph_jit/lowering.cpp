@@ -1602,6 +1602,101 @@ std::expected<void, std::string> emit_event_persistent_ring_prune(
     return {};
 }
 
+std::expected<void, std::string> emit_event_feedback_append(
+    llvm::IRBuilder<>& builder,
+    detail::EventPortBindingPlan const& event_ports,
+    detail::EventFeedbackPlan const& feedback,
+    llvm::Value* storage_base,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
+{
+    if (feedback.source_representation >= event_ports.representations.size()
+        || feedback.ring_representation >= event_ports.representations.size()) {
+        return std::unexpected(
+            "GraphJit event feedback references a missing representation");
+    }
+    auto const& source =
+        event_ports.representations[feedback.source_representation];
+    auto const& ring =
+        event_ports.representations[feedback.ring_representation];
+    if (!source.region.valid() || !ring.region.valid()
+        || source.persistent_ring
+        || !ring.persistent || !ring.persistent_ring
+        || source.type != ring.type) {
+        return std::unexpected(
+            "GraphJit exact-type event feedback has inconsistent physical storage");
+    }
+
+    auto& context = builder.getContext();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* source_count_pointer = byte_offset_pointer(
+        builder,
+        storage_base,
+        source.count_storage_offset,
+        "event.feedback.source.count");
+    auto* source_count = builder.CreateLoad(
+        size_type,
+        source_count_pointer,
+        "event.feedback.source.count.value");
+    auto* source_capacity = llvm::ConstantInt::get(
+        size_type, source.event_capacity);
+    auto* source_count_bounded = builder.CreateSelect(
+        builder.CreateICmpULT(
+            source_count, source_capacity, "event.feedback.source.count.in_range"),
+        source_count,
+        source_capacity,
+        "event.feedback.source.count.bounded");
+    auto* source_events = byte_offset_pointer(
+        builder,
+        storage_base,
+        source.events_storage_offset,
+        "event.feedback.source.events");
+    auto* ring_read_pointer = byte_offset_pointer(
+        builder,
+        storage_base,
+        ring.read_index_storage_offset,
+        "event.feedback.ring.read");
+    auto* ring_write_pointer = byte_offset_pointer(
+        builder,
+        storage_base,
+        ring.write_index_storage_offset,
+        "event.feedback.ring.write");
+    auto* ring_events = byte_offset_pointer(
+        builder,
+        storage_base,
+        ring.events_storage_offset,
+        "event.feedback.ring.events");
+    auto* read_index = builder.CreateLoad(
+        size_type, ring_read_pointer, "event.feedback.ring.read.value");
+    auto* write_index = builder.CreateLoad(
+        size_type, ring_write_pointer, "event.feedback.ring.write.value");
+
+    auto* helper_type = llvm::FunctionType::get(
+        size_type,
+        {pointer_type, size_type, size_type, size_type, size_type,
+         pointer_type, size_type, size_type, size_type},
+        false);
+    auto* module = builder.GetInsertBlock()->getModule();
+    auto helper = module->getOrInsertFunction(
+        detail::event_feedback_append_symbol, helper_type);
+    auto* next_write = builder.CreateCall(
+        helper,
+        {source_events,
+         source_count_bounded,
+         sample_index,
+         block_size,
+         llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
+         ring_events,
+         llvm::ConstantInt::get(size_type, ring.event_capacity),
+         read_index,
+         write_index},
+        "event.feedback.ring.write.next");
+    builder.CreateStore(next_write, ring_write_pointer);
+    return {};
+}
+
 std::expected<void, std::string> emit_event_sequence_reset(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
@@ -1836,6 +1931,254 @@ std::expected<void, std::string> emit_event_materialization(
     return {};
 }
 
+std::expected<void, std::string> emit_execution_step(
+    llvm::Module& module,
+    llvm::IRBuilder<>& builder,
+    detail::LoweringPlan const& plan,
+    std::vector<EmittedNodeConfiguration> const& configurations,
+    EmittedSamplePortBindings const& sample_bindings,
+    EmittedEventPortBindings const& event_bindings,
+    detail::PrimitiveExecutionStep const& step,
+    llvm::Value* storage_base,
+    llvm::Value* sample_index,
+    llvm::Value* block_size,
+    bool skip,
+    bool allow_primitive_slicing,
+    bool emit_sequence_resets,
+    bool emit_ring_prunes)
+{
+    if (step.configuration_index >= configurations.size()) {
+        return std::unexpected(
+            "GraphJit execution plan references a missing node configuration");
+    }
+    if (step.storage_index >= plan.declarations.primitive_storage.size()) {
+        return std::unexpected(
+            "GraphJit execution plan references a missing canonical storage plan");
+    }
+    if (step.configuration_index >= sample_bindings.primitives.size()) {
+        return std::unexpected(
+            "GraphJit execution plan references a missing sample-port runtime plan");
+    }
+    if (step.configuration_index >= event_bindings.primitives.size()) {
+        return std::unexpected(
+            "GraphJit execution plan references a missing event-port runtime plan");
+    }
+
+    if (emit_ring_prunes) {
+        for (auto const ring_index : step.event_persistent_ring_prunes_before) {
+            if (ring_index >= plan.event_ports.persistent_rings.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing persistent event ring");
+            }
+            auto pruned = emit_event_persistent_ring_prune(
+                builder,
+                plan.event_ports,
+                plan.event_ports.persistent_rings[ring_index],
+                storage_base,
+                sample_index);
+            if (!pruned) {
+                return std::unexpected(std::move(pruned.error()));
+            }
+        }
+    }
+
+    if (emit_sequence_resets) {
+        for (auto const representation_index : step.event_sequence_resets_before) {
+            auto reset = emit_event_sequence_reset(
+                builder,
+                plan.event_ports,
+                representation_index,
+                storage_base);
+            if (!reset) {
+                return std::unexpected(std::move(reset.error()));
+            }
+        }
+    }
+
+    for (auto const carry_index : step.event_carry_restores_before) {
+        if (carry_index >= plan.event_ports.carry_operations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing event carry restore");
+        }
+        auto restored = emit_event_carry_operation(
+            builder,
+            plan.event_ports,
+            plan.event_ports.carry_operations[carry_index],
+            storage_base,
+            sample_index,
+            block_size,
+            true);
+        if (!restored) {
+            return std::unexpected(std::move(restored.error()));
+        }
+    }
+
+    for (auto const carry_index : step.sample_carry_restores_before) {
+        if (carry_index >= plan.sample_ports.physical.carry_operations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing sample carry restore");
+        }
+        auto restored = emit_sample_carry_operation(
+            builder,
+            plan.sample_ports.physical,
+            plan.sample_ports.physical.carry_operations[carry_index],
+            storage_base,
+            sample_index,
+            block_size,
+            true);
+        if (!restored) {
+            return std::unexpected(std::move(restored.error()));
+        }
+    }
+
+    auto const& callback_symbol =
+        skip ? step.skip_callback_symbol : step.tick_callback_symbol;
+    if (callback_symbol.empty()) {
+        return std::unexpected(
+            "GraphJit execution plan references a missing primitive callback");
+    }
+    auto* primitive_callback = module.getFunction(callback_symbol);
+    if (!primitive_callback || primitive_callback->isDeclaration()) {
+        return std::unexpected(
+            "GraphJit execution plan references an unmaterialized primitive callback");
+    }
+    if (step.maximum_block_size == 0) {
+        return std::unexpected(
+            "GraphJit execution plan contains an invalid primitive maximum block size");
+    }
+    if (allow_primitive_slicing
+        && step.maximum_block_size < plan.declarations.node_layout.max_block_size) {
+        emit_sliced_primitive_calls(
+            builder,
+            primitive_callback,
+            configurations[step.configuration_index],
+            plan.declarations.primitive_storage[step.storage_index],
+            sample_bindings.primitives[step.configuration_index],
+            event_bindings.primitives[step.configuration_index],
+            storage_base,
+            sample_index,
+            block_size,
+            step.maximum_block_size);
+    } else {
+        emit_primitive_call(
+            builder,
+            primitive_callback,
+            configurations[step.configuration_index],
+            plan.declarations.primitive_storage[step.storage_index],
+            sample_bindings.primitives[step.configuration_index],
+            event_bindings.primitives[step.configuration_index],
+            storage_base,
+            sample_index,
+            block_size);
+    }
+
+    for (auto const feedback_index : step.event_feedback_appends_after) {
+        if (feedback_index >= plan.event_ports.feedback_operations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing event feedback append");
+        }
+        auto appended = emit_event_feedback_append(
+            builder,
+            plan.event_ports,
+            plan.event_ports.feedback_operations[feedback_index],
+            storage_base,
+            sample_index,
+            block_size);
+        if (!appended) {
+            return std::unexpected(std::move(appended.error()));
+        }
+    }
+
+    for (auto const materialization_index : step.event_materializations_after) {
+        if (materialization_index >= plan.event_ports.materializations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing event materialization");
+        }
+        auto materialized = emit_event_materialization(
+            builder,
+            plan.event_ports,
+            plan.event_ports.materializations[materialization_index],
+            storage_base,
+            sample_index,
+            block_size);
+        if (!materialized) {
+            return std::unexpected(std::move(materialized.error()));
+        }
+    }
+
+    for (auto const carry_index : step.event_carry_commits_after) {
+        if (carry_index >= plan.event_ports.carry_operations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing event carry commit");
+        }
+        auto committed = emit_event_carry_operation(
+            builder,
+            plan.event_ports,
+            plan.event_ports.carry_operations[carry_index],
+            storage_base,
+            sample_index,
+            block_size,
+            false);
+        if (!committed) {
+            return std::unexpected(std::move(committed.error()));
+        }
+    }
+
+    for (auto const materialization_index : step.sample_materializations_after) {
+        if (materialization_index
+            >= plan.sample_ports.physical.materializations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing sample materialization");
+        }
+        auto materialized = emit_sample_materialization(
+            builder,
+            plan.sample_ports.physical,
+            plan.sample_ports.physical.materializations[materialization_index],
+            storage_base,
+            sample_index,
+            block_size);
+        if (!materialized) {
+            return std::unexpected(std::move(materialized.error()));
+        }
+    }
+
+    for (auto const composition_index : step.sample_compositions_after) {
+        if (composition_index >= plan.sample_ports.physical.compositions.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing sample composition");
+        }
+        auto composed = emit_sample_composition(
+            builder,
+            plan.sample_ports.physical,
+            plan.sample_ports.physical.compositions[composition_index],
+            storage_base,
+            sample_index,
+            block_size);
+        if (!composed) {
+            return std::unexpected(std::move(composed.error()));
+        }
+    }
+
+    for (auto const carry_index : step.sample_carry_commits_after) {
+        if (carry_index >= plan.sample_ports.physical.carry_operations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing sample carry commit");
+        }
+        auto committed = emit_sample_carry_operation(
+            builder,
+            plan.sample_ports.physical,
+            plan.sample_ports.physical.carry_operations[carry_index],
+            storage_base,
+            sample_index,
+            block_size,
+            false);
+        if (!committed) {
+            return std::unexpected(std::move(committed.error()));
+        }
+    }
+    return {};
+}
+
 std::expected<llvm::Function*, std::string> define_root_operation(
     llvm::Module& module,
     std::string_view symbol,
@@ -1863,217 +2206,155 @@ std::expected<llvm::Function*, std::string> define_root_operation(
 
     auto* entry = llvm::BasicBlock::Create(module.getContext(), "entry", function);
     llvm::IRBuilder<> builder(entry);
-    for (auto const& step : plan.execution.primitive_steps) {
-        if (step.configuration_index >= configurations.size()) {
-            return std::unexpected(
-                "GraphJit execution plan references a missing node configuration");
-        }
-        if (step.storage_index >= plan.declarations.primitive_storage.size()) {
-            return std::unexpected(
-                "GraphJit execution plan references a missing canonical storage plan");
-        }
-        if (step.configuration_index >= sample_bindings.primitives.size()) {
-            return std::unexpected(
-                "GraphJit execution plan references a missing sample-port runtime plan");
-        }
-        if (step.configuration_index >= event_bindings.primitives.size()) {
-            return std::unexpected(
-                "GraphJit execution plan references a missing event-port runtime plan");
+
+    for (std::size_t region_index = 0;
+         region_index < plan.execution.regions.size(); ++region_index) {
+        auto const& region = plan.execution.regions[region_index];
+        if (!region.cyclic) {
+            for (auto const step_index : region.primitive_steps) {
+                if (step_index >= plan.execution.primitive_steps.size()) {
+                    return std::unexpected(
+                        "GraphJit execution region references a missing primitive step");
+                }
+                auto emitted = emit_execution_step(
+                    module,
+                    builder,
+                    plan,
+                    configurations,
+                    sample_bindings,
+                    event_bindings,
+                    plan.execution.primitive_steps[step_index],
+                    storage_base,
+                    sample_index,
+                    block_size,
+                    skip,
+                    true,
+                    true,
+                    true);
+                if (!emitted) {
+                    return std::unexpected(std::move(emitted.error()));
+                }
+            }
+            continue;
         }
 
-        for (auto const ring_index : step.event_persistent_ring_prunes_before) {
-            if (ring_index >= plan.event_ports.persistent_rings.size()) {
+        if (region.maximum_block_size == 0
+            || region.scc_feedback_latency == 0) {
+            return std::unexpected(
+                "GraphJit cyclic execution region has invalid slice semantics");
+        }
+
+        // Aggregate event producer sequences belong to the complete root call,
+        // not an individual SCC slice. Clear each once before entering the
+        // slice-major loop. Feedback rings are pruned per slice below so every
+        // consumer in the slice observes the same reader window.
+        for (auto const step_index : region.primitive_steps) {
+            if (step_index >= plan.execution.primitive_steps.size()) {
                 return std::unexpected(
-                    "GraphJit execution plan references a missing persistent event ring");
+                    "GraphJit cyclic execution region references a missing primitive step");
             }
-            auto pruned = emit_event_persistent_ring_prune(
-                builder,
-                plan.event_ports,
-                plan.event_ports.persistent_rings[ring_index],
-                storage_base,
-                sample_index);
-            if (!pruned) {
-                return std::unexpected(std::move(pruned.error()));
-            }
-        }
-
-        for (auto const representation_index : step.event_sequence_resets_before) {
-            auto reset = emit_event_sequence_reset(
-                builder,
-                plan.event_ports,
-                representation_index,
-                storage_base);
-            if (!reset) {
-                return std::unexpected(std::move(reset.error()));
+            auto const& step = plan.execution.primitive_steps[step_index];
+            for (auto const representation_index : step.event_sequence_resets_before) {
+                auto reset = emit_event_sequence_reset(
+                    builder,
+                    plan.event_ports,
+                    representation_index,
+                    storage_base);
+                if (!reset) {
+                    return std::unexpected(std::move(reset.error()));
+                }
             }
         }
 
-        for (auto const carry_index : step.event_carry_restores_before) {
-            if (carry_index >= plan.event_ports.carry_operations.size()) {
+        auto& context = module.getContext();
+        auto* size_type = llvm::IntegerType::get(
+            context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+        auto* zero = llvm::ConstantInt::get(size_type, 0);
+        auto* quantum = llvm::ConstantInt::get(
+            size_type, region.maximum_block_size);
+        auto* preheader = builder.GetInsertBlock();
+        auto* loop = llvm::BasicBlock::Create(
+            context,
+            "scc." + std::to_string(region_index) + ".slice",
+            function);
+        auto* exit = llvm::BasicBlock::Create(
+            context,
+            "scc." + std::to_string(region_index) + ".end",
+            function);
+        auto* nonempty = builder.CreateICmpNE(
+            block_size, zero, "scc.slice.nonempty");
+        builder.CreateCondBr(nonempty, loop, exit);
+
+        builder.SetInsertPoint(loop);
+        auto* offset = builder.CreatePHI(size_type, 2, "scc.slice.offset");
+        offset->addIncoming(zero, preheader);
+        auto* remaining = builder.CreateSub(
+            block_size, offset, "scc.slice.remaining");
+        auto* tail = builder.CreateICmpULT(
+            remaining, quantum, "scc.slice.tail");
+        auto* slice_size = builder.CreateSelect(
+            tail, remaining, quantum, "scc.slice.size");
+        auto* slice_index = builder.CreateAdd(
+            sample_index, offset, "scc.slice.index");
+
+        // Prune all feedback rings before any consumer runs. This is stronger
+        // than attaching prune to the semantic producer: detached reader fanout
+        // may contain several consumers at different topological positions, and
+        // they must all observe the same current-slice feedback window.
+        for (auto const step_index : region.primitive_steps) {
+            auto const& step = plan.execution.primitive_steps[step_index];
+            for (auto const ring_index : step.event_persistent_ring_prunes_before) {
+                if (ring_index >= plan.event_ports.persistent_rings.size()) {
+                    return std::unexpected(
+                        "GraphJit cyclic execution references a missing persistent event ring");
+                }
+                auto pruned = emit_event_persistent_ring_prune(
+                    builder,
+                    plan.event_ports,
+                    plan.event_ports.persistent_rings[ring_index],
+                    storage_base,
+                    slice_index);
+                if (!pruned) {
+                    return std::unexpected(std::move(pruned.error()));
+                }
+            }
+        }
+
+        for (auto const step_index : region.primitive_steps) {
+            auto const& step = plan.execution.primitive_steps[step_index];
+            if (step.maximum_block_size < region.maximum_block_size) {
                 return std::unexpected(
-                    "GraphJit execution plan references a missing event carry restore");
+                    "GraphJit SCC quantum exceeds a primitive maximum block size");
             }
-            auto restored = emit_event_carry_operation(
+            auto emitted = emit_execution_step(
+                module,
                 builder,
-                plan.event_ports,
-                plan.event_ports.carry_operations[carry_index],
+                plan,
+                configurations,
+                sample_bindings,
+                event_bindings,
+                step,
                 storage_base,
-                sample_index,
-                block_size,
-                true);
-            if (!restored) {
-                return std::unexpected(std::move(restored.error()));
-            }
-        }
-
-        for (auto const carry_index : step.sample_carry_restores_before) {
-            if (carry_index >= plan.sample_ports.physical.carry_operations.size()) {
-                return std::unexpected(
-                    "GraphJit execution plan references a missing sample carry restore");
-            }
-            auto restored = emit_sample_carry_operation(
-                builder,
-                plan.sample_ports.physical,
-                plan.sample_ports.physical.carry_operations[carry_index],
-                storage_base,
-                sample_index,
-                block_size,
-                true);
-            if (!restored) {
-                return std::unexpected(std::move(restored.error()));
-            }
-        }
-
-        auto const& callback_symbol =
-            skip ? step.skip_callback_symbol : step.tick_callback_symbol;
-        if (callback_symbol.empty()) {
-            return std::unexpected(
-                "GraphJit execution plan references a missing primitive callback");
-        }
-        auto* primitive_callback = module.getFunction(callback_symbol);
-        if (!primitive_callback || primitive_callback->isDeclaration()) {
-            return std::unexpected(
-                "GraphJit execution plan references an unmaterialized primitive callback");
-        }
-        if (step.maximum_block_size == 0) {
-            return std::unexpected(
-                "GraphJit execution plan contains an invalid primitive maximum block size");
-        }
-        if (step.maximum_block_size < plan.declarations.node_layout.max_block_size) {
-            emit_sliced_primitive_calls(
-                builder,
-                primitive_callback,
-                configurations[step.configuration_index],
-                plan.declarations.primitive_storage[step.storage_index],
-                sample_bindings.primitives[step.configuration_index],
-                event_bindings.primitives[step.configuration_index],
-                storage_base,
-                sample_index,
-                block_size,
-                step.maximum_block_size);
-        } else {
-            emit_primitive_call(
-                builder,
-                primitive_callback,
-                configurations[step.configuration_index],
-                plan.declarations.primitive_storage[step.storage_index],
-                sample_bindings.primitives[step.configuration_index],
-                event_bindings.primitives[step.configuration_index],
-                storage_base,
-                sample_index,
-                block_size);
-        }
-
-        for (auto const materialization_index :
-             step.event_materializations_after) {
-            if (materialization_index >= plan.event_ports.materializations.size()) {
-                return std::unexpected(
-                    "GraphJit execution plan references a missing event materialization");
-            }
-            auto materialized = emit_event_materialization(
-                builder,
-                plan.event_ports,
-                plan.event_ports.materializations[materialization_index],
-                storage_base,
-                sample_index,
-                block_size);
-            if (!materialized) {
-                return std::unexpected(std::move(materialized.error()));
-            }
-        }
-
-        for (auto const carry_index : step.event_carry_commits_after) {
-            if (carry_index >= plan.event_ports.carry_operations.size()) {
-                return std::unexpected(
-                    "GraphJit execution plan references a missing event carry commit");
-            }
-            auto committed = emit_event_carry_operation(
-                builder,
-                plan.event_ports,
-                plan.event_ports.carry_operations[carry_index],
-                storage_base,
-                sample_index,
-                block_size,
+                slice_index,
+                slice_size,
+                skip,
+                false,
+                false,
                 false);
-            if (!committed) {
-                return std::unexpected(std::move(committed.error()));
+            if (!emitted) {
+                return std::unexpected(std::move(emitted.error()));
             }
         }
 
-        for (auto const materialization_index :
-             step.sample_materializations_after) {
-            if (materialization_index
-                >= plan.sample_ports.physical.materializations.size()) {
-                return std::unexpected(
-                    "GraphJit execution plan references a missing sample materialization");
-            }
-            auto materialized = emit_sample_materialization(
-                builder,
-                plan.sample_ports.physical,
-                plan.sample_ports.physical.materializations[materialization_index],
-                storage_base,
-                sample_index,
-                block_size);
-            if (!materialized) {
-                return std::unexpected(std::move(materialized.error()));
-            }
-        }
-
-        for (auto const composition_index : step.sample_compositions_after) {
-            if (composition_index >= plan.sample_ports.physical.compositions.size()) {
-                return std::unexpected(
-                    "GraphJit execution plan references a missing sample composition");
-            }
-            auto composed = emit_sample_composition(
-                builder,
-                plan.sample_ports.physical,
-                plan.sample_ports.physical.compositions[composition_index],
-                storage_base,
-                sample_index,
-                block_size);
-            if (!composed) {
-                return std::unexpected(std::move(composed.error()));
-            }
-        }
-
-        for (auto const carry_index : step.sample_carry_commits_after) {
-            if (carry_index >= plan.sample_ports.physical.carry_operations.size()) {
-                return std::unexpected(
-                    "GraphJit execution plan references a missing sample carry commit");
-            }
-            auto committed = emit_sample_carry_operation(
-                builder,
-                plan.sample_ports.physical,
-                plan.sample_ports.physical.carry_operations[carry_index],
-                storage_base,
-                sample_index,
-                block_size,
-                false);
-            if (!committed) {
-                return std::unexpected(std::move(committed.error()));
-            }
-        }
+        auto* next_offset = builder.CreateAdd(
+            offset, slice_size, "scc.slice.next");
+        auto* done = builder.CreateICmpUGE(
+            next_offset, block_size, "scc.slice.done");
+        builder.CreateCondBr(done, exit, loop);
+        offset->addIncoming(next_offset, builder.GetInsertBlock());
+        builder.SetInsertPoint(exit);
     }
+
     builder.CreateRetVoid();
     return function;
 }

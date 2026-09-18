@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <utility>
 
 namespace iv::graph_jit::detail {
 
@@ -74,6 +75,39 @@ extern "C" std::size_t iv_graph_jit_prune_event_persistent_ring(
         ++read_index;
     }
     return read_index;
+}
+
+extern "C" std::size_t iv_graph_jit_append_event_feedback(
+    void const* source_events,
+    std::size_t source_count,
+    std::size_t sample_index,
+    std::size_t block_size,
+    std::size_t loop_extra_latency,
+    void* ring_events,
+    std::size_t ring_capacity,
+    std::size_t read_index,
+    std::size_t write_index) noexcept
+{
+    if (source_events == nullptr || ring_events == nullptr || ring_capacity == 0) {
+        return write_index;
+    }
+
+    auto const block_begin = static_cast<SampleIndex>(sample_index);
+    auto const block_end = saturating_sample_index_add(block_begin, block_size);
+    auto const* source = static_cast<TimedEvent const*>(source_events);
+    auto* target = static_cast<TimedEvent*>(ring_events);
+    auto const mask = ring_capacity - 1;
+    for (std::size_t i = 0; i < source_count; ++i) {
+        auto const time = static_cast<SampleIndex>(source[i].time);
+        if (time < block_begin || time >= block_end) continue;
+        if (write_index - read_index >= ring_capacity) break;
+        auto delayed = source[i];
+        delayed.time = static_cast<EventTime>(
+            saturating_sample_index_add(time, loop_extra_latency));
+        target[write_index & mask] = std::move(delayed);
+        ++write_index;
+    }
+    return write_index;
 }
 
 } // namespace iv::graph_jit::detail

@@ -777,6 +777,30 @@ std::expected<void, std::string> validate_detach_cycle(
     return {};
 }
 
+std::expected<Sample, std::string> sample_detach_initial_value(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan const& plan,
+    ConfiguredDetachedSamplePortInfo const& info)
+{
+    if (info.initial_value_override) return *info.initial_value_override;
+
+    for (auto const& connection : plan.sample_connections) {
+        if (std::ranges::find(
+                connection.source_channels, info.reader_channel)
+            == connection.source_channels.end()) {
+            continue;
+        }
+        if (connection.target_port.node_bundle_handle >= graph.node_bundles.size()) {
+            continue;
+        }
+        auto const target = graph.node_bundles.resolve_sample_input(
+            connection.target_port).config;
+        return target.neutral_value;
+    }
+    return std::unexpected(
+        "GraphJit sample detach has no connected input from which to derive its initial value");
+}
+
 std::expected<void, std::string> inventory_and_validate_detaches(
     ConfiguredGraph const& graph,
     ConnectionAnalysisPlan& plan)
@@ -806,6 +830,10 @@ std::expected<void, std::string> inventory_and_validate_detaches(
             !valid) {
             return valid;
         }
+        auto initial_value = sample_detach_initial_value(graph, plan, info);
+        if (!initial_value) {
+            return std::unexpected(std::move(initial_value.error()));
+        }
         plan.sample_detaches.push_back(SampleDetachPlan{
             .detach_id = info.detach_id,
             .source_type = info.source_type,
@@ -815,6 +843,8 @@ std::expected<void, std::string> inventory_and_validate_detaches(
             .reader_channel = info.reader_channel,
             .consumer_bundles = consumers,
             .loop_extra_latency = info.loop_extra_latency,
+            .initial_value_override = info.initial_value_override,
+            .initial_value = *initial_value,
         });
     }
 
@@ -1060,9 +1090,25 @@ std::expected<SchedulePlan, std::string> build_schedule(
         return std::unexpected("connection SCC condensation graph is cyclic");
     }
 
+    auto is_detach_endpoint = [&](NodeBundleHandle bundle) {
+        return std::ranges::any_of(
+                   plan.sample_detaches,
+                   [&](SampleDetachPlan const& detach) {
+                       return detach.writer_bundle == bundle
+                           || detach.reader_bundle == bundle;
+                   })
+            || std::ranges::any_of(
+                   plan.event_detaches,
+                   [&](EventDetachPlan const& detach) {
+                       return detach.writer_bundle == bundle
+                           || detach.reader_bundle == bundle;
+                   });
+    };
+
     std::size_t execution_position = 0;
     for (auto const region_index : schedule.region_order) {
         for (auto const bundle : schedule.regions[region_index].execution_order) {
+            if (is_detach_endpoint(bundle)) continue;
             schedule.bundle_execution_position[bundle] = execution_position++;
         }
     }
@@ -1289,11 +1335,20 @@ std::expected<void, std::string> plan_sample_latency_compensation(
     return {};
 }
 
+std::size_t scheduled_execution_count(ConnectionAnalysisPlan const& plan)
+{
+    std::size_t result = 0;
+    for (auto const& position : plan.schedule.bundle_execution_position) {
+        if (position) result = std::max(result, *position + 1);
+    }
+    return result;
+}
+
 ConnectionLiveIntervalPlan live_interval_for_sample_group(
     ConnectionAnalysisPlan const& plan,
     SampleProducerGroupPlan const& group)
 {
-    auto const execution_count = plan.nodes.size();
+    auto const execution_count = scheduled_execution_count(plan);
     ConnectionLiveIntervalPlan live{
         .begin = execution_count,
         .end = 0,
@@ -1337,7 +1392,7 @@ ConnectionLiveIntervalPlan live_interval_for_event_group(
     ConnectionAnalysisPlan const& plan,
     EventProducerGroupPlan const& group)
 {
-    auto const execution_count = plan.nodes.size();
+    auto const execution_count = scheduled_execution_count(plan);
     ConnectionLiveIntervalPlan live{
         .begin = execution_count,
         .end = 0,
@@ -1576,24 +1631,43 @@ void plan_event_groups(
         auto& connection = plan.event_connections[i];
         if (uses_realtime_storage(connection.access)) {
             std::optional<std::size_t> block_size;
+            std::optional<std::size_t> common_region;
+            bool same_cyclic_region = true;
             auto observe = [&](NodeBundleHandle bundle) {
                 auto const current =
                     effective_block_size(plan, bundle, kernel_block_size);
-                // Event sequences are invocation-oriented rather than
-                // absolute-indexed sample rings. Any primitive slicing therefore
-                // needs a root-block materialized sequence even when producer
-                // and consumer happen to use the same smaller slice size.
-                if (current != kernel_block_size) {
-                    connection.requires_block_materialization = true;
-                }
                 if (block_size && *block_size != current) {
                     connection.requires_block_materialization = true;
                 } else {
                     block_size = current;
                 }
+                if (bundle >= plan.schedule.bundle_to_region.size()
+                    || !plan.schedule.bundle_to_region[bundle]) {
+                    same_cyclic_region = false;
+                    return;
+                }
+                auto const region = *plan.schedule.bundle_to_region[bundle];
+                if (region >= plan.schedule.regions.size()
+                    || !plan.schedule.regions[region].cyclic) {
+                    same_cyclic_region = false;
+                    return;
+                }
+                if (common_region && *common_region != region) {
+                    same_cyclic_region = false;
+                } else {
+                    common_region = region;
+                }
             };
             for (auto const source : connection.sources) observe(source.bundle);
             for (auto const target : connection.targets) observe(target.bundle);
+            // Slice-major SCC execution keeps exact-type event transport direct
+            // inside one region. Outside an SCC, invocation-oriented sequences
+            // still need root-block materialization whenever either endpoint is
+            // sliced.
+            if (!same_cyclic_region
+                && block_size && *block_size != kernel_block_size) {
+                connection.requires_block_materialization = true;
+            }
         }
         auto group = std::ranges::find_if(
             plan.event_producer_groups,
@@ -1620,6 +1694,17 @@ void plan_event_groups(
         bool feedback = false;
         bool external = false;
         std::size_t retained = 0;
+        bool source_in_cyclic_region = false;
+        for (auto const source : group.sources) {
+            if (source.bundle >= plan.schedule.bundle_to_region.size()
+                || !plan.schedule.bundle_to_region[source.bundle]) {
+                continue;
+            }
+            auto const region = *plan.schedule.bundle_to_region[source.bundle];
+            source_in_cyclic_region = source_in_cyclic_region
+                || (region < plan.schedule.regions.size()
+                    && plan.schedule.regions[region].cyclic);
+        }
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = plan.event_connections[connection_index];
             if (!uses_realtime_storage(connection.access)) {
@@ -1649,6 +1734,14 @@ void plan_event_groups(
             retained_event_capacity = event_count_for_sample_span(
                 group.max_events_per_sample, retained);
         }
+        // A cyclic region executes slice-major. Keep one aggregate producer
+        // sequence for the whole root call so per-slice callbacks do not reset
+        // and thereby enlarge the authored static event budget. Same-region
+        // consumers still bind that representation directly and select their
+        // current absolute-time window.
+        requires_materialization = requires_materialization
+            || source_in_cyclic_region;
+        direct = direct && !source_in_cyclic_region;
         group.requirements = EventConnectionImplementationRequirements{
             .direct_implementation_legal = direct,
             .requires_materialization = requires_materialization,

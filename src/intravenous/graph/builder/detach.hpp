@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <ranges>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -17,6 +18,7 @@ struct ConfiguredDetachedSamplePortInfo {
   NodeBundleHandle reader_bundle = 0;
   SampleOutputChannelId reader_channel{};
   size_t loop_extra_latency = 1;
+  std::optional<Sample> initial_value_override{};
 };
 
 struct ConfiguredDetachedEventPortInfo {

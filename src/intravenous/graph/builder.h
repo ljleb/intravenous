@@ -299,7 +299,8 @@ public:
   std::span<SampleOutputChannelId const> sample_port_channels(SamplePortRef const&) const;
   EventPortRef make_event_port(EventTypeId, std::span<EventOutputPortId const>);
   std::span<EventOutputPortId const> event_port_sources(EventPortRef const&) const;
-  SamplePortRef detach_sample_port(SamplePortRef const&, size_t);
+  SamplePortRef detach_sample_port(
+      SamplePortRef const&, size_t, std::optional<Sample>);
   EventPortRef detach_event_port(EventPortRef const&, size_t);
   void apply_ttl(NodeBundleHandle, size_t);
   void annotate_node(NodeBundleHandle, std::string_view, std::string_view,
@@ -733,7 +734,8 @@ TypedNodeRef<Node, Projection>::connect_event_input(
   return this->_clone_handle();
 }
 template<class Node, class Projection>
-inline SamplePortRef TypedNodeRef<Node, Projection>::detach(size_t latency) const {
-  return static_cast<SamplePortRef>(*this).detach(latency);
+inline SamplePortRef TypedNodeRef<Node, Projection>::detach(
+    size_t latency, std::optional<Sample> initial_value) const {
+  return static_cast<SamplePortRef>(*this).detach(latency, initial_value);
 }
 } // namespace iv

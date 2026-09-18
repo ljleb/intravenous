@@ -298,8 +298,10 @@ TEST(DetachRegression, BuilderSessionPreservesSampleAndEventDetachLatency)
     auto const sample_source = iv::details::configure_concrete_node<iv::Constant>(
         graph, iv::Sample{0.5f});
     auto const sample_detached =
-        static_cast<iv::SamplePortRef>(sample_source).detach(5);
+        static_cast<iv::SamplePortRef>(sample_source).detach(5, iv::Sample{0.25f});
     (void)sample_detached;
+    EXPECT_ANY_THROW(
+        static_cast<iv::SamplePortRef>(sample_source).detach(5, iv::Sample{0.5f}));
 
     auto const event_source =
         iv::details::configure_concrete_node<DetachedEventSource>(graph);
@@ -328,6 +330,9 @@ TEST(DetachRegression, BuilderSessionPreservesSampleAndEventDetachLatency)
     auto const sample_infos = configured.detach.configured_infos();
     ASSERT_EQ(sample_infos.size(), 1u);
     EXPECT_EQ(sample_infos[0].loop_extra_latency, 5u);
+    ASSERT_TRUE(sample_infos[0].initial_value_override.has_value());
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(*sample_infos[0].initial_value_override), 0.25f);
 
     auto const event_infos = configured.detach.configured_event_infos();
     ASSERT_EQ(event_infos.size(), 1u);

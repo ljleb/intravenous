@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 2;
+inline constexpr std::uint32_t archive_version = 3;
 
 class Writer {
 public:
@@ -665,6 +665,10 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
         writer.size(value.reader_bundle);
         write_output_channel(writer, value.reader_channel);
         writer.size(value.loop_extra_latency);
+        writer.flag(value.initial_value_override.has_value());
+        if (value.initial_value_override) {
+            writer.pod(value.initial_value_override->value);
+        }
     });
     auto const detached_events = configured.detach.configured_event_infos();
     writer.list(detached_events, [&](ConfiguredDetachedEventPortInfo const& value) {
@@ -696,7 +700,7 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
     if (reader.pod<std::uint32_t>() != archive_magic)
         throw std::runtime_error("unsupported configured graph archive magic");
     auto const version = reader.pod<std::uint32_t>();
-    if (version != 1 && version != archive_version)
+    if (version < 1 || version > archive_version)
         throw std::runtime_error("unsupported configured graph archive version");
     auto make_owned_config_storage = [](ConfiguredNodeConfigBytes const& config) {
         if (config.alignment == 0 || !std::has_single_bit(config.alignment)) {
@@ -829,9 +833,19 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
     });
     auto const next_detach_id = reader.size();
     auto detached = read_list<ConfiguredDetachedSamplePortInfo>(reader, [&] {
-        return ConfiguredDetachedSamplePortInfo{.detach_id = reader.size(), .source_type = read_enum<ChannelTypeId>(reader),
-            .source_channels = read_values<SampleOutputChannelId>(reader, read_output_channel), .writer_bundle = reader.size(),
-            .reader_bundle = reader.size(), .reader_channel = read_output_channel(reader), .loop_extra_latency = reader.size()};
+        ConfiguredDetachedSamplePortInfo result{
+            .detach_id = reader.size(),
+            .source_type = read_enum<ChannelTypeId>(reader),
+            .source_channels = read_values<SampleOutputChannelId>(reader, read_output_channel),
+            .writer_bundle = reader.size(),
+            .reader_bundle = reader.size(),
+            .reader_channel = read_output_channel(reader),
+            .loop_extra_latency = reader.size(),
+        };
+        if (version >= 3 && reader.flag()) {
+            result.initial_value_override = Sample{reader.pod<Sample::storage>()};
+        }
+        return result;
     });
     std::vector<ConfiguredDetachedEventPortInfo> detached_events;
     if (version >= 2) {

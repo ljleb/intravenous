@@ -47,6 +47,21 @@ struct PlainSamplePass {
     void tick_block(iv::TickBlockContext<PlainSamplePass> const&) const {}
 };
 
+struct NeutralSamplePass {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in", iv::SampleInputProperties{.neutral_value = 0.375f})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output("out")};
+    }
+
+    void tick_block(iv::TickBlockContext<NeutralSamplePass> const&) const {}
+};
+
 struct PlainEventPass {
     static constexpr auto inputs()
     {
@@ -645,7 +660,7 @@ TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)
     using namespace iv;
     GraphBuilder graph;
     auto first = details::configure_concrete_node<PlainSamplePass>(graph);
-    auto second = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto second = details::configure_concrete_node<NeutralSamplePass>(graph);
     auto const first_handle = first.node_bundle_handle();
     auto const second_handle = second.node_bundle_handle();
     first(second);
@@ -659,6 +674,8 @@ TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)
     ASSERT_EQ(plan->sample_detaches.size(), 1u);
     auto const& detach = plan->sample_detaches.front();
     EXPECT_EQ(detach.loop_extra_latency, 6u);
+    EXPECT_FALSE(detach.initial_value_override.has_value());
+    EXPECT_FLOAT_EQ(static_cast<float>(detach.initial_value), 0.375f);
     ASSERT_TRUE(detach.region.has_value());
     ASSERT_LT(*detach.region, plan->schedule.regions.size());
     auto const& region = plan->schedule.regions[*detach.region];
@@ -682,6 +699,27 @@ TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)
     EXPECT_TRUE(std::ranges::none_of(
         plan->sample_connections,
         &graph_jit::detail::SampleConnectionPlan::feedback));
+}
+
+TEST(GraphJitConnectionPlan, SampleDetachInitialValueOverrideWins)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto first = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto second = details::configure_concrete_node<NeutralSamplePass>(graph);
+    first(second);
+    second(static_cast<SamplePortRef>(first).detach(6, Sample{-0.625f}));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->sample_detaches.size(), 1u);
+    auto const& detach = plan->sample_detaches.front();
+    ASSERT_TRUE(detach.initial_value_override.has_value());
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(*detach.initial_value_override), -0.625f);
+    EXPECT_FLOAT_EQ(static_cast<float>(detach.initial_value), -0.625f);
 }
 
 TEST(GraphJitConnectionPlan, DerivesEventDetachExecutionRegion)

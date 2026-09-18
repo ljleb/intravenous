@@ -92,6 +92,21 @@ std::expected<std::vector<PrimitiveBundle>, std::string> supported_primitives(
     std::string structural_error;
     std::size_t boundary_count = 0;
     std::size_t node_bundle = 0;
+
+    auto is_detach_endpoint = [&](NodeBundleHandle bundle) {
+        return std::ranges::any_of(
+                   input.graph.detach.configured_infos(),
+                   [&](ConfiguredDetachedSamplePortInfo const& detach) {
+                       return detach.writer_bundle == bundle
+                           || detach.reader_bundle == bundle;
+                   })
+            || std::ranges::any_of(
+                   input.graph.detach.configured_event_infos(),
+                   [&](ConfiguredDetachedEventPortInfo const& detach) {
+                       return detach.writer_bundle == bundle
+                           || detach.reader_bundle == bundle;
+                   });
+    };
     input.graph.node_bundles.for_each_configured_bundle(
         [&](ConfiguredNodeBundleView const& view) {
             auto const current_bundle = node_bundle++;
@@ -121,12 +136,17 @@ std::expected<std::vector<PrimitiveBundle>, std::string> supported_primitives(
                     "configured primitive has invalid node configuration alignment";
                 return;
             }
-            if ((view.lifetime && view.lifetime->ttl_samples)
-                || (view.deferred_detach && view.deferred_detach->has_value())) {
+            if (view.lifetime && view.lifetime->ttl_samples) {
                 structural_error =
-                    "GraphJit sample-edge slice does not yet support activity or detach semantics";
+                    "GraphJit sample-edge slice does not yet support activity semantics";
                 return;
             }
+            // detach() writer/reader bundles are materialized as concrete
+            // synthetic bundles before ConfiguredGraph is frozen. The
+            // per-bundle deferred_detach marker is intentionally cleared by
+            // materialization, so durable detach metadata is the source of
+            // truth for recognizing these non-executable endpoints here.
+            if (is_detach_endpoint(current_bundle)) return;
             if (!is_power_of_two(view.maximum_block_size)) {
                 structural_error =
                     "configured primitive has invalid maximum block size";
@@ -595,6 +615,7 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
 std::expected<ConfigurationPlan, std::string> plan_node_configurations(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
+    ConnectionAnalysisPlan const& connections,
     PackageImportPlan const& imports)
 {
     ConfigurationPlan plan;
@@ -643,7 +664,18 @@ std::expected<ConfigurationPlan, std::string> plan_node_configurations(
             .alignment = primitive.bundle.node_alignment,
             .tick_context_template = ReflectedNodeTickContext{
                 .sample_rate = input.specialization.sample_rate,
-                .scc_feedback_latency = 0,
+                .scc_feedback_latency = [&] {
+                    auto const bundle = primitive.bundle.node_bundle;
+                    if (bundle >= connections.schedule.bundle_to_region.size()
+                        || !connections.schedule.bundle_to_region[bundle]) {
+                        return std::size_t{0};
+                    }
+                    auto const region =
+                        *connections.schedule.bundle_to_region[bundle];
+                    return region < connections.schedule.regions.size()
+                        ? connections.schedule.regions[region].scc_feedback_latency
+                        : std::size_t{0};
+                }(),
             },
             .node_global_symbol = node_config_global_symbol(i),
             .tick_context_global_symbol = tick_context_global_symbol(i),
@@ -1192,10 +1224,100 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         return representation_index;
     };
 
+    auto detach_for_reader_group = [&](EventProducerGroupPlan const& group)
+        -> EventDetachPlan const* {
+        if (group.sources.size() != 1) return nullptr;
+        auto const found = std::ranges::find_if(
+            connections.event_detaches,
+            [&](EventDetachPlan const& detach) {
+                return detach.source_type == group.source_type
+                    && detach.reader_port == group.sources.front();
+            });
+        return found == connections.event_detaches.end() ? nullptr : &*found;
+    };
+    auto is_detach_writer = [&](NodeBundleHandle bundle) {
+        return std::ranges::any_of(
+            connections.event_detaches,
+            [&](EventDetachPlan const& detach) {
+                return detach.writer_bundle == bundle;
+            });
+    };
+    auto region_for_bundle = [&](NodeBundleHandle bundle)
+        -> SccRegionPlan const* {
+        if (bundle >= connections.schedule.bundle_to_region.size()
+            || !connections.schedule.bundle_to_region[bundle]) {
+            return nullptr;
+        }
+        auto const region = *connections.schedule.bundle_to_region[bundle];
+        return region < connections.schedule.regions.size()
+            ? &connections.schedule.regions[region]
+            : nullptr;
+    };
+
+    // Point 12 currently supports only exact realtime event transport inside a
+    // cyclic execution region. Retention, conversion and edges escaping the SCC
+    // remain separate capabilities.
+    for (auto const& connection : connections.event_connections) {
+        std::optional<std::size_t> cyclic_region;
+        auto observe = [&](NodeBundleHandle bundle)
+            -> std::expected<void, std::string> {
+            if (bundle >= connections.schedule.bundle_to_region.size()
+                || !connections.schedule.bundle_to_region[bundle]) {
+                return {};
+            }
+            auto const region = *connections.schedule.bundle_to_region[bundle];
+            if (region >= connections.schedule.regions.size()
+                || !connections.schedule.regions[region].cyclic) {
+                return {};
+            }
+            if (cyclic_region && *cyclic_region != region) {
+                return std::unexpected(
+                    "GraphJit event SCC lowering does not yet support edges crossing cyclic regions");
+            }
+            cyclic_region = region;
+            return {};
+        };
+        for (auto const source : connection.sources) {
+            if (auto observed = observe(source.bundle); !observed) {
+                return std::unexpected(std::move(observed.error()));
+            }
+        }
+        for (auto const target : connection.targets) {
+            if (auto observed = observe(target.bundle); !observed) {
+                return std::unexpected(std::move(observed.error()));
+            }
+        }
+        if (!cyclic_region) continue;
+        for (auto const source : connection.sources) {
+            auto const* region = region_for_bundle(source.bundle);
+            if (!region || !region->cyclic) {
+                return std::unexpected(
+                    "GraphJit event SCC lowering does not yet support fanout leaving a cyclic region");
+            }
+        }
+        for (auto const target : connection.targets) {
+            auto const* region = region_for_bundle(target.bundle);
+            if (!region || !region->cyclic) {
+                return std::unexpected(
+                    "GraphJit event SCC lowering does not yet support fanout leaving a cyclic region");
+            }
+        }
+        if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+            || connection.external_boundary
+            || connection.requires_conversion
+            || connection.source_history != 0
+            || connection.source_latency != 0
+            || connection.target_history != 0) {
+            return std::unexpected(
+                "GraphJit event SCC lowering currently requires exact-type zero-history zero-latency realtime transport");
+        }
+    }
+
     for (std::size_t group_index = 0;
          group_index < connections.event_producer_groups.size();
          ++group_index) {
         auto const& group = connections.event_producer_groups[group_index];
+        if (detach_for_reader_group(group)) continue;
         if (!group.has_realtime_connections) {
             return std::unexpected(
                 "GraphJit event flow does not yet support compiled-only event connections");
@@ -1500,6 +1622,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             }
 
             for (auto const target_id : connection.targets) {
+                if (is_detach_writer(target_id.bundle)) continue;
                 auto const target_primitive = primitive_index_for_bundle(
                     target_id.bundle);
                 if (!target_primitive) {
@@ -1533,6 +1656,180 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 target_binding.representation = target_representation;
             }
         }
+    }
+
+    for (auto const& detach : connections.event_detaches) {
+        if (!detach.region || *detach.region >= connections.schedule.regions.size()) {
+            return std::unexpected(
+                "GraphJit event detach lost its validated SCC region");
+        }
+        if (detach.sources.size() != 1) {
+            return std::unexpected(
+                "GraphJit exact-type event feedback currently requires one semantic source");
+        }
+        auto const& region = connections.schedule.regions[*detach.region];
+        if (!region.cyclic || region.maximum_block_size == 0) {
+            return std::unexpected(
+                "GraphJit event detach has an invalid SCC execution region");
+        }
+
+        auto const source_group_it = std::ranges::find_if(
+            connections.event_producer_groups,
+            [&](EventProducerGroupPlan const& group) {
+                return group.source_type == detach.source_type
+                    && group.sources == detach.sources;
+            });
+        auto const reader_sources = std::vector<EventOutputPortId>{detach.reader_port};
+        auto const reader_group_it = std::ranges::find_if(
+            connections.event_producer_groups,
+            [&](EventProducerGroupPlan const& group) {
+                return group.source_type == detach.source_type
+                    && group.sources == reader_sources;
+            });
+        if (source_group_it == connections.event_producer_groups.end()
+            || reader_group_it == connections.event_producer_groups.end()) {
+            return std::unexpected(
+                "GraphJit event detach lost its source or reader producer group");
+        }
+        auto const source_group_index = static_cast<std::size_t>(
+            std::distance(connections.event_producer_groups.begin(), source_group_it));
+        auto const reader_group_index = static_cast<std::size_t>(
+            std::distance(connections.event_producer_groups.begin(), reader_group_it));
+        if (source_group_index >= plan.producer_group_representations.size()
+            || !plan.producer_group_representations[source_group_index]) {
+            return std::unexpected(
+                "GraphJit event detach source has no realized event representation");
+        }
+        auto const source_representation =
+            *plan.producer_group_representations[source_group_index];
+        if (source_representation >= plan.representations.size()) {
+            return std::unexpected(
+                "GraphJit event detach source representation is invalid");
+        }
+        auto const& source_storage = plan.representations[source_representation];
+        if (source_storage.type != detach.source_type
+            || source_storage.event_capacity == 0) {
+            return std::unexpected(
+                "GraphJit event detach source representation disagrees with detach type");
+        }
+
+        bool writer_connection_found = false;
+        for (auto const connection_index : source_group_it->connection_indices) {
+            if (connection_index >= connections.event_connections.size()) continue;
+            auto const& connection = connections.event_connections[connection_index];
+            writer_connection_found = writer_connection_found
+                || std::ranges::any_of(
+                    connection.targets,
+                    [&](EventInputPortId target) {
+                        return target.bundle == detach.writer_bundle;
+                    });
+        }
+        if (!writer_connection_found) {
+            return std::unexpected(
+                "GraphJit event detach source is not connected to its writer marker");
+        }
+
+        if (detach.loop_extra_latency > std::numeric_limits<std::size_t>::max()
+                - region.maximum_block_size) {
+            return std::unexpected(
+                "GraphJit event feedback temporal span overflows size_t");
+        }
+        auto const feedback_span = detach.loop_extra_latency
+            + region.maximum_block_size;
+        auto const root_span = input.specialization.block_size;
+        if (root_span == 0) {
+            return std::unexpected(
+                "GraphJit event feedback requires a non-zero root block size");
+        }
+        auto const retained_root_windows = feedback_span / root_span
+            + (feedback_span % root_span != 0 ? 1u : 0u) + 1u;
+        if (source_storage.event_capacity
+            > std::numeric_limits<std::size_t>::max() / retained_root_windows) {
+            return std::unexpected(
+                "GraphJit event feedback static capacity overflows size_t");
+        }
+        auto const required_capacity =
+            source_storage.event_capacity * retained_root_windows;
+        constexpr auto highest_power_of_two = std::size_t{1}
+            << (std::numeric_limits<std::size_t>::digits - 1);
+        if (required_capacity > highest_power_of_two) {
+            return std::unexpected(
+                "GraphJit event feedback exceeds representable static capacity");
+        }
+        auto const ring_capacity = next_power_of_2(required_capacity);
+        std::string migration_identity =
+            "graphjit.event.feedback:" + std::to_string(detach.detach_id)
+            + ":type="
+            + std::to_string(static_cast<unsigned>(detach.source_type))
+            + ":latency=" + std::to_string(detach.loop_extra_latency)
+            + ":capacity=" + std::to_string(ring_capacity);
+        auto ring_representation = append_representation(
+            reader_group_index,
+            detach.source_type,
+            ring_capacity,
+            false,
+            true,
+            std::move(migration_identity),
+            true);
+        if (!ring_representation) {
+            return std::unexpected(std::move(ring_representation.error()));
+        }
+        plan.producer_group_representations[reader_group_index] =
+            *ring_representation;
+
+        for (auto const connection_index : reader_group_it->connection_indices) {
+            if (connection_index >= connections.event_connections.size()) {
+                return std::unexpected(
+                    "GraphJit event detach reader group references an invalid connection");
+            }
+            auto const& connection = connections.event_connections[connection_index];
+            if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+                || connection.external_boundary
+                || connection.requires_conversion
+                || connection.source_history != 0
+                || connection.source_latency != 0
+                || connection.target_history != 0
+                || connection.source_type != detach.source_type
+                || connection.target_type != detach.source_type) {
+                return std::unexpected(
+                    "GraphJit event feedback currently requires exact-type zero-history zero-latency reader transport");
+            }
+            for (auto const target_id : connection.targets) {
+                auto const target_primitive = primitive_index_for_bundle(target_id.bundle);
+                if (!target_primitive
+                    || target_id.port >= plan.primitives[*target_primitive].inputs.size()) {
+                    return std::unexpected(
+                        "GraphJit event feedback requires concrete in-SCC consumers");
+                }
+                auto& target_binding =
+                    plan.primitives[*target_primitive].inputs[target_id.port];
+                if (target_binding.representation) {
+                    return std::unexpected(
+                        "GraphJit event feedback consumer input is connected more than once");
+                }
+                target_binding.representation = *ring_representation;
+            }
+        }
+
+        auto const source_bundle = detach.sources.front().bundle;
+        if (source_bundle >= connections.schedule.bundle_execution_position.size()
+            || !connections.schedule.bundle_execution_position[source_bundle]) {
+            return std::unexpected(
+                "GraphJit event feedback source has no executable schedule position");
+        }
+        auto const producer_position =
+            *connections.schedule.bundle_execution_position[source_bundle];
+        plan.persistent_rings.push_back(EventPersistentRingPlan{
+            .representation = *ring_representation,
+            .producer_execution_position = producer_position,
+            .retained_history_samples = 0,
+        });
+        plan.feedback_operations.push_back(EventFeedbackPlan{
+            .source_representation = source_representation,
+            .ring_representation = *ring_representation,
+            .producer_execution_position = producer_position,
+            .loop_extra_latency = detach.loop_extra_latency,
+        });
     }
 
     for (auto const& primitive : plan.primitives) {
@@ -1578,24 +1875,49 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         .root_skippable = true,
     };
     plan.primitive_steps.reserve(analysis.primitives.size());
+    plan.regions.reserve(connections.schedule.regions.size());
 
-    // Consume the explicit schedule for both disconnected and feed-forward
-    // slices so physical sample lifetimes and primitive execution share one
-    // deterministic schedule model.
+    auto is_detach_endpoint = [&](NodeBundleHandle bundle) {
+        return std::ranges::any_of(
+                   connections.sample_detaches,
+                   [&](SampleDetachPlan const& detach) {
+                       return detach.writer_bundle == bundle
+                           || detach.reader_bundle == bundle;
+                   })
+            || std::ranges::any_of(
+                   connections.event_detaches,
+                   [&](EventDetachPlan const& detach) {
+                       return detach.writer_bundle == bundle
+                           || detach.reader_bundle == bundle;
+                   });
+    };
+
+    // Keep one flattened primitive-step namespace because all physical plans
+    // refer to producer execution positions in that namespace. Execution regions
+    // add the information LLVM realization needs to switch cyclic SCCs from the
+    // ordinary primitive-major traversal to slice-major traversal. Synthetic
+    // detach writer/reader bundles remain schedule vertices but deliberately do
+    // not become executable primitive steps.
     std::vector<bool> scheduled(analysis.primitives.size(), false);
     for (auto const region_index : connections.schedule.region_order) {
         if (region_index >= connections.schedule.regions.size()) {
             return std::unexpected(
                 "GraphJit connection schedule contains an invalid region index");
         }
-        for (auto const bundle :
-             connections.schedule.regions[region_index].execution_order) {
+        auto const& source_region = connections.schedule.regions[region_index];
+        ExecutionRegionPlan region{
+            .cyclic = source_region.cyclic,
+            .maximum_block_size = source_region.maximum_block_size,
+            .scc_feedback_latency = source_region.scc_feedback_latency,
+        };
+        for (auto const bundle : source_region.execution_order) {
             auto const primitive = std::ranges::find_if(
                 analysis.primitives,
                 [&](PrimitiveAnalysis const& candidate) {
                     return candidate.bundle.node_bundle == bundle;
                 });
             if (primitive == analysis.primitives.end()) {
+                if (is_detach_endpoint(bundle)) continue;
                 return std::unexpected(
                     "GraphJit connection schedule contains a non-primitive bundle");
             }
@@ -1609,6 +1931,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             auto const& callbacks = imports.primitive_callbacks[i];
             plan.root_skippable =
                 plan.root_skippable && primitive->bundle.block_skippable;
+            auto const step_index = plan.primitive_steps.size();
             plan.primitive_steps.push_back(PrimitiveExecutionStep{
                 .configuration_index = i,
                 .storage_index = i,
@@ -1616,6 +1939,14 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 .tick_callback_symbol = callbacks.tick_block,
                 .skip_callback_symbol = callbacks.skip_block,
             });
+            region.primitive_steps.push_back(step_index);
+        }
+        if (region.cyclic && region.primitive_steps.empty()) {
+            return std::unexpected(
+                "GraphJit cyclic execution region contains no executable primitive");
+        }
+        if (!region.primitive_steps.empty()) {
+            plan.regions.push_back(std::move(region));
         }
     }
     if (!std::ranges::all_of(scheduled, [](bool value) { return value; })) {
@@ -1720,6 +2051,58 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 materialization.source_representation);
         }
     }
+
+    // Cyclic exact-type event producers append into one aggregate root-call
+    // sequence across all SCC slices. Unlike an ordinary sliced producer there
+    // may be no downstream materialization operation to request a reset, so
+    // derive the reset directly from the output binding. Carry-backed working
+    // sequences are restored rather than cleared; persistent rings retain their
+    // own indices.
+    for (std::size_t primitive_index = 0;
+         primitive_index < event_ports.primitives.size(); ++primitive_index) {
+        auto const step_it = std::ranges::find_if(
+            plan.primitive_steps,
+            [&](PrimitiveExecutionStep const& step) {
+                return step.configuration_index == primitive_index;
+            });
+        if (step_it == plan.primitive_steps.end()) continue;
+        auto& step = *step_it;
+        for (auto const& output : event_ports.primitives[primitive_index].outputs) {
+            if (!output.append_existing || !output.representation) continue;
+            auto const representation = *output.representation;
+            if (representation >= event_ports.representations.size()) {
+                return std::unexpected(
+                    "GraphJit event output reset references an invalid representation");
+            }
+            auto const carry_source = std::ranges::any_of(
+                event_ports.carry_operations,
+                [&](EventCarryPlan const& carry) {
+                    return carry.working_representation == representation;
+                });
+            if (carry_source
+                || event_ports.representations[representation].persistent_ring) {
+                continue;
+            }
+            if (std::ranges::find(
+                    step.event_sequence_resets_before, representation)
+                == step.event_sequence_resets_before.end()) {
+                step.event_sequence_resets_before.push_back(representation);
+            }
+        }
+    }
+
+    for (std::size_t feedback_index = 0;
+         feedback_index < event_ports.feedback_operations.size();
+         ++feedback_index) {
+        auto const& feedback = event_ports.feedback_operations[feedback_index];
+        if (feedback.producer_execution_position >= plan.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit event feedback operation references an invalid execution position");
+        }
+        plan.primitive_steps[feedback.producer_execution_position]
+            .event_feedback_appends_after.push_back(feedback_index);
+    }
+
     return plan;
 }
 } // namespace
@@ -1735,10 +2118,9 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     if (!connections) {
         return std::unexpected(std::move(connections.error()));
     }
-    if (!connections->sample_detaches.empty()
-        || !connections->event_detaches.empty()) {
+    if (!connections->sample_detaches.empty()) {
         return std::unexpected(
-            "GraphJit detach transport lowering is not yet implemented");
+            "GraphJit sample detach transport lowering is not yet implemented");
     }
 
     auto analysis = analyze_graph(input);
@@ -1757,7 +2139,8 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     auto imports = plan_package_imports(input, *analysis);
     if (!imports) return std::unexpected(std::move(imports.error()));
 
-    auto configurations = plan_node_configurations(input, *analysis, *imports);
+    auto configurations = plan_node_configurations(
+        input, *analysis, *connections, *imports);
     if (!configurations) {
         return std::unexpected(std::move(configurations.error()));
     }

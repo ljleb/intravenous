@@ -5,6 +5,8 @@
 #include <intravenous/graph_jit/sample_physical_plan.h>
 #include <intravenous/graph_jit/transient_arena_plan.h>
 #include <intravenous/node/resources.h>
+#include <intravenous/module/builder_session.h>
+#include <intravenous/module/package_definitions.h>
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/node_definitions_events.h>
@@ -59,6 +61,8 @@ constexpr char graph_jit_converted_event_fanout_module_id[] = "iv.test.graph_jit
 constexpr char graph_jit_retained_event_module_id[] = "iv.test.graph_jit.state_context.retained_event_module";
 constexpr char graph_jit_persistent_event_ring_module_id[] = "iv.test.graph_jit.state_context.persistent_event_ring_module";
 constexpr char graph_jit_retained_converted_event_fanout_module_id[] = "iv.test.graph_jit.state_context.retained_converted_event_fanout_module";
+constexpr char graph_jit_event_feedback_a_id[] = "iv.test.graph_jit.state_context.event_feedback_a";
+constexpr char graph_jit_event_feedback_b_id[] = "iv.test.graph_jit.state_context.event_feedback_b";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -185,6 +189,27 @@ struct EventConsumerProbeStateMirror {
     std::uint64_t first_time = 0;
     std::uint64_t last_time = 0;
     std::uint32_t marker = 0;
+};
+
+struct EventFeedbackAStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t scc_feedback_latency = 0;
+    std::array<std::uint64_t, 12> indices{};
+    std::array<std::uint64_t, 12> block_sizes{};
+    std::array<std::uint64_t, 12> input_counts{};
+    std::array<std::uint64_t, 12> first_input_times{};
+    std::uint32_t marker = 0;
+};
+
+struct EventFeedbackBStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t scc_feedback_latency = 0;
+    std::array<std::uint64_t, 12> indices{};
+    std::array<std::uint64_t, 12> block_sizes{};
+    std::array<std::uint64_t, 12> input_counts{};
+    std::array<std::uint64_t, 12> first_input_times{};
+    std::uint64_t marker = 0;
+    std::uint64_t distinct_padding = 0;
 };
 
 struct SlicedEventConsumerProbeStateMirror {
@@ -1253,6 +1278,7 @@ std::string_view graph_jit_runtime_package_source()
     return R"cpp(
 #include <intravenous/dsl.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -2153,6 +2179,107 @@ struct LimitedTriggerEventSource {
     }
 };
 
+struct EventFeedbackA {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t scc_feedback_latency = 0;
+        std::array<std::uint64_t, 12> indices{};
+        std::array<std::uint64_t, 12> block_sizes{};
+        std::array<std::uint64_t, 12> input_counts{};
+        std::array<std::uint64_t, 12> first_input_times{};
+        std::uint32_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_event_output(
+            "out",
+            iv::EventOutputProperties{
+                .type = iv::EventTypeId::trigger,
+                .max_events_per_sample = 0.25,
+            })};
+    }
+
+    void tick_block(iv::TickBlockContext<EventFeedbackA> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = static_cast<std::size_t>(state.calls);
+        auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        if (slot < state.indices.size()) {
+            state.indices[slot] = ctx.index;
+            state.block_sizes[slot] = ctx.block_size;
+            state.input_counts[slot] = events.size();
+            state.first_input_times[slot] = events.empty() ? 0 : events[0].time;
+        }
+        ++state.calls;
+        state.scc_feedback_latency = ctx.scc_feedback_latency;
+        state.marker = 0xa11ce001u;
+        if (ctx.block_size != 0) {
+            auto const offset = std::min<std::size_t>(1, ctx.block_size - 1);
+            ctx.event_outputs[0].push(
+                iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+        }
+    }
+};
+
+struct EventFeedbackB {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t scc_feedback_latency = 0;
+        std::array<std::uint64_t, 12> indices{};
+        std::array<std::uint64_t, 12> block_sizes{};
+        std::array<std::uint64_t, 12> input_counts{};
+        std::array<std::uint64_t, 12> first_input_times{};
+        std::uint64_t marker = 0;
+        std::uint64_t distinct_padding = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_event_output(
+            "out",
+            iv::EventOutputProperties{
+                .type = iv::EventTypeId::trigger,
+                .max_events_per_sample = 0.25,
+            })};
+    }
+
+    void tick_block(iv::TickBlockContext<EventFeedbackB> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = static_cast<std::size_t>(state.calls);
+        auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        if (slot < state.indices.size()) {
+            state.indices[slot] = ctx.index;
+            state.block_sizes[slot] = ctx.block_size;
+            state.input_counts[slot] = events.size();
+            state.first_input_times[slot] = events.empty() ? 0 : events[0].time;
+        }
+        ++state.calls;
+        state.scc_feedback_latency = ctx.scc_feedback_latency;
+        state.marker = 0xb22ce002ull;
+        if (ctx.block_size != 0) {
+            auto const offset = std::min<std::size_t>(2, ctx.block_size - 1);
+            ctx.event_outputs[0].push(
+                iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+        }
+    }
+};
+
 struct TriggerEventConsumer {
     struct State {
         std::uint64_t calls = 0;
@@ -2733,6 +2860,8 @@ IV_NODE("iv.test.graph_jit.state_context.interleaved_latency_compensation_probe"
 IV_NODE("iv.test.graph_jit.state_context.trigger_event_source", TriggerEventSource);
 IV_NODE("iv.test.graph_jit.state_context.midi_event_source", MidiEventSource);
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_source", LimitedTriggerEventSource);
+IV_NODE("iv.test.graph_jit.state_context.event_feedback_a", EventFeedbackA);
+IV_NODE("iv.test.graph_jit.state_context.event_feedback_b", EventFeedbackB);
 IV_NODE("iv.test.graph_jit.state_context.trigger_event_consumer", TriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_consumer", LimitedTriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_source", RetainedTriggerEventSource);
@@ -2825,6 +2954,41 @@ std::shared_ptr<iv::PackageRevision const> load_graph_jit_runtime_revision()
     }
     return std::make_shared<iv::PackageRevision const>(
         std::move(request.result.revisions.front()));
+}
+
+
+std::shared_ptr<iv::ConfiguredGraph const> configured_event_feedback_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create GraphJit event-feedback builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto first = iv::details::configure_package_definition_provider(
+        graph, graph_jit_event_feedback_a_id, std::nullopt, {});
+    auto second = iv::details::configure_package_definition_provider(
+        graph, graph_jit_event_feedback_b_id, std::nullopt, {});
+    first.connect_event_input(0, second.event_port());
+    second.connect_event_input(0, first.event_port().detach(10));
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
 }
 
 SampleConsumerProbeStateMirror* find_consumer_state(
@@ -4359,6 +4523,102 @@ TEST_F(GraphJitRuntimeFixture, DirectEventFlow)
     EXPECT_EQ(direct_event_probe->first_time, 67u);
     EXPECT_EQ(direct_event_probe->last_time, 127u);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
+{
+    auto feedback_graph = configured_event_feedback_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    ASSERT_EQ(analysis->event_detaches.size(), 1u);
+    auto const& detach = analysis->event_detaches.front();
+    EXPECT_EQ(detach.loop_extra_latency, 10u);
+    ASSERT_TRUE(detach.region.has_value());
+    ASSERT_LT(*detach.region, analysis->schedule.regions.size());
+    auto const& region = analysis->schedule.regions[*detach.region];
+    ASSERT_TRUE(region.cyclic);
+    EXPECT_EQ(region.maximum_block_size, 8u);
+    EXPECT_EQ(region.scc_feedback_latency, 8u);
+
+    auto compiled = compile_graph(feedback_graph, 124);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_EQ(compiled.compiled_graph->node_layout.nodes.size(), 2u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    EventFeedbackAStateMirror* state_a = nullptr;
+    EventFeedbackBStateMirror* state_b = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size =
+            compiled.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(EventFeedbackAStateMirror)) {
+            ASSERT_EQ(state_a, nullptr);
+            state_a = static_cast<EventFeedbackAStateMirror*>(storage.state_ptr(i));
+        } else if (state_size == sizeof(EventFeedbackBStateMirror)) {
+            ASSERT_EQ(state_b, nullptr);
+            state_b = static_cast<EventFeedbackBStateMirror*>(storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(state_a, nullptr);
+    ASSERT_NE(state_b, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 64);
+
+    ASSERT_EQ(state_a->calls, 8u);
+    ASSERT_EQ(state_b->calls, 8u);
+    EXPECT_EQ(state_a->scc_feedback_latency, 8u);
+    EXPECT_EQ(state_b->scc_feedback_latency, 8u);
+    EXPECT_EQ(state_a->marker, 0xa11ce001u);
+    EXPECT_EQ(state_b->marker, 0xb22ce002ull);
+
+    for (std::size_t slice = 0; slice < 8; ++slice) {
+        auto const index = slice * 8u;
+        EXPECT_EQ(state_a->indices[slice], index);
+        EXPECT_EQ(state_b->indices[slice], index);
+        EXPECT_EQ(state_a->block_sizes[slice], 8u);
+        EXPECT_EQ(state_b->block_sizes[slice], 8u);
+
+        // B runs before A in the explicit same-slice order. B publishes at +2,
+        // so A observes that event directly in the current SCC slice.
+        EXPECT_EQ(state_a->input_counts[slice], 1u);
+        EXPECT_EQ(state_a->first_input_times[slice], index + 2u);
+
+        // A's output is detached by exactly 10 samples. The first event lands at
+        // time 11 and therefore first becomes visible to B in slice [8, 16).
+        if (slice == 0) {
+            EXPECT_EQ(state_b->input_counts[slice], 0u);
+            EXPECT_EQ(state_b->first_input_times[slice], 0u);
+        } else {
+            EXPECT_EQ(state_b->input_counts[slice], 1u);
+            EXPECT_EQ(state_b->first_input_times[slice], (slice - 1u) * 8u + 11u);
+        }
+    }
+
+    // The last event emitted by A in the first root call is at 57. Detach adds
+    // 10, so the persistent feedback ring must carry time 67 across the root
+    // boundary. This also proves transport latency (10) is independent of the
+    // SCC scheduling quantum reflected to callbacks (8).
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 64, 8);
+    ASSERT_EQ(state_a->calls, 9u);
+    ASSERT_EQ(state_b->calls, 9u);
+    EXPECT_EQ(state_a->indices[8], 64u);
+    EXPECT_EQ(state_b->indices[8], 64u);
+    EXPECT_EQ(state_a->block_sizes[8], 8u);
+    EXPECT_EQ(state_b->block_sizes[8], 8u);
+    EXPECT_EQ(state_a->input_counts[8], 1u);
+    EXPECT_EQ(state_a->first_input_times[8], 66u);
+    EXPECT_EQ(state_b->input_counts[8], 1u);
+    EXPECT_EQ(state_b->first_input_times[8], 67u);
 }
 
 TEST_F(GraphJitRuntimeFixture, TransientEventSlicing)

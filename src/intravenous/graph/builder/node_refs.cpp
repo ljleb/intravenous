@@ -71,11 +71,12 @@ SamplePortRef SamplePortRef::select_channel(size_t channel) const
         std::array{semantic_channels[channel]});
 }
 
-SamplePortRef SamplePortRef::detach(size_t latency) const
+SamplePortRef SamplePortRef::detach(
+    size_t latency, std::optional<Sample> initial_value) const
 {
     if (!graph_builder)
         details::error("attempted to detach an empty sample port");
-    return graph_builder->detach_sample_port(*this, latency);
+    return graph_builder->detach_sample_port(*this, latency, initial_value);
 }
 
 std::string SamplePortRef::to_string() const

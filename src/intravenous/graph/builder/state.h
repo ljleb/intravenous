@@ -247,7 +247,8 @@ public:
 
 private:
   constexpr SamplePortRef detach_sample_port(
-      SamplePortRef const&, size_t loop_extra_latency);
+      SamplePortRef const&, size_t loop_extra_latency,
+      std::optional<Sample> initial_value);
   EventPortRef detach_event_port(
       EventPortRef const&, size_t loop_extra_latency);
   SamplePortRef make_sample_port(
@@ -526,7 +527,8 @@ constexpr void GraphBuilderState::connect_sample_input(
 }
 
 constexpr SamplePortRef GraphBuilderState::detach_sample_port(
-    SamplePortRef const& source, size_t latency) {
+    SamplePortRef const& source, size_t latency,
+    std::optional<Sample> initial_value) {
   if (!source.graph_builder || source.graph_builder != &facade())
     details::error("cannot detach a sample port from another builder");
   auto const source_channels = source.channels();
@@ -537,6 +539,8 @@ constexpr SamplePortRef GraphBuilderState::detach_sample_port(
   if (auto existing = _detach.info_for_source(source.channel_type, source_channels)) {
     if (existing->loop_extra_latency != latency)
       details::error("detach loop extra latency conflict");
+    if (existing->initial_value_override != initial_value)
+      details::error("detach initial value conflict");
     return SamplePortRef(
         facade(), {existing->reader_bundle, PortKind::sample, 0});
   }
@@ -561,6 +565,7 @@ constexpr SamplePortRef GraphBuilderState::detach_sample_port(
       .reader_bundle = reader.node_bundle_handle(),
       .reader_channel = detached.channels().front(),
       .loop_extra_latency = latency,
+      .initial_value_override = initial_value,
   });
   return detached;
 }

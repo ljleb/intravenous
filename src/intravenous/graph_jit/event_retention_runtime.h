@@ -12,6 +12,8 @@ inline constexpr char event_carry_commit_symbol[] =
     "iv_graph_jit_commit_event_carry";
 inline constexpr char event_persistent_ring_prune_symbol[] =
     "iv_graph_jit_prune_event_persistent_ring";
+inline constexpr char event_feedback_append_symbol[] =
+    "iv_graph_jit_append_event_feedback";
 
 #if defined(_WIN32)
 #define IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT __declspec(dllexport)
@@ -51,6 +53,22 @@ iv_graph_jit_prune_event_persistent_ring(
     std::size_t write_index,
     std::size_t sample_index,
     std::size_t retained_history_samples) noexcept;
+
+// Append only the producer events belonging to the current SCC slice into a
+// persistent feedback ring. Timestamps are shifted by the authored detach
+// latency; SCC scheduling latency is deliberately not part of this transport
+// operation. Returns the updated monotonic write index.
+extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT std::size_t
+iv_graph_jit_append_event_feedback(
+    void const* source_events,
+    std::size_t source_count,
+    std::size_t sample_index,
+    std::size_t block_size,
+    std::size_t loop_extra_latency,
+    void* ring_events,
+    std::size_t ring_capacity,
+    std::size_t read_index,
+    std::size_t write_index) noexcept;
 
 #undef IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT
 

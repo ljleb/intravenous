@@ -129,6 +129,37 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_THROW(fixture.decode(trailing), std::runtime_error);
 }
 
+TEST(ConfiguredGraphBinaryArchive, RoundTripsSampleDetachInitialValueOverride)
+{
+    iv::ConfiguredGraph configured;
+    std::array sample_detaches{iv::ConfiguredDetachedSamplePortInfo{
+        .detach_id = 3,
+        .source_type = iv::ChannelTypeId::mono,
+        .source_channels = {iv::SampleOutputChannelId{.bundle = 4, .port = 1, .channel = 0}},
+        .writer_bundle = 5,
+        .reader_bundle = 6,
+        .reader_channel = iv::SampleOutputChannelId{.bundle = 6, .port = 0, .channel = 0},
+        .loop_extra_latency = 9,
+        .initial_value_override = iv::Sample{-0.375f},
+    }};
+    configured.detach = iv::GraphBuilderDetach::from_configured_infos(
+        4, sample_detaches);
+
+    auto const archive = iv::serialize_configured_graph(configured);
+    auto const decoded = iv::deserialize_configured_graph(
+        archive.bytes,
+        std::span<iv::details::NodeCompilerRecord const>{},
+        archive.node_configs);
+    auto const infos = decoded.detach.configured_infos();
+    ASSERT_EQ(decoded.detach.next_detach_id(), 4u);
+    ASSERT_EQ(infos.size(), 1u);
+    EXPECT_EQ(infos[0].detach_id, 3u);
+    EXPECT_EQ(infos[0].loop_extra_latency, 9u);
+    ASSERT_TRUE(infos[0].initial_value_override.has_value());
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(*infos[0].initial_value_override), -0.375f);
+}
+
 TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
 {
     iv::SampleInputConfig const realtime_input {

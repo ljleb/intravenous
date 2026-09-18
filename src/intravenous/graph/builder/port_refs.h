@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -62,7 +63,9 @@ struct SamplePortRef {
     typename std::remove_cvref_t<Member>::channel_type;
     std::remove_cvref_t<Member>::channel_ordinal;
   };
-  SamplePortRef detach(size_t loop_extra_latency = 1) const;
+  SamplePortRef detach(
+      size_t loop_extra_latency = 1,
+      std::optional<Sample> initial_value = std::nullopt) const;
   void _annotate_source_info(
       std::string_view, std::string_view, uint32_t, uint32_t) const;
   std::string to_string() const;
