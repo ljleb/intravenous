@@ -1130,6 +1130,126 @@ TEST(GraphJitSamplePhysicalPlan, RealizesLargeRetentionAsPersistentRing)
     EXPECT_FALSE(layout.regions[0].migration_identity.empty());
 }
 
+TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
+{
+    using namespace iv::graph_jit::detail;
+
+    iv::ChannelLayout const mono{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    iv::SampleOutputChannelId const source_channel{
+        .bundle = 1,
+        .port = 0,
+        .channel = 0,
+    };
+    iv::NodeBundlePortId const source_port{1, iv::PortKind::sample, 0};
+
+    ConnectionAnalysisPlan connections;
+    connections.schedule.bundle_execution_position.resize(3);
+    connections.schedule.bundle_execution_position[1] = 0;
+    connections.schedule.bundle_execution_position[2] = 1;
+
+    SampleConnectionPlan feedback;
+    feedback.source_type = iv::ChannelTypeId::mono;
+    feedback.source_channels = {source_channel};
+    feedback.source_channel_timings = {SampleSourceChannelTimingPlan{
+        .source = source_channel,
+        .source_layout = mono,
+    }};
+    feedback.canonical_source_port = source_port;
+    feedback.canonical_source_layout = mono;
+    feedback.target_type = iv::ChannelTypeId::mono;
+    feedback.target_layout = mono;
+    feedback.target_channels = {iv::SampleInputChannelId{
+        .bundle = 2,
+        .port = 0,
+        .channel = 0,
+    }};
+    feedback.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
+    feedback.access = PlannedConnectionAccess::realtime_to_realtime;
+    feedback.detach = iv::ConfiguredSampleConnectionDetach{
+        .loop_extra_latency = 5,
+        .initial_value_override = iv::Sample{0.25f},
+    };
+    feedback.detach_initial_value = iv::Sample{0.25f};
+    connections.sample_connections.push_back(feedback);
+
+    SampleProducerGroupPlan group;
+    group.source_port = source_port;
+    group.source_type = iv::ChannelTypeId::mono;
+    group.source_channels = {source_channel};
+    group.canonical_source_layout = mono;
+    group.connection_indices = {0};
+    group.has_realtime_connections = true;
+    group.implementation =
+        iv::SampleConnectionImplementationKind::transient_materialization;
+    group.live_interval = ConnectionLiveIntervalPlan{
+        .begin = 0,
+        .end = 1,
+        .crosses_kernel_invocations = true,
+    };
+    connections.sample_producer_groups.push_back(group);
+
+    auto physical = build_sample_physical_plan(connections, 64);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->representations.size(), 2u);
+    ASSERT_EQ(physical->transient_allocations.size(), 1u);
+    ASSERT_EQ(physical->persistent_allocations.size(), 1u);
+    ASSERT_EQ(physical->feedback_operations.size(), 1u);
+    ASSERT_TRUE(physical->connection_representations[0].has_value());
+
+    auto const canonical = physical->producer_groups[0]->canonical_representation;
+    auto const ring = *physical->connection_representations[0];
+    ASSERT_NE(canonical, ring);
+    EXPECT_EQ(
+        physical->representations[canonical].implementation,
+        iv::SampleConnectionImplementationKind::transient_materialization);
+    EXPECT_EQ(
+        physical->representations[ring].implementation,
+        iv::SampleConnectionImplementationKind::feedback_ring);
+    EXPECT_EQ(physical->representations[ring].frame_capacity, 128u);
+    EXPECT_EQ(
+        physical->representations[ring].transient_allocation,
+        no_sample_transient_allocation);
+    ASSERT_NE(
+        physical->representations[ring].persistent_allocation,
+        no_sample_persistent_allocation);
+
+    auto const& persistent = physical->persistent_allocations[
+        physical->representations[ring].persistent_allocation];
+    EXPECT_EQ(persistent.kind, SamplePersistentStorageKind::ring);
+    EXPECT_EQ(persistent.retained_frames, 5u);
+    EXPECT_EQ(persistent.frame_capacity, 128u);
+    EXPECT_EQ(persistent.size_bytes, 128u * sizeof(iv::Sample));
+    EXPECT_NE(
+        persistent.migration_identity.find("graphjit.sample.feedback:"),
+        std::string::npos);
+
+    auto const& operation = physical->feedback_operations[0];
+    EXPECT_EQ(operation.source_representation, canonical);
+    EXPECT_EQ(operation.ring_representation, ring);
+    EXPECT_EQ(operation.producer_execution_position, 0u);
+    EXPECT_EQ(operation.loop_extra_latency, 5u);
+    EXPECT_FLOAT_EQ(static_cast<float>(operation.initial_value), 0.25f);
+
+    iv::NodeLayoutBuilder builder(64);
+    auto declared = declare_sample_physical_storage(builder, *physical);
+    ASSERT_TRUE(declared.has_value())
+        << (declared ? std::string{} : declared.error());
+    auto layout = std::move(builder).build();
+    auto finalized = finalize_sample_physical_storage(layout, *physical);
+    ASSERT_TRUE(finalized.has_value())
+        << (finalized ? std::string{} : finalized.error());
+    ASSERT_EQ(layout.regions.size(), 2u);
+    auto const& persistent_region = layout.regions[persistent.region.index];
+    EXPECT_EQ(persistent_region.size, 128u * sizeof(iv::Sample));
+    EXPECT_EQ(
+        persistent_region.migration_identity,
+        persistent.migration_identity);
+}
+
 TEST(GraphJitSamplePhysicalPlan, ConvertedRetentionMaterializesHistoricalWindow)
 {
     using namespace iv::graph_jit::detail;

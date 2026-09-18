@@ -5,6 +5,8 @@
 #include <intravenous/sample.h>
 
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <exception>
 #include <iterator>
 #include <limits>
@@ -77,6 +79,34 @@ std::string persistent_identity(
     }
     out << ":kind=" << static_cast<unsigned>(kind)
         << ":retained=" << retained_frames
+        << ":capacity=" << frame_capacity;
+    return std::move(out).str();
+}
+
+std::string feedback_identity(
+    SampleProducerGroupPlan const& group,
+    SampleConnectionPlan const& connection,
+    Sample initial_value,
+    std::size_t frame_capacity)
+{
+    std::ostringstream out;
+    out << "graphjit.sample.feedback:source=";
+    if (group.source_port) {
+        out << group.source_port->node_bundle_handle << '.'
+            << group.source_port->port_ordinal;
+    } else {
+        for (auto const source : group.source_channels) {
+            out << source.bundle << '.' << source.port << '.' << source.channel << ',';
+        }
+    }
+    out << ":target=" << connection.target_port.node_bundle_handle << '.'
+        << connection.target_port.port_ordinal
+        << ":layout="
+        << static_cast<unsigned>(connection.target_layout.channel_type) << '.'
+        << static_cast<unsigned>(connection.target_layout.sample_layout)
+        << ":latency=" << connection.detach->loop_extra_latency
+        << ":initial_bits="
+        << std::bit_cast<std::uint32_t>(static_cast<float>(initial_value))
         << ":capacity=" << frame_capacity;
     return std::move(out).str();
 }
@@ -190,7 +220,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         SamplePersistentStorageKind kind,
         ChannelLayout layout,
         std::size_t retained_frames,
-        std::size_t frame_capacity)
+        std::size_t frame_capacity,
+        std::string migration_identity = {})
         -> std::expected<std::size_t, std::string> {
         auto const storage_frames = kind == SamplePersistentStorageKind::compact_carry
             ? retained_frames
@@ -206,8 +237,10 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             .frame_capacity = frame_capacity,
             .size_bytes = *bytes,
             .alignment = alignof(Sample),
-            .migration_identity = persistent_identity(
-                group, kind, retained_frames, frame_capacity),
+            .migration_identity = migration_identity.empty()
+                ? persistent_identity(
+                    group, kind, retained_frames, frame_capacity)
+                : std::move(migration_identity),
         });
         return allocation_index;
     };
@@ -237,7 +270,14 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 "GraphJit point-9 sample physical plan does not yet realize feedback or external storage");
         }
 
+        auto const has_feedback_branch = std::ranges::any_of(
+            group.connection_indices,
+            [&](std::size_t connection_index) {
+                return connection_index < connections.sample_connections.size()
+                    && connections.sample_connections[connection_index].detach.has_value();
+            });
         if (group.live_interval.crosses_kernel_invocations
+            && !has_feedback_branch
             && (*group.implementation == SampleConnectionImplementationKind::direct
                 || *group.implementation
                     == SampleConnectionImplementationKind::transient_materialization)) {
@@ -392,6 +432,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 return std::unexpected(
                     "GraphJit sample connection belongs to multiple producer groups");
             }
+            if (connection.detach) continue;
             if (group.source_port
                 && (!connection.canonical_source_port
                     || *connection.canonical_source_port != *group.source_port)) {
@@ -497,6 +538,85 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 if (!updated) return std::unexpected(std::move(updated.error()));
             }
             plan.connection_representations[connection_index] = branch->representation;
+        }
+
+        // Detach transport is branch-local. Keep the producer's canonical
+        // representation ordinary, then allocate one persistent absolute-indexed
+        // ring for the delayed branch. This first physical slice intentionally
+        // accepts only exact whole-port transport; conversion/history/latency can
+        // be layered on after the feedback copy operation itself is executable.
+        for (auto const connection_index : group.connection_indices) {
+            auto const& connection = connections.sample_connections[connection_index];
+            if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+                || !connection.detach) {
+                continue;
+            }
+            if (plan.connection_representations[connection_index]) {
+                return std::unexpected(
+                    "GraphJit detached sample connection already owns a physical representation");
+            }
+            if (!group.source_port
+                || !connection.canonical_source_port
+                || *connection.canonical_source_port != *group.source_port
+                || !connection.canonical_source_layout
+                || *connection.canonical_source_layout != *group.canonical_source_layout
+                || connection.requires_conversion
+                || connection.requires_block_materialization
+                || connection.target_layout != *group.canonical_source_layout
+                || connection.target_history != 0
+                || connection.read_latency != 0) {
+                return std::unexpected(
+                    "GraphJit sample feedback currently requires exact whole-port zero-history zero-latency realtime transport");
+            }
+            if (!connection.detach_initial_value) {
+                return std::unexpected(
+                    "GraphJit sample feedback lost its resolved initial value");
+            }
+
+            auto const latency = connection.detach->loop_extra_latency;
+            auto ring_capacity = working_ring_capacity(kernel_block_size, latency);
+            if (!ring_capacity) {
+                return std::unexpected(std::move(ring_capacity.error()));
+            }
+            auto const ring_representation = append_representation(
+                SampleRepresentationPlan{
+                    .producer_group_index = group_index,
+                    .canonical_producer_representation = false,
+                    .implementation = SampleConnectionImplementationKind::feedback_ring,
+                    .channel_layout = connection.target_layout,
+                    .frame_capacity = *ring_capacity,
+                    .live_interval = ConnectionLiveIntervalPlan{
+                        .begin = producer_position,
+                        .end = target_position(connection, group.live_interval),
+                        .crosses_kernel_invocations = true,
+                    },
+                });
+            auto persistent = append_persistent_allocation(
+                ring_representation,
+                group,
+                SamplePersistentStorageKind::ring,
+                connection.target_layout,
+                latency,
+                *ring_capacity,
+                feedback_identity(
+                    group,
+                    connection,
+                    *connection.detach_initial_value,
+                    *ring_capacity));
+            if (!persistent) {
+                return std::unexpected(std::move(persistent.error()));
+            }
+            plan.representations[ring_representation].persistent_allocation =
+                *persistent;
+            plan.connection_representations[connection_index] =
+                ring_representation;
+            plan.feedback_operations.push_back(SampleFeedbackOperationPlan{
+                .source_representation = canonical,
+                .ring_representation = ring_representation,
+                .producer_execution_position = producer_position,
+                .loop_extra_latency = latency,
+                .initial_value = *connection.detach_initial_value,
+            });
         }
     }
 

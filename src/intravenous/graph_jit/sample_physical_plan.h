@@ -131,6 +131,19 @@ struct SampleCarryOperationPlan {
     std::size_t retained_frames = 0;
 };
 
+// One branch-local delayed copy of a canonical producer representation. The
+// persistent ring is indexed in the same absolute sample timeline as the
+// source; execution lowering will copy each produced slice into the ring and
+// consumers will read it with loop_extra_latency. initial_value defines the
+// unproduced prefix observed before the delayed source timeline reaches zero.
+struct SampleFeedbackOperationPlan {
+    std::size_t source_representation = no_sample_representation;
+    std::size_t ring_representation = no_sample_representation;
+    std::size_t producer_execution_position = 0;
+    std::size_t loop_extra_latency = 1;
+    Sample initial_value{};
+};
+
 struct SamplePhysicalPlan {
     // Indexed by ConnectionAnalysisPlan::sample_producer_groups.
     std::vector<std::optional<SampleProducerPhysicalPlan>> producer_groups{};
@@ -148,6 +161,7 @@ struct SamplePhysicalPlan {
     std::vector<SampleMaterializationPlan> materializations{};
     std::vector<SampleCompositionPlan> compositions{};
     std::vector<SampleCarryOperationPlan> carry_operations{};
+    std::vector<SampleFeedbackOperationPlan> feedback_operations{};
 
     // One exact range per transient representation. The arena high-water mark
     // is independent of any individual representation's maximum size.
