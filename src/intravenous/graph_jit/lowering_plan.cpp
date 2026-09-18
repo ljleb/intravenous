@@ -975,9 +975,20 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 return std::unexpected(
                     "GraphJit sample connection lost its required layout conversion");
             }
-            target_read_latency = connection.detach
-                ? connection.detach->loop_extra_latency
-                : connection.read_latency;
+            if (connection.detach) {
+                auto const detach_latency =
+                    connection.detach->loop_extra_latency;
+                if (connection.read_latency
+                    > std::numeric_limits<std::size_t>::max()
+                        - detach_latency) {
+                    return std::unexpected(
+                        "GraphJit sample feedback read latency overflows size_t");
+                }
+                target_read_latency =
+                    detach_latency + connection.read_latency;
+            } else {
+                target_read_latency = connection.read_latency;
+            }
         } else {
             // Projection/permutation has already normalized to one semantic
             // source per target channel. Channel-count conversion remains a

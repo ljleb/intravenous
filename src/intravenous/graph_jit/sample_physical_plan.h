@@ -134,9 +134,10 @@ struct SampleCarryOperationPlan {
 
 // One branch-local delayed copy of a canonical producer representation. The
 // persistent ring is indexed in the same absolute sample timeline as the
-// source; execution lowering will copy each produced slice into the ring and
-// consumers will read it with loop_extra_latency. initial_value defines the
-// unproduced prefix observed before the delayed source timeline reaches zero.
+// source; execution lowering copies each produced slice into the ring. Consumer
+// bindings add loop_extra_latency to the source's ordinary read latency, while
+// the ring retains that full delay plus target history. initial_value defines
+// every unproduced frame observed before the delayed source timeline reaches zero.
 struct SampleFeedbackOperationPlan {
     std::size_t source_representation = no_sample_representation;
     std::size_t ring_representation = no_sample_representation;
@@ -191,8 +192,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     std::size_t kernel_block_size);
 
 // Reserve canonical NodeStorage for transient scratch and persistent connection
-// state. No C++ objects are constructed; NodeStorage's zero-filled allocation is
-// the initial history state and realtime execution performs no setup/allocation.
+// state. No C++ objects are constructed. Persistent feedback rings with authored
+// initial values install raw-region initialization callbacks, so realtime
+// execution performs no setup/allocation.
 std::expected<void, std::string> declare_sample_physical_storage(
     NodeLayoutBuilder& builder,
     SamplePhysicalPlan& plan);

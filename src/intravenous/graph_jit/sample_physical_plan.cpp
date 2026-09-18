@@ -592,11 +592,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 || *connection.canonical_source_layout != *group.canonical_source_layout
                 || connection.requires_conversion
                 || connection.requires_block_materialization
-                || connection.target_layout != *group.canonical_source_layout
-                || connection.target_history != 0
-                || connection.read_latency != 0) {
+                || connection.target_layout != *group.canonical_source_layout) {
                 return std::unexpected(
-                    "GraphJit sample feedback currently requires exact whole-port zero-history zero-latency realtime transport");
+                    "GraphJit sample feedback currently requires exact whole-port realtime transport");
             }
             if (!connection.detach_initial_value) {
                 return std::unexpected(
@@ -604,7 +602,18 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             }
 
             auto const latency = connection.detach->loop_extra_latency;
-            auto ring_capacity = working_ring_capacity(kernel_block_size, latency);
+            if (connection.read_latency
+                    > std::numeric_limits<std::size_t>::max() - latency
+                || connection.target_history
+                    > std::numeric_limits<std::size_t>::max()
+                        - latency - connection.read_latency) {
+                return std::unexpected(
+                    "GraphJit sample feedback retained extent overflows size_t");
+            }
+            auto const retained_frames =
+                latency + connection.read_latency + connection.target_history;
+            auto ring_capacity = working_ring_capacity(
+                kernel_block_size, retained_frames);
             if (!ring_capacity) {
                 return std::unexpected(std::move(ring_capacity.error()));
             }
@@ -626,7 +635,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 group,
                 SamplePersistentStorageKind::ring,
                 connection.target_layout,
-                latency,
+                retained_frames,
                 *ring_capacity,
                 feedback_identity(
                     group,
