@@ -114,7 +114,7 @@ match.
 - Arithmetic creates ordinary builder nodes. Typed ports preserve channel type
   and layout; incompatible channel representations fail rather than silently
   flattening or selecting channels.
-- `~port` detaches a sample stream. Bundle outputs are lowered first.
+- `port.detach(loop_extra_latency)` detaches a sample or event stream with the declared extra feedback latency; `~port` uses the default latency of one sample. Bundle outputs are lowered first.
 - Public outputs accept ports or nodes under the same exactly-one-output rule;
   their virtual/bundle identity never becomes a tile identity.
 

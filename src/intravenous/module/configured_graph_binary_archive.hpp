@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 1;
+inline constexpr std::uint32_t archive_version = 2;
 
 class Writer {
 public:
@@ -560,6 +560,9 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
                 write_enum(bundles, deferred.kind);
                 bundles.size(deferred.id);
                 bundles.size(deferred.loop_extra_latency);
+                write_enum(bundles, deferred.port_kind);
+                write_enum(bundles, deferred.event_type);
+                bundles.pod(deferred.max_events_per_sample);
             }
             auto const has_state_structures = view.state_structures_storage
                 && *view.state_structures_storage;
@@ -663,6 +666,16 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
         write_output_channel(writer, value.reader_channel);
         writer.size(value.loop_extra_latency);
     });
+    auto const detached_events = configured.detach.configured_event_infos();
+    writer.list(detached_events, [&](ConfiguredDetachedEventPortInfo const& value) {
+        writer.size(value.detach_id);
+        write_enum(writer, value.source_type);
+        write_values<EventOutputPortId>(writer, value.sources, write_event_output_port);
+        writer.size(value.writer_bundle);
+        writer.size(value.reader_bundle);
+        write_event_output_port(writer, value.reader_port);
+        writer.size(value.loop_extra_latency);
+    });
     auto const virtual_nodes = configured.virtual_nodes.records();
     writer.list(virtual_nodes, [&](VirtualNodeRecord const& value) { write_virtual_node(writer, value); });
     result.bytes = std::move(writer).take();
@@ -682,7 +695,8 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
     Reader reader(bytes);
     if (reader.pod<std::uint32_t>() != archive_magic)
         throw std::runtime_error("unsupported configured graph archive magic");
-    if (reader.pod<std::uint32_t>() != archive_version)
+    auto const version = reader.pod<std::uint32_t>();
+    if (version != 1 && version != archive_version)
         throw std::runtime_error("unsupported configured graph archive version");
     auto make_owned_config_storage = [](ConfiguredNodeConfigBytes const& config) {
         if (config.alignment == 0 || !std::has_single_bit(config.alignment)) {
@@ -747,8 +761,19 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             if (reader.flag()) record.default_ttl_samples = reader.size();
             record.block_skippable = reader.flag();
             if (reader.flag()) record.static_sample_value = Sample{reader.pod<Sample::storage>()};
-            if (reader.flag()) record.deferred_detach = DeferredDetachNode{
-                .kind = read_enum<DeferredDetachNodeKind>(reader), .id = reader.size(), .loop_extra_latency = reader.size()};
+            if (reader.flag()) {
+                DeferredDetachNode deferred{
+                    .kind = read_enum<DeferredDetachNodeKind>(reader),
+                    .id = reader.size(),
+                    .loop_extra_latency = reader.size(),
+                };
+                if (version >= 2) {
+                    deferred.port_kind = read_enum<PortKind>(reader);
+                    deferred.event_type = read_enum<EventTypeId>(reader);
+                    deferred.max_events_per_sample = reader.pod<double>();
+                }
+                record.deferred_detach = deferred;
+            }
             if (reader.flag()) {
                 NodeStateStructures structures;
                 if (reader.flag()) structures.state = read_state(reader);
@@ -808,13 +833,28 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             .source_channels = read_values<SampleOutputChannelId>(reader, read_output_channel), .writer_bundle = reader.size(),
             .reader_bundle = reader.size(), .reader_channel = read_output_channel(reader), .loop_extra_latency = reader.size()};
     });
+    std::vector<ConfiguredDetachedEventPortInfo> detached_events;
+    if (version >= 2) {
+        detached_events = read_list<ConfiguredDetachedEventPortInfo>(reader, [&] {
+            return ConfiguredDetachedEventPortInfo{
+                .detach_id = reader.size(),
+                .source_type = read_enum<EventTypeId>(reader),
+                .sources = read_values<EventOutputPortId>(reader, read_event_output_port),
+                .writer_bundle = reader.size(),
+                .reader_bundle = reader.size(),
+                .reader_port = read_event_output_port(reader),
+                .loop_extra_latency = reader.size(),
+            };
+        });
+    }
     auto virtual_nodes = read_list<VirtualNodeRecord>(reader, [&] { return read_virtual_node(reader); });
     reader.finish();
     return {.identity = GraphBuilderIdentity{std::move(identity)},
         .node_bundles = GraphBuilderNodeBundles::from_configured_records(bundles),
         .connections = GraphBuilderConnections::from_configured_connections(sample_connections, event_connections),
         .public_ports = GraphBuilderPublicPorts::from_configured_record(public_ports),
-        .detach = GraphBuilderDetach::from_configured_infos(next_detach_id, detached), .annotations = {},
+        .detach = GraphBuilderDetach::from_configured_infos(
+            next_detach_id, detached, detached_events), .annotations = {},
         .virtual_nodes = GraphBuilderVirtualNodes::from_configured_records(virtual_nodes)};
 }
 

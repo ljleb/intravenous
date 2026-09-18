@@ -489,6 +489,16 @@ namespace iv {
         return sample_port.detach();
     }
 
+    constexpr EventPortRef operator~(EventPortRef const& event_port)
+    {
+        return event_port.detach();
+    }
+
+    constexpr EventPortRef operator~(EventPortRef&& event_port)
+    {
+        return event_port.detach();
+    }
+
     template<class T>
     requires (
         std::convertible_to<std::remove_cvref_t<T>, SamplePortRef> &&

@@ -396,6 +396,11 @@ SamplePortRef GraphBuilder::detach_sample_port(
 {
     return state(*this).detach_sample_port(source, latency);
 }
+EventPortRef GraphBuilder::detach_event_port(
+    EventPortRef const& source, size_t latency)
+{
+    return state(*this).detach_event_port(source, latency);
+}
 void GraphBuilder::apply_ttl(NodeBundleHandle handle, size_t samples)
 {
     state(*this).apply_ttl(handle, samples);

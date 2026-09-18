@@ -283,6 +283,10 @@ public:
       size_t detach_id, size_t loop_extra_latency);
   constexpr NodeBundleHandle append_deferred_detach_reader(
       size_t detach_id, size_t loop_extra_latency);
+  constexpr NodeBundleHandle append_deferred_event_detach_writer(
+      size_t detach_id, size_t loop_extra_latency, EventTypeId, double max_events_per_sample);
+  constexpr NodeBundleHandle append_deferred_event_detach_reader(
+      size_t detach_id, size_t loop_extra_latency, EventTypeId, double max_events_per_sample);
   constexpr void materialize_deferred_detaches();
 
   constexpr NodeBundleHandle append_tiled(
@@ -453,6 +457,48 @@ GraphBuilderNodeBundles::append_deferred_detach_reader(
   return append_concrete(std::move(node));
 }
 
+constexpr NodeBundleHandle
+GraphBuilderNodeBundles::append_deferred_event_detach_writer(
+    size_t detach_id, size_t loop_extra_latency, EventTypeId type,
+    double max_events_per_sample) {
+  ConcreteNode node;
+  node.ports.input_configs = {realtime_event_input({}, type)};
+  node.type_identity = {.value = std::string(
+      details::clang_type_name<EventDetachWriterNode>())};
+  node.deferred_detach = DeferredDetachNode{
+      .kind = DeferredDetachNodeKind::writer,
+      .port_kind = PortKind::event,
+      .id = detach_id,
+      .loop_extra_latency = loop_extra_latency,
+      .event_type = type,
+      .max_events_per_sample = max_events_per_sample,
+  };
+  return append_concrete(std::move(node));
+}
+
+constexpr NodeBundleHandle
+GraphBuilderNodeBundles::append_deferred_event_detach_reader(
+    size_t detach_id, size_t loop_extra_latency, EventTypeId type,
+    double max_events_per_sample) {
+  ConcreteNode node;
+  node.ports.output_configs = {realtime_event_output(
+      {}, EventOutputProperties{
+          .type = type,
+          .max_events_per_sample = max_events_per_sample,
+      })};
+  node.type_identity = {.value = std::string(
+      details::clang_type_name<EventDetachReaderNode>())};
+  node.deferred_detach = DeferredDetachNode{
+      .kind = DeferredDetachNodeKind::reader,
+      .port_kind = PortKind::event,
+      .id = detach_id,
+      .loop_extra_latency = loop_extra_latency,
+      .event_type = type,
+      .max_events_per_sample = max_events_per_sample,
+  };
+  return append_concrete(std::move(node));
+}
+
 constexpr void GraphBuilderNodeBundles::materialize_deferred_detaches() {
   for (auto& bundle : _bundles) {
     if (!bundle.is_concrete()) continue;
@@ -462,16 +508,38 @@ constexpr void GraphBuilderNodeBundles::materialize_deferred_detaches() {
 
     ConcreteNode materialized;
     auto const deferred = *payload.deferred_detach;
-    if (deferred.kind == DeferredDetachNodeKind::writer) {
-      materialized = make_concrete_node(details::reflect_node(
-          DetachWriterNode{
-              DetachArrayId{deferred.id}, deferred.loop_extra_latency,
-          }));
+    if (deferred.port_kind == PortKind::sample) {
+      if (deferred.kind == DeferredDetachNodeKind::writer) {
+        materialized = make_concrete_node(details::reflect_node(
+            DetachWriterNode{
+                DetachArrayId{deferred.id}, deferred.loop_extra_latency,
+            }));
+      } else {
+        materialized = make_concrete_node(details::reflect_node(
+            DetachReaderNode{
+                DetachArrayId{deferred.id}, deferred.loop_extra_latency,
+            }));
+      }
+    } else if (deferred.port_kind == PortKind::event) {
+      if (deferred.kind == DeferredDetachNodeKind::writer) {
+        materialized = make_concrete_node(details::reflect_node(
+            EventDetachWriterNode{
+                DetachArrayId{deferred.id},
+                deferred.loop_extra_latency,
+                deferred.event_type,
+                deferred.max_events_per_sample,
+            }));
+      } else {
+        materialized = make_concrete_node(details::reflect_node(
+            EventDetachReaderNode{
+                DetachArrayId{deferred.id},
+                deferred.loop_extra_latency,
+                deferred.event_type,
+                deferred.max_events_per_sample,
+            }));
+      }
     } else {
-      materialized = make_concrete_node(details::reflect_node(
-          DetachReaderNode{
-              DetachArrayId{deferred.id}, deferred.loop_extra_latency,
-          }));
+      details::error("deferred detach has an invalid port kind");
     }
 
     payload.ports = std::move(materialized.ports);

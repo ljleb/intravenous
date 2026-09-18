@@ -3,6 +3,8 @@
 #include <intravenous/node/lifecycle.h>
 
 #include <array>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -72,6 +74,138 @@ namespace iv {
 
         operator std::string() const {
             return "detach:" + std::to_string(id);
+        }
+    };
+
+
+    struct EventDetachWriterNode {
+        DetachArrayId id;
+        size_t loop_extra_latency = 1;
+        EventTypeId type = EventTypeId::empty;
+        double max_events_per_sample = DEFAULT_MAX_EVENTS_PER_SAMPLE;
+
+        constexpr explicit EventDetachWriterNode(
+            DetachArrayId id_,
+            size_t loop_extra_latency_ = 1,
+            EventTypeId type_ = EventTypeId::empty,
+            double max_events_per_sample_ = DEFAULT_MAX_EVENTS_PER_SAMPLE)
+            : id(id_)
+            , loop_extra_latency(loop_extra_latency_)
+            , type(type_)
+            , max_events_per_sample(max_events_per_sample_)
+        {}
+
+        struct State {
+            std::span<TimedEvent> events;
+            std::span<size_t> control;
+        };
+
+        constexpr auto inputs() const
+        {
+            return std::array{realtime_event_input({}, type)};
+        }
+
+        void declare(DeclarationContext<EventDetachWriterNode> const& ctx) const
+        {
+            auto& state = ctx.state();
+            if (loop_extra_latency
+                > std::numeric_limits<size_t>::max() - ctx.max_block_size()) {
+                throw std::logic_error(
+                    "event detach temporal span is not representable");
+            }
+            auto const span = loop_extra_latency + ctx.max_block_size();
+            auto const capacity = event_count_for_sample_span(
+                max_events_per_sample, span);
+            if (!capacity) {
+                throw std::logic_error(
+                    "event detach capacity is not representable");
+            }
+            ctx.local_array(state.events, std::max<size_t>(1, *capacity));
+            ctx.local_array(state.control, 3);
+            ctx.export_array(std::string(id) + ":events", state.events);
+            ctx.export_array(std::string(id) + ":control", state.control);
+        }
+
+        void initialize(InitializationContext<EventDetachWriterNode> const& ctx) const
+        {
+            std::ranges::fill(ctx.state().control, size_t{0});
+        }
+
+        void tick_block(TickBlockContext<EventDetachWriterNode> const& ctx) const
+        {
+            auto& state = ctx.state();
+            auto& tail = state.control[1];
+            auto& count = state.control[2];
+            auto const capacity = state.events.size();
+            auto const input = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            for (auto const& event : input) {
+                IV_ASSERT(count < capacity, "event detach buffer capacity exceeded");
+                auto delayed = event;
+                delayed.time = saturating_sample_index_add(
+                    delayed.time, loop_extra_latency);
+                state.events[tail] = std::move(delayed);
+                tail = (tail + 1) % capacity;
+                ++count;
+            }
+        }
+    };
+
+    struct EventDetachReaderNode {
+        DetachArrayId id;
+        size_t loop_extra_latency = 1;
+        EventTypeId type = EventTypeId::empty;
+        double max_events_per_sample = DEFAULT_MAX_EVENTS_PER_SAMPLE;
+
+        constexpr explicit EventDetachReaderNode(
+            DetachArrayId id_,
+            size_t loop_extra_latency_ = 1,
+            EventTypeId type_ = EventTypeId::empty,
+            double max_events_per_sample_ = DEFAULT_MAX_EVENTS_PER_SAMPLE)
+            : id(id_)
+            , loop_extra_latency(loop_extra_latency_)
+            , type(type_)
+            , max_events_per_sample(max_events_per_sample_)
+        {}
+
+        struct State {
+            std::span<TimedEvent> events;
+            std::span<size_t> control;
+        };
+
+        constexpr auto outputs() const
+        {
+            return std::array{realtime_event_output(
+                {}, EventOutputProperties{
+                    .type = type,
+                    .max_events_per_sample = max_events_per_sample,
+                })};
+        }
+
+        void declare(DeclarationContext<EventDetachReaderNode> const& ctx) const
+        {
+            auto& state = ctx.state();
+            ctx.import_array(std::string(id) + ":events", state.events);
+            ctx.import_array(std::string(id) + ":control", state.control);
+        }
+
+        void tick_block(TickBlockContext<EventDetachReaderNode> const& ctx) const
+        {
+            auto& state = ctx.state();
+            auto& head = state.control[0];
+            auto& count = state.control[2];
+            auto const capacity = state.events.size();
+            auto const begin = ctx.index;
+            auto const end = saturating_sample_index_add(ctx.index, ctx.block_size);
+
+            while (count != 0 && state.events[head].time < begin) {
+                head = (head + 1) % capacity;
+                --count;
+            }
+            while (count != 0 && state.events[head].time < end) {
+                ctx.event_outputs[0].push(state.events[head]);
+                head = (head + 1) % capacity;
+                --count;
+            }
         }
     };
 

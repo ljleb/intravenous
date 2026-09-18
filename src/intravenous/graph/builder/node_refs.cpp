@@ -124,6 +124,13 @@ std::span<EventOutputPortId const> EventPortRef::sources() const
     return graph_builder->event_port_sources(*this);
 }
 
+EventPortRef EventPortRef::detach(size_t latency) const
+{
+    if (!graph_builder)
+        details::error("attempted to detach an empty event port");
+    return graph_builder->detach_event_port(*this, latency);
+}
+
 std::string EventPortRef::to_string() const
 {
     if (!graph_builder) return "empty event";

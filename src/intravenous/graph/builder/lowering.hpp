@@ -2005,6 +2005,9 @@ class GraphLowerer {
   }
 
   constexpr void lower_detach() {
+    if (!detach.configured_event_infos().empty())
+      details::error(
+          "legacy Graph lowering does not yet support event detach semantics");
     if (detach.configured_infos().empty()) return;
     // This lookup is meaningful only for detach writers. Building it while
     // every ordinary sample edge is added made no-detach graphs maintain a

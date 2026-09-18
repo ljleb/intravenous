@@ -300,6 +300,7 @@ public:
   EventPortRef make_event_port(EventTypeId, std::span<EventOutputPortId const>);
   std::span<EventOutputPortId const> event_port_sources(EventPortRef const&) const;
   SamplePortRef detach_sample_port(SamplePortRef const&, size_t);
+  EventPortRef detach_event_port(EventPortRef const&, size_t);
   void apply_ttl(NodeBundleHandle, size_t);
   void annotate_node(NodeBundleHandle, std::string_view, std::string_view,
       uint32_t, uint32_t);

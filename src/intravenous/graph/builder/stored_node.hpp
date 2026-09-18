@@ -54,8 +54,11 @@ enum class DeferredDetachNodeKind {
 // been resolved and the final executable node values can be reflected once.
 struct DeferredDetachNode {
   DeferredDetachNodeKind kind = DeferredDetachNodeKind::writer;
+  PortKind port_kind = PortKind::sample;
   size_t id = 0;
   size_t loop_extra_latency = 1;
+  EventTypeId event_type = EventTypeId::empty;
+  double max_events_per_sample = DEFAULT_MAX_EVENTS_PER_SAMPLE;
 };
 
 // Configured concrete-node data stays owned by GraphBuilderNodeBundles throughout

@@ -248,6 +248,8 @@ public:
 private:
   constexpr SamplePortRef detach_sample_port(
       SamplePortRef const&, size_t loop_extra_latency);
+  EventPortRef detach_event_port(
+      EventPortRef const&, size_t loop_extra_latency);
   SamplePortRef make_sample_port(
       ChannelTypeId, std::span<SampleOutputChannelId const>);
   std::span<SampleOutputChannelId const> sample_port_channels(
@@ -558,6 +560,61 @@ constexpr SamplePortRef GraphBuilderState::detach_sample_port(
       .writer_bundle = writer.node_bundle_handle(),
       .reader_bundle = reader.node_bundle_handle(),
       .reader_channel = detached.channels().front(),
+      .loop_extra_latency = latency,
+  });
+  return detached;
+}
+
+inline EventPortRef GraphBuilderState::detach_event_port(
+    EventPortRef const& source, size_t latency) {
+  if (!source.graph_builder || source.graph_builder != &facade())
+    details::error("cannot detach an event port from another builder");
+  auto const sources = source.sources();
+  if (sources.empty())
+    details::error("cannot detach an event port with no semantic sources");
+  if (_detach.reader_output_exists(source.type, sources))
+    return source;
+  if (auto existing = _detach.info_for_source(source.type, sources)) {
+    if (existing->loop_extra_latency != latency)
+      details::error("detach loop extra latency conflict");
+    return EventPortRef(
+        facade(), {existing->reader_bundle, PortKind::event, 0});
+  }
+  if (latency < 1)
+    details::error("detach loop extra latency must be at least 1");
+
+  double max_events_per_sample = 0.0;
+  for (auto const event_source : sources) {
+    auto const config = _node_bundles.resolve_event_output(
+        {event_source.bundle, PortKind::event, event_source.port}).config;
+    if (config.type != source.type)
+      details::error("event detach source type changed before configuration");
+    if (!is_valid_event_buffer_rate(config.max_events_per_sample))
+      details::error("event detach source has an invalid event rate");
+    max_events_per_sample += config.max_events_per_sample;
+    if (!is_valid_event_buffer_rate(max_events_per_sample))
+      details::error("event detach aggregate event rate is not representable");
+  }
+
+  auto const id = _detach.allocate_detach_id();
+  auto writer = NodeRef(
+      facade(), _node_bundles.append_deferred_event_detach_writer(
+          id, latency, source.type, max_events_per_sample));
+  record_configured_event_connection(
+      {writer.node_bundle_handle(), PortKind::event, 0}, source);
+  auto reader = NodeRef(
+      facade(), _node_bundles.append_deferred_event_detach_reader(
+          id, latency, source.type, max_events_per_sample));
+  EventPortRef detached = reader.event_port();
+  if (detached.type != source.type || detached.sources().size() != 1)
+    details::error("event detach reader must expose exactly one event port");
+  _detach.record_detached_source(ConfiguredDetachedEventPortInfo{
+      .detach_id = id,
+      .source_type = source.type,
+      .sources = {sources.begin(), sources.end()},
+      .writer_bundle = writer.node_bundle_handle(),
+      .reader_bundle = reader.node_bundle_handle(),
+      .reader_port = detached.sources().front(),
       .loop_extra_latency = latency,
   });
   return detached;

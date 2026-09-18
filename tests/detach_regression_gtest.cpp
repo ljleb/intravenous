@@ -56,6 +56,31 @@ namespace {
         }
     };
 
+    struct DetachedEventSource {
+        static constexpr auto outputs()
+        {
+            return std::array{iv::realtime_event_output(
+                "trigger",
+                iv::EventOutputProperties{
+                    .type = iv::EventTypeId::trigger,
+                    .max_events_per_sample = 0.25,
+                })};
+        }
+
+        void tick_block(iv::TickBlockContext<DetachedEventSource> const&) const {}
+    };
+
+    struct DetachedEventSink {
+        static constexpr auto inputs()
+        {
+            return std::array{
+                iv::realtime_event_input("trigger", iv::EventTypeId::trigger),
+            };
+        }
+
+        void tick_block(iv::TickBlockContext<DetachedEventSink> const&) const {}
+    };
+
     void detached_voice(
         iv::GraphBuilder& g,
         iv::SubgraphBuilder& boundary,
@@ -264,4 +289,52 @@ TEST(DetachRegression, StaticSubgraphDefaultUsesInitializedConstantStorage)
         EXPECT_EQ(first_output[i], iv::Sample{0.375f});
         EXPECT_EQ(runtime_output_values[i], iv::Sample{0.375f});
     }
+}
+
+TEST(DetachRegression, BuilderSessionPreservesSampleAndEventDetachLatency)
+{
+    iv::GraphBuilder graph;
+
+    auto const sample_source = iv::details::configure_concrete_node<iv::Constant>(
+        graph, iv::Sample{0.5f});
+    auto const sample_detached =
+        static_cast<iv::SamplePortRef>(sample_source).detach(5);
+    (void)sample_detached;
+
+    auto const event_source =
+        iv::details::configure_concrete_node<DetachedEventSource>(graph);
+    auto const event_sink =
+        iv::details::configure_concrete_node<DetachedEventSink>(graph);
+    auto const event_port = event_source.event_port();
+    auto const event_sources = event_port.sources();
+    auto const original_event_sources =
+        std::vector<iv::EventOutputPortId>(
+            event_sources.begin(), event_sources.end());
+
+    auto const event_detached = event_port.detach(7);
+    auto const event_detached_again = event_detached.detach(7);
+    EXPECT_EQ(
+        std::vector<iv::EventOutputPortId>(
+            event_detached.sources().begin(), event_detached.sources().end()),
+        std::vector<iv::EventOutputPortId>(
+            event_detached_again.sources().begin(),
+            event_detached_again.sources().end()));
+    EXPECT_ANY_THROW(event_source.event_port().detach(8));
+    event_sink(event_detached);
+
+    auto configured = std::move(graph).finish();
+    ASSERT_EQ(configured.detach.next_detach_id(), 2u);
+
+    auto const sample_infos = configured.detach.configured_infos();
+    ASSERT_EQ(sample_infos.size(), 1u);
+    EXPECT_EQ(sample_infos[0].loop_extra_latency, 5u);
+
+    auto const event_infos = configured.detach.configured_event_infos();
+    ASSERT_EQ(event_infos.size(), 1u);
+    EXPECT_EQ(event_infos[0].detach_id, 1u);
+    EXPECT_EQ(event_infos[0].source_type, iv::EventTypeId::trigger);
+    EXPECT_EQ(event_infos[0].sources, original_event_sources);
+    EXPECT_EQ(event_infos[0].loop_extra_latency, 7u);
+    EXPECT_EQ(event_infos[0].reader_port.bundle, event_infos[0].reader_bundle);
+    EXPECT_EQ(event_infos[0].reader_port.port, 0u);
 }
