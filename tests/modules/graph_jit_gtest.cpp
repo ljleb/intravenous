@@ -4782,8 +4782,8 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
     EXPECT_EQ(migrated_b->input_counts[0], 1u);
     EXPECT_EQ(migrated_b->first_input_times[0], 67u);
 
-    // Tail slices and non-quantized root calls must preserve exact absolute
-    // event time. Exercise 13 = 8+5, then 3, then 11 = 8+3.
+    // Legal root block sizes smaller than the SCC quantum must preserve exact
+    // absolute event time across changing invocation boundaries.
     auto tail_storage =
         compiled.compiled_graph->node_layout.create_storage(resources);
     tail_storage.initialize();
@@ -4804,19 +4804,25 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
     ASSERT_NE(tail_a, nullptr);
     ASSERT_NE(tail_b, nullptr);
     compiled.compiled_graph->root_operations.tick_block(
-        tail_storage.buffer().data(), 0, 13);
+        tail_storage.buffer().data(), 0, 4);
     compiled.compiled_graph->root_operations.tick_block(
-        tail_storage.buffer().data(), 13, 3);
+        tail_storage.buffer().data(), 4, 2);
     compiled.compiled_graph->root_operations.tick_block(
-        tail_storage.buffer().data(), 16, 11);
+        tail_storage.buffer().data(), 6, 1);
+    compiled.compiled_graph->root_operations.tick_block(
+        tail_storage.buffer().data(), 7, 8);
+    compiled.compiled_graph->root_operations.tick_block(
+        tail_storage.buffer().data(), 15, 1);
+    compiled.compiled_graph->root_operations.tick_block(
+        tail_storage.buffer().data(), 16, 2);
 
-    std::array<std::uint64_t, 5> const expected_indices{0, 8, 13, 16, 24};
-    std::array<std::uint64_t, 5> const expected_sizes{8, 5, 3, 8, 3};
-    std::array<std::uint64_t, 5> const expected_a_times{2, 10, 15, 18, 26};
-    std::array<std::uint64_t, 5> const expected_b_counts{0, 1, 0, 1, 1};
-    std::array<std::uint64_t, 5> const expected_b_times{0, 11, 0, 19, 24};
-    ASSERT_EQ(tail_a->calls, 5u);
-    ASSERT_EQ(tail_b->calls, 5u);
+    std::array<std::uint64_t, 6> const expected_indices{0, 4, 6, 7, 15, 16};
+    std::array<std::uint64_t, 6> const expected_sizes{4, 2, 1, 8, 1, 2};
+    std::array<std::uint64_t, 6> const expected_a_times{2, 5, 6, 9, 15, 17};
+    std::array<std::uint64_t, 6> const expected_b_counts{0, 0, 0, 1, 1, 1};
+    std::array<std::uint64_t, 6> const expected_b_times{0, 0, 0, 11, 15, 16};
+    ASSERT_EQ(tail_a->calls, 6u);
+    ASSERT_EQ(tail_b->calls, 6u);
     EXPECT_EQ(tail_a->scc_feedback_latency, 8u);
     EXPECT_EQ(tail_b->scc_feedback_latency, 8u);
     for (std::size_t i = 0; i < expected_indices.size(); ++i) {
