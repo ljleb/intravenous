@@ -445,11 +445,15 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     historical prefix. Persistent-ring producers prune once at SCC entry and seed
     detached feedback cursors from the prior monotonic write index, so feedback
     copies only events authored during the current root call even when retained
-    source history remains resident. Conversion consumed inside a cycle, source
-    history/latency, multi-producer fan-in
-    inside a cycle, feed-forward
-    ingress into a cycle, and edges spanning distinct cyclic regions remain
-    capability-gated.
+    source history remains resident. Cyclic producers may also use compact-carry
+    authored source latency on outbound and detached branches: future events remain
+    in canonical retained storage across root calls, restored future events are not
+    re-enqueued into detached feedback, and producers remain responsible for globally
+    nondecreasing publication order rather than relying on a generated sort/back-fill
+    path. Persistent-ring source latency, direct retained consumption inside a cycle,
+    conversion consumed inside a cycle, source history, multi-producer fan-in inside
+    a cycle, feed-forward ingress into a cycle, and edges spanning distinct cyclic
+    regions remain capability-gated.
 13. **Root I/O node integration.** Keep the configured project root zero-input and
     zero-output. Device I/O and communication with other application modules are
     ordinary concrete node definitions that own the relevant external resource or

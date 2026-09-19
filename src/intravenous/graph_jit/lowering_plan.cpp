@@ -1294,10 +1294,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
 
     // Point 12 currently supports exact realtime event transport inside a
     // cyclic execution region and fanout from a cyclic producer to downstream
-    // acyclic consumers, including non-expanding conversion and retained target
-    // history at SCC exit. Source history/latency, retained consumption
-    // inside a cycle, feed-forward ingress into a cycle, and edges between cyclic
-    // regions remain separate capabilities.
+    // acyclic consumers, including non-expanding conversion, retained target
+    // history, and authored source latency at SCC exit. Source history, retained
+    // consumption inside a cycle, feed-forward ingress into a cycle, and edges
+    // between cyclic regions remain separate capabilities.
     for (auto const& connection : connections.event_connections) {
         std::optional<std::size_t> cyclic_region;
         auto observe = [&](NodeBundleHandle bundle)
@@ -1345,11 +1345,27 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         if (connection.access != PlannedConnectionAccess::realtime_to_realtime
             || connection.external_boundary
             || connection.source_history != 0
-            || connection.source_latency != 0
+            || (connection.source_latency != 0
+                && target_inside_cyclic_region && !connection.detach)
             || (connection.target_history != 0
                 && target_inside_cyclic_region)) {
             return std::unexpected(
-                "GraphJit event SCC lowering currently supports target history only on outbound realtime transport");
+                "GraphJit event SCC lowering currently supports source latency on outbound/detached transport and target history only on outbound realtime transport");
+        }
+        if (connection.source_latency != 0) {
+            auto const group = std::ranges::find_if(
+                connections.event_producer_groups,
+                [&](EventProducerGroupPlan const& candidate) {
+                    return candidate.source_type == connection.source_type
+                        && candidate.sources == connection.sources;
+                });
+            if (group == connections.event_producer_groups.end()
+                || !group->implementation
+                || *group->implementation
+                    != EventConnectionImplementationKind::compact_persistent_carry) {
+                return std::unexpected(
+                    "GraphJit cyclic event source latency currently requires compact retained carry");
+            }
         }
         if (connection.target_history != 0) {
             auto const group = std::ranges::find_if(
@@ -2114,11 +2130,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             || connection.external_boundary
             || connection.requires_conversion
             || connection.source_history != 0
-            || connection.source_latency != 0
             || connection.target_history != 0
             || connection.source_type != connection.target_type) {
             return std::unexpected(
-                "GraphJit event feedback currently requires exact-type zero-history zero-latency realtime transport");
+                "GraphJit event feedback currently requires exact-type zero-history realtime transport");
         }
 
         auto const source_group_it = std::ranges::find_if(
