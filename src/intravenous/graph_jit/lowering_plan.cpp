@@ -2414,6 +2414,34 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             .event_merges_after.push_back(merge_index);
     }
 
+    // Map flattened execution positions back to their region. Event
+    // materializations produced by a cyclic SCC and consumed only outside that
+    // SCC belong to the root-call boundary: running them after every SCC slice
+    // would give windowed conversion/retention the slice index/size rather than
+    // the root index/size. Current capability gates ensure such cross-region
+    // materializations target acyclic downstream consumers.
+    std::vector<std::optional<std::size_t>> step_regions(
+        plan.primitive_steps.size());
+    std::vector<std::optional<std::size_t>> configuration_steps(
+        analysis.primitives.size());
+    for (std::size_t region_index = 0; region_index < plan.regions.size();
+         ++region_index) {
+        for (auto const step_index : plan.regions[region_index].primitive_steps) {
+            if (step_index >= plan.primitive_steps.size()) {
+                return std::unexpected(
+                    "GraphJit execution region references an invalid primitive step");
+            }
+            step_regions[step_index] = region_index;
+            auto const configuration_index =
+                plan.primitive_steps[step_index].configuration_index;
+            if (configuration_index >= configuration_steps.size()) {
+                return std::unexpected(
+                    "GraphJit execution step references an invalid primitive configuration");
+            }
+            configuration_steps[configuration_index] = step_index;
+        }
+    }
+
     for (std::size_t materialization_index = 0;
          materialization_index < event_ports.materializations.size();
          ++materialization_index) {
@@ -2424,7 +2452,56 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 "GraphJit event materialization references an invalid execution position");
         }
         auto& step = plan.primitive_steps[materialization.after_execution_position];
-        step.event_materializations_after.push_back(materialization_index);
+        auto const producer_region_index =
+            step_regions[materialization.after_execution_position];
+        if (!producer_region_index) {
+            return std::unexpected(
+                "GraphJit event materialization producer is absent from the execution regions");
+        }
+
+        auto& producer_region = plan.regions[*producer_region_index];
+        if (!producer_region.cyclic) {
+            step.event_materializations_after.push_back(materialization_index);
+        } else {
+            bool consumed_inside_region = false;
+            bool consumed_outside_region = false;
+            for (std::size_t primitive_index = 0;
+                 primitive_index < event_ports.primitives.size();
+                 ++primitive_index) {
+                auto const consumes_target = std::ranges::any_of(
+                    event_ports.primitives[primitive_index].inputs,
+                    [&](PrimitiveEventInputBindingPlan const& input) {
+                        return input.representation
+                            == materialization.target_representation;
+                    });
+                if (!consumes_target) continue;
+                if (primitive_index >= configuration_steps.size()
+                    || !configuration_steps[primitive_index]) {
+                    return std::unexpected(
+                        "GraphJit event materialization consumer is absent from the execution schedule");
+                }
+                auto const consumer_step = *configuration_steps[primitive_index];
+                if (!step_regions[consumer_step]) {
+                    return std::unexpected(
+                        "GraphJit event materialization consumer is absent from the execution regions");
+                }
+                if (*step_regions[consumer_step] == *producer_region_index) {
+                    consumed_inside_region = true;
+                } else {
+                    consumed_outside_region = true;
+                }
+            }
+            if (consumed_inside_region && consumed_outside_region) {
+                return std::unexpected(
+                    "GraphJit event materialization cannot yet serve both cyclic-region and downstream consumers");
+            }
+            if (consumed_outside_region) {
+                producer_region.event_materializations_after.push_back(
+                    materialization_index);
+            } else {
+                step.event_materializations_after.push_back(materialization_index);
+            }
+        }
         auto const carry_source = std::ranges::any_of(
             event_ports.carry_operations,
             [&](EventCarryPlan const& carry) {

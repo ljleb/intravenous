@@ -247,7 +247,10 @@ The current internal realtime connection surface is intentionally asymmetric:
   and detached feedback edges to stay within one cyclic region. Same-delay detached
   fanout shares one persistent delayed stream, and an exact-type zero-retention
   producer may fan out from a cyclic SCC to downstream acyclic consumers through
-  the ordinary aggregate-sequence materialization path. Generalized
+  the ordinary aggregate-sequence materialization path. Cross-region event
+  materializations are scheduled once at SCC exit with the root invocation
+  index/size rather than after every producer slice; this is the structural
+  boundary required by future windowed conversion/retention. Generalized
   conversion/retention in cyclic regions, feed-forward ingress into a cycle, and
   edges between cyclic regions remain the main realtime connection work.
 - **Both kinds:** the root graph is required to have zero public/boundary ports.

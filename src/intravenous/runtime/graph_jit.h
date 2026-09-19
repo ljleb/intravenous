@@ -46,7 +46,8 @@ struct GraphJitDiagnostic {
 // Generated zero-input/zero-output root-node execution ABI. Mutable bytes are
 // owned by GraphExecutor through NodeStorage created from CompiledGraph::node_layout.
 // Generated code receives only that storage base plus execution coordinates;
-// lifecycle remains entirely in the ordinary NodeStorage machinery.
+// lifecycle remains entirely in the ordinary NodeStorage machinery. Callers must
+// provide block_size > 0; an empty audio block is outside the root-operation ABI.
 using CompiledGraphBlockFunction =
     void (*)(std::byte* storage_base, std::size_t sample_index, std::size_t block_size);
 

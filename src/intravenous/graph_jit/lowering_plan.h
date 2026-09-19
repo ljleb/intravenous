@@ -276,6 +276,10 @@ struct PrimitiveExecutionStep {
 
 struct ExecutionRegionPlan {
     std::vector<std::size_t> primitive_steps{};
+    // Root-window event operations sourced from a cyclic region must run after
+    // the complete slice-major SCC traversal, not after each producer slice.
+    // Indices refer to EventPortBindingPlan::materializations.
+    std::vector<std::size_t> event_materializations_after{};
     bool cyclic = false;
     std::size_t maximum_block_size = 0;
     std::size_t scc_feedback_latency = 0;

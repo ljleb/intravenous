@@ -3067,6 +3067,28 @@ std::expected<llvm::Function*, std::string> define_root_operation(
         builder.CreateCondBr(done, exit, loop);
         offset->addIncoming(next_offset, builder.GetInsertBlock());
         builder.SetInsertPoint(exit);
+
+        // A cyclic producer's aggregate event sequence represents the complete
+        // root invocation. Materializations feeding downstream regions therefore
+        // execute once here, with the root index/size, after all SCC slices have
+        // appended to that aggregate.
+        for (auto const materialization_index :
+             region.event_materializations_after) {
+            if (materialization_index >= plan.event_ports.materializations.size()) {
+                return std::unexpected(
+                    "GraphJit cyclic execution region references a missing event materialization");
+            }
+            auto materialized = emit_event_materialization(
+                builder,
+                plan.event_ports,
+                plan.event_ports.materializations[materialization_index],
+                storage_base,
+                sample_index,
+                block_size);
+            if (!materialized) {
+                return std::unexpected(std::move(materialized.error()));
+            }
+        }
     }
 
     builder.CreateRetVoid();
