@@ -81,6 +81,7 @@ constexpr char graph_jit_converted_sample_feedback_id[] = "iv.test.graph_jit.sta
 constexpr char graph_jit_event_feedback_a_id[] = "iv.test.graph_jit.state_context.event_feedback_a";
 constexpr char graph_jit_latent_event_feedback_a_id[] = "iv.test.graph_jit.state_context.latent_event_feedback_a";
 constexpr char graph_jit_persistent_latent_event_feedback_a_id[] = "iv.test.graph_jit.state_context.persistent_latent_event_feedback_a";
+constexpr char graph_jit_persistent_latent_boundary_event_feedback_a_id[] = "iv.test.graph_jit.state_context.persistent_latent_boundary_event_feedback_a";
 constexpr char graph_jit_event_feedback_b_id[] = "iv.test.graph_jit.state_context.event_feedback_b";
 constexpr char graph_jit_boundary_event_feedback_a_id[] = "iv.test.graph_jit.state_context.boundary_event_feedback_a";
 constexpr char graph_jit_boundary_event_feedback_b_id[] = "iv.test.graph_jit.state_context.boundary_event_feedback_b";
@@ -3815,6 +3816,38 @@ struct PersistentLatentEventFeedbackA {
     }
 };
 
+struct PersistentLatentBoundaryEventFeedbackA {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input("in", iv::EventTypeId::boundary),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_event_output(
+            "out",
+            iv::EventOutputProperties{
+                .type = iv::EventTypeId::boundary,
+                .max_events_per_sample = 0.25,
+            },
+            iv::RealtimeOutputConfig{.latency = 320})};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<PersistentLatentBoundaryEventFeedbackA> const& ctx) const
+    {
+        (void)ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        auto const offset = ctx.block_size + 1;
+        ctx.event_outputs[0].push(
+            iv::BoundaryEvent{.is_begin = true},
+            offset,
+            ctx.index,
+            ctx.block_size);
+    }
+};
+
 struct EventFeedbackBurstA {
     static constexpr auto inputs()
     {
@@ -4664,6 +4697,7 @@ IV_NODE("iv.test.graph_jit.state_context.fan_in_sparse_event_source", FanInSpars
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_a", EventFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.latent_event_feedback_a", LatentEventFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.persistent_latent_event_feedback_a", PersistentLatentEventFeedbackA);
+IV_NODE("iv.test.graph_jit.state_context.persistent_latent_boundary_event_feedback_a", PersistentLatentBoundaryEventFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_b", EventFeedbackB);
 IV_NODE("iv.test.graph_jit.state_context.boundary_event_feedback_a", BoundaryEventFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.boundary_event_feedback_b", BoundaryEventFeedbackB);
@@ -5746,6 +5780,7 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
         "iv.test.graph_jit.state_context.trigger_event_consumer"));
     EXPECT_TRUE(has_leaf_definition(graph_jit_latent_event_feedback_a_id));
     EXPECT_TRUE(has_leaf_definition(graph_jit_persistent_latent_event_feedback_a_id));
+    EXPECT_TRUE(has_leaf_definition(graph_jit_persistent_latent_boundary_event_feedback_a_id));
     EXPECT_TRUE(has_leaf_definition(graph_jit_boundary_event_feedback_a_id));
     EXPECT_TRUE(has_leaf_definition(graph_jit_boundary_event_feedback_b_id));
     EXPECT_TRUE(has_leaf_definition(
@@ -9913,6 +9948,164 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
     EXPECT_EQ(observer->second_times[2], 129u);
     EXPECT_EQ(observer->last_times[2], 129u);
     EXPECT_EQ(feedback_write_index(), 17u);
+}
+
+TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversion)
+{
+    auto feedback_graph = configured_event_feedback_scc_external_fanout_graph(
+        *revision,
+        "iv.test.graph_jit.state_context.persistent_event_feedback_consumer",
+        graph_jit_persistent_latent_boundary_event_feedback_a_id,
+        graph_jit_boundary_event_feedback_b_id);
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+
+    auto const fanout = std::ranges::find_if(
+        analysis->event_connections,
+        [&](iv::graph_jit::detail::EventConnectionPlan const& connection) {
+            if (connection.detach || connection.sources.empty()
+                || connection.targets.empty()) {
+                return false;
+            }
+            auto const source = connection.sources.front().bundle;
+            auto const target = connection.targets.front().bundle;
+            if (source >= analysis->schedule.bundle_to_region.size()
+                || target >= analysis->schedule.bundle_to_region.size()
+                || !analysis->schedule.bundle_to_region[source]
+                || !analysis->schedule.bundle_to_region[target]) {
+                return false;
+            }
+            auto const source_region =
+                *analysis->schedule.bundle_to_region[source];
+            auto const target_region =
+                *analysis->schedule.bundle_to_region[target];
+            return source_region < analysis->schedule.regions.size()
+                && target_region < analysis->schedule.regions.size()
+                && analysis->schedule.regions[source_region].cyclic
+                && !analysis->schedule.regions[target_region].cyclic;
+        });
+    ASSERT_NE(fanout, analysis->event_connections.end());
+    EXPECT_EQ(fanout->source_type, iv::EventTypeId::boundary);
+    EXPECT_EQ(fanout->target_type, iv::EventTypeId::trigger);
+    EXPECT_EQ(fanout->source_history, 0u);
+    EXPECT_EQ(fanout->source_latency, 320u);
+    EXPECT_EQ(fanout->target_history, 320u);
+    EXPECT_TRUE(fanout->requires_conversion);
+    EXPECT_TRUE(fanout->requires_block_materialization);
+    ASSERT_EQ(fanout->conversion.step_count, 1u);
+    EXPECT_EQ(
+        fanout->conversion.steps[0],
+        iv::EventConversionStepId::boundary_to_trigger);
+
+    auto const fanout_index = static_cast<std::size_t>(
+        std::distance(analysis->event_connections.begin(), fanout));
+    auto const group = std::ranges::find_if(
+        analysis->event_producer_groups,
+        [&](iv::graph_jit::detail::EventProducerGroupPlan const& candidate) {
+            return std::ranges::find(
+                       candidate.connection_indices, fanout_index)
+                != candidate.connection_indices.end();
+        });
+    ASSERT_NE(group, analysis->event_producer_groups.end());
+    ASSERT_TRUE(group->implementation.has_value());
+    EXPECT_EQ(
+        *group->implementation,
+        iv::EventConnectionImplementationKind::persistent_ring);
+    // The canonical producer timeline must retain both sides of the root
+    // window: 320 samples of target history behind it and 320 samples of
+    // authored source latency ahead of it.
+    EXPECT_EQ(group->requirements.retained_window_samples, 640u);
+    ASSERT_TRUE(group->requirements.retained_event_capacity.has_value());
+    EXPECT_GT(*group->requirements.retained_event_capacity, 64u);
+
+    auto compiled = compile_graph(feedback_graph, 153);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    PersistentEventFeedbackConsumerStateMirror* observer = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(PersistentEventFeedbackConsumerStateMirror)) {
+            ASSERT_EQ(observer, nullptr);
+            observer = static_cast<PersistentEventFeedbackConsumerStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(observer, nullptr);
+
+    std::optional<iv::NodeLayout::RegionHandle> source_ring;
+    std::optional<iv::NodeLayout::RegionHandle> feedback_ring;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.regions.size(); ++i) {
+        auto const& region = compiled.compiled_graph->node_layout.regions[i];
+        if (region.kind != iv::NodeLayout::Region::Kind::raw) continue;
+        if (region.migration_identity.starts_with("graphjit.event.feedback:")) {
+            ASSERT_FALSE(feedback_ring.has_value());
+            feedback_ring = iv::NodeLayout::RegionHandle{.index = i};
+        } else if (region.migration_identity.find("kind=persistent_ring")
+                       != std::string::npos
+                   && region.migration_identity.find("latency=320")
+                       != std::string::npos) {
+            ASSERT_FALSE(source_ring.has_value());
+            source_ring = iv::NodeLayout::RegionHandle{.index = i};
+        }
+    }
+    ASSERT_TRUE(source_ring.has_value());
+    ASSERT_TRUE(feedback_ring.has_value());
+
+    auto const indices = [&](iv::NodeLayout::RegionHandle region) {
+        auto const bytes = storage.region_bytes(region);
+        EXPECT_GE(bytes.size(), 2 * sizeof(std::size_t));
+        std::array<std::size_t, 2> value{};
+        if (bytes.size() >= 2 * sizeof(std::size_t)) {
+            std::memcpy(value.data(), bytes.data(), 2 * sizeof(std::size_t));
+        }
+        return value;
+    };
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 64);
+    ASSERT_EQ(observer->calls, 1u);
+    EXPECT_EQ(observer->indices[0], 0u);
+    EXPECT_EQ(observer->event_counts[0], 7u);
+    EXPECT_EQ(observer->first_times[0], 9u);
+    EXPECT_EQ(observer->last_times[0], 57u);
+    EXPECT_EQ(observer->marker, 0xfeed320u);
+    EXPECT_EQ(indices(*source_ring)[0], 0u);
+    EXPECT_EQ(indices(*source_ring)[1], 8u);
+    EXPECT_EQ(indices(*feedback_ring)[1], 8u);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 64, 64);
+    ASSERT_EQ(observer->calls, 2u);
+    EXPECT_EQ(observer->indices[1], 64u);
+    EXPECT_EQ(observer->event_counts[1], 15u);
+    EXPECT_EQ(observer->first_times[1], 9u);
+    EXPECT_EQ(observer->last_times[1], 121u);
+    EXPECT_EQ(indices(*source_ring)[0], 0u);
+    EXPECT_EQ(indices(*source_ring)[1], 16u);
+    EXPECT_EQ(indices(*feedback_ring)[1], 16u);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 128, 64);
+    ASSERT_EQ(observer->calls, 3u);
+    EXPECT_EQ(observer->indices[2], 128u);
+    EXPECT_EQ(observer->event_counts[2], 23u);
+    EXPECT_EQ(observer->first_times[2], 9u);
+    EXPECT_EQ(observer->last_times[2], 185u);
+    EXPECT_EQ(indices(*source_ring)[0], 0u);
+    EXPECT_EQ(indices(*source_ring)[1], 24u);
+    EXPECT_EQ(indices(*feedback_ring)[1], 24u);
 }
 
 TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsOutboundTargetHistory)

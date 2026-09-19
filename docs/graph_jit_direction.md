@@ -255,10 +255,13 @@ The current internal realtime connection surface is intentionally asymmetric:
   restore and SCC-exit carry commit slots, so retained cyclic state has root-call
   rather than slice lifetime. Outbound target history works with both compact
   carry and a canonical persistent producer ring; detached feedback copies only
-  the newly-authored monotonic suffix from either representation. Source
-  history/latency in cyclic transport, conversion consumed inside a cycle,
-  feed-forward ingress into a cycle, and edges between cyclic regions remain the
-  main realtime connection work.
+  the newly-authored monotonic suffix from either representation. Authored
+  source latency is supported on outbound/detached cyclic transport with either
+  compact carry or a persistent canonical ring, and composes with outbound
+  target history and non-expanding conversion at SCC exit. Source history,
+  retained consumption or conversion inside a cycle, feed-forward ingress into
+  a cycle, and edges between cyclic regions remain the main realtime connection
+  work.
 - **Both kinds:** the root graph is required to have zero public/boundary ports.
   Device I/O and communication with other application modules enter through
   concrete node types, so there is no future root-boundary transport ABI to add.
@@ -453,7 +456,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     path. Authored source latency is supported with either compact carry or a
     canonical persistent producer ring; persistent-ring sources preserve future
     events across root calls and seed detached feedback from their prior monotonic
-    write index so retained future events are not re-enqueued. Direct retained
+    write index so retained future events are not re-enqueued. Source latency,
+    outbound target history, and non-expanding conversion also compose on the
+    same persistent canonical timeline: one SCC-exit materialization selects the
+    root-visible retained window and converts it for the acyclic consumer. Direct retained
     consumption inside a cycle, conversion consumed inside a cycle, source history,
     multi-producer fan-in inside
     a cycle, feed-forward ingress into a cycle, and edges spanning distinct cyclic
