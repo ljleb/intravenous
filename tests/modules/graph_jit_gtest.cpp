@@ -32,6 +32,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 
 namespace {
@@ -2218,7 +2219,11 @@ constexpr char graph_jit_runtime_fixture_name[] = "graph_jit_runtime_shared_pack
 
 std::string_view graph_jit_runtime_package_source()
 {
-    return R"cpp(
+    // Keep each raw string literal comfortably below the implementation
+    // minimum 64 KiB literal-size limit. The shared runtime package keeps
+    // growing as GraphJit coverage expands, so assemble it once from
+    // stable fragments instead of relying on one oversized literal.
+    static constexpr std::string_view part_1 = R"cpp(
 #include <intravenous/dsl.h>
 
 #include <algorithm>
@@ -3178,7 +3183,8 @@ struct FiveSampleDelay {
     }
 };
 
-struct LatencyCompensationProbe {
+)cpp";
+    static constexpr std::string_view part_2 = R"cpp(struct LatencyCompensationProbe {
     struct State {
         std::uint64_t calls = 0;
         std::uint64_t last_index = 0;
@@ -4169,6 +4175,16 @@ IV_MODULE("iv.test.graph_jit.state_context.persistent_event_ring_module", persis
 IV_MODULE("iv.test.graph_jit.state_context.retained_converted_event_fanout_module", retained_converted_event_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp";
+    static_assert(part_1.size() < 60 * 1024);
+    static_assert(part_2.size() < 60 * 1024);
+    static std::string const source = [] {
+        std::string result;
+        result.reserve(part_1.size() + part_2.size());
+        result.append(part_1);
+        result.append(part_2);
+        return result;
+    }();
+    return std::string_view{source};
 }
 
 void write_graph_jit_fixture_file_if_changed(
@@ -6405,6 +6421,115 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndF
         EXPECT_FLOAT_EQ(
             state->last_seeded[slice], expected_last_seeded[slice]);
     }
+}
+
+TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesMigrateSharedHomeAndFallbackCopy)
+{
+    auto feedback_graph = configured_multi_branch_sample_feedback_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto current = compile_graph(feedback_graph, 136);
+    ASSERT_TRUE(current.succeeded())
+        << (current.diagnostics.empty()
+                ? ""
+                : current.diagnostics.front().message);
+    auto storage = current.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    current.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 13);
+
+    // The two zero-initialized detach branches share one producer-home ring,
+    // while the non-zero branch owns a second branch-local ring. Snapshot both
+    // retained timelines before migration so we prove they migrate
+    // independently rather than merely checking the post-migration waveform.
+    struct RetainedRegionSnapshot {
+        std::string identity;
+        std::vector<std::byte> bytes;
+    };
+    auto retained_regions = [](iv::NodeStorage const& node_storage) {
+        std::vector<RetainedRegionSnapshot> result;
+        if (!node_storage.layout) return result;
+        for (std::size_t i = 0; i < node_storage.layout->regions.size(); ++i) {
+            auto const& region = node_storage.layout->regions[i];
+            if (region.kind != iv::NodeLayout::Region::Kind::raw
+                || !(region.migration_identity.starts_with("graphjit.sample:")
+                    || region.migration_identity.starts_with(
+                        "graphjit.sample.feedback:"))) {
+                continue;
+            }
+            iv::NodeLayout::RegionHandle handle{.index = i};
+            auto const bytes = node_storage.region_bytes(handle);
+            result.push_back(RetainedRegionSnapshot{
+                .identity = region.migration_identity,
+                .bytes = std::vector<std::byte>(bytes.begin(), bytes.end()),
+            });
+        }
+        std::ranges::sort(
+            result, {}, &RetainedRegionSnapshot::identity);
+        return result;
+    };
+
+    auto const before = retained_regions(storage);
+    ASSERT_EQ(before.size(), 2u);
+    EXPECT_EQ(
+        std::ranges::count_if(before, [](auto const& region) {
+            return region.identity.starts_with("graphjit.sample:");
+        }),
+        1u);
+    EXPECT_EQ(
+        std::ranges::count_if(before, [](auto const& region) {
+            return region.identity.starts_with("graphjit.sample.feedback:");
+        }),
+        1u);
+
+    auto migrated = compile_graph(feedback_graph, 137);
+    ASSERT_TRUE(migrated.succeeded())
+        << (migrated.diagnostics.empty()
+                ? ""
+                : migrated.diagnostics.front().message);
+    auto migrated_storage =
+        migrated.compiled_graph->node_layout.create_storage(resources);
+    migrated_storage.initialize(&storage);
+
+    auto const after = retained_regions(migrated_storage);
+    ASSERT_EQ(after.size(), before.size());
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        EXPECT_EQ(after[i].identity, before[i].identity);
+        EXPECT_EQ(after[i].bytes, before[i].bytes);
+    }
+
+    auto* state = static_cast<MultiBranchSampleFeedbackStateMirror*>(
+        migrated_storage.state_ptr(0));
+    ASSERT_NE(state, nullptr);
+
+    // Resume at an awkward absolute index. The shared producer-home timeline
+    // must continue both zero-initialized branches, while the independently
+    // migrated seeded timeline must continue without replaying its -2 pre-roll.
+    migrated.compiled_graph->root_operations.tick_block(
+        migrated_storage.buffer().data(), 13, 6);
+
+    ASSERT_EQ(state->calls, 2u);
+    EXPECT_EQ(state->scc_feedback_latency, 4u);
+    EXPECT_EQ(state->marker, 0x6d756c74u);
+
+    EXPECT_EQ(state->indices[0], 13u);
+    EXPECT_EQ(state->block_sizes[0], 4u);
+    EXPECT_FLOAT_EQ(state->first_fast[0], 3.0f);
+    EXPECT_FLOAT_EQ(state->last_fast[0], 4.0f);
+    EXPECT_FLOAT_EQ(state->first_slow[0], 2.0f);
+    EXPECT_FLOAT_EQ(state->last_slow[0], 3.0f);
+    EXPECT_FLOAT_EQ(state->first_seeded[0], 2.0f);
+    EXPECT_FLOAT_EQ(state->last_seeded[0], 3.0f);
+
+    EXPECT_EQ(state->indices[1], 17u);
+    EXPECT_EQ(state->block_sizes[1], 2u);
+    EXPECT_FLOAT_EQ(state->first_fast[1], 4.0f);
+    EXPECT_FLOAT_EQ(state->last_fast[1], 4.0f);
+    EXPECT_FLOAT_EQ(state->first_slow[1], 3.0f);
+    EXPECT_FLOAT_EQ(state->last_slow[1], 3.0f);
+    EXPECT_FLOAT_EQ(state->first_seeded[1], 3.0f);
+    EXPECT_FLOAT_EQ(state->last_seeded[1], 4.0f);
 }
 
 TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTargetHistory)
