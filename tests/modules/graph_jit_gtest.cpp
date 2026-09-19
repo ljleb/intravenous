@@ -66,6 +66,7 @@ constexpr char graph_jit_persistent_event_ring_module_id[] = "iv.test.graph_jit.
 constexpr char graph_jit_retained_converted_event_fanout_module_id[] = "iv.test.graph_jit.state_context.retained_converted_event_fanout_module";
 constexpr char graph_jit_sample_feedback_a_id[] = "iv.test.graph_jit.state_context.sample_feedback_a";
 constexpr char graph_jit_sample_feedback_b_id[] = "iv.test.graph_jit.state_context.sample_feedback_b";
+constexpr char graph_jit_multi_branch_sample_feedback_id[] = "iv.test.graph_jit.state_context.multi_branch_sample_feedback";
 constexpr char graph_jit_temporal_sample_feedback_id[] = "iv.test.graph_jit.state_context.temporal_sample_feedback";
 constexpr char graph_jit_converted_sample_feedback_id[] = "iv.test.graph_jit.state_context.converted_sample_feedback";
 constexpr char graph_jit_event_feedback_a_id[] = "iv.test.graph_jit.state_context.event_feedback_a";
@@ -150,6 +151,20 @@ struct SampleFeedbackBStateMirror {
     std::array<float, 24> last_inputs{};
     std::uint64_t marker = 0;
     std::uint64_t distinct_padding = 0;
+};
+
+struct MultiBranchSampleFeedbackStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t scc_feedback_latency = 0;
+    std::array<std::uint64_t, 24> indices{};
+    std::array<std::uint64_t, 24> block_sizes{};
+    std::array<float, 24> first_fast{};
+    std::array<float, 24> last_fast{};
+    std::array<float, 24> first_slow{};
+    std::array<float, 24> last_slow{};
+    std::array<float, 24> first_seeded{};
+    std::array<float, 24> last_seeded{};
+    std::uint32_t marker = 0;
 };
 
 struct TemporalSampleFeedbackStateMirror {
@@ -2642,6 +2657,63 @@ struct SampleFeedbackB {
     }
 };
 
+struct MultiBranchSampleFeedback {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t scc_feedback_latency = 0;
+        std::array<std::uint64_t, 24> indices{};
+        std::array<std::uint64_t, 24> block_sizes{};
+        std::array<float, 24> first_fast{};
+        std::array<float, 24> last_fast{};
+        std::array<float, 24> first_slow{};
+        std::array<float, 24> last_slow{};
+        std::array<float, 24> first_seeded{};
+        std::array<float, 24> last_seeded{};
+        std::uint32_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_sample_input("fast"),
+            iv::realtime_sample_input("slow"),
+            iv::realtime_sample_input("seeded"),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output("out")};
+    }
+
+    void tick_block(iv::TickBlockContext<MultiBranchSampleFeedback> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const fast = ctx.inputs[0].get_block(ctx.block_size);
+        auto const slow = ctx.inputs[1].get_block(ctx.block_size);
+        auto const seeded = ctx.inputs[2].get_block(ctx.block_size);
+        auto const slot = static_cast<std::size_t>(state.calls);
+        if (slot < state.indices.size()) {
+            state.indices[slot] = ctx.index;
+            state.block_sizes[slot] = ctx.block_size;
+            if (!fast.empty()) {
+                state.first_fast[slot] = static_cast<float>(fast[0]);
+                state.last_fast[slot] = static_cast<float>(fast[fast.size() - 1]);
+                state.first_slow[slot] = static_cast<float>(slow[0]);
+                state.last_slow[slot] = static_cast<float>(slow[slow.size() - 1]);
+                state.first_seeded[slot] = static_cast<float>(seeded[0]);
+                state.last_seeded[slot] = static_cast<float>(seeded[seeded.size() - 1]);
+            }
+        }
+        ++state.calls;
+        state.scc_feedback_latency = ctx.scc_feedback_latency;
+        state.marker = 0x6d756c74u;
+        for (auto const sample : fast) {
+            ctx.outputs[0].push(sample + 1.0f);
+        }
+    }
+};
+
 struct TemporalSampleFeedback {
     struct State {
         std::uint64_t calls = 0;
@@ -4038,6 +4110,7 @@ IV_NODE("iv.test.graph_jit.state_context.limited_sample_ramp_source", LimitedSam
 IV_NODE("iv.test.graph_jit.state_context.sample_consumer", SampleConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.sample_feedback_a", SampleFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.sample_feedback_b", SampleFeedbackB);
+IV_NODE("iv.test.graph_jit.state_context.multi_branch_sample_feedback", MultiBranchSampleFeedback);
 IV_NODE("iv.test.graph_jit.state_context.temporal_sample_feedback", TemporalSampleFeedback);
 IV_NODE("iv.test.graph_jit.state_context.converted_sample_feedback", ConvertedSampleFeedback);
 IV_NODE("iv.test.graph_jit.state_context.mono_interleaved_consumer", MonoInterleavedConsumerProbe);
@@ -4184,6 +4257,41 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_sample_feedback_graph(
         graph, graph_jit_sample_feedback_b_id, std::nullopt, {});
     first(second);
     second(static_cast<iv::SamplePortRef>(first).detach(latency, initial_value));
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
+
+std::shared_ptr<iv::ConfiguredGraph const> configured_multi_branch_sample_feedback_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create GraphJit multi-branch sample-feedback builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto node = iv::details::configure_package_definition_provider(
+        graph, graph_jit_multi_branch_sample_feedback_id, std::nullopt, {});
+    auto const output = static_cast<iv::SamplePortRef>(node);
+    node.connect_input(0, output.detach(4, iv::Sample{0.0f}));
+    node.connect_input(1, output.detach(8, iv::Sample{0.0f}));
+    node.connect_input(2, output.detach(6, iv::Sample{-2.0f}));
     graph.outputs();
     return std::make_shared<iv::ConfiguredGraph const>(
         iv::details::take_built_graph(session.get()));
@@ -4619,6 +4727,7 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
         "iv.test.graph_jit.state_context.interleaved_latency_compensation_probe"));
     EXPECT_TRUE(has_leaf_definition(graph_jit_sample_feedback_a_id));
     EXPECT_TRUE(has_leaf_definition(graph_jit_sample_feedback_b_id));
+    EXPECT_TRUE(has_leaf_definition(graph_jit_multi_branch_sample_feedback_id));
     EXPECT_TRUE(has_module_definition(graph_jit_latency_compensation_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_latency_conversion_fanout_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_composed_latency_module_id));
@@ -6192,6 +6301,110 @@ TEST_F(GraphJitRuntimeFixture, ExactSampleDetachFeedback)
     EXPECT_FLOAT_EQ(migrated_b->first_inputs[1], 1.375f);
     EXPECT_FLOAT_EQ(migrated_a->last_inputs[1], 2.375f);
     EXPECT_FLOAT_EQ(migrated_b->last_inputs[1], 2.375f);
+}
+
+TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndFallbackCopy)
+{
+    auto feedback_graph = configured_multi_branch_sample_feedback_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    ASSERT_EQ(analysis->sample_connections.size(), 3u);
+    ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
+
+    auto physical = iv::graph_jit::detail::build_sample_physical_plan(
+        *analysis, 64);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->feedback_timelines.size(), 3u);
+    ASSERT_EQ(physical->persistent_allocations.size(), 2u);
+
+    auto const canonical =
+        physical->producer_groups.front()->canonical_representation;
+    ASSERT_LT(canonical, physical->representations.size());
+    EXPECT_EQ(
+        physical->representations[canonical].implementation,
+        iv::SampleConnectionImplementationKind::feedback_ring);
+
+    auto const timeline_for_latency = [&](std::size_t latency)
+        -> iv::graph_jit::detail::SampleFeedbackTimelinePlan const* {
+        auto const it = std::ranges::find_if(
+            physical->feedback_timelines,
+            [&](auto const& timeline) {
+                return timeline.loop_extra_latency == latency;
+            });
+        return it == physical->feedback_timelines.end()
+            ? nullptr
+            : std::addressof(*it);
+    };
+    auto const* fast = timeline_for_latency(4);
+    auto const* seeded = timeline_for_latency(6);
+    auto const* slow = timeline_for_latency(8);
+    ASSERT_NE(fast, nullptr);
+    ASSERT_NE(seeded, nullptr);
+    ASSERT_NE(slow, nullptr);
+
+    EXPECT_EQ(
+        fast->writer.kind,
+        iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::producer_home);
+    EXPECT_EQ(fast->timeline_representation, canonical);
+    EXPECT_FLOAT_EQ(static_cast<float>(fast->initial_value), 0.0f);
+    EXPECT_EQ(
+        slow->writer.kind,
+        iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::producer_home);
+    EXPECT_EQ(slow->timeline_representation, canonical);
+    EXPECT_FLOAT_EQ(static_cast<float>(slow->initial_value), 0.0f);
+
+    EXPECT_EQ(
+        seeded->writer.kind,
+        iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::copy);
+    EXPECT_NE(seeded->timeline_representation, canonical);
+    EXPECT_EQ(seeded->writer.source_representation, canonical);
+    EXPECT_FLOAT_EQ(static_cast<float>(seeded->initial_value), -2.0f);
+
+    auto compiled = compile_graph(feedback_graph, 135);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_EQ(compiled.compiled_graph->node_layout.nodes.size(), 1u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* state = static_cast<MultiBranchSampleFeedbackStateMirror*>(
+        storage.state_ptr(0));
+    ASSERT_NE(state, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 13);
+
+    ASSERT_EQ(state->calls, 4u);
+    EXPECT_EQ(state->scc_feedback_latency, 4u);
+    EXPECT_EQ(state->marker, 0x6d756c74u);
+
+    std::array<std::uint64_t, 4> const expected_indices{0, 4, 8, 12};
+    std::array<std::uint64_t, 4> const expected_sizes{4, 4, 4, 1};
+    std::array<float, 4> const expected_first_fast{0.0f, 1.0f, 2.0f, 3.0f};
+    std::array<float, 4> const expected_last_fast{0.0f, 1.0f, 2.0f, 3.0f};
+    std::array<float, 4> const expected_first_slow{0.0f, 0.0f, 1.0f, 2.0f};
+    std::array<float, 4> const expected_last_slow{0.0f, 0.0f, 1.0f, 2.0f};
+    std::array<float, 4> const expected_first_seeded{-2.0f, -2.0f, 1.0f, 2.0f};
+    std::array<float, 4> const expected_last_seeded{-2.0f, 1.0f, 2.0f, 2.0f};
+    for (std::size_t slice = 0; slice < expected_indices.size(); ++slice) {
+        EXPECT_EQ(state->indices[slice], expected_indices[slice]);
+        EXPECT_EQ(state->block_sizes[slice], expected_sizes[slice]);
+        EXPECT_FLOAT_EQ(state->first_fast[slice], expected_first_fast[slice]);
+        EXPECT_FLOAT_EQ(state->last_fast[slice], expected_last_fast[slice]);
+        EXPECT_FLOAT_EQ(state->first_slow[slice], expected_first_slow[slice]);
+        EXPECT_FLOAT_EQ(state->last_slow[slice], expected_last_slow[slice]);
+        EXPECT_FLOAT_EQ(
+            state->first_seeded[slice], expected_first_seeded[slice]);
+        EXPECT_FLOAT_EQ(
+            state->last_seeded[slice], expected_last_seeded[slice]);
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTargetHistory)
