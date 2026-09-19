@@ -1966,6 +1966,63 @@ std::expected<void, std::string> emit_event_carry_operation(
     return {};
 }
 
+std::expected<void, std::string> seed_event_feedback_cursors_after_carry_restore(
+    llvm::IRBuilder<>& builder,
+    detail::EventPortBindingPlan const& event_ports,
+    detail::EventCarryPlan const& carry,
+    std::vector<llvm::Value*> const& event_feedback_cursors,
+    llvm::Value* storage_base)
+{
+    if (carry.working_representation >= event_ports.representations.size()) {
+        return std::unexpected(
+            "GraphJit event carry feedback cursor references a missing working representation");
+    }
+    auto const& working =
+        event_ports.representations[carry.working_representation];
+    if (!working.region.valid() || working.persistent
+        || working.persistent_ring) {
+        return std::unexpected(
+            "GraphJit event carry feedback cursor has invalid working storage");
+    }
+
+    bool needs_seed = false;
+    for (std::size_t feedback_index = 0;
+         feedback_index < event_ports.feedback_operations.size();
+         ++feedback_index) {
+        if (event_ports.feedback_operations[feedback_index].source_representation
+            != carry.working_representation) {
+            continue;
+        }
+        if (feedback_index >= event_feedback_cursors.size()
+            || event_feedback_cursors[feedback_index] == nullptr) {
+            return std::unexpected(
+                "GraphJit event carry feedback cursor is missing root-call storage");
+        }
+        needs_seed = true;
+    }
+    if (!needs_seed) return {};
+
+    auto* size_type = llvm::IntegerType::get(
+        builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* working_count_pointer = byte_offset_pointer(
+        builder,
+        storage_base,
+        working.count_storage_offset,
+        "event.carry.feedback.seed.count");
+    auto* restored_count = builder.CreateLoad(
+        size_type, working_count_pointer, "event.carry.feedback.seed.value");
+    for (std::size_t feedback_index = 0;
+         feedback_index < event_ports.feedback_operations.size();
+         ++feedback_index) {
+        if (event_ports.feedback_operations[feedback_index].source_representation
+            == carry.working_representation) {
+            builder.CreateStore(
+                restored_count, event_feedback_cursors[feedback_index]);
+        }
+    }
+    return {};
+}
+
 std::expected<void, std::string> emit_event_persistent_ring_prune(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
@@ -2981,16 +3038,29 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 return std::unexpected(
                     "GraphJit cyclic execution references a missing event carry restore");
             }
+            auto const& carry = plan.event_ports.carry_operations[carry_index];
             auto restored = emit_event_carry_operation(
                 builder,
                 plan.event_ports,
-                plan.event_ports.carry_operations[carry_index],
+                carry,
                 storage_base,
                 sample_index,
                 block_size,
                 true);
             if (!restored) {
                 return std::unexpected(std::move(restored.error()));
+            }
+            // The restored prefix exists only to satisfy retained outbound
+            // windows. Detached feedback branches must append only events
+            // authored during this root call, not enqueue that history again.
+            auto seeded = seed_event_feedback_cursors_after_carry_restore(
+                builder,
+                plan.event_ports,
+                carry,
+                event_feedback_cursors,
+                storage_base);
+            if (!seeded) {
+                return std::unexpected(std::move(seeded.error()));
             }
         }
 

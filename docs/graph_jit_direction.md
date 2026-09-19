@@ -408,10 +408,13 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     realtime slice, including same-delay detached fanout, burst retention, changing
     root-call sizes, and generation migration. A cyclic producer may also fan out
     to an acyclic consumer through one SCC-exit materialization, including
-    non-expanding event conversion. The execution plan now also has explicit
-    SCC-entry persistent-ring prune/carry-restore and SCC-exit carry-commit
-    phases, while retained cyclic transport itself remains gated. Conversion
-    consumed inside a cycle, history/latency retention, multi-producer fan-in
+    non-expanding event conversion and compact-carry target history. Retained
+    outbound history restores once at SCC entry, materializes the root history
+    window once at SCC exit, then commits once; detached feedback cursors skip the
+    restored historical prefix so it is not re-enqueued as newly authored output.
+    The execution plan also has explicit SCC-entry persistent-ring prune and
+    SCC-exit carry-commit phases. Conversion consumed inside a cycle, source
+    history/latency, persistent-ring outbound retention, multi-producer fan-in
     inside a cycle, feed-forward
     ingress into a cycle, and edges spanning distinct cyclic regions remain
     capability-gated.

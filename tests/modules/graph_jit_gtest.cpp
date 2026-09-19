@@ -8488,6 +8488,148 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConvertsFanoutToAcyclicConsumer)
     EXPECT_EQ(observer->last_time, 65u);
 }
 
+TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
+{
+    auto feedback_graph = configured_event_feedback_scc_external_fanout_graph(
+        *revision,
+        "iv.test.graph_jit.state_context.retained_trigger_event_consumer");
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    auto const fanout = std::ranges::find_if(
+        analysis->event_connections,
+        [&](iv::graph_jit::detail::EventConnectionPlan const& connection) {
+            if (connection.detach || connection.target_history != 8
+                || connection.sources.empty() || connection.targets.empty()) {
+                return false;
+            }
+            auto const source = connection.sources.front().bundle;
+            auto const target = connection.targets.front().bundle;
+            if (source >= analysis->schedule.bundle_to_region.size()
+                || target >= analysis->schedule.bundle_to_region.size()
+                || !analysis->schedule.bundle_to_region[source]
+                || !analysis->schedule.bundle_to_region[target]) {
+                return false;
+            }
+            auto const source_region =
+                *analysis->schedule.bundle_to_region[source];
+            auto const target_region =
+                *analysis->schedule.bundle_to_region[target];
+            return source_region < analysis->schedule.regions.size()
+                && target_region < analysis->schedule.regions.size()
+                && analysis->schedule.regions[source_region].cyclic
+                && !analysis->schedule.regions[target_region].cyclic;
+        });
+    ASSERT_NE(fanout, analysis->event_connections.end());
+    EXPECT_EQ(fanout->source_history, 0u);
+    EXPECT_EQ(fanout->source_latency, 0u);
+    EXPECT_EQ(fanout->target_history, 8u);
+    EXPECT_TRUE(fanout->requires_block_materialization);
+
+    auto const fanout_index = static_cast<std::size_t>(
+        std::distance(analysis->event_connections.begin(), fanout));
+    auto const group = std::ranges::find_if(
+        analysis->event_producer_groups,
+        [&](iv::graph_jit::detail::EventProducerGroupPlan const& candidate) {
+            return std::ranges::find(
+                       candidate.connection_indices, fanout_index)
+                != candidate.connection_indices.end();
+        });
+    ASSERT_NE(group, analysis->event_producer_groups.end());
+    ASSERT_TRUE(group->implementation.has_value());
+    EXPECT_EQ(
+        *group->implementation,
+        iv::EventConnectionImplementationKind::compact_persistent_carry);
+    EXPECT_EQ(group->requirements.retained_window_samples, 8u);
+
+    auto compiled = compile_graph(feedback_graph, 149);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    RetainedEventConsumerProbeStateMirror* observer = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size =
+            compiled.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(RetainedEventConsumerProbeStateMirror)) {
+            ASSERT_EQ(observer, nullptr);
+            observer = static_cast<RetainedEventConsumerProbeStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(observer, nullptr);
+
+    std::optional<iv::NodeLayout::RegionHandle> feedback_ring;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.regions.size(); ++i) {
+        auto const& region = compiled.compiled_graph->node_layout.regions[i];
+        if (region.kind == iv::NodeLayout::Region::Kind::raw
+            && region.migration_identity.starts_with(
+                "graphjit.event.feedback:")) {
+            ASSERT_FALSE(feedback_ring.has_value());
+            feedback_ring = iv::NodeLayout::RegionHandle{.index = i};
+        }
+    }
+    ASSERT_TRUE(feedback_ring.has_value());
+    auto const feedback_write_index = [&]() {
+        auto const bytes = storage.region_bytes(*feedback_ring);
+        EXPECT_GE(bytes.size(), 2 * sizeof(std::size_t));
+        std::size_t value = 0;
+        if (bytes.size() >= 2 * sizeof(std::size_t)) {
+            std::memcpy(
+                &value, bytes.data() + sizeof(std::size_t), sizeof(value));
+        }
+        return value;
+    };
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 64);
+    ASSERT_EQ(observer->calls, 1u);
+    EXPECT_EQ(observer->indices[0], 0u);
+    EXPECT_EQ(observer->event_counts[0], 8u);
+    EXPECT_EQ(observer->first_times[0], 1u);
+    EXPECT_EQ(observer->second_times[0], 9u);
+    EXPECT_EQ(observer->last_times[0], 57u);
+    EXPECT_EQ(feedback_write_index(), 8u);
+
+    // The carry retains [56, 64), so event 57 becomes history for the next
+    // root call. The SCC then appends eight current events before one root-exit
+    // materialization selects [56, 128).
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 64, 64);
+    ASSERT_EQ(observer->calls, 2u);
+    EXPECT_EQ(observer->indices[1], 64u);
+    EXPECT_EQ(observer->event_counts[1], 9u);
+    EXPECT_EQ(observer->first_times[1], 57u);
+    EXPECT_EQ(observer->second_times[1], 65u);
+    EXPECT_EQ(observer->last_times[1], 121u);
+
+    // The restored event 57 is historical context, not newly authored output.
+    // The feedback ring write cursor therefore advances by exactly the eight
+    // events authored in this root call, rather than by a ninth restored event.
+    EXPECT_EQ(feedback_write_index(), 16u);
+
+    // Changing the root-call size still uses the root history window, not an
+    // SCC-slice-sized window. Only prior event 121 and current event 129 fit.
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 128, 8);
+    ASSERT_EQ(observer->calls, 3u);
+    EXPECT_EQ(observer->indices[2], 128u);
+    EXPECT_EQ(observer->event_counts[2], 2u);
+    EXPECT_EQ(observer->first_times[2], 121u);
+    EXPECT_EQ(observer->second_times[2], 129u);
+    EXPECT_EQ(observer->last_times[2], 129u);
+    EXPECT_EQ(feedback_write_index(), 17u);
+}
+
 TEST_F(GraphJitRuntimeFixture, EventDetachFeedbackFanoutSharesDelayedStream)
 {
     auto feedback_graph = configured_event_feedback_fanout_graph(*revision);
