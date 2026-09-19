@@ -8,6 +8,9 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(googletest)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(gtest PRIVATE -Wno-character-conversion)
+endif()
 
 function(add_iv_gtest target source)
     set(options ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION NO_HOST_RUNTIME_OBJECTS)
