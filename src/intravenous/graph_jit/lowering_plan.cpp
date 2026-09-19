@@ -1292,12 +1292,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             : nullptr;
     };
 
-    // Point 12 currently supports exact realtime event transport inside a
-    // cyclic execution region and fanout from a cyclic producer to downstream
-    // acyclic consumers, including non-expanding conversion, retained target
-    // history, and authored source latency at SCC exit. Source history, retained
-    // consumption inside a cycle, feed-forward ingress into a cycle, and edges
-    // between cyclic regions remain separate capabilities.
+    // Realtime event transport inside a cyclic execution region supports
+    // exact-type and non-expanding converted feed-forward edges, including
+    // target-history windows materialized after the producer on each SCC slice.
+    // Outbound cyclic transport additionally supports retained target history
+    // and authored source latency at SCC exit. Source history, authored source
+    // latency consumed directly inside a cycle, feed-forward ingress into a
+    // cycle, and edges between cyclic regions remain separate capabilities.
     for (auto const& connection : connections.event_connections) {
         std::optional<std::size_t> cyclic_region;
         auto observe = [&](NodeBundleHandle bundle)
@@ -1346,11 +1347,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             || connection.external_boundary
             || connection.source_history != 0
             || (connection.source_latency != 0
-                && target_inside_cyclic_region && !connection.detach)
-            || (connection.target_history != 0
-                && target_inside_cyclic_region)) {
+                && target_inside_cyclic_region && !connection.detach)) {
             return std::unexpected(
-                "GraphJit event SCC lowering currently supports source latency on outbound/detached transport and target history only on outbound realtime transport");
+                "GraphJit event SCC lowering currently supports source latency only on outbound/detached transport");
         }
         if (connection.source_latency != 0) {
             auto const group = std::ranges::find_if(
@@ -1383,18 +1382,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                     && *group->implementation
                         != EventConnectionImplementationKind::persistent_ring)) {
                 return std::unexpected(
-                    "GraphJit cyclic outbound event history requires retained event storage");
+                    "GraphJit cyclic event target history requires retained event storage");
             }
-        }
-        if (connection.requires_conversion
-            && std::ranges::any_of(
-                connection.targets,
-                [&](EventInputPortId target) {
-                    auto const* region = region_for_bundle(target.bundle);
-                    return region != nullptr && region->cyclic;
-                })) {
-            return std::unexpected(
-                "GraphJit event SCC lowering does not yet support conversion consumed inside a cyclic region");
         }
     }
 
@@ -1712,6 +1701,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                     connection.source_history != 0
                     || connection.source_latency != 0
                     || connection.target_history != 0;
+                auto const consumed_inside_cyclic_region =
+                    std::ranges::any_of(
+                        connection.targets,
+                        [&](EventInputPortId target) {
+                            auto const* region = region_for_bundle(target.bundle);
+                            return region != nullptr && region->cyclic;
+                        });
                 if (connection.access
                         != PlannedConnectionAccess::realtime_to_realtime
                     || connection.external_boundary
@@ -1748,8 +1744,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                         existing->history_samples = std::max(
                             existing->history_samples,
                             connection.target_history);
-                        existing->select_root_window =
-                            existing->select_root_window || retained_storage;
+                        existing->select_invocation_window =
+                            existing->select_invocation_window
+                            || retained_storage
+                            || consumed_inside_cyclic_region;
                     } else {
                         auto derived = append_representation(
                             group_index,
@@ -1764,7 +1762,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                             .target_representation = target_representation,
                             .conversion = connection.conversion,
                             .history_samples = connection.target_history,
-                            .select_root_window = retained_storage,
+                            .select_invocation_window =
+                                retained_storage || consumed_inside_cyclic_region,
                             .after_execution_position = producer_execution_position,
                         });
                     }
@@ -2011,6 +2010,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 connection.source_history != 0
                 || connection.source_latency != 0
                 || connection.target_history != 0;
+            auto const consumed_inside_cyclic_region =
+                std::ranges::any_of(
+                    connection.targets,
+                    [&](EventInputPortId target) {
+                        auto const* region = region_for_bundle(target.bundle);
+                        return region != nullptr && region->cyclic;
+                    });
             if (connection.access != PlannedConnectionAccess::realtime_to_realtime
                 || connection.external_boundary
                 || connection.sources.size() != 1
@@ -2048,8 +2054,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                     target_representation = existing->target_representation;
                     existing->history_samples = std::max(
                         existing->history_samples, connection.target_history);
-                    existing->select_root_window =
-                        existing->select_root_window || retained_storage;
+                    existing->select_invocation_window =
+                        existing->select_invocation_window
+                        || retained_storage
+                        || consumed_inside_cyclic_region;
                 } else {
                     // A narrower consumer window cannot safely imply a smaller
                     // event-count capacity: max_events_per_sample is only a
@@ -2069,7 +2077,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                         .target_representation = target_representation,
                         .conversion = connection.conversion,
                         .history_samples = connection.target_history,
-                        .select_root_window = retained_storage,
+                        .select_invocation_window =
+                            retained_storage || consumed_inside_cyclic_region,
                         .after_execution_position = group.live_interval.begin,
                     });
                 }
@@ -2519,11 +2528,12 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             .event_merges_after.push_back(merge_index);
     }
 
-    // Event materializations produced by a cyclic SCC and consumed only outside
-    // that SCC belong to the root-call boundary: running them after every SCC
-    // slice would give windowed conversion/retention the slice index/size rather
-    // than the root index/size. Current capability gates ensure such cross-region
-    // materializations target acyclic downstream consumers.
+    // A materialization consumed inside a cyclic SCC is step-local and therefore
+    // receives the current SCC slice index/size. This is what retained intra-SCC
+    // consumers need: each producer slice refreshes exactly that consumer's
+    // [slice-history, slice-end) view before the dependent primitive runs. A
+    // materialization consumed only outside the SCC instead belongs to the
+    // region/root-call boundary, so it sees the complete aggregate invocation.
     for (std::size_t materialization_index = 0;
          materialization_index < event_ports.materializations.size();
          ++materialization_index) {

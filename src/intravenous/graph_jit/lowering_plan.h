@@ -178,16 +178,19 @@ struct EventMaterializationPlan {
     std::size_t source_representation = 0;
     std::size_t target_representation = 0;
     EventConversionPlan conversion{};
-    // Retained canonical sources may contain history and authored-future
-    // events that this consumer branch does not need during the current root
-    // invocation. Windowed materialization selects
-    // [index-history_samples, index+block_size) before conversion. Target
+    // Aggregate or retained canonical sources may contain events outside the
+    // consumer invocation currently being materialized. Windowed selection uses
+    // the index/block_size supplied at the emission site: a cyclic step-local
+    // materialization therefore selects one SCC slice, while a region-exit
+    // materialization selects the complete root call. In both cases the window
+    // is [index-history_samples, index+block_size) before conversion. Target
     // capacity remains source-capacity-sized because max_events_per_sample is
     // only a storage-sizing rate, not a runtime density constraint.
     std::size_t history_samples = 0;
-    bool select_root_window = false;
-    // Schedule position of the producer. The producer has completed all of its
-    // root-invocation slices before this operation runs.
+    bool select_invocation_window = false;
+    // Flattened schedule position of the producer. Execution planning keeps this
+    // operation step-local for consumers inside the same SCC, or lifts it to the
+    // cyclic region exit when every consumer is downstream of that SCC.
     std::size_t after_execution_position = 0;
 };
 

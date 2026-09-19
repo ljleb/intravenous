@@ -87,6 +87,8 @@ constexpr char graph_jit_boundary_event_feedback_a_id[] = "iv.test.graph_jit.sta
 constexpr char graph_jit_boundary_event_feedback_b_id[] = "iv.test.graph_jit.state_context.boundary_event_feedback_b";
 constexpr char graph_jit_event_feedback_burst_a_id[] = "iv.test.graph_jit.state_context.event_feedback_burst_a";
 constexpr char graph_jit_event_feedback_fanout_a_id[] = "iv.test.graph_jit.state_context.event_feedback_fanout_a";
+constexpr char graph_jit_retained_dual_event_feedback_a_id[] = "iv.test.graph_jit.state_context.retained_dual_event_feedback_a";
+constexpr char graph_jit_dual_event_feedback_b_id[] = "iv.test.graph_jit.state_context.dual_event_feedback_b";
 
 struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t tick_calls = 0;
@@ -386,6 +388,20 @@ struct EventFeedbackBStateMirror {
     std::array<std::uint64_t, 24> first_input_times{};
     std::uint64_t marker = 0;
     std::uint64_t distinct_padding = 0;
+};
+
+struct RetainedDualEventFeedbackStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t scc_feedback_latency = 0;
+    std::array<std::uint64_t, 24> indices{};
+    std::array<std::uint64_t, 24> block_sizes{};
+    std::array<std::uint64_t, 24> exact_counts{};
+    std::array<std::uint64_t, 24> exact_first_times{};
+    std::array<std::uint64_t, 24> exact_last_times{};
+    std::array<std::uint64_t, 24> converted_counts{};
+    std::array<std::uint64_t, 24> converted_first_times{};
+    std::array<std::uint64_t, 24> converted_last_times{};
+    std::uint64_t marker = 0;
 };
 
 struct SlicedEventConsumerProbeStateMirror {
@@ -3962,6 +3978,118 @@ struct EventFeedbackB {
     }
 };
 
+struct RetainedDualEventFeedbackA {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t scc_feedback_latency = 0;
+        std::array<std::uint64_t, 24> indices{};
+        std::array<std::uint64_t, 24> block_sizes{};
+        std::array<std::uint64_t, 24> exact_counts{};
+        std::array<std::uint64_t, 24> exact_first_times{};
+        std::array<std::uint64_t, 24> exact_last_times{};
+        std::array<std::uint64_t, 24> converted_counts{};
+        std::array<std::uint64_t, 24> converted_first_times{};
+        std::array<std::uint64_t, 24> converted_last_times{};
+        std::uint64_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input(
+                "exact",
+                iv::EventTypeId::trigger,
+                iv::RealtimeInputConfig{.history = 8}),
+            iv::realtime_event_input(
+                "converted",
+                iv::EventTypeId::trigger,
+                iv::RealtimeInputConfig{.history = 8}),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_event_output(
+            "out",
+            iv::EventOutputProperties{
+                .type = iv::EventTypeId::trigger,
+                .max_events_per_sample = 0.25,
+            })};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<RetainedDualEventFeedbackA> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = static_cast<std::size_t>(state.calls++);
+        auto const history = ctx.index < 8 ? ctx.index : std::size_t{8};
+        auto const exact = ctx.event_inputs[0].get_block(
+            ctx.index - history, ctx.block_size + history);
+        auto const converted = ctx.event_inputs[1].get_block(
+            ctx.index - history, ctx.block_size + history);
+        if (slot < state.indices.size()) {
+            state.indices[slot] = ctx.index;
+            state.block_sizes[slot] = ctx.block_size;
+            state.exact_counts[slot] = exact.size();
+            state.converted_counts[slot] = converted.size();
+            if (!exact.empty()) {
+                state.exact_first_times[slot] = exact[0].time;
+                state.exact_last_times[slot] = exact[exact.size() - 1].time;
+            }
+            if (!converted.empty()) {
+                state.converted_first_times[slot] = converted[0].time;
+                state.converted_last_times[slot] =
+                    converted[converted.size() - 1].time;
+            }
+        }
+        state.scc_feedback_latency = ctx.scc_feedback_latency;
+        state.marker = 0xa11ce808u;
+        auto const offset = std::min<std::size_t>(1, ctx.block_size - 1);
+        ctx.event_outputs[0].push(
+            iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+    }
+};
+
+struct DualEventFeedbackB {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::realtime_event_output(
+                "exact",
+                iv::EventOutputProperties{
+                    .type = iv::EventTypeId::trigger,
+                    .max_events_per_sample = 0.25,
+                }),
+            iv::realtime_event_output(
+                "converted",
+                iv::EventOutputProperties{
+                    .type = iv::EventTypeId::boundary,
+                    .max_events_per_sample = 0.25,
+                }),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<DualEventFeedbackB> const& ctx) const
+    {
+        (void)ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        auto const offset = std::min<std::size_t>(2, ctx.block_size - 1);
+        ctx.event_outputs[0].push(
+            iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+        ctx.event_outputs[1].push(
+            iv::BoundaryEvent{.is_begin = true},
+            offset,
+            ctx.index,
+            ctx.block_size);
+    }
+};
+
 struct TriggerEventConsumer {
     struct State {
         std::uint64_t calls = 0;
@@ -4703,6 +4831,8 @@ IV_NODE("iv.test.graph_jit.state_context.boundary_event_feedback_a", BoundaryEve
 IV_NODE("iv.test.graph_jit.state_context.boundary_event_feedback_b", BoundaryEventFeedbackB);
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_burst_a", EventFeedbackBurstA);
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_fanout_a", EventFeedbackFanoutA);
+IV_NODE("iv.test.graph_jit.state_context.retained_dual_event_feedback_a", RetainedDualEventFeedbackA);
+IV_NODE("iv.test.graph_jit.state_context.dual_event_feedback_b", DualEventFeedbackB);
 IV_NODE("iv.test.graph_jit.state_context.trigger_event_consumer", TriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_consumer", LimitedTriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_source", RetainedTriggerEventSource);
@@ -5612,6 +5742,42 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_event_feedback_graph(
         iv::details::take_built_graph(session.get()));
 }
 
+std::shared_ptr<iv::ConfiguredGraph const>
+configured_retained_converted_event_feedback_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create retained converted event-feedback builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto first = iv::details::configure_package_definition_provider(
+        graph, graph_jit_retained_dual_event_feedback_a_id, std::nullopt, {});
+    auto second = iv::details::configure_package_definition_provider(
+        graph, graph_jit_dual_event_feedback_b_id, std::nullopt, {});
+    first.connect_event_input(0, second.event_port(0));
+    first.connect_event_input(1, second.event_port(1));
+    second.connect_event_input(0, first.event_port().detach(10));
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
 std::shared_ptr<iv::ConfiguredGraph const> configured_event_feedback_fanout_graph(
     iv::PackageRevision const& revision)
 {
@@ -5783,6 +5949,8 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     EXPECT_TRUE(has_leaf_definition(graph_jit_persistent_latent_boundary_event_feedback_a_id));
     EXPECT_TRUE(has_leaf_definition(graph_jit_boundary_event_feedback_a_id));
     EXPECT_TRUE(has_leaf_definition(graph_jit_boundary_event_feedback_b_id));
+    EXPECT_TRUE(has_leaf_definition(graph_jit_retained_dual_event_feedback_a_id));
+    EXPECT_TRUE(has_leaf_definition(graph_jit_dual_event_feedback_b_id));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.limited_trigger_event_consumer"));
     EXPECT_TRUE(has_module_definition(graph_jit_direct_event_module_id));
@@ -8973,6 +9141,106 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
         EXPECT_EQ(tail_b->input_counts[i], expected_b_counts[i]);
         EXPECT_EQ(tail_b->first_input_times[i], expected_b_times[i]);
     }
+}
+
+TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConsumesRetainedAndConvertedHistoryPerSlice)
+{
+    auto feedback_graph = configured_retained_converted_event_feedback_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+
+    std::size_t retained_inside_connections = 0;
+    bool saw_exact = false;
+    bool saw_converted = false;
+    for (auto const& connection : analysis->event_connections) {
+        if (connection.detach || connection.target_history != 8
+            || connection.targets.empty()) {
+            continue;
+        }
+        auto const target = connection.targets.front().bundle;
+        ASSERT_LT(target, analysis->schedule.bundle_to_region.size());
+        ASSERT_TRUE(analysis->schedule.bundle_to_region[target].has_value());
+        auto const region = *analysis->schedule.bundle_to_region[target];
+        ASSERT_LT(region, analysis->schedule.regions.size());
+        if (!analysis->schedule.regions[region].cyclic) continue;
+        ++retained_inside_connections;
+        if (connection.source_type == iv::EventTypeId::trigger
+            && connection.target_type == iv::EventTypeId::trigger
+            && !connection.requires_conversion) {
+            saw_exact = true;
+        }
+        if (connection.source_type == iv::EventTypeId::boundary
+            && connection.target_type == iv::EventTypeId::trigger
+            && connection.requires_conversion) {
+            ASSERT_EQ(connection.conversion.step_count, 1u);
+            EXPECT_EQ(
+                connection.conversion.steps[0],
+                iv::EventConversionStepId::boundary_to_trigger);
+            saw_converted = true;
+        }
+    }
+    EXPECT_EQ(retained_inside_connections, 2u);
+    EXPECT_TRUE(saw_exact);
+    EXPECT_TRUE(saw_converted);
+
+    auto compiled = compile_graph(feedback_graph, 156);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    RetainedDualEventFeedbackStateMirror* state = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(RetainedDualEventFeedbackStateMirror)) {
+            ASSERT_EQ(state, nullptr);
+            state = static_cast<RetainedDualEventFeedbackStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(state, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 64);
+    ASSERT_EQ(state->calls, 8u);
+    EXPECT_EQ(state->scc_feedback_latency, 8u);
+    EXPECT_EQ(state->marker, 0xa11ce808u);
+    for (std::size_t slice = 0; slice < 8; ++slice) {
+        auto const index = slice * 8u;
+        EXPECT_EQ(state->indices[slice], index);
+        EXPECT_EQ(state->block_sizes[slice], 8u);
+        auto const expected_count = slice == 0 ? 1u : 2u;
+        auto const expected_first = slice == 0 ? 2u : index - 6u;
+        auto const expected_last = index + 2u;
+        EXPECT_EQ(state->exact_counts[slice], expected_count);
+        EXPECT_EQ(state->converted_counts[slice], expected_count);
+        EXPECT_EQ(state->exact_first_times[slice], expected_first);
+        EXPECT_EQ(state->converted_first_times[slice], expected_first);
+        EXPECT_EQ(state->exact_last_times[slice], expected_last);
+        EXPECT_EQ(state->converted_last_times[slice], expected_last);
+    }
+
+    // Carry restore happens once at SCC entry. The first slice of the next root
+    // call therefore sees the prior event at 58 as history together with the
+    // newly authored event at 66, for both exact and converted branches.
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 64, 8);
+    ASSERT_EQ(state->calls, 9u);
+    EXPECT_EQ(state->indices[8], 64u);
+    EXPECT_EQ(state->block_sizes[8], 8u);
+    EXPECT_EQ(state->exact_counts[8], 2u);
+    EXPECT_EQ(state->converted_counts[8], 2u);
+    EXPECT_EQ(state->exact_first_times[8], 58u);
+    EXPECT_EQ(state->converted_first_times[8], 58u);
+    EXPECT_EQ(state->exact_last_times[8], 66u);
+    EXPECT_EQ(state->converted_last_times[8], 66u);
 }
 
 TEST_F(GraphJitRuntimeFixture, EventRawStorageIsInitializedByNodeStorageLifecycle)

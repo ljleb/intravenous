@@ -2537,7 +2537,7 @@ std::expected<void, std::string> emit_event_materialization(
         target.events_storage_offset,
         "event.materialize.target.events");
 
-    if (materialization.select_root_window || source.persistent_ring) {
+    if (materialization.select_invocation_window || source.persistent_ring) {
         llvm::Value* source_read_index = llvm::ConstantInt::get(size_type, 0);
         llvm::Value* source_write_index = nullptr;
         if (source.persistent_ring) {

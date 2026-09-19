@@ -243,8 +243,9 @@ The current internal realtime connection surface is intentionally asymmetric:
   stable-merged in semantic source order after the final producer, so equal-time
   event ordering is deterministic before conversion/retention/fanout.
 - **Events, cyclic:** `detach()` currently requires one semantic source, exact event
-  type, zero source/target history, zero source latency, realtime-to-realtime access,
-  and detached feedback edges to stay within one cyclic region. Same-delay detached
+  type, zero source/target history, realtime-to-realtime access, and detached
+  feedback edges to stay within one cyclic region. Authored source latency is
+  permitted and retained on the canonical producer timeline. Same-delay detached
   fanout shares one persistent delayed stream, and an exact-type zero-retention
   producer may fan out from a cyclic SCC to downstream acyclic consumers through
   the ordinary aggregate-sequence materialization path. Non-expanding conversion
@@ -258,9 +259,13 @@ The current internal realtime connection surface is intentionally asymmetric:
   the newly-authored monotonic suffix from either representation. Authored
   source latency is supported on outbound/detached cyclic transport with either
   compact carry or a persistent canonical ring, and composes with outbound
-  target history and non-expanding conversion at SCC exit. Source history,
-  retained consumption or conversion inside a cycle, feed-forward ingress into
-  a cycle, and edges between cyclic regions remain the main realtime connection
+  target history and non-expanding conversion at SCC exit. Inside the SCC,
+  non-detached feed-forward event edges may now consume target-history windows
+  and non-expanding conversions after each producer slice; restored root-call
+  history and events authored by earlier slices remain visible to the current
+  slice without changing the append-only producer contract. Source history,
+  source latency consumed directly inside a cycle, feed-forward ingress into a
+  cycle, and edges between cyclic regions remain the main realtime connection
   work.
 - **Both kinds:** the root graph is required to have zero public/boundary ports.
   Device I/O and communication with other application modules enter through
