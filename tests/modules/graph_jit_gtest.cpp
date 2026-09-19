@@ -4558,6 +4558,43 @@ configured_unequal_latency_projected_sample_feedback_graph(
 }
 
 
+std::shared_ptr<iv::ConfiguredGraph const>
+configured_permuted_unequal_latency_projected_sample_feedback_graph(
+    iv::PackageRevision const& revision,
+    std::size_t latency = 6,
+    iv::Sample initial_value = iv::Sample{-0.25f})
+{
+    auto base = configured_unequal_latency_projected_sample_feedback_graph(
+        revision, latency, initial_value);
+    auto graph = std::make_shared<iv::ConfiguredGraph>(*base);
+    auto const configured = base->connections.configured_sample_connections();
+    auto connections = std::vector<iv::ConfiguredSampleConnection>(
+        configured.begin(), configured.end());
+
+    std::vector<std::size_t> detached_indices;
+    for (std::size_t i = 0; i < connections.size(); ++i) {
+        if (!connections[i].detach) continue;
+        if (connections[i].target_channels.size() != 1) {
+            throw std::runtime_error(
+                "GraphJit permuted projected feedback fixture lost its mono target projection");
+        }
+        detached_indices.push_back(i);
+    }
+    if (detached_indices.size() != 2) {
+        throw std::runtime_error(
+            "GraphJit permuted projected feedback fixture lost its detached contributions");
+    }
+
+    std::swap(
+        connections[detached_indices[0]].target_channels.front(),
+        connections[detached_indices[1]].target_channels.front());
+    graph->connections = iv::GraphBuilderConnections::from_configured_connections(
+        connections,
+        base->connections.configured_event_connections());
+    return graph;
+}
+
+
 std::shared_ptr<iv::ConfiguredGraph const> configured_event_feedback_graph(
     iv::PackageRevision const& revision,
     std::string_view first_definition = graph_jit_event_feedback_a_id)
@@ -7047,6 +7084,96 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackAlignsUnequalMixingL
     }
 }
 
+
+TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackPermutesTargetChannels)
+{
+    auto feedback_graph =
+        configured_permuted_unequal_latency_projected_sample_feedback_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    auto detached = std::ranges::find_if(
+        analysis->sample_connections,
+        [](auto const& connection) { return connection.detach.has_value(); });
+    ASSERT_NE(detached, analysis->sample_connections.end());
+    ASSERT_EQ(detached->projection_contributions.size(), 2u);
+    EXPECT_EQ(
+        detached->projection_contributions[0].target_channels,
+        (std::vector<std::size_t>{1u}));
+    EXPECT_EQ(
+        detached->projection_contributions[1].target_channels,
+        (std::vector<std::size_t>{0u}));
+
+    auto physical = iv::graph_jit::detail::build_sample_physical_plan(
+        *analysis, 64);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->feedback_timelines.size(), 1u);
+    auto const& timeline = physical->feedback_timelines.front();
+    ASSERT_EQ(
+        timeline.writer.kind,
+        iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::composition);
+    ASSERT_EQ(timeline.writer.composition_contributions.size(), 2u);
+    EXPECT_EQ(
+        timeline.writer.composition_contributions[0].target_channels,
+        (std::vector<std::size_t>{1u}));
+    EXPECT_EQ(
+        timeline.writer.composition_contributions[1].target_channels,
+        (std::vector<std::size_t>{0u}));
+
+    auto compiled = compile_graph(feedback_graph, 129);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 17);
+
+    ConvertedSampleFeedbackStateMirror* state = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            != sizeof(ConvertedSampleFeedbackStateMirror)) {
+            continue;
+        }
+        auto* candidate = static_cast<ConvertedSampleFeedbackStateMirror*>(
+            storage.state_ptr(i));
+        if (candidate != nullptr && candidate->marker == 0xc04e7ed1u) {
+            ASSERT_EQ(state, nullptr);
+            state = candidate;
+        }
+    }
+    ASSERT_NE(state, nullptr);
+    ASSERT_EQ(state->calls, 5u);
+    EXPECT_EQ(state->scc_feedback_latency, 4u);
+
+    std::array<std::uint64_t, 5> const expected_indices{0, 4, 8, 12, 16};
+    std::array<std::uint64_t, 5> const expected_sizes{4, 4, 4, 4, 1};
+    // This is the unequal-latency feedback waveform with its semantic target
+    // projection swapped. If lowering accidentally canonicalizes contribution
+    // order instead of honoring target_channels, these pairs are reversed.
+    std::array<float, 5> const expected_first_left{
+        -0.25f, -0.25f, 1.75f, 1.75f, 3.5f};
+    std::array<float, 5> const expected_last_left{
+        -0.25f, -0.25f, 1.75f, 1.75f, 3.5f};
+    std::array<float, 5> const expected_first_right{
+        -0.25f, -0.25f, 1.25f, 1.25f, 3.0f};
+    std::array<float, 5> const expected_last_right{
+        -0.25f, -0.25f, 1.25f, 2.125f, 3.0f};
+    for (std::size_t slice = 0; slice < expected_indices.size(); ++slice) {
+        EXPECT_EQ(state->indices[slice], expected_indices[slice]);
+        EXPECT_EQ(state->block_sizes[slice], expected_sizes[slice]);
+        EXPECT_FLOAT_EQ(state->first_left[slice], expected_first_left[slice]);
+        EXPECT_FLOAT_EQ(state->last_left[slice], expected_last_left[slice]);
+        EXPECT_FLOAT_EQ(state->first_right[slice], expected_first_right[slice]);
+        EXPECT_FLOAT_EQ(state->last_right[slice], expected_last_right[slice]);
+    }
+}
 
 TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesPartialAlignmentWarmup)
 {

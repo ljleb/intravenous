@@ -112,6 +112,9 @@ struct SampleConnectionPlan {
     std::optional<ChannelLayout> canonical_source_layout{};
     ChannelTypeId target_type = ChannelTypeId::mono;
     ChannelLayout target_layout{};
+    // After partial/projected connections are normalized, this covers the
+    // whole target port in canonical declaration order. The actual semantic
+    // projection/permutation remains in projection_contributions.target_channels.
     std::vector<SampleInputChannelId> target_channels{};
     NodeBundlePortId target_port{};
 

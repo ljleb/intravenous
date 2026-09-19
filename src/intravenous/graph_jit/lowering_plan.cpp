@@ -877,7 +877,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 || target_channel.port != target_port.port_ordinal
                 || target_channel.channel != channel) {
                 return std::unexpected(
-                    "GraphJit sample composition currently requires canonical target-channel ordering");
+                    "GraphJit normalized sample composition lost canonical target-port coverage");
             }
         }
         if (target_port.port_ordinal

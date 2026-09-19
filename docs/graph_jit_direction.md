@@ -327,9 +327,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     because `max_events_per_sample` is only a sizing rate and does not constrain how
     many resident source events may share one timestamp. Feedback rings, telemetry
     surfacing, and liveness reuse remain to land.
-12. **SCC/feedback execution.** Turn existing SCC analysis into feedback-aware
-    scheduling, `feedback_ring` realization for sample/event groups, and nonzero
-    reflected `scc_feedback_latency`.
+12. **SCC/feedback execution.** **Sample feedback and the first event-feedback
+    slice landed.** Sample `detach()` now executes through feedback-aware SCC
+    scheduling with nonzero reflected `scc_feedback_latency`, producer-home or
+    branch-local persistent timelines, source latency/history, channel conversion,
+    projected/permuted composition, unequal-latency mixing alignment, and exact-shape
+    generation migration. Event feedback executes for the current exact-type,
+    zero-history, zero-latency realtime slice; generalized cyclic event transport
+    and SCC boundary/fanout cases remain.
 13. **External project boundaries.** Define the generated root boundary-binding ABI
     and realize `external_boundary` without copying through compatibility Graph
     objects. Keep boundary ownership outside `CompiledGraph` storage.
