@@ -2321,6 +2321,32 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             "GraphJit connection schedule omitted a concrete primitive");
     }
 
+    // Map flattened execution positions back to their region before assigning
+    // physical event operations. Operations whose semantic lifetime is one
+    // complete cyclic root invocation belong to the region boundary rather
+    // than to an individual primitive slice.
+    std::vector<std::optional<std::size_t>> step_regions(
+        plan.primitive_steps.size());
+    std::vector<std::optional<std::size_t>> configuration_steps(
+        analysis.primitives.size());
+    for (std::size_t region_index = 0; region_index < plan.regions.size();
+         ++region_index) {
+        for (auto const step_index : plan.regions[region_index].primitive_steps) {
+            if (step_index >= plan.primitive_steps.size()) {
+                return std::unexpected(
+                    "GraphJit execution region references an invalid primitive step");
+            }
+            step_regions[step_index] = region_index;
+            auto const configuration_index =
+                plan.primitive_steps[step_index].configuration_index;
+            if (configuration_index >= configuration_steps.size()) {
+                return std::unexpected(
+                    "GraphJit execution step references an invalid primitive configuration");
+            }
+            configuration_steps[configuration_index] = step_index;
+        }
+    }
+
     for (std::size_t carry_index = 0;
          carry_index < sample_ports.physical.carry_operations.size();
          ++carry_index) {
@@ -2395,8 +2421,19 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             return std::unexpected(
                 "GraphJit persistent event ring references an invalid execution position");
         }
-        plan.primitive_steps[ring.producer_execution_position]
-            .event_persistent_ring_prunes_before.push_back(ring_index);
+        auto const region_index =
+            step_regions[ring.producer_execution_position];
+        if (!region_index) {
+            return std::unexpected(
+                "GraphJit persistent event ring producer is absent from the execution regions");
+        }
+        if (plan.regions[*region_index].cyclic) {
+            plan.regions[*region_index]
+                .event_persistent_ring_prunes_before.push_back(ring_index);
+        } else {
+            plan.primitive_steps[ring.producer_execution_position]
+                .event_persistent_ring_prunes_before.push_back(ring_index);
+        }
     }
 
     for (std::size_t carry_index = 0;
@@ -2407,9 +2444,21 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             return std::unexpected(
                 "GraphJit event carry operation references an invalid execution position");
         }
-        auto& step = plan.primitive_steps[carry.producer_execution_position];
-        step.event_carry_restores_before.push_back(carry_index);
-        step.event_carry_commits_after.push_back(carry_index);
+        auto const region_index =
+            step_regions[carry.producer_execution_position];
+        if (!region_index) {
+            return std::unexpected(
+                "GraphJit event carry producer is absent from the execution regions");
+        }
+        if (plan.regions[*region_index].cyclic) {
+            auto& region = plan.regions[*region_index];
+            region.event_carry_restores_before.push_back(carry_index);
+            region.event_carry_commits_after.push_back(carry_index);
+        } else {
+            auto& step = plan.primitive_steps[carry.producer_execution_position];
+            step.event_carry_restores_before.push_back(carry_index);
+            step.event_carry_commits_after.push_back(carry_index);
+        }
     }
 
     for (std::size_t merge_index = 0;
@@ -2424,34 +2473,11 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             .event_merges_after.push_back(merge_index);
     }
 
-    // Map flattened execution positions back to their region. Event
-    // materializations produced by a cyclic SCC and consumed only outside that
-    // SCC belong to the root-call boundary: running them after every SCC slice
-    // would give windowed conversion/retention the slice index/size rather than
-    // the root index/size. Current capability gates ensure such cross-region
+    // Event materializations produced by a cyclic SCC and consumed only outside
+    // that SCC belong to the root-call boundary: running them after every SCC
+    // slice would give windowed conversion/retention the slice index/size rather
+    // than the root index/size. Current capability gates ensure such cross-region
     // materializations target acyclic downstream consumers.
-    std::vector<std::optional<std::size_t>> step_regions(
-        plan.primitive_steps.size());
-    std::vector<std::optional<std::size_t>> configuration_steps(
-        analysis.primitives.size());
-    for (std::size_t region_index = 0; region_index < plan.regions.size();
-         ++region_index) {
-        for (auto const step_index : plan.regions[region_index].primitive_steps) {
-            if (step_index >= plan.primitive_steps.size()) {
-                return std::unexpected(
-                    "GraphJit execution region references an invalid primitive step");
-            }
-            step_regions[step_index] = region_index;
-            auto const configuration_index =
-                plan.primitive_steps[step_index].configuration_index;
-            if (configuration_index >= configuration_steps.size()) {
-                return std::unexpected(
-                    "GraphJit execution step references an invalid primitive configuration");
-            }
-            configuration_steps[configuration_index] = step_index;
-        }
-    }
-
     for (std::size_t materialization_index = 0;
          materialization_index < event_ports.materializations.size();
          ++materialization_index) {

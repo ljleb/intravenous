@@ -276,10 +276,14 @@ struct PrimitiveExecutionStep {
 
 struct ExecutionRegionPlan {
     std::vector<std::size_t> primitive_steps{};
-    // Root-window event operations sourced from a cyclic region must run after
-    // the complete slice-major SCC traversal, not after each producer slice.
-    // Indices refer to EventPortBindingPlan::materializations.
+    // Retained event state owned by a cyclic producer is root-invocation state,
+    // not slice state. These operations therefore surround the complete
+    // slice-major SCC traversal. Indices refer to the corresponding
+    // EventPortBindingPlan vectors.
+    std::vector<std::size_t> event_persistent_ring_prunes_before{};
+    std::vector<std::size_t> event_carry_restores_before{};
     std::vector<std::size_t> event_materializations_after{};
+    std::vector<std::size_t> event_carry_commits_after{};
     bool cyclic = false;
     std::size_t maximum_block_size = 0;
     std::size_t scc_feedback_latency = 0;

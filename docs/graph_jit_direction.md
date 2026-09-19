@@ -251,7 +251,10 @@ The current internal realtime connection surface is intentionally asymmetric:
   on such outbound branches is also supported. Cross-region event materializations
   are scheduled once at SCC exit with the root invocation index/size rather than
   after every producer slice; conversion therefore sees the complete root-call
-  aggregate. Retention in cyclic transport, conversion consumed inside a cycle,
+  aggregate. Execution regions also own SCC-entry persistent-ring pruning/carry
+  restore and SCC-exit carry commit slots, so retained cyclic state has root-call
+  rather than slice lifetime once its capability gate is opened. Retention in
+  cyclic transport, conversion consumed inside a cycle,
   feed-forward ingress into a cycle, and edges between cyclic regions remain the
   main realtime connection work.
 - **Both kinds:** the root graph is required to have zero public/boundary ports.
@@ -405,8 +408,11 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     realtime slice, including same-delay detached fanout, burst retention, changing
     root-call sizes, and generation migration. A cyclic producer may also fan out
     to an acyclic consumer through one SCC-exit materialization, including
-    non-expanding event conversion. Conversion consumed inside a cycle,
-    history/latency retention, multi-producer fan-in inside a cycle, feed-forward
+    non-expanding event conversion. The execution plan now also has explicit
+    SCC-entry persistent-ring prune/carry-restore and SCC-exit carry-commit
+    phases, while retained cyclic transport itself remains gated. Conversion
+    consumed inside a cycle, history/latency retention, multi-producer fan-in
+    inside a cycle, feed-forward
     ingress into a cycle, and edges spanning distinct cyclic regions remain
     capability-gated.
 13. **Root I/O node integration.** Keep the configured project root zero-input and

@@ -2957,11 +2957,46 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 "GraphJit cyclic execution region has invalid slice semantics");
         }
 
-        // Aggregate event producer sequences belong to the complete root call,
-        // not an individual SCC slice. Clear each once before entering the
-        // slice-major loop. Persistent retained rings (when present) are pruned
-        // per slice below; feedback rings retire old events in their producer
-        // append operation after all same-slice consumers have run.
+        // Retained event state owned by an SCC producer spans the complete root
+        // invocation. Advance/restore it once before entering the slice-major
+        // loop. Feedback rings remain separate: they retire old events in the
+        // producer append operation after all same-slice consumers have run.
+        for (auto const ring_index : region.event_persistent_ring_prunes_before) {
+            if (ring_index >= plan.event_ports.persistent_rings.size()) {
+                return std::unexpected(
+                    "GraphJit cyclic execution references a missing persistent event ring");
+            }
+            auto pruned = emit_event_persistent_ring_prune(
+                builder,
+                plan.event_ports,
+                plan.event_ports.persistent_rings[ring_index],
+                storage_base,
+                sample_index);
+            if (!pruned) {
+                return std::unexpected(std::move(pruned.error()));
+            }
+        }
+        for (auto const carry_index : region.event_carry_restores_before) {
+            if (carry_index >= plan.event_ports.carry_operations.size()) {
+                return std::unexpected(
+                    "GraphJit cyclic execution references a missing event carry restore");
+            }
+            auto restored = emit_event_carry_operation(
+                builder,
+                plan.event_ports,
+                plan.event_ports.carry_operations[carry_index],
+                storage_base,
+                sample_index,
+                block_size,
+                true);
+            if (!restored) {
+                return std::unexpected(std::move(restored.error()));
+            }
+        }
+
+        // Aggregate transient event producer sequences also belong to the
+        // complete root call, not an individual SCC slice. Clear each once
+        // before entering the slice-major loop.
         for (auto const step_index : region.primitive_steps) {
             if (step_index >= plan.execution.primitive_steps.size()) {
                 return std::unexpected(
@@ -3010,28 +3045,6 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             tail, remaining, quantum, "scc.slice.size");
         auto* slice_index = builder.CreateAdd(
             sample_index, offset, "scc.slice.index");
-
-        // Retained non-feedback event rings are advanced before the slice's
-        // consumers run. Feedback rings retire their old prefix in the
-        // producer-side append operation after every feedback consumer has run.
-        for (auto const step_index : region.primitive_steps) {
-            auto const& step = plan.execution.primitive_steps[step_index];
-            for (auto const ring_index : step.event_persistent_ring_prunes_before) {
-                if (ring_index >= plan.event_ports.persistent_rings.size()) {
-                    return std::unexpected(
-                        "GraphJit cyclic execution references a missing persistent event ring");
-                }
-                auto pruned = emit_event_persistent_ring_prune(
-                    builder,
-                    plan.event_ports,
-                    plan.event_ports.persistent_rings[ring_index],
-                    storage_base,
-                    slice_index);
-                if (!pruned) {
-                    return std::unexpected(std::move(pruned.error()));
-                }
-            }
-        }
 
         for (auto const step_index : region.primitive_steps) {
             auto const& step = plan.execution.primitive_steps[step_index];
@@ -3087,6 +3100,23 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 block_size);
             if (!materialized) {
                 return std::unexpected(std::move(materialized.error()));
+            }
+        }
+        for (auto const carry_index : region.event_carry_commits_after) {
+            if (carry_index >= plan.event_ports.carry_operations.size()) {
+                return std::unexpected(
+                    "GraphJit cyclic execution references a missing event carry commit");
+            }
+            auto committed = emit_event_carry_operation(
+                builder,
+                plan.event_ports,
+                plan.event_ports.carry_operations[carry_index],
+                storage_base,
+                sample_index,
+                block_size,
+                false);
+            if (!committed) {
+                return std::unexpected(std::move(committed.error()));
             }
         }
     }
