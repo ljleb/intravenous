@@ -999,9 +999,14 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 return std::unexpected(
                     "GraphJit sample composition currently requires one source channel per target channel without channel-count conversion");
             }
-            // The synthetic representation is already timestamp-aligned by
-            // its per-channel gather, so the primitive reads it at latency 0.
-            target_read_latency = 0;
+            // Feed-forward composition materializes a timestamp-aligned
+            // transient value and therefore reads at latency zero. Detached
+            // composition writes each source frame forward by its channel's
+            // read latency into a persistent aligned timeline, leaving only
+            // the authored loop delay for the InputPort binding.
+            target_read_latency = connection.detach
+                ? connection.detach->loop_extra_latency
+                : 0;
         }
 
         validated_targets.push_back(ValidatedSampleTargetBinding{

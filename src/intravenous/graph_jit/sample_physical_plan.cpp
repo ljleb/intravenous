@@ -145,6 +145,31 @@ std::string feedback_identity(
     return std::move(out).str();
 }
 
+std::string composition_feedback_identity(
+    SampleConnectionPlan const& connection,
+    Sample initial_value,
+    std::size_t frame_capacity)
+{
+    std::ostringstream out;
+    out << "graphjit.sample.composed_feedback:target="
+        << connection.target_port.node_bundle_handle << '.'
+        << connection.target_port.port_ordinal
+        << ":layout="
+        << static_cast<unsigned>(connection.target_layout.channel_type) << '.'
+        << static_cast<unsigned>(connection.target_layout.sample_layout)
+        << ":sources=";
+    for (auto const& channel : connection.source_channel_timings) {
+        out << channel.source.bundle << '.' << channel.source.port << '.'
+            << channel.source.channel << '@' << channel.read_latency << ',';
+    }
+    out << ":latency=" << connection.detach->loop_extra_latency
+        << ":history=" << connection.target_history
+        << ":initial_bits="
+        << std::bit_cast<std::uint32_t>(static_cast<float>(initial_value))
+        << ":capacity=" << frame_capacity;
+    return std::move(out).str();
+}
+
 } // namespace
 
 std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
@@ -276,6 +301,35 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 ? persistent_identity(
                     group, kind, retained_frames, frame_capacity)
                 : std::move(migration_identity),
+            .initialize_value = initialize_value,
+        });
+        return allocation_index;
+    };
+
+    auto append_synthetic_persistent_allocation = [&] (
+        std::size_t representation_index,
+        ChannelLayout layout,
+        std::size_t retained_frames,
+        std::size_t frame_capacity,
+        std::string migration_identity,
+        std::optional<Sample> initialize_value)
+        -> std::expected<std::size_t, std::string> {
+        if (migration_identity.empty()) {
+            return std::unexpected(
+                "GraphJit synthetic sample persistent allocation requires a migration identity");
+        }
+        auto bytes = sample_bytes(layout, frame_capacity, false);
+        if (!bytes) return std::unexpected(std::move(bytes.error()));
+        auto const allocation_index = plan.persistent_allocations.size();
+        plan.persistent_allocations.push_back(SamplePersistentAllocationPlan{
+            .representation_index = representation_index,
+            .kind = SamplePersistentStorageKind::ring,
+            .channel_layout = layout,
+            .retained_frames = retained_frames,
+            .frame_capacity = frame_capacity,
+            .size_bytes = *bytes,
+            .alignment = alignof(Sample),
+            .migration_identity = std::move(migration_identity),
             .initialize_value = initialize_value,
         });
         return allocation_index;
@@ -670,13 +724,17 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 return std::unexpected(
                     "GraphJit detached sample connection already owns a physical representation");
             }
+            // Non-canonical projected/permuted feedback is realized once,
+            // after every contributing producer group has been planned, by the
+            // composition pass below. Do not allocate one feedback branch per
+            // contributing producer here.
+            if (!connection.canonical_source_port) continue;
             if (!group.source_port
-                || !connection.canonical_source_port
                 || *connection.canonical_source_port != *group.source_port
                 || !connection.canonical_source_layout
                 || *connection.canonical_source_layout != *group.canonical_source_layout) {
                 return std::unexpected(
-                    "GraphJit sample feedback currently requires one canonical whole-port realtime source");
+                    "GraphJit canonical sample feedback lost its producer identity");
             }
             if (!connection.requires_conversion
                 && connection.target_layout != *group.canonical_source_layout) {
@@ -828,9 +886,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             return std::unexpected(
                 "GraphJit composed sample connection already owns a physical representation");
         }
-        if (connection.detach || connection.external_boundary) {
+        if (connection.external_boundary) {
             return std::unexpected(
-                "GraphJit point-9 sample composition does not yet realize feedback or external storage");
+                "GraphJit sample composition does not yet realize external storage");
         }
         if (connection.source_channel_timings.size()
                 != connection.source_channels.size()
@@ -852,9 +910,6 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             }
         }
 
-        auto capacity = working_ring_capacity(
-            kernel_block_size, connection.target_history);
-        if (!capacity) return std::unexpected(std::move(capacity.error()));
         auto const begin = composition_position(
             connection,
             ConnectionLiveIntervalPlan{
@@ -865,29 +920,103 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         auto const end = target_position(
             connection,
             ConnectionLiveIntervalPlan{.begin = begin, .end = begin});
-        auto target_representation = append_transient_representation(
-            SampleRepresentationPlan{
-                .producer_group_index = no_sample_producer_group,
-                .canonical_producer_representation = false,
-                .implementation = SampleConnectionImplementationKind::transient_materialization,
-                .channel_layout = connection.target_layout,
-                .frame_capacity = *capacity,
-                .live_interval = ConnectionLiveIntervalPlan{
-                    .begin = begin,
-                    .end = std::max(begin, end),
-                    .crosses_kernel_invocations = false,
-                },
-            });
-        if (!target_representation) {
-            return std::unexpected(std::move(target_representation.error()));
+
+        std::size_t target_representation = no_sample_representation;
+        std::size_t composition_history = connection.target_history;
+        bool const detached = connection.detach.has_value();
+        if (detached) {
+            if (!connection.detach_initial_value) {
+                return std::unexpected(
+                    "GraphJit composed sample feedback lost its resolved initial value");
+            }
+            auto max_read_latency = std::size_t{0};
+            for (auto const& channel : connection.source_channel_timings) {
+                max_read_latency = std::max(
+                    max_read_latency, channel.read_latency);
+            }
+            auto const detach_latency = connection.detach->loop_extra_latency;
+            if (connection.target_history
+                    > std::numeric_limits<std::size_t>::max() - detach_latency
+                || max_read_latency
+                    > std::numeric_limits<std::size_t>::max()
+                        - detach_latency - connection.target_history) {
+                return std::unexpected(
+                    "GraphJit composed sample feedback retained extent overflows size_t");
+            }
+            auto const retained_frames = detach_latency
+                + connection.target_history + max_read_latency;
+            auto capacity = working_ring_capacity(
+                kernel_block_size, retained_frames);
+            if (!capacity) {
+                return std::unexpected(std::move(capacity.error()));
+            }
+
+            target_representation = append_representation(
+                SampleRepresentationPlan{
+                    .producer_group_index = no_sample_producer_group,
+                    .canonical_producer_representation = false,
+                    .implementation = SampleConnectionImplementationKind::feedback_ring,
+                    .channel_layout = connection.target_layout,
+                    .frame_capacity = *capacity,
+                    .live_interval = ConnectionLiveIntervalPlan{
+                        .begin = std::min(begin, end),
+                        .end = std::max(begin, end),
+                        .crosses_kernel_invocations = true,
+                    },
+                });
+            auto persistent = append_synthetic_persistent_allocation(
+                target_representation,
+                connection.target_layout,
+                retained_frames,
+                *capacity,
+                composition_feedback_identity(
+                    connection,
+                    *connection.detach_initial_value,
+                    *capacity),
+                *connection.detach_initial_value);
+            if (!persistent) {
+                return std::unexpected(std::move(persistent.error()));
+            }
+            plan.representations[target_representation].persistent_allocation =
+                *persistent;
+
+            // Persistent feedback owns the historical target timeline. The
+            // composition operation writes only newly produced source frames,
+            // shifted forward by their per-channel read latency. Rewriting the
+            // historical window would destroy authored detach pre-roll.
+            composition_history = 0;
+        } else {
+            auto capacity = working_ring_capacity(
+                kernel_block_size, connection.target_history);
+            if (!capacity) {
+                return std::unexpected(std::move(capacity.error()));
+            }
+            auto transient = append_transient_representation(
+                SampleRepresentationPlan{
+                    .producer_group_index = no_sample_producer_group,
+                    .canonical_producer_representation = false,
+                    .implementation = SampleConnectionImplementationKind::transient_materialization,
+                    .channel_layout = connection.target_layout,
+                    .frame_capacity = *capacity,
+                    .live_interval = ConnectionLiveIntervalPlan{
+                        .begin = begin,
+                        .end = std::max(begin, end),
+                        .crosses_kernel_invocations = false,
+                    },
+                });
+            if (!transient) {
+                return std::unexpected(std::move(transient.error()));
+            }
+            target_representation = *transient;
         }
 
         SampleCompositionPlan composition{
             .connection_index = connection_index,
-            .target_representation = *target_representation,
+            .target_representation = target_representation,
             .after_execution_position = begin,
             .target_layout = connection.target_layout,
-            .target_history = connection.target_history,
+            .target_history = composition_history,
+            .shift_writes_by_read_latency = detached,
         };
         composition.sources.reserve(connection.source_channel_timings.size());
         for (std::size_t channel_index = 0;
@@ -932,7 +1061,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             });
         }
         plan.compositions.push_back(std::move(composition));
-        plan.connection_representations[connection_index] = *target_representation;
+        plan.connection_representations[connection_index] = target_representation;
     }
 
     auto arena = plan_transient_arena(transient_requests);

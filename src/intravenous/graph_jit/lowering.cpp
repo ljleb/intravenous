@@ -1138,6 +1138,15 @@ std::expected<void, std::string> emit_sample_composition(
         return std::unexpected(
             "GraphJit sample composition requires exactly one source per target channel");
     }
+    if (composition.shift_writes_by_read_latency
+        && (composition.target_history != 0
+            || target_representation.implementation
+                != SampleConnectionImplementationKind::feedback_ring
+            || target_representation.persistent_allocation
+                == detail::no_sample_persistent_allocation)) {
+        return std::unexpected(
+            "GraphJit shifted sample composition requires a persistent feedback target");
+    }
 
     auto target = sample_storage_binding(
         physical, composition.target_representation);
@@ -1217,10 +1226,19 @@ std::expected<void, std::string> emit_sample_composition(
 
     for (std::size_t i = 0; i < sources.size(); ++i) {
         auto const& source = sources[i];
-        auto* source_frame = builder.CreateSub(
-            target_frame,
-            llvm::ConstantInt::get(size_type, source.read_latency),
-            "sample.compose.source.frame." + std::to_string(i));
+        llvm::Value* source_frame = target_frame;
+        llvm::Value* target_storage_frame = target_frame;
+        if (composition.shift_writes_by_read_latency) {
+            target_storage_frame = builder.CreateAdd(
+                target_frame,
+                llvm::ConstantInt::get(size_type, source.read_latency),
+                "sample.compose.target.frame." + std::to_string(i));
+        } else {
+            source_frame = builder.CreateSub(
+                target_frame,
+                llvm::ConstantInt::get(size_type, source.read_latency),
+                "sample.compose.source.frame." + std::to_string(i));
+        }
         auto* source_pointer = sample_element_pointer(
             builder,
             storage_base,
@@ -1236,7 +1254,7 @@ std::expected<void, std::string> emit_sample_composition(
             builder,
             storage_base,
             *target,
-            target_frame,
+            target_storage_frame,
             source.target_channel,
             "sample.compose.target." + std::to_string(i));
         builder.CreateStore(value, target_pointer);

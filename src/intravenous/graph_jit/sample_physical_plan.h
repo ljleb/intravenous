@@ -76,10 +76,12 @@ struct SampleCompositionSourcePlan {
 };
 
 // A composed connection gathers independently-timed channels from canonical
-// producer representations into one transient target-layout representation.
-// The gathered representation is timestamp-aligned, so its eventual InputPort
-// binding reads with zero additional latency; target history is reconstructed
-// from the producer histories while the composition runs.
+// producer representations into one target-layout representation. Feed-forward
+// composition writes a timestamp-aligned transient window, so its eventual
+// InputPort binding reads with zero additional latency and target history is
+// reconstructed while composition runs. Detached composition instead owns a
+// persistent initialized ring and shifts current source writes forward by each
+// channel's read latency; its InputPort applies only the common detach delay.
 struct SampleCompositionPlan {
     std::size_t connection_index = 0;
     std::vector<SampleCompositionSourcePlan> sources{};
@@ -87,6 +89,14 @@ struct SampleCompositionPlan {
     std::size_t after_execution_position = 0;
     ChannelLayout target_layout{};
     std::size_t target_history = 0;
+
+    // Detached composition stores one persistent target-layout timeline without
+    // first materializing a transient aggregate. Each producer channel writes
+    // its current source frame at target absolute index source + read_latency.
+    // This preserves per-channel path latency while leaving every unwritten
+    // pre-roll frame at the authored detach initial value. The eventual input
+    // binding therefore needs only the common detach latency.
+    bool shift_writes_by_read_latency = false;
 };
 
 // Exact transient byte range assigned to one representation. Ranges may overlap
