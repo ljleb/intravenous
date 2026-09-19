@@ -1172,6 +1172,9 @@ std::expected<void, std::string> emit_sample_composition_write(
         std::vector<SourceBinding> sources{};
         std::vector<std::size_t> target_channels{};
         std::vector<std::size_t> shifted_write_latencies{};
+        std::optional<ReflectedSamplePortStorageBinding> feedback_alignment_storage{};
+        std::optional<std::size_t> feedback_alignment_state_offset{};
+        std::size_t feedback_alignment_write_latency = 0;
     };
 
     std::vector<ContributionBinding> contributions;
@@ -1232,6 +1235,15 @@ std::expected<void, std::string> emit_sample_composition_write(
             populated_targets[target_channel] = true;
         }
 
+        if (!shift_writes_by_read_latency
+            && (contribution_plan.feedback_alignment_representation
+                    != detail::no_sample_representation
+                || contribution_plan.feedback_alignment_state
+                    != detail::no_sample_representation
+                || contribution_plan.feedback_alignment_write_latency != 0)) {
+            return std::unexpected(
+                "GraphJit feed-forward sample composition unexpectedly owns feedback alignment state");
+        }
         if (shift_writes_by_read_latency) {
             auto const source_type = contribution.source_layout.channel_type;
             auto const converted_type = contribution.converted_layout.channel_type;
@@ -1250,13 +1262,55 @@ std::expected<void, std::string> emit_sample_composition_write(
                     contribution.shifted_write_latencies, latency);
             } else if (source_type == ChannelTypeId::stereo
                 && converted_type == ChannelTypeId::mono) {
-                if (contribution.sources[0].read_latency
-                    != contribution.sources[1].read_latency) {
+                auto const minimum_latency = std::min(
+                    contribution.sources[0].read_latency,
+                    contribution.sources[1].read_latency);
+                auto const maximum_latency = std::max(
+                    contribution.sources[0].read_latency,
+                    contribution.sources[1].read_latency);
+                contribution.shifted_write_latencies[0] = minimum_latency;
+                if (minimum_latency != maximum_latency) {
+                    if (contribution_plan.feedback_alignment_representation
+                            >= physical.representations.size()
+                        || contribution_plan.feedback_alignment_state
+                            >= physical.feedback_alignment_states.size()
+                        || contribution_plan.feedback_alignment_write_latency
+                            != minimum_latency) {
+                        return std::unexpected(
+                            "GraphJit unequal-latency feedback mixing lost its alignment plan");
+                    }
+                    auto alignment = sample_storage_binding(
+                        physical,
+                        contribution_plan.feedback_alignment_representation);
+                    if (!alignment) {
+                        return std::unexpected(std::move(alignment.error()));
+                    }
+                    if (alignment->channel_layout != contribution.source_layout
+                        || alignment->frame_capacity == 0
+                        || !is_power_of_2(alignment->frame_capacity)) {
+                        return std::unexpected(
+                            "GraphJit unequal-latency feedback mixing has invalid alignment storage");
+                    }
+                    auto const& state = physical.feedback_alignment_states[
+                        contribution_plan.feedback_alignment_state];
+                    if (state.warmup_frames
+                            != maximum_latency - minimum_latency
+                        || state.migration_identity.empty()) {
+                        return std::unexpected(
+                            "GraphJit unequal-latency feedback mixing has invalid warmup state");
+                    }
+                    contribution.feedback_alignment_storage = *alignment;
+                    contribution.feedback_alignment_state_offset =
+                        state.storage_offset;
+                    contribution.feedback_alignment_write_latency =
+                        minimum_latency;
+                } else if (contribution_plan.feedback_alignment_representation
+                               != detail::no_sample_representation
+                    || contribution_plan.feedback_alignment_state
+                        != detail::no_sample_representation) {
                     return std::unexpected(
-                        "GraphJit shifted stereo-to-mono feedback conversion requires equal source-channel latencies");
+                        "GraphJit equal-latency feedback mixing unexpectedly owns alignment state");
                 }
-                contribution.shifted_write_latencies[0] =
-                    contribution.sources[0].read_latency;
             } else {
                 return std::unexpected(
                     "GraphJit shifted sample composition has an unsupported semantic conversion");
@@ -1331,6 +1385,86 @@ std::expected<void, std::string> emit_sample_composition_write(
                     + std::to_string(source_index)));
         }
 
+        llvm::Value* feedback_alignment_ready = nullptr;
+        if (contribution.feedback_alignment_storage) {
+            if (!contribution.feedback_alignment_state_offset) {
+                return std::unexpected(
+                    "GraphJit unequal-latency feedback mixing lost its warmup storage");
+            }
+            for (std::size_t source_index = 0;
+                 source_index < contribution.sources.size(); ++source_index) {
+                auto* alignment_pointer = sample_element_pointer(
+                    builder,
+                    storage_base,
+                    *contribution.feedback_alignment_storage,
+                    target_frame,
+                    source_index,
+                    "sample.compose.align.write."
+                        + std::to_string(contribution_index) + "."
+                        + std::to_string(source_index));
+                builder.CreateStore(
+                    source_values[source_index], alignment_pointer);
+            }
+
+            for (std::size_t source_index = 0;
+                 source_index < contribution.sources.size(); ++source_index) {
+                auto const latency_delta =
+                    contribution.sources[source_index].read_latency
+                    - contribution.feedback_alignment_write_latency;
+                auto* aligned_frame = builder.CreateSub(
+                    target_frame,
+                    llvm::ConstantInt::get(size_type, latency_delta),
+                    "sample.compose.align.frame."
+                        + std::to_string(contribution_index) + "."
+                        + std::to_string(source_index));
+                auto* alignment_pointer = sample_element_pointer(
+                    builder,
+                    storage_base,
+                    *contribution.feedback_alignment_storage,
+                    aligned_frame,
+                    source_index,
+                    "sample.compose.align.read."
+                        + std::to_string(contribution_index) + "."
+                        + std::to_string(source_index));
+                source_values[source_index] = builder.CreateLoad(
+                    sample_type,
+                    alignment_pointer,
+                    "sample.compose.align.value."
+                        + std::to_string(contribution_index) + "."
+                        + std::to_string(source_index));
+            }
+
+            auto* warmup_pointer = byte_offset_pointer(
+                builder,
+                storage_base,
+                *contribution.feedback_alignment_state_offset,
+                "sample.compose.align.warmup.ptr."
+                    + std::to_string(contribution_index));
+            auto* warmup = builder.CreateLoad(
+                size_type,
+                warmup_pointer,
+                "sample.compose.align.warmup."
+                    + std::to_string(contribution_index));
+            feedback_alignment_ready = builder.CreateICmpEQ(
+                warmup,
+                zero,
+                "sample.compose.align.ready."
+                    + std::to_string(contribution_index));
+            auto* decremented = builder.CreateSub(
+                warmup,
+                llvm::ConstantInt::get(size_type, 1),
+                "sample.compose.align.warmup.dec."
+                    + std::to_string(contribution_index));
+            builder.CreateStore(
+                builder.CreateSelect(
+                    feedback_alignment_ready,
+                    zero,
+                    decremented,
+                    "sample.compose.align.warmup.next."
+                        + std::to_string(contribution_index)),
+                warmup_pointer);
+        }
+
         std::vector<llvm::Value*> converted_values;
         switch (contribution.source_layout.channel_type) {
         case ChannelTypeId::mono: {
@@ -1403,8 +1537,23 @@ std::expected<void, std::string> emit_sample_composition_write(
                 "sample.compose.target."
                     + std::to_string(contribution_index) + "."
                     + std::to_string(converted_channel));
-            builder.CreateStore(
-                converted_values[converted_channel], target_pointer);
+            auto* value = converted_values[converted_channel];
+            if (feedback_alignment_ready) {
+                auto* previous = builder.CreateLoad(
+                    sample_type,
+                    target_pointer,
+                    "sample.compose.align.target.previous."
+                        + std::to_string(contribution_index) + "."
+                        + std::to_string(converted_channel));
+                value = builder.CreateSelect(
+                    feedback_alignment_ready,
+                    value,
+                    previous,
+                    "sample.compose.align.target.value."
+                        + std::to_string(contribution_index) + "."
+                        + std::to_string(converted_channel));
+            }
+            builder.CreateStore(value, target_pointer);
         }
     }
 

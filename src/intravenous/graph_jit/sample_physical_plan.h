@@ -82,6 +82,16 @@ struct SampleCompositionContributionPlan {
     ChannelLayout converted_layout{};
     std::vector<SampleCompositionInputPlan> sources{};
     std::vector<std::size_t> target_channels{};
+
+    // Unequal-latency channel mixing cannot be emitted by independently
+    // shifting converted target writes: conversion must observe source
+    // channels at one logical timestamp. Detached contributions that need
+    // this use a branch-local persistent source-layout ring. Current source
+    // samples are staged there, then conversion reads the required aligned
+    // past frames before writing the feedback timeline.
+    std::size_t feedback_alignment_representation = no_sample_representation;
+    std::size_t feedback_alignment_state = no_sample_representation;
+    std::size_t feedback_alignment_write_latency = 0;
 };
 
 // A feed-forward composed connection gathers independently-timed semantic
@@ -175,6 +185,14 @@ struct SampleFeedbackTimelineWriterPlan {
     std::vector<SampleCompositionContributionPlan> composition_contributions{};
 };
 
+
+struct SampleFeedbackAlignmentStatePlan {
+    std::size_t warmup_frames = 0;
+    std::string migration_identity{};
+    NodeLayout::RegionHandle region{};
+    std::size_t storage_offset = 0;
+};
+
 struct SampleFeedbackTimelinePlan {
     std::size_t connection_index = 0;
     std::size_t timeline_representation = no_sample_representation;
@@ -208,6 +226,11 @@ struct SamplePhysicalPlan {
     // scheduled write; copy/composition writers are emitted after their source
     // execution position.
     std::vector<SampleFeedbackTimelinePlan> feedback_timelines{};
+    // Persistent warmup state for unequal-latency feedback mixing. The
+    // corresponding source-layout alignment samples live in ordinary
+    // persistent sample allocations; only this frame count needs separate
+    // scalar storage.
+    std::vector<SampleFeedbackAlignmentStatePlan> feedback_alignment_states{};
 
     // One exact range per transient representation. The arena high-water mark
     // is independent of any individual representation's maximum size.

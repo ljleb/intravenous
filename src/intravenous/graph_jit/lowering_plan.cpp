@@ -300,12 +300,21 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 && region_index == sample_ports.physical.transient_region.index) {
                 return true;
             }
+            if (std::any_of(
+                    sample_ports.physical.persistent_allocations.begin(),
+                    sample_ports.physical.persistent_allocations.end(),
+                    [&](SamplePersistentAllocationPlan const& allocation) {
+                        return allocation.region.valid()
+                            && allocation.region.index == region_index;
+                    })) {
+                return true;
+            }
             return std::any_of(
-                sample_ports.physical.persistent_allocations.begin(),
-                sample_ports.physical.persistent_allocations.end(),
-                [&](SamplePersistentAllocationPlan const& allocation) {
-                    return allocation.region.valid()
-                        && allocation.region.index == region_index;
+                sample_ports.physical.feedback_alignment_states.begin(),
+                sample_ports.physical.feedback_alignment_states.end(),
+                [&](SampleFeedbackAlignmentStatePlan const& state) {
+                    return state.region.valid()
+                        && state.region.index == region_index;
                 });
         };
 

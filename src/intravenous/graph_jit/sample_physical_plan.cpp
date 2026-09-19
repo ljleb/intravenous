@@ -44,6 +44,26 @@ std::vector<std::byte> sample_initialize_payload(Sample value)
     return payload;
 }
 
+void initialize_size_raw_region(
+    std::span<std::byte> storage,
+    std::span<std::byte const> payload)
+{
+    if (storage.size() != sizeof(std::size_t)
+        || payload.size() != sizeof(std::size_t)) {
+        throw std::logic_error(
+            "GraphJit size raw-region initializer received invalid storage");
+    }
+    std::memcpy(storage.data(), payload.data(), sizeof(std::size_t));
+}
+
+std::vector<std::byte> size_initialize_payload(std::size_t value)
+{
+    static_assert(std::is_trivially_copyable_v<std::size_t>);
+    std::vector<std::byte> payload(sizeof(value));
+    std::memcpy(payload.data(), &value, sizeof(value));
+    return payload;
+}
+
 std::expected<std::size_t, std::string> sample_bytes(
     ChannelLayout layout,
     std::size_t frames,
@@ -180,6 +200,30 @@ std::string composition_feedback_identity(
         << ":initial_bits="
         << std::bit_cast<std::uint32_t>(static_cast<float>(initial_value))
         << ":capacity=" << frame_capacity;
+    return std::move(out).str();
+}
+
+std::string composition_feedback_alignment_identity(
+    SampleConnectionPlan const& connection,
+    std::size_t contribution_index,
+    ChannelLayout source_layout,
+    std::size_t minimum_latency,
+    std::size_t maximum_latency,
+    std::size_t frame_capacity,
+    Sample initial_value)
+{
+    std::ostringstream out;
+    out << "graphjit.sample.composed_feedback_alignment:target="
+        << connection.target_port.node_bundle_handle << '.'
+        << connection.target_port.port_ordinal
+        << ":contribution=" << contribution_index
+        << ":layout=" << static_cast<unsigned>(source_layout.channel_type) << '.'
+        << static_cast<unsigned>(source_layout.sample_layout)
+        << ":min_latency=" << minimum_latency
+        << ":max_latency=" << maximum_latency
+        << ":capacity=" << frame_capacity
+        << ":initial_bits="
+        << std::bit_cast<std::uint32_t>(static_cast<float>(initial_value));
     return std::move(out).str();
 }
 
@@ -1027,7 +1071,11 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             connection.projection_contributions.size());
         std::vector<bool> populated_targets(channel_count(connection.target_layout), false);
 
-        for (auto const& semantic : connection.projection_contributions) {
+        for (std::size_t contribution_index = 0;
+             contribution_index < connection.projection_contributions.size();
+             ++contribution_index) {
+            auto const& semantic =
+                connection.projection_contributions[contribution_index];
             auto const source_layout = ChannelLayout{
                 .channel_type = semantic.source_type,
                 .sample_layout = SampleStreamLayout::planar,
@@ -1110,6 +1158,74 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 }
                 populated_targets[target_channel] = true;
                 contribution.target_channels.push_back(target_channel);
+            }
+
+            if (detached
+                && source_layout.channel_type == ChannelTypeId::stereo
+                && converted_layout.channel_type == ChannelTypeId::mono) {
+                auto const [minimum_it, maximum_it] = std::ranges::minmax_element(
+                    contribution.sources,
+                    {},
+                    &SampleCompositionInputPlan::read_latency);
+                auto const minimum_latency = minimum_it->read_latency;
+                auto const maximum_latency = maximum_it->read_latency;
+                if (minimum_latency != maximum_latency) {
+                    auto const alignment_history =
+                        maximum_latency - minimum_latency;
+                    auto alignment_capacity = working_ring_capacity(
+                        kernel_block_size, alignment_history);
+                    if (!alignment_capacity) {
+                        return std::unexpected(
+                            std::move(alignment_capacity.error()));
+                    }
+                    auto const alignment_representation = append_representation(
+                        SampleRepresentationPlan{
+                            .producer_group_index = no_sample_producer_group,
+                            .canonical_producer_representation = false,
+                            .implementation = SampleConnectionImplementationKind::persistent_ring,
+                            .channel_layout = source_layout,
+                            .frame_capacity = *alignment_capacity,
+                            .live_interval = ConnectionLiveIntervalPlan{
+                                .begin = std::min(begin, end),
+                                .end = std::max(begin, end),
+                                .crosses_kernel_invocations = true,
+                            },
+                        });
+                    auto const identity =
+                        composition_feedback_alignment_identity(
+                            connection,
+                            contribution_index,
+                            source_layout,
+                            minimum_latency,
+                            maximum_latency,
+                            *alignment_capacity,
+                            *connection.detach_initial_value);
+                    auto persistent = append_synthetic_persistent_allocation(
+                        alignment_representation,
+                        source_layout,
+                        alignment_history,
+                        *alignment_capacity,
+                        identity + ":samples",
+                        *connection.detach_initial_value);
+                    if (!persistent) {
+                        return std::unexpected(std::move(persistent.error()));
+                    }
+                    plan.representations[alignment_representation]
+                        .persistent_allocation = *persistent;
+
+                    auto const alignment_state =
+                        plan.feedback_alignment_states.size();
+                    plan.feedback_alignment_states.push_back(
+                        SampleFeedbackAlignmentStatePlan{
+                            .warmup_frames = alignment_history,
+                            .migration_identity = identity + ":warmup",
+                        });
+                    contribution.feedback_alignment_representation =
+                        alignment_representation;
+                    contribution.feedback_alignment_state = alignment_state;
+                    contribution.feedback_alignment_write_latency =
+                        minimum_latency;
+                }
             }
             composition_contributions.push_back(std::move(contribution));
         }
@@ -1226,6 +1342,18 @@ std::expected<void, std::string> declare_sample_physical_storage(
                     ? sample_initialize_payload(*allocation.initialize_value)
                     : std::vector<std::byte>{});
         }
+        for (auto& state : plan.feedback_alignment_states) {
+            if (state.warmup_frames == 0 || state.migration_identity.empty()) {
+                return std::unexpected(
+                    "GraphJit sample feedback alignment state is invalid");
+            }
+            state.region = builder.declare_raw_region(
+                sizeof(std::size_t),
+                alignof(std::size_t),
+                state.migration_identity,
+                initialize_size_raw_region,
+                size_initialize_payload(state.warmup_frames));
+        }
         return {};
     } catch (std::exception const& e) {
         return std::unexpected(
@@ -1296,6 +1424,28 @@ std::expected<void, std::string> finalize_sample_physical_storage(
         if (allocation.storage_offset % allocation.alignment != 0) {
             return std::unexpected(
                 "GraphJit finalized sample persistent allocation lost alignment");
+        }
+    }
+    for (auto& state : plan.feedback_alignment_states) {
+        if (!state.region.valid()
+            || state.region.index >= layout.regions.size()) {
+            return std::unexpected(
+                "GraphJit sample feedback alignment state was lost during NodeLayout finalization");
+        }
+        auto const& region = layout.regions[state.region.index];
+        if (region.kind != NodeLayout::Region::Kind::raw
+            || region.size != sizeof(std::size_t)
+            || region.alignment != alignof(std::size_t)
+            || region.migration_identity != state.migration_identity
+            || region.raw_initialize_fn != initialize_size_raw_region
+            || region.raw_initialize_payload.size() != sizeof(std::size_t)) {
+            return std::unexpected(
+                "GraphJit finalized sample feedback alignment state changed semantics");
+        }
+        state.storage_offset = region.storage_offset;
+        if (state.storage_offset % alignof(std::size_t) != 0) {
+            return std::unexpected(
+                "GraphJit finalized sample feedback alignment state lost alignment");
         }
     }
     return {};
