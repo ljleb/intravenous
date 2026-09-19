@@ -27,6 +27,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -174,6 +175,101 @@ struct ConvertedSampleFeedbackStateMirror {
     std::array<float, 24> last_right{};
     std::uint32_t marker = 0;
 };
+
+struct SampleFeedbackAlignmentRegions {
+    iv::NodeLayout::RegionHandle samples{};
+    iv::NodeLayout::RegionHandle warmup{};
+};
+
+std::optional<SampleFeedbackAlignmentRegions> sample_feedback_alignment_regions(
+    iv::NodeStorage const& storage)
+{
+    if (!storage.layout) return std::nullopt;
+
+    SampleFeedbackAlignmentRegions result;
+    for (std::size_t region_index = 0;
+         region_index < storage.layout->regions.size(); ++region_index) {
+        auto const& region = storage.layout->regions[region_index];
+        if (region.kind != iv::NodeLayout::Region::Kind::raw
+            || !region.migration_identity.starts_with(
+                "graphjit.sample.composed_feedback_alignment:")) {
+            continue;
+        }
+        if (region.migration_identity.ends_with(":samples")) {
+            if (result.samples.valid()) return std::nullopt;
+            result.samples.index = region_index;
+        } else if (region.migration_identity.ends_with(":warmup")) {
+            if (result.warmup.valid()) return std::nullopt;
+            result.warmup.index = region_index;
+        }
+    }
+    if (!result.samples.valid() || !result.warmup.valid()) return std::nullopt;
+    return result;
+}
+
+std::optional<std::size_t> raw_size_value(
+    iv::NodeStorage const& storage,
+    iv::NodeLayout::RegionHandle region)
+{
+    auto const bytes = storage.region_bytes(region);
+    if (bytes.size() != sizeof(std::size_t)) return std::nullopt;
+    std::size_t value = 0;
+    std::memcpy(&value, bytes.data(), sizeof(value));
+    return value;
+}
+
+ConvertedSampleFeedbackStateMirror* converted_sample_feedback_state(
+    iv::NodeStorage const& storage)
+{
+    if (!storage.layout) return nullptr;
+    ConvertedSampleFeedbackStateMirror* result = nullptr;
+    for (std::size_t i = 0; i < storage.layout->nodes.size(); ++i) {
+        if (storage.layout->nodes[i].state_size
+            != sizeof(ConvertedSampleFeedbackStateMirror)) {
+            continue;
+        }
+        auto* candidate = static_cast<ConvertedSampleFeedbackStateMirror*>(
+            storage.state_ptr(i));
+        if (candidate == nullptr || candidate->marker != 0xc04e7ed1u) continue;
+        if (result != nullptr) return nullptr;
+        result = candidate;
+    }
+    return result;
+}
+
+void expect_converted_feedback_suffix_equal(
+    ConvertedSampleFeedbackStateMirror const& reference,
+    std::size_t reference_begin,
+    ConvertedSampleFeedbackStateMirror const& actual)
+{
+    ASSERT_GE(reference.calls, reference_begin);
+    auto const suffix_calls = reference.calls - reference_begin;
+    std::size_t actual_begin = 0;
+    if (actual.calls == reference.calls) {
+        // A future node-state migration policy may preserve the probe state.
+        // In that case compare only observations produced after migration.
+        actual_begin = reference_begin;
+    } else {
+        ASSERT_EQ(actual.calls, suffix_calls);
+    }
+    ASSERT_LE(actual_begin + suffix_calls, actual.calls);
+    EXPECT_EQ(actual.scc_feedback_latency, reference.scc_feedback_latency);
+    EXPECT_EQ(actual.marker, reference.marker);
+    for (std::size_t i = 0; i < suffix_calls; ++i) {
+        auto const reference_i = reference_begin + i;
+        auto const actual_i = actual_begin + i;
+        EXPECT_EQ(actual.indices[actual_i], reference.indices[reference_i]);
+        EXPECT_EQ(actual.block_sizes[actual_i], reference.block_sizes[reference_i]);
+        EXPECT_FLOAT_EQ(
+            actual.first_left[actual_i], reference.first_left[reference_i]);
+        EXPECT_FLOAT_EQ(
+            actual.first_right[actual_i], reference.first_right[reference_i]);
+        EXPECT_FLOAT_EQ(
+            actual.last_left[actual_i], reference.last_left[reference_i]);
+        EXPECT_FLOAT_EQ(
+            actual.last_right[actual_i], reference.last_right[reference_i]);
+    }
+}
 
 struct StereoSampleConsumerProbeStateMirror {
     std::uint64_t calls = 0;
@@ -6611,6 +6707,194 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackAlignsUnequalMixingL
         EXPECT_FLOAT_EQ(state->first_right[slice], expected_first_right[slice]);
         EXPECT_FLOAT_EQ(state->last_right[slice], expected_last_right[slice]);
     }
+}
+
+
+TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesPartialAlignmentWarmup)
+{
+    auto feedback_graph =
+        configured_unequal_latency_projected_sample_feedback_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto reference = compile_graph(feedback_graph, 129);
+    ASSERT_TRUE(reference.succeeded())
+        << (reference.diagnostics.empty()
+                ? ""
+                : reference.diagnostics.front().message);
+    auto current = compile_graph(feedback_graph, 130);
+    ASSERT_TRUE(current.succeeded())
+        << (current.diagnostics.empty()
+                ? ""
+                : current.diagnostics.front().message);
+
+    auto reference_storage =
+        reference.compiled_graph->node_layout.create_storage(resources);
+    reference_storage.initialize();
+    auto storage = current.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    // One frame leaves the 2-frame alignment carry partially warmed. This is
+    // the migration point that requires both the scalar countdown and the
+    // staged frame at absolute index 0 to survive together.
+    reference.compiled_graph->root_operations.tick_block(
+        reference_storage.buffer().data(), 0, 1);
+    current.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 1);
+
+    auto const reference_regions =
+        sample_feedback_alignment_regions(reference_storage);
+    auto const current_regions = sample_feedback_alignment_regions(storage);
+    ASSERT_TRUE(reference_regions.has_value());
+    ASSERT_TRUE(current_regions.has_value());
+    ASSERT_EQ(
+        raw_size_value(reference_storage, reference_regions->warmup),
+        std::optional<std::size_t>{1u});
+    ASSERT_EQ(
+        raw_size_value(storage, current_regions->warmup),
+        std::optional<std::size_t>{1u});
+
+    auto const staged_before = storage.region_bytes(current_regions->samples);
+    std::vector<std::byte> staged_snapshot(
+        staged_before.begin(), staged_before.end());
+
+    auto migrated = compile_graph(feedback_graph, 131);
+    ASSERT_TRUE(migrated.succeeded())
+        << (migrated.diagnostics.empty()
+                ? ""
+                : migrated.diagnostics.front().message);
+    auto migrated_storage =
+        migrated.compiled_graph->node_layout.create_storage(resources);
+    migrated_storage.initialize(&storage);
+
+    auto const migrated_regions =
+        sample_feedback_alignment_regions(migrated_storage);
+    ASSERT_TRUE(migrated_regions.has_value());
+    EXPECT_EQ(
+        raw_size_value(migrated_storage, migrated_regions->warmup),
+        std::optional<std::size_t>{1u});
+    auto const staged_after =
+        migrated_storage.region_bytes(migrated_regions->samples);
+    ASSERT_EQ(staged_after.size(), staged_snapshot.size());
+    EXPECT_TRUE(std::ranges::equal(staged_after, staged_snapshot));
+
+    auto* reference_state_before =
+        converted_sample_feedback_state(reference_storage);
+    ASSERT_NE(reference_state_before, nullptr);
+    auto const reference_prefix_calls =
+        static_cast<std::size_t>(reference_state_before->calls);
+
+    // Root tick_block() accepts only power-of-two block sizes. Continue the
+    // same logical 11-frame suffix using legal calls on both generations.
+    reference.compiled_graph->root_operations.tick_block(
+        reference_storage.buffer().data(), 1, 8);
+    reference.compiled_graph->root_operations.tick_block(
+        reference_storage.buffer().data(), 9, 2);
+    reference.compiled_graph->root_operations.tick_block(
+        reference_storage.buffer().data(), 11, 1);
+    migrated.compiled_graph->root_operations.tick_block(
+        migrated_storage.buffer().data(), 1, 8);
+    migrated.compiled_graph->root_operations.tick_block(
+        migrated_storage.buffer().data(), 9, 2);
+    migrated.compiled_graph->root_operations.tick_block(
+        migrated_storage.buffer().data(), 11, 1);
+
+    auto* reference_state = converted_sample_feedback_state(reference_storage);
+    auto* migrated_state = converted_sample_feedback_state(migrated_storage);
+    ASSERT_NE(reference_state, nullptr);
+    ASSERT_NE(migrated_state, nullptr);
+    expect_converted_feedback_suffix_equal(
+        *reference_state, reference_prefix_calls, *migrated_state);
+}
+
+TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesWarmedAlignment)
+{
+    auto feedback_graph =
+        configured_unequal_latency_projected_sample_feedback_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto reference = compile_graph(feedback_graph, 132);
+    ASSERT_TRUE(reference.succeeded())
+        << (reference.diagnostics.empty()
+                ? ""
+                : reference.diagnostics.front().message);
+    auto current = compile_graph(feedback_graph, 133);
+    ASSERT_TRUE(current.succeeded())
+        << (current.diagnostics.empty()
+                ? ""
+                : current.diagnostics.front().message);
+
+    auto reference_storage =
+        reference.compiled_graph->node_layout.create_storage(resources);
+    reference_storage.initialize();
+    auto storage = current.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    // Three frames have consumed the 2-frame warmup and emitted the first
+    // aligned mixed frame. Migration here must preserve the zero countdown and
+    // the carry needed by subsequent aligned reads rather than reinitializing
+    // either region.
+    reference.compiled_graph->root_operations.tick_block(
+        reference_storage.buffer().data(), 0, 2);
+    reference.compiled_graph->root_operations.tick_block(
+        reference_storage.buffer().data(), 2, 1);
+    current.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 2);
+    current.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 2, 1);
+
+    auto const current_regions = sample_feedback_alignment_regions(storage);
+    ASSERT_TRUE(current_regions.has_value());
+    ASSERT_EQ(
+        raw_size_value(storage, current_regions->warmup),
+        std::optional<std::size_t>{0u});
+    auto const staged_before = storage.region_bytes(current_regions->samples);
+    std::vector<std::byte> staged_snapshot(
+        staged_before.begin(), staged_before.end());
+
+    auto migrated = compile_graph(feedback_graph, 134);
+    ASSERT_TRUE(migrated.succeeded())
+        << (migrated.diagnostics.empty()
+                ? ""
+                : migrated.diagnostics.front().message);
+    auto migrated_storage =
+        migrated.compiled_graph->node_layout.create_storage(resources);
+    auto prepared = migrated_storage.prepare_migration_from(storage);
+
+    // Raw compiler-owned state migrates during preparation, before activation
+    // and before any realtime callback can observe the new generation.
+    auto const migrated_regions =
+        sample_feedback_alignment_regions(migrated_storage);
+    ASSERT_TRUE(migrated_regions.has_value());
+    EXPECT_EQ(
+        raw_size_value(migrated_storage, migrated_regions->warmup),
+        std::optional<std::size_t>{0u});
+    auto const staged_after =
+        migrated_storage.region_bytes(migrated_regions->samples);
+    ASSERT_EQ(staged_after.size(), staged_snapshot.size());
+    EXPECT_TRUE(std::ranges::equal(staged_after, staged_snapshot));
+    prepared.commit();
+
+    auto* reference_state_before =
+        converted_sample_feedback_state(reference_storage);
+    ASSERT_NE(reference_state_before, nullptr);
+    auto const reference_prefix_calls =
+        static_cast<std::size_t>(reference_state_before->calls);
+
+    reference.compiled_graph->root_operations.tick_block(
+        reference_storage.buffer().data(), 3, 8);
+    reference.compiled_graph->root_operations.tick_block(
+        reference_storage.buffer().data(), 11, 2);
+    migrated.compiled_graph->root_operations.tick_block(
+        migrated_storage.buffer().data(), 3, 8);
+    migrated.compiled_graph->root_operations.tick_block(
+        migrated_storage.buffer().data(), 11, 2);
+
+    auto* reference_state = converted_sample_feedback_state(reference_storage);
+    auto* migrated_state = converted_sample_feedback_state(migrated_storage);
+    ASSERT_NE(reference_state, nullptr);
+    ASSERT_NE(migrated_state, nullptr);
+    expect_converted_feedback_suffix_equal(
+        *reference_state, reference_prefix_calls, *migrated_state);
 }
 
 

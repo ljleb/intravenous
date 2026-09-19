@@ -467,6 +467,13 @@ if(JUCE_FOUND)
         POSITION_INDEPENDENT_CODE ON
     )
     iv_configure_intravenous_target(intravenous_juce_runtime PUBLIC)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(intravenous_juce_runtime PRIVATE
+            -Wno-array-bounds
+            -Wno-unnecessary-virtual-specifier
+            -Wno-unused-template
+        )
+    endif()
     target_compile_definitions(intravenous_juce_runtime PRIVATE
         IV_ENABLE_JUCE_VST=1
         JUCE_PLUGINHOST_VST3=1
