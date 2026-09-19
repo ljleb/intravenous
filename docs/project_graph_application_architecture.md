@@ -666,8 +666,9 @@ The implementation checkpoints now stand as follows:
    synchronously captures exact package LLVM/provenance, resolves compiler
    anchors/config relocations, verifies and O3 optimizes generated project LLVM,
    owns the project ORC domain, and returns independently releasable
-   `CompiledGraph` generations carrying the canonical `NodeLayout` plus generated
-   root `tick_block`/optional `skip_block` operations;
+   `CompiledGraph` generations carrying the canonical `NodeLayout` plus the generated
+   root `tick_block`; primitive `skip_block` callbacks remain internal scheduler
+   operations and are not exposed as a root ABI;
 9. introduce `GraphExecutor` ownership of `NodeStorage`, sequential root-node
    execution, internal compiled-access requests, state migration, and
    safe-boundary activation;

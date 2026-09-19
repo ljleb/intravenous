@@ -30,7 +30,6 @@
 namespace iv::graph_jit {
 namespace {
 constexpr std::string_view root_tick_block_symbol = "__iv_graph_root_tick_block";
-constexpr std::string_view root_skip_block_symbol = "__iv_graph_root_skip_block";
 
 struct ReflectedContextByteOffsets {
     std::size_t sample_storage_base = 0;
@@ -1173,7 +1172,6 @@ std::expected<void, std::string> emit_sample_composition_write(
         std::vector<std::size_t> target_channels{};
         std::vector<std::size_t> shifted_write_latencies{};
         std::optional<ReflectedSamplePortStorageBinding> feedback_alignment_storage{};
-        std::optional<std::size_t> feedback_alignment_state_offset{};
         std::size_t feedback_alignment_write_latency = 0;
     };
 
@@ -1238,11 +1236,9 @@ std::expected<void, std::string> emit_sample_composition_write(
         if (!shift_writes_by_read_latency
             && (contribution_plan.feedback_alignment_representation
                     != detail::no_sample_representation
-                || contribution_plan.feedback_alignment_state
-                    != detail::no_sample_representation
                 || contribution_plan.feedback_alignment_write_latency != 0)) {
             return std::unexpected(
-                "GraphJit feed-forward sample composition unexpectedly owns feedback alignment state");
+                "GraphJit feed-forward sample composition unexpectedly owns feedback alignment storage");
         }
         if (shift_writes_by_read_latency) {
             auto const source_type = contribution.source_layout.channel_type;
@@ -1272,8 +1268,6 @@ std::expected<void, std::string> emit_sample_composition_write(
                 if (minimum_latency != maximum_latency) {
                     if (contribution_plan.feedback_alignment_representation
                             >= physical.representations.size()
-                        || contribution_plan.feedback_alignment_state
-                            >= physical.feedback_alignment_states.size()
                         || contribution_plan.feedback_alignment_write_latency
                             != minimum_latency) {
                         return std::unexpected(
@@ -1291,25 +1285,13 @@ std::expected<void, std::string> emit_sample_composition_write(
                         return std::unexpected(
                             "GraphJit unequal-latency feedback mixing has invalid alignment storage");
                     }
-                    auto const& state = physical.feedback_alignment_states[
-                        contribution_plan.feedback_alignment_state];
-                    if (state.warmup_frames
-                            != maximum_latency - minimum_latency
-                        || state.migration_identity.empty()) {
-                        return std::unexpected(
-                            "GraphJit unequal-latency feedback mixing has invalid warmup state");
-                    }
                     contribution.feedback_alignment_storage = *alignment;
-                    contribution.feedback_alignment_state_offset =
-                        state.storage_offset;
                     contribution.feedback_alignment_write_latency =
                         minimum_latency;
                 } else if (contribution_plan.feedback_alignment_representation
-                               != detail::no_sample_representation
-                    || contribution_plan.feedback_alignment_state
-                        != detail::no_sample_representation) {
+                               != detail::no_sample_representation) {
                     return std::unexpected(
-                        "GraphJit equal-latency feedback mixing unexpectedly owns alignment state");
+                        "GraphJit equal-latency feedback mixing unexpectedly owns alignment storage");
                 }
             } else {
                 return std::unexpected(
@@ -1333,16 +1315,18 @@ std::expected<void, std::string> emit_sample_composition_write(
     auto* history = llvm::ConstantInt::get(size_type, target_history);
     auto* compose_count = builder.CreateAdd(
         block_size, history, "sample.compose.count");
-    auto* preheader = builder.GetInsertBlock();
-    auto* has_frames = builder.CreateICmpNE(
-        compose_count, zero, "sample.compose.nonempty");
-    auto* loop = llvm::BasicBlock::Create(
-        context, "sample.compose", function);
-    auto* exit = llvm::BasicBlock::Create(
-        context, "sample.compose.end", function);
-    builder.CreateCondBr(has_frames, loop, exit);
+    auto emit_loop = [&](
+                         llvm::BasicBlock* preheader,
+                         llvm::BasicBlock* exit)
+        -> std::expected<void, std::string> {
+        builder.SetInsertPoint(preheader);
+        auto* has_frames = builder.CreateICmpNE(
+            compose_count, zero, "sample.compose.nonempty");
+        auto* loop = llvm::BasicBlock::Create(
+            context, "sample.compose.loop", function);
+        builder.CreateCondBr(has_frames, loop, exit);
 
-    builder.SetInsertPoint(loop);
+        builder.SetInsertPoint(loop);
     auto* frame_offset = builder.CreatePHI(
         size_type, 2, "sample.compose.frame");
     frame_offset->addIncoming(zero, preheader);
@@ -1385,12 +1369,7 @@ std::expected<void, std::string> emit_sample_composition_write(
                     + std::to_string(source_index)));
         }
 
-        llvm::Value* feedback_alignment_ready = nullptr;
         if (contribution.feedback_alignment_storage) {
-            if (!contribution.feedback_alignment_state_offset) {
-                return std::unexpected(
-                    "GraphJit unequal-latency feedback mixing lost its warmup storage");
-            }
             for (std::size_t source_index = 0;
                  source_index < contribution.sources.size(); ++source_index) {
                 auto* alignment_pointer = sample_element_pointer(
@@ -1434,35 +1413,6 @@ std::expected<void, std::string> emit_sample_composition_write(
                         + std::to_string(source_index));
             }
 
-            auto* warmup_pointer = byte_offset_pointer(
-                builder,
-                storage_base,
-                *contribution.feedback_alignment_state_offset,
-                "sample.compose.align.warmup.ptr."
-                    + std::to_string(contribution_index));
-            auto* warmup = builder.CreateLoad(
-                size_type,
-                warmup_pointer,
-                "sample.compose.align.warmup."
-                    + std::to_string(contribution_index));
-            feedback_alignment_ready = builder.CreateICmpEQ(
-                warmup,
-                zero,
-                "sample.compose.align.ready."
-                    + std::to_string(contribution_index));
-            auto* decremented = builder.CreateSub(
-                warmup,
-                llvm::ConstantInt::get(size_type, 1),
-                "sample.compose.align.warmup.dec."
-                    + std::to_string(contribution_index));
-            builder.CreateStore(
-                builder.CreateSelect(
-                    feedback_alignment_ready,
-                    zero,
-                    decremented,
-                    "sample.compose.align.warmup.next."
-                        + std::to_string(contribution_index)),
-                warmup_pointer);
         }
 
         std::vector<llvm::Value*> converted_values;
@@ -1537,23 +1487,8 @@ std::expected<void, std::string> emit_sample_composition_write(
                 "sample.compose.target."
                     + std::to_string(contribution_index) + "."
                     + std::to_string(converted_channel));
-            auto* value = converted_values[converted_channel];
-            if (feedback_alignment_ready) {
-                auto* previous = builder.CreateLoad(
-                    sample_type,
-                    target_pointer,
-                    "sample.compose.align.target.previous."
-                        + std::to_string(contribution_index) + "."
-                        + std::to_string(converted_channel));
-                value = builder.CreateSelect(
-                    feedback_alignment_ready,
-                    value,
-                    previous,
-                    "sample.compose.align.target.value."
-                        + std::to_string(contribution_index) + "."
-                        + std::to_string(converted_channel));
-            }
-            builder.CreateStore(value, target_pointer);
+            builder.CreateStore(
+                converted_values[converted_channel], target_pointer);
         }
     }
 
@@ -1565,7 +1500,15 @@ std::expected<void, std::string> emit_sample_composition_write(
         next, compose_count, "sample.compose.done");
     builder.CreateCondBr(done, exit, loop);
     frame_offset->addIncoming(next, loop);
-    builder.SetInsertPoint(exit);
+        return {};
+    };
+
+    auto* composition_exit = llvm::BasicBlock::Create(
+        context, "sample.compose.end", function);
+    auto* preheader = builder.GetInsertBlock();
+    auto emitted = emit_loop(preheader, composition_exit);
+    if (!emitted) return std::unexpected(std::move(emitted.error()));
+    builder.SetInsertPoint(composition_exit);
     return {};
 }
 
@@ -2225,6 +2168,124 @@ std::expected<void, std::string> emit_event_sequence_reset(
     return {};
 }
 
+std::expected<void, std::string> emit_event_merge(
+    llvm::IRBuilder<>& builder,
+    detail::EventPortBindingPlan const& event_ports,
+    detail::EventMergePlan const& merge,
+    llvm::Value* storage_base)
+{
+    if (merge.target_representation >= event_ports.representations.size()
+        || merge.source_representations.empty()) {
+        return std::unexpected(
+            "GraphJit event merge references a missing representation");
+    }
+    auto const& target =
+        event_ports.representations[merge.target_representation];
+    if (!target.region.valid()
+        || (target.event_capacity != 0
+            && !is_power_of_2(target.event_capacity))) {
+        return std::unexpected(
+            "GraphJit event merge target has invalid physical storage");
+    }
+    if (target.persistent_ring && !merge.preserve_existing_target) {
+        return std::unexpected(
+            "GraphJit persistent event merge must preserve retained target events");
+    }
+
+    auto& context = builder.getContext();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* target_events = byte_offset_pointer(
+        builder,
+        storage_base,
+        target.events_storage_offset,
+        "event.merge.target.events");
+
+    llvm::Value* target_read = llvm::ConstantInt::get(size_type, 0);
+    llvm::Value* target_write = llvm::ConstantInt::get(size_type, 0);
+    llvm::Value* target_count_or_write_pointer = nullptr;
+    if (target.persistent_ring) {
+        auto* read_pointer = byte_offset_pointer(
+            builder,
+            storage_base,
+            target.read_index_storage_offset,
+            "event.merge.target.read.ptr");
+        auto* write_pointer = byte_offset_pointer(
+            builder,
+            storage_base,
+            target.write_index_storage_offset,
+            "event.merge.target.write.ptr");
+        target_read = builder.CreateLoad(
+            size_type, read_pointer, "event.merge.target.read");
+        target_write = builder.CreateLoad(
+            size_type, write_pointer, "event.merge.target.write");
+        target_count_or_write_pointer = write_pointer;
+    } else {
+        auto* count_pointer = byte_offset_pointer(
+            builder,
+            storage_base,
+            target.count_storage_offset,
+            "event.merge.target.count.ptr");
+        if (merge.preserve_existing_target) {
+            target_write = builder.CreateLoad(
+                size_type, count_pointer, "event.merge.target.count");
+        }
+        target_count_or_write_pointer = count_pointer;
+    }
+
+    auto* helper_type = llvm::FunctionType::get(
+        size_type,
+        {pointer_type, size_type, size_type, size_type,
+         pointer_type, size_type, size_type},
+        false);
+    auto* module = builder.GetInsertBlock()->getModule();
+    auto helper = module->getOrInsertFunction(
+        detail::event_sequence_merge_symbol, helper_type);
+
+    for (std::size_t source_index = 0;
+         source_index < merge.source_representations.size(); ++source_index) {
+        auto const representation_index =
+            merge.source_representations[source_index];
+        if (representation_index >= event_ports.representations.size()) {
+            return std::unexpected(
+                "GraphJit event merge references a missing source representation");
+        }
+        auto const& source = event_ports.representations[representation_index];
+        if (!source.region.valid() || source.persistent_ring
+            || source.type != target.type) {
+            return std::unexpected(
+                "GraphJit event merge source has inconsistent physical storage");
+        }
+        auto* source_count_pointer = byte_offset_pointer(
+            builder,
+            storage_base,
+            source.count_storage_offset,
+            "event.merge.source.count.ptr." + std::to_string(source_index));
+        auto* source_count = builder.CreateLoad(
+            size_type,
+            source_count_pointer,
+            "event.merge.source.count." + std::to_string(source_index));
+        auto* source_events = byte_offset_pointer(
+            builder,
+            storage_base,
+            source.events_storage_offset,
+            "event.merge.source.events." + std::to_string(source_index));
+        target_write = builder.CreateCall(
+            helper,
+            {target_events,
+             llvm::ConstantInt::get(size_type, target.event_capacity),
+             target_read,
+             target_write,
+             source_events,
+             llvm::ConstantInt::get(size_type, source.event_capacity),
+             source_count},
+            "event.merge.write." + std::to_string(source_index));
+    }
+    builder.CreateStore(target_write, target_count_or_write_pointer);
+    return {};
+}
+
 std::expected<void, std::string> emit_event_materialization(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
@@ -2614,6 +2675,21 @@ std::expected<void, std::string> emit_execution_step(
         }
     }
 
+    for (auto const merge_index : step.event_merges_after) {
+        if (merge_index >= plan.event_ports.merges.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing event merge");
+        }
+        auto merged = emit_event_merge(
+            builder,
+            plan.event_ports,
+            plan.event_ports.merges[merge_index],
+            storage_base);
+        if (!merged) {
+            return std::unexpected(std::move(merged.error()));
+        }
+    }
+
     for (auto const materialization_index : step.event_materializations_after) {
         if (materialization_index >= plan.event_ports.materializations.size()) {
             return std::unexpected(
@@ -2951,25 +3027,10 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
         false);
     if (!tick) return std::unexpected(std::move(tick.error()));
 
-    std::string skip_symbol;
-    if (plan.execution.root_skippable) {
-        auto skip = define_root_operation(
-            output_module,
-            root_skip_block_symbol,
-            plan,
-            *configurations,
-            *sample_bindings,
-            *event_bindings,
-            true);
-        if (!skip) return std::unexpected(std::move(skip.error()));
-        skip_symbol = std::string(root_skip_block_symbol);
-    }
-
     return LoweringOutput{
         .node_layout = std::move(plan.declarations.node_layout),
         .root_symbols = {
             .tick_block = std::string(root_tick_block_symbol),
-            .skip_block = std::move(skip_symbol),
         },
     };
 }
@@ -2979,8 +3040,7 @@ std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
     LoweringInput& input,
     llvm::Module& output_module)
 {
-    if (output_module.getNamedValue(root_tick_block_symbol)
-        || output_module.getNamedValue(root_skip_block_symbol)) {
+    if (output_module.getNamedValue(root_tick_block_symbol)) {
         return std::unexpected(
             "ConfiguredGraph -> LLVM IR lowering output module already contains reserved root symbols");
     }

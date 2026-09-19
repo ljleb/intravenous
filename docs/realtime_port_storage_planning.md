@@ -24,7 +24,6 @@ The whole-project compiler may implement a realtime sample connection with:
 - compact persistent history/latency carry plus transient current-block storage;
 - persistent circular storage;
 - explicit feedback/SCC storage;
-- external I/O storage;
 - an explicitly materialized contiguous block;
 - a combination of the above for different consumers.
 
@@ -167,7 +166,8 @@ This stage answers correctness questions such as:
 - does feedback/SCC execution impose persistent state?
 - are producer/consumer representations directly aliasable?
 - does a conversion require materialization or can it remain arithmetic?
-- is this graph/device ingress or egress?
+- does a concrete system/communication node require ordinary retained state for
+  its external resource interaction?
 - what is the pass-local live interval?
 - what temporal window is legal for realtime event production/consumption?
 
@@ -197,7 +197,9 @@ one globally optimal threshold:
 - retained event payloads use the `max_events_per_sample` sizing rate to derive
   the retained representation capacity, then use compact carry below a
   configurable count budget and a ring above it; and
-- graph/device boundary handling remains a distinct implementation kind.
+The configured project root itself has no boundary ports. Device I/O and
+communication with other application modules are modeled by concrete node types,
+so root-boundary storage is not a connection implementation kind.
 
 For events, the two retained implementations intentionally have different copy
 behavior. `compact_persistent_carry` keeps a transient producer sequence and copies
@@ -445,10 +447,13 @@ as compact carry versus a persistent ring.
 
 Fanout does not multiply the sizing rate: several consumers of one logical
 producer share the same source event stream. A merge of independent producers
-sums their rates for the merged representation. Connection analysis already
-computes that aggregate sizing rate, but the current GraphJIT physical lowerer
-still capability-gates multi-producer event fan-in and realizes one producer
-stream per event group. Implicit event conversions are required to be
+sums their rates for the merged representation. Feed-forward multi-producer
+fan-in realizes one bounded producer-local sequence per source, then stable-merges
+those sequences in semantic source order into one canonical aggregate after the
+last producer completes. Equal-timestamp events therefore retain deterministic
+source ordering, and conversion/retention/fanout operate on the merged stream.
+Cyclic multi-producer fan-in remains a separate SCC capability. Implicit event
+conversions are required to be
 **non-expanding**: each source event produces zero or one target event, timestamps
 are preserved, and the conversion may only preserve or discard information. Any
 transformation that can synthesize multiple events belongs in an explicit node,

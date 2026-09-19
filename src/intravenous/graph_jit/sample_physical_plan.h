@@ -90,7 +90,6 @@ struct SampleCompositionContributionPlan {
     // samples are staged there, then conversion reads the required aligned
     // past frames before writing the feedback timeline.
     std::size_t feedback_alignment_representation = no_sample_representation;
-    std::size_t feedback_alignment_state = no_sample_representation;
     std::size_t feedback_alignment_write_latency = 0;
 };
 
@@ -186,13 +185,6 @@ struct SampleFeedbackTimelineWriterPlan {
 };
 
 
-struct SampleFeedbackAlignmentStatePlan {
-    std::size_t warmup_frames = 0;
-    std::string migration_identity{};
-    NodeLayout::RegionHandle region{};
-    std::size_t storage_offset = 0;
-};
-
 struct SampleFeedbackTimelinePlan {
     std::size_t connection_index = 0;
     std::size_t timeline_representation = no_sample_representation;
@@ -226,11 +218,9 @@ struct SamplePhysicalPlan {
     // scheduled write; copy/composition writers are emitted after their source
     // execution position.
     std::vector<SampleFeedbackTimelinePlan> feedback_timelines{};
-    // Persistent warmup state for unequal-latency feedback mixing. The
-    // corresponding source-layout alignment samples live in ordinary
-    // persistent sample allocations; only this frame count needs separate
-    // scalar storage.
-    std::vector<SampleFeedbackAlignmentStatePlan> feedback_alignment_states{};
+    // Unequal-latency feedback mixing uses ordinary persistent sample
+    // allocations as source-layout alignment rings. Their initialized contents
+    // are the branch prehistory; no separate validity/warmup state is needed.
 
     // One exact range per transient representation. The arena high-water mark
     // is independent of any individual representation's maximum size.

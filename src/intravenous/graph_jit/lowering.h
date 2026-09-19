@@ -78,12 +78,11 @@ struct LoweringInput {
     std::span<ConfigRelocation const> config_relocations{};
 };
 
-// Names of the generated zero-input/zero-output root-node operations. The
-// lowerer may choose unique symbol names per project generation. tick_block is
-// required; an empty skip_block means the root is not legally skippable.
+// Name of the generated zero-input/zero-output root operation. The root owns
+// scheduling decisions; primitive skip callbacks remain internal implementation
+// details and are never exposed as a root skip_block ABI.
 struct LoweredGraphRootSymbols {
     std::string tick_block{};
-    std::string skip_block{};
 };
 
 // The lowerer owns graph analysis and canonical storage planning as well as

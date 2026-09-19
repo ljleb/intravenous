@@ -44,26 +44,6 @@ std::vector<std::byte> sample_initialize_payload(Sample value)
     return payload;
 }
 
-void initialize_size_raw_region(
-    std::span<std::byte> storage,
-    std::span<std::byte const> payload)
-{
-    if (storage.size() != sizeof(std::size_t)
-        || payload.size() != sizeof(std::size_t)) {
-        throw std::logic_error(
-            "GraphJit size raw-region initializer received invalid storage");
-    }
-    std::memcpy(storage.data(), payload.data(), sizeof(std::size_t));
-}
-
-std::vector<std::byte> size_initialize_payload(std::size_t value)
-{
-    static_assert(std::is_trivially_copyable_v<std::size_t>);
-    std::vector<std::byte> payload(sizeof(value));
-    std::memcpy(payload.data(), &value, sizeof(value));
-    return payload;
-}
-
 std::expected<std::size_t, std::string> sample_bytes(
     ChannelLayout layout,
     std::size_t frames,
@@ -1213,16 +1193,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     plan.representations[alignment_representation]
                         .persistent_allocation = *persistent;
 
-                    auto const alignment_state =
-                        plan.feedback_alignment_states.size();
-                    plan.feedback_alignment_states.push_back(
-                        SampleFeedbackAlignmentStatePlan{
-                            .warmup_frames = alignment_history,
-                            .migration_identity = identity + ":warmup",
-                        });
                     contribution.feedback_alignment_representation =
                         alignment_representation;
-                    contribution.feedback_alignment_state = alignment_state;
                     contribution.feedback_alignment_write_latency =
                         minimum_latency;
                 }
@@ -1342,18 +1314,6 @@ std::expected<void, std::string> declare_sample_physical_storage(
                     ? sample_initialize_payload(*allocation.initialize_value)
                     : std::vector<std::byte>{});
         }
-        for (auto& state : plan.feedback_alignment_states) {
-            if (state.warmup_frames == 0 || state.migration_identity.empty()) {
-                return std::unexpected(
-                    "GraphJit sample feedback alignment state is invalid");
-            }
-            state.region = builder.declare_raw_region(
-                sizeof(std::size_t),
-                alignof(std::size_t),
-                state.migration_identity,
-                initialize_size_raw_region,
-                size_initialize_payload(state.warmup_frames));
-        }
         return {};
     } catch (std::exception const& e) {
         return std::unexpected(
@@ -1424,28 +1384,6 @@ std::expected<void, std::string> finalize_sample_physical_storage(
         if (allocation.storage_offset % allocation.alignment != 0) {
             return std::unexpected(
                 "GraphJit finalized sample persistent allocation lost alignment");
-        }
-    }
-    for (auto& state : plan.feedback_alignment_states) {
-        if (!state.region.valid()
-            || state.region.index >= layout.regions.size()) {
-            return std::unexpected(
-                "GraphJit sample feedback alignment state was lost during NodeLayout finalization");
-        }
-        auto const& region = layout.regions[state.region.index];
-        if (region.kind != NodeLayout::Region::Kind::raw
-            || region.size != sizeof(std::size_t)
-            || region.alignment != alignof(std::size_t)
-            || region.migration_identity != state.migration_identity
-            || region.raw_initialize_fn != initialize_size_raw_region
-            || region.raw_initialize_payload.size() != sizeof(std::size_t)) {
-            return std::unexpected(
-                "GraphJit finalized sample feedback alignment state changed semantics");
-        }
-        state.storage_offset = region.storage_offset;
-        if (state.storage_offset % alignof(std::size_t) != 0) {
-            return std::unexpected(
-                "GraphJit finalized sample feedback alignment state lost alignment");
         }
     }
     return {};

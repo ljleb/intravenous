@@ -200,6 +200,19 @@ struct EventPersistentRingPlan {
     std::size_t retained_history_samples = 0;
 };
 
+struct EventMergePlan {
+    // Independent producer-local sequences are stable-merged in semantic source
+    // order only after every producer has completed its root invocation. This
+    // keeps producer writes local and preserves one globally time-sorted input
+    // sequence for downstream consumers.
+    std::vector<std::size_t> source_representations{};
+    std::size_t target_representation = 0;
+    std::size_t after_execution_position = 0;
+    // Retained targets already contain restored/pruned events from previous
+    // invocations; transient targets begin empty.
+    bool preserve_existing_target = false;
+};
+
 struct EventFeedbackPlan {
     std::size_t source_representation = 0;
     std::size_t ring_representation = 0;
@@ -219,6 +232,7 @@ struct EventPortBindingPlan {
     std::vector<EventMaterializationPlan> materializations{};
     std::vector<EventCarryPlan> carry_operations{};
     std::vector<EventPersistentRingPlan> persistent_rings{};
+    std::vector<EventMergePlan> merges{};
     std::vector<EventFeedbackPlan> feedback_operations{};
     // Indexed by analyzed concrete primitive.
     std::vector<PrimitiveEventPortPlan> primitives{};
@@ -248,6 +262,7 @@ struct PrimitiveExecutionStep {
     std::vector<std::size_t> event_sequence_resets_before{};
     std::vector<std::size_t> event_persistent_ring_prunes_before{};
     std::vector<std::size_t> event_carry_restores_before{};
+    std::vector<std::size_t> event_merges_after{};
     std::vector<std::size_t> event_materializations_after{};
     std::vector<std::size_t> event_carry_commits_after{};
     std::vector<std::size_t> event_feedback_appends_after{};
@@ -266,7 +281,6 @@ struct ExecutionPlan {
     // that provisional order without changing the LLVM-emission boundary.
     std::vector<PrimitiveExecutionStep> primitive_steps{};
     std::vector<ExecutionRegionPlan> regions{};
-    bool root_skippable = false;
 };
 
 struct LoweringPlan {

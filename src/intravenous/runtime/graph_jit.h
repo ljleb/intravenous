@@ -52,17 +52,10 @@ using CompiledGraphBlockFunction =
 
 struct CompiledGraphRootOperations {
     CompiledGraphBlockFunction tick_block = nullptr;
-    // Null means the generated root cannot legally skip a block.
-    CompiledGraphBlockFunction skip_block = nullptr;
 
     [[nodiscard]] bool valid() const noexcept
     {
         return tick_block != nullptr;
-    }
-
-    [[nodiscard]] bool can_skip_block() const noexcept
-    {
-        return skip_block != nullptr;
     }
 };
 

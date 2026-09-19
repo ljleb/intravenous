@@ -754,8 +754,6 @@ void validate_lowering_output(
     auto* block_type = root_block_operation_type(module.getContext());
     validate_root_operation(
         module, output.root_symbols.tick_block, block_type, "tick_block", true);
-    validate_root_operation(
-        module, output.root_symbols.skip_block, block_type, "skip_block", false);
 }
 
 void optimize_project_module(llvm::Module& module, llvm::TargetMachine& target_machine)
@@ -898,10 +896,6 @@ MaterializedProjectCode materialize_project_module(
         CompiledGraphRootOperations root_operations{
             .tick_block = symbol.template operator()<CompiledGraphBlockFunction>(
                 root_symbols.tick_block, "root tick_block"),
-            .skip_block = root_symbols.skip_block.empty()
-                ? nullptr
-                : symbol.template operator()<CompiledGraphBlockFunction>(
-                    root_symbols.skip_block, "root skip_block"),
         };
         if (!root_operations.valid()) {
             fail(
