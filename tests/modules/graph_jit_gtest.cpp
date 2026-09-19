@@ -72,6 +72,7 @@ constexpr char graph_jit_sample_feedback_a_id[] = "iv.test.graph_jit.state_conte
 constexpr char graph_jit_sample_feedback_b_id[] = "iv.test.graph_jit.state_context.sample_feedback_b";
 constexpr char graph_jit_multi_branch_sample_feedback_id[] = "iv.test.graph_jit.state_context.multi_branch_sample_feedback";
 constexpr char graph_jit_temporal_sample_feedback_id[] = "iv.test.graph_jit.state_context.temporal_sample_feedback";
+constexpr char graph_jit_revising_sample_feedback_id[] = "iv.test.graph_jit.state_context.revising_sample_feedback";
 constexpr char graph_jit_converted_sample_feedback_id[] = "iv.test.graph_jit.state_context.converted_sample_feedback";
 constexpr char graph_jit_event_feedback_a_id[] = "iv.test.graph_jit.state_context.event_feedback_a";
 constexpr char graph_jit_event_feedback_b_id[] = "iv.test.graph_jit.state_context.event_feedback_b";
@@ -182,6 +183,14 @@ struct TemporalSampleFeedbackStateMirror {
     std::array<float, 24> history_3_inputs{};
     std::array<float, 24> first_inputs{};
     std::array<float, 24> last_inputs{};
+    std::uint32_t marker = 0;
+};
+
+struct RevisingSampleFeedbackStateMirror {
+    std::uint64_t calls = 0;
+    std::array<std::uint64_t, 8> indices{};
+    std::array<float, 8> first_inputs{};
+    std::array<float, 8> last_inputs{};
     std::uint32_t marker = 0;
 };
 
@@ -1424,6 +1433,7 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     EXPECT_EQ(timeline.loop_extra_latency, 5u);
     EXPECT_FLOAT_EQ(static_cast<float>(timeline.initial_value), 0.25f);
     EXPECT_EQ(timeline.writer.kind, SampleFeedbackTimelineWriterKind::copy);
+    EXPECT_EQ(timeline.writer.revision_frames, 2u);
     EXPECT_EQ(timeline.writer.source_representation, canonical);
     EXPECT_EQ(timeline.writer.after_execution_position, 0u);
     EXPECT_TRUE(timeline.writer.composition_contributions.empty());
@@ -1752,6 +1762,7 @@ TEST(GraphJitSamplePhysicalPlan, DetachedCompositionUsesPersistentShiftedTimelin
     EXPECT_EQ(
         timeline.writer.kind,
         SampleFeedbackTimelineWriterKind::composition);
+    EXPECT_EQ(timeline.writer.revision_frames, 7u);
     EXPECT_EQ(timeline.writer.after_execution_position, 1u);
     EXPECT_EQ(
         timeline.writer.source_representation,
@@ -2805,6 +2816,55 @@ struct TemporalSampleFeedback {
         state.marker = 0x7e4fba11u;
         for (auto const sample : input) {
             ctx.outputs[0].push(sample + 1.0f);
+        }
+    }
+};
+
+struct RevisingSampleFeedback {
+    struct State {
+        std::uint64_t calls = 0;
+        std::array<std::uint64_t, 8> indices{};
+        std::array<float, 8> first_inputs{};
+        std::array<float, 8> last_inputs{};
+        std::uint32_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input("in")};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, {.latency = 2})};
+    }
+
+    void tick_block(iv::TickBlockContext<RevisingSampleFeedback> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = static_cast<std::size_t>(state.calls);
+        if (slot < state.indices.size()) {
+            state.indices[slot] = ctx.index;
+            auto const block = ctx.inputs[0].get_block(ctx.block_size);
+            state.first_inputs[slot] = block.empty()
+                ? 0.0f
+                : static_cast<float>(block[0]);
+            state.last_inputs[slot] = block.empty()
+                ? 0.0f
+                : static_cast<float>(block[block.size() - 1]);
+        }
+        ++state.calls;
+        state.marker = 0x5a17e001u;
+
+        auto& output = ctx.outputs[0];
+        if (ctx.index == 4) {
+            // Frame 3 was authored by the preceding root call and remains
+            // revisable because the output declares two frames of latency.
+            output.update(iv::Sample{103.0f});
+        }
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            output.push(static_cast<iv::Sample>(ctx.index + i));
         }
     }
 };
@@ -4324,6 +4384,7 @@ IV_NODE("iv.test.graph_jit.state_context.sample_feedback_a", SampleFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.sample_feedback_b", SampleFeedbackB);
 IV_NODE("iv.test.graph_jit.state_context.multi_branch_sample_feedback", MultiBranchSampleFeedback);
 IV_NODE("iv.test.graph_jit.state_context.temporal_sample_feedback", TemporalSampleFeedback);
+IV_NODE("iv.test.graph_jit.state_context.revising_sample_feedback", RevisingSampleFeedback);
 IV_NODE("iv.test.graph_jit.state_context.converted_sample_feedback", ConvertedSampleFeedback);
 IV_NODE("iv.test.graph_jit.state_context.mono_interleaved_consumer", MonoInterleavedConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.stereo_ramp_source", StereoRampSource);
@@ -4554,6 +4615,38 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_temporal_sample_feedback_g
     auto node = iv::details::configure_package_definition_provider(
         graph, graph_jit_temporal_sample_feedback_id, std::nullopt, {});
     node(static_cast<iv::SamplePortRef>(node).detach(latency, initial_value));
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
+
+std::shared_ptr<iv::ConfiguredGraph const> configured_revising_sample_feedback_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create GraphJit revising sample-feedback builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto node = iv::details::configure_package_definition_provider(
+        graph, graph_jit_revising_sample_feedback_id, std::nullopt, {});
+    node(static_cast<iv::SamplePortRef>(node).detach(6, iv::Sample{-1.0f}));
     graph.outputs();
     return std::make_shared<iv::ConfiguredGraph const>(
         iv::details::take_built_graph(session.get()));
@@ -7229,24 +7322,26 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTarg
 
     ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
     auto const& producer = analysis->sample_producer_groups.front();
-    // Feedback delay/history is branch-local. The canonical producer needs no
-    // retained carry merely because its detached consumer reads older frames.
-    EXPECT_EQ(producer.requirements.retained_frames, 0u);
+    // Feedback delay/history remains branch-local, but the canonical producer
+    // must retain its own authored latency horizon because OutputPort::update()
+    // may revise those already-authored frames on a later invocation.
+    EXPECT_EQ(producer.requirements.retained_frames, 2u);
     ASSERT_TRUE(producer.implementation.has_value());
     EXPECT_EQ(
         *producer.implementation,
-        iv::SampleConnectionImplementationKind::transient_materialization);
+        iv::SampleConnectionImplementationKind::compact_persistent_carry);
 
     auto physical = iv::graph_jit::detail::build_sample_physical_plan(
         *analysis, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
     ASSERT_EQ(physical->feedback_timelines.size(), 1u);
-    ASSERT_EQ(physical->persistent_allocations.size(), 1u);
+    ASSERT_EQ(physical->persistent_allocations.size(), 2u);
     auto const& timeline = physical->feedback_timelines.front();
     EXPECT_EQ(
         timeline.writer.kind,
         iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::copy);
+    EXPECT_EQ(timeline.writer.revision_frames, 2u);
     auto const ring_representation = timeline.timeline_representation;
     ASSERT_LT(ring_representation, physical->representations.size());
     auto const persistent_index =
@@ -7291,6 +7386,69 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTarg
         EXPECT_FLOAT_EQ(state->first_inputs[slice], expected_current[slice]);
         EXPECT_FLOAT_EQ(state->last_inputs[slice], expected_current[slice]);
     }
+}
+
+TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackRecopiesAuthoredLatencyHorizon)
+{
+    auto feedback_graph = configured_revising_sample_feedback_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    ASSERT_EQ(analysis->sample_connections.size(), 1u);
+    auto const& connection = analysis->sample_connections.front();
+    ASSERT_TRUE(connection.detach.has_value());
+    EXPECT_EQ(connection.source_latency, 2u);
+    EXPECT_EQ(connection.detach->loop_extra_latency, 6u);
+    ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
+    EXPECT_EQ(
+        analysis->sample_producer_groups.front().requirements.retained_frames,
+        2u);
+
+    auto physical = iv::graph_jit::detail::build_sample_physical_plan(
+        *analysis, 64);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->feedback_timelines.size(), 1u);
+    auto const& timeline = physical->feedback_timelines.front();
+    EXPECT_EQ(
+        timeline.writer.kind,
+        iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::copy);
+    EXPECT_EQ(timeline.writer.revision_frames, 2u);
+
+    auto compiled = compile_graph(feedback_graph, 152);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_EQ(compiled.compiled_graph->node_layout.nodes.size(), 1u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* state = static_cast<RevisingSampleFeedbackStateMirror*>(
+        storage.state_ptr(0));
+    ASSERT_NE(state, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 4);
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 4, 4);
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 8, 4);
+
+    ASSERT_EQ(state->calls, 3u);
+    EXPECT_EQ(state->indices[0], 0u);
+    EXPECT_EQ(state->indices[1], 4u);
+    EXPECT_EQ(state->indices[2], 8u);
+    EXPECT_FLOAT_EQ(state->first_inputs[0], -1.0f);
+    EXPECT_FLOAT_EQ(state->last_inputs[0], -1.0f);
+    EXPECT_FLOAT_EQ(state->first_inputs[1], -1.0f);
+    EXPECT_FLOAT_EQ(state->last_inputs[1], -1.0f);
+    EXPECT_FLOAT_EQ(state->first_inputs[2], 0.0f);
+    EXPECT_FLOAT_EQ(state->last_inputs[2], 103.0f);
+    EXPECT_EQ(state->marker, 0x5a17e001u);
 }
 
 TEST_F(GraphJitRuntimeFixture, ConvertedSampleDetachFeedback)
@@ -7547,6 +7705,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
     EXPECT_EQ(
         timeline.writer.kind,
         iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::composition);
+    EXPECT_EQ(timeline.writer.revision_frames, 2u);
     ASSERT_EQ(timeline.writer.composition_contributions.size(), 2u);
     EXPECT_EQ(
         timeline.writer.composition_contributions[0].source_layout.channel_type,

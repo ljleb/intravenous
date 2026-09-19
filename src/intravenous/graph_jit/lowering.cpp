@@ -1144,8 +1144,7 @@ std::expected<void, std::string> emit_sample_composition_write(
             "GraphJit sample composition contains no semantic contributions");
     }
     if (shift_writes_by_read_latency
-        && (target_history != 0
-            || target_representation.implementation
+        && (target_representation.implementation
                 != SampleConnectionImplementationKind::feedback_ring
             || target_representation.persistent_allocation
                 == detail::no_sample_persistent_allocation)) {
@@ -1314,7 +1313,16 @@ std::expected<void, std::string> emit_sample_composition_write(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* sample_type = llvm::Type::getFloatTy(context);
     auto* zero = llvm::ConstantInt::get(size_type, 0);
-    auto* history = llvm::ConstantInt::get(size_type, target_history);
+    llvm::Value* history = llvm::ConstantInt::get(size_type, target_history);
+    if (shift_writes_by_read_latency && target_history != 0) {
+        auto* history_limit = history;
+        history = builder.CreateSelect(
+            builder.CreateICmpULT(
+                sample_index, history_limit, "sample.compose.history.before-origin"),
+            sample_index,
+            history_limit,
+            "sample.compose.history.available");
+    }
     auto* compose_count = builder.CreateAdd(
         block_size, history, "sample.compose.count");
     auto emit_loop = [&](
@@ -1595,7 +1603,7 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
             timeline.writer.composition_contributions,
             timeline.timeline_representation,
             timeline.channel_layout,
-            0,
+            timeline.writer.revision_frames,
             true,
             storage_base,
             sample_index,
@@ -1629,6 +1637,22 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* sample_type = llvm::Type::getFloatTy(context);
     auto* zero = llvm::ConstantInt::get(size_type, 0);
+    auto* revision_limit = llvm::ConstantInt::get(
+        size_type, timeline.writer.revision_frames);
+    auto* revision_frames = timeline.writer.revision_frames == 0
+        ? static_cast<llvm::Value*>(zero)
+        : builder.CreateSelect(
+              builder.CreateICmpULT(
+                  sample_index,
+                  revision_limit,
+                  "sample.feedback.copy.revision.before-origin"),
+              sample_index,
+              revision_limit,
+              "sample.feedback.copy.revision.available");
+    auto* copy_count = builder.CreateAdd(
+        block_size, revision_frames, "sample.feedback.copy.count");
+    auto* first_frame = builder.CreateSub(
+        sample_index, revision_frames, "sample.feedback.copy.first");
     auto* preheader = builder.GetInsertBlock();
     auto* loop = llvm::BasicBlock::Create(
         context, "sample.feedback.copy", function);
@@ -1636,7 +1660,7 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
         context, "sample.feedback.copy.end", function);
     builder.CreateCondBr(
         builder.CreateICmpNE(
-            block_size, zero, "sample.feedback.copy.nonempty"),
+            copy_count, zero, "sample.feedback.copy.nonempty"),
         loop,
         exit);
 
@@ -1645,7 +1669,7 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
         size_type, 2, "sample.feedback.copy.frame");
     frame_offset->addIncoming(zero, preheader);
     auto* absolute_frame = builder.CreateAdd(
-        sample_index, frame_offset, "sample.feedback.copy.absolute");
+        first_frame, frame_offset, "sample.feedback.copy.absolute");
 
     auto const channels = channel_count(source_plan.channel_layout);
     for (std::size_t channel = 0; channel < channels; ++channel) {
@@ -1675,7 +1699,7 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
         llvm::ConstantInt::get(size_type, 1),
         "sample.feedback.copy.next");
     auto* done = builder.CreateICmpUGE(
-        next, block_size, "sample.feedback.copy.done");
+        next, copy_count, "sample.feedback.copy.done");
     builder.CreateCondBr(done, exit, loop);
     frame_offset->addIncoming(next, loop);
     builder.SetInsertPoint(exit);

@@ -264,6 +264,13 @@ The current internal realtime connection surface is intentionally asymmetric:
   concrete node types, so there is no future root-boundary transport ABI to add.
   Compiled-access directions remain a separate lowering capability.
 
+Sample output authored latency is also a revision horizon. `OutputPort::update()`
+may rewrite any of the preceding authored-latency frames, so canonical sample
+storage retains that horizon across root calls. Detached copy/composition writers
+unconditionally refresh the available authored-latency prefix together with the
+current block; producer-home feedback needs no copy because revisions already hit
+the persistent canonical ring directly.
+
 Fresh compiler-owned persistent connection state is lifecycle-owned. Sample
 feedback/carry/alignment raw regions and event raw representations install
 `NodeLayout` raw initializers; exact-shape persistent regions skip initialization

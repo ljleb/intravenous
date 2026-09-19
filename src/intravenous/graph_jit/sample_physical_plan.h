@@ -177,6 +177,11 @@ struct SampleFeedbackTimelineWriterPlan {
         SampleFeedbackTimelineWriterKind::producer_home;
     std::size_t after_execution_position = 0;
 
+    // Number of already-authored source frames that must be recopied on every
+    // invocation because OutputPort::update() may revise any of them. This is
+    // the producer's authored latency horizon, not the consumer read latency.
+    std::size_t revision_frames = 0;
+
     // copy only
     std::size_t source_representation = no_sample_representation;
 

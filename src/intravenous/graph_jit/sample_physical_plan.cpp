@@ -906,6 +906,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                         ? SampleFeedbackTimelineWriterKind::producer_home
                         : SampleFeedbackTimelineWriterKind::copy,
                     .after_execution_position = producer_position,
+                    .revision_frames = writes_directly_to_feedback
+                        ? 0
+                        : connection.source_latency,
                     .source_representation = writes_directly_to_feedback
                         ? no_sample_representation
                         : canonical,
@@ -966,6 +969,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         std::size_t target_representation = no_sample_representation;
         bool const detached = connection.detach.has_value();
         std::size_t feedback_retained_frames = 0;
+        std::size_t max_source_latency = 0;
         if (detached) {
             if (!connection.detach_initial_value) {
                 return std::unexpected(
@@ -975,6 +979,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             for (auto const& channel : connection.source_channel_timings) {
                 max_read_latency = std::max(
                     max_read_latency, channel.read_latency);
+                max_source_latency = std::max(
+                    max_source_latency, channel.source_latency);
             }
             auto const detach_latency = connection.detach->loop_extra_latency;
             if (connection.target_history
@@ -1218,6 +1224,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 .writer = SampleFeedbackTimelineWriterPlan{
                     .kind = SampleFeedbackTimelineWriterKind::composition,
                     .after_execution_position = begin,
+                    .revision_frames = max_source_latency,
                     .composition_contributions = std::move(composition_contributions),
                 },
             });

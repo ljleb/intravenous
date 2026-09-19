@@ -1440,7 +1440,8 @@ void plan_sample_groups(
                 connection_retained = std::max(
                     connection_retained,
                     connection.detach
-                        ? channel.source_history
+                        ? saturating_add(
+                            channel.source_history, channel.source_latency)
                         : retained_extent(
                             channel.source_history,
                             channel.read_latency,
