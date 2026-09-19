@@ -54,6 +54,7 @@ constexpr char graph_jit_transient_sample_module_id[] = "iv.test.graph_jit.state
 constexpr char graph_jit_reused_sample_arena_module_id[] = "iv.test.graph_jit.state_context.reused_sample_arena_module";
 constexpr char graph_jit_sample_fanout_conversion_module_id[] = "iv.test.graph_jit.state_context.sample_fanout_conversion_module";
 constexpr char graph_jit_sample_revision_module_id[] = "iv.test.graph_jit.state_context.sample_revision_module";
+constexpr char graph_jit_tick_fallback_sample_module_id[] = "iv.test.graph_jit.state_context.tick_fallback_sample_module";
 constexpr char graph_jit_stereo_conversion_module_id[] = "iv.test.graph_jit.state_context.stereo_conversion_module";
 constexpr char graph_jit_history_fanout_module_id[] = "iv.test.graph_jit.state_context.history_fanout_module";
 constexpr char graph_jit_persistent_history_module_id[] = "iv.test.graph_jit.state_context.persistent_history_module";
@@ -2563,6 +2564,30 @@ struct RevisingSampleSource {
     }
 };
 
+struct TickFallbackSampleSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, {.latency = 1})};
+    }
+
+    std::size_t max_block_size() const { return 2; }
+
+    void tick(iv::TickSampleContext<TickFallbackSampleSource> const& ctx) const
+    {
+        auto& output = ctx.outputs[0];
+        if (ctx.index != 0) {
+            output.update(static_cast<iv::Sample>(100 + ctx.index - 1));
+        }
+        output.push(static_cast<iv::Sample>(ctx.index));
+    }
+};
+
 struct LimitedSampleRampSource {
     static constexpr auto inputs()
     {
@@ -4228,6 +4253,14 @@ void sample_revision_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void tick_fallback_sample_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.tick_fallback_sample_source">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.sample_consumer">();
+    sink(source);
+    graph.outputs();
+}
+
 void stereo_conversion_module(iv::GraphBuilder& graph)
 {
     auto source = graph.node<"iv.test.graph_jit.state_context.stereo_ramp_source">();
@@ -4378,6 +4411,7 @@ IV_NODE("iv.test.graph_jit.state_context.pointer_configured", PointerConfiguredP
 IV_NODE("iv.test.graph_jit.state_context.limited_block", LimitedBlockProbe);
 IV_NODE("iv.test.graph_jit.state_context.sample_ramp_source", SampleRampSource);
 IV_NODE("iv.test.graph_jit.state_context.revising_sample_source", RevisingSampleSource);
+IV_NODE("iv.test.graph_jit.state_context.tick_fallback_sample_source", TickFallbackSampleSource);
 IV_NODE("iv.test.graph_jit.state_context.limited_sample_ramp_source", LimitedSampleRampSource);
 IV_NODE("iv.test.graph_jit.state_context.sample_consumer", SampleConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.sample_feedback_a", SampleFeedbackA);
@@ -4432,6 +4466,7 @@ IV_MODULE("iv.test.graph_jit.state_context.transient_sample_module", transient_s
 IV_MODULE("iv.test.graph_jit.state_context.reused_sample_arena_module", reused_sample_arena_module);
 IV_MODULE("iv.test.graph_jit.state_context.sample_fanout_conversion_module", sample_fanout_conversion_module);
 IV_MODULE("iv.test.graph_jit.state_context.sample_revision_module", sample_revision_module);
+IV_MODULE("iv.test.graph_jit.state_context.tick_fallback_sample_module", tick_fallback_sample_module);
 IV_MODULE("iv.test.graph_jit.state_context.stereo_conversion_module", stereo_conversion_module);
 IV_MODULE("iv.test.graph_jit.state_context.history_fanout_module", history_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.persistent_history_module", persistent_history_module);
@@ -6239,6 +6274,57 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
     EXPECT_FLOAT_EQ(stereo->last_right, 106.0f);
     EXPECT_FLOAT_EQ(stereo->sum_left, 418.0f);
     EXPECT_FLOAT_EQ(stereo->sum_right, 418.0f);
+}
+
+TEST_F(GraphJitRuntimeFixture, TickOnlySampleNodePreservesContextAcrossPrimitiveSlices)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_tick_fallback_sample_module_id);
+    ASSERT_TRUE(graph);
+    auto compiled = compile_graph(graph, 130);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_EQ(compiled.compiled_graph->node_layout.nodes.size(), 2u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    SampleConsumerProbeStateMirror* consumer = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(SampleConsumerProbeStateMirror)) {
+            consumer = static_cast<SampleConsumerProbeStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(consumer, nullptr);
+
+    // The source callback is sliced as [0,2), [2,4). Because it only
+    // implements tick(), each slice is further executed one sample at a time.
+    // update() at index 2 therefore revises a frame authored by the
+    // preceding primitive callback invocation, while the one-sample source
+    // latency keeps those frames unpublished until the consumer runs.
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 4);
+    EXPECT_EQ(consumer->calls, 1u);
+    EXPECT_EQ(consumer->last_index, 0u);
+    EXPECT_EQ(consumer->last_block_size, 4u);
+    EXPECT_FLOAT_EQ(consumer->first, 0.0f);
+    EXPECT_FLOAT_EQ(consumer->last, 102.0f);
+    EXPECT_FLOAT_EQ(consumer->sum, 303.0f);
+
+    // The next root call begins by revising frame 3 from the previous root.
+    // Later updates cross the [4,6) -> [6,8) primitive-slice boundary too.
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 4, 4);
+    EXPECT_EQ(consumer->calls, 2u);
+    EXPECT_EQ(consumer->last_index, 4u);
+    EXPECT_EQ(consumer->last_block_size, 4u);
+    EXPECT_FLOAT_EQ(consumer->first, 103.0f);
+    EXPECT_FLOAT_EQ(consumer->last, 106.0f);
+    EXPECT_FLOAT_EQ(consumer->sum, 418.0f);
 }
 
 TEST_F(GraphJitRuntimeFixture, SampleLatencyCompensation)

@@ -1011,6 +1011,9 @@ namespace iv {
         IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
         {
             size_t const available = _latency + _history + 1;
+            if (sample_offset >= available) {
+                return {};
+            }
             size_t const count = std::min(block_size, available - sample_offset);
             size_t const start = (
                 _position + _storage.latency + buffer_size() - (sample_offset + count)
@@ -1081,11 +1084,16 @@ namespace iv {
 
         IV_FORCEINLINE constexpr void push_silence(size_t block_size)
         {
-            size_t const start = (_position + _storage.latency) & (buffer_size() - 1);
-            auto block = make_block_view(_storage.buffer, start, block_size);
-            std::fill(block.first.begin(), block.first.end(), 0.0f);
-            std::fill(block.second.begin(), block.second.end(), 0.0f);
-            _position = (_position + block_size) & (buffer_size() - 1);
+            size_t const mask = buffer_size() - 1;
+            size_t const start = (_position + _storage.latency) & mask;
+            auto const channels = channel_count(_storage.channel_layout);
+            for (size_t frame_offset = 0; frame_offset < block_size; ++frame_offset) {
+                size_t const frame = (start + frame_offset) & mask;
+                for (size_t channel = 0; channel < channels; ++channel) {
+                    _storage.buffer[_storage.sample_index(frame, channel)] = 0.0f;
+                }
+            }
+            _position = (_position + block_size) & mask;
         }
 
         IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0)

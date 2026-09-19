@@ -494,6 +494,20 @@ namespace iv {
         };
     }
 
+    // Sequential sample callbacks use invocation-local port facades. A tick()
+    // callback owns exactly one sample: after it returns, direct output writes
+    // are committed and every input cursor advances by one. do_tick_block()
+    // synthesizes block execution for tick()-only nodes by repeating that exact
+    // transition for each absolute sample index.
+    //
+    // A native tick_block() callback instead receives facades anchored at the
+    // block's first sample for its entire call. Inputs advance only after the
+    // callback returns; block accessors address later frames explicitly.
+    // Sequential OutputPort::push* calls advance their own authored cursor, while
+    // static/direct block writes are committed once at callback return. A
+    // well-formed realtime node authors exactly one frame per output per tick(),
+    // or block_size frames per output per tick_block(); the runtime deliberately
+    // does not add release-time accounting for under/over-production.
     template<typename Node>
     IV_FORCEINLINE void do_tick(Node const& node, TickSampleContext<Node> const& ctx)
     {
@@ -546,6 +560,10 @@ namespace iv {
         }
     }
 
+    // skip_block() follows the same block anchoring/advancement contract. A
+    // custom skip_block owns its output semantics; when absent, the runtime
+    // synthesizes one block of silence for every sample output. Inputs always
+    // advance by block_size after the skip callback/synthesis completes.
     template<typename Node>
     IV_FORCEINLINE void do_skip_block(Node const& node, SkipBlockContext<Node> const& ctx)
     {

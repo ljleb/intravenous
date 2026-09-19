@@ -271,6 +271,27 @@ unconditionally refresh the available authored-latency prefix together with the
 current block; producer-home feedback needs no copy because revisions already hit
 the persistent canonical ring directly.
 
+The sequential callback contract is part of lowering correctness, not merely a
+node-helper detail. A reflected sample facade is reconstructed at the primitive
+invocation's absolute `sample_index`. For a native `tick_block()` callback, input
+cursors remain anchored there for the duration of the callback and block accessors
+address later frames explicitly. Sequential `OutputPort::push*()` calls advance
+the output's authored cursor, while static/direct block writes are committed once
+when the callback returns. A node that implements only `tick()` is executed by
+`do_tick_block()` as one one-sample context per frame, advancing input/output
+cursors after every call. Primitive maximum-block slicing reconstructs the same
+facades at each slice index, so authored-latency revision must remain valid across
+both slice and root-call boundaries. Well-formed realtime nodes publish exactly
+one sample frame per output per `tick()`, or `block_size` frames per output per
+`tick_block()`; release execution does not maintain a redundant production-count
+check.
+
+`skip_block()` uses the same block anchoring. A custom skip callback owns its own
+output semantics; when one is absent the generic helper synthesizes silence for
+every channel of every sample output and advances inputs by the skipped block.
+GraphJit's generated root does not yet schedule primitive skips, so this remains a
+generic callback contract until activity/TTL lowering lands.
+
 Fresh compiler-owned persistent connection state is lifecycle-owned. Sample
 feedback/carry/alignment raw regions and event raw representations install
 `NodeLayout` raw initializers; exact-shape persistent regions skip initialization

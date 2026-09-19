@@ -264,6 +264,135 @@ struct EventBeforeSamplePass {
     }
 };
 
+struct TickFallbackContractTrace {
+    std::size_t calls = 0;
+    std::array<iv::SampleIndex, 4> indices{};
+    std::array<iv::Sample, 4> current_inputs{};
+    std::array<iv::Sample, 4> history_inputs{};
+    std::array<iv::Sample, 4> previous_outputs{};
+    std::array<std::size_t, 4> output_positions{};
+};
+
+struct TickFallbackContractProbe {
+    TickFallbackContractTrace* trace = nullptr;
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in", {}, {.history = 1})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, {.history = 1, .latency = 2})};
+    }
+
+    void tick(iv::TickSampleContext<TickFallbackContractProbe> const& ctx) const
+    {
+        auto const slot = trace->calls++;
+        if (slot < trace->indices.size()) {
+            trace->indices[slot] = ctx.index;
+            trace->current_inputs[slot] = ctx.inputs[0].get();
+            trace->history_inputs[slot] = ctx.inputs[0].get(1);
+            trace->previous_outputs[slot] = ctx.outputs[0].get();
+            trace->output_positions[slot] = ctx.outputs[0].position();
+        }
+        if (ctx.index == 6) {
+            ctx.outputs[0].update(iv::Sample{500.0f});
+        }
+        ctx.outputs[0].push(static_cast<iv::Sample>(ctx.index));
+    }
+};
+
+struct TickBlockContractTrace {
+    iv::SampleIndex index = 0;
+    std::size_t block_size = 0;
+    iv::Sample anchored_input = 0.0f;
+    std::array<iv::Sample, 4> block_inputs{};
+    iv::Sample previous_output = 0.0f;
+    std::size_t output_position_before = 0;
+    std::size_t output_position_after = 0;
+};
+
+struct TickBlockContractProbe {
+    TickBlockContractTrace* trace = nullptr;
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in", {}, {.history = 1})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, {.latency = 2})};
+    }
+
+    void tick_block(iv::TickBlockContext<TickBlockContractProbe> const& ctx) const
+    {
+        trace->index = ctx.index;
+        trace->block_size = ctx.block_size;
+        trace->anchored_input = ctx.inputs[0].get();
+        auto const block = ctx.inputs[0].get_block(ctx.block_size);
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            trace->block_inputs[i] = block[i];
+        }
+
+        auto& output = ctx.outputs[0];
+        trace->previous_output = output.get();
+        trace->output_position_before = output.position();
+        output.update(iv::Sample{444.0f});
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            output.push(block[i]);
+        }
+        trace->output_position_after = output.position();
+    }
+};
+
+struct DirectBlockWriteContractTrace {
+    std::size_t output_position_before = 0;
+    std::size_t output_position_after_write = 0;
+};
+
+struct DirectBlockWriteContractProbe {
+    DirectBlockWriteContractTrace* trace = nullptr;
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output("out")};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<DirectBlockWriteContractProbe> const& ctx) const
+    {
+        trace->output_position_before = ctx.outputs[0].position();
+        auto output = ctx.output<"out">();
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            output[i] = static_cast<iv::Sample>(ctx.index + i);
+        }
+        trace->output_position_after_write = ctx.outputs[0].position();
+    }
+};
+
+struct SynthesizedStereoSkipProbe {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input("in")};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output("out", {
+            .channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            },
+        })};
+    }
+};
+
 struct ScheduledTriggerSource {
     size_t sample_offset = 0;
 
@@ -1125,6 +1254,190 @@ TEST(Channels, OutputPortUpdateRevisesOnlyUnpublishedLatencyWindow)
     EXPECT_FLOAT_EQ(samples[1], 20.0f);
     EXPECT_FLOAT_EQ(output.get(0), 20.0f);
     EXPECT_FLOAT_EQ(output.get(1), 10.0f);
+}
+
+TEST(Channels, TickOnlyBlockFallbackAdvancesSequentialPortCursors)
+{
+    std::array<iv::Sample, 16> input_samples{};
+    std::array<iv::Sample, 16> output_samples{};
+    for (std::size_t i = 0; i < input_samples.size(); ++i) {
+        input_samples[i] = static_cast<iv::Sample>(10 * i);
+    }
+    output_samples[4] = iv::Sample{400.0f};
+
+    iv::SharedPortData input_data(input_samples, 0);
+    iv::SharedPortData output_data(output_samples, 0);
+    std::array<iv::InputPort, 1> inputs{
+        iv::InputPort(input_data, 1, 0, 5)};
+    std::array<iv::OutputPort, 1> outputs{
+        iv::OutputPort(output_data, 1, 5, 2)};
+    TickFallbackContractTrace trace;
+
+    iv::do_tick_block(
+        TickFallbackContractProbe{&trace},
+        iv::TickBlockContext<TickFallbackContractProbe>{
+            iv::TickContext<TickFallbackContractProbe>{
+                .inputs = inputs,
+                .outputs = outputs,
+            },
+            5,
+            4,
+        });
+
+    EXPECT_EQ(trace.calls, 4u);
+    EXPECT_EQ(
+        trace.indices,
+        (std::array<iv::SampleIndex, 4>{5, 6, 7, 8}));
+    EXPECT_EQ(
+        trace.current_inputs,
+        (std::array<iv::Sample, 4>{50.0f, 60.0f, 70.0f, 80.0f}));
+    EXPECT_EQ(
+        trace.history_inputs,
+        (std::array<iv::Sample, 4>{40.0f, 50.0f, 60.0f, 70.0f}));
+    EXPECT_EQ(
+        trace.previous_outputs,
+        (std::array<iv::Sample, 4>{400.0f, 5.0f, 6.0f, 7.0f}));
+    EXPECT_EQ(
+        trace.output_positions,
+        (std::array<std::size_t, 4>{5, 6, 7, 8}));
+
+    EXPECT_FLOAT_EQ(output_samples[5], 500.0f);
+    EXPECT_FLOAT_EQ(output_samples[6], 6.0f);
+    EXPECT_FLOAT_EQ(output_samples[7], 7.0f);
+    EXPECT_FLOAT_EQ(output_samples[8], 8.0f);
+    EXPECT_EQ(outputs[0].position(), 9u);
+    EXPECT_FLOAT_EQ(inputs[0].get(), 90.0f);
+    EXPECT_FLOAT_EQ(inputs[0].get(1), 80.0f);
+}
+
+TEST(Channels, TickBlockKeepsInputsAnchoredAndAdvancesSequentialOutputs)
+{
+    std::array<iv::Sample, 16> input_samples{};
+    std::array<iv::Sample, 16> output_samples{};
+    for (std::size_t i = 0; i < input_samples.size(); ++i) {
+        input_samples[i] = static_cast<iv::Sample>(10 * i);
+    }
+    output_samples[4] = iv::Sample{400.0f};
+
+    iv::SharedPortData input_data(input_samples, 0);
+    iv::SharedPortData output_data(output_samples, 0);
+    std::array<iv::InputPort, 1> inputs{
+        iv::InputPort(input_data, 1, 0, 5)};
+    std::array<iv::OutputPort, 1> outputs{
+        iv::OutputPort(output_data, 0, 5, 2)};
+    TickBlockContractTrace trace;
+
+    iv::do_tick_block(
+        TickBlockContractProbe{&trace},
+        iv::TickBlockContext<TickBlockContractProbe>{
+            iv::TickContext<TickBlockContractProbe>{
+                .inputs = inputs,
+                .outputs = outputs,
+            },
+            5,
+            4,
+        });
+
+    EXPECT_EQ(trace.index, 5u);
+    EXPECT_EQ(trace.block_size, 4u);
+    EXPECT_FLOAT_EQ(trace.anchored_input, 50.0f);
+    EXPECT_EQ(
+        trace.block_inputs,
+        (std::array<iv::Sample, 4>{50.0f, 60.0f, 70.0f, 80.0f}));
+    EXPECT_FLOAT_EQ(trace.previous_output, 400.0f);
+    EXPECT_EQ(trace.output_position_before, 5u);
+    EXPECT_EQ(trace.output_position_after, 9u);
+
+    EXPECT_FLOAT_EQ(output_samples[4], 444.0f);
+    EXPECT_FLOAT_EQ(output_samples[5], 50.0f);
+    EXPECT_FLOAT_EQ(output_samples[6], 60.0f);
+    EXPECT_FLOAT_EQ(output_samples[7], 70.0f);
+    EXPECT_FLOAT_EQ(output_samples[8], 80.0f);
+    EXPECT_EQ(outputs[0].position(), 9u);
+    EXPECT_FLOAT_EQ(inputs[0].get(), 90.0f);
+}
+
+TEST(Channels, DirectBlockWritesCommitOutputCursorAfterCallback)
+{
+    std::array<iv::Sample, 16> output_samples{};
+    iv::SharedPortData output_data(output_samples, 0);
+    std::array<iv::OutputPort, 1> outputs{
+        iv::OutputPort(output_data, 0, 5)};
+    DirectBlockWriteContractTrace trace;
+
+    iv::do_tick_block(
+        DirectBlockWriteContractProbe{&trace},
+        iv::TickBlockContext<DirectBlockWriteContractProbe>{
+            iv::TickContext<DirectBlockWriteContractProbe>{
+                .outputs = outputs,
+            },
+            5,
+            4,
+        });
+
+    EXPECT_EQ(trace.output_position_before, 5u);
+    EXPECT_EQ(trace.output_position_after_write, 5u);
+    EXPECT_EQ(outputs[0].position(), 9u);
+    EXPECT_FLOAT_EQ(output_samples[5], 5.0f);
+    EXPECT_FLOAT_EQ(output_samples[6], 6.0f);
+    EXPECT_FLOAT_EQ(output_samples[7], 7.0f);
+    EXPECT_FLOAT_EQ(output_samples[8], 8.0f);
+}
+
+TEST(Channels, SynthesizedSkipSilencesAllChannelsAndAdvancesInputs)
+{
+    constexpr auto stereo = iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::interleaved,
+    };
+    std::array<iv::Sample, 8> input_samples{};
+    std::array<iv::Sample, 16> output_samples{};
+    for (std::size_t i = 0; i < input_samples.size(); ++i) {
+        input_samples[i] = static_cast<iv::Sample>(i);
+    }
+    std::ranges::fill(output_samples, iv::Sample{9.0f});
+
+    iv::SharedPortData input_data(input_samples, 0);
+    iv::SharedPortData output_data(output_samples, 0, stereo, 8);
+    std::array<iv::InputPort, 1> inputs{
+        iv::InputPort(input_data, 0, 0, 2)};
+    std::array<iv::OutputPort, 1> outputs{
+        iv::OutputPort(output_data, 0, 2)};
+
+    iv::do_skip_block(
+        SynthesizedStereoSkipProbe{},
+        iv::SkipBlockContext<SynthesizedStereoSkipProbe>{
+            iv::TickContext<SynthesizedStereoSkipProbe>{
+                .inputs = inputs,
+                .outputs = outputs,
+            },
+            2,
+            4,
+        });
+
+    for (std::size_t frame = 0; frame < 8; ++frame) {
+        for (std::size_t channel = 0; channel < 2; ++channel) {
+            auto const value = output_samples[output_data.sample_index(frame, channel)];
+            if (frame >= 2 && frame < 6) {
+                EXPECT_FLOAT_EQ(value, 0.0f);
+            } else {
+                EXPECT_FLOAT_EQ(value, 9.0f);
+            }
+        }
+    }
+    EXPECT_EQ(outputs[0].position(), 6u);
+    EXPECT_FLOAT_EQ(inputs[0].get(), 6.0f);
+}
+
+TEST(Channels, OutputPortGetBlockRejectsOffsetBeyondReadableWindow)
+{
+    std::array<iv::Sample, 8> samples{};
+    iv::SharedPortData data(samples, 0);
+    iv::OutputPort output(data, 1, 0, 2);
+    output.push(iv::Sample{1.0f});
+    output.push(iv::Sample{2.0f});
+
+    EXPECT_TRUE(output.get_block(2, 5).empty());
 }
 
 TEST(Channels, OutputPortUpdateAppliesWriteBoundaryConversion)
