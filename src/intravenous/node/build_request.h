@@ -168,6 +168,7 @@ IV_FORCEINLINE OutputPort reflected_sample_output_port(
         reflected_sample_storage_view(storage_base, binding.storage),
         binding.history,
         index,
+        binding.latency,
     };
 }
 

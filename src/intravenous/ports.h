@@ -842,18 +842,26 @@ namespace iv {
     class OutputPort {
         SamplePortStorageView _storage;
         size_t _history;
+        size_t _latency;
         size_t _position = 0;
         size_t _direct_write_extent = 0;
         ChannelLayout _source_layout;
         ChannelConversionPlan _conversion;
 
-        IV_FORCEINLINE constexpr void write_target_frame(std::span<Sample const> values, size_t frame_offset)
+        IV_FORCEINLINE constexpr void write_target_frame_at(
+            std::span<Sample const> values, size_t frame)
         {
             IV_ASSERT(values.size() == channel_count(_storage.channel_layout), "output frame does not match target channel layout");
-            size_t const frame = (_position + _storage.latency + frame_offset) & (buffer_size() - 1);
             for (size_t channel = 0; channel < values.size(); ++channel) {
                 _storage.buffer[_storage.sample_index(frame, channel)] = values[channel];
             }
+        }
+
+        IV_FORCEINLINE constexpr void write_target_frame(
+            std::span<Sample const> values, size_t frame_offset)
+        {
+            size_t const frame = (_position + _storage.latency + frame_offset) & (buffer_size() - 1);
+            write_target_frame_at(values, frame);
         }
 
     public:
@@ -861,13 +869,23 @@ namespace iv {
             SamplePortStorageView storage,
             size_t history,
             SampleIndex index = 0
+        ) : OutputPort(storage, history, index, storage.latency)
+        {}
+
+        explicit OutputPort(
+            SamplePortStorageView storage,
+            size_t history,
+            SampleIndex index,
+            size_t latency
         ) :
             _storage(storage),
             _history(history),
+            _latency(latency),
             _position(static_cast<size_t>(index & (storage.frame_capacity - 1))),
             _source_layout(storage.channel_layout)
         {
             IV_ASSERT(is_power_of_2(_storage.frame_capacity), "buffer frame capacity should be a power of 2");
+            IV_ASSERT(_latency < _storage.frame_capacity, "output latency must fit its shared ring buffer");
         }
 
         explicit OutputPort(
@@ -879,19 +897,42 @@ namespace iv {
         {}
 
         explicit OutputPort(
+            SharedPortData& shared_data,
+            size_t history,
+            SampleIndex index,
+            size_t latency
+        ) :
+            OutputPort(
+                SamplePortStorageView{shared_data}, history, index, latency)
+        {}
+
+        explicit OutputPort(
             SamplePortStorageView storage,
             size_t history,
             ChannelLayout source_layout,
             ChannelConversionPlan conversion,
             SampleIndex index = 0
+        ) : OutputPort(
+            storage, history, source_layout, conversion, index, storage.latency)
+        {}
+
+        explicit OutputPort(
+            SamplePortStorageView storage,
+            size_t history,
+            ChannelLayout source_layout,
+            ChannelConversionPlan conversion,
+            SampleIndex index,
+            size_t latency
         ) :
             _storage(storage),
             _history(history),
+            _latency(latency),
             _position(static_cast<size_t>(index & (storage.frame_capacity - 1))),
             _source_layout(source_layout),
             _conversion(conversion)
         {
             IV_ASSERT(is_power_of_2(_storage.frame_capacity), "buffer frame capacity should be a power of 2");
+            IV_ASSERT(_latency < _storage.frame_capacity, "output latency must fit its shared ring buffer");
             IV_ASSERT(_conversion && _conversion.source == _source_layout, "sample edge conversion source layout does not match output layout");
             IV_ASSERT(_conversion.target == _storage.channel_layout, "sample edge conversion target layout does not match output buffer layout");
         }
@@ -910,9 +951,25 @@ namespace iv {
             index)
         {}
 
+        explicit OutputPort(
+            SharedPortData& shared_data,
+            size_t history,
+            ChannelLayout source_layout,
+            ChannelConversionPlan conversion,
+            SampleIndex index,
+            size_t latency
+        ) : OutputPort(
+            SamplePortStorageView{shared_data},
+            history,
+            source_layout,
+            conversion,
+            index,
+            latency)
+        {}
+
         IV_FORCEINLINE constexpr Sample get(size_t offset = 0, size_t channel = 0) const
         {
-            if (offset > _storage.latency + _history) return 0.0f;
+            if (offset > _latency + _history) return 0.0f;
             size_t const idx = (
                 _position + _storage.latency + buffer_size() - 1 - offset
             ) & (buffer_size() - 1);
@@ -953,7 +1010,7 @@ namespace iv {
 
         IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
         {
-            size_t const available = _storage.latency + _history + 1;
+            size_t const available = _latency + _history + 1;
             size_t const count = std::min(block_size, available - sample_offset);
             size_t const start = (
                 _position + _storage.latency + buffer_size() - (sample_offset + count)
@@ -1033,9 +1090,29 @@ namespace iv {
 
         IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0)
         {
-            if (offset > _storage.latency) return;
-            size_t const idx = (_position + _storage.latency + buffer_size() - offset) & (buffer_size() - 1);
-            _storage.buffer[idx] = value;
+            IV_ASSERT(channel_count(_source_layout) == 1, "update(Sample) requires a mono source output port");
+            Sample source[] { value };
+            update_frame(source, offset);
+        }
+
+        IV_FORCEINLINE constexpr void update_frame(
+            std::span<Sample const> source, size_t offset = 0)
+        {
+            if (offset >= _latency) return;
+            IV_ASSERT(source.size() == channel_count(_source_layout), "output frame does not match source channel layout");
+            Sample converted[2] {};
+            std::span<Sample const> target = source;
+            if (_conversion) {
+                _conversion.convert(source.data(), converted, 1);
+                target = std::span<Sample const>(
+                    converted, channel_count(_storage.channel_layout));
+            } else {
+                IV_ASSERT(_source_layout == _storage.channel_layout, "sample output requires a channel conversion plan");
+            }
+            size_t const frame = (
+                _position + _storage.latency + buffer_size() - 1 - offset
+            ) & (buffer_size() - 1);
+            write_target_frame_at(target, frame);
         }
 
         IV_FORCEINLINE constexpr size_t position() const

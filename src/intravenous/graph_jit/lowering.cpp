@@ -571,6 +571,7 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                 bindings.push_back(ReflectedSampleOutputPortBinding{
                     .storage = *storage,
                     .history = output.history,
+                    .latency = output.latency,
                 });
             }
             result.output_bindings = immutable_bytes_global(

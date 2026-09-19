@@ -53,6 +53,7 @@ constexpr char graph_jit_direct_sample_module_id[] = "iv.test.graph_jit.state_co
 constexpr char graph_jit_transient_sample_module_id[] = "iv.test.graph_jit.state_context.transient_sample_module";
 constexpr char graph_jit_reused_sample_arena_module_id[] = "iv.test.graph_jit.state_context.reused_sample_arena_module";
 constexpr char graph_jit_sample_fanout_conversion_module_id[] = "iv.test.graph_jit.state_context.sample_fanout_conversion_module";
+constexpr char graph_jit_sample_revision_module_id[] = "iv.test.graph_jit.state_context.sample_revision_module";
 constexpr char graph_jit_stereo_conversion_module_id[] = "iv.test.graph_jit.state_context.stereo_conversion_module";
 constexpr char graph_jit_history_fanout_module_id[] = "iv.test.graph_jit.state_context.history_fanout_module";
 constexpr char graph_jit_persistent_history_module_id[] = "iv.test.graph_jit.state_context.persistent_history_module";
@@ -2526,6 +2527,31 @@ struct SampleRampSource {
     }
 };
 
+struct RevisingSampleSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, {.latency = 1})};
+    }
+
+    void tick_block(iv::TickBlockContext<RevisingSampleSource> const& ctx) const
+    {
+        auto& output = ctx.outputs[0];
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            auto const index = ctx.index + i;
+            if (index != 0) {
+                output.update(static_cast<iv::Sample>(100 + index - 1));
+            }
+            output.push(static_cast<iv::Sample>(index));
+        }
+    }
+};
+
 struct LimitedSampleRampSource {
     static constexpr auto inputs()
     {
@@ -4132,6 +4158,16 @@ void sample_fanout_conversion_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void sample_revision_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.revising_sample_source">();
+    auto mono_sink = graph.node<"iv.test.graph_jit.state_context.sample_consumer">();
+    auto stereo_sink = graph.node<"iv.test.graph_jit.state_context.stereo_sample_consumer">();
+    mono_sink(source);
+    stereo_sink(source);
+    graph.outputs();
+}
+
 void stereo_conversion_module(iv::GraphBuilder& graph)
 {
     auto source = graph.node<"iv.test.graph_jit.state_context.stereo_ramp_source">();
@@ -4281,6 +4317,7 @@ IV_NODE("iv.test.graph_jit.state_context.configured", ConfiguredProbe);
 IV_NODE("iv.test.graph_jit.state_context.pointer_configured", PointerConfiguredProbe);
 IV_NODE("iv.test.graph_jit.state_context.limited_block", LimitedBlockProbe);
 IV_NODE("iv.test.graph_jit.state_context.sample_ramp_source", SampleRampSource);
+IV_NODE("iv.test.graph_jit.state_context.revising_sample_source", RevisingSampleSource);
 IV_NODE("iv.test.graph_jit.state_context.limited_sample_ramp_source", LimitedSampleRampSource);
 IV_NODE("iv.test.graph_jit.state_context.sample_consumer", SampleConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.sample_feedback_a", SampleFeedbackA);
@@ -4333,6 +4370,7 @@ IV_MODULE("iv.test.graph_jit.state_context.direct_sample_module", direct_sample_
 IV_MODULE("iv.test.graph_jit.state_context.transient_sample_module", transient_sample_module);
 IV_MODULE("iv.test.graph_jit.state_context.reused_sample_arena_module", reused_sample_arena_module);
 IV_MODULE("iv.test.graph_jit.state_context.sample_fanout_conversion_module", sample_fanout_conversion_module);
+IV_MODULE("iv.test.graph_jit.state_context.sample_revision_module", sample_revision_module);
 IV_MODULE("iv.test.graph_jit.state_context.stereo_conversion_module", stereo_conversion_module);
 IV_MODULE("iv.test.graph_jit.state_context.history_fanout_module", history_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.persistent_history_module", persistent_history_module);
@@ -5230,6 +5268,7 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.stereo_sample_consumer"));
     EXPECT_TRUE(has_module_definition(graph_jit_sample_fanout_conversion_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_sample_revision_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_stereo_conversion_module_id));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.history_ramp_source"));
@@ -6043,6 +6082,70 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
     EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_left, 2128.0f);
     EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_right, 34128.0f);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_sample_revision_module_id);
+    ASSERT_TRUE(graph);
+    auto compiled = compile_graph(graph, 114);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_EQ(compiled.compiled_graph->node_layout.nodes.size(), 3u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    SampleConsumerProbeStateMirror* mono = nullptr;
+    StereoSampleConsumerProbeStateMirror* stereo = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size =
+            compiled.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(SampleConsumerProbeStateMirror)) {
+            mono = static_cast<SampleConsumerProbeStateMirror*>(
+                storage.state_ptr(i));
+        } else if (state_size == sizeof(StereoSampleConsumerProbeStateMirror)) {
+            stereo = static_cast<StereoSampleConsumerProbeStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(mono, nullptr);
+    ASSERT_NE(stereo, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 4);
+    EXPECT_EQ(mono->calls, 1u);
+    EXPECT_FLOAT_EQ(mono->first, 0.0f);
+    EXPECT_FLOAT_EQ(mono->last, 102.0f);
+    EXPECT_FLOAT_EQ(mono->sum, 303.0f);
+    EXPECT_EQ(stereo->calls, 1u);
+    EXPECT_FLOAT_EQ(stereo->first_left, 0.0f);
+    EXPECT_FLOAT_EQ(stereo->first_right, 0.0f);
+    EXPECT_FLOAT_EQ(stereo->last_left, 102.0f);
+    EXPECT_FLOAT_EQ(stereo->last_right, 102.0f);
+    EXPECT_FLOAT_EQ(stereo->sum_left, 303.0f);
+    EXPECT_FLOAT_EQ(stereo->sum_right, 303.0f);
+
+    // Frame 3 was published in the previous root call but remained hidden by
+    // the source's one-sample authored latency. The first update in this call
+    // must revise that retained frame before either direct or converted fanout
+    // observes it.
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 4, 4);
+    EXPECT_EQ(mono->calls, 2u);
+    EXPECT_FLOAT_EQ(mono->first, 103.0f);
+    EXPECT_FLOAT_EQ(mono->last, 106.0f);
+    EXPECT_FLOAT_EQ(mono->sum, 418.0f);
+    EXPECT_EQ(stereo->calls, 2u);
+    EXPECT_FLOAT_EQ(stereo->first_left, 103.0f);
+    EXPECT_FLOAT_EQ(stereo->first_right, 103.0f);
+    EXPECT_FLOAT_EQ(stereo->last_left, 106.0f);
+    EXPECT_FLOAT_EQ(stereo->last_right, 106.0f);
+    EXPECT_FLOAT_EQ(stereo->sum_left, 418.0f);
+    EXPECT_FLOAT_EQ(stereo->sum_right, 418.0f);
 }
 
 TEST_F(GraphJitRuntimeFixture, SampleLatencyCompensation)

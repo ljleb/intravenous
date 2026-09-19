@@ -75,6 +75,7 @@ struct ReflectedSampleInputPortBinding {
 struct ReflectedSampleOutputPortBinding {
     ReflectedSamplePortStorageBinding storage {};
     std::size_t history = 0;
+    std::size_t latency = 0;
 };
 
 // Immutable compiler-owned event storage binding. Ordinary bounded sequences

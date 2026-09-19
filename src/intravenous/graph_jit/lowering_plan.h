@@ -101,6 +101,7 @@ struct PrimitiveSampleInputBindingPlan {
 struct PrimitiveSampleOutputBindingPlan {
     std::optional<std::size_t> representation{};
     std::size_t history = 0;
+    std::size_t latency = 0;
 };
 
 struct PrimitiveSamplePortPlan {

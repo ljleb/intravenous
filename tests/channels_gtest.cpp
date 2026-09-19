@@ -1104,6 +1104,61 @@ TEST(Channels, SamplePortStorageViewConstructsFacadesWithoutSharedPortData)
     EXPECT_FLOAT_EQ(block[3], 4.0f);
 }
 
+TEST(Channels, OutputPortUpdateRevisesOnlyUnpublishedLatencyWindow)
+{
+    std::array<iv::Sample, 8> samples{};
+    iv::SamplePortStorageView storage{
+        std::span<iv::Sample>{samples},
+        0,
+        iv::mono_planar_channel_layout,
+        8,
+    };
+    iv::OutputPort output(storage, 0, 0, 2);
+
+    output.push(iv::Sample{1.0f});
+    output.push(iv::Sample{2.0f});
+    output.update(iv::Sample{20.0f});
+    output.update(iv::Sample{10.0f}, 1);
+    output.update(iv::Sample{99.0f}, 2);
+
+    EXPECT_FLOAT_EQ(samples[0], 10.0f);
+    EXPECT_FLOAT_EQ(samples[1], 20.0f);
+    EXPECT_FLOAT_EQ(output.get(0), 20.0f);
+    EXPECT_FLOAT_EQ(output.get(1), 10.0f);
+}
+
+TEST(Channels, OutputPortUpdateAppliesWriteBoundaryConversion)
+{
+    constexpr auto mono = iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    constexpr auto stereo = iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::interleaved,
+    };
+    std::array<iv::Sample, 16> samples{};
+    iv::SamplePortStorageView storage{
+        std::span<iv::Sample>{samples},
+        0,
+        stereo,
+        8,
+    };
+    iv::OutputPort output(
+        storage,
+        0,
+        mono,
+        iv::ChannelConversionRegistry::plan(mono, stereo),
+        0,
+        1);
+
+    output.push(iv::Sample{2.0f});
+    output.update(iv::Sample{3.0f});
+
+    EXPECT_FLOAT_EQ(samples[storage.sample_index(0, 0)], 3.0f);
+    EXPECT_FLOAT_EQ(samples[storage.sample_index(0, 1)], 3.0f);
+}
+
 TEST(Channels, MonoPlanarIdentityConversionPreservesExactSamples)
 {
     auto const samples = std::array<iv::Sample, 5>{

@@ -759,6 +759,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         std::size_t source_primitive = 0;
         std::size_t source_port = 0;
         std::size_t source_history = 0;
+        std::size_t source_latency = 0;
     };
     struct ValidatedSampleTargetBinding {
         std::size_t connection_index = 0;
@@ -930,6 +931,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                     .source_primitive = *source_primitive,
                     .source_port = source_port.port_ordinal,
                     .source_history = timing.source_history,
+                    .source_latency = timing.source_latency,
                 });
             }
         }
@@ -1091,12 +1093,14 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 "GraphJit sample output fanout resolved to conflicting canonical representations");
         }
         if (source_binding.representation
-            && source_binding.history != source.source_history) {
+            && (source_binding.history != source.source_history
+                || source_binding.latency != source.source_latency)) {
             return std::unexpected(
-                "GraphJit sample output fanout disagrees on authored output history");
+                "GraphJit sample output fanout disagrees on authored output timing");
         }
         source_binding.representation = output_representation;
         source_binding.history = source.source_history;
+        source_binding.latency = source.source_latency;
     }
 
     for (auto const& target : validated_targets) {

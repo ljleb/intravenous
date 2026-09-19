@@ -21,15 +21,17 @@ namespace iv {
         full,
     };
 
-    // A lowered wrapper needs only the output attributes consumed while it
-    // constructs runtime OutputPorts.  Name and latency were needed by graph
-    // compilation, but are not needed by execution.
+    // A lowered wrapper keeps only the output attributes consumed while it
+    // constructs runtime OutputPorts. Authored latency is part of the output
+    // facade contract because update() may revise values that have not yet
+    // become visible downstream.
     struct GraphOutputPortConfig {
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
         size_t history = 0;
+        size_t latency = 0;
     };
 
     struct GraphEventOutputPortConfig {
@@ -157,6 +159,7 @@ namespace iv {
                 result.push_back({
                     .channel_layout = output.channel_layout,
                     .history = realtime_history_or_zero(output),
+                    .latency = realtime_latency_or_zero(output),
                 });
             }
             return result;
@@ -409,7 +412,9 @@ namespace iv {
                         const_cast<SharedPortData&>(target_port_data[0]),
                         _outputs[output_i].history,
                         _outputs[output_i].channel_layout,
-                        target.conversion);
+                        target.conversion,
+                        0,
+                        _outputs[output_i].latency);
                 }
                 auto const& target = _output_targets[output_i];
                 if (target.target.empty()) {
@@ -433,7 +438,9 @@ namespace iv {
                     const_cast<SharedPortData&>(target_port_data[0]),
                     _outputs[output_i].history,
                     _outputs[output_i].channel_layout,
-                    target.conversion
+                    target.conversion,
+                    0,
+                    _outputs[output_i].latency
                 );
             }
             for (size_t output_i = 0;
