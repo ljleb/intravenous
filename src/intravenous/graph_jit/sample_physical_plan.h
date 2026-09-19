@@ -137,12 +137,14 @@ struct SampleCarryOperationPlan {
     std::size_t retained_frames = 0;
 };
 
-// One branch-local delayed copy of a canonical producer representation. The
-// persistent ring is indexed in the same absolute sample timeline as the
-// source; execution lowering copies each produced slice into the ring. Consumer
-// bindings add loop_extra_latency to the source's ordinary read latency, while
-// the ring retains that full delay plus target history. initial_value defines
-// every unproduced frame observed before the delayed source timeline reaches zero.
+// One fallback branch-local delayed copy of a canonical producer representation.
+// Compatible feedback may instead make the persistent ring the producer's
+// canonical home and needs no operation here. A copied ring is indexed in the
+// same absolute sample timeline as the source; execution lowering copies each
+// produced slice into it. Consumer bindings add loop_extra_latency to the
+// source's ordinary read latency, while the ring retains that full delay plus
+// target history. initial_value defines every unproduced frame observed before
+// the delayed source timeline reaches zero.
 struct SampleFeedbackOperationPlan {
     std::size_t source_representation = no_sample_representation;
     std::size_t ring_representation = no_sample_representation;
@@ -168,6 +170,7 @@ struct SamplePhysicalPlan {
     std::vector<SampleMaterializationPlan> materializations{};
     std::vector<SampleCompositionPlan> compositions{};
     std::vector<SampleCarryOperationPlan> carry_operations{};
+    // Only feedback branches that cannot alias the producer home appear here.
     std::vector<SampleFeedbackOperationPlan> feedback_operations{};
 
     // One exact range per transient representation. The arena high-water mark

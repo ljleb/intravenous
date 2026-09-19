@@ -381,8 +381,87 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             canonical_capacity = *capacity;
         }
 
+        // Zero-initialized detached branches may share the producer's home
+        // representation when the producer has no independent retained state.
+        // Zero is also the fresh NodeStorage value seen by ordinary producer
+        // history, so this does not leak branch-local detach initialization back
+        // into OutputPort semantics. Different feedback delays remain InputPort
+        // read latencies over the same absolute producer timeline. Non-zero detach
+        // initialization stays branch-local and therefore keeps an explicit copy.
+        bool has_feedback_home = false;
+        std::size_t home_feedback_retained_frames = 0;
+        std::size_t home_feedback_capacity = 0;
+        if (group.requirements.retained_frames == 0
+            && (*group.implementation == SampleConnectionImplementationKind::direct
+                || *group.implementation
+                    == SampleConnectionImplementationKind::transient_materialization)) {
+            for (auto const connection_index : group.connection_indices) {
+                auto const& connection = connections.sample_connections[connection_index];
+                if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+                    || !connection.detach
+                    || !connection.detach_initial_value
+                    || std::bit_cast<std::uint32_t>(
+                        static_cast<float>(*connection.detach_initial_value))
+                        != std::bit_cast<std::uint32_t>(0.0f)
+                    || !group.source_port
+                    || !connection.canonical_source_port
+                    || *connection.canonical_source_port != *group.source_port
+                    || !connection.canonical_source_layout
+                    || *connection.canonical_source_layout
+                        != *group.canonical_source_layout) {
+                    continue;
+                }
+                auto const latency = connection.detach->loop_extra_latency;
+                if (connection.read_latency
+                        > std::numeric_limits<std::size_t>::max() - latency
+                    || connection.target_history
+                        > std::numeric_limits<std::size_t>::max()
+                            - latency - connection.read_latency) {
+                    return std::unexpected(
+                        "GraphJit sample feedback retained extent overflows size_t");
+                }
+                has_feedback_home = true;
+                home_feedback_retained_frames = std::max(
+                    home_feedback_retained_frames,
+                    latency + connection.read_latency + connection.target_history);
+            }
+            if (has_feedback_home) {
+                auto capacity = working_ring_capacity(
+                    kernel_block_size, home_feedback_retained_frames);
+                if (!capacity) {
+                    return std::unexpected(std::move(capacity.error()));
+                }
+                home_feedback_capacity = *capacity;
+            }
+        }
+
         std::size_t canonical = no_sample_representation;
-        if (*group.implementation == SampleConnectionImplementationKind::persistent_ring) {
+        if (has_feedback_home) {
+            auto const index = append_representation(SampleRepresentationPlan{
+                .producer_group_index = group_index,
+                .canonical_producer_representation = true,
+                .implementation = SampleConnectionImplementationKind::feedback_ring,
+                .channel_layout = *group.canonical_source_layout,
+                .frame_capacity = home_feedback_capacity,
+                .live_interval = group.live_interval,
+            });
+            auto persistent = append_persistent_allocation(
+                index,
+                group,
+                SamplePersistentStorageKind::ring,
+                *group.canonical_source_layout,
+                home_feedback_retained_frames,
+                home_feedback_capacity,
+                persistent_identity(
+                    group,
+                    SamplePersistentStorageKind::ring,
+                    home_feedback_retained_frames,
+                    home_feedback_capacity),
+                Sample{});
+            if (!persistent) return std::unexpected(std::move(persistent.error()));
+            plan.representations[index].persistent_allocation = *persistent;
+            canonical = index;
+        } else if (*group.implementation == SampleConnectionImplementationKind::persistent_ring) {
             auto const index = append_representation(SampleRepresentationPlan{
                 .producer_group_index = group_index,
                 .canonical_producer_representation = true,
@@ -635,37 +714,56 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             if (!ring_capacity) {
                 return std::unexpected(std::move(ring_capacity.error()));
             }
-            auto const ring_representation = append_representation(
-                SampleRepresentationPlan{
-                    .producer_group_index = group_index,
-                    .canonical_producer_representation = false,
-                    .implementation = SampleConnectionImplementationKind::feedback_ring,
-                    .channel_layout = *group.canonical_source_layout,
-                    .frame_capacity = *ring_capacity,
-                    .live_interval = ConnectionLiveIntervalPlan{
-                        .begin = producer_position,
-                        .end = target_position(connection, group.live_interval),
-                        .crosses_kernel_invocations = true,
-                    },
-                });
-            auto persistent = append_persistent_allocation(
-                ring_representation,
-                group,
-                SamplePersistentStorageKind::ring,
-                *group.canonical_source_layout,
-                retained_frames,
-                *ring_capacity,
-                feedback_identity(
+            auto const writes_directly_to_feedback = has_feedback_home
+                && std::bit_cast<std::uint32_t>(
+                    static_cast<float>(*connection.detach_initial_value))
+                    == std::bit_cast<std::uint32_t>(0.0f);
+            std::size_t ring_representation = canonical;
+            if (writes_directly_to_feedback) {
+                auto const& home = plan.representations[canonical];
+                if (!home.canonical_producer_representation
+                    || home.implementation
+                        != SampleConnectionImplementationKind::feedback_ring
+                    || home.channel_layout != *group.canonical_source_layout
+                    || home.frame_capacity < *ring_capacity
+                    || home.persistent_allocation
+                        == no_sample_persistent_allocation) {
+                    return std::unexpected(
+                        "GraphJit sample feedback producer-home representation is inconsistent");
+                }
+            } else {
+                ring_representation = append_representation(
+                    SampleRepresentationPlan{
+                        .producer_group_index = group_index,
+                        .canonical_producer_representation = false,
+                        .implementation = SampleConnectionImplementationKind::feedback_ring,
+                        .channel_layout = *group.canonical_source_layout,
+                        .frame_capacity = *ring_capacity,
+                        .live_interval = ConnectionLiveIntervalPlan{
+                            .begin = producer_position,
+                            .end = target_position(connection, group.live_interval),
+                            .crosses_kernel_invocations = true,
+                        },
+                    });
+                auto persistent = append_persistent_allocation(
+                    ring_representation,
                     group,
-                    connection,
-                    *connection.detach_initial_value,
-                    *ring_capacity),
-                *connection.detach_initial_value);
-            if (!persistent) {
-                return std::unexpected(std::move(persistent.error()));
+                    SamplePersistentStorageKind::ring,
+                    *group.canonical_source_layout,
+                    retained_frames,
+                    *ring_capacity,
+                    feedback_identity(
+                        group,
+                        connection,
+                        *connection.detach_initial_value,
+                        *ring_capacity),
+                    *connection.detach_initial_value);
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.representations[ring_representation].persistent_allocation =
+                    *persistent;
             }
-            plan.representations[ring_representation].persistent_allocation =
-                *persistent;
 
             if (connection.requires_conversion) {
                 auto const consumer_position =
@@ -701,13 +799,15 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 plan.connection_representations[connection_index] =
                     ring_representation;
             }
-            plan.feedback_operations.push_back(SampleFeedbackOperationPlan{
-                .source_representation = canonical,
-                .ring_representation = ring_representation,
-                .producer_execution_position = producer_position,
-                .loop_extra_latency = latency,
-                .initial_value = *connection.detach_initial_value,
-            });
+            if (!writes_directly_to_feedback) {
+                plan.feedback_operations.push_back(SampleFeedbackOperationPlan{
+                    .source_representation = canonical,
+                    .ring_representation = ring_representation,
+                    .producer_execution_position = producer_position,
+                    .loop_extra_latency = latency,
+                    .initial_value = *connection.detach_initial_value,
+                });
+            }
         }
     }
 

@@ -1321,6 +1321,138 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     }
 }
 
+TEST(GraphJitSamplePhysicalPlan, ZeroInitializedFeedbackUsesProducerHomeAndCopiesOnlyIncompatibleBranches)
+{
+    using namespace iv::graph_jit::detail;
+
+    iv::ChannelLayout const mono{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    iv::SampleOutputChannelId const source_channel{
+        .bundle = 1,
+        .port = 0,
+        .channel = 0,
+    };
+    iv::NodeBundlePortId const source_port{1, iv::PortKind::sample, 0};
+
+    ConnectionAnalysisPlan connections;
+    connections.schedule.bundle_execution_position.resize(5);
+    connections.schedule.bundle_execution_position[1] = 0;
+    connections.schedule.bundle_execution_position[2] = 1;
+    connections.schedule.bundle_execution_position[3] = 2;
+    connections.schedule.bundle_execution_position[4] = 3;
+
+    auto make_feedback = [&](std::size_t target_bundle,
+                             std::size_t latency,
+                             iv::Sample initial_value) {
+        SampleConnectionPlan feedback;
+        feedback.source_type = iv::ChannelTypeId::mono;
+        feedback.source_channels = {source_channel};
+        feedback.source_channel_timings = {SampleSourceChannelTimingPlan{
+            .source = source_channel,
+            .source_layout = mono,
+        }};
+        feedback.canonical_source_port = source_port;
+        feedback.canonical_source_layout = mono;
+        feedback.target_type = iv::ChannelTypeId::mono;
+        feedback.target_layout = mono;
+        feedback.target_channels = {iv::SampleInputChannelId{
+            .bundle = target_bundle,
+            .port = 0,
+            .channel = 0,
+        }};
+        feedback.target_port = iv::NodeBundlePortId{
+            target_bundle, iv::PortKind::sample, 0};
+        feedback.access = PlannedConnectionAccess::realtime_to_realtime;
+        feedback.detach = iv::ConfiguredSampleConnectionDetach{
+            .loop_extra_latency = latency,
+            .initial_value_override = initial_value,
+        };
+        feedback.detach_initial_value = initial_value;
+        return feedback;
+    };
+
+    connections.sample_connections.push_back(
+        make_feedback(2, 5, iv::Sample{0.0f}));
+    connections.sample_connections.push_back(
+        make_feedback(3, 7, iv::Sample{0.5f}));
+    connections.sample_connections.push_back(
+        make_feedback(4, 12, iv::Sample{0.0f}));
+
+    SampleProducerGroupPlan group;
+    group.source_port = source_port;
+    group.source_type = iv::ChannelTypeId::mono;
+    group.source_channels = {source_channel};
+    group.canonical_source_layout = mono;
+    group.connection_indices = {0, 1, 2};
+    group.has_realtime_connections = true;
+    group.implementation =
+        iv::SampleConnectionImplementationKind::transient_materialization;
+    group.live_interval = ConnectionLiveIntervalPlan{
+        .begin = 0,
+        .end = 3,
+        .crosses_kernel_invocations = true,
+    };
+    connections.sample_producer_groups.push_back(group);
+
+    auto physical = build_sample_physical_plan(connections, 8);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->representations.size(), 2u);
+    EXPECT_TRUE(physical->transient_allocations.empty());
+    ASSERT_EQ(physical->persistent_allocations.size(), 2u);
+    ASSERT_EQ(physical->feedback_operations.size(), 1u);
+
+    auto const canonical =
+        physical->producer_groups[0]->canonical_representation;
+    ASSERT_LT(canonical, physical->representations.size());
+    EXPECT_TRUE(
+        physical->representations[canonical].canonical_producer_representation);
+    EXPECT_EQ(
+        physical->representations[canonical].implementation,
+        iv::SampleConnectionImplementationKind::feedback_ring);
+    EXPECT_EQ(physical->representations[canonical].frame_capacity, 32u);
+    ASSERT_TRUE(physical->connection_representations[0].has_value());
+    ASSERT_TRUE(physical->connection_representations[2].has_value());
+    EXPECT_EQ(*physical->connection_representations[0], canonical);
+    EXPECT_EQ(*physical->connection_representations[2], canonical);
+
+    auto const copied_ring = *physical->connection_representations[1];
+    ASSERT_NE(copied_ring, canonical);
+    auto const& operation = physical->feedback_operations.front();
+    EXPECT_EQ(operation.source_representation, canonical);
+    EXPECT_EQ(operation.ring_representation, copied_ring);
+    EXPECT_EQ(operation.producer_execution_position, 0u);
+    EXPECT_FLOAT_EQ(static_cast<float>(operation.initial_value), 0.5f);
+
+    auto const home_persistent_index =
+        physical->representations[canonical].persistent_allocation;
+    ASSERT_LT(home_persistent_index, physical->persistent_allocations.size());
+    auto const& home = physical->persistent_allocations[home_persistent_index];
+    EXPECT_EQ(home.retained_frames, 12u);
+    EXPECT_EQ(home.frame_capacity, 32u);
+    ASSERT_TRUE(home.initialize_value.has_value());
+    EXPECT_FLOAT_EQ(static_cast<float>(*home.initialize_value), 0.0f);
+    EXPECT_NE(home.migration_identity.find("graphjit.sample:"), std::string::npos);
+    EXPECT_EQ(
+        home.migration_identity.find("graphjit.sample.feedback:"),
+        std::string::npos);
+
+    iv::NodeLayoutBuilder builder(8);
+    auto declared = declare_sample_physical_storage(builder, *physical);
+    ASSERT_TRUE(declared.has_value())
+        << (declared ? std::string{} : declared.error());
+    auto layout = std::move(builder).build();
+    auto finalized = finalize_sample_physical_storage(layout, *physical);
+    ASSERT_TRUE(finalized.has_value())
+        << (finalized ? std::string{} : finalized.error());
+    auto const& home_region = layout.regions[
+        physical->persistent_allocations[home_persistent_index].region.index];
+    ASSERT_NE(home_region.raw_initialize_fn, nullptr);
+    EXPECT_EQ(home_region.raw_initialize_payload.size(), sizeof(iv::Sample));
+}
+
 TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackKeepsCanonicalPersistentRing)
 {
     using namespace iv::graph_jit::detail;
@@ -5549,6 +5681,85 @@ TEST_F(GraphJitRuntimeFixture, ConvertedSampleDetachFeedback)
         -0.25f, -0.25f, 0.75f, 1.75f, 1.75f};
     std::array<float, 5> const expected_last{
         -0.25f, 0.75f, 0.75f, 1.75f, 1.75f};
+    for (std::size_t slice = 0; slice < expected_indices.size(); ++slice) {
+        EXPECT_EQ(state->indices[slice], expected_indices[slice]);
+        EXPECT_EQ(state->block_sizes[slice], expected_sizes[slice]);
+        EXPECT_FLOAT_EQ(state->first_left[slice], expected_first[slice]);
+        EXPECT_FLOAT_EQ(state->first_right[slice], expected_first[slice]);
+        EXPECT_FLOAT_EQ(state->last_left[slice], expected_last[slice]);
+        EXPECT_FLOAT_EQ(state->last_right[slice], expected_last[slice]);
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, ZeroInitializedConvertedFeedbackWritesDirectlyToProducerHome)
+{
+    auto feedback_graph = configured_converted_sample_feedback_graph(
+        *revision, 6, iv::Sample{0.0f});
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    ASSERT_EQ(analysis->sample_connections.size(), 1u);
+    ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
+    EXPECT_EQ(
+        analysis->sample_producer_groups.front().requirements.retained_frames,
+        0u);
+
+    auto physical = iv::graph_jit::detail::build_sample_physical_plan(
+        *analysis, 64);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    EXPECT_TRUE(physical->feedback_operations.empty());
+    ASSERT_EQ(physical->persistent_allocations.size(), 1u);
+    ASSERT_EQ(physical->materializations.size(), 1u);
+    ASSERT_EQ(physical->representations.size(), 2u);
+
+    auto const canonical =
+        physical->producer_groups.front()->canonical_representation;
+    auto const derived = *physical->connection_representations.front();
+    ASSERT_NE(canonical, derived);
+    EXPECT_TRUE(
+        physical->representations[canonical].canonical_producer_representation);
+    EXPECT_EQ(
+        physical->representations[canonical].implementation,
+        iv::SampleConnectionImplementationKind::feedback_ring);
+    EXPECT_EQ(
+        physical->representations[canonical].channel_layout.channel_type,
+        iv::ChannelTypeId::mono);
+    EXPECT_EQ(
+        physical->representations[derived].channel_layout.channel_type,
+        iv::ChannelTypeId::stereo);
+    auto const& materialization = physical->materializations.front();
+    EXPECT_EQ(materialization.source_representation, canonical);
+    EXPECT_EQ(materialization.target_representation, derived);
+    ASSERT_TRUE(materialization.before_execution_position.has_value());
+
+    auto compiled = compile_graph(feedback_graph, 126);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_EQ(compiled.compiled_graph->node_layout.nodes.size(), 1u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* state = static_cast<ConvertedSampleFeedbackStateMirror*>(
+        storage.state_ptr(0));
+    ASSERT_NE(state, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 17);
+
+    ASSERT_EQ(state->calls, 5u);
+    EXPECT_EQ(state->scc_feedback_latency, 4u);
+    EXPECT_EQ(state->marker, 0xc04e7ed1u);
+
+    std::array<std::uint64_t, 5> const expected_indices{0, 4, 8, 12, 16};
+    std::array<std::uint64_t, 5> const expected_sizes{4, 4, 4, 4, 1};
+    std::array<float, 5> const expected_first{0.0f, 0.0f, 1.0f, 2.0f, 2.0f};
+    std::array<float, 5> const expected_last{0.0f, 1.0f, 1.0f, 2.0f, 2.0f};
     for (std::size_t slice = 0; slice < expected_indices.size(); ++slice) {
         EXPECT_EQ(state->indices[slice], expected_indices[slice]);
         EXPECT_EQ(state->block_sizes[slice], expected_sizes[slice]);
