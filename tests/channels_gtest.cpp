@@ -9,9 +9,7 @@
 #include <intravenous/graph/connection_node.hpp>
 #include <intravenous/graph/runtime_bindings.h>
 #include <intravenous/node/tick.h>
-#include <intravenous/runtime/runtime_graph_bindings.h>
 #include <intravenous/runtime/sample_stream_blocks.h>
-#include <intravenous/runtime/timeline_execution_events.h>
 
 #include <gtest/gtest.h>
 
@@ -31,16 +29,8 @@ namespace {
 using iv::operator""_F;
 using iv::operator""_P;
 
-iv::BorrowedSampleBlock runtime_timeline_sample_block {};
 size_t connection_conversion_call_count = 0;
 size_t connection_conversion_frame_count = 0;
-
-void provide_runtime_timeline_sample_block(
-    iv::LaneId,
-    iv::TimelineExecutionRealtimeSampleBlockBuilder& builder)
-{
-    builder.succeed(runtime_timeline_sample_block);
-}
 
 void tracked_mono_block_copy(
     iv::Sample const* source,
@@ -92,7 +82,7 @@ std::vector<iv::Sample> sample_values(iv::SampleStorageBlock const& block)
 struct PlanarStereoCopy {
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 1>{iv::sample_input("audio", {
+        return std::array<iv::InputConfig, 1>{iv::realtime_sample_input("audio", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::planar,
@@ -102,7 +92,7 @@ struct PlanarStereoCopy {
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("main", {
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("main", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::planar,
@@ -124,7 +114,7 @@ struct PlanarStereoCopy {
 struct InterleavedStereoCopy {
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 1>{iv::sample_input("audio", {
+        return std::array<iv::InputConfig, 1>{iv::realtime_sample_input("audio", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -134,7 +124,7 @@ struct InterleavedStereoCopy {
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("main", {
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("main", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -164,7 +154,7 @@ struct NamedStereoSource {
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("main", {
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("main", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::planar,
@@ -181,7 +171,7 @@ struct NamedStereoSource {
 struct NamedInterleavedStereoSource {
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("main", {
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("main", {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -198,12 +188,12 @@ struct NamedInterleavedStereoSource {
 struct MonoPass {
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 1>{iv::sample_input("in")};
+        return std::array<iv::InputConfig, 1>{iv::realtime_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("out")};
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("out")};
     }
 
     void tick(iv::TickSampleContext<MonoPass> const& ctx) const
@@ -215,14 +205,14 @@ struct MonoPass {
 struct DefaultMonoPass {
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 1>{iv::sample_input("in", {
+        return std::array<iv::InputConfig, 1>{iv::realtime_sample_input("in", {
             .default_value = iv::Sample{0.75f},
         })};
     }
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("out")};
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("out")};
     }
 
     void tick(iv::TickSampleContext<DefaultMonoPass> const& ctx) const
@@ -235,16 +225,16 @@ struct EventfulMonoPass {
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 2>{
-            iv::sample_input("in"),
-            iv::event_input("trigger", iv::EventTypeId::trigger),
+            iv::realtime_sample_input("in"),
+            iv::realtime_event_input("trigger", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array<iv::OutputConfig, 2>{
-            iv::sample_output("out"),
-            iv::event_output("trigger", iv::EventTypeId::trigger),
+            iv::realtime_sample_output("out"),
+            iv::realtime_event_output("trigger", iv::EventTypeId::trigger),
         };
     }
 
@@ -258,19 +248,148 @@ struct EventBeforeSamplePass {
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 2>{
-            iv::event_input("trigger", iv::EventTypeId::trigger),
-            iv::sample_input("in"),
+            iv::realtime_event_input("trigger", iv::EventTypeId::trigger),
+            iv::realtime_sample_input("in"),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::sample_output("out")};
+        return std::array<iv::OutputConfig, 1>{iv::realtime_sample_output("out")};
     }
 
     void tick(iv::TickSampleContext<EventBeforeSamplePass> const& ctx) const
     {
         ctx.outputs[0].push(ctx.inputs[0].get());
+    }
+};
+
+struct TickFallbackContractTrace {
+    std::size_t calls = 0;
+    std::array<iv::SampleIndex, 4> indices{};
+    std::array<iv::Sample, 4> current_inputs{};
+    std::array<iv::Sample, 4> history_inputs{};
+    std::array<iv::Sample, 4> previous_outputs{};
+    std::array<std::size_t, 4> output_positions{};
+};
+
+struct TickFallbackContractProbe {
+    TickFallbackContractTrace* trace = nullptr;
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in", {}, {.history = 1})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, {.history = 1, .latency = 2})};
+    }
+
+    void tick(iv::TickSampleContext<TickFallbackContractProbe> const& ctx) const
+    {
+        auto const slot = trace->calls++;
+        if (slot < trace->indices.size()) {
+            trace->indices[slot] = ctx.index;
+            trace->current_inputs[slot] = ctx.inputs[0].get();
+            trace->history_inputs[slot] = ctx.inputs[0].get(1);
+            trace->previous_outputs[slot] = ctx.outputs[0].get();
+            trace->output_positions[slot] = ctx.outputs[0].position();
+        }
+        if (ctx.index == 6) {
+            ctx.outputs[0].update(iv::Sample{500.0f});
+        }
+        ctx.outputs[0].push(static_cast<iv::Sample>(ctx.index));
+    }
+};
+
+struct TickBlockContractTrace {
+    iv::SampleIndex index = 0;
+    std::size_t block_size = 0;
+    iv::Sample anchored_input = 0.0f;
+    std::array<iv::Sample, 4> block_inputs{};
+    iv::Sample previous_output = 0.0f;
+    std::size_t output_position_before = 0;
+    std::size_t output_position_after = 0;
+};
+
+struct TickBlockContractProbe {
+    TickBlockContractTrace* trace = nullptr;
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in", {}, {.history = 1})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output(
+            "out", {}, {.latency = 2})};
+    }
+
+    void tick_block(iv::TickBlockContext<TickBlockContractProbe> const& ctx) const
+    {
+        trace->index = ctx.index;
+        trace->block_size = ctx.block_size;
+        trace->anchored_input = ctx.inputs[0].get();
+        auto const block = ctx.inputs[0].get_block(ctx.block_size);
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            trace->block_inputs[i] = block[i];
+        }
+
+        auto& output = ctx.outputs[0];
+        trace->previous_output = output.get();
+        trace->output_position_before = output.position();
+        output.update(iv::Sample{444.0f});
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            output.push(block[i]);
+        }
+        trace->output_position_after = output.position();
+    }
+};
+
+struct DirectBlockWriteContractTrace {
+    std::size_t output_position_before = 0;
+    std::size_t output_position_after_write = 0;
+};
+
+struct DirectBlockWriteContractProbe {
+    DirectBlockWriteContractTrace* trace = nullptr;
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output("out")};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<DirectBlockWriteContractProbe> const& ctx) const
+    {
+        trace->output_position_before = ctx.outputs[0].position();
+        auto output = ctx.output<"out">();
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            output[i] = static_cast<iv::Sample>(ctx.index + i);
+        }
+        trace->output_position_after_write = ctx.outputs[0].position();
+    }
+};
+
+struct SynthesizedStereoSkipProbe {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input("in")};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output("out", {
+            .channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            },
+        })};
     }
 };
 
@@ -280,7 +399,7 @@ struct ScheduledTriggerSource {
     static constexpr auto outputs()
     {
         return std::array<iv::OutputConfig, 1>{
-            iv::event_output("trigger", iv::EventTypeId::trigger),
+            iv::realtime_event_output("trigger", iv::EventTypeId::trigger),
         };
     }
 
@@ -615,19 +734,18 @@ DetachConfiguration configure_detach()
 ChannelTopologySnapshot detach_snapshot()
 {
     auto const configured = configure_detach();
-    auto const built = compile_graph(configured.view);
-    auto const connection_nodes = std::ranges::count_if(
-        built.metadata.concrete_node_type_identities,
-        [](auto const& type) {
-            return std::string_view(type).contains("ConnectionNode");
-        });
+    auto graph = iv::thaw_configured_graph_for_test(configured.view);
+    auto const connections = graph.connections.configured_sample_connections();
     return {
-        .ok = configured.after_detach_handle == configured.right_handle + 3
-            && !has_generated_type(
-                built.metadata.concrete_node_type_identities, "ChannelPack")
-            && !has_generated_type(
-                built.metadata.concrete_node_type_identities, "ChannelUnpack"),
-        .connection_nodes = static_cast<size_t>(connection_nodes),
+        .ok = configured.after_detach_handle == configured.right_handle + 1
+            && graph.node_bundles.size() == 4
+            && connections.size() == 1
+            && connections.front().source_type == iv::ChannelTypeId::stereo
+            && connections.front().source_channels.size() == 2
+            && connections.front().detach.has_value()
+            && connections.front().detach->loop_extra_latency == 1
+            && !connections.front().detach->initial_value_override.has_value(),
+        .connection_nodes = 0,
     };
 }
 
@@ -1090,6 +1208,270 @@ ExecutionRootSnapshot execution_root_snapshot()
     };
 }
 
+TEST(Channels, SamplePortStorageViewConstructsFacadesWithoutSharedPortData)
+{
+    std::array<iv::Sample, 8> samples{};
+    iv::SamplePortStorageView storage{
+        std::span<iv::Sample>{samples},
+        0,
+        iv::mono_planar_channel_layout,
+        8,
+    };
+    // Invocation-local façades may be reconstructed at an arbitrary absolute
+    // sample index; no persistent cursor state is required between calls.
+    iv::OutputPort output(storage, 0, 6);
+    iv::InputPort input(storage, 0, 0, 6);
+
+    for (std::size_t i = 0; i < 4; ++i) {
+        output.push(static_cast<iv::Sample>(i + 1));
+    }
+    auto const block = input.get_block(4);
+    ASSERT_EQ(block.size(), 4u);
+    EXPECT_FLOAT_EQ(block[0], 1.0f);
+    EXPECT_FLOAT_EQ(block[1], 2.0f);
+    EXPECT_FLOAT_EQ(block[2], 3.0f);
+    EXPECT_FLOAT_EQ(block[3], 4.0f);
+}
+
+TEST(Channels, OutputPortUpdateRevisesOnlyUnpublishedLatencyWindow)
+{
+    std::array<iv::Sample, 8> samples{};
+    iv::SamplePortStorageView storage{
+        std::span<iv::Sample>{samples},
+        0,
+        iv::mono_planar_channel_layout,
+        8,
+    };
+    iv::OutputPort output(storage, 0, 0, 2);
+
+    output.push(iv::Sample{1.0f});
+    output.push(iv::Sample{2.0f});
+    output.update(iv::Sample{20.0f});
+    output.update(iv::Sample{10.0f}, 1);
+    output.update(iv::Sample{99.0f}, 2);
+
+    EXPECT_FLOAT_EQ(samples[0], 10.0f);
+    EXPECT_FLOAT_EQ(samples[1], 20.0f);
+    EXPECT_FLOAT_EQ(output.get(0), 20.0f);
+    EXPECT_FLOAT_EQ(output.get(1), 10.0f);
+}
+
+TEST(Channels, TickOnlyBlockFallbackAdvancesSequentialPortCursors)
+{
+    std::array<iv::Sample, 16> input_samples{};
+    std::array<iv::Sample, 16> output_samples{};
+    for (std::size_t i = 0; i < input_samples.size(); ++i) {
+        input_samples[i] = static_cast<iv::Sample>(10 * i);
+    }
+    output_samples[4] = iv::Sample{400.0f};
+
+    iv::SharedPortData input_data(input_samples, 0);
+    iv::SharedPortData output_data(output_samples, 0);
+    std::array<iv::InputPort, 1> inputs{
+        iv::InputPort(input_data, 1, 0, 5)};
+    std::array<iv::OutputPort, 1> outputs{
+        iv::OutputPort(output_data, 1, 5, 2)};
+    TickFallbackContractTrace trace;
+
+    iv::do_tick_block(
+        TickFallbackContractProbe{&trace},
+        iv::TickBlockContext<TickFallbackContractProbe>{
+            iv::TickContext<TickFallbackContractProbe>{
+                .inputs = inputs,
+                .outputs = outputs,
+            },
+            5,
+            4,
+        });
+
+    EXPECT_EQ(trace.calls, 4u);
+    EXPECT_EQ(
+        trace.indices,
+        (std::array<iv::SampleIndex, 4>{5, 6, 7, 8}));
+    EXPECT_EQ(
+        trace.current_inputs,
+        (std::array<iv::Sample, 4>{50.0f, 60.0f, 70.0f, 80.0f}));
+    EXPECT_EQ(
+        trace.history_inputs,
+        (std::array<iv::Sample, 4>{40.0f, 50.0f, 60.0f, 70.0f}));
+    EXPECT_EQ(
+        trace.previous_outputs,
+        (std::array<iv::Sample, 4>{400.0f, 5.0f, 6.0f, 7.0f}));
+    EXPECT_EQ(
+        trace.output_positions,
+        (std::array<std::size_t, 4>{5, 6, 7, 8}));
+
+    EXPECT_FLOAT_EQ(output_samples[5], 500.0f);
+    EXPECT_FLOAT_EQ(output_samples[6], 6.0f);
+    EXPECT_FLOAT_EQ(output_samples[7], 7.0f);
+    EXPECT_FLOAT_EQ(output_samples[8], 8.0f);
+    EXPECT_EQ(outputs[0].position(), 9u);
+    EXPECT_FLOAT_EQ(inputs[0].get(), 90.0f);
+    EXPECT_FLOAT_EQ(inputs[0].get(1), 80.0f);
+}
+
+TEST(Channels, TickBlockKeepsInputsAnchoredAndAdvancesSequentialOutputs)
+{
+    std::array<iv::Sample, 16> input_samples{};
+    std::array<iv::Sample, 16> output_samples{};
+    for (std::size_t i = 0; i < input_samples.size(); ++i) {
+        input_samples[i] = static_cast<iv::Sample>(10 * i);
+    }
+    output_samples[4] = iv::Sample{400.0f};
+
+    iv::SharedPortData input_data(input_samples, 0);
+    iv::SharedPortData output_data(output_samples, 0);
+    std::array<iv::InputPort, 1> inputs{
+        iv::InputPort(input_data, 1, 0, 5)};
+    std::array<iv::OutputPort, 1> outputs{
+        iv::OutputPort(output_data, 0, 5, 2)};
+    TickBlockContractTrace trace;
+
+    iv::do_tick_block(
+        TickBlockContractProbe{&trace},
+        iv::TickBlockContext<TickBlockContractProbe>{
+            iv::TickContext<TickBlockContractProbe>{
+                .inputs = inputs,
+                .outputs = outputs,
+            },
+            5,
+            4,
+        });
+
+    EXPECT_EQ(trace.index, 5u);
+    EXPECT_EQ(trace.block_size, 4u);
+    EXPECT_FLOAT_EQ(trace.anchored_input, 50.0f);
+    EXPECT_EQ(
+        trace.block_inputs,
+        (std::array<iv::Sample, 4>{50.0f, 60.0f, 70.0f, 80.0f}));
+    EXPECT_FLOAT_EQ(trace.previous_output, 400.0f);
+    EXPECT_EQ(trace.output_position_before, 5u);
+    EXPECT_EQ(trace.output_position_after, 9u);
+
+    EXPECT_FLOAT_EQ(output_samples[4], 444.0f);
+    EXPECT_FLOAT_EQ(output_samples[5], 50.0f);
+    EXPECT_FLOAT_EQ(output_samples[6], 60.0f);
+    EXPECT_FLOAT_EQ(output_samples[7], 70.0f);
+    EXPECT_FLOAT_EQ(output_samples[8], 80.0f);
+    EXPECT_EQ(outputs[0].position(), 9u);
+    EXPECT_FLOAT_EQ(inputs[0].get(), 90.0f);
+}
+
+TEST(Channels, DirectBlockWritesCommitOutputCursorAfterCallback)
+{
+    std::array<iv::Sample, 16> output_samples{};
+    iv::SharedPortData output_data(output_samples, 0);
+    std::array<iv::OutputPort, 1> outputs{
+        iv::OutputPort(output_data, 0, 5)};
+    DirectBlockWriteContractTrace trace;
+
+    iv::do_tick_block(
+        DirectBlockWriteContractProbe{&trace},
+        iv::TickBlockContext<DirectBlockWriteContractProbe>{
+            iv::TickContext<DirectBlockWriteContractProbe>{
+                .outputs = outputs,
+            },
+            5,
+            4,
+        });
+
+    EXPECT_EQ(trace.output_position_before, 5u);
+    EXPECT_EQ(trace.output_position_after_write, 5u);
+    EXPECT_EQ(outputs[0].position(), 9u);
+    EXPECT_FLOAT_EQ(output_samples[5], 5.0f);
+    EXPECT_FLOAT_EQ(output_samples[6], 6.0f);
+    EXPECT_FLOAT_EQ(output_samples[7], 7.0f);
+    EXPECT_FLOAT_EQ(output_samples[8], 8.0f);
+}
+
+TEST(Channels, SynthesizedSkipSilencesAllChannelsAndAdvancesInputs)
+{
+    constexpr auto stereo = iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::interleaved,
+    };
+    std::array<iv::Sample, 8> input_samples{};
+    std::array<iv::Sample, 16> output_samples{};
+    for (std::size_t i = 0; i < input_samples.size(); ++i) {
+        input_samples[i] = static_cast<iv::Sample>(i);
+    }
+    std::ranges::fill(output_samples, iv::Sample{9.0f});
+
+    iv::SharedPortData input_data(input_samples, 0);
+    iv::SharedPortData output_data(output_samples, 0, stereo, 8);
+    std::array<iv::InputPort, 1> inputs{
+        iv::InputPort(input_data, 0, 0, 2)};
+    std::array<iv::OutputPort, 1> outputs{
+        iv::OutputPort(output_data, 0, 2)};
+
+    iv::do_skip_block(
+        SynthesizedStereoSkipProbe{},
+        iv::SkipBlockContext<SynthesizedStereoSkipProbe>{
+            iv::TickContext<SynthesizedStereoSkipProbe>{
+                .inputs = inputs,
+                .outputs = outputs,
+            },
+            2,
+            4,
+        });
+
+    for (std::size_t frame = 0; frame < 8; ++frame) {
+        for (std::size_t channel = 0; channel < 2; ++channel) {
+            auto const value = output_samples[output_data.sample_index(frame, channel)];
+            if (frame >= 2 && frame < 6) {
+                EXPECT_FLOAT_EQ(value, 0.0f);
+            } else {
+                EXPECT_FLOAT_EQ(value, 9.0f);
+            }
+        }
+    }
+    EXPECT_EQ(outputs[0].position(), 6u);
+    EXPECT_FLOAT_EQ(inputs[0].get(), 6.0f);
+}
+
+TEST(Channels, OutputPortGetBlockRejectsOffsetBeyondReadableWindow)
+{
+    std::array<iv::Sample, 8> samples{};
+    iv::SharedPortData data(samples, 0);
+    iv::OutputPort output(data, 1, 0, 2);
+    output.push(iv::Sample{1.0f});
+    output.push(iv::Sample{2.0f});
+
+    EXPECT_TRUE(output.get_block(2, 5).empty());
+}
+
+TEST(Channels, OutputPortUpdateAppliesWriteBoundaryConversion)
+{
+    constexpr auto mono = iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    constexpr auto stereo = iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::interleaved,
+    };
+    std::array<iv::Sample, 16> samples{};
+    iv::SamplePortStorageView storage{
+        std::span<iv::Sample>{samples},
+        0,
+        stereo,
+        8,
+    };
+    iv::OutputPort output(
+        storage,
+        0,
+        mono,
+        iv::ChannelConversionRegistry::plan(mono, stereo),
+        0,
+        1);
+
+    output.push(iv::Sample{2.0f});
+    output.update(iv::Sample{3.0f});
+
+    EXPECT_FLOAT_EQ(samples[storage.sample_index(0, 0)], 3.0f);
+    EXPECT_FLOAT_EQ(samples[storage.sample_index(0, 1)], 3.0f);
+}
+
 TEST(Channels, MonoPlanarIdentityConversionPreservesExactSamples)
 {
     auto const samples = std::array<iv::Sample, 5>{
@@ -1274,38 +1656,6 @@ TEST(Channels, OutputPortAppliesStereoToMonoConversionAtItsWriteBoundary)
     EXPECT_EQ(samples[data.sample_index(0, 0)], iv::Sample{4.0f});
 }
 
-TEST(Channels, RuntimeTimelineSampleReaderWritesRequestedInterleavedLayout)
-{
-    constexpr auto planar = iv::ChannelLayout{
-        .channel_type = iv::ChannelTypeId::stereo,
-        .sample_layout = iv::SampleStreamLayout::planar,
-    };
-    constexpr auto interleaved = iv::ChannelLayout{
-        .channel_type = iv::ChannelTypeId::stereo,
-        .sample_layout = iv::SampleStreamLayout::interleaved,
-    };
-    std::array<iv::Sample, 6> source{
-        iv::Sample{1}, iv::Sample{2}, iv::Sample{3},
-        iv::Sample{10}, iv::Sample{20}, iv::Sample{30},
-    };
-    std::array<iv::Sample, 6> target{};
-    runtime_timeline_sample_block = borrowed_block(source, planar, 3);
-    auto const previous_subscriber =
-        iv::iv_runtime_timeline_execution_realtime_sample_block_requested_event;
-    iv::iv_runtime_timeline_execution_realtime_sample_block_requested_event =
-        &provide_runtime_timeline_sample_block;
-    auto bindings = iv::make_graph_runtime_bindings();
-    auto binding = bindings->sample_input("interleaved-reader-regression");
-    binding->read_timeline_block(
-        iv::LaneId{1}, 0, 0, 0, 3, interleaved, target);
-    iv::iv_runtime_timeline_execution_realtime_sample_block_requested_event =
-        previous_subscriber;
-    EXPECT_EQ(target, (std::array<iv::Sample, 6>{
-        iv::Sample{1}, iv::Sample{10}, iv::Sample{2},
-        iv::Sample{20}, iv::Sample{3}, iv::Sample{30},
-    }));
-}
-
 TEST(Channels, ConnectionNodeConvertsEachEphemeralExpressionAsOneBlock)
 {
     static auto const connection = tracked_connection_node();
@@ -1418,11 +1768,11 @@ TEST(Channels, ChannelQualifiedPublicOutputsAreProjectedOnlyAtCompletion)
     EXPECT_EQ(snapshot.connection_nodes, 1u);
 }
 
-TEST(Channels, DetachAuthorsOnlyItsExplicitWriterAndReaderNodes)
+TEST(Channels, TiledDetachStaysConnectionMetadata)
 {
     auto snapshot = detach_snapshot();
     EXPECT_TRUE(snapshot.ok);
-    EXPECT_EQ(snapshot.connection_nodes, 1u);
+    EXPECT_EQ(snapshot.connection_nodes, 0u);
 }
 
 bool named_public_inputs_preserve_requested_channel_types()

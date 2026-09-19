@@ -134,7 +134,6 @@ namespace iv {
         std::vector<std::shared_ptr<void const>> generated_node_storage;
         std::flat_set<GraphEdge> edges;
         std::flat_set<GraphEventEdge> event_edges;
-        std::vector<DetachedInfo> detached;
         GraphExecutionPlan execution_plan;
         std::vector<SampleInputConfig> public_inputs;
         std::vector<SampleOutputConfig> public_outputs;

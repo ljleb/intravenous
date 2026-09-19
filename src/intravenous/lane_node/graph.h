@@ -29,24 +29,6 @@ namespace iv {
         bool operator==(LanePortId const&) const = default;
     };
 
-    inline LanePortId realtime_sample_input(size_t ordinal = 0)
-    {
-        return LanePortId {
-            .domain = LanePortDomain::realtime,
-            .kind = PortKind::sample,
-            .ordinal = ordinal,
-        };
-    }
-
-    inline LanePortId realtime_event_input(size_t ordinal = 0)
-    {
-        return LanePortId {
-            .domain = LanePortDomain::realtime,
-            .kind = PortKind::event,
-            .ordinal = ordinal,
-        };
-    }
-
     struct LaneInputConnection {
         LaneId source {};
         LanePortId input {};

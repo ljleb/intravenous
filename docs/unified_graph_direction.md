@@ -1,10 +1,20 @@
 # Unified Graph Direction
 
-_Status: working architecture direction, not a final implementation plan._
+_Status: unified-graph direction. The concrete application-module decomposition,
+node terminology, caching ownership, recursive project matcher model, and event
+procedures are now normative in
+[project_graph_application_architecture.md](./project_graph_application_architecture.md),
+with whole-project compilation ownership in
+[graph_jit_direction.md](./graph_jit_direction.md) and realtime physical
+connection planning in
+[realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
+Where older sections below use `iv module` as the general node abstraction,
+describe a separate managed-realization/controller layer, or imply that logical
+connections require buffers, the newer documents take precedence._
 
 The immediate application-module cleanup that precedes the replacement executor
 is recorded in
-[application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+[application_module_cleanup_direction.md](./historical/application_module_cleanup_direction.md).
 That cleanup deliberately deletes the old lane/task execution modules before
 choosing the new isolated execution-module decomposition.
 
@@ -29,6 +39,31 @@ Compiled DSP-port semantics are specified separately and normatively in
 that capability fits the unified project graph; it should not restate or replace
 the node API, request-planning, or storage rules from that document.
 
+## Settled terminology and ownership
+
+The general registered abstraction is now **node definition**:
+
+- a primitive registered `IV_NODE` definition is a **leaf node definition**;
+- a registered `IV_MODULE` graph-producing definition is a **module node definition**.
+
+Their configured reusable results are **node instances**. A cached node instance
+may be referenced by several stable project instance ids and embedded several
+times, producing distinct runtime storage/state at each placement. Module nodes
+remain configuration/project identities rather than execution partitions.
+
+`NodeDefinitions` owns the immutable versioned id-to-provider snapshot.
+`NodeInstances` owns recursive configuration and reusable configured instance
+caches. `ProjectGraph` owns durable project declarations and orchestrates the root
+builder. `GraphConnections` applies project-wide connections after all desired
+instances have been embedded. `GraphJit` synchronously compiles the completed
+root `ConfiguredGraph`; `GraphExecutor` owns mutable runtime storage, active/
+pending compiled generations, execution requests, and safe-boundary activation.
+
+The old proposal for a generic automatically-managed graph-fragment/controller
+layer is not part of the current core design. Presentations and optional device
+convenience services can issue ordinary batched node/connection requests through
+the same project-graph machinery when those features are designed.
+
 ## The central change
 
 The application should move toward one canonical project graph of ordinary
@@ -40,10 +75,17 @@ node implementations, cached independently
 project graph topology
                 |
                 v
-      generated LLVM graph-composition layer
+      completed root ConfiguredGraph
                 |
                 v
-        executable project graph kernel
+             GraphJit
+      generated/optimized LLVM
+                |
+                v
+          CompiledGraph
+                |
+                v
+          GraphExecutor
 ```
 
 The old lane/DSP division was justified principally by the cost of changing
@@ -121,7 +163,7 @@ means changing the module definition or reifying the realization.
 The criterion for a generated node to receive a user-managed project
 connection is stable identity.
 
-- A generated node with stable identity is an addressable project-edge endpoint.
+- A generated node with stable identity may be matched by persistent project connection state.
 - A generated node without stable identity is generated-only; it cannot receive
   a persistent user-managed connection.
 - This is not a separate sealing or per-port authorization policy. Normal graph
@@ -142,7 +184,7 @@ source-configured virtual node has stable identity. A virtual node may represent
 one or several concrete members, and the ordering of concrete members under a
 given virtual node is itself stable identity.
 
-Thus a C++ attachment endpoint can be modeled as:
+Thus a C++ persistent port attachment/matcher can be modeled as:
 
 ```text
 iv-module instance
@@ -267,12 +309,12 @@ adapters:
   attached to configured graph structure rather than to lane identity.
 
 Therefore a project connection can address an iv-module instance and one of its
-virtual/public endpoints directly. `GraphInputLanes` does not need a successor
+virtual/public ports directly. `GraphInputLanes` does not need a successor
 that manufactures one proxy lane per exposed port. The replacement should store
-the connection/control state against the stable project endpoint and adapt it to
+the connection/control state against the stable project node/port matcher and adapt it to
 the compatibility executor only for as long as that executor remains.
 
-Public module ports are boundary endpoints, not implicit project nodes. A
+Public module ports are boundary ports, not implicit project nodes. A
 specialized UI may present them as controls or lane-like rows without requiring
 extra graph nodes merely for presentation.
 
@@ -282,17 +324,25 @@ Compiled and realtime are capabilities of ordinary DSP ports in the same graph,
 not indicators of different node families or graph executors. The normative
 contract is in [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). In summary:
 
-- sample/event kind and realtime/compiled capability are orthogonal;
+- sample/event kind and realtime/compiled access are orthogonal declaration axes;
+- a declaration chooses either bounded realtime timing (`RealtimeInputConfig` /
+  `RealtimeOutputConfig`) or compiled random access (`CompiledPortConfig`);
+- compiled **inputs** still expose the ordinary current-block typed wrapper during
+  `tick()` / `tick_block()` and add arbitrary reads there; compiled outputs are
+  not writable from tick execution and are produced only by `access_block*`;
 - a compiled sample output can be requested at arbitrary global sample positions,
   while a compiled event output can be queried over arbitrary global intervals;
 - a compiled input extends the corresponding ordinary realtime sample/event
   access rather than replacing it with a separate resource API;
 - compiled sample requests may use sparse sampled grids, while compiled event
   requests preserve every event in the requested interval;
-- compiled capability does not imply persistent materialization, buffering, or
+- compiled access does not imply persistent materialization, buffering, or
   caching;
 - sequential `tick_block()` and arbitrary `access_block()` are distinct execution
-  modes, with `access_block()` restricted to compiled ports and `CompiledState`;
+  modes that are not synthesized from one another; `tick_block()` reads realtime/
+  compiled inputs, writes realtime outputs, and may mutate `State` plus
+  `CompiledState`, while `access_block()` sees only compiled ports plus the same
+  mutable `CompiledState`;
 - a compiled query is planned globally: demands propagate in reverse topological
   order, request sets are unioned/coalesced, and evaluation then runs forward;
 - temporary representation/materialization is chosen only after planning; and
@@ -306,6 +356,20 @@ state and is distinct from any future framework cache. Old `TimelineExecution`
 compiled caches, invalidation spans, explicit recording-lane requirements, and
 prepared-resource input APIs are therefore migration history, not replacement
 architecture.
+
+Realtime sample/event connections follow the same storage-independent principle.
+`ConfiguredGraph` records logical connection semantics only. The whole-project
+compiler derives history/latency/event-window correctness requirements, chooses
+physical connection implementations with a pure testable planner, performs
+transient liveness/scratch reuse, and only then emits LLVM. Realtime event
+outputs must have finite compiler-known production windows; compiled event access
+remains arbitrary-range. See
+[realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
+
+`GraphJit` owns that synchronous whole-project compiler/ORC domain. It compiles
+one coherent configured/provider generation and returns an immutable
+`CompiledGraph`; `GraphExecutor` owns live `NodeStorage` and activates successors
+only at legal audio-pass boundaries.
 
 The executable kernel is replaceable. Logical node state survives when a
 stable node correspondence and compatible state layout survive:
@@ -335,7 +399,7 @@ The capabilities that must be designed independently of the old lane
 implementation are:
 
 1. **Compiled DSP ports.** Implement the semantics in
-   [compiled_dsp_nodes.md](./compiled_dsp_nodes.md): compiled capability is
+   [compiled_dsp_nodes.md](./compiled_dsp_nodes.md): compiled access is
    orthogonal to sample/event kind, so both compiled sample and compiled event
    ports remain first-class. Use global batched demand planning, cacheless
    computed access initially, kind-appropriate sample/event request semantics,
@@ -347,7 +411,7 @@ implementation are:
    subgraph, and may provide a custom UI. The exact API remains follow-up design
    work; lane deletion should not force that API to imitate lane types.
 3. **Canonical project ownership.** Provide enough project-owned identity,
-   connections, dangling-endpoint state, hierarchy/metadata, controls, and
+   connections, dangling matcher state, hierarchy/metadata, controls, and
    persistence that deleting `Timeline` does not delete the project's topology or
    user state. C++ iv-module instances can continue to use their retained
    `ConfiguredGraph` realization and stable virtual/member/port identities.
@@ -380,7 +444,7 @@ Preserve or reinterpret:
 - hierarchy;
 - tags, metadata, and query language;
 - UI-created graph structure;
-- persistent project connections and dangling-endpoint behavior;
+- persistent project connections and dangling matcher behavior;
 - source navigation and live-edit controls;
 - transport semantics that remain part of the product;
 - state migration; and

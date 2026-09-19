@@ -38,12 +38,12 @@ ReflectedNodeDescription materialize_node_build_request(
         request.config_size);
     auto description = details::materialize_node_description(
         request, std::move(storage), std::move(relocations));
-    description.state_structure_storage =
-        details::copy_builder_node_state_structure(
+    description.state_structures_storage =
+        details::copy_builder_node_state_structures(
             session, request.compiler_record->code_key);
-    description.operations.runtime.state_structure =
-        description.state_structure_storage
-            ? description.state_structure_storage.get()
+    description.operations.runtime.state_structures =
+        description.state_structures_storage
+            ? description.state_structures_storage.get()
             : nullptr;
     return description;
 }
@@ -376,6 +376,16 @@ SamplePortRef GraphBuilder::make_sample_port(
 {
     return state(*this).make_sample_port(type, channels);
 }
+SamplePortRef GraphBuilder::make_tiled_sample_port(
+    ChannelTypeId type, std::span<SamplePortRef const> members)
+{
+    return state(*this).make_tiled_sample_port(type, members);
+}
+SamplePortRef GraphBuilder::select_sample_port_channel(
+    SamplePortRef const& port, size_t channel)
+{
+    return state(*this).select_sample_port_channel(port, channel);
+}
 std::span<SampleOutputChannelId const>
 GraphBuilder::sample_port_channels(SamplePortRef const& ref) const
 {
@@ -392,9 +402,15 @@ GraphBuilder::event_port_sources(EventPortRef const& ref) const
     return state(*this).event_port_sources(ref);
 }
 SamplePortRef GraphBuilder::detach_sample_port(
-    SamplePortRef const& source, size_t latency)
+    SamplePortRef const& source, size_t latency,
+    std::optional<Sample> initial_value)
 {
-    return state(*this).detach_sample_port(source, latency);
+    return state(*this).detach_sample_port(source, latency, initial_value);
+}
+EventPortRef GraphBuilder::detach_event_port(
+    EventPortRef const& source, size_t latency)
+{
+    return state(*this).detach_event_port(source, latency);
 }
 void GraphBuilder::apply_ttl(NodeBundleHandle handle, size_t samples)
 {
@@ -463,7 +479,14 @@ NodeRef GraphBuilder::embed_child(GraphBuilder& child, std::string_view kind)
 {
     auto& graph = state(*this);
     auto& child_graph = state(child);
-    return graph.embed_subgraph(child_graph, kind);
+    auto embedding = graph.embed_subgraph(child_graph, kind);
+    return NodeRef(*this, embedding.root_scope);
+}
+
+ConfiguredGraphEmbedding GraphBuilder::embed(
+    ConfiguredGraph const& child, std::string_view kind)
+{
+    return state(*this).embed_configured_graph(child, kind);
 }
 
 details::SubgraphBuildScope* GraphBuilder::begin_subgraph()

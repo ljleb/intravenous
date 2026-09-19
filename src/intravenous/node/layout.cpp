@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace iv {
     NodeLayoutBuilder::NodeLayoutBuilder(size_t max_block_size)
@@ -43,6 +44,36 @@ namespace iv {
         return _event_port_buffer_base_multiplier;
     }
 
+    NodeLayout::RegionHandle NodeLayoutBuilder::declare_raw_region(
+        size_t size,
+        size_t alignment,
+        std::string migration_identity,
+        NodeLayout::Region::RawInitializeFn initialize_fn,
+        std::vector<std::byte> initialize_payload)
+    {
+        if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
+            throw std::invalid_argument(
+                "node layout raw-region alignment must be a non-zero power of two");
+        }
+
+        NodeLayout::Region region;
+        region.kind = NodeLayout::Region::Kind::raw;
+        region.owner_node = NodeLayout::no_owner_node;
+        region.size = size;
+        region.alignment = alignment;
+        region.migration_identity = std::move(migration_identity);
+        region.raw_initialize_fn = initialize_fn;
+        region.raw_initialize_payload = std::move(initialize_payload);
+        if (!region.raw_initialize_fn && !region.raw_initialize_payload.empty()) {
+            throw std::invalid_argument(
+                "node layout raw-region initialize payload requires a callback");
+        }
+
+        _storage_alignment = std::max(_storage_alignment, alignment);
+        _regions.push_back(std::move(region));
+        return NodeLayout::RegionHandle { .index = _regions.size() - 1 };
+    }
+
     void NodeLayoutBuilder::log_node_event(
         char const* event, NodeLayout::NodeRecord const& record, size_t node_index)
     {
@@ -51,13 +82,44 @@ namespace iv {
         (void)node_index;
     }
 
-    void NodeLayoutBuilder::override_node_state_structure(
-        size_t node_index, NodeStateStructure structure)
+    void NodeLayoutBuilder::override_node_state_structures(
+        size_t node_index, NodeStateStructures const& structures)
     {
         if (node_index >= _nodes.size()) {
             throw std::out_of_range("node state structure index out of range");
         }
-        _nodes[node_index].node_state_structure = std::move(structure);
+
+        auto& node = _nodes[node_index];
+        auto validate = [&](
+            std::optional<NodeStateStructure> const& structure,
+            size_t size,
+            size_t alignment,
+            char const* label) {
+            if (!structure) {
+                if (size != 0) {
+                    throw std::invalid_argument(
+                        std::string("missing reflected ") + label + " structure");
+                }
+                return;
+            }
+            if (
+                structure->size_bits != size * 8 ||
+                structure->alignment_bits != alignment * 8
+            ) {
+                throw std::invalid_argument(
+                    std::string("reflected ") + label +
+                    " structure does not match declared ABI");
+            }
+        };
+
+        validate(structures.state, node.state_size, node.state_alignment, "State");
+        validate(
+            structures.compiled_state,
+            node.compiled_state_size,
+            node.compiled_state_alignment,
+            "CompiledState");
+        node.state_structure = structures.state;
+        node.compiled_state_structure = structures.compiled_state;
     }
 
     size_t NodeLayoutBuilder::align_up(size_t value, size_t alignment)
@@ -76,9 +138,11 @@ namespace iv {
             record.node = registration.node;
             record.node_type = registration.node_type;
             record.node_type_name = registration.node_type_name;
+            record.compiled_state_size = registration.compiled_state_size;
+            record.compiled_state_alignment = registration.compiled_state_alignment;
             record.lifecycle = registration.lifecycle;
             if (registration.has_state) {
-                record.node_state_structure = NodeStateStructure {
+                record.state_structure = NodeStateStructure {
                     .size_bits = registration.state_size * 8,
                     .alignment_bits = registration.state_alignment * 8,
                 };
@@ -89,6 +153,12 @@ namespace iv {
                 region.size = 0;
                 region.alignment = 1;
                 builder._regions.push_back(region);
+            }
+            if (registration.has_compiled_state) {
+                record.compiled_state_structure = NodeStateStructure {
+                    .size_bits = registration.compiled_state_size * 8,
+                    .alignment_bits = registration.compiled_state_alignment * 8,
+                };
             }
             builder._nodes.push_back(std::move(record));
             return node_index;
@@ -122,6 +192,35 @@ namespace iv {
             builder._regions.push_back(region);
         }
 
+        void allocate_node_compiled_state(
+            NodeLayoutBuilder& builder,
+            size_t node_index,
+            size_t size,
+            size_t alignment)
+        {
+            if (node_index >= builder._nodes.size()) {
+                throw std::out_of_range(
+                    "node compiled-state allocation index out of range");
+            }
+
+            auto& node = builder._nodes[node_index];
+            if (node.compiled_state_size != 0 && node.compiled_state_offset >= 0) {
+                return;
+            }
+
+            builder._storage_alignment =
+                std::max(builder._storage_alignment, alignment);
+            node.compiled_state_size = size;
+            node.compiled_state_alignment = alignment;
+
+            NodeLayout::Region region;
+            region.kind = NodeLayout::Region::Kind::compiled_state;
+            region.owner_node = node_index;
+            region.size = size;
+            region.alignment = alignment;
+            builder._regions.push_back(region);
+        }
+
         void declare_local_array(
             NodeLayoutBuilder& builder,
             NodeLayoutArrayDeclaration const& declaration)
@@ -129,6 +228,7 @@ namespace iv {
             NodeLayout::Region region;
             region.kind = NodeLayout::Region::Kind::local_array;
             region.owner_node = declaration.owner_node;
+            region.compiled_state_field = declaration.compiled_state_field;
             region.state_field_offset = declaration.state_field_offset;
             region.size = declaration.element_size * declaration.element_count;
             region.alignment = declaration.element_alignment;
@@ -161,8 +261,9 @@ namespace iv {
                 ptrdiff_t field_offset,
                 void* data,
                 size_t count) {
-                auto& span_ref = *reinterpret_cast<std::span<std::span<std::byte>>*>(
-                    static_cast<std::byte*>(state_base) + field_offset);
+                auto& span_ref =
+                    *reinterpret_cast<std::span<std::span<std::byte>>*>(
+                        static_cast<std::byte*>(state_base) + field_offset);
                 span_ref = {
                     static_cast<std::span<std::byte>*>(data),
                     count,
@@ -170,7 +271,43 @@ namespace iv {
             };
 
             builder._storage_alignment = std::max(
-                builder._storage_alignment, size_t(alignof(std::span<std::byte>)));
+                builder._storage_alignment,
+                size_t(alignof(std::span<std::byte>)));
+            builder._regions.push_back(std::move(region));
+            return builder._regions.size() - 1;
+        }
+
+        size_t declare_nested_node_compiled_states(
+            NodeLayoutBuilder& builder,
+            size_t node_index,
+            ptrdiff_t state_field_offset)
+        {
+            NodeLayout::Region region;
+            region.kind = NodeLayout::Region::Kind::nested_node_compiled_states;
+            region.owner_node = node_index;
+            region.state_field_offset = state_field_offset;
+            region.size = 0;
+            region.alignment = alignof(std::span<std::byte>);
+            region.element_count = 0;
+            region.element_type = node_layout_type_token<std::span<std::byte>>();
+            region.element_type_name = typeid(std::span<std::byte>).name();
+            region.assign_span_fn = [](
+                void* state_base,
+                ptrdiff_t field_offset,
+                void* data,
+                size_t count) {
+                auto& span_ref =
+                    *reinterpret_cast<std::span<std::span<std::byte>>*>(
+                        static_cast<std::byte*>(state_base) + field_offset);
+                span_ref = {
+                    static_cast<std::span<std::byte>*>(data),
+                    count,
+                };
+            };
+
+            builder._storage_alignment = std::max(
+                builder._storage_alignment,
+                size_t(alignof(std::span<std::byte>)));
             builder._regions.push_back(std::move(region));
             return builder._regions.size() - 1;
         }
@@ -185,8 +322,10 @@ namespace iv {
                 "nested nodes region index out of bounds");
             auto& region = builder._regions[region_index];
             IV_ASSERT(
-                region.kind == NodeLayout::Region::Kind::nested_node_states,
-                "region must be a nested nodes region");
+                region.kind == NodeLayout::Region::Kind::nested_node_states ||
+                    region.kind ==
+                        NodeLayout::Region::Kind::nested_node_compiled_states,
+                "region must be a nested node-state region");
 
             region.size =
                 sizeof(std::span<std::byte>) * nested_node_indices.size();
@@ -202,6 +341,7 @@ namespace iv {
             builder._exports.push_back({
                 .owner_node = declaration.owner_node,
                 .id = std::move(id),
+                .compiled_state_field = declaration.compiled_state_field,
                 .state_field_offset = declaration.state_field_offset,
                 .element_type = declaration.element_type,
                 .element_size = declaration.element_size,
@@ -218,6 +358,7 @@ namespace iv {
             builder._imports.push_back({
                 .owner_node = declaration.owner_node,
                 .id = std::move(id),
+                .compiled_state_field = declaration.compiled_state_field,
                 .state_field_offset = declaration.state_field_offset,
                 .element_type = declaration.element_type,
                 .element_size = declaration.element_size,
@@ -270,12 +411,12 @@ namespace iv {
                 });
         }
 
-        void override_node_state_structure(
+        void override_node_state_structures(
             NodeLayoutBuilder& builder,
             size_t node_index,
-            NodeStateStructure const& structure)
+            NodeStateStructures const& structures)
         {
-            builder.override_node_state_structure(node_index, structure);
+            builder.override_node_state_structures(node_index, structures);
         }
 
         size_t node_layout_max_block_size(NodeLayoutBuilder const& builder)
@@ -309,6 +450,9 @@ namespace iv {
 
             if (region.kind == NodeLayout::Region::Kind::state) {
                 layout.nodes[region.owner_node].state_offset =
+                    static_cast<ptrdiff_t>(region.storage_offset);
+            } else if (region.kind == NodeLayout::Region::Kind::compiled_state) {
+                layout.nodes[region.owner_node].compiled_state_offset =
                     static_cast<ptrdiff_t>(region.storage_offset);
             }
         }
@@ -395,7 +539,9 @@ namespace iv {
 
             void* data = nullptr;
             size_t count = 0;
-            void* export_state = storage.state_ptr(export_it->owner_node);
+            void* export_state = export_it->compiled_state_field
+                ? storage.compiled_state_ptr(export_it->owner_node)
+                : storage.state_ptr(export_it->owner_node);
             export_it->read_span_fn(
                 export_state, export_it->state_field_offset, data, count);
             return {
@@ -408,6 +554,12 @@ namespace iv {
             NodeStorage const& storage, size_t node_index)
         {
             return storage.state_ptr(node_index);
+        }
+
+        void* node_storage_compiled_state_ptr(
+            NodeStorage const& storage, size_t node_index)
+        {
+            return storage.compiled_state_ptr(node_index);
         }
 
         ResourceContext const& node_storage_resources(NodeStorage const& storage)
@@ -465,11 +617,13 @@ namespace iv {
     , resources(other.resources)
     , storage(std::move(other.storage))
     , constructed_nodes(std::move(other.constructed_nodes))
+    , constructed_compiled_states(std::move(other.constructed_compiled_states))
     , initialized_nodes(std::move(other.initialized_nodes))
     {
         other.layout = nullptr;
         other.resources = nullptr;
         other.constructed_nodes.clear();
+        other.constructed_compiled_states.clear();
         other.initialized_nodes.clear();
     }
 
@@ -485,11 +639,14 @@ namespace iv {
         resources = other.resources;
         storage = std::move(other.storage);
         constructed_nodes = std::move(other.constructed_nodes);
+        constructed_compiled_states =
+            std::move(other.constructed_compiled_states);
         initialized_nodes = std::move(other.initialized_nodes);
 
         other.layout = nullptr;
         other.resources = nullptr;
         other.constructed_nodes.clear();
+        other.constructed_compiled_states.clear();
         other.initialized_nodes.clear();
         return *this;
     }
@@ -503,14 +660,31 @@ namespace iv {
     void NodeStorage::destroy_constructed_states()
     {
         if (layout) {
-            for (auto it = constructed_nodes.rbegin(); it != constructed_nodes.rend(); ++it) {
-                auto const& node = layout->nodes[*it];
-                if (node.state_size != 0 && node.lifecycle.destroy_state_fn) {
-                    NodeLayoutBuilder::log_node_event("destroyed", node, *it);
-                    node.lifecycle.destroy_state_fn(state_ptr(*it));
+            size_t state_count = constructed_nodes.size();
+            size_t compiled_state_count = constructed_compiled_states.size();
+            for (size_t node_index = layout->nodes.size(); node_index-- > 0;) {
+                auto const& node = layout->nodes[node_index];
+                if (compiled_state_count != 0 &&
+                    constructed_compiled_states[compiled_state_count - 1] ==
+                        node_index) {
+                    if (node.lifecycle.destroy_compiled_state_fn) {
+                        node.lifecycle.destroy_compiled_state_fn(
+                            compiled_state_ptr(node_index));
+                    }
+                    --compiled_state_count;
+                }
+                if (state_count != 0 &&
+                    constructed_nodes[state_count - 1] == node_index) {
+                    if (node.lifecycle.destroy_state_fn) {
+                        NodeLayoutBuilder::log_node_event(
+                            "destroyed", node, node_index);
+                        node.lifecycle.destroy_state_fn(state_ptr(node_index));
+                    }
+                    --state_count;
                 }
             }
         }
+        constructed_compiled_states.clear();
         constructed_nodes.clear();
     }
 
@@ -536,6 +710,31 @@ namespace iv {
         return storage.get() + node.state_offset;
     }
 
+    void* NodeStorage::compiled_state_ptr(size_t node_index) const
+    {
+        if (!layout || node_index >= layout->nodes.size()) {
+            return nullptr;
+        }
+        auto const& node = layout->nodes[node_index];
+        if (node.compiled_state_size == 0 || node.compiled_state_offset < 0) {
+            return nullptr;
+        }
+        return storage.get() + node.compiled_state_offset;
+    }
+
+    std::span<std::byte> NodeStorage::region_bytes(
+        NodeLayout::RegionHandle region) const
+    {
+        if (!layout || !region.valid() || region.index >= layout->regions.size()) {
+            return {};
+        }
+        auto const& record = layout->regions[region.index];
+        if (record.size == 0) {
+            return {};
+        }
+        return { storage.get() + record.storage_offset, record.size };
+    }
+
     bool NodeStorage::can_move_from(NodeStorage const& previous, size_t node_index, size_t previous_node_index) const
     {
         if (!layout || !previous.layout) {
@@ -551,12 +750,29 @@ namespace iv {
             node.node_type_name && previous_node.node_type_name &&
             std::strcmp(
                 node.node_type_name, previous_node.node_type_name) == 0;
-        auto const same_state_structure =
-            node.node_state_structure.has_value() &&
-            node.node_state_structure == previous_node.node_state_structure;
+        auto const same_reflected_definition = [](
+            std::optional<NodeStateStructure> const& current,
+            std::optional<NodeStateStructure> const& prior,
+            size_t size) {
+            if (size == 0) {
+                return !current && !prior;
+            }
+            return current && prior && current->type_identity.valid() &&
+                prior->type_identity.valid() && *current == *prior;
+        };
+        auto const same_state_definitions =
+            same_reflected_definition(
+                node.state_structure, previous_node.state_structure, node.state_size) &&
+            same_reflected_definition(
+                node.compiled_state_structure,
+                previous_node.compiled_state_structure,
+                node.compiled_state_size);
         auto const same_node_type = node.node_type == previous_node.node_type ||
-            (same_node_name && same_state_structure);
-        if (!same_node_type || node.state_size != previous_node.state_size) {
+            (same_node_name && same_state_definitions);
+        if (!same_node_type || node.state_size != previous_node.state_size ||
+            node.state_alignment != previous_node.state_alignment ||
+            node.compiled_state_size != previous_node.compiled_state_size ||
+            node.compiled_state_alignment != previous_node.compiled_state_alignment) {
             return false;
         }
 
@@ -582,6 +798,8 @@ namespace iv {
 
             if (
                 current_region.kind != previous_region.kind ||
+                current_region.compiled_state_field !=
+                    previous_region.compiled_state_field ||
                 current_region.state_field_offset != previous_region.state_field_offset ||
                 current_region.size != previous_region.size ||
                 current_region.alignment != previous_region.alignment ||
@@ -611,17 +829,24 @@ namespace iv {
         OwnerIsConstructed&& owner_is_constructed)
     {
         for (auto const& region : storage.layout->regions) {
-            if (!owner_is_constructed(region.owner_node) ||
-                (region.kind != NodeLayout::Region::Kind::local_array &&
-                 region.kind != NodeLayout::Region::Kind::nested_node_states) ||
+            if ((region.kind != NodeLayout::Region::Kind::local_array &&
+                 region.kind != NodeLayout::Region::Kind::nested_node_states &&
+                 region.kind !=
+                     NodeLayout::Region::Kind::nested_node_compiled_states) ||
+                region.owner_node == NodeLayout::no_owner_node ||
+                !owner_is_constructed(region.owner_node) ||
                 !region.assign_span_fn) {
                 continue;
             }
-            void* state = storage.state_ptr(region.owner_node);
+            void* state = region.compiled_state_field
+                ? storage.compiled_state_ptr(region.owner_node)
+                : storage.state_ptr(region.owner_node);
             void* data = storage.storage.get() + region.storage_offset;
             region.assign_span_fn(
                 state, region.state_field_offset, data, region.element_count);
-            if (region.kind != NodeLayout::Region::Kind::nested_node_states) {
+            if (region.kind != NodeLayout::Region::Kind::nested_node_states &&
+                region.kind !=
+                    NodeLayout::Region::Kind::nested_node_compiled_states) {
                 continue;
             }
             auto const& assigned_span =
@@ -636,8 +861,23 @@ namespace iv {
             }
             auto* nested_node_states = static_cast<std::span<std::byte>*>(data);
             for (size_t i = 0; i < region.nested_node_indices.size(); ++i) {
-                auto* nested_state = static_cast<std::byte*>(
-                    storage.state_ptr(region.nested_node_indices[i]));
+                auto const nested_node = region.nested_node_indices[i];
+                if (region.kind ==
+                    NodeLayout::Region::Kind::nested_node_compiled_states) {
+                    auto* nested_state = static_cast<std::byte*>(
+                        storage.compiled_state_ptr(nested_node));
+                    nested_node_states[i] = nested_state
+                        ? std::span<std::byte> {
+                              nested_state,
+                              storage.layout->nodes[nested_node]
+                                  .compiled_state_size,
+                          }
+                        : std::span<std::byte> {};
+                    continue;
+                }
+
+                auto* nested_state =
+                    static_cast<std::byte*>(storage.state_ptr(nested_node));
                 IV_ASSERT(
                     nested_state != nullptr,
                     "nested child state pointer must resolve during storage initialization");
@@ -647,6 +887,95 @@ namespace iv {
                         (storage.storage.get() + storage.layout->storage_size) -
                         nested_state),
                 };
+            }
+        }
+    }
+
+    std::unordered_set<std::string> migrate_persistent_raw_regions(
+        NodeStorage& current, NodeStorage const& previous)
+    {
+        std::unordered_set<std::string> migrated;
+        if (!current.layout || !previous.layout) return migrated;
+
+        auto collect = [](NodeLayout const& layout) {
+            std::unordered_map<std::string, NodeLayout::Region const*> result;
+            for (auto const& region : layout.regions) {
+                if (region.kind != NodeLayout::Region::Kind::raw
+                    || region.migration_identity.empty()) {
+                    continue;
+                }
+                auto [_, inserted] = result.emplace(
+                    region.migration_identity, &region);
+                if (!inserted) {
+                    throw std::runtime_error(
+                        "duplicate raw-region migration identity: "
+                        + region.migration_identity);
+                }
+            }
+            return result;
+        };
+
+        auto const previous_regions = collect(*previous.layout);
+        auto const current_regions = collect(*current.layout);
+        for (auto const& [identity, region] : current_regions) {
+            auto const found = previous_regions.find(identity);
+            if (found == previous_regions.end()) continue;
+            auto const* prior = found->second;
+            if (region->size != prior->size
+                || region->alignment != prior->alignment) {
+                continue;
+            }
+            if (region->size != 0) {
+                std::memcpy(
+                    current.storage.get() + region->storage_offset,
+                    previous.storage.get() + prior->storage_offset,
+                    region->size);
+            }
+            migrated.insert(identity);
+        }
+        return migrated;
+    }
+
+    void initialize_raw_regions(
+        NodeStorage& storage,
+        std::unordered_set<std::string> const& migrated)
+    {
+        if (!storage.layout) return;
+        for (auto const& region : storage.layout->regions) {
+            if (region.kind != NodeLayout::Region::Kind::raw
+                || !region.raw_initialize_fn) {
+                continue;
+            }
+            if (!region.migration_identity.empty()
+                && migrated.contains(region.migration_identity)) {
+                continue;
+            }
+            auto bytes = storage.buffer();
+            region.raw_initialize_fn(
+                bytes.subspan(region.storage_offset, region.size),
+                region.raw_initialize_payload);
+        }
+    }
+
+    void construct_node_storage_states(NodeStorage& storage)
+    {
+        for (size_t node_index = 0;
+             node_index < storage.layout->nodes.size();
+             ++node_index) {
+            auto const& record = storage.layout->nodes[node_index];
+            if (record.state_size != 0) {
+                if (record.lifecycle.default_construct_state_fn) {
+                    record.lifecycle.default_construct_state_fn(
+                        storage.state_ptr(node_index));
+                }
+                storage.constructed_nodes.push_back(node_index);
+            }
+            if (record.compiled_state_size != 0) {
+                if (record.lifecycle.default_construct_compiled_state_fn) {
+                    record.lifecycle.default_construct_compiled_state_fn(
+                        storage.compiled_state_ptr(node_index));
+                }
+                storage.constructed_compiled_states.push_back(node_index);
             }
         }
     }
@@ -666,12 +995,16 @@ namespace iv {
             size_t count = 0;
             if (export_it != storage.layout->exported_arrays.end() &&
                 export_it->read_span_fn) {
-                void* export_state = storage.state_ptr(export_it->owner_node);
+                void* export_state = export_it->compiled_state_field
+                    ? storage.compiled_state_ptr(export_it->owner_node)
+                    : storage.state_ptr(export_it->owner_node);
                 export_it->read_span_fn(
                     export_state, export_it->state_field_offset, data, count);
             }
             if (import_endpoint.assign_span_fn) {
-                void* import_state = storage.state_ptr(import_endpoint.owner_node);
+                void* import_state = import_endpoint.compiled_state_field
+                    ? storage.compiled_state_ptr(import_endpoint.owner_node)
+                    : storage.state_ptr(import_endpoint.owner_node);
                 import_endpoint.assign_span_fn(
                     import_state,
                     import_endpoint.state_field_offset,
@@ -687,7 +1020,9 @@ namespace iv {
         if (!layout || !resources || !previous.layout || !previous.resources) {
             throw std::logic_error("node storage migration requires two valid storages");
         }
-        if (!constructed_nodes.empty() || !initialized_nodes.empty()) {
+        if (!constructed_nodes.empty() ||
+            !constructed_compiled_states.empty() ||
+            !initialized_nodes.empty()) {
             throw std::logic_error("node storage migration target must be uninitialized");
         }
 
@@ -701,6 +1036,7 @@ namespace iv {
         prepared.deferred_initialize_nodes.reserve(layout->nodes.size());
         prepared.previous_release_nodes.reserve(previous.layout->nodes.size());
         constructed_nodes.reserve(layout->nodes.size());
+        constructed_compiled_states.reserve(layout->nodes.size());
         initialized_nodes.reserve(layout->nodes.size());
 
         std::unordered_map<std::string, size_t> previous_by_identity;
@@ -766,13 +1102,10 @@ namespace iv {
             }
         }
 
-        for (size_t node = 0; node < layout->nodes.size(); ++node) {
-            auto const& record = layout->nodes[node];
-            if (record.state_size == 0) continue;
-            if (record.lifecycle.default_construct_state_fn)
-                record.lifecycle.default_construct_state_fn(state_ptr(node));
-            constructed_nodes.push_back(node);
-        }
+        construct_node_storage_states(*this);
+        auto const migrated_raw_regions =
+            migrate_persistent_raw_regions(*this, previous);
+        initialize_raw_regions(*this, migrated_raw_regions);
 
         patch_node_storage_regions(*this, [](size_t) { return true; });
 
@@ -902,9 +1235,7 @@ namespace iv {
                 }
 
                 size_t const previous_node_index = previous_it->second;
-                auto const& previous_record = previous->layout->nodes[previous_node_index];
-                if (record.node_type != previous_record.node_type ||
-                    !record.lifecycle.move_fn) {
+                if (!record.lifecycle.move_fn) {
                     continue;
                 }
                 if (!can_move_from(*previous, node_index, previous_node_index)) {
@@ -917,78 +1248,17 @@ namespace iv {
         }
 
         constructed_nodes.clear();
+        constructed_compiled_states.clear();
         initialized_nodes.clear();
-        for (size_t node_index = 0; node_index < layout->nodes.size(); ++node_index) {
-            auto const& record = layout->nodes[node_index];
-            if (record.state_size == 0) {
-                continue;
-            }
-
-            void* state = state_ptr(node_index);
-            if (record.lifecycle.default_construct_state_fn) {
-                record.lifecycle.default_construct_state_fn(state);
-            }
-
-            constructed_nodes.push_back(node_index);
+        construct_node_storage_states(*this);
+        std::unordered_set<std::string> migrated_raw_regions;
+        if (previous && previous->layout) {
+            migrated_raw_regions = migrate_persistent_raw_regions(*this, *previous);
         }
+        initialize_raw_regions(*this, migrated_raw_regions);
 
-        for (auto const& region : layout->regions) {
-            if (
-                (region.kind != NodeLayout::Region::Kind::local_array &&
-                 region.kind != NodeLayout::Region::Kind::nested_node_states) ||
-                !region.assign_span_fn
-            ) {
-                continue;
-            }
-            void* state = state_ptr(region.owner_node);
-            void* data = storage.get() + region.storage_offset;
-            region.assign_span_fn(state, region.state_field_offset, data, region.element_count);
-            if (region.kind == NodeLayout::Region::Kind::nested_node_states) {
-                auto const& assigned_span = *reinterpret_cast<std::span<std::span<std::byte>> const*>(
-                    static_cast<std::byte*>(state) + region.state_field_offset
-                );
-                if (assigned_span.size() != region.element_count) {
-                    throw std::logic_error(
-                        "nested node span assignment failed for owner node " + std::to_string(region.owner_node) +
-                        " (expected count=" + std::to_string(region.element_count) +
-                        ", actual count=" + std::to_string(assigned_span.size()) + ")"
-                    );
-                }
-                auto* nested_node_states = static_cast<std::span<std::byte>*>(data);
-                for (size_t i = 0; i < region.nested_node_indices.size(); ++i) {
-                    auto* nested_state = static_cast<std::byte*>(state_ptr(region.nested_node_indices[i]));
-                    IV_ASSERT(
-                        nested_state != nullptr,
-                        "nested child state pointer must resolve during storage initialization"
-                    );
-                    nested_node_states[i] = { nested_state, static_cast<size_t>((storage.get() + layout->storage_size) - nested_state) };
-                }
-            }
-        }
-
-        for (auto const& import_endpoint : layout->imported_arrays) {
-            auto export_it = std::find_if(
-                layout->exported_arrays.begin(),
-                layout->exported_arrays.end(),
-                [&](auto const& export_endpoint) {
-                    return
-                        export_endpoint.id == import_endpoint.id &&
-                        export_endpoint.element_type == import_endpoint.element_type;
-                }
-            );
-
-            void* data = nullptr;
-            size_t count = 0;
-            if (export_it != layout->exported_arrays.end() && export_it->read_span_fn) {
-                void* export_state = state_ptr(export_it->owner_node);
-                export_it->read_span_fn(export_state, export_it->state_field_offset, data, count);
-            }
-
-            if (import_endpoint.assign_span_fn) {
-                void* import_state = state_ptr(import_endpoint.owner_node);
-                import_endpoint.assign_span_fn(import_state, import_endpoint.state_field_offset, data, count);
-            }
-        }
+        patch_node_storage_regions(*this, [](size_t) { return true; });
+        patch_node_storage_imports(*this);
 
         if (previous && previous->layout) {
             for (size_t node_index : layout->initialize_order) {

@@ -145,8 +145,6 @@ ProjectConfig load_runtime_installation_config(std::filesystem::path const &work
                 assign_size(config.execution.sample_rate);
             } else if (key == "block_size") {
                 assign_size(config.execution.block_size);
-            } else if (key == "compiled_sample_cache_chunk_size_multiplier") {
-                assign_size(config.execution.compiled_sample_cache_chunk_size_multiplier);
             } else if (key == "output_device_id") {
                 config.output_device_id =
                     value.empty() ? std::nullopt : std::optional(value);

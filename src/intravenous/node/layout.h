@@ -15,20 +15,49 @@
 
 namespace iv {
     struct NodeLayout {
+        static constexpr size_t no_owner_node = std::numeric_limits<size_t>::max();
+
+        struct RegionHandle {
+            size_t index = std::numeric_limits<size_t>::max();
+
+            constexpr bool valid() const noexcept
+            {
+                return index != std::numeric_limits<size_t>::max();
+            }
+
+            constexpr bool operator==(RegionHandle const&) const = default;
+        };
+
         struct Region {
             enum class Kind {
                 state,
+                compiled_state,
                 local_array,
                 nested_node_states,
+                nested_node_compiled_states,
+                raw,
             };
 
             Kind kind = Kind::state;
-            size_t owner_node = 0;
+            size_t owner_node = no_owner_node;
+            bool compiled_state_field = false;
             ptrdiff_t state_field_offset = 0;
             size_t storage_offset = 0;
             size_t size = 0;
             size_t alignment = 1;
             size_t element_count = 0;
+            // Optional stable identity for compiler-owned raw regions whose
+            // bytes are semantic persistent state rather than scratch. Exact-
+            // shape matches are copied during NodeStorage migration; transient
+            // arenas leave this empty and are always freshly zeroed. A raw
+            // initializer runs during storage initialization only when this
+            // region was not restored by exact-shape migration.
+            std::string migration_identity{};
+            using RawInitializeFn = void (*)(
+                std::span<std::byte> storage,
+                std::span<std::byte const> payload);
+            RawInitializeFn raw_initialize_fn = nullptr;
+            std::vector<std::byte> raw_initialize_payload{};
             void const* element_type = nullptr;
             char const* element_type_name = nullptr;
             void (*assign_span_fn)(
@@ -40,6 +69,7 @@ namespace iv {
         struct ArrayBinding {
             size_t owner_node = 0;
             std::string id;
+            bool compiled_state_field = false;
             ptrdiff_t state_field_offset = 0;
             void const* element_type = nullptr;
             size_t element_size = 0;
@@ -55,10 +85,14 @@ namespace iv {
             void const* node = nullptr;
             void const* node_type = nullptr;
             char const* node_type_name = nullptr;
-            std::optional<NodeStateStructure> node_state_structure {};
+            std::optional<NodeStateStructure> state_structure {};
+            std::optional<NodeStateStructure> compiled_state_structure {};
             ptrdiff_t state_offset = 0;
             size_t state_size = 0;
             size_t state_alignment = 1;
+            ptrdiff_t compiled_state_offset = -1;
+            size_t compiled_state_size = 0;
+            size_t compiled_state_alignment = 1;
             std::vector<size_t> dependencies;
             NodeLifecycleCallbacks lifecycle;
         };
@@ -89,6 +123,13 @@ namespace iv {
         size_t default_silence_ttl_samples() const;
         size_t event_port_buffer_base_multiplier() const;
 
+        NodeLayout::RegionHandle declare_raw_region(
+            size_t size,
+            size_t alignment = 1,
+            std::string migration_identity = {},
+            NodeLayout::Region::RawInitializeFn initialize_fn = nullptr,
+            std::vector<std::byte> initialize_payload = {});
+
         template<typename A>
         static void const* array_type_token()
         {
@@ -100,8 +141,8 @@ namespace iv {
             NodeLayout::NodeRecord const& record,
             size_t node_index);
 
-        void override_node_state_structure(
-            size_t node_index, NodeStateStructure structure);
+        void override_node_state_structures(
+            size_t node_index, NodeStateStructures const& structures);
 
         template<typename A>
         bool has_import_array(std::string const& id) const
@@ -136,9 +177,13 @@ namespace iv {
             NodeLayoutBuilder&, details::NodeLayoutNodeRegistration const&);
         friend void details::allocate_node_state(
             NodeLayoutBuilder&, size_t, size_t, size_t);
+        friend void details::allocate_node_compiled_state(
+            NodeLayoutBuilder&, size_t, size_t, size_t);
         friend void details::declare_local_array(
             NodeLayoutBuilder&, details::NodeLayoutArrayDeclaration const&);
         friend size_t details::declare_nested_node_states(
+            NodeLayoutBuilder&, size_t, ptrdiff_t);
+        friend size_t details::declare_nested_node_compiled_states(
             NodeLayoutBuilder&, size_t, ptrdiff_t);
         friend void details::finalize_nested_node_states(
             NodeLayoutBuilder&, size_t, std::vector<size_t>);
@@ -178,6 +223,7 @@ namespace iv {
         ResourceContext const* resources = nullptr;
         std::unique_ptr<std::byte[], StorageDeleter> storage;
         std::vector<size_t> constructed_nodes;
+        std::vector<size_t> constructed_compiled_states;
         std::vector<size_t> initialized_nodes;
 
         NodeStorage();
@@ -191,6 +237,8 @@ namespace iv {
         std::span<std::byte> buffer() const;
         size_t max_block_size() const;
         void* state_ptr(size_t node_index) const;
+        void* compiled_state_ptr(size_t node_index) const;
+        std::span<std::byte> region_bytes(NodeLayout::RegionHandle region) const;
 
         template<typename A>
         std::span<A const> resolve_exported_array_storage(

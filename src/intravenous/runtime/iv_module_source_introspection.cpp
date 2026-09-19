@@ -5,9 +5,8 @@
 #include <intravenous/compat.h>
 #include <intravenous/filesystem_paths.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
-#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
-#include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <algorithm>
@@ -20,77 +19,6 @@
 #include <unordered_set>
 
 namespace iv {
-namespace {
-std::string public_input_node_id(PublicSampleInputInfo const &input)
-{
-    return public_sample_input_node_id(input.instance_id, input.source_identity);
-}
-
-template<class Port>
-std::string public_output_node_id(Port const& output)
-{
-    return iv::public_output_node_id(output.instance_id, output.source_identity);
-}
-
-void apply_public_ports_snapshot(
-    IvModuleSourceIntrospection &introspection,
-    GraphInputPublicPortsSnapshot snapshot)
-{
-    introspection.set_public_sample_inputs(std::move(snapshot.sample_inputs));
-    introspection.set_public_event_inputs(std::move(snapshot.event_inputs));
-    introspection.set_public_sample_outputs(std::move(snapshot.sample_outputs));
-    introspection.set_public_event_outputs(std::move(snapshot.event_outputs));
-}
-
-void notify_updated_node_ids(
-    IvModuleSourceIntrospection const &introspection,
-    std::vector<std::string> node_ids)
-{
-    if (node_ids.empty()) {
-        return;
-    }
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_source_introspection_nodes_updated_event,
-        ProjectVirtualNodesNotification{
-            .nodes = introspection.get_virtual_nodes(std::move(node_ids)),
-        });
-}
-
-ProjectSampleInputState parse_project_sample_input_state(std::string const &state)
-{
-    if (state == "default") return ProjectSampleInputState::default_;
-    if (state == "overridden") return ProjectSampleInputState::overridden;
-    if (state == "virtualFollow") return ProjectSampleInputState::virtual_follow;
-    if (state == "timelineLane") return ProjectSampleInputState::timeline_lane;
-    if (state == "disconnected") return ProjectSampleInputState::disconnected;
-    throw std::runtime_error("unknown sample input state: " + state);
-}
-
-ProjectEventInputState parse_project_event_input_state(std::string const &state)
-{
-    if (state == "default") return ProjectEventInputState::default_;
-    if (state == "virtualFollow") return ProjectEventInputState::virtual_follow;
-    if (state == "timelineLane") return ProjectEventInputState::timeline_lane;
-    if (state == "disconnected") return ProjectEventInputState::disconnected;
-    throw std::runtime_error("unknown event input state: " + state);
-}
-
-ProjectSampleOutputState parse_project_sample_output_state(std::string const &state)
-{
-    if (state == "disconnected") return ProjectSampleOutputState::disconnected;
-    if (state == "virtual") return ProjectSampleOutputState::virtual_port;
-    if (state == "timelineLane") return ProjectSampleOutputState::timeline_lane;
-    throw std::runtime_error("unknown sample output state: " + state);
-}
-
-ProjectEventOutputState parse_project_event_output_state(std::string const &state)
-{
-    if (state == "disconnected") return ProjectEventOutputState::disconnected;
-    if (state == "virtual") return ProjectEventOutputState::virtual_port;
-    if (state == "timelineLane") return ProjectEventOutputState::timeline_lane;
-    throw std::runtime_error("unknown event output state: " + state);
-}
-}
 SourceTextLineMap SourceTextLineMap::from_file(std::filesystem::path const &path)
 {
     std::ifstream in(path, std::ios::binary);
@@ -109,59 +37,6 @@ SourceTextLineMap SourceTextLineMap::from_file(std::filesystem::path const &path
         }
     }
     return map;
-}
-
-void IvModuleSourceIntrospection::set_public_sample_inputs(std::vector<PublicSampleInputInfo> inputs)
-{
-    std::scoped_lock lock(mutex);
-    std::unordered_set<std::string> replaced_instances;
-    for (auto const &input : inputs) {
-        replaced_instances.insert(input.instance_id);
-    }
-    for (auto const &instance_id : replaced_instances) {
-        public_inputs_by_instance_id.erase(instance_id);
-    }
-    for (auto &input : inputs) {
-        public_inputs_by_instance_id[input.instance_id].push_back(std::move(input));
-    }
-}
-
-void IvModuleSourceIntrospection::set_public_event_inputs(std::vector<PublicEventInputInfo> inputs)
-{
-    std::scoped_lock lock(mutex);
-    std::unordered_set<std::string> instances;
-    for (auto const &input : inputs) instances.insert(input.instance_id);
-    for (auto const &id : instances) public_event_inputs_by_instance_id.erase(id);
-    for (auto &input : inputs) public_event_inputs_by_instance_id[input.instance_id].push_back(std::move(input));
-}
-
-void IvModuleSourceIntrospection::set_public_sample_outputs(std::vector<PublicSampleOutputInfo> outputs)
-{
-    std::scoped_lock lock(mutex);
-    std::unordered_set<std::string> instances;
-    for (auto const& output : outputs) instances.insert(output.instance_id);
-    for (auto const& id : instances) public_outputs_by_instance_id.erase(id);
-    for (auto& output : outputs) public_outputs_by_instance_id[output.instance_id].push_back(std::move(output));
-}
-
-void IvModuleSourceIntrospection::set_public_event_outputs(std::vector<PublicEventOutputInfo> outputs)
-{
-    std::scoped_lock lock(mutex);
-    std::unordered_set<std::string> instances;
-    for (auto const& output : outputs) instances.insert(output.instance_id);
-    for (auto const& id : instances) public_event_outputs_by_instance_id.erase(id);
-    for (auto& output : outputs) public_event_outputs_by_instance_id[output.instance_id].push_back(std::move(output));
-}
-
-void IvModuleSourceIntrospection::replace_public_input_instances(std::span<std::string const> instance_ids)
-{
-    std::scoped_lock lock(mutex);
-    for (auto const &id : instance_ids) {
-        public_inputs_by_instance_id.erase(id);
-        public_event_inputs_by_instance_id.erase(id);
-        public_outputs_by_instance_id.erase(id);
-        public_event_outputs_by_instance_id.erase(id);
-    }
 }
 
 size_t SourceTextLineMap::offset_for(SourcePosition position) const
@@ -197,125 +72,6 @@ SourcePosition SourceTextLineMap::position_for(size_t offset) const
 
 namespace {
 constexpr std::string_view runtime_node_id_separator = "\x1fvirtual:";
-
-struct LivePortStateMaps {
-    std::unordered_map<std::string, std::string> sample_inputs;
-    std::unordered_map<std::string, std::string> event_inputs;
-    std::unordered_map<std::string, std::string> sample_outputs;
-    std::unordered_map<std::string, std::string> event_outputs;
-};
-
-std::string port_state_key(
-    std::string_view virtual_node_id,
-    std::optional<size_t> member_ordinal,
-    size_t port_ordinal)
-{
-    std::string key(virtual_node_id);
-    key += "#port:";
-    key += std::to_string(port_ordinal);
-    if (member_ordinal.has_value()) {
-        key += "#member:";
-        key += std::to_string(*member_ordinal);
-    }
-    return key;
-}
-
-std::string sample_input_state_value(ProjectSampleInputState state)
-{
-    switch (state) {
-    case ProjectSampleInputState::default_:
-        return "default";
-    case ProjectSampleInputState::overridden:
-        return "overridden";
-    case ProjectSampleInputState::virtual_follow:
-        return "virtualFollow";
-    case ProjectSampleInputState::timeline_lane:
-        return "timelineLane";
-    case ProjectSampleInputState::disconnected:
-        return "disconnected";
-    }
-    return "default";
-}
-
-std::string event_input_state_value(ProjectEventInputState state)
-{
-    switch (state) {
-    case ProjectEventInputState::default_:
-        return "default";
-    case ProjectEventInputState::virtual_follow:
-        return "virtualFollow";
-    case ProjectEventInputState::timeline_lane:
-        return "timelineLane";
-    case ProjectEventInputState::disconnected:
-        return "disconnected";
-    }
-    return "default";
-}
-
-std::string sample_output_state_value(ProjectSampleOutputState state)
-{
-    switch (state) {
-    case ProjectSampleOutputState::disconnected:
-        return "disconnected";
-    case ProjectSampleOutputState::virtual_port:
-        return "virtual";
-    case ProjectSampleOutputState::timeline_lane:
-        return "timelineLane";
-    }
-    return "disconnected";
-}
-
-std::string event_output_state_value(ProjectEventOutputState state)
-{
-    switch (state) {
-    case ProjectEventOutputState::disconnected:
-        return "disconnected";
-    case ProjectEventOutputState::virtual_port:
-        return "virtual";
-    case ProjectEventOutputState::timeline_lane:
-        return "timelineLane";
-    }
-    return "disconnected";
-}
-
-LivePortStateMaps build_live_port_state_maps(
-    IvModuleSourceIntrospectionConfiguredStateSnapshot const &snapshot)
-{
-    LivePortStateMaps maps;
-
-    for (auto const &request : snapshot.sample_input_values) {
-        maps.sample_inputs[port_state_key(
-            request.node_id,
-            request.member_ordinal,
-            request.input_ordinal)] = "overridden";
-    }
-    for (auto const &request : snapshot.sample_input_states) {
-        maps.sample_inputs[port_state_key(
-            request.node_id,
-            request.member_ordinal,
-            request.input_ordinal)] = sample_input_state_value(request.state);
-    }
-    for (auto const &request : snapshot.event_input_states) {
-        maps.event_inputs[port_state_key(
-            request.node_id,
-            request.member_ordinal,
-            request.input_ordinal)] = event_input_state_value(request.state);
-    }
-    for (auto const &request : snapshot.sample_output_states) {
-        maps.sample_outputs[port_state_key(
-            request.node_id,
-            request.member_ordinal,
-            request.output_ordinal)] = sample_output_state_value(request.state);
-    }
-    for (auto const &request : snapshot.event_output_states) {
-        maps.event_outputs[port_state_key(
-            request.node_id,
-            request.member_ordinal,
-            request.output_ordinal)] = event_output_state_value(request.state);
-    }
-
-    return maps;
-}
 
 VirtualPortInfo to_live_port(IntrospectionPortInfo const &port)
 {
@@ -431,44 +187,6 @@ std::optional<ResolvedRuntimeNodeId> parse_runtime_node_id(std::string_view runt
     };
 }
 
-std::string live_input_snapshot_key(
-    std::string_view virtual_node_id,
-    std::optional<size_t> member_ordinal,
-    size_t input_ordinal)
-{
-    std::string key(virtual_node_id);
-    key += "#input:";
-    key += std::to_string(input_ordinal);
-    if (member_ordinal.has_value()) {
-        key += "#member:";
-        key += std::to_string(*member_ordinal);
-    }
-    return key;
-}
-
-GraphInputPortDescriptor sample_graph_input_port_for(
-    IntrospectionVirtualNode const &node,
-    std::optional<size_t> concrete_member_ordinal,
-    size_t input_ordinal)
-{
-    auto const &ports = concrete_member_ordinal.has_value()
-        ? node.members[*concrete_member_ordinal].sample_inputs
-        : node.sample_inputs;
-    auto const port_it = std::ranges::find_if(ports, [&](IntrospectionPortInfo const &port) {
-        return port.ordinal == input_ordinal;
-    });
-    if (port_it == ports.end()) {
-        throw std::runtime_error("unknown sample input ordinal " + std::to_string(input_ordinal));
-    }
-    return GraphInputPortDescriptor{
-        .virtual_node_id = node.id,
-        .node_bundle_port_ordinal = concrete_member_ordinal,
-        .port_kind = PortKind::sample,
-        .port_ordinal = port_it->ordinal,
-        .port_name = port_it->name,
-        .port_type = port_it->type,
-    };
-}
 } // namespace
 
 SourceTextLineMap const &
@@ -525,107 +243,20 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
     IntrospectionVirtualNode const &node,
     std::string const &instance_id) const
 {
-    auto const runtime_id = runtime_node_id(instance_id, node.id);
-    IvModuleSourceIntrospectionConfiguredStateSnapshotBuilder configured_state_builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_source_introspection_configured_state_snapshot_requested_event,
-        configured_state_builder);
-    auto const live_port_states = build_live_port_state_maps(configured_state_builder.build());
-    std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> snapshot_requests;
-    snapshot_requests.reserve(
-        node.sample_inputs.size() +
-        std::accumulate(
-            node.members.begin(),
-            node.members.end(),
-            size_t{0},
-            [](size_t sum, auto const &member) {
-                return sum + member.sample_inputs.size();
-            }));
-    for (auto const &port : node.sample_inputs) {
-        snapshot_requests.push_back(IvModuleSourceIntrospectionLiveInputSnapshotRequest{
-            .virtual_node_id = runtime_id,
-            .member_ordinal = std::nullopt,
-            .input_ordinal = port.ordinal,
-            .fallback = port.default_value,
-        });
-    }
-    for (auto const &member : node.members) {
-        for (auto const &port : member.sample_inputs) {
-            snapshot_requests.push_back(IvModuleSourceIntrospectionLiveInputSnapshotRequest{
-                .virtual_node_id = runtime_id,
-                .member_ordinal = member.ordinal,
-                .input_ordinal = port.ordinal,
-                .fallback = port.default_value,
-            });
-        }
-    }
-
-    IvModuleSourceIntrospectionLiveInputSnapshotsBuilder snapshot_builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_source_introspection_live_input_snapshots_requested_event,
-        snapshot_requests,
-        snapshot_builder);
-    auto const snapshots = snapshot_builder.build();
-
-    std::unordered_map<std::string, IvModuleSourceIntrospectionLiveInputSnapshot> snapshots_by_key;
-    snapshots_by_key.reserve(snapshots.size());
-    for (auto const &snapshot : snapshots) {
-        snapshots_by_key.emplace(
-            live_input_snapshot_key(
-                snapshot.virtual_node_id,
-                snapshot.member_ordinal,
-                snapshot.input_ordinal),
-            snapshot);
-    }
-
     VirtualNodeInfo live;
-    live.id = runtime_id;
+    live.id = runtime_node_id(instance_id, node.id);
     live.instance_id = instance_id;
     live.kind = node.kind;
     live.source_identity = node.source_identity;
     live.type_identity = node.type_identity;
     live.sample_inputs = to_live_ports(node.sample_inputs);
-    for (auto &port : live.sample_inputs) {
-        auto const snapshot_it = snapshots_by_key.find(
-            live_input_snapshot_key(runtime_id, std::nullopt, port.ordinal));
-        if (snapshot_it == snapshots_by_key.end()) {
-            throw std::runtime_error("missing live input snapshot for virtual input");
-        }
-        port.current_value = snapshot_it->second.current_value;
-        auto const state_it = live_port_states.sample_inputs.find(
-            port_state_key(runtime_id, std::nullopt, port.ordinal));
-        port.state_value =
-            state_it != live_port_states.sample_inputs.end()
-                ? state_it->second
-                : "overridden";
-    }
+    for (auto &port : live.sample_inputs) port.state_value = "default";
     live.sample_outputs = to_live_ports(node.sample_outputs);
-    for (auto &port : live.sample_outputs) {
-        auto const state_it = live_port_states.sample_outputs.find(
-            port_state_key(runtime_id, std::nullopt, port.ordinal));
-        port.state_value =
-            state_it != live_port_states.sample_outputs.end()
-                ? state_it->second
-                : "disconnected";
-    }
+    for (auto &port : live.sample_outputs) port.state_value = "disconnected";
     live.event_inputs = to_live_ports(node.event_inputs);
-    for (auto &port : live.event_inputs) {
-        auto const state_it = live_port_states.event_inputs.find(
-            port_state_key(runtime_id, std::nullopt, port.ordinal));
-        port.state_value =
-            state_it != live_port_states.event_inputs.end()
-                ? state_it->second
-                : "default";
-    }
+    for (auto &port : live.event_inputs) port.state_value = "default";
     live.event_outputs = to_live_ports(node.event_outputs);
-    for (auto &port : live.event_outputs) {
-        auto const state_it = live_port_states.event_outputs.find(
-            port_state_key(runtime_id, std::nullopt, port.ordinal));
-        port.state_value =
-            state_it != live_port_states.event_outputs.end()
-                ? state_it->second
-                : "disconnected";
-    }
+    for (auto &port : live.event_outputs) port.state_value = "disconnected";
     live.member_count = node.backing_node_ids.size();
     live.members.reserve(node.members.size());
     for (auto const &member : node.members) {
@@ -636,307 +267,128 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
         live_member.type_identity = member.type_identity;
         live_member.sample_inputs = to_live_ports(member.sample_inputs);
         for (auto &port : live_member.sample_inputs) {
-            auto const snapshot_it = snapshots_by_key.find(
-                live_input_snapshot_key(runtime_id, member.ordinal, port.ordinal));
-            if (snapshot_it == snapshots_by_key.end()) {
-                throw std::runtime_error("missing live input snapshot for concrete input");
-            }
-            port.current_value = snapshot_it->second.current_value;
-            port.has_concrete_override = snapshot_it->second.has_concrete_override;
-            auto const state_it = live_port_states.sample_inputs.find(
-                port_state_key(runtime_id, member.ordinal, port.ordinal));
-            if (state_it != live_port_states.sample_inputs.end()) {
-                port.state_value = state_it->second;
-            } else {
-                port.state_value =
-                    port.connectivity == VirtualPortConnectivity::connected
-                        ? "disconnected"
-                        : "virtualFollow";
-            }
+            port.state_value = port.connectivity == VirtualPortConnectivity::connected
+                ? "disconnected"
+                : "virtualFollow";
         }
         live_member.sample_outputs = to_live_ports(member.sample_outputs);
-        for (auto &port : live_member.sample_outputs) {
-            auto const state_it = live_port_states.sample_outputs.find(
-                port_state_key(runtime_id, member.ordinal, port.ordinal));
-            if (state_it != live_port_states.sample_outputs.end()) {
-                port.state_value = state_it->second;
-            } else {
-                auto const virtual_state_it = live_port_states.sample_outputs.find(
-                    port_state_key(runtime_id, std::nullopt, port.ordinal));
-                port.state_value =
-                    virtual_state_it != live_port_states.sample_outputs.end()
-                    && virtual_state_it->second == "timelineLane"
-                        ? "virtual"
-                        : "disconnected";
-            }
-        }
+        for (auto &port : live_member.sample_outputs) port.state_value = "disconnected";
         live_member.event_inputs = to_live_ports(member.event_inputs);
         for (auto &port : live_member.event_inputs) {
-            auto const state_it = live_port_states.event_inputs.find(
-                port_state_key(runtime_id, member.ordinal, port.ordinal));
-            if (state_it != live_port_states.event_inputs.end()) {
-                port.state_value = state_it->second;
-            } else {
-                port.state_value =
-                    port.connectivity == VirtualPortConnectivity::connected
-                        ? "disconnected"
-                        : "virtualFollow";
-            }
+            port.state_value = port.connectivity == VirtualPortConnectivity::connected
+                ? "disconnected"
+                : "virtualFollow";
         }
         live_member.event_outputs = to_live_ports(member.event_outputs);
-        for (auto &port : live_member.event_outputs) {
-            auto const state_it = live_port_states.event_outputs.find(
-                port_state_key(runtime_id, member.ordinal, port.ordinal));
-            if (state_it != live_port_states.event_outputs.end()) {
-                port.state_value = state_it->second;
-            } else {
-                auto const virtual_state_it = live_port_states.event_outputs.find(
-                    port_state_key(runtime_id, std::nullopt, port.ordinal));
-                port.state_value =
-                    virtual_state_it != live_port_states.event_outputs.end()
-                    && virtual_state_it->second == "timelineLane"
-                        ? "virtual"
-                        : "disconnected";
-            }
-        }
+        for (auto &port : live_member.event_outputs) port.state_value = "disconnected";
         live.members.push_back(std::move(live_member));
     }
     live.source_spans.reserve(node.source_spans.size());
-    for (auto const &span : node.source_spans) {
-        live.source_spans.push_back(to_live_span(span));
-    }
+    for (auto const &span : node.source_spans) live.source_spans.push_back(to_live_span(span));
     return live;
 }
 
-VirtualNodeInfo IvModuleSourceIntrospection::to_public_sample_input(PublicSampleInputInfo const &input) const
-{
-    VirtualNodeInfo node{
-        .id = public_input_node_id(input),
-        .instance_id = input.instance_id,
-        .kind = "Public input",
-        .source_identity = input.source_identity,
-        .type_identity = "iv::PublicSampleInputRef",
-        .member_count = input.member_ordinals.size(),
-    };
-    for (auto const &info : input.source_infos) {
-        node.source_spans.push_back(to_live_span(info.span));
-    }
-    node.sample_inputs.push_back(VirtualPortInfo{
-        .name = input.name.empty() ? "input" : input.name,
-        .type = "sample",
-        .connectivity = input.graph_connected
-            ? VirtualPortConnectivity::connected
-            : VirtualPortConnectivity::disconnected,
-        .ordinal = 0,
-        .default_value = input.default_value,
-        .min = input.min,
-        .max = input.max,
-        .current_value = input.current_value,
-        .state_value = input.virtual_state,
-    });
-    for (size_t i = 0; i < input.member_ordinals.size(); ++i) {
-        auto const member_ordinal = input.member_ordinals[i];
-        VirtualNodeMemberInfo member{
-            .ordinal = member_ordinal,
-            .kind = "Public input member",
-            .type_identity = "iv::PublicSampleInputRef",
-        };
-        member.sample_inputs.push_back(VirtualPortInfo{
-            .name = input.name.empty() ? "input" : input.name,
-            .type = "sample",
-            .connectivity = i < input.member_graph_connected.size()
-                    && input.member_graph_connected[i]
-                ? VirtualPortConnectivity::connected
-                : VirtualPortConnectivity::disconnected,
-            .ordinal = 0,
-            .default_value = input.default_value,
-            .min = input.min,
-            .max = input.max,
-            .current_value = input.current_value,
-            .state_value = i < input.member_states.size()
-                ? input.member_states[i]
-                : "virtualFollow",
-        });
-        node.members.push_back(std::move(member));
-    }
-    return node;
-}
-
-VirtualNodeInfo IvModuleSourceIntrospection::to_public_event_input(PublicEventInputInfo const &input) const
-{
-    VirtualNodeInfo node{
-        .id = public_sample_input_node_id(input.instance_id, input.source_identity),
-        .instance_id = input.instance_id,
-        .kind = "Public event input",
-        .source_identity = input.source_identity,
-        .type_identity = "iv::PublicEventInputRef",
-        .member_count = input.member_ordinals.size(),
-    };
-    for (auto const &info : input.source_infos) node.source_spans.push_back(to_live_span(info.span));
-    node.event_inputs.push_back(VirtualPortInfo{
-        .name = input.name.empty() ? "event" : input.name,
-        .type = details::event_type_name(input.type),
-        .connectivity = input.graph_connected
-            ? VirtualPortConnectivity::connected
-            : VirtualPortConnectivity::disconnected,
-        .ordinal = 0,
-        .state_value = input.virtual_state,
-    });
-    for (size_t i = 0; i < input.member_ordinals.size(); ++i) {
-        VirtualNodeMemberInfo member{.ordinal = input.member_ordinals[i], .kind = "Public event input member", .type_identity = "iv::PublicEventInputRef"};
-        member.event_inputs.push_back(VirtualPortInfo{
-            .name = input.name.empty() ? "event" : input.name,
-            .type = details::event_type_name(input.type),
-            .connectivity = i < input.member_graph_connected.size()
-                    && input.member_graph_connected[i]
-                ? VirtualPortConnectivity::connected
-                : VirtualPortConnectivity::disconnected,
-            .ordinal = 0,
-            .state_value = i < input.member_states.size() ? input.member_states[i] : "virtualFollow",
-        });
-        node.members.push_back(std::move(member));
-    }
-    return node;
-}
-
-VirtualNodeInfo IvModuleSourceIntrospection::to_public_sample_output(PublicSampleOutputInfo const& output) const
-{
-    VirtualNodeInfo node{
-        .id = public_output_node_id(output), .instance_id = output.instance_id,
-        .kind = "Public output", .source_identity = output.source_identity,
-        .type_identity = "iv::GraphBuilder::outputs",
-    };
-    for (auto const& info : output.source_infos) node.source_spans.push_back(to_live_span(info.span));
-    node.sample_outputs.push_back(VirtualPortInfo{
-        .name = output.name.empty() ? "output" : output.name, .type = "sample",
-        .connectivity = output.graph_connected ? VirtualPortConnectivity::connected : VirtualPortConnectivity::disconnected,
-        .ordinal = 0, .state_value = output.virtual_state,
-    });
-    for (size_t i = 0; i < output.member_ordinals.size(); ++i) {
-        VirtualNodeMemberInfo member{.ordinal = output.member_ordinals[i], .kind = "Public output member", .type_identity = "iv::GraphBuilder::outputs"};
-        member.sample_outputs.push_back(VirtualPortInfo{
-            .name = output.name.empty() ? "output" : output.name, .type = "sample",
-            .connectivity = i < output.member_graph_connected.size() && output.member_graph_connected[i]
-                ? VirtualPortConnectivity::connected : VirtualPortConnectivity::disconnected,
-            .ordinal = 0, .state_value = i < output.member_states.size() ? output.member_states[i] : "virtualFollow",
-        });
-        node.members.push_back(std::move(member));
-    }
-    return node;
-}
-
-VirtualNodeInfo IvModuleSourceIntrospection::to_public_event_output(PublicEventOutputInfo const& output) const
-{
-    VirtualNodeInfo node{
-        .id = public_output_node_id(output), .instance_id = output.instance_id,
-        .kind = "Public event output", .source_identity = output.source_identity,
-        .type_identity = "iv::GraphBuilder::event_outputs",
-    };
-    for (auto const& info : output.source_infos) node.source_spans.push_back(to_live_span(info.span));
-    node.event_outputs.push_back(VirtualPortInfo{ .name = output.name.empty() ? "event" : output.name,
-        .type = details::event_type_name(output.type),
-        .connectivity = output.graph_connected ? VirtualPortConnectivity::connected : VirtualPortConnectivity::disconnected,
-        .ordinal = 0, .state_value = output.virtual_state });
-    for (size_t i = 0; i < output.member_ordinals.size(); ++i) {
-        VirtualNodeMemberInfo member{.ordinal = output.member_ordinals[i], .kind = "Public event output member", .type_identity = "iv::GraphBuilder::event_outputs"};
-        member.event_outputs.push_back(VirtualPortInfo{.name = output.name.empty() ? "event" : output.name,
-            .type = details::event_type_name(output.type),
-            .connectivity = i < output.member_graph_connected.size() && output.member_graph_connected[i]
-                ? VirtualPortConnectivity::connected : VirtualPortConnectivity::disconnected,
-            .ordinal = 0, .state_value = i < output.member_states.size() ? output.member_states[i] : "virtualFollow"});
-        node.members.push_back(std::move(member));
-    }
-    return node;
-}
-
-void IvModuleSourceIntrospection::handle_iv_module_instances_configured(
-    IvModuleInstancesConfigured const &configured)
+void IvModuleSourceIntrospection::handle_iv_package_definitions_changed(
+    IvPackageDefinitionsChanged const &package_diff)
 {
     std::vector<std::string> replace_instance_ids;
     std::vector<IvModuleInstanceInfo> updated_instances;
 
     {
         std::scoped_lock lock(mutex);
+        std::unordered_set<std::string> changed_definition_ids;
 
-        if (configured.definitions != nullptr) {
-            auto const &diff = *configured.definitions;
-            for (auto const &definition_id : diff.deleted_definition_ids) {
-                graph_indexes_by_definition_id.erase(definition_id);
-            }
-            for (auto const &definition : diff.created) {
-                invalidate_source_texts(definition.dependencies);
-                graph_indexes_by_definition_id[definition.definition_id] =
-                    build_graph_introspection_index(
-                        definition.definition_id,
-                        definition.introspection,
-                        definition.package_root,
-                        definition.module_id,
-                        definition.dependencies);
-            }
-            for (auto const &definition : diff.updated) {
-                invalidate_source_texts(definition.dependencies);
-                graph_indexes_by_definition_id[definition.definition_id] =
-                    build_graph_introspection_index(
-                        definition.definition_id,
-                        definition.introspection,
-                        definition.package_root,
-                        definition.module_id,
-                        definition.dependencies);
-            }
+        auto apply_definition = [&](ModuleNodeDefinition const &definition) {
+            changed_definition_ids.insert(definition.definition_id);
+            invalidate_source_texts(definition.dependencies);
+            graph_indexes_by_definition_id[definition.definition_id] =
+                build_graph_introspection_index(
+                    definition.definition_id,
+                    definition.introspection,
+                    definition.package_root,
+                    definition.module_id,
+                    definition.dependencies);
+        };
+
+        for (auto const &definition : package_diff.module_definitions.created) {
+            apply_definition(definition);
         }
-
-        if (configured.builders != nullptr) {
-            auto const &diff = *configured.builders;
-            auto apply_instance = [&](IvModuleInstanceBuilderRef const &ref) {
-                auto const *instance = ref.instance;
-                if (instance == nullptr) {
-                    return;
+        for (auto const &definition : package_diff.module_definitions.updated) {
+            apply_definition(definition);
+        }
+        for (auto const &definition_id : package_diff.module_definitions.deleted_definition_ids) {
+            changed_definition_ids.insert(definition_id);
+            if (auto index = graph_indexes_by_definition_id.find(definition_id);
+                index != graph_indexes_by_definition_id.end()) {
+                for (auto const &path : index->second.dependency_file_paths) {
+                    invalidate_source_text(path);
                 }
-                replace_instance_ids.push_back(instance->instance_id);
-                auto info = IvModuleInstanceInfo{
-                    .instance_id = instance->instance_id,
-                    .definition_id = instance->definition_id,
-                    .package_root = instance->package_root,
-                    .default_silence_ttl_samples = instance->default_silence_ttl_samples,
-                    .realized = true,
-                    .module_id = instance->module_id,
-                };
-                realized_instances_by_id[info.instance_id] = info;
-                updated_instances.push_back(std::move(info));
-            };
-
-            for (auto const &created : diff.created) {
-                apply_instance(created);
-            }
-            for (auto const &updated : diff.updated) {
-                apply_instance(updated);
-            }
-            for (auto const &instance_id : diff.deleted_instance_ids) {
-                realized_instances_by_id.erase(instance_id);
-                replace_instance_ids.push_back(instance_id);
+                graph_indexes_by_definition_id.erase(index);
             }
         }
 
-        if (configured.public_ports.has_value()) {
-            public_inputs_by_instance_id.clear();
-            public_event_inputs_by_instance_id.clear();
-            public_outputs_by_instance_id.clear();
-            public_event_outputs_by_instance_id.clear();
-            for (auto const &input : configured.public_ports->sample_inputs) {
-                public_inputs_by_instance_id[input.instance_id].push_back(input);
+        for (auto const &[instance_id, instance] : instances_by_id) {
+            if (!changed_definition_ids.contains(instance.definition_id)) {
+                continue;
             }
-            for (auto const &input : configured.public_ports->event_inputs) {
-                public_event_inputs_by_instance_id[input.instance_id].push_back(input);
-            }
-            for (auto const &output : configured.public_ports->sample_outputs) {
-                public_outputs_by_instance_id[output.instance_id].push_back(output);
-            }
-            for (auto const &output : configured.public_ports->event_outputs) {
-                public_event_outputs_by_instance_id[output.instance_id].push_back(output);
+            replace_instance_ids.push_back(instance_id);
+            if (graph_indexes_by_definition_id.contains(instance.definition_id)) {
+                updated_instances.push_back(instance);
             }
         }
     }
 
+    if (replace_instance_ids.empty()) {
+        return;
+    }
+
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_source_introspection_nodes_updated_event,
+        ProjectVirtualNodesNotification{
+            .nodes = get_virtual_nodes_for_instances(updated_instances),
+            .replace_instance_ids = std::move(replace_instance_ids),
+        });
+}
+
+void IvModuleSourceIntrospection::handle_iv_module_instance_declarations_changed(
+    std::vector<IvModuleInstanceInfo> const &instances)
+{
+    std::vector<std::string> replace_instance_ids;
+    std::vector<IvModuleInstanceInfo> updated_instances;
+
+    {
+        std::scoped_lock lock(mutex);
+        std::unordered_map<std::string, IvModuleInstanceInfo> next_instances;
+        for (auto const &instance : instances) {
+            if (instance.instance_id.empty() || instance.definition_id.empty()) {
+                continue;
+            }
+            next_instances.emplace(instance.instance_id, instance);
+        }
+
+        for (auto const &[instance_id, previous] : instances_by_id) {
+            auto const next = next_instances.find(instance_id);
+            if (next == next_instances.end()
+                || next->second.definition_id != previous.definition_id) {
+                replace_instance_ids.push_back(instance_id);
+            }
+        }
+        for (auto const &[instance_id, instance] : next_instances) {
+            auto const previous = instances_by_id.find(instance_id);
+            if (previous == instances_by_id.end()
+                || previous->second.definition_id != instance.definition_id) {
+                replace_instance_ids.push_back(instance_id);
+                updated_instances.push_back(instance);
+            }
+        }
+
+        instances_by_id = std::move(next_instances);
+    }
+
+    std::ranges::sort(replace_instance_ids);
+    replace_instance_ids.erase(
+        std::unique(replace_instance_ids.begin(), replace_instance_ids.end()),
+        replace_instance_ids.end());
     if (replace_instance_ids.empty()) {
         return;
     }
@@ -956,7 +408,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
     std::optional<std::string> instance_id) const
 {
     std::scoped_lock lock(mutex);
-    if (graph_indexes_by_definition_id.empty() || realized_instances_by_id.empty()) {
+    if (graph_indexes_by_definition_id.empty() || instances_by_id.empty()) {
         return {};
     }
 
@@ -1131,7 +583,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
         auto const &graph_index = index_it->second;
         auto const &node = graph_index.virtual_nodes[ranked.virtual_index];
         std::vector<std::string> matching_instance_ids;
-        for (auto const &[candidate_instance_id, instance] : realized_instances_by_id) {
+        for (auto const &[candidate_instance_id, instance] : instances_by_id) {
             if (instance.definition_id != ranked.definition_id) {
                 continue;
             }
@@ -1179,71 +631,6 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
         }
     }
 
-    for (auto const &[public_instance_id, inputs] : public_inputs_by_instance_id) {
-        if (instance_id.has_value() && public_instance_id != *instance_id) {
-            continue;
-        }
-        for (auto const &input : inputs) {
-            bool matches = requested_ranges.empty();
-            if (!requested_ranges.empty()) {
-                auto touches = [&](auto const &range) {
-                    return std::ranges::any_of(input.source_infos, [&](SourceInfo const &info) {
-                        return normalized_path_string(info.span.file_path) == normalized_file_path
-                            && byte_span_touches_range(info.span.begin, info.span.end, range);
-                    });
-                };
-                matches = match_mode == SourceRangeMatchMode::union_
-                    ? std::ranges::any_of(requested_ranges, touches)
-                    : std::ranges::all_of(requested_ranges, touches);
-            }
-            if (matches) {
-                result.nodes.push_back(to_public_sample_input(input));
-            }
-        }
-    }
-    for (auto const &[public_instance_id, inputs] : public_event_inputs_by_instance_id) {
-        if (instance_id.has_value() && public_instance_id != *instance_id) continue;
-        for (auto const &input : inputs) {
-            bool matches = requested_ranges.empty();
-            if (!requested_ranges.empty()) {
-                auto touches = [&](auto const &range) {
-                    return std::ranges::any_of(input.source_infos, [&](SourceInfo const &info) {
-                        return normalized_path_string(info.span.file_path) == normalized_file_path
-                            && byte_span_touches_range(info.span.begin, info.span.end, range);
-                    });
-                };
-                matches = match_mode == SourceRangeMatchMode::union_
-                    ? std::ranges::any_of(requested_ranges, touches)
-                    : std::ranges::all_of(requested_ranges, touches);
-            }
-            if (matches) result.nodes.push_back(to_public_event_input(input));
-        }
-    }
-    for (auto const &[public_instance_id, outputs] : public_outputs_by_instance_id) {
-        if (instance_id.has_value() && public_instance_id != *instance_id) continue;
-        for (auto const& output : outputs) {
-            auto const matches = requested_ranges.empty() || std::ranges::any_of(output.source_infos, [&](SourceInfo const& info) {
-                return std::ranges::any_of(requested_ranges, [&](auto const& range) {
-                    return normalized_path_string(info.span.file_path) == normalized_file_path
-                        && byte_span_touches_range(info.span.begin, info.span.end, range);
-                });
-            });
-            if (matches) result.nodes.push_back(to_public_sample_output(output));
-        }
-    }
-    for (auto const &[public_instance_id, outputs] : public_event_outputs_by_instance_id) {
-        if (instance_id.has_value() && public_instance_id != *instance_id) continue;
-        for (auto const& output : outputs) {
-            auto const matches = requested_ranges.empty() || std::ranges::any_of(output.source_infos, [&](SourceInfo const& info) {
-                return std::ranges::any_of(requested_ranges, [&](auto const& range) {
-                    return normalized_path_string(info.span.file_path) == normalized_file_path
-                        && byte_span_touches_range(info.span.begin, info.span.end, range);
-                });
-            });
-            if (matches) result.nodes.push_back(to_public_event_output(output));
-        }
-    }
-
     return result;
 }
 
@@ -1286,57 +673,6 @@ ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
             }
         }
     }
-    for (auto const &[_, inputs] : public_inputs_by_instance_id) {
-        for (auto const &input : inputs) {
-            for (auto const &info : input.source_infos) {
-                if (normalized_path_string(info.span.file_path) != normalized_file_path) {
-                    continue;
-                }
-                auto live_span = to_live_span(info.span);
-                auto const key = live_span.file_path + ":" +
-                                 std::to_string(live_span.range.start.line) + ":" +
-                                 std::to_string(live_span.range.start.column) + ":" +
-                                 std::to_string(live_span.range.end.line) + ":" +
-                                 std::to_string(live_span.range.end.column);
-                if (emitted_spans.insert(key).second) {
-                    result.source_spans.push_back(std::move(live_span));
-                }
-            }
-        }
-    }
-    for (auto const &[_, inputs] : public_event_inputs_by_instance_id) {
-        for (auto const &input : inputs) {
-            for (auto const &info : input.source_infos) {
-                if (normalized_path_string(info.span.file_path) != normalized_file_path) continue;
-                auto live_span = to_live_span(info.span);
-                auto const key = live_span.file_path + ":" + std::to_string(live_span.range.start.line) + ":"
-                    + std::to_string(live_span.range.start.column) + ":" + std::to_string(live_span.range.end.line)
-                    + ":" + std::to_string(live_span.range.end.column);
-                if (emitted_spans.insert(key).second) result.source_spans.push_back(std::move(live_span));
-            }
-        }
-    }
-    for (auto const &[_, outputs] : public_outputs_by_instance_id) {
-        for (auto const& output : outputs) for (auto const& info : output.source_infos) {
-            if (normalized_path_string(info.span.file_path) != normalized_file_path) continue;
-            auto live_span = to_live_span(info.span);
-            auto const key = live_span.file_path + ":" + std::to_string(live_span.range.start.line) + ":"
-                + std::to_string(live_span.range.start.column) + ":" + std::to_string(live_span.range.end.line)
-                + ":" + std::to_string(live_span.range.end.column);
-            if (emitted_spans.insert(key).second) result.source_spans.push_back(std::move(live_span));
-        }
-    }
-    for (auto const &[_, outputs] : public_event_outputs_by_instance_id) {
-        for (auto const& output : outputs) for (auto const& info : output.source_infos) {
-            if (normalized_path_string(info.span.file_path) != normalized_file_path) continue;
-            auto live_span = to_live_span(info.span);
-            auto const key = live_span.file_path + ":" + std::to_string(live_span.range.start.line) + ":"
-                + std::to_string(live_span.range.start.column) + ":" + std::to_string(live_span.range.end.line)
-                + ":" + std::to_string(live_span.range.end.column);
-            if (emitted_spans.insert(key).second) result.source_spans.push_back(std::move(live_span));
-        }
-    }
-
     return result;
 }
 
@@ -1356,30 +692,12 @@ bool IvModuleSourceIntrospection::definition_uses_source_file(
 VirtualNodeInfo IvModuleSourceIntrospection::get_virtual_node(std::string const &node_id) const
 {
     std::scoped_lock lock(mutex);
-    for (auto const &[_, inputs] : public_inputs_by_instance_id) {
-        for (auto const &input : inputs) {
-            if (public_input_node_id(input) == node_id) return to_public_sample_input(input);
-        }
-    }
-    for (auto const &[_, inputs] : public_event_inputs_by_instance_id) {
-        for (auto const &input : inputs) {
-            if (public_sample_input_node_id(input.instance_id, input.source_identity) == node_id) {
-                return to_public_event_input(input);
-            }
-        }
-    }
-    for (auto const &[_, outputs] : public_outputs_by_instance_id) {
-        for (auto const& output : outputs) if (public_output_node_id(output) == node_id) return to_public_sample_output(output);
-    }
-    for (auto const &[_, outputs] : public_event_outputs_by_instance_id) {
-        for (auto const& output : outputs) if (public_output_node_id(output) == node_id) return to_public_event_output(output);
-    }
     auto const resolved = parse_runtime_node_id(node_id);
     if (!resolved.has_value()) {
         throw std::runtime_error("unknown node id: " + node_id);
     }
-    auto const instance_it = realized_instances_by_id.find(resolved->instance_id);
-    if (instance_it == realized_instances_by_id.end()) {
+    auto const instance_it = instances_by_id.find(resolved->instance_id);
+    if (instance_it == instances_by_id.end()) {
         throw std::runtime_error("unknown node id: " + node_id);
     }
     auto const index_it = graph_indexes_by_definition_id.find(instance_it->second.definition_id);
@@ -1402,43 +720,12 @@ std::vector<VirtualNodeInfo> IvModuleSourceIntrospection::get_virtual_nodes(
     std::vector<VirtualNodeInfo> nodes;
     nodes.reserve(node_ids.size());
     for (auto const &node_id : node_ids) {
-        bool public_node = false;
-        for (auto const &[_, inputs] : public_inputs_by_instance_id) {
-            auto const it = std::find_if(inputs.begin(), inputs.end(), [&](auto const &input) {
-                return public_input_node_id(input) == node_id;
-            });
-            if (it != inputs.end()) {
-                nodes.push_back(to_public_sample_input(*it));
-                public_node = true;
-                break;
-            }
-        }
-        if (!public_node) for (auto const &[_, inputs] : public_event_inputs_by_instance_id) {
-            auto const it = std::find_if(inputs.begin(), inputs.end(), [&](auto const &input) {
-                return public_sample_input_node_id(input.instance_id, input.source_identity) == node_id;
-            });
-            if (it != inputs.end()) {
-                nodes.push_back(to_public_event_input(*it));
-                public_node = true;
-                break;
-            }
-        }
-        if (public_node) continue;
-        for (auto const &[_, outputs] : public_outputs_by_instance_id) {
-            auto const it = std::find_if(outputs.begin(), outputs.end(), [&](auto const& output) { return public_output_node_id(output) == node_id; });
-            if (it != outputs.end()) { nodes.push_back(to_public_sample_output(*it)); public_node = true; break; }
-        }
-        if (!public_node) for (auto const &[_, outputs] : public_event_outputs_by_instance_id) {
-            auto const it = std::find_if(outputs.begin(), outputs.end(), [&](auto const& output) { return public_output_node_id(output) == node_id; });
-            if (it != outputs.end()) { nodes.push_back(to_public_event_output(*it)); public_node = true; break; }
-        }
-        if (public_node) continue;
         auto const resolved = parse_runtime_node_id(node_id);
         if (!resolved.has_value()) {
             throw std::runtime_error("unknown node id: " + node_id);
         }
-        auto const instance_it = realized_instances_by_id.find(resolved->instance_id);
-        if (instance_it == realized_instances_by_id.end()) {
+        auto const instance_it = instances_by_id.find(resolved->instance_id);
+        if (instance_it == instances_by_id.end()) {
             throw std::runtime_error("unknown node id: " + node_id);
         }
         auto const index_it = graph_indexes_by_definition_id.find(instance_it->second.definition_id);
@@ -1462,7 +749,7 @@ std::vector<VirtualNodeInfo> IvModuleSourceIntrospection::get_virtual_nodes_for_
     std::scoped_lock lock(mutex);
     std::vector<VirtualNodeInfo> nodes;
     for (auto const &instance : instances) {
-        if (!instance.realized || instance.instance_id.empty() || instance.definition_id.empty()) {
+        if (instance.instance_id.empty() || instance.definition_id.empty()) {
             continue;
         }
         auto const index_it = graph_indexes_by_definition_id.find(instance.definition_id);
@@ -1472,60 +759,8 @@ std::vector<VirtualNodeInfo> IvModuleSourceIntrospection::get_virtual_nodes_for_
         for (auto const &virtual_node : index_it->second.virtual_nodes) {
             nodes.push_back(to_virtual_node(virtual_node, instance.instance_id));
         }
-        if (auto const public_it = public_inputs_by_instance_id.find(instance.instance_id);
-            public_it != public_inputs_by_instance_id.end()) {
-            for (auto const &input : public_it->second) {
-                nodes.push_back(to_public_sample_input(input));
-            }
-        }
-        if (auto const public_it = public_event_inputs_by_instance_id.find(instance.instance_id);
-            public_it != public_event_inputs_by_instance_id.end()) {
-            for (auto const &input : public_it->second) nodes.push_back(to_public_event_input(input));
-        }
-        if (auto const public_it = public_outputs_by_instance_id.find(instance.instance_id);
-            public_it != public_outputs_by_instance_id.end()) {
-            for (auto const& output : public_it->second) nodes.push_back(to_public_sample_output(output));
-        }
-        if (auto const public_it = public_event_outputs_by_instance_id.find(instance.instance_id);
-            public_it != public_event_outputs_by_instance_id.end()) {
-            for (auto const& output : public_it->second) nodes.push_back(to_public_event_output(output));
-        }
     }
     return nodes;
-}
-
-GraphInputPortDescriptor IvModuleSourceIntrospection::sample_graph_input_port_for_node(
-    std::string const &node_id,
-    std::optional<size_t> concrete_member_ordinal,
-    size_t input_ordinal) const
-{
-    std::scoped_lock lock(mutex);
-    auto const resolved = parse_runtime_node_id(node_id);
-    if (!resolved.has_value()) {
-        throw std::runtime_error("unknown node id: " + node_id);
-    }
-    auto const instance_it = realized_instances_by_id.find(resolved->instance_id);
-    if (instance_it == realized_instances_by_id.end()) {
-        throw std::runtime_error("unknown node id: " + node_id);
-    }
-    auto const index_it = graph_indexes_by_definition_id.find(instance_it->second.definition_id);
-    if (index_it == graph_indexes_by_definition_id.end()) {
-        throw std::runtime_error("unknown node id: " + node_id);
-    }
-    auto const virtual_it = index_it->second.virtual_node_index_by_id.find(resolved->virtual_node_id);
-    if (virtual_it == index_it->second.virtual_node_index_by_id.end()) {
-        throw std::runtime_error("unknown node id: " + node_id);
-    }
-    auto const &node = index_it->second.virtual_nodes[virtual_it->second];
-    if (concrete_member_ordinal.has_value() &&
-        *concrete_member_ordinal >= node.members.size()) {
-        throw std::runtime_error("unknown member ordinal " +
-                                 std::to_string(*concrete_member_ordinal) +
-                                 " for node id: " + node_id);
-    }
-    auto descriptor = sample_graph_input_port_for(node, concrete_member_ordinal, input_ordinal);
-    descriptor.virtual_node_id = node_id;
-    return descriptor;
 }
 
 void IvModuleSourceIntrospection::handle_iv_module_instances_source_file_filter(
@@ -1574,140 +809,5 @@ void IvModuleSourceIntrospection::handle_socket_rpc_get_virtual_nodes(
     builder.succeed(get_virtual_nodes(request.node_ids));
 }
 
-void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_value(
-    SetSampleInputValueRequest const &request,
-    SocketRpcAckResponseBuilder &builder)
-{
-    try {
-        ProjectGraphInputAckBuilder project_builder;
-        if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
-            IV_INVOKE_LINKER_EVENT(
-                iv_runtime_project_set_public_sample_input_value_requested_event,
-                public_input->first,
-                public_input->second,
-                request.value,
-                project_builder);
-        } else {
-            IV_INVOKE_LINKER_EVENT(
-                iv_runtime_project_set_sample_input_value_requested_event,
-                ProjectSetSampleInputValueRequest{
-                    .node_id = request.node_id,
-                    .member_ordinal = request.member_ordinal,
-                    .input_ordinal = request.input_ordinal,
-                    .value = request.value,
-                },
-                project_builder);
-        }
-        apply_public_ports_snapshot(*this, project_builder.build());
-        notify_updated_node_ids(*this, {request.node_id});
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_state(
-    SetSampleInputStateRequest const &request,
-    SocketRpcAckResponseBuilder &builder)
-{
-    try {
-        ProjectGraphInputAckBuilder project_builder;
-        if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
-            IV_INVOKE_LINKER_EVENT(
-                iv_runtime_project_set_public_sample_input_state_requested_event,
-                ProjectSetPublicSampleInputStateRequest{
-                    .instance_id = public_input->first,
-                    .source_identity = public_input->second,
-                    .member_ordinal = request.member_ordinal,
-                    .state = parse_project_sample_input_state(request.state),
-                },
-                project_builder);
-        } else {
-            IV_INVOKE_LINKER_EVENT(
-                iv_runtime_project_set_sample_input_state_requested_event,
-                ProjectSetSampleInputStateRequest{
-                    .node_id = request.node_id,
-                    .member_ordinal = request.member_ordinal,
-                    .input_ordinal = request.input_ordinal,
-                    .state = parse_project_sample_input_state(request.state),
-                },
-                project_builder);
-        }
-        apply_public_ports_snapshot(*this, project_builder.build());
-        notify_updated_node_ids(*this, {request.node_id});
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void IvModuleSourceIntrospection::handle_socket_rpc_set_event_input_state(
-    SetEventInputStateRequest const &request,
-    SocketRpcAckResponseBuilder &builder)
-{
-    try {
-        ProjectGraphInputAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_event_input_state_requested_event,
-            ProjectSetEventInputStateRequest{
-                .node_id = request.node_id,
-                .member_ordinal = request.member_ordinal,
-                .input_ordinal = request.input_ordinal,
-                .state = parse_project_event_input_state(request.state),
-            },
-            project_builder);
-        apply_public_ports_snapshot(*this, project_builder.build());
-        notify_updated_node_ids(*this, {request.node_id});
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_output_state(
-    SetSampleOutputStateRequest const &request,
-    SocketRpcAckResponseBuilder &builder)
-{
-    try {
-        ProjectGraphInputAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_sample_output_state_requested_event,
-            ProjectSetSampleOutputStateRequest{
-                .node_id = request.node_id,
-                .member_ordinal = request.member_ordinal,
-                .output_ordinal = request.output_ordinal,
-                .state = parse_project_sample_output_state(request.state),
-            },
-            project_builder);
-        apply_public_ports_snapshot(*this, project_builder.build());
-        notify_updated_node_ids(*this, {request.node_id});
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void IvModuleSourceIntrospection::handle_socket_rpc_set_event_output_state(
-    SetEventOutputStateRequest const &request,
-    SocketRpcAckResponseBuilder &builder)
-{
-    try {
-        ProjectGraphInputAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_event_output_state_requested_event,
-            ProjectSetEventOutputStateRequest{
-                .node_id = request.node_id,
-                .member_ordinal = request.member_ordinal,
-                .output_ordinal = request.output_ordinal,
-                .state = parse_project_event_output_state(request.state),
-            },
-            project_builder);
-        apply_public_ports_snapshot(*this, project_builder.build());
-        notify_updated_node_ids(*this, {request.node_id});
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
 
 } // namespace iv

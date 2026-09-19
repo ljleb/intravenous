@@ -6,28 +6,171 @@
 // widening that record.
 
 #include <intravenous/node/compiler_record.h>
+#include <intravenous/node/compiled_port_context.h>
 #include <intravenous/ports.h>
 
 #include <cstddef>
 #include <span>
+#include <type_traits>
+#include <utility>
 
 namespace iv {
 
+// Compiler-facing span ABI. Whole-project LLVM may materialize these fields
+// directly, so their object representation is explicit rather than inheriting
+// an implementation-defined std::span layout. The implicit conversion keeps
+// the reflected adapter compatible with the ordinary TickContext interface.
+template<typename T>
+struct ReflectedSpan {
+    T* pointer = nullptr;
+    std::size_t extent = 0;
+
+    constexpr ReflectedSpan() noexcept = default;
+    constexpr ReflectedSpan(std::span<T> value) noexcept
+        : pointer(value.data())
+        , extent(value.size())
+    {}
+
+    template<typename Range>
+        requires requires(Range&& range) {
+            std::span<T>(std::forward<Range>(range));
+        }
+    constexpr ReflectedSpan(Range&& range)
+        noexcept(noexcept(std::span<T>(std::forward<Range>(range))))
+        : ReflectedSpan(std::span<T>(std::forward<Range>(range)))
+    {}
+
+    [[nodiscard]] constexpr T* data() const noexcept { return pointer; }
+    [[nodiscard]] constexpr std::size_t size() const noexcept { return extent; }
+    [[nodiscard]] constexpr bool empty() const noexcept { return extent == 0; }
+
+    constexpr operator std::span<T>() const noexcept
+    {
+        return {pointer, extent};
+    }
+};
+
+static_assert(std::is_standard_layout_v<ReflectedSpan<std::byte>>);
+static_assert(std::is_trivially_copyable_v<ReflectedSpan<std::byte>>);
+
+struct ReflectedSamplePortStorageBinding {
+    // Byte offset from ReflectedNodeTickContext::sample_storage_base. The
+    // backing itself is canonical compiler-owned NodeStorage; façade objects
+    // are invocation-local values created by the imported primitive wrapper.
+    std::size_t storage_offset = 0;
+    std::size_t frame_capacity = 0;
+    std::size_t storage_latency = 0;
+    ChannelLayout channel_layout {
+        .channel_type = ChannelTypeId::mono,
+        .sample_layout = SampleStreamLayout::planar,
+    };
+};
+
+struct ReflectedSampleInputPortBinding {
+    ReflectedSamplePortStorageBinding storage {};
+    std::size_t history = 0;
+    std::size_t read_latency = 0;
+};
+
+struct ReflectedSampleOutputPortBinding {
+    ReflectedSamplePortStorageBinding storage {};
+    std::size_t history = 0;
+    std::size_t latency = 0;
+};
+
+// Immutable compiler-owned event storage binding. Ordinary bounded sequences
+// store one event-count word followed by a TimedEvent array. Persistent event
+// rings instead store monotonic read/write indices followed by the same bounded
+// power-of-two TimedEvent array. EventInputPort and EventOutputPort remain
+// invocation-local facades reconstructed by the imported primitive wrapper; no
+// facade/cursor objects persist in NodeStorage.
+static_assert(std::is_trivially_copyable_v<TimedEvent>,
+    "GraphJit raw event storage requires TimedEvent to remain byte-storable");
+
+struct ReflectedEventPortStorageBinding {
+    std::size_t count_offset = 0;
+    std::size_t read_index_offset = 0;
+    std::size_t write_index_offset = 0;
+    std::size_t events_offset = 0;
+    std::size_t event_capacity = 0;
+    EventTypeId type = EventTypeId::empty;
+    bool persistent_ring = false;
+};
+
+struct ReflectedEventInputPortBinding {
+    ReflectedEventPortStorageBinding storage {};
+};
+
+struct ReflectedEventOutputPortBinding {
+    ReflectedEventPortStorageBinding storage {};
+    // Per-logical-output producer overflow telemetry. Derived event
+    // representations never allocate or bind their own copy of this counter.
+    std::size_t overflow_count_offset = 0;
+    EventTypeId source_type = EventTypeId::empty;
+    std::size_t history = 0;
+    std::size_t latency = 0;
+    // A producer may write into a larger aggregate representation while still
+    // being limited to its own statically planned sequence capacity.
+    std::size_t write_capacity = 0;
+    // Direct flow owns one primitive invocation, so the wrapper may clear the
+    // sequence when reconstructing the output facade. Materialized flow can
+    // span several primitive slices; in that case lowering clears the raw
+    // sequence once before the producer step and every slice appends.
+    bool append_existing = false;
+};
+
+static_assert(std::is_standard_layout_v<ReflectedSamplePortStorageBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedSamplePortStorageBinding>);
+static_assert(std::is_standard_layout_v<ReflectedSampleInputPortBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedSampleInputPortBinding>);
+static_assert(std::is_standard_layout_v<ReflectedSampleOutputPortBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedSampleOutputPortBinding>);
+static_assert(std::is_standard_layout_v<ReflectedEventPortStorageBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedEventPortStorageBinding>);
+static_assert(std::is_standard_layout_v<ReflectedEventInputPortBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedEventInputPortBinding>);
+static_assert(std::is_standard_layout_v<ReflectedEventOutputPortBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedEventOutputPortBinding>);
+
 struct ReflectedNodeTickContext {
-    std::span<InputPort> inputs {};
-    std::span<OutputPort> outputs {};
-    std::span<EventInputPort> event_inputs {};
-    std::span<EventOutputPort> event_outputs {};
+    // Legacy reflected sample façades remain temporarily for the old Graph
+    // implementation. GraphJit does not populate or store these objects.
+    ReflectedSpan<InputPort> inputs {};
+    ReflectedSpan<OutputPort> outputs {};
+
+    // Whole-project sample bindings are immutable compiler records. Imported
+    // primitive wrappers reconstruct short-lived InputPort/OutputPort values
+    // from these bindings and the current absolute sample index. This avoids
+    // persistent façade/cursor state and makes implementation constants visible
+    // to whole-project O3 after inlining.
+    std::byte* sample_storage_base = nullptr;
+    ReflectedSpan<ReflectedSampleInputPortBinding const> sample_input_bindings {};
+    ReflectedSpan<ReflectedSampleOutputPortBinding const> sample_output_bindings {};
+
+    // GraphJit event bindings mirror the sample binding architecture. Legacy
+    // reflected event facade spans remain as the compatibility fallback when
+    // event_storage_base is null.
+    std::byte* event_storage_base = nullptr;
+    ReflectedSpan<ReflectedEventInputPortBinding const> event_input_bindings {};
+    ReflectedSpan<ReflectedEventOutputPortBinding const> event_output_bindings {};
+    ReflectedSpan<EventInputPort> event_inputs {};
+    ReflectedSpan<EventOutputPort> event_outputs {};
+    ReflectedSpan<CompiledInputPort const> compiled_inputs {};
+    ReflectedSpan<CompiledEventInputPort const> compiled_event_inputs {};
+    ReflectedSpan<std::byte> compiled_state {};
     std::size_t sample_rate = 48000;
     std::size_t scc_feedback_latency = 0;
-    std::span<std::byte> state {};
+    ReflectedSpan<std::byte> state {};
 };
+
+static_assert(std::is_standard_layout_v<ReflectedNodeTickContext>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeTickContext>);
 
 struct ReflectedNodeRuntimeOperations {
     void const* node_data = nullptr;
-    NodeStateStructure const* state_structure = nullptr;
+    NodeStateStructures const* state_structures = nullptr;
     std::size_t (*declare_node)(
-        void const*, NodeStateStructure const*, NodeLayoutBuilder&) = nullptr;
+        void const*, NodeStateStructures const*, NodeLayoutBuilder&) = nullptr;
     void (*tick_block)(
         void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
     void (*skip_block)(
@@ -54,11 +197,11 @@ namespace details {
 constexpr ReflectedNodeRuntimeOperations make_runtime_operations(
     NodeCompilerRecord const& record,
     void const* node_data,
-    NodeStateStructure const* state_structure = nullptr)
+    NodeStateStructures const* state_structures = nullptr)
 {
     return {
         .node_data = node_data,
-        .state_structure = state_structure,
+        .state_structures = state_structures,
         .declare_node = record.operations.declare_node,
         .tick_block = record.operations.tick_block,
         .skip_block = record.operations.skip_block,

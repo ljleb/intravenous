@@ -7,7 +7,7 @@
 #include <type_traits>
 
 namespace iv {
-inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 1;
+inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 0;
 
 struct ModuleDataView {
     void const* data = nullptr;
@@ -37,6 +37,9 @@ struct NodeStateFieldData {
 
 struct NodeStateStructureData {
     NodeCodeKey code_key{};
+    ModuleDataView nominal_id{};
+    ModuleDataView definition_fingerprint{};
+    ModuleDataView display_name{};
     std::size_t size_bits = 0;
     std::size_t alignment_bits = 0;
     ModuleDataView fields{};
@@ -60,4 +63,5 @@ using iv_package_definitions_fn = iv::ModuleDataView (*)();
 using iv_package_node_config_pointer_fields_fn = iv::ModuleDataView (*)();
 using iv_package_retained_globals_fn = iv::ModuleDataView (*)();
 using iv_package_node_state_structures_fn = iv::ModuleDataView (*)();
+using iv_package_node_compiled_state_structures_fn = iv::ModuleDataView (*)();
 }

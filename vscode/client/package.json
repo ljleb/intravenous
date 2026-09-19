@@ -12,7 +12,6 @@
     ],
     "activationEvents": [
         "workspaceContains:iv_project.jsonl",
-        "onWebviewPanel:intravenous.lanes",
         "onWebviewPanel:intravenous.modules"
     ],
     "main": "./dist/extension.js",
@@ -63,28 +62,8 @@
         },
         "commands": [
             {
-                "command": "intravenous.openLanes",
-                "title": "Intravenous: Open Lanes"
-            },
-            {
-                "command": "intravenous.createLane",
-                "title": "Intravenous: Create Lane"
-            },
-            {
                 "command": "intravenous.openModules",
                 "title": "Intravenous: Open Modules"
-            },
-            {
-                "command": "intravenous.resumePlayback",
-                "title": "Intravenous: Resume Playback"
-            },
-            {
-                "command": "intravenous.pausePlayback",
-                "title": "Intravenous: Pause Playback"
-            },
-            {
-                "command": "intravenous.togglePlayback",
-                "title": "Intravenous: Toggle Playback"
             },
             {
                 "command": "intravenous.saveProject",
@@ -97,12 +76,6 @@
             {
                 "command": "intravenous.disableProjectAutosave",
                 "title": "Intravenous: Disable Project Autosave"
-            }
-        ],
-        "keybindings": [
-            {
-                "command": "intravenous.togglePlayback",
-                "key": "shift+space"
             }
         ]
     },

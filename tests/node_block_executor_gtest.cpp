@@ -76,18 +76,18 @@ struct MixedPortDeclarationNode {
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 3>{
-            iv::event_input("event-a", iv::EventTypeId::trigger),
-            iv::sample_input("sample"),
-            iv::event_input("event-b", iv::EventTypeId::trigger),
+            iv::realtime_event_input("event-a", iv::EventTypeId::trigger),
+            iv::realtime_sample_input("sample"),
+            iv::realtime_event_input("event-b", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array<iv::OutputConfig, 3>{
-            iv::sample_output("sample-a"),
-            iv::event_output("event", iv::EventTypeId::trigger),
-            iv::sample_output("sample-b"),
+            iv::realtime_sample_output("sample-a"),
+            iv::realtime_event_output("event", iv::EventTypeId::trigger),
+            iv::realtime_sample_output("sample-b"),
         };
     }
 
@@ -261,6 +261,11 @@ TEST(NodeStorageMigration, SameNodeNameRefusesSameSizeChangedStateFieldType)
     auto new_layout = std::move(new_builder).build();
 
     auto const structure = iv::NodeStateStructure{
+        .type_identity = {
+            .nominal_id = "test.MigratingLifecycleNode.State",
+            .definition_fingerprint = "v1",
+            .display_name = "MigratingLifecycleNode::State",
+        },
         .size_bits = sizeof(MigratingLifecycleNode::State) * 8,
         .alignment_bits = alignof(MigratingLifecycleNode::State) * 8,
         .fields = {iv::NodeStateFieldStructure{
@@ -271,8 +276,8 @@ TEST(NodeStorageMigration, SameNodeNameRefusesSameSizeChangedStateFieldType)
             .alignment_bits = alignof(int) * 8,
         }},
     };
-    old_layout.nodes.front().node_state_structure = structure;
-    new_layout.nodes.front().node_state_structure = structure;
+    old_layout.nodes.front().state_structure = structure;
+    new_layout.nodes.front().state_structure = structure;
     static int replacement_generation_type_token = 0;
     new_layout.nodes.front().node_type = &replacement_generation_type_token;
 
@@ -284,7 +289,9 @@ TEST(NodeStorageMigration, SameNodeNameRefusesSameSizeChangedStateFieldType)
     // Hot-reload identity may legitimately retain the configured node name.
     // A field-type change can retain the same ABI size/alignment, so comparing
     // only the node name or State byte size would permit an unsafe move.
-    new_layout.nodes.front().node_state_structure->fields.front().type_name =
+    new_layout.nodes.front().state_structure->type_identity.definition_fingerprint =
+        "v2";
+    new_layout.nodes.front().state_structure->fields.front().type_name =
         "float";
     EXPECT_FALSE(new_storage.can_move_from(old_storage, 0, 0));
 }
@@ -306,6 +313,11 @@ TEST(NodeStorageMigration, ChangedCrossGenerationStateInitializesInsteadOfMoving
     auto new_layout = std::move(new_builder).build();
 
     auto const old_structure = iv::NodeStateStructure{
+        .type_identity = {
+            .nominal_id = "test.MigratingLifecycleNode.State",
+            .definition_fingerprint = "v1",
+            .display_name = "MigratingLifecycleNode::State",
+        },
         .size_bits = sizeof(MigratingLifecycleNode::State) * 8,
         .alignment_bits = alignof(MigratingLifecycleNode::State) * 8,
         .fields = {iv::NodeStateFieldStructure{
@@ -317,9 +329,10 @@ TEST(NodeStorageMigration, ChangedCrossGenerationStateInitializesInsteadOfMoving
         }},
     };
     auto new_structure = old_structure;
+    new_structure.type_identity.definition_fingerprint = "v2";
     new_structure.fields.front().type_name = "float";
-    old_layout.nodes.front().node_state_structure = old_structure;
-    new_layout.nodes.front().node_state_structure = new_structure;
+    old_layout.nodes.front().state_structure = old_structure;
+    new_layout.nodes.front().state_structure = new_structure;
     static int replacement_generation_type_token = 0;
     new_layout.nodes.front().node_type = &replacement_generation_type_token;
 

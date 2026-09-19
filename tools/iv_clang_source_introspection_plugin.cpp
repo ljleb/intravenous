@@ -188,6 +188,16 @@ void append_type_definition_fingerprint(
     if (auto const* record = type->getAsCXXRecordDecl()) {
         auto const* definition = record->getDefinition();
         material += definition_text(definition);
+        if (definition) {
+            for (auto const& base : definition->bases()) {
+                append_type_definition_fingerprint(
+                    context, base.getType(), visited, material);
+            }
+            for (auto const* field : definition->fields()) {
+                append_type_definition_fingerprint(
+                    context, field->getType(), visited, material);
+            }
+        }
     } else if (auto const* enumeration = type->getAs<EnumType>()) {
         if (auto const* definition = enumeration->getDecl()->getDefinition()) {
             material += definition_text(definition);
@@ -1116,42 +1126,46 @@ private:
     }
 };
 
-std::optional<QualType> direct_node_state_type(
+std::optional<QualType> direct_node_nested_type(
     ASTContext& context,
-    CXXRecordDecl const* node)
+    CXXRecordDecl const* node,
+    StringRef name)
 {
     if (!node) return std::nullopt;
     for (auto const* declaration : node->decls()) {
         auto const* type = dyn_cast<TypeDecl>(declaration);
-        if (type && type->getName() == "State")
+        if (type && type->getName() == name)
             return context.getTypeDeclType(type);
     }
     return std::nullopt;
 }
 
-std::optional<QualType> node_state_type(
+std::optional<QualType> node_nested_type(
     ASTContext& context,
     CXXRecordDecl const* node,
+    StringRef name,
     std::set<CXXRecordDecl const*>& visited)
 {
     if (!node || !visited.insert(node).second) return std::nullopt;
-    if (auto state = direct_node_state_type(context, node)) return state;
-    // `typename Node::State` uses normal base-class lookup too. Follow that
-    // same lookup here so inherited aliases and nested State records receive
-    // metadata keyed by the derived node that actually uses them.
+    if (auto type = direct_node_nested_type(context, node, name)) return type;
+    // `typename Node::State` / `typename Node::CompiledState` use normal
+    // base-class lookup too. Follow that lookup so inherited aliases and
+    // nested records are keyed by the derived node that actually uses them.
     for (auto const& base : node->bases()) {
         auto const* base_record = base.getType()->getAsCXXRecordDecl();
-        if (auto state = node_state_type(context, base_record, visited)) return state;
+        if (auto type = node_nested_type(context, base_record, name, visited))
+            return type;
     }
     return std::nullopt;
 }
 
-std::optional<QualType> node_state_type(
+std::optional<QualType> node_nested_type(
     ASTContext& context,
-    CXXRecordDecl const* node)
+    CXXRecordDecl const* node,
+    StringRef name)
 {
     std::set<CXXRecordDecl const*> visited;
-    return node_state_type(context, node, visited);
+    return node_nested_type(context, node, name, visited);
 }
 
 class StateMetadataCollector final {
@@ -1163,15 +1177,43 @@ public:
     void record_node(CXXRecordDecl const* node)
     {
         if (!node || !node->isCompleteDefinition() || node->isLambda()) return;
-        // An uninstantiated class template has no concrete State ABI. Asking
-        // Clang for its layout recursively instantiates its own dependent
-        // members (for example MidiVoiceAllocator's voice-count arrays),
-        // exhausting the frontend stack. A concrete specialization can retain
-        // a dependent pattern in its nested declarations, so the node itself
-        // is the discriminator.
+        // An uninstantiated class template has no concrete state ABI. Asking
+        // Clang for its layout recursively instantiates dependent members, so
+        // only concrete specializations participate in source metadata.
         if (!has_concrete_template_arguments(node)) return;
 
-        auto state_type = node_state_type(context_, node);
+        auto const node_type = context_.getCanonicalTagType(node);
+        auto const node_type_name = type_string(context_, node_type);
+        // The canonical declaration of every specialization is the primary
+        // class template. Deduplicate by concrete spelling so each NodeCodeKey
+        // receives exactly one pair of State/CompiledState records.
+        if (!seen_node_types_.insert(node_type_name).second) return;
+
+        auto const node_type_usr = declaration_usr(context_, node);
+        record_state(
+            node, node_type, node_type_name, node_type_usr,
+            "State", states_);
+        record_state(
+            node, node_type, node_type_name, node_type_usr,
+            "CompiledState", compiled_states_);
+    }
+
+    llvm::json::Array take_states() { return std::move(states_); }
+    llvm::json::Array take_compiled_states()
+    {
+        return std::move(compiled_states_);
+    }
+
+private:
+    void record_state(
+        CXXRecordDecl const* node,
+        QualType node_type,
+        std::string const& node_type_name,
+        std::string const& node_type_usr,
+        StringRef state_name,
+        llvm::json::Array& output)
+    {
+        auto state_type = node_nested_type(context_, node, state_name);
         if (!state_type) return;
         auto const canonical_state_type = state_type->getCanonicalType();
         auto const* state_record = canonical_state_type->getAsCXXRecordDecl();
@@ -1180,18 +1222,11 @@ public:
         if (state_record && state_record->getNumBases() != 0) {
             auto id = context_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
-                "Node::State must not have base classes");
-            context_.getDiagnostics().Report(state_record->getLocation(), id);
+                "Node::%0 must not have base classes");
+            context_.getDiagnostics().Report(state_record->getLocation(), id)
+                << state_name;
             return;
         }
-
-        auto const node_type = context_.getCanonicalTagType(node);
-        auto const node_type_name = type_string(context_, node_type);
-        auto const node_type_usr = declaration_usr(context_, node);
-        // The canonical declaration of every specialization is the primary
-        // class template. Deduplicate by the concrete spelling instead so
-        // each NodeCodeKey receives exactly one State record.
-        if (!seen_node_types_.insert(node_type_name).second) return;
 
         llvm::json::Array fields;
         if (state_record) {
@@ -1214,22 +1249,24 @@ public:
                 fields.push_back(std::move(field_record));
             }
         }
-        states_.push_back(llvm::json::Object{
+
+        output.push_back(llvm::json::Object{
             {"node_code_key", node_code_key(context_, node_type)},
             {"node_type_usr", node_type_usr},
             {"node_type", node_type_name},
-            {"state_type_usr", type_usr(context_, canonical_state_type)},
+            {"type_usr", type_usr(context_, canonical_state_type)},
+            {"type", type_string(context_, canonical_state_type)},
+            {"definition_fingerprint",
+             type_definition_fingerprint(context_, canonical_state_type)},
             {"size_bits", static_cast<std::int64_t>(context_.getTypeSize(canonical_state_type))},
             {"alignment_bits", static_cast<std::int64_t>(context_.getTypeAlign(canonical_state_type))},
             {"fields", std::move(fields)},
         });
     }
 
-    llvm::json::Array take_states() && { return std::move(states_); }
-
-private:
     ASTContext& context_;
     llvm::json::Array states_;
+    llvm::json::Array compiled_states_;
     std::set<std::string> seen_node_types_;
 };
 
@@ -1743,8 +1780,9 @@ void write_state_metadata(
     }
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
-            {"version", 8},
-            {"states", std::move(state_collector).take_states()},
+            {"version", 0},
+            {"states", state_collector.take_states()},
+            {"compiled_states", state_collector.take_compiled_states()},
             {"config_pointers", std::move(node_config_collector).take_fields()},
             {"configuration_types", std::move(configuration_type_collector).take_identities()},
             {"package_definitions", std::move(package_definition_collector).take_definitions()},

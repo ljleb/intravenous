@@ -64,69 +64,6 @@ namespace iv {
         std::vector<VirtualNodeMemberInfo> members{};
     };
 
-    // Source-annotated public inputs are not graph nodes, but the source
-    // sidebar presents them using the same virtual/member shape.
-    struct PublicSampleInputInfo {
-        std::string instance_id {};
-        std::string source_identity {};
-        std::vector<SourceInfo> source_infos {};
-        std::string name {};
-        Sample default_value = 0.0f;
-        std::optional<Sample> min {};
-        std::optional<Sample> max {};
-        Sample current_value = 0.0f;
-        std::string virtual_state {};
-        bool graph_connected = false;
-        std::vector<size_t> member_ordinals {};
-        std::vector<bool> member_graph_connected {};
-        std::vector<std::string> member_states {};
-    };
-
-    struct PublicEventInputInfo {
-        std::string instance_id {};
-        std::string source_identity {};
-        std::vector<SourceInfo> source_infos {};
-        std::string name {};
-        EventTypeId type = EventTypeId::trigger;
-        std::string virtual_state {};
-        bool graph_connected = false;
-        std::vector<size_t> member_ordinals {};
-        std::vector<bool> member_graph_connected {};
-        std::vector<std::string> member_states {};
-    };
-
-    struct PublicSampleOutputInfo {
-        std::string instance_id {};
-        std::string source_identity {};
-        std::vector<SourceInfo> source_infos {};
-        std::string name {};
-        std::string virtual_state {};
-        bool graph_connected = false;
-        std::vector<size_t> member_ordinals {};
-        std::vector<bool> member_graph_connected {};
-        std::vector<std::string> member_states {};
-    };
-
-    struct PublicEventOutputInfo {
-        std::string instance_id {};
-        std::string source_identity {};
-        std::vector<SourceInfo> source_infos {};
-        std::string name {};
-        EventTypeId type = EventTypeId::trigger;
-        std::string virtual_state {};
-        bool graph_connected = false;
-        std::vector<size_t> member_ordinals {};
-        std::vector<bool> member_graph_connected {};
-        std::vector<std::string> member_states {};
-    };
-
-    struct GraphInputPublicPortsSnapshot {
-        std::vector<PublicSampleInputInfo> sample_inputs {};
-        std::vector<PublicEventInputInfo> event_inputs {};
-        std::vector<PublicSampleOutputInfo> sample_outputs {};
-        std::vector<PublicEventOutputInfo> event_outputs {};
-    };
-
     struct ProjectQueryResult {
         std::vector<VirtualNodeInfo> nodes{};
     };

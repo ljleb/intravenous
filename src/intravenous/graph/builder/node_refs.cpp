@@ -11,30 +11,11 @@ namespace details {
 SamplePortRef make_tiled_sample_port(
     ChannelTypeId type, SamplePortRef const* members, size_t member_count)
 {
-    if (member_count == 0) {
-        error("cannot tile an empty sample output");
-    }
-
+    if (member_count == 0) error("cannot tile an empty sample output");
     auto* const builder = members[0].graph_builder;
-    if (!builder) {
-        error("cannot tile an empty sample output");
-    }
-
-    std::vector<SampleOutputChannelId> channels;
-    channels.reserve(member_count);
-    for (size_t i = 0; i < member_count; ++i) {
-        auto const& member = members[i];
-        if (member.graph_builder != builder) {
-            error("cannot tile sample outputs from different builders");
-        }
-        auto const member_channels = member.channels();
-        if (member.channel_type != ChannelTypeId::mono
-            || member_channels.size() != 1) {
-            error("each g.tile channel must be a scalar sample expression");
-        }
-        channels.push_back(member_channels.front());
-    }
-    return SamplePortRef(*builder, type, channels);
+    if (!builder) error("cannot tile an empty sample output");
+    return builder->make_tiled_sample_port(
+        type, std::span<SamplePortRef const>(members, member_count));
 }
 } // namespace details
 
@@ -63,19 +44,15 @@ SamplePortRef SamplePortRef::select_channel(size_t channel) const
 {
     if (!graph_builder)
         details::error("attempted to select a channel from an empty sample port");
-    auto const semantic_channels = channels();
-    if (channel >= semantic_channels.size())
-        details::error("sample channel ordinal is out of bounds");
-    return SamplePortRef(
-        *graph_builder, ChannelTypeId::mono,
-        std::array{semantic_channels[channel]});
+    return graph_builder->select_sample_port_channel(*this, channel);
 }
 
-SamplePortRef SamplePortRef::detach(size_t latency) const
+SamplePortRef SamplePortRef::detach(
+    size_t latency, std::optional<Sample> initial_value) const
 {
     if (!graph_builder)
         details::error("attempted to detach an empty sample port");
-    return graph_builder->detach_sample_port(*this, latency);
+    return graph_builder->detach_sample_port(*this, latency, initial_value);
 }
 
 std::string SamplePortRef::to_string() const
@@ -122,6 +99,13 @@ std::span<EventOutputPortId const> EventPortRef::sources() const
     if (!graph_builder)
         details::error("attempted to read sources from an empty event port");
     return graph_builder->event_port_sources(*this);
+}
+
+EventPortRef EventPortRef::detach(size_t latency) const
+{
+    if (!graph_builder)
+        details::error("attempted to detach an empty event port");
+    return graph_builder->detach_event_port(*this, latency);
 }
 
 std::string EventPortRef::to_string() const

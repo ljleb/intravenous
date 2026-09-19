@@ -1,11 +1,20 @@
 # Project Persistence And Command Surface Direction
 
+> **Current project-graph note:** `ProjectPersistence` remains the serializer/replayer.
+> `NodeInstances` owns desired node-instance declarations, `GraphConnections` owns
+> desired connection declarations, and `ProjectGraph` coordinates reconstruction
+> transactions without duplicating either set. Current graph-state fields and event
+> procedures are specified in
+> [project_graph_application_architecture.md](./project_graph_application_architecture.md)
+> and [event_flows/startup_and_project_replay.md](./event_flows/startup_and_project_replay.md).
+> Older lane/timeline and `IvModuleInstances` ownership sections below are historical.
+
 > **Status note:** `ProjectPersistence` remains part of the target application,
 > but the concrete per-module persistence inventory below contains modules now
 > planned for deletion or refocus. Preserve the persistence principles and
 > product state requirements, not the old `Timeline`/lane/task-runner ownership
 > boundaries. See
-> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+> [application_module_cleanup_direction.md](./historical/application_module_cleanup_direction.md).
 
 This note consolidates the current direction for project persistence, shared
 modification commands, config-file ownership, and configured-state boundaries.
@@ -481,7 +490,7 @@ Do not persist:
 - visualization payloads
 - refresh/publishing runtime state
 
-### `IvModuleDefinitions`
+### `NodeDefinitions`
 
 Persist:
 

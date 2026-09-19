@@ -59,9 +59,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         auto const has_structural_saw_state = std::ranges::any_of(
             executor.layout().nodes,
             [](iv::NodeLayout::NodeRecord const& record) {
-                if (!record.node_state_structure) return false;
+                if (!record.state_structure) return false;
                 return std::ranges::any_of(
-                    record.node_state_structure->fields,
+                    record.state_structure->fields,
                     [](iv::NodeStateFieldStructure const& field) {
                         return field.name == "phase" && !field.type_name.empty();
                     });
@@ -154,7 +154,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         local_workspace / "cmake-build" / "iv-package-finalizer-timings.txt";
     ASSERT_TRUE(std::filesystem::exists(finalizer_timings));
     auto const finalizer_timings_text = iv::test::read_text(finalizer_timings);
-    EXPECT_TRUE(finalizer_timings_text.starts_with("version=1\n"));
+    EXPECT_TRUE(finalizer_timings_text.starts_with("version=0\n"));
     EXPECT_NE(
         finalizer_timings_text.find("bitcode_parse_link_us="),
         std::string::npos);

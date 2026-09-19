@@ -1,11 +1,14 @@
 #include "../module_test_utils.h"
 
-#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_events.h>
-#include <intravenous/runtime/iv_module_definitions_socket_rpc_packages_bridge.h>
-#include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_definitions_events.h>
+#include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
+#include <intravenous/runtime/package_definitions.h>
+#include <intravenous/runtime/package_pipeline_events.h>
+#include <intravenous/runtime/socket_rpc_package_definitions_bridge.h>
+#include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
 #include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/lane_query_schema_service.h>
 #include <intravenous/runtime/socket_rpc_lane_query_schema_bridge.h>
@@ -272,9 +275,9 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneQuerySchemaChanges)
 TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
 {
     auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_instances_notification_server"));
-    IvModuleInstances instances;
+    NodeInstances instances;
     auto notification_scope =
-        socket_rpc_iv_module_instances_bridge::bind(
+        socket_rpc_node_instances_bridge::bind(
             harness.server,
             instances);
 
@@ -312,17 +315,30 @@ TEST(SocketRpcNotificationBridge, PublishedPackageDefinitionsRefreshThePackageCa
     auto const workspace = iv::test::fresh_module_fixture_workspace(
         "socket_rpc_package_catalog_notification_server");
     auto harness = NotificationServerHarness(workspace);
-    IvModuleDefinitions definitions;
-    auto package_catalog_scope =
-        iv_module_definitions_socket_rpc_packages_bridge::bind(
-            definitions,
-            harness.server);
+    NodeDefinitions definitions;
+    PackageDefinitions package_definitions(workspace);
+    auto definitions_scope = package_definitions_node_definitions_bridge::bind(
+        package_definitions,
+        definitions);
+    auto package_catalog_scope = socket_rpc_package_definitions_bridge::bind(
+        harness.server,
+        package_definitions);
 
-    definitions.seed_loaded_definition(IvModuleReloadedDefinition{
-        .package_id = "iv.test.catalog",
-        .definition_id = "iv.test.catalog.module",
-        .package_root = workspace,
-        .module_id = "iv.test.catalog.module",
+    package_definitions.handle_package_refresh(PackageRefreshTransaction{
+        .declarations = IvPackageDeclarationsChanged{
+            .created = {{.package_id = "iv.test.catalog", .package_root = workspace}},
+        },
+        .successful_revisions = {PackageRevision{
+            .package_id = "iv.test.catalog",
+            .package_root = workspace,
+            .revision = 1,
+            .module_definitions = {PackageModuleDefinition{
+                .package_id = "iv.test.catalog",
+                .definition_id = "iv.test.catalog.module",
+                .package_root = workspace,
+                .module_id = "iv.test.catalog.module",
+            }},
+        }},
     });
     IV_INVOKE_LINKER_EVENT_SOURCE(
         iv_runtime_iv_package_catalog_changed_event,

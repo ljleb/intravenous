@@ -1,7 +1,7 @@
 #pragma once
 
-#include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_packages.h>
+#include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/query/lane_query_schema.h>
@@ -21,7 +21,7 @@ namespace iv {
     SocketRpcJson iv_module_instance_json(IvModuleInstanceInfo const &instance);
     SocketRpcJson iv_module_instances_json(std::vector<IvModuleInstanceInfo> const &instances);
     SocketRpcJson iv_package_json(IvPackageInfo const &package);
-    SocketRpcJson iv_packages_json(std::vector<IvPackageInfo> const &packages);
+    SocketRpcJson iv_package_definitions_json(std::vector<IvPackageInfo> const &packages);
 
     SocketRpcJson virtual_port_json(VirtualPortInfo const &port);
     SocketRpcJson virtual_ports_json(std::vector<VirtualPortInfo> const &ports);

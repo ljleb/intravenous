@@ -39,6 +39,7 @@ enum class PackageDefinitionKind {
 // GraphBuilder& of an IV_MODULE is deliberately not represented here.
 struct RegisteredSignature {
     ConfigurationTypeIdentity const* const* parameter_types = nullptr;
+    ConfigurationValueOperations const* const* parameter_operations = nullptr;
     std::size_t required_argument_count = 0;
     std::size_t argument_count = 0;
 };
@@ -140,7 +141,8 @@ inline void validate_registered_signature_shape(
     RegisteredSignature const& signature)
 {
     if (signature.required_argument_count > signature.argument_count
-        || (signature.argument_count != 0 && !signature.parameter_types)) {
+        || (signature.argument_count != 0
+            && (!signature.parameter_types || !signature.parameter_operations))) {
         throw std::logic_error(
             "registered definition '" + std::string(id)
             + "' published an invalid construction signature");
@@ -172,8 +174,11 @@ struct RegisteredSignatureStorage {
 
     inline static constexpr std::array<ConfigurationTypeIdentity const*, sizeof...(Args)>
         parameter_types{configuration_type_identity<std::remove_cvref_t<Args>>()...};
+    inline static constexpr std::array<ConfigurationValueOperations const*, sizeof...(Args)>
+        parameter_operations{configuration_value_operations<std::remove_cvref_t<Args>>()...};
     inline static constexpr RegisteredSignature value{
         .parameter_types = parameter_types.data(),
+        .parameter_operations = parameter_operations.data(),
         .required_argument_count = Required,
         .argument_count = sizeof...(Args),
     };
@@ -509,15 +514,26 @@ RegisteredSignature const* node_constructor_signature()
         "IV_NODE requires inputs() and outputs() to return static constexpr arrays of InputConfig and OutputConfig. " \
         "Each array carries both sample and event ports through its config variant. " \
         "Dynamic-arity or configuration-dependent nodes must remain internal lowering nodes."); \
+    static_assert(::iv::details::compiled_state_type_is_valid_v<Node>, \
+        "IV_NODE Node::CompiledState must be a mutable, non-volatile, default-constructible object type."); \
     static_assert(::iv::details::access_block_callback_kind_v<Node> \
             != ::iv::CompiledPortCallbackKind::conflicting, \
         "IV_NODE node type must define only one compiled-access callback: access_block(...) or access_block_batch(...)."); \
-    static_assert(!::iv::details::declares_compiled_sample_ports_v<Node> \
+    static_assert(!::iv::details::declares_compiled_outputs_v<Node> \
             || ::iv::details::has_valid_access_block_callback_v<Node>, \
-        "IV_NODE node type declares a compiled sample port; define exactly one of access_block(...) or access_block_batch(...)."); \
+        "IV_NODE node type declares a compiled output port; define exactly one of access_block(...) or access_block_batch(...)."); \
+    static_assert(::iv::details::access_block_callback_kind_v<Node> \
+            == ::iv::CompiledPortCallbackKind::none \
+            || ::iv::details::declares_compiled_outputs_v<Node>, \
+        "IV_NODE node type defines access_block/access_block_batch but declares no compiled output port."); \
     static_assert(::iv::details::propagate_block_access_callback_kind_v<Node> \
             != ::iv::CompiledPortCallbackKind::conflicting, \
-        "IV_NODE node type may define at most one compiled block-access propagation callback: propagate_block_access(...) or propagate_block_access_batch(...).")
+        "IV_NODE node type may define at most one compiled block-access propagation callback: propagate_block_access(...) or propagate_block_access_batch(...)."); \
+    static_assert(::iv::details::propagate_block_access_callback_kind_v<Node> \
+            == ::iv::CompiledPortCallbackKind::none \
+            || (::iv::details::declares_compiled_outputs_v<Node> \
+                && ::iv::details::declares_compiled_inputs_v<Node>), \
+        "IV_NODE node type defines compiled block-access propagation but does not declare both compiled input and compiled output ports.")
 
 #define IV_NODE_IMPL(Id, Node, Unique) \
     namespace { \

@@ -17,9 +17,6 @@ IV_DEFINE_LINKER_EVENT(
     LanesVisualizationCompiledEventWindowRequestedEvent,
     iv_runtime_lanes_visualization_compiled_event_window_requested_event);
 IV_DEFINE_LINKER_EVENT(
-    LanesVisualizationTimelineBatchRequestedEvent,
-    iv_runtime_lanes_visualization_timeline_batch_requested_event);
-IV_DEFINE_LINKER_EVENT(
     LaneViewContentUpdatedEvent,
     iv_runtime_lane_view_content_updated_event);
 } // namespace iv

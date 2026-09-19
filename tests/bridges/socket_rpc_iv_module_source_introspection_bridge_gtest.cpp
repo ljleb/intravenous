@@ -1,13 +1,16 @@
 #include "../module_test_utils.h"
 
-#include <intravenous/runtime/graph_input_lanes.h>
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_definitions_project_graph_bridge.h>
+#include <intravenous/runtime/graph_connections.h>
+#include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/project_graph_graph_connections_bridge.h>
+#include <intravenous/runtime/project_graph_node_instances_bridge.h>
+#include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
-#include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/startup_config.h>
@@ -35,17 +38,22 @@ Json parse_json_line(std::string_view line)
 }
 
 struct SeededIvModuleSourceIntrospectionOwner {
-    IvModuleInstances instances;
-    IvModuleDefinitions definitions;
-    GraphInputLanes graph_input_lanes;
+    NodeInstances instances;
+    NodeDefinitions definitions;
+    GraphConnections graph_connections;
+    ProjectGraph project_graph;
     IvModuleSourceIntrospection introspection;
     StartupConfig startup_config;
-    iv_module_definitions_iv_module_instances_bridge::scope
-        iv_module_definitions_iv_module_instances_scope;
-    iv_module_instances_iv_module_source_introspection_bridge::scope
+    node_definitions_project_graph_bridge::scope
+        node_definitions_project_graph_scope;
+    project_graph_node_instances_bridge::scope
+        project_graph_node_instances_scope;
+    project_graph_graph_connections_bridge::scope
+        project_graph_graph_connections_scope;
+    node_definitions_iv_module_source_introspection_bridge::scope
+        node_definitions_iv_module_source_introspection_scope;
+    node_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
-    iv_module_source_introspection_graph_input_lanes_bridge::scope
-        iv_module_source_introspection_graph_input_lanes_scope;
 
     SeededIvModuleSourceIntrospectionOwner(
         std::filesystem::path workspace_root,
@@ -55,13 +63,15 @@ struct SeededIvModuleSourceIntrospectionOwner {
               std::move(workspace_root),
               std::move(discovery_start),
               std::move(extra_search_roots)),
-          iv_module_definitions_iv_module_instances_scope(definitions, instances),
+          node_definitions_project_graph_scope(definitions, project_graph),
+          project_graph_node_instances_scope(project_graph, instances),
+          project_graph_graph_connections_scope(project_graph, graph_connections),
+          node_definitions_iv_module_source_introspection_scope(
+              definitions,
+              introspection),
           iv_module_instances_iv_module_source_introspection_scope(
               instances,
-              introspection),
-          iv_module_source_introspection_graph_input_lanes_scope(
-              introspection,
-              graph_input_lanes)
+              introspection)
     {
     }
 

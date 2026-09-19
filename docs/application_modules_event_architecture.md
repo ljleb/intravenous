@@ -1,26 +1,33 @@
 # Application Modules And Batched Event Architecture
 
-This note captures the current architectural direction for Intravenous as it is
-actually being implemented.
+> **Current architecture:** the project-graph module inventory and its concrete
+> batched propagation procedures are now specified in
+> [project_graph_application_architecture.md](./project_graph_application_architecture.md)
+> and [event_flows/](./event_flows/README.md). The general event/bridge principles
+> in this file remain useful; iv-module/lane-specific module inventories below are
+> historical where they conflict with those documents.
+
+This note captures the event-oriented architectural principles Intravenous uses.
 
 It is intentionally high level. The goal is to keep ownership boundaries and
 control-flow seams clear as the runtime grows.
 
 ## Current transition status
 
-The application-module inventory in this older note is being simplified. The
-authoritative keep/delete/rename decisions for the next maintenance step are in
-[application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+The lane/timeline/task-runner cleanup has landed. The replacement execution-side
+application architecture is now defined in
+[project_graph_application_architecture.md](./project_graph_application_architecture.md).
 
-In particular, `Timeline`, `TimelineExecution`, `GraphInputLanes`,
-`ConfiguredLanes`, `TasksRunner`, and `IvModuleInstancesExecution` are planned
-for deletion; `AudioDeviceLanes` is being refocused as `SystemAudioDevices`;
-`IvModuleReload` is being refocused as package-scoped `IvPackageReload`; and
-`IvPackages` is being refocused as event-isolated `IvPackageDefinitions`.
+The generalized target names are `PackageWatcher`, `PackageJit`,
+`PackageDefinitions`, `NodeDefinitions`, `NodeInstances`, `ProjectGraph`,
+`GraphConnections`, `GraphJit`, and `GraphExecutor`, with `SystemAudioDevices`
+remaining a separate device-domain module. The package-specific split is defined
+in [package_pipeline_architecture.md](./package_pipeline_architecture.md).
 
-The event/bridge principles below remain current. Module-specific ownership and
-control-flow descriptions below should be treated as historical wherever they
-conflict with the cleanup-direction note.
+The event/bridge principles below remain useful. Module-specific inventories and
+lane-era propagation descriptions below are historical wherever they conflict
+with the current project-graph document or the concrete
+[event-flow procedures](./event_flows/README.md).
 
 ## Goal
 

@@ -151,8 +151,6 @@ export class WorkspaceSession {
     private lastQuery: QueryShape | null = null;
     private startInFlight: Promise<boolean> | null = null;
     private lastTerminalStatusMessage = "";
-    private playbackPaused = true;
-    private lastScrubbedSampleIndex = 0;
     private serverStdoutLines: string[] = [];
     private serverStderrLines: string[] = [];
     private readonly maxCapturedServerLogLines = 20;
@@ -415,7 +413,7 @@ export class WorkspaceSession {
         };
     }
 
-    private parseIvPackages(payload: unknown): IvPackageInfo[] {
+    private parseIvPackageDefinitions(payload: unknown): IvPackageInfo[] {
         if (!Array.isArray(payload)) return [];
         return payload.map((packageInfo) => this.parseIvPackage(packageInfo))
             .filter((packageInfo): packageInfo is IvPackageInfo => packageInfo !== null);
@@ -883,75 +881,16 @@ export class WorkspaceSession {
             }
             return;
 
-        case "setSampleInputValue":
-            if (!(await this.ensureReady()) || !this.rpc) {
-                return;
-            }
-            await this.rpc.setSampleInputValue(
-                message.nodeId,
-                message.inputOrdinal,
-                message.value,
-                message.memberOrdinal ?? null,
-            );
-            return;
-
-        case "setSampleInputState":
-            if (!(await this.ensureReady()) || !this.rpc) {
-                return;
-            }
-            await this.rpc.setSampleInputState(
-                message.nodeId,
-                message.inputOrdinal,
-                message.state,
-                message.memberOrdinal ?? null,
-            );
-            return;
-
-        case "setEventInputState":
-            if (!(await this.ensureReady()) || !this.rpc) {
-                return;
-            }
-            await this.rpc.setEventInputState(
-                message.nodeId,
-                message.inputOrdinal,
-                message.state,
-                message.memberOrdinal ?? null,
-            );
-            return;
-
-        case "setSampleOutputState":
-            if (!(await this.ensureReady()) || !this.rpc) {
-                return;
-            }
-            await this.rpc.setSampleOutputState(
-                message.nodeId,
-                message.outputOrdinal,
-                message.state,
-                message.memberOrdinal ?? null,
-            );
-            return;
-
-        case "setEventOutputState":
-            if (!(await this.ensureReady()) || !this.rpc) {
-                return;
-            }
-            await this.rpc.setEventOutputState(
-                message.nodeId,
-                message.outputOrdinal,
-                message.state,
-                message.memberOrdinal ?? null,
-            );
-            return;
         }
     }
 
     async refreshModulesPanel(): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) return;
         const [packages, instances] = await Promise.all([
-            this.rpc.getIvPackages(),
+            this.rpc.getIvPackageDefinitions(),
             this.rpc.getIvModuleInstances(),
         ]);
-        this.ivPackages = this.parseIvPackages(packages.packages);
+        this.ivPackages = this.parseIvPackageDefinitions(packages.packages);
         this.projectModuleInstances = this.parseIvModuleInstances(instances.instances);
         this.refreshLaneInstanceNames();
         this.refreshModulesPanelState();
@@ -1042,8 +981,8 @@ export class WorkspaceSession {
     private async moduleIdForPackageRoot(packageRoot: string): Promise<string> {
         let packageInfo = this.ivPackages.find((candidate) => candidate.packageRoot === packageRoot);
         if (!packageInfo && this.rpc) {
-            const result = await this.rpc.getIvPackages();
-            this.ivPackages = this.parseIvPackages(result.packages);
+            const result = await this.rpc.getIvPackageDefinitions();
+            this.ivPackages = this.parseIvPackageDefinitions(result.packages);
             packageInfo = this.ivPackages.find((candidate) => candidate.packageRoot === packageRoot);
         }
         if (!packageInfo) {
@@ -1123,96 +1062,6 @@ export class WorkspaceSession {
     private syncSelectedInstanceViews(): void {
         this.provider.setSelectedInstanceId(this.selectedInstanceId);
         this.refreshModulesPanelState();
-    }
-
-    async pausePlayback(): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) {
-            return;
-        }
-        await this.rpc.pausePlayback();
-        this.playbackPaused = true;
-    }
-
-    async resumePlayback(startIndex = 0): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) {
-            return;
-        }
-        await this.rpc.resumePlayback(startIndex);
-        this.playbackPaused = false;
-    }
-
-    async togglePlayback(): Promise<void> {
-        if (this.playbackPaused) {
-            await this.resumePlayback(this.lastScrubbedSampleIndex);
-        } else {
-            await this.pausePlayback();
-        }
-    }
-
-    async seekPlayback(sampleIndex: number): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.seekPlayback(sampleIndex);
-        this.lastScrubbedSampleIndex = sampleIndex;
-    }
-
-    async setTimelineLaneUiState(laneId: string, serializedState: string, expectedRevision?: number): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        try {
-            await this.rpc.setTimelineLaneUiState(laneId, serializedState, expectedRevision);
-        } catch (error) {
-            this.outputChannel.appendLine(`Intravenous lane UI debug: state update failed for ${laneId}: ${String(error)}`);
-            throw error;
-        }
-    }
-
-    async setTimelineLaneName(laneId: string, name: string): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.setTimelineLaneName(laneId, name);
-    }
-
-    async getTimelineLaneTypes(): Promise<Array<{
-        typeId: string; category: string; label: string; description: string;
-    }>> {
-        return (await this.rpc.getTimelineLaneTypes()).laneTypes ?? [];
-    }
-
-    async createTimelineLane(typeId: string): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.createTimelineLane(typeId);
-    }
-
-    async deleteTimelineLane(laneId: string): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.deleteTimelineLane(laneId);
-    }
-
-    async duplicateTimelineLane(laneId: string): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.duplicateTimelineLane(laneId);
-    }
-
-    async connectTimelineLanes(
-        sourceLaneId: string,
-        targetLaneId: string,
-        portDomain: "realtime" | "compiled",
-        portKind: "sample" | "event",
-        portOrdinal: number,
-    ): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.connectTimelineLanes(
-            sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal);
-    }
-
-    async disconnectTimelineLanes(
-        sourceLaneId: string,
-        targetLaneId: string,
-        portDomain: "realtime" | "compiled",
-        portKind: "sample" | "event",
-        portOrdinal: number,
-    ): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.disconnectTimelineLanes(
-            sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal);
     }
 
     async saveProject(): Promise<void> {

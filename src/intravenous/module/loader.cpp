@@ -105,7 +105,7 @@ struct LoadedPackageCode {
     std::vector<details::PackageDefinition> definitions{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
-    std::vector<details::BuilderNodeStateStructure> node_state_structures{};
+    std::vector<details::BuilderNodeStateStructures> node_state_structures{};
     ModuleDependency dependency{};
 
     ~LoadedPackageCode();
@@ -624,10 +624,10 @@ void collect_compatibility_runtime_code(
         }
         auto const* record = llvm::dyn_cast_or_null<llvm::ConstantStruct>(
             global.getInitializer());
-        if (!record || record->getNumOperands() != 6) continue;
+        if (!record || record->getNumOperands() != 8) continue;
         auto const* operations = llvm::dyn_cast<llvm::ConstantStruct>(
             record->getOperand(1));
-        if (!operations || operations->getNumOperands() != 3) continue;
+        if (!operations || operations->getNumOperands() != 5) continue;
 
         // declare_node participates in graph construction and is intentionally
         // left at package O0.  Package/provider configuration is allowed to
@@ -1201,6 +1201,9 @@ public:
             auto const node_state_structures_fn =
                 symbol.template operator()<iv_package_node_state_structures_fn>(
                     "iv_package_node_state_structures");
+            auto const node_compiled_state_structures_fn =
+                symbol.template operator()<iv_package_node_compiled_state_structures_fn>(
+                    "iv_package_node_compiled_state_structures");
 
             auto copy_table = [&](auto view, auto* type_tag, std::string_view name) {
                 using T = std::remove_pointer_t<decltype(type_tag)>;
@@ -1232,6 +1235,10 @@ public:
                 node_state_structures_fn(),
                 static_cast<NodeStateStructureData*>(nullptr),
                 "node-state structure");
+            auto const compiled_state_structures = copy_table(
+                node_compiled_state_structures_fn(),
+                static_cast<NodeStateStructureData*>(nullptr),
+                "node-compiled-state structure");
 
             auto copy_text = [](ModuleDataView view, std::string_view what) {
                 if (!view.data && view.size != 0) {
@@ -1241,23 +1248,39 @@ public:
                 return std::string(
                     static_cast<char const*>(view.data), view.size);
             };
-            package->node_state_structures.reserve(state_structures.size());
-            for (auto const& state : state_structures) {
+            auto copy_state_structure = [&](NodeStateStructureData const& state,
+                                                std::string_view label) {
                 if (!state.fields.data && state.fields.size != 0) {
                     throw std::runtime_error(
-                        "IV package node-state field table has null data");
+                        "IV package " + std::string(label)
+                        + " field table has null data");
                 }
                 if (state.fields.size % sizeof(NodeStateFieldData) != 0) {
                     throw std::runtime_error(
-                        "IV package node-state field table has invalid size");
+                        "IV package " + std::string(label)
+                        + " field table has invalid size");
                 }
                 auto const fields = std::span(
                     static_cast<NodeStateFieldData const*>(state.fields.data),
                     state.fields.size / sizeof(NodeStateFieldData));
                 NodeStateStructure structure{
+                    .type_identity = {
+                        .nominal_id = copy_text(
+                            state.nominal_id, "node-state nominal type ID"),
+                        .definition_fingerprint = copy_text(
+                            state.definition_fingerprint,
+                            "node-state definition fingerprint"),
+                        .display_name = copy_text(
+                            state.display_name, "node-state display name"),
+                    },
                     .size_bits = state.size_bits,
                     .alignment_bits = state.alignment_bits,
                 };
+                if (!structure.type_identity.valid()) {
+                    throw std::runtime_error(
+                        "IV package " + std::string(label)
+                        + " has incomplete type definition identity");
+                }
                 structure.fields.reserve(fields.size());
                 for (auto const& field : fields) {
                     structure.fields.push_back({
@@ -1272,11 +1295,41 @@ public:
                             : std::nullopt,
                     });
                 }
-                package->node_state_structures.push_back({
-                    .code_key = state.code_key,
-                    .structure = std::move(structure),
-                });
+                return structure;
+            };
+
+            package->node_state_structures.reserve(
+                state_structures.size() + compiled_state_structures.size());
+            auto find_or_append = [&](NodeCodeKey key) -> details::BuilderNodeStateStructures& {
+                auto found = std::ranges::find(
+                    package->node_state_structures,
+                    key,
+                    &details::BuilderNodeStateStructures::code_key);
+                if (found != package->node_state_structures.end()) {
+                    return *found;
+                }
+                package->node_state_structures.push_back({.code_key = key});
+                return package->node_state_structures.back();
+            };
+            for (auto const& state : state_structures) {
+                auto& destination = find_or_append(state.code_key);
+                if (destination.structures.state) {
+                    throw std::runtime_error(
+                        "IV package has duplicate Node::State structure record");
+                }
+                destination.structures.state =
+                    copy_state_structure(state, "node-state structure");
             }
+            for (auto const& state : compiled_state_structures) {
+                auto& destination = find_or_append(state.code_key);
+                if (destination.structures.compiled_state) {
+                    throw std::runtime_error(
+                        "IV package has duplicate Node::CompiledState structure record");
+                }
+                destination.structures.compiled_state =
+                    copy_state_structure(state, "node-compiled-state structure");
+            }
+
 
             // Package ownership comes from the loader's resolved manifest, not
             // a per-package compiler definition. This keeps package code—and
@@ -1328,6 +1381,7 @@ public:
             loaded_node_types.push_back({
                 .node_type_id = std::move(node_type_id),
                 .compiler_record = *compiler_record,
+                .provider = definition,
                 .package_path = root.module_dir,
                 .module_refs = {package},
             });
@@ -1343,6 +1397,14 @@ public:
             .definitions = {},
             .node_types = std::move(loaded_node_types),
             .dependencies = std::move(dependencies),
+            .compiler_artifact = {
+                .bitcode_path = package->bitcode_path,
+                .dynamic_libraries = package->dynamic_libraries,
+            },
+            .provider_definitions = package->definitions,
+            .config_pointer_fields = package->config_pointer_fields,
+            .retained_globals = package->retained_globals,
+            .node_state_structures = package->node_state_structures,
             .package_code = package,
         };
     }
@@ -1408,6 +1470,7 @@ public:
                     GraphIntrospectionMetadata{},
                     compiled.root.module_dir,
                     std::move(module_id),
+                    definition,
                     package_result.dependencies,
                     nullptr);
                 continue;
@@ -1472,6 +1535,7 @@ public:
                 std::move(plan.introspection),
                 compiled.root.module_dir,
                 std::move(module_id),
+                definition,
                 std::move(dependencies),
                 std::move(configured));
         }
@@ -1625,6 +1689,7 @@ ModuleLoader::LoadedDefinition::LoadedDefinition(
     GraphIntrospectionMetadata introspection_,
     std::filesystem::path path,
     std::string id,
+    details::PackageDefinition provider_,
     std::vector<ModuleDependency> deps,
     std::shared_ptr<ConfiguredGraph const> configured_graph_)
     : module_refs(std::move(refs)),
@@ -1632,6 +1697,7 @@ ModuleLoader::LoadedDefinition::LoadedDefinition(
       introspection(std::move(introspection_)),
       package_path(std::move(path)),
       module_id(std::move(id)),
+      provider(provider_),
       dependencies(std::move(deps)),
       configured_graph(std::move(configured_graph_))
 {}

@@ -2,7 +2,6 @@
 
 #include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
-#include <intravenous/runtime/timeline_events.h>
 
 #include <intravenous/query/lane_query_completion.h>
 
@@ -14,30 +13,6 @@ void LaneQuerySchemaService::initialize(query::LaneQuerySchema schema)
 {
     std::scoped_lock lock(mutex);
     schema_ = std::move(schema);
-}
-
-void LaneQuerySchemaService::handle_timeline_lanes_changed(
-    TimelineLanesChanged const &change)
-{
-    if (!change.schema_change.changed) {
-        return;
-    }
-
-    std::optional<LaneQuerySchemaChanged> notification;
-    {
-        std::scoped_lock lock(mutex);
-        // A newer snapshot has already been published, or this notification
-        // was produced from a stale timeline revision.
-        if (schema_.revision() != change.schema_change.old_revision) {
-            return;
-        }
-        schema_ = change.schema;
-        notification.emplace(LaneQuerySchemaChanged{
-            .schema = change.schema,
-            .change = change.schema_change,
-        });
-    }
-    IV_INVOKE_LINKER_EVENT(iv_runtime_lane_query_schema_changed_event, *notification);
 }
 
 query::LaneQuerySchema LaneQuerySchemaService::snapshot() const

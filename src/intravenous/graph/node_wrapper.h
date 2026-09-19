@@ -21,21 +21,29 @@ namespace iv {
         full,
     };
 
-    // A lowered wrapper needs only the output attributes consumed while it
-    // constructs runtime OutputPorts.  Name and latency were needed by graph
-    // compilation, but are not needed by execution.
+    // A lowered wrapper keeps only the output attributes consumed while it
+    // constructs runtime OutputPorts. Authored latency is part of the output
+    // facade contract because update() may revise values that have not yet
+    // become visible downstream.
     struct GraphOutputPortConfig {
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
         size_t history = 0;
+        size_t latency = 0;
+    };
+
+    struct GraphEventOutputPortConfig {
+        EventTypeId type = EventTypeId::empty;
+        size_t history = 0;
+        size_t latency = 0;
     };
 
     struct GraphNodeWrapper {
         ReflectedNodeRuntimeOperations _operations {};
         std::vector<GraphOutputPortConfig> _outputs {};
-        std::vector<EventTypeId> _event_output_types {};
+        std::vector<GraphEventOutputPortConfig> _event_outputs {};
         size_t _internal_latency = 0;
         size_t _max_block_size = MAX_BLOCK_SIZE;
         size_t _ttl_samples = 0;
@@ -71,9 +79,9 @@ namespace iv {
         , _outputs(build_mode == GraphNodeWrapperBuildMode::full
               ? make_output_port_configs(node.sample_outputs())
               : std::vector<GraphOutputPortConfig>{})
-        , _event_output_types(build_mode == GraphNodeWrapperBuildMode::full
-              ? make_event_output_types(node.event_outputs())
-              : std::vector<EventTypeId>{})
+        , _event_outputs(build_mode == GraphNodeWrapperBuildMode::full
+              ? make_event_output_port_configs(node.event_outputs())
+              : std::vector<GraphEventOutputPortConfig>{})
         , _internal_latency(node.internal_latency())
         , _max_block_size(node.max_block_size())
         , _ttl_samples(ttl_samples.value_or(0))
@@ -150,19 +158,25 @@ namespace iv {
             for (auto const& output : outputs) {
                 result.push_back({
                     .channel_layout = output.channel_layout,
-                    .history = output.history,
+                    .history = realtime_history_or_zero(output),
+                    .latency = realtime_latency_or_zero(output),
                 });
             }
             return result;
         }
 
-        static constexpr std::vector<EventTypeId>
-        make_event_output_types(std::span<EventOutputConfig const> outputs)
+        static constexpr std::vector<GraphEventOutputPortConfig>
+        make_event_output_port_configs(
+            std::span<EventOutputConfig const> outputs)
         {
-            std::vector<EventTypeId> result;
+            std::vector<GraphEventOutputPortConfig> result;
             result.reserve(outputs.size());
             for (auto const& output : outputs) {
-                result.push_back(output.type);
+                result.push_back({
+                    .type = output.type,
+                    .history = realtime_history_or_zero(output),
+                    .latency = realtime_latency_or_zero(output),
+                });
             }
             return result;
         }
@@ -225,7 +239,7 @@ namespace iv {
                     port_data_export_id(node_id, input_i),
                     GraphPortStorageConfig {
                         .channel_layout = input.channel_layout,
-                        .history = input.history,
+                        .history = realtime_history_or_zero(input),
                         .default_value = input_bindings[input_i].static_value
                             .value_or(input.default_value),
                     },
@@ -248,7 +262,7 @@ namespace iv {
                     entry.id,
                     GraphPortStorageConfig {
                         .channel_layout = entry.config.channel_layout,
-                        .history = entry.config.history,
+                        .history = realtime_history_or_zero(entry.config),
                         .default_value = entry.config.default_value,
                     },
                     InputPortPlan{.storage = entry.plan});
@@ -274,6 +288,7 @@ namespace iv {
 
         struct State {
             std::span<std::span<std::byte>> nested_node_states;
+            std::span<std::span<std::byte>> nested_node_compiled_states;
             std::span<InputPort> inputs;
             std::span<OutputPort> outputs;
             std::span<OutputPort> fanout_outputs;
@@ -302,9 +317,10 @@ namespace iv {
             auto const num_inputs = _input_port_data_nodes.size();
             auto const num_outputs = _outputs.size();
             auto const num_event_inputs = _input_event_port_data_nodes.size();
-            auto const num_event_outputs = _event_output_types.size();
+            auto const num_event_outputs = _event_outputs.size();
 
             ctx.nested_node_states(state.nested_node_states);
+            ctx.nested_node_compiled_states(state.nested_node_compiled_states);
             ctx.local_array(state.inputs, num_inputs);
             ctx.local_array(state.outputs, num_outputs);
             ctx.local_array(state.fanout_outputs, _fanout_targets.size());
@@ -321,7 +337,7 @@ namespace iv {
             }
             ctx.declare_reflected_child(
                 _operations.node_data,
-                _operations.state_structure,
+                _operations.state_structures,
                 _operations.declare_node);
 
             for (size_t input_i = 0; input_i < num_inputs; ++input_i) {
@@ -396,7 +412,9 @@ namespace iv {
                         const_cast<SharedPortData&>(target_port_data[0]),
                         _outputs[output_i].history,
                         _outputs[output_i].channel_layout,
-                        target.conversion);
+                        target.conversion,
+                        0,
+                        _outputs[output_i].latency);
                 }
                 auto const& target = _output_targets[output_i];
                 if (target.target.empty()) {
@@ -420,11 +438,13 @@ namespace iv {
                     const_cast<SharedPortData&>(target_port_data[0]),
                     _outputs[output_i].history,
                     _outputs[output_i].channel_layout,
-                    target.conversion
+                    target.conversion,
+                    0,
+                    _outputs[output_i].latency
                 );
             }
             for (size_t output_i = 0;
-                 output_i < _event_output_types.size();
+                 output_i < _event_outputs.size();
                  ++output_i) {
                 auto const& target = _event_output_targets[output_i];
                 if (target.target.empty()) {
@@ -444,8 +464,10 @@ namespace iv {
                 std::construct_at(
                     &state.event_outputs[output_i],
                     const_cast<EventSharedPortData&>(target_port_data[0]),
-                    _event_output_types[output_i],
-                    target.conversion
+                    _event_outputs[output_i].type,
+                    target.conversion,
+                    _event_outputs[output_i].history,
+                    _event_outputs[output_i].latency
                 );
             }
         }
@@ -463,43 +485,74 @@ namespace iv {
             }
         }
 
+        template<typename Fn>
+        static void with_event_output_window(
+            std::span<EventOutputPort> outputs,
+            SampleIndex index,
+            size_t block_size,
+            Fn&& fn)
+        {
+            for (auto& output : outputs) {
+                output.begin_block(index, block_size);
+            }
+            try {
+                std::forward<Fn>(fn)();
+            } catch (...) {
+                for (auto& output : outputs) {
+                    output.end_block();
+                }
+                throw;
+            }
+            for (auto& output : outputs) {
+                output.end_block();
+            }
+        }
+
         void tick(TickBlockContext<GraphNodeWrapper> const& ctx) const
         {
             auto& state = ctx.state();
-            _operations.tick_block(
-                _operations.node_data,
-                ReflectedNodeTickContext {
-                    .inputs = state.inputs,
-                    .outputs = state.outputs,
-                    .event_inputs = state.event_inputs,
-                    .event_outputs = state.event_outputs,
-                    .sample_rate = ctx.sample_rate,
-                    .scc_feedback_latency = ctx.scc_feedback_latency,
-                    .state = state.nested_node_states.back(),
-                },
-                ctx.index,
-                ctx.block_size
-            );
+            with_event_output_window(
+                state.event_outputs, ctx.index, ctx.block_size, [&] {
+                    _operations.tick_block(
+                        _operations.node_data,
+                        ReflectedNodeTickContext {
+                            .inputs = state.inputs,
+                            .outputs = state.outputs,
+                            .event_inputs = state.event_inputs,
+                            .event_outputs = state.event_outputs,
+                            .compiled_state = state.nested_node_compiled_states.back(),
+                            .sample_rate = ctx.sample_rate,
+                            .scc_feedback_latency = ctx.scc_feedback_latency,
+                            .state = state.nested_node_states.back(),
+                        },
+                        ctx.index,
+                        ctx.block_size
+                    );
+                });
             propagate_sample_fanout(state, ctx.block_size);
         }
 
         void skip(SkipBlockContext<GraphNodeWrapper> const& ctx) const
         {
             auto& state = ctx.state();
-            _operations.skip_block(
-                _operations.node_data,
-                ReflectedNodeTickContext {
-                    .inputs = state.inputs,
-                    .outputs = state.outputs,
-                    .event_inputs = state.event_inputs,
-                    .event_outputs = state.event_outputs,
-                    .sample_rate = ctx.sample_rate,
-                    .scc_feedback_latency = ctx.scc_feedback_latency,
-                    .state = state.nested_node_states.back(),
-                },
-                ctx.index,
-                ctx.block_size
-            );
+            with_event_output_window(
+                state.event_outputs, ctx.index, ctx.block_size, [&] {
+                    _operations.skip_block(
+                        _operations.node_data,
+                        ReflectedNodeTickContext {
+                            .inputs = state.inputs,
+                            .outputs = state.outputs,
+                            .event_inputs = state.event_inputs,
+                            .event_outputs = state.event_outputs,
+                            .compiled_state = state.nested_node_compiled_states.back(),
+                            .sample_rate = ctx.sample_rate,
+                            .scc_feedback_latency = ctx.scc_feedback_latency,
+                            .state = state.nested_node_states.back(),
+                        },
+                        ctx.index,
+                        ctx.block_size
+                    );
+                });
             propagate_sample_fanout(state, ctx.block_size);
         }
 

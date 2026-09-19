@@ -3,7 +3,6 @@
 #include <intravenous/node/lifecycle.h>
 
 #include <array>
-#include <string>
 #include <vector>
 
 namespace iv {
@@ -17,7 +16,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{sample_output("out", {
+            return std::array<OutputConfig, 1>{realtime_sample_output("out", {
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = SampleStreamLayout::planar,
@@ -39,7 +38,7 @@ namespace iv {
     public:
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{sample_input("in", {
+            return std::array<InputConfig, 1>{realtime_sample_input("in", {
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = SampleStreamLayout::planar,
@@ -65,16 +64,6 @@ namespace iv {
         }
     };
 
-    struct DetachArrayId {
-        size_t id;
-
-        constexpr DetachArrayId(size_t id): id(id) {}
-
-        operator std::string() const {
-            return "detach:" + std::to_string(id);
-        }
-    };
-
     struct BroadcastEvent {
         size_t _num_outputs;
         EventTypeId _type;
@@ -86,13 +75,13 @@ namespace iv {
 
         constexpr auto inputs() const
         {
-            return std::array { event_input({}, _type) };
+            return std::array { realtime_event_input({}, _type) };
         }
 
         constexpr auto outputs() const
         {
             return std::vector<OutputConfig>(
-                _num_outputs, event_output({}, _type));
+                _num_outputs, realtime_event_output({}, _type));
         }
 
         void tick_block(TickBlockContext<BroadcastEvent> const& ctx) const
@@ -119,12 +108,12 @@ namespace iv {
 
         constexpr auto inputs() const
         {
-            return std::vector<InputConfig>(_num_inputs, event_input({}, _type));
+            return std::vector<InputConfig>(_num_inputs, realtime_event_input({}, _type));
         }
 
         constexpr auto outputs() const
         {
-            return std::array { event_output({}, _type) };
+            return std::array { realtime_event_output({}, _type) };
         }
 
         void declare(DeclarationContext<EventConcatenation> const& ctx) const
@@ -164,89 +153,6 @@ namespace iv {
         }
     };
 
-struct DetachWriterNode {
-    DetachArrayId id;
-    size_t loop_extra_latency = 1;
-
-    constexpr explicit DetachWriterNode(
-        DetachArrayId id_, size_t loop_extra_latency_ = 1)
-        : id(id_)
-        , loop_extra_latency(loop_extra_latency_)
-    {}
-
-        struct State {
-            std::span<Sample> samples;
-        };
-
-        static constexpr auto inputs()
-        {
-            return std::array<InputConfig, 1>{};
-        }
-
-        void declare(DeclarationContext<DetachWriterNode> const& ctx) const
-        {
-            auto const& state = ctx.state();
-            size_t const min_size = loop_extra_latency + ctx.max_block_size();
-            ctx.local_array(state.samples, next_power_of_2(min_size));
-            ctx.export_array(id, state.samples);
-        }
-
-        void initialize(InitializationContext<DetachWriterNode> const& ctx) const
-        {
-            auto& state = ctx.state();
-            std::ranges::fill(state.samples, Sample{});
-        }
-
-        void tick_block(TickBlockContext<DetachWriterNode> const& ctx) const
-        {
-            auto& state = ctx.state();
-            auto const& src = ctx.inputs[0].get_block(ctx.block_size);
-            auto const& dst = make_block_view(state.samples, ctx.index & (state.samples.size() - 1), ctx.block_size);
-            src.copy_to(dst);
-        }
-    };
-
-struct DetachReaderNode {
-    DetachArrayId id;
-    size_t loop_extra_latency = 1;
-
-    constexpr explicit DetachReaderNode(
-        DetachArrayId id_, size_t loop_extra_latency_ = 1)
-        : id(id_)
-        , loop_extra_latency(loop_extra_latency_)
-    {}
-
-        struct State {
-            std::span<Sample> samples;
-        };
-
-        static constexpr auto outputs()
-        {
-            return std::array<OutputConfig, 1>{};
-        }
-
-        void declare(DeclarationContext<DetachReaderNode> const& ctx) const
-        {
-            auto const& state = ctx.state();
-            ctx.import_array(id, state.samples);
-        }
-
-        void tick_block(TickBlockContext<DetachReaderNode> const& ctx) const
-        {
-            auto& state = ctx.state();
-            auto const& samples = state.samples;
-            auto const n = samples.size();
-
-            auto const total = ctx.block_size;
-            auto const start = (ctx.index + n - loop_extra_latency) & (n - 1);
-            BlockView<Sample const> const samples_block {
-                std::span<Sample const>(samples.data() + start, std::min(total, n - start)),
-                std::span<Sample const>(samples.data(), total - std::min(total, n - start)),
-            };
-            ctx.outputs[0].push_block(samples_block);
-        }
-    };
-
     struct DummySink {
         static constexpr auto inputs()
         {
@@ -260,7 +166,7 @@ struct DetachReaderNode {
     struct DummyEventSink {
         static constexpr auto inputs()
         {
-            return std::array { event_input({}, EventTypeId::empty) };
+            return std::array { realtime_event_input({}, EventTypeId::empty) };
         }
 
         void tick_block(TickBlockContext<DummyEventSink> const&) const

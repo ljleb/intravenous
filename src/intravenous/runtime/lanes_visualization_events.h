@@ -1,10 +1,10 @@
 #pragma once
 
+#include <intravenous/lane_node/traits.h>
 #include <intravenous/lane_node/ui_state.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/lane_graph.h>
 #include <intravenous/runtime/lanes_visualization_api_types.h>
-#include <intravenous/runtime/timeline_events.h>
 
 #include <optional>
 #include <vector>
@@ -103,11 +103,6 @@ using LanesVisualizationCompiledEventWindowRequestedEvent =
     void (*)(LaneId, size_t first, size_t last,
              LanesVisualizationCompiledEventWindowBuilder&);
 
-// ---- Timeline batch request ----
-
-using LanesVisualizationTimelineBatchRequestedEvent =
-    void (*)(TimelineLaneBatchUpdate const&);
-
 // ---- Content update notification ----
 
 using LaneViewContentUpdatedEvent =
@@ -128,9 +123,6 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     LanesVisualizationCompiledEventWindowRequestedEvent,
     iv_runtime_lanes_visualization_compiled_event_window_requested_event);
-IV_DECLARE_LINKER_EVENT(
-    LanesVisualizationTimelineBatchRequestedEvent,
-    iv_runtime_lanes_visualization_timeline_batch_requested_event);
 IV_DECLARE_LINKER_EVENT(
     LaneViewContentUpdatedEvent,
     iv_runtime_lane_view_content_updated_event);

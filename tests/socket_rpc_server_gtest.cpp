@@ -1,10 +1,10 @@
 #include "module_test_utils.h"
 
 #include <intravenous/bridge.h>
-#include <intravenous/runtime/audio_device_lanes.h>
+#include <intravenous/runtime/system_audio_devices.h>
 #include <intravenous/runtime/lane_views.h>
 #include <intravenous/runtime/runtime_project_events.h>
-#include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
+#include <intravenous/runtime/socket_rpc_system_audio_devices_bridge.h>
 #include <intravenous/runtime/socket_rpc_lane_views_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
@@ -56,9 +56,9 @@ namespace {
         void request_shutdown() {}
     };
 
-    iv::AudioDeviceLanesBackend make_audio_backend()
+    iv::SystemAudioDevicesBackend make_audio_backend()
     {
-        return iv::AudioDeviceLanesBackend{
+        return iv::SystemAudioDevicesBackend{
             .list_output_devices = [] {
                 return std::vector<iv::AudioDeviceDescriptor>{
                     {.device_id = "default", .name = "System Default"},
@@ -241,17 +241,17 @@ namespace {
 
     public:
         iv::SocketRpcServer server;
-        iv::AudioDeviceLanes audio_device_lanes;
+        iv::SystemAudioDevices system_audio_devices;
         socket_rpc_server_test_state_bridge::scope test_state_scope;
-        iv::socket_rpc_audio_device_lanes_bridge::scope audio_device_lanes_scope;
+        iv::socket_rpc_system_audio_devices_bridge::scope system_audio_devices_scope;
         std::string response_buffer;
 
         explicit SocketRpcHarness(std::filesystem::path const& workspace)
             : fds(make_socket_pair()),
               server(workspace, fds[1]),
-              audio_device_lanes(48000, 8, make_audio_backend()),
+              system_audio_devices(48000, 8, make_audio_backend()),
               test_state_scope(server, socket_rpc_test_state),
-              audio_device_lanes_scope(server, audio_device_lanes)
+              system_audio_devices_scope(server, system_audio_devices)
         {
             socket_rpc_test_state.current_server = &server;
             server.start();
@@ -409,12 +409,12 @@ TEST(SocketRpcServer, DispatchesAudioDeviceGetAndSetRequests)
     auto const set_response = harness.read_response(9);
     EXPECT_TRUE(set_response.contains(R"("deviceId":"out-1")")) << set_response;
     EXPECT_TRUE(set_response.contains(R"("selectedInput")")) << set_response;
-    auto const snapshot = harness.audio_device_lanes.audio_devices_snapshot();
+    auto const snapshot = harness.system_audio_devices.audio_devices_snapshot();
     EXPECT_EQ(snapshot.selected_output.device_id, std::optional<std::string>{"out-1"});
     EXPECT_FALSE(snapshot.selected_input.device_id.has_value());
 }
 
-TEST(SocketRpcServer, UnboundRequestReturnsTheOwningServiceError)
+TEST(SocketRpcServer, RemovedTimelineExecutionRequestIsRejected)
 {
     socket_rpc_test_state.reset();
     auto harness = SocketRpcHarness(make_server_workspace());
@@ -425,7 +425,7 @@ TEST(SocketRpcServer, UnboundRequestReturnsTheOwningServiceError)
         R"({"jsonrpc":"2.0","id":10,"method":"playback.pause","params":{}})"
         "\n");
     auto const response = harness.read_response(10);
-    EXPECT_TRUE(response.contains("timeline execution service is unavailable"))
+    EXPECT_TRUE(response.contains("unsupported JSON-RPC method: playback.pause"))
         << response;
 }
 

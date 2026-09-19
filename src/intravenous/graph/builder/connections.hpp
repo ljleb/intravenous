@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <ranges>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -116,11 +117,18 @@ struct GraphBuilderVirtualSampleOutputFamilies {
   std::vector<GraphBuilderVirtualSampleOutputFamily> families{};
 };
 
+struct ConfiguredSampleConnectionDetach {
+  size_t loop_extra_latency = 1;
+  std::optional<Sample> initial_value_override{};
+  bool operator==(ConfiguredSampleConnectionDetach const&) const = default;
+};
+
 struct ConfiguredSampleConnection {
   ChannelTypeId source_type = ChannelTypeId::mono;
   std::vector<SampleOutputChannelId> source_channels{};
   ChannelTypeId target_type = ChannelTypeId::mono;
   std::vector<SampleInputChannelId> target_channels{};
+  std::optional<ConfiguredSampleConnectionDetach> detach{};
   bool operator==(ConfiguredSampleConnection const&) const = default;
 };
 
@@ -133,11 +141,17 @@ struct SampleLoweringPlan {
   std::vector<SampleLoweringGroup> groups{};
 };
 
+struct ConfiguredEventConnectionDetach {
+  size_t loop_extra_latency = 1;
+  bool operator==(ConfiguredEventConnectionDetach const&) const = default;
+};
+
 struct ConfiguredEventConnection {
   EventTypeId source_type = EventTypeId::empty;
   std::vector<EventOutputPortId> sources{};
   EventTypeId target_type = EventTypeId::empty;
   std::vector<EventInputPortId> targets{};
+  std::optional<ConfiguredEventConnectionDetach> detach{};
   bool operator==(ConfiguredEventConnection const&) const = default;
 };
 

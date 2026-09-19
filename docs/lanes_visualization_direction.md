@@ -4,13 +4,13 @@
 > `Timeline`, `TimelineExecution`, and `TasksRunner` is superseded. The module
 > will temporarily lose those bridges and receive a replacement data-source
 > design later. See
-> [application_module_cleanup_direction.md](./application_module_cleanup_direction.md).
+> [application_module_cleanup_direction.md](./historical/application_module_cleanup_direction.md).
 
 This note captures the current intended direction for lane visualization and UI
 refresh behavior.
 
 It should be read together with
-[task_runner_execution_direction.md](./task_runner_execution_direction.md).
+[task_runner_execution_direction.md](./historical/task_runner_execution_direction.md).
 That document covers execution scheduling. This document covers how lane data
 should be prepared and delivered for UI display.
 

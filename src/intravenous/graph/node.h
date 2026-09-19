@@ -234,7 +234,7 @@ namespace iv {
                     entry.id,
                     GraphPortStorageConfig {
                         .channel_layout = entry.config.channel_layout,
-                        .history = entry.config.history,
+                        .history = realtime_history_or_zero(entry.config),
                         .default_value = entry.config.default_value,
                     },
                     InputPortPlan{.storage = entry.plan});
@@ -463,7 +463,10 @@ namespace iv {
                         &state.ingress_event_outputs[edge.source.port],
                         const_cast<EventSharedPortData&>(consumer_port_data[0]),
                         _public_event_inputs[edge.source.port].type,
-                        edge.conversion
+                        edge.conversion,
+                        realtime_history_or_zero(
+                            _public_event_inputs[edge.source.port]),
+                        0
                     );
                 }
             }

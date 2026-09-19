@@ -44,7 +44,7 @@ class NodeBundle {
     NodePorts ports{};
     ReflectedNodeOperations operations{};
     std::shared_ptr<void const> node_storage{};
-    std::shared_ptr<NodeStateStructure const> state_structure_storage{};
+    std::shared_ptr<NodeStateStructures const> state_structures_storage{};
     NodeConfigRelocations config_relocations{};
     NodeCodeKey code_key{};
     std::optional<RegisteredNodeTypeIdentity> registered_node_type_identity{};
@@ -58,7 +58,6 @@ class NodeBundle {
     std::optional<size_t> default_ttl_samples{};
     bool block_skippable = false;
     std::optional<Sample> static_sample_value{};
-    std::optional<DeferredDetachNode> deferred_detach{};
   };
 
   struct TiledNodeBundle {
@@ -143,8 +142,7 @@ public:
   constexpr size_t event_output_index(std::string_view) const;
   constexpr NodeBundlePortId input_port_at(
       NodeBundleHandle, size_t) const;
-  constexpr void import_into(
-      size_t node_bundle_offset, size_t detach_id_offset);
+  constexpr void import_into(size_t node_bundle_offset);
 
   constexpr std::vector<size_t> &virtual_node_handles();
   constexpr std::vector<size_t> const &virtual_node_handles() const;
@@ -192,7 +190,7 @@ struct ConfiguredNodeBundleRecord {
   NodePorts ports{};
   ReflectedNodeOperations operations{};
   std::shared_ptr<void const> node_storage{};
-  std::shared_ptr<NodeStateStructure const> state_structure_storage{};
+  std::shared_ptr<NodeStateStructures const> state_structures_storage{};
   NodeCodeKey code_key{};
   std::optional<RegisteredNodeTypeIdentity> registered_node_type_identity{};
   size_t node_size = 0;
@@ -205,7 +203,6 @@ struct ConfiguredNodeBundleRecord {
   std::optional<size_t> default_ttl_samples{};
   bool block_skippable = false;
   std::optional<Sample> static_sample_value{};
-  std::optional<DeferredDetachNode> deferred_detach{};
 
   std::vector<NodeBundleHandle> tiled_members{};
 
@@ -230,7 +227,7 @@ struct ConfiguredNodeBundleView {
   NodePorts const* ports = nullptr;
   ReflectedNodeOperations const* operations = nullptr;
   std::shared_ptr<void const> const* node_storage = nullptr;
-  std::shared_ptr<NodeStateStructure const> const* state_structure_storage = nullptr;
+  std::shared_ptr<NodeStateStructures const> const* state_structures_storage = nullptr;
   NodeConfigRelocations const* config_relocations = nullptr;
   NodeCodeKey const* code_key = nullptr;
   RegisteredNodeTypeIdentity const* registered_node_type_identity = nullptr;
@@ -244,7 +241,6 @@ struct ConfiguredNodeBundleView {
   std::optional<size_t> const* default_ttl_samples = nullptr;
   bool block_skippable = false;
   std::optional<Sample> const* static_sample_value = nullptr;
-  std::optional<DeferredDetachNode> const* deferred_detach = nullptr;
 
   std::span<NodeBundleHandle const> tiled_members{};
 
@@ -279,12 +275,6 @@ public:
   constexpr NodeBundleHandle append_scope_boundary();
 
   constexpr NodeBundleHandle append_concrete(ConcreteNode node);
-  constexpr NodeBundleHandle append_deferred_detach_writer(
-      size_t detach_id, size_t loop_extra_latency);
-  constexpr NodeBundleHandle append_deferred_detach_reader(
-      size_t detach_id, size_t loop_extra_latency);
-  constexpr void materialize_deferred_detaches();
-
   constexpr NodeBundleHandle append_tiled(
       std::span<NodeBundleHandle const>, ChannelLayout promoted_channel_layout);
   constexpr NodeBundleHandle append_subgraph(
@@ -325,8 +315,7 @@ public:
 
   constexpr size_t size() const { return _bundles.size(); }
   constexpr void apply_ttl(NodeBundleHandle, size_t ttl_samples);
-  constexpr size_t import_child(
-      GraphBuilderNodeBundles const &, size_t detach_id_offset);
+  constexpr size_t import_child(GraphBuilderNodeBundles const &);
   template<class Visitor>
   constexpr void for_each_configured_bundle(Visitor&& visitor) const;
   static constexpr GraphBuilderNodeBundles from_configured_records(
@@ -362,12 +351,18 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
       std::span<EventOutputConfig const>(event_outputs),
       description.type_name,
       "event");
+  for (auto const& output : event_outputs) {
+    if (!is_valid_event_buffer_rate(output.max_events_per_sample)) {
+      details::error(std::string(description.type_name)
+          + ": event output max_events_per_sample must be finite and nonnegative");
+    }
+  }
 
   return ConcreteNode{
       .ports = std::move(description.ports),
       .operations = description.operations,
       .node_storage = std::move(description.node_storage),
-      .state_structure_storage = std::move(description.state_structure_storage),
+      .state_structures_storage = std::move(description.state_structures_storage),
       .config_relocations = std::move(description.config_relocations),
       .code_key = description.code_key,
       .registered_node_type_identity = std::move(description.registered_node_type_identity),
@@ -396,7 +391,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
       .ports = std::move(lowered.ports),
       .operations = lowered.operations,
       .node_storage = std::move(lowered.node_storage),
-      .state_structure_storage = std::move(lowered.state_structure_storage),
+      .state_structures_storage = std::move(lowered.state_structures_storage),
       .config_relocations = std::move(lowered.config_relocations),
       .code_key = lowered.code_key,
       .registered_node_type_identity = std::move(lowered.registered_node_type_identity),
@@ -410,84 +405,10 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
       .default_ttl_samples = lowered.default_ttl_samples,
       .block_skippable = lowered.block_skippable,
       .static_sample_value = lowered.static_sample_value,
-      .deferred_detach = lowered.deferred_detach,
   };
   auto const handle = _bundles.size();
   _bundles.push_back(NodeBundle(std::move(payload)));
   return handle;
-}
-
-constexpr NodeBundleHandle
-GraphBuilderNodeBundles::append_deferred_detach_writer(
-    size_t detach_id, size_t loop_extra_latency) {
-  ConcreteNode node;
-  node.ports.input_configs = {sample_input()};
-  node.type_identity = {.value = std::string(
-      details::clang_type_name<DetachWriterNode>())};
-  node.deferred_detach = DeferredDetachNode{
-      .kind = DeferredDetachNodeKind::writer,
-      .id = detach_id,
-      .loop_extra_latency = loop_extra_latency,
-  };
-  return append_concrete(std::move(node));
-}
-
-constexpr NodeBundleHandle
-GraphBuilderNodeBundles::append_deferred_detach_reader(
-    size_t detach_id, size_t loop_extra_latency) {
-  ConcreteNode node;
-  node.ports.output_configs = {sample_output()};
-  node.type_identity = {.value = std::string(
-      details::clang_type_name<DetachReaderNode>())};
-  node.deferred_detach = DeferredDetachNode{
-      .kind = DeferredDetachNodeKind::reader,
-      .id = detach_id,
-      .loop_extra_latency = loop_extra_latency,
-  };
-  return append_concrete(std::move(node));
-}
-
-constexpr void GraphBuilderNodeBundles::materialize_deferred_detaches() {
-  for (auto& bundle : _bundles) {
-    if (!bundle.is_concrete()) continue;
-    auto& payload = std::get<NodeBundle::ConcreteNodeBundle>(
-        *bundle._payload);
-    if (!payload.deferred_detach) continue;
-
-    ConcreteNode materialized;
-    auto const deferred = *payload.deferred_detach;
-    if (deferred.kind == DeferredDetachNodeKind::writer) {
-      materialized = make_concrete_node(details::reflect_node(
-          DetachWriterNode{
-              DetachArrayId{deferred.id}, deferred.loop_extra_latency,
-          }));
-    } else {
-      materialized = make_concrete_node(details::reflect_node(
-          DetachReaderNode{
-              DetachArrayId{deferred.id}, deferred.loop_extra_latency,
-          }));
-    }
-
-    payload.ports = std::move(materialized.ports);
-    payload.operations = materialized.operations;
-    payload.node_storage = std::move(materialized.node_storage);
-    payload.state_structure_storage = std::move(materialized.state_structure_storage);
-    payload.config_relocations = std::move(materialized.config_relocations);
-    payload.node_size = materialized.node_size;
-    payload.node_alignment = materialized.node_alignment;
-    payload.code_key = materialized.code_key;
-    payload.registered_node_type_identity =
-        std::move(materialized.registered_node_type_identity);
-    payload.lifetime = std::move(materialized.lifetime);
-    payload.type_identity = std::move(materialized.type_identity);
-    payload.reflected_type_name = materialized.reflected_type_name;
-    payload.internal_latency_samples = materialized.internal_latency_samples;
-    payload.maximum_block_size = materialized.maximum_block_size;
-    payload.default_ttl_samples = materialized.default_ttl_samples;
-    payload.block_skippable = materialized.block_skippable;
-    payload.static_sample_value = materialized.static_sample_value;
-    payload.deferred_detach.reset();
-  }
 }
 
 constexpr NodeBundleHandle GraphBuilderNodeBundles::append_boundary() {
@@ -632,8 +553,7 @@ NodeBundle::sample_input_descriptor(size_t ordinal) const {
           return {.config = SampleInputConfig{
               .name = output.name,
               .channel_layout = output.channel_layout,
-              .compiled = output.compiled,
-              .history = output.history,
+              .access = inward_input_access(output.access),
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return {.config = payload.ports.sample_input(ordinal)};
@@ -658,8 +578,7 @@ NodeBundle::sample_output_descriptor(size_t ordinal) const {
           return {.config = SampleOutputConfig{
               .name = input.name,
               .channel_layout = input.channel_layout,
-              .compiled = input.compiled,
-              .history = input.history,
+              .access = inward_output_access(input.access),
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return {.config = payload.ports.sample_output(ordinal)};
@@ -760,12 +679,12 @@ namespace iv {
 namespace {
 constexpr EventOutputConfig inward_event_output_config(
     EventInputConfig const &config) {
-  return EventOutputConfig{.name = config.name, .type = config.type, .compiled = config.compiled};
+  return EventOutputConfig{.name = config.name, .type = config.type, .access = inward_output_access(config.access)};
 }
 
 constexpr EventInputConfig inward_event_input_config(
     EventOutputConfig const &config) {
-  return EventInputConfig{.name = config.name, .type = config.type, .compiled = config.compiled};
+  return EventInputConfig{.name = config.name, .type = config.type, .access = inward_input_access(config.access)};
 }
 
 template <class MatchesName>
@@ -1010,16 +929,11 @@ constexpr NodeBundlePortId NodeBundle::input_port_at(
   }, *_payload);
 }
 
-constexpr void NodeBundle::import_into(
-    size_t node_bundle_offset, size_t detach_id_offset) {
+constexpr void NodeBundle::import_into(size_t node_bundle_offset) {
   if (!_payload) details::error("empty NodeBundle");
   std::visit([&](auto &payload) {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
-    if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
-      if (payload.deferred_detach) {
-        payload.deferred_detach->id += detach_id_offset;
-      }
-    } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
+    if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
       for (auto &member : payload.member_bundles) member += node_bundle_offset;
     } else if constexpr (std::is_same_v<Bundle, SubgraphNodeBundle>) {
       payload.boundary += node_bundle_offset;
@@ -1067,13 +981,12 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
   };
 
   auto same_input = [](InputConfig const& lhs, InputConfig const& rhs) {
-    if (lhs.name != rhs.name || lhs.compiled != rhs.compiled
+    if (lhs.name != rhs.name || lhs.access != rhs.access
         || is_sample(lhs) != is_sample(rhs)) return false;
     if (is_sample(lhs)) {
       auto const& a = sample_properties(lhs);
       auto const& b = sample_properties(rhs);
       return a.channel_layout == b.channel_layout
-          && a.history == b.history
           && a.neutral_value.value == b.neutral_value.value
           && a.default_value.value == b.default_value.value
           && a.min.value == b.min.value
@@ -1082,14 +995,12 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
     return event_properties(lhs).type == event_properties(rhs).type;
   };
   auto same_output = [](OutputConfig const& lhs, OutputConfig const& rhs) {
-    if (lhs.name != rhs.name || lhs.compiled != rhs.compiled
+    if (lhs.name != rhs.name || lhs.access != rhs.access
         || is_sample(lhs) != is_sample(rhs)) return false;
     if (is_sample(lhs)) {
       auto const& a = sample_properties(lhs);
       auto const& b = sample_properties(rhs);
-      return a.channel_layout == b.channel_layout
-          && a.latency == b.latency
-          && a.history == b.history;
+      return a.channel_layout == b.channel_layout;
     }
     return event_properties(lhs).type == event_properties(rhs).type;
   };
@@ -1262,7 +1173,7 @@ GraphBuilderNodeBundles::materialize_concrete_description(
       .ports = payload->ports,
       .operations = payload->operations,
       .node_storage = payload->node_storage,
-      .state_structure_storage = payload->state_structure_storage,
+      .state_structures_storage = payload->state_structures_storage,
       .config_relocations = payload->config_relocations,
       .code_key = payload->code_key,
       .registered_node_type_identity = payload->registered_node_type_identity,
@@ -1333,11 +1244,11 @@ constexpr void GraphBuilderNodeBundles::apply_ttl(
 }
 
 constexpr size_t GraphBuilderNodeBundles::import_child(
-    GraphBuilderNodeBundles const &child, size_t detach_id_offset) {
+    GraphBuilderNodeBundles const &child) {
   auto const bundle_offset = _bundles.size();
   _bundles.reserve(_bundles.size() + child._bundles.size());
   for (auto imported : child._bundles) {
-    imported.import_into(bundle_offset, detach_id_offset);
+    imported.import_into(bundle_offset);
     _bundles.push_back(std::move(imported));
   }
   return bundle_offset;
@@ -1358,7 +1269,7 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
         view.ports = &payload.ports;
         view.operations = &payload.operations;
         view.node_storage = &payload.node_storage;
-        view.state_structure_storage = &payload.state_structure_storage;
+        view.state_structures_storage = &payload.state_structures_storage;
         view.config_relocations = &payload.config_relocations;
         view.code_key = &payload.code_key;
         if (payload.registered_node_type_identity) {
@@ -1375,7 +1286,6 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
         view.default_ttl_samples = &payload.default_ttl_samples;
         view.block_skippable = payload.block_skippable;
         view.static_sample_value = &payload.static_sample_value;
-        view.deferred_detach = &payload.deferred_detach;
       } else if constexpr (std::same_as<Payload, NodeBundle::TiledNodeBundle>) {
         view.kind = ConfiguredNodeBundleKind::tiled;
         view.tiled_members = std::span<NodeBundleHandle const>{
@@ -1415,14 +1325,14 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
       // The archive reader owns this structure while reconstructing records.
       // Once the bundle takes its shared ownership, its runtime callback must
       // point at that durable copy rather than the soon-to-be-destroyed record.
-      operations.runtime.state_structure = record.state_structure_storage
-          ? record.state_structure_storage.get()
+      operations.runtime.state_structures = record.state_structures_storage
+          ? record.state_structures_storage.get()
           : nullptr;
       bundle = NodeBundle(NodeBundle::ConcreteNodeBundle{
           .ports = record.ports,
           .operations = operations,
           .node_storage = record.node_storage,
-          .state_structure_storage = record.state_structure_storage,
+          .state_structures_storage = record.state_structures_storage,
           .code_key = record.code_key,
           .registered_node_type_identity = record.registered_node_type_identity,
           .node_size = record.node_size,
@@ -1435,7 +1345,6 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
           .default_ttl_samples = record.default_ttl_samples,
           .block_skippable = record.block_skippable,
           .static_sample_value = record.static_sample_value,
-          .deferred_detach = record.deferred_detach,
       });
       break;
     }

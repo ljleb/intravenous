@@ -3,7 +3,7 @@
 #include <intravenous/graph/build_types.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/lane_view_service.h>
-#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/lanes_visualization_api_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/query/lane_query_schema.h>
@@ -41,8 +41,8 @@ namespace iv {
         void (*)(GetVirtualNodesRequest const &, SocketRpcVirtualNodesResultBuilder &);
     using SocketRpcCreateIvModuleInstanceEvent =
         void (*)(CreateIvModuleInstanceRequest const &, SocketRpcCreateIvModuleInstanceResultBuilder &);
-    using SocketRpcGetIvPackagesEvent =
-        void (*)(GetIvPackagesRequest const &, SocketRpcIvPackagesResultBuilder &);
+    using SocketRpcGetIvPackageDefinitionsEvent =
+        void (*)(GetIvPackageDefinitionsRequest const &, SocketRpcIvPackageDefinitionsResultBuilder &);
     using SocketRpcCreateIvPackageEvent =
         void (*)(CreateIvPackageRequest const &, SocketRpcIvPackageResultBuilder &);
     using SocketRpcGetIvModuleInstancesEvent =
@@ -51,24 +51,6 @@ namespace iv {
         void (*)(DeleteIvModuleInstanceRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcUpdateIvModuleInstancesEvent =
         void (*)(UpdateIvModuleInstancesRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcSetTimelineCompiledSampleCacheChunkSizeMultiplierEvent =
-        void (*)(SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcSetTimelineLaneSampleChannelTypeEvent =
-        void (*)(SetTimelineLaneSampleChannelTypeRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcSetTimelineLaneUiStateEvent =
-        void (*)(SetTimelineLaneUiStateRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcConnectTimelineLanesEvent =
-        void (*)(ConnectTimelineLanesRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcDisconnectTimelineLanesEvent =
-        void (*)(DisconnectTimelineLanesRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcGetTimelineLaneTypesEvent =
-        void (*)(GetTimelineLaneTypesRequest const &, SocketRpcLaneTypesResultBuilder &);
-    using SocketRpcCreateTimelineLaneEvent =
-        void (*)(CreateTimelineLaneRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcDeleteTimelineLaneEvent =
-        void (*)(DeleteTimelineLaneRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcDuplicateTimelineLaneEvent =
-        void (*)(DuplicateTimelineLaneRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcGetAudioDevicesEvent =
         void (*)(GetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
     using SocketRpcSetAudioDevicesEvent =
@@ -83,22 +65,6 @@ namespace iv {
         void (*)(GetLaneQuerySchemaRequest const &, SocketRpcLaneQuerySchemaResultBuilder &);
     using SocketRpcCompleteLaneQueryEvent =
         void (*)(CompleteLaneQueryRequest const &, SocketRpcLaneQueryCompletionResultBuilder &);
-    using SocketRpcSetSampleInputValueEvent =
-        void (*)(SetSampleInputValueRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcSetSampleInputStateEvent =
-        void (*)(SetSampleInputStateRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcSetEventInputStateEvent =
-        void (*)(SetEventInputStateRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcSetSampleOutputStateEvent =
-        void (*)(SetSampleOutputStateRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcSetEventOutputStateEvent =
-        void (*)(SetEventOutputStateRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcPauseEvent =
-        void (*)(PauseRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcResumeEvent =
-        void (*)(ResumeRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcSeekEvent =
-        void (*)(SeekRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcSaveProjectEvent =
         void (*)(SaveProjectRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcEnableProjectAutosaveEvent =
@@ -111,20 +77,11 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodeEvent, iv_socket_rpc_get_virtual_node_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodesEvent, iv_socket_rpc_get_virtual_nodes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleInstanceEvent, iv_socket_rpc_create_iv_module_instance_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcGetIvPackagesEvent, iv_socket_rpc_get_iv_packages_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetIvPackageDefinitionsEvent, iv_socket_rpc_get_iv_package_definitions_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvPackageEvent, iv_socket_rpc_create_iv_package_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetIvModuleInstancesEvent, iv_socket_rpc_get_iv_module_instances_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDeleteIvModuleInstanceEvent, iv_socket_rpc_delete_iv_module_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcUpdateIvModuleInstancesEvent, iv_socket_rpc_update_iv_module_instances_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcSetTimelineCompiledSampleCacheChunkSizeMultiplierEvent, iv_socket_rpc_set_timeline_compiled_sample_cache_chunk_size_multiplier_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcSetTimelineLaneSampleChannelTypeEvent, iv_socket_rpc_set_timeline_lane_sample_channel_type_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcSetTimelineLaneUiStateEvent, iv_socket_rpc_set_timeline_lane_ui_state_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcConnectTimelineLanesEvent, iv_socket_rpc_connect_timeline_lanes_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcDisconnectTimelineLanesEvent, iv_socket_rpc_disconnect_timeline_lanes_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcGetTimelineLaneTypesEvent, iv_socket_rpc_get_timeline_lane_types_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcCreateTimelineLaneEvent, iv_socket_rpc_create_timeline_lane_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcDeleteTimelineLaneEvent, iv_socket_rpc_delete_timeline_lane_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcDuplicateTimelineLaneEvent, iv_socket_rpc_duplicate_timeline_lane_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcOpenLaneViewEvent, iv_socket_rpc_open_lane_view_event);
@@ -132,14 +89,6 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcCloseLaneViewEvent, iv_socket_rpc_close_lane_view_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetLaneQuerySchemaEvent, iv_socket_rpc_get_lane_query_schema_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCompleteLaneQueryEvent, iv_socket_rpc_complete_lane_query_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcSetSampleInputValueEvent, iv_socket_rpc_set_sample_input_value_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcSetSampleInputStateEvent, iv_socket_rpc_set_sample_input_state_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcSetEventInputStateEvent, iv_socket_rpc_set_event_input_state_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcSetSampleOutputStateEvent, iv_socket_rpc_set_sample_output_state_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcSetEventOutputStateEvent, iv_socket_rpc_set_event_output_state_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcPauseEvent, iv_socket_rpc_pause_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcResumeEvent, iv_socket_rpc_resume_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcSeekEvent, iv_socket_rpc_seek_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcEnableProjectAutosaveEvent, iv_socket_rpc_enable_project_autosave_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDisableProjectAutosaveEvent, iv_socket_rpc_disable_project_autosave_event);
@@ -190,7 +139,7 @@ namespace iv {
         void send_lane_query_schema_changed(query::LaneQuerySchemaChange const &notification);
         void send_iv_module_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
-        void send_iv_packages_updated();
+        void send_iv_package_definitions_updated();
         void send_virtual_nodes_updated(
             ProjectVirtualNodesNotification const &notification);
         void handle_project_notification(ProjectNotification const &notification);
