@@ -1918,6 +1918,16 @@ std::expected<ExecutionPlan, std::string> plan_execution(
          ++materialization_index) {
         auto const& materialization =
             sample_ports.physical.materializations[materialization_index];
+        if (materialization.before_execution_position) {
+            if (*materialization.before_execution_position
+                >= plan.primitive_steps.size()) {
+                return std::unexpected(
+                    "GraphJit sample materialization references an invalid before-execution position");
+            }
+            plan.primitive_steps[*materialization.before_execution_position]
+                .sample_materializations_before.push_back(materialization_index);
+            continue;
+        }
         if (materialization.after_execution_position >= plan.primitive_steps.size()) {
             return std::unexpected(
                 "GraphJit sample materialization references an invalid execution position");

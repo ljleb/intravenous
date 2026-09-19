@@ -65,6 +65,7 @@ constexpr char graph_jit_retained_converted_event_fanout_module_id[] = "iv.test.
 constexpr char graph_jit_sample_feedback_a_id[] = "iv.test.graph_jit.state_context.sample_feedback_a";
 constexpr char graph_jit_sample_feedback_b_id[] = "iv.test.graph_jit.state_context.sample_feedback_b";
 constexpr char graph_jit_temporal_sample_feedback_id[] = "iv.test.graph_jit.state_context.temporal_sample_feedback";
+constexpr char graph_jit_converted_sample_feedback_id[] = "iv.test.graph_jit.state_context.converted_sample_feedback";
 constexpr char graph_jit_event_feedback_a_id[] = "iv.test.graph_jit.state_context.event_feedback_a";
 constexpr char graph_jit_event_feedback_b_id[] = "iv.test.graph_jit.state_context.event_feedback_b";
 constexpr char graph_jit_event_feedback_burst_a_id[] = "iv.test.graph_jit.state_context.event_feedback_burst_a";
@@ -158,6 +159,18 @@ struct TemporalSampleFeedbackStateMirror {
     std::array<float, 24> history_3_inputs{};
     std::array<float, 24> first_inputs{};
     std::array<float, 24> last_inputs{};
+    std::uint32_t marker = 0;
+};
+
+struct ConvertedSampleFeedbackStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t scc_feedback_latency = 0;
+    std::array<std::uint64_t, 24> indices{};
+    std::array<std::uint64_t, 24> block_sizes{};
+    std::array<float, 24> first_left{};
+    std::array<float, 24> first_right{};
+    std::array<float, 24> last_left{};
+    std::array<float, 24> last_right{};
     std::uint32_t marker = 0;
 };
 
@@ -1308,6 +1321,114 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     }
 }
 
+TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackKeepsCanonicalPersistentRing)
+{
+    using namespace iv::graph_jit::detail;
+
+    iv::ChannelLayout const mono{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    iv::ChannelLayout const stereo{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::interleaved,
+    };
+    iv::SampleOutputChannelId const source_channel{
+        .bundle = 1,
+        .port = 0,
+        .channel = 0,
+    };
+    iv::NodeBundlePortId const source_port{1, iv::PortKind::sample, 0};
+
+    ConnectionAnalysisPlan connections;
+    connections.schedule.bundle_execution_position.resize(3);
+    connections.schedule.bundle_execution_position[1] = 0;
+    connections.schedule.bundle_execution_position[2] = 1;
+
+    SampleConnectionPlan feedback;
+    feedback.source_type = iv::ChannelTypeId::mono;
+    feedback.source_channels = {source_channel};
+    feedback.source_channel_timings = {SampleSourceChannelTimingPlan{
+        .source = source_channel,
+        .source_layout = mono,
+    }};
+    feedback.canonical_source_port = source_port;
+    feedback.canonical_source_layout = mono;
+    feedback.target_type = iv::ChannelTypeId::stereo;
+    feedback.target_layout = stereo;
+    feedback.target_channels = {
+        iv::SampleInputChannelId{.bundle = 2, .port = 0, .channel = 0},
+        iv::SampleInputChannelId{.bundle = 2, .port = 0, .channel = 1},
+    };
+    feedback.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
+    feedback.target_history = 3;
+    feedback.access = PlannedConnectionAccess::realtime_to_realtime;
+    feedback.requires_conversion = true;
+    feedback.detach = iv::ConfiguredSampleConnectionDetach{
+        .loop_extra_latency = 6,
+        .initial_value_override = iv::Sample{-0.25f},
+    };
+    feedback.detach_initial_value = iv::Sample{-0.25f};
+    connections.sample_connections.push_back(feedback);
+
+    SampleProducerGroupPlan group;
+    group.source_port = source_port;
+    group.source_type = iv::ChannelTypeId::mono;
+    group.source_channels = {source_channel};
+    group.canonical_source_layout = mono;
+    group.connection_indices = {0};
+    group.has_realtime_connections = true;
+    group.implementation =
+        iv::SampleConnectionImplementationKind::transient_materialization;
+    group.live_interval = ConnectionLiveIntervalPlan{
+        .begin = 0,
+        .end = 1,
+        .crosses_kernel_invocations = true,
+    };
+    connections.sample_producer_groups.push_back(group);
+
+    auto physical = build_sample_physical_plan(connections, 64);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->representations.size(), 3u);
+    ASSERT_EQ(physical->persistent_allocations.size(), 1u);
+    ASSERT_EQ(physical->feedback_operations.size(), 1u);
+    ASSERT_EQ(physical->materializations.size(), 1u);
+
+    auto const canonical =
+        physical->producer_groups[0]->canonical_representation;
+    auto const ring = physical->feedback_operations[0].ring_representation;
+    auto const derived = *physical->connection_representations[0];
+    ASSERT_NE(canonical, ring);
+    ASSERT_NE(ring, derived);
+    EXPECT_EQ(physical->representations[ring].channel_layout, mono);
+    EXPECT_EQ(physical->representations[derived].channel_layout, stereo);
+    EXPECT_EQ(
+        physical->representations[ring].implementation,
+        iv::SampleConnectionImplementationKind::feedback_ring);
+    EXPECT_EQ(
+        physical->representations[derived].implementation,
+        iv::SampleConnectionImplementationKind::transient_materialization);
+
+    auto const persistent_index =
+        physical->representations[ring].persistent_allocation;
+    ASSERT_LT(persistent_index, physical->persistent_allocations.size());
+    auto const& persistent = physical->persistent_allocations[persistent_index];
+    EXPECT_EQ(persistent.channel_layout, mono);
+    EXPECT_EQ(persistent.retained_frames, 9u);
+    EXPECT_EQ(persistent.size_bytes, 128u * sizeof(iv::Sample));
+
+    auto const& materialization = physical->materializations.front();
+    EXPECT_EQ(materialization.source_representation, ring);
+    EXPECT_EQ(materialization.target_representation, derived);
+    ASSERT_TRUE(materialization.before_execution_position.has_value());
+    EXPECT_EQ(*materialization.before_execution_position, 1u);
+    EXPECT_EQ(materialization.source_layout, mono);
+    EXPECT_EQ(materialization.target_layout, stereo);
+    EXPECT_EQ(materialization.retained_before, 9u);
+    EXPECT_EQ(materialization.latest_read_latency, 6u);
+}
+
 TEST(GraphJitSamplePhysicalPlan, ConvertedRetentionMaterializesHistoricalWindow)
 {
     using namespace iv::graph_jit::detail;
@@ -1970,6 +2091,63 @@ struct TemporalSampleFeedback {
         state.marker = 0x7e4fba11u;
         for (auto const sample : input) {
             ctx.outputs[0].push(sample + 1.0f);
+        }
+    }
+};
+
+struct ConvertedSampleFeedback {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t scc_feedback_latency = 0;
+        std::array<std::uint64_t, 24> indices{};
+        std::array<std::uint64_t, 24> block_sizes{};
+        std::array<float, 24> first_left{};
+        std::array<float, 24> first_right{};
+        std::array<float, 24> last_left{};
+        std::array<float, 24> last_right{};
+        std::uint32_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in",
+            {.channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            }})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_sample_output("out")};
+    }
+
+    void tick_block(iv::TickBlockContext<ConvertedSampleFeedback> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = static_cast<std::size_t>(state.calls);
+        if (slot < state.indices.size()) {
+            state.indices[slot] = ctx.index;
+            state.block_sizes[slot] = ctx.block_size;
+            if (ctx.block_size != 0) {
+                state.first_left[slot] =
+                    static_cast<float>(ctx.inputs[0].get_frame(0, 0));
+                state.first_right[slot] =
+                    static_cast<float>(ctx.inputs[0].get_frame(0, 1));
+                state.last_left[slot] = static_cast<float>(
+                    ctx.inputs[0].get_frame(ctx.block_size - 1, 0));
+                state.last_right[slot] = static_cast<float>(
+                    ctx.inputs[0].get_frame(ctx.block_size - 1, 1));
+            }
+        }
+        ++state.calls;
+        state.scc_feedback_latency = ctx.scc_feedback_latency;
+        state.marker = 0xc04e7ed1u;
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            auto const left = ctx.inputs[0].get_frame(i, 0);
+            auto const right = ctx.inputs[0].get_frame(i, 1);
+            ctx.outputs[0].push((left + right) * 0.5f + 1.0f);
         }
     }
 };
@@ -3262,6 +3440,7 @@ IV_NODE("iv.test.graph_jit.state_context.sample_consumer", SampleConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.sample_feedback_a", SampleFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.sample_feedback_b", SampleFeedbackB);
 IV_NODE("iv.test.graph_jit.state_context.temporal_sample_feedback", TemporalSampleFeedback);
+IV_NODE("iv.test.graph_jit.state_context.converted_sample_feedback", ConvertedSampleFeedback);
 IV_NODE("iv.test.graph_jit.state_context.mono_interleaved_consumer", MonoInterleavedConsumerProbe);
 IV_NODE("iv.test.graph_jit.state_context.stereo_ramp_source", StereoRampSource);
 IV_NODE("iv.test.graph_jit.state_context.stereo_planar_consumer", StereoPlanarConsumerProbe);
@@ -3439,6 +3618,40 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_temporal_sample_feedback_g
     iv::GraphBuilder graph(session.get());
     auto node = iv::details::configure_package_definition_provider(
         graph, graph_jit_temporal_sample_feedback_id, std::nullopt, {});
+    node(static_cast<iv::SamplePortRef>(node).detach(latency, initial_value));
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
+
+std::shared_ptr<iv::ConfiguredGraph const> configured_converted_sample_feedback_graph(
+    iv::PackageRevision const& revision,
+    std::size_t latency = 6,
+    iv::Sample initial_value = iv::Sample{-0.25f})
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create GraphJit converted sample-feedback builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto node = iv::details::configure_package_definition_provider(
+        graph, graph_jit_converted_sample_feedback_id, std::nullopt, {});
     node(static_cast<iv::SamplePortRef>(node).detach(latency, initial_value));
     graph.outputs();
     return std::make_shared<iv::ConfiguredGraph const>(
@@ -5267,6 +5480,82 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTarg
             state->history_3_inputs[slice], expected_history_3[slice]);
         EXPECT_FLOAT_EQ(state->first_inputs[slice], expected_current[slice]);
         EXPECT_FLOAT_EQ(state->last_inputs[slice], expected_current[slice]);
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, ConvertedSampleDetachFeedback)
+{
+    auto feedback_graph = configured_converted_sample_feedback_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    ASSERT_EQ(analysis->sample_connections.size(), 1u);
+    auto const& connection = analysis->sample_connections.front();
+    ASSERT_TRUE(connection.detach.has_value());
+    EXPECT_EQ(connection.detach->loop_extra_latency, 6u);
+    EXPECT_TRUE(connection.requires_conversion);
+    ASSERT_TRUE(connection.canonical_source_layout.has_value());
+    EXPECT_EQ(
+        connection.canonical_source_layout->channel_type,
+        iv::ChannelTypeId::mono);
+    EXPECT_EQ(connection.target_layout.channel_type, iv::ChannelTypeId::stereo);
+
+    auto physical = iv::graph_jit::detail::build_sample_physical_plan(
+        *analysis, 64);
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_EQ(physical->feedback_operations.size(), 1u);
+    ASSERT_EQ(physical->materializations.size(), 1u);
+    auto const ring = physical->feedback_operations.front().ring_representation;
+    auto const derived = *physical->connection_representations.front();
+    ASSERT_NE(ring, derived);
+    EXPECT_EQ(
+        physical->representations[ring].channel_layout.channel_type,
+        iv::ChannelTypeId::mono);
+    EXPECT_EQ(
+        physical->representations[derived].channel_layout.channel_type,
+        iv::ChannelTypeId::stereo);
+    auto const& materialization = physical->materializations.front();
+    EXPECT_EQ(materialization.source_representation, ring);
+    EXPECT_EQ(materialization.target_representation, derived);
+    ASSERT_TRUE(materialization.before_execution_position.has_value());
+
+    auto compiled = compile_graph(feedback_graph, 125);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_EQ(compiled.compiled_graph->node_layout.nodes.size(), 1u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* state = static_cast<ConvertedSampleFeedbackStateMirror*>(
+        storage.state_ptr(0));
+    ASSERT_NE(state, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 17);
+
+    ASSERT_EQ(state->calls, 5u);
+    EXPECT_EQ(state->scc_feedback_latency, 4u);
+    EXPECT_EQ(state->marker, 0xc04e7ed1u);
+
+    std::array<std::uint64_t, 5> const expected_indices{0, 4, 8, 12, 16};
+    std::array<std::uint64_t, 5> const expected_sizes{4, 4, 4, 4, 1};
+    std::array<float, 5> const expected_first{
+        -0.25f, -0.25f, 0.75f, 1.75f, 1.75f};
+    std::array<float, 5> const expected_last{
+        -0.25f, 0.75f, 0.75f, 1.75f, 1.75f};
+    for (std::size_t slice = 0; slice < expected_indices.size(); ++slice) {
+        EXPECT_EQ(state->indices[slice], expected_indices[slice]);
+        EXPECT_EQ(state->block_sizes[slice], expected_sizes[slice]);
+        EXPECT_FLOAT_EQ(state->first_left[slice], expected_first[slice]);
+        EXPECT_FLOAT_EQ(state->first_right[slice], expected_first[slice]);
+        EXPECT_FLOAT_EQ(state->last_left[slice], expected_last[slice]);
+        EXPECT_FLOAT_EQ(state->last_right[slice], expected_last[slice]);
     }
 }
 

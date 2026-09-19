@@ -236,6 +236,7 @@ struct PrimitiveExecutionStep {
     // Explicit sample physical operations surrounding this producer. These are
     // physical-plan indices, not OutputPort behavior or runtime objects.
     std::vector<std::size_t> sample_carry_restores_before{};
+    std::vector<std::size_t> sample_materializations_before{};
     std::vector<std::size_t> sample_feedback_copies_after{};
     std::vector<std::size_t> sample_materializations_after{};
     std::vector<std::size_t> sample_compositions_after{};

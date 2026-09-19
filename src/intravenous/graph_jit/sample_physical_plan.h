@@ -50,6 +50,11 @@ struct SampleMaterializationPlan {
     std::size_t source_representation = no_sample_representation;
     std::size_t target_representation = no_sample_representation;
     std::size_t after_execution_position = 0;
+    // Feedback conversion is consumer-driven rather than producer-driven: in a
+    // cyclic region the consumer may precede the producer in deterministic
+    // execution order, so the delayed window must be materialized from the
+    // persistent feedback ring immediately before that consumer executes.
+    std::optional<std::size_t> before_execution_position{};
     ChannelLayout source_layout{};
     ChannelLayout target_layout{};
 

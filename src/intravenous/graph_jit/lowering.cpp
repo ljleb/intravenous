@@ -2162,6 +2162,24 @@ std::expected<void, std::string> emit_execution_step(
         }
     }
 
+    for (auto const materialization_index : step.sample_materializations_before) {
+        if (materialization_index
+            >= plan.sample_ports.physical.materializations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing pre-sample materialization");
+        }
+        auto materialized = emit_sample_materialization(
+            builder,
+            plan.sample_ports.physical,
+            plan.sample_ports.physical.materializations[materialization_index],
+            storage_base,
+            sample_index,
+            block_size);
+        if (!materialized) {
+            return std::unexpected(std::move(materialized.error()));
+        }
+    }
+
     auto const& callback_symbol =
         skip ? step.skip_callback_symbol : step.tick_callback_symbol;
     if (callback_symbol.empty()) {

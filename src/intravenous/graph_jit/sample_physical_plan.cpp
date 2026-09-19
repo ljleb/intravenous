@@ -129,9 +129,15 @@ std::string feedback_identity(
     }
     out << ":target=" << connection.target_port.node_bundle_handle << '.'
         << connection.target_port.port_ordinal
-        << ":layout="
-        << static_cast<unsigned>(connection.target_layout.channel_type) << '.'
-        << static_cast<unsigned>(connection.target_layout.sample_layout)
+        << ":source_layout=";
+    if (group.canonical_source_layout) {
+        out << static_cast<unsigned>(group.canonical_source_layout->channel_type)
+            << '.'
+            << static_cast<unsigned>(group.canonical_source_layout->sample_layout);
+    } else {
+        out << static_cast<unsigned>(connection.source_type);
+    }
+    out
         << ":latency=" << connection.detach->loop_extra_latency
         << ":initial_bits="
         << std::bit_cast<std::uint32_t>(static_cast<float>(initial_value))
@@ -572,9 +578,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
 
         // Detach transport is branch-local. Keep the producer's canonical
         // representation ordinary, then allocate one persistent absolute-indexed
-        // ring for the delayed branch. This first physical slice intentionally
-        // accepts only exact whole-port transport; conversion/history/latency can
-        // be layered on after the feedback copy operation itself is executable.
+        // ring in the canonical source layout. Converted consumers derive
+        // transient target-layout windows from that ring immediately before they
+        // execute, so persistent feedback state stays producer-format and stable.
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = connections.sample_connections[connection_index];
             if (connection.access != PlannedConnectionAccess::realtime_to_realtime
@@ -589,12 +595,24 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 || !connection.canonical_source_port
                 || *connection.canonical_source_port != *group.source_port
                 || !connection.canonical_source_layout
-                || *connection.canonical_source_layout != *group.canonical_source_layout
-                || connection.requires_conversion
-                || connection.requires_block_materialization
-                || connection.target_layout != *group.canonical_source_layout) {
+                || *connection.canonical_source_layout != *group.canonical_source_layout) {
                 return std::unexpected(
-                    "GraphJit sample feedback currently requires exact whole-port realtime transport");
+                    "GraphJit sample feedback currently requires one canonical whole-port realtime source");
+            }
+            if (!connection.requires_conversion
+                && connection.target_layout != *group.canonical_source_layout) {
+                return std::unexpected(
+                    "GraphJit sample feedback changed channel layout without a conversion");
+            }
+            if (connection.requires_conversion) {
+                try {
+                    (void)ChannelConversionRegistry::plan(
+                        *group.canonical_source_layout, connection.target_layout);
+                } catch (std::exception const& e) {
+                    return std::unexpected(
+                        "GraphJit sample feedback conversion is unsupported: "
+                        + std::string(e.what()));
+                }
             }
             if (!connection.detach_initial_value) {
                 return std::unexpected(
@@ -622,7 +640,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     .producer_group_index = group_index,
                     .canonical_producer_representation = false,
                     .implementation = SampleConnectionImplementationKind::feedback_ring,
-                    .channel_layout = connection.target_layout,
+                    .channel_layout = *group.canonical_source_layout,
                     .frame_capacity = *ring_capacity,
                     .live_interval = ConnectionLiveIntervalPlan{
                         .begin = producer_position,
@@ -634,7 +652,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 ring_representation,
                 group,
                 SamplePersistentStorageKind::ring,
-                connection.target_layout,
+                *group.canonical_source_layout,
                 retained_frames,
                 *ring_capacity,
                 feedback_identity(
@@ -648,8 +666,41 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             }
             plan.representations[ring_representation].persistent_allocation =
                 *persistent;
-            plan.connection_representations[connection_index] =
-                ring_representation;
+
+            if (connection.requires_conversion) {
+                auto const consumer_position =
+                    target_position(connection, group.live_interval);
+                auto derived = append_transient_representation(
+                    SampleRepresentationPlan{
+                        .producer_group_index = group_index,
+                        .canonical_producer_representation = false,
+                        .implementation = SampleConnectionImplementationKind::transient_materialization,
+                        .channel_layout = connection.target_layout,
+                        .frame_capacity = *ring_capacity,
+                        .live_interval = ConnectionLiveIntervalPlan{
+                            .begin = consumer_position,
+                            .end = consumer_position,
+                            .crosses_kernel_invocations = false,
+                        },
+                    });
+                if (!derived) {
+                    return std::unexpected(std::move(derived.error()));
+                }
+                plan.materializations.push_back(SampleMaterializationPlan{
+                    .source_representation = ring_representation,
+                    .target_representation = *derived,
+                    .after_execution_position = consumer_position,
+                    .before_execution_position = consumer_position,
+                    .source_layout = *group.canonical_source_layout,
+                    .target_layout = connection.target_layout,
+                    .retained_before = retained_frames,
+                    .latest_read_latency = latency + connection.read_latency,
+                });
+                plan.connection_representations[connection_index] = *derived;
+            } else {
+                plan.connection_representations[connection_index] =
+                    ring_representation;
+            }
             plan.feedback_operations.push_back(SampleFeedbackOperationPlan{
                 .source_representation = canonical,
                 .ring_representation = ring_representation,
