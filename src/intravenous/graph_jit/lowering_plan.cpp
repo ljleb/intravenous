@@ -1361,10 +1361,12 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 });
             if (group == connections.event_producer_groups.end()
                 || !group->implementation
-                || *group->implementation
-                    != EventConnectionImplementationKind::compact_persistent_carry) {
+                || (*group->implementation
+                        != EventConnectionImplementationKind::compact_persistent_carry
+                    && *group->implementation
+                        != EventConnectionImplementationKind::persistent_ring)) {
                 return std::unexpected(
-                    "GraphJit cyclic event source latency currently requires compact retained carry");
+                    "GraphJit cyclic event source latency requires retained event storage");
             }
         }
         if (connection.target_history != 0) {

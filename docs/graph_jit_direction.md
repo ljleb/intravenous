@@ -450,8 +450,12 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     in canonical retained storage across root calls, restored future events are not
     re-enqueued into detached feedback, and producers remain responsible for globally
     nondecreasing publication order rather than relying on a generated sort/back-fill
-    path. Persistent-ring source latency, direct retained consumption inside a cycle,
-    conversion consumed inside a cycle, source history, multi-producer fan-in inside
+    path. Authored source latency is supported with either compact carry or a
+    canonical persistent producer ring; persistent-ring sources preserve future
+    events across root calls and seed detached feedback from their prior monotonic
+    write index so retained future events are not re-enqueued. Direct retained
+    consumption inside a cycle, conversion consumed inside a cycle, source history,
+    multi-producer fan-in inside
     a cycle, feed-forward ingress into a cycle, and edges spanning distinct cyclic
     regions remain capability-gated.
 13. **Root I/O node integration.** Keep the configured project root zero-input and
