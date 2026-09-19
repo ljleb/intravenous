@@ -68,22 +68,32 @@ struct SampleMaterializationPlan {
     std::size_t latest_read_latency = 0;
 };
 
-struct SampleCompositionSourcePlan {
+struct SampleCompositionInputPlan {
     std::size_t source_representation = no_sample_representation;
     std::size_t source_channel = 0;
-    std::size_t target_channel = 0;
     std::size_t read_latency = 0;
 };
 
-// A feed-forward composed connection gathers independently-timed channels
-// from canonical producer representations into one target-layout transient
+// One normalized gather -> semantic conversion -> projection contribution.
+// sources are ordered by source_layout's semantic channels; target_channels
+// map converted semantic channels into the final target-port representation.
+struct SampleCompositionContributionPlan {
+    ChannelLayout source_layout{};
+    ChannelLayout converted_layout{};
+    std::vector<SampleCompositionInputPlan> sources{};
+    std::vector<std::size_t> target_channels{};
+};
+
+// A feed-forward composed connection gathers independently-timed semantic
+// source channels, applies each configured channel-count/layout conversion,
+// and projects the converted channels into one target-layout transient
 // representation. It writes a timestamp-aligned window, so its eventual
 // InputPort binding reads with zero additional latency and target history is
 // reconstructed while composition runs. Detached composition is represented
 // uniformly by SampleFeedbackTimelinePlan below instead of a special mode here.
 struct SampleCompositionPlan {
     std::size_t connection_index = 0;
-    std::vector<SampleCompositionSourcePlan> sources{};
+    std::vector<SampleCompositionContributionPlan> contributions{};
     std::size_t target_representation = no_sample_representation;
     std::size_t after_execution_position = 0;
     ChannelLayout target_layout{};
@@ -162,7 +172,7 @@ struct SampleFeedbackTimelineWriterPlan {
     std::size_t source_representation = no_sample_representation;
 
     // composition only
-    std::vector<SampleCompositionSourcePlan> composition_sources{};
+    std::vector<SampleCompositionContributionPlan> composition_contributions{};
 };
 
 struct SampleFeedbackTimelinePlan {

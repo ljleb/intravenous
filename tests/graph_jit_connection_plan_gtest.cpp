@@ -490,16 +490,21 @@ TEST(GraphJitConnectionPlan, EqualizesChannelsInsideComposedSampleInput)
     EXPECT_EQ(composition.target_history, connection->target_history);
     EXPECT_EQ(composition.target_representation,
         *physical->connection_representations[connection_index]);
-    ASSERT_EQ(composition.sources.size(), 2u);
+    ASSERT_EQ(composition.contributions.size(), 1u);
+    auto const& contribution = composition.contributions.front();
+    EXPECT_EQ(contribution.source_layout.channel_type, ChannelTypeId::stereo);
+    EXPECT_EQ(contribution.converted_layout.channel_type, ChannelTypeId::stereo);
+    ASSERT_EQ(contribution.sources.size(), 2u);
+    ASSERT_EQ(contribution.target_channels.size(), 2u);
     EXPECT_NE(
-        composition.sources[0].source_representation,
-        composition.sources[1].source_representation);
-    EXPECT_EQ(composition.sources[0].source_channel, 0u);
-    EXPECT_EQ(composition.sources[0].target_channel, 0u);
-    EXPECT_EQ(composition.sources[0].read_latency, 7u);
-    EXPECT_EQ(composition.sources[1].source_channel, 0u);
-    EXPECT_EQ(composition.sources[1].target_channel, 1u);
-    EXPECT_EQ(composition.sources[1].read_latency, 2u);
+        contribution.sources[0].source_representation,
+        contribution.sources[1].source_representation);
+    EXPECT_EQ(contribution.sources[0].source_channel, 0u);
+    EXPECT_EQ(contribution.sources[0].read_latency, 7u);
+    EXPECT_EQ(contribution.sources[1].source_channel, 0u);
+    EXPECT_EQ(contribution.sources[1].read_latency, 2u);
+    EXPECT_EQ(contribution.target_channels[0], 0u);
+    EXPECT_EQ(contribution.target_channels[1], 1u);
 
     auto const& target_representation =
         physical->representations[composition.target_representation];

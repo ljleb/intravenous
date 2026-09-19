@@ -85,11 +85,29 @@ struct SampleSourceChannelTimingPlan {
     std::size_t read_latency = 0;
 };
 
+// One semantic contribution to a normalized target-port composition. Source
+// indices name entries in SampleConnectionPlan::source_channel_timings in the
+// semantic source-channel order expected by source_type. target_channels are
+// canonical target-port channel ordinals in the semantic target-channel order
+// produced by target_type. Keeping only indices here leaves the central timing
+// vector authoritative when latency compensation later adjusts read_latency.
+struct SampleProjectionContributionPlan {
+    ChannelTypeId source_type = ChannelTypeId::mono;
+    std::vector<std::size_t> source_channel_indices{};
+    ChannelTypeId target_type = ChannelTypeId::mono;
+    std::vector<std::size_t> target_channels{};
+};
+
 struct SampleConnectionPlan {
     std::size_t configured_connection_index = 0;
     ChannelTypeId source_type = ChannelTypeId::mono;
     std::vector<SampleOutputChannelId> source_channels{};
     std::vector<SampleSourceChannelTimingPlan> source_channel_timings{};
+    // Non-empty only after several/partial configured connections have been
+    // normalized into one whole target-port composition. Each contribution
+    // retains its own gather -> semantic channel-conversion -> projection
+    // boundary rather than flattening channel-count conversion away.
+    std::vector<SampleProjectionContributionPlan> projection_contributions{};
     std::optional<NodeBundlePortId> canonical_source_port{};
     std::optional<ChannelLayout> canonical_source_layout{};
     ChannelTypeId target_type = ChannelTypeId::mono;

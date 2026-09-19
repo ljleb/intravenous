@@ -1115,7 +1115,7 @@ std::expected<void, std::string> emit_sample_materialization(
 std::expected<void, std::string> emit_sample_composition_write(
     llvm::IRBuilder<>& builder,
     detail::SamplePhysicalPlan const& physical,
-    std::vector<detail::SampleCompositionSourcePlan> const& source_plans,
+    std::vector<detail::SampleCompositionContributionPlan> const& contribution_plans,
     std::size_t target_representation_index,
     ChannelLayout target_layout,
     std::size_t target_history,
@@ -1138,9 +1138,9 @@ std::expected<void, std::string> emit_sample_composition_write(
         return std::unexpected(
             "GraphJit sample composition target layout disagrees with its representation");
     }
-    if (source_plans.size() != channel_count(target_layout)) {
+    if (contribution_plans.empty()) {
         return std::unexpected(
-            "GraphJit sample composition requires exactly one source per target channel");
+            "GraphJit sample composition contains no semantic contributions");
     }
     if (shift_writes_by_read_latency
         && (target_history != 0
@@ -1164,37 +1164,108 @@ std::expected<void, std::string> emit_sample_composition_write(
     struct SourceBinding {
         ReflectedSamplePortStorageBinding storage{};
         std::size_t source_channel = 0;
-        std::size_t target_channel = 0;
         std::size_t read_latency = 0;
     };
-    std::vector<SourceBinding> sources;
-    sources.reserve(source_plans.size());
-    std::vector<bool> target_channels(channel_count(target_layout), false);
-    for (auto const& source_plan : source_plans) {
-        if (source_plan.source_representation >= physical.representations.size()) {
+    struct ContributionBinding {
+        ChannelLayout source_layout{};
+        ChannelLayout converted_layout{};
+        std::vector<SourceBinding> sources{};
+        std::vector<std::size_t> target_channels{};
+        std::vector<std::size_t> shifted_write_latencies{};
+    };
+
+    std::vector<ContributionBinding> contributions;
+    contributions.reserve(contribution_plans.size());
+    std::vector<bool> populated_targets(channel_count(target_layout), false);
+    for (auto const& contribution_plan : contribution_plans) {
+        if (contribution_plan.sources.size()
+                != channel_count(contribution_plan.source_layout)
+            || contribution_plan.target_channels.size()
+                != channel_count(contribution_plan.converted_layout)) {
             return std::unexpected(
-                "GraphJit sample composition references a missing source representation");
+                "GraphJit sample composition contribution has inconsistent semantic channel counts");
         }
-        auto source = sample_storage_binding(
-            physical, source_plan.source_representation);
-        if (!source) return std::unexpected(std::move(source.error()));
-        if (source->frame_capacity == 0
-            || !is_power_of_2(source->frame_capacity)
-            || source_plan.source_channel >= channel_count(source->channel_layout)
-            || source_plan.target_channel >= target_channels.size()
-            || target_channels[source_plan.target_channel]) {
+        try {
+            (void)ChannelConversionRegistry::plan(
+                contribution_plan.source_layout,
+                contribution_plan.converted_layout);
+        } catch (std::exception const& e) {
             return std::unexpected(
-                "GraphJit sample composition contains an invalid channel mapping");
+                "GraphJit sample composition conversion is unsupported: "
+                + std::string(e.what()));
         }
-        target_channels[source_plan.target_channel] = true;
-        sources.push_back(SourceBinding{
-            .storage = *source,
-            .source_channel = source_plan.source_channel,
-            .target_channel = source_plan.target_channel,
-            .read_latency = source_plan.read_latency,
-        });
+
+        ContributionBinding contribution{
+            .source_layout = contribution_plan.source_layout,
+            .converted_layout = contribution_plan.converted_layout,
+            .target_channels = contribution_plan.target_channels,
+        };
+        contribution.sources.reserve(contribution_plan.sources.size());
+        for (auto const& source_plan : contribution_plan.sources) {
+            if (source_plan.source_representation
+                >= physical.representations.size()) {
+                return std::unexpected(
+                    "GraphJit sample composition references a missing source representation");
+            }
+            auto source = sample_storage_binding(
+                physical, source_plan.source_representation);
+            if (!source) return std::unexpected(std::move(source.error()));
+            if (source->frame_capacity == 0
+                || !is_power_of_2(source->frame_capacity)
+                || source_plan.source_channel
+                    >= channel_count(source->channel_layout)) {
+                return std::unexpected(
+                    "GraphJit sample composition contains an invalid source channel");
+            }
+            contribution.sources.push_back(SourceBinding{
+                .storage = *source,
+                .source_channel = source_plan.source_channel,
+                .read_latency = source_plan.read_latency,
+            });
+        }
+        for (auto const target_channel : contribution.target_channels) {
+            if (target_channel >= populated_targets.size()
+                || populated_targets[target_channel]) {
+                return std::unexpected(
+                    "GraphJit sample composition contains an invalid target projection");
+            }
+            populated_targets[target_channel] = true;
+        }
+
+        if (shift_writes_by_read_latency) {
+            auto const source_type = contribution.source_layout.channel_type;
+            auto const converted_type = contribution.converted_layout.channel_type;
+            contribution.shifted_write_latencies.resize(
+                channel_count(converted_type));
+            if (source_type == converted_type) {
+                for (std::size_t channel = 0;
+                     channel < contribution.shifted_write_latencies.size();
+                     ++channel) {
+                    contribution.shifted_write_latencies[channel] =
+                        contribution.sources[channel].read_latency;
+                }
+            } else if (source_type == ChannelTypeId::mono) {
+                auto const latency = contribution.sources.front().read_latency;
+                std::ranges::fill(
+                    contribution.shifted_write_latencies, latency);
+            } else if (source_type == ChannelTypeId::stereo
+                && converted_type == ChannelTypeId::mono) {
+                if (contribution.sources[0].read_latency
+                    != contribution.sources[1].read_latency) {
+                    return std::unexpected(
+                        "GraphJit shifted stereo-to-mono feedback conversion requires equal source-channel latencies");
+                }
+                contribution.shifted_write_latencies[0] =
+                    contribution.sources[0].read_latency;
+            } else {
+                return std::unexpected(
+                    "GraphJit shifted sample composition has an unsupported semantic conversion");
+            }
+        }
+        contributions.push_back(std::move(contribution));
     }
-    if (!std::ranges::all_of(target_channels, [](bool value) { return value; })) {
+    if (!std::ranges::all_of(
+            populated_targets, [](bool value) { return value; })) {
         return std::unexpected(
             "GraphJit sample composition does not populate every target channel");
     }
@@ -1226,40 +1297,115 @@ std::expected<void, std::string> emit_sample_composition_write(
     auto* target_frame = builder.CreateAdd(
         first_frame, frame_offset, "sample.compose.absolute");
 
-    for (std::size_t i = 0; i < sources.size(); ++i) {
-        auto const& source = sources[i];
-        llvm::Value* source_frame = target_frame;
-        llvm::Value* target_storage_frame = target_frame;
-        if (shift_writes_by_read_latency) {
-            target_storage_frame = builder.CreateAdd(
-                target_frame,
-                llvm::ConstantInt::get(size_type, source.read_latency),
-                "sample.compose.target.frame." + std::to_string(i));
-        } else {
-            source_frame = builder.CreateSub(
-                target_frame,
-                llvm::ConstantInt::get(size_type, source.read_latency),
-                "sample.compose.source.frame." + std::to_string(i));
+    for (std::size_t contribution_index = 0;
+         contribution_index < contributions.size(); ++contribution_index) {
+        auto const& contribution = contributions[contribution_index];
+        std::vector<llvm::Value*> source_values;
+        source_values.reserve(contribution.sources.size());
+        for (std::size_t source_index = 0;
+             source_index < contribution.sources.size(); ++source_index) {
+            auto const& source = contribution.sources[source_index];
+            llvm::Value* source_frame = target_frame;
+            if (!shift_writes_by_read_latency) {
+                source_frame = builder.CreateSub(
+                    target_frame,
+                    llvm::ConstantInt::get(size_type, source.read_latency),
+                    "sample.compose.source.frame."
+                        + std::to_string(contribution_index) + "."
+                        + std::to_string(source_index));
+            }
+            auto* source_pointer = sample_element_pointer(
+                builder,
+                storage_base,
+                source.storage,
+                source_frame,
+                source.source_channel,
+                "sample.compose.source."
+                    + std::to_string(contribution_index) + "."
+                    + std::to_string(source_index));
+            source_values.push_back(builder.CreateLoad(
+                sample_type,
+                source_pointer,
+                "sample.compose.value."
+                    + std::to_string(contribution_index) + "."
+                    + std::to_string(source_index)));
         }
-        auto* source_pointer = sample_element_pointer(
-            builder,
-            storage_base,
-            source.storage,
-            source_frame,
-            source.source_channel,
-            "sample.compose.source." + std::to_string(i));
-        auto* value = builder.CreateLoad(
-            sample_type,
-            source_pointer,
-            "sample.compose.value." + std::to_string(i));
-        auto* target_pointer = sample_element_pointer(
-            builder,
-            storage_base,
-            *target,
-            target_storage_frame,
-            source.target_channel,
-            "sample.compose.target." + std::to_string(i));
-        builder.CreateStore(value, target_pointer);
+
+        std::vector<llvm::Value*> converted_values;
+        switch (contribution.source_layout.channel_type) {
+        case ChannelTypeId::mono: {
+            auto* mono = source_values[0];
+            switch (contribution.converted_layout.channel_type) {
+            case ChannelTypeId::mono:
+                converted_values.push_back(mono);
+                break;
+            case ChannelTypeId::stereo:
+                converted_values.push_back(mono);
+                converted_values.push_back(mono);
+                break;
+            case ChannelTypeId::count:
+                return std::unexpected(
+                    "GraphJit sample composition has an invalid converted channel type");
+            }
+            break;
+        }
+        case ChannelTypeId::stereo: {
+            auto* left = source_values[0];
+            auto* right = source_values[1];
+            switch (contribution.converted_layout.channel_type) {
+            case ChannelTypeId::mono: {
+                auto* sum = builder.CreateFAdd(
+                    left, right, "sample.compose.stereo.sum");
+                converted_values.push_back(builder.CreateFMul(
+                    sum,
+                    llvm::ConstantFP::get(sample_type, 0.5),
+                    "sample.compose.stereo.average"));
+                break;
+            }
+            case ChannelTypeId::stereo:
+                converted_values.push_back(left);
+                converted_values.push_back(right);
+                break;
+            case ChannelTypeId::count:
+                return std::unexpected(
+                    "GraphJit sample composition has an invalid converted channel type");
+            }
+            break;
+        }
+        case ChannelTypeId::count:
+            return std::unexpected(
+                "GraphJit sample composition has an invalid source channel type");
+        }
+
+        if (converted_values.size() != contribution.target_channels.size()) {
+            return std::unexpected(
+                "GraphJit sample composition conversion produced an invalid channel count");
+        }
+        for (std::size_t converted_channel = 0;
+             converted_channel < converted_values.size(); ++converted_channel) {
+            llvm::Value* target_storage_frame = target_frame;
+            if (shift_writes_by_read_latency) {
+                target_storage_frame = builder.CreateAdd(
+                    target_frame,
+                    llvm::ConstantInt::get(
+                        size_type,
+                        contribution.shifted_write_latencies[converted_channel]),
+                    "sample.compose.target.frame."
+                        + std::to_string(contribution_index) + "."
+                        + std::to_string(converted_channel));
+            }
+            auto* target_pointer = sample_element_pointer(
+                builder,
+                storage_base,
+                *target,
+                target_storage_frame,
+                contribution.target_channels[converted_channel],
+                "sample.compose.target."
+                    + std::to_string(contribution_index) + "."
+                    + std::to_string(converted_channel));
+            builder.CreateStore(
+                converted_values[converted_channel], target_pointer);
+        }
     }
 
     auto* next = builder.CreateAdd(
@@ -1285,7 +1431,7 @@ std::expected<void, std::string> emit_sample_composition(
     return emit_sample_composition_write(
         builder,
         physical,
-        composition.sources,
+        composition.contributions,
         composition.target_representation,
         composition.target_layout,
         composition.target_history,
@@ -1345,14 +1491,14 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
             "GraphJit producer-home feedback timeline must not schedule a post-producer write");
     case detail::SampleFeedbackTimelineWriterKind::composition:
         if (timeline.writer.source_representation != detail::no_sample_representation
-            || timeline.writer.composition_sources.empty()) {
+            || timeline.writer.composition_contributions.empty()) {
             return std::unexpected(
                 "GraphJit composed sample feedback timeline has an invalid writer shape");
         }
         return emit_sample_composition_write(
             builder,
             physical,
-            timeline.writer.composition_sources,
+            timeline.writer.composition_contributions,
             timeline.timeline_representation,
             timeline.channel_layout,
             0,
@@ -1364,7 +1510,7 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
         break;
     }
 
-    if (!timeline.writer.composition_sources.empty()
+    if (!timeline.writer.composition_contributions.empty()
         || timeline.writer.source_representation >= physical.representations.size()) {
         return std::unexpected(
             "GraphJit copied sample feedback timeline has an invalid writer shape");

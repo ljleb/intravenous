@@ -990,14 +990,59 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 target_read_latency = connection.read_latency;
             }
         } else {
-            // Projection/permutation has already normalized to one semantic
-            // source per target channel. Channel-count conversion remains a
-            // separate whole-port materialization feature.
+            // Projection/permutation normalization preserves one semantic
+            // gather -> conversion -> projection contribution per configured
+            // connection. The flattened source vector is only producer/timing
+            // inventory; contribution metadata is authoritative for channel
+            // conversion and final target placement.
             if (connection.canonical_source_layout
-                || connection.source_type != connection.target_type
-                || connection.source_channels.size() != target_channel_total) {
+                || connection.projection_contributions.empty()) {
                 return std::unexpected(
-                    "GraphJit sample composition currently requires one source channel per target channel without channel-count conversion");
+                    "GraphJit sample composition lost normalized projection metadata");
+            }
+            std::vector<bool> populated_targets(target_channel_total, false);
+            for (auto const& contribution : connection.projection_contributions) {
+                if (contribution.source_channel_indices.size()
+                        != channel_count(contribution.source_type)
+                    || contribution.target_channels.size()
+                        != channel_count(contribution.target_type)) {
+                    return std::unexpected(
+                        "GraphJit sample composition contribution has inconsistent semantic channel counts");
+                }
+                try {
+                    (void)ChannelConversionRegistry::plan(
+                        ChannelLayout{
+                            .channel_type = contribution.source_type,
+                            .sample_layout = SampleStreamLayout::planar,
+                        },
+                        ChannelLayout{
+                            .channel_type = contribution.target_type,
+                            .sample_layout = SampleStreamLayout::planar,
+                        });
+                } catch (std::exception const& e) {
+                    return std::unexpected(
+                        "GraphJit sample composition conversion is unsupported: "
+                        + std::string(e.what()));
+                }
+                for (auto const source_index : contribution.source_channel_indices) {
+                    if (source_index >= connection.source_channel_timings.size()) {
+                        return std::unexpected(
+                            "GraphJit sample composition contribution lost a source timing");
+                    }
+                }
+                for (auto const target_channel : contribution.target_channels) {
+                    if (target_channel >= populated_targets.size()
+                        || populated_targets[target_channel]) {
+                        return std::unexpected(
+                            "GraphJit sample composition contribution has an invalid target projection");
+                    }
+                    populated_targets[target_channel] = true;
+                }
+            }
+            if (!std::ranges::all_of(
+                    populated_targets, [](bool value) { return value; })) {
+                return std::unexpected(
+                    "GraphJit sample composition does not populate every target channel");
             }
             // Feed-forward composition materializes a timestamp-aligned
             // transient value and therefore reads at latency zero. Detached

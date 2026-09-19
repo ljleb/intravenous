@@ -157,10 +157,23 @@ std::string composition_feedback_identity(
         << ":layout="
         << static_cast<unsigned>(connection.target_layout.channel_type) << '.'
         << static_cast<unsigned>(connection.target_layout.sample_layout)
-        << ":sources=";
-    for (auto const& channel : connection.source_channel_timings) {
-        out << channel.source.bundle << '.' << channel.source.port << '.'
-            << channel.source.channel << '@' << channel.read_latency << ',';
+        << ":contributions=";
+    for (auto const& contribution : connection.projection_contributions) {
+        out << '[' << static_cast<unsigned>(contribution.source_type) << '>'
+            << static_cast<unsigned>(contribution.target_type) << ':';
+        for (auto const source_index : contribution.source_channel_indices) {
+            if (source_index >= connection.source_channel_timings.size()) {
+                out << "invalid,";
+                continue;
+            }
+            auto const& channel = connection.source_channel_timings[source_index];
+            out << channel.source.bundle << '.' << channel.source.port << '.'
+                << channel.source.channel << '@' << channel.read_latency << ',';
+        }
+        out << "->";
+        for (auto const target_channel : contribution.target_channels)
+            out << target_channel << ',';
+        out << ']';
     }
     out << ":latency=" << connection.detach->loop_extra_latency
         << ":history=" << connection.target_history
@@ -900,12 +913,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         }
         if (connection.source_channel_timings.size()
                 != connection.source_channels.size()
-            || connection.source_channels.size() != connection.target_channels.size()
-            || connection.source_type != connection.target_type
-            || connection.source_channels.size()
-                != channel_count(connection.target_layout)) {
+            || connection.projection_contributions.empty()) {
             return std::unexpected(
-                "GraphJit sample composition currently requires one source channel per target channel without channel-count conversion");
+                "GraphJit sample composition lost normalized projection metadata");
         }
         for (std::size_t channel = 0;
              channel < connection.target_channels.size(); ++channel) {
@@ -1012,48 +1022,101 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             target_representation = *transient;
         }
 
-        std::vector<SampleCompositionSourcePlan> composition_sources;
-        composition_sources.reserve(connection.source_channel_timings.size());
-        for (std::size_t channel_index = 0;
-             channel_index < connection.source_channel_timings.size();
-             ++channel_index) {
-            auto const& channel = connection.source_channel_timings[channel_index];
-            NodeBundlePortId const source_port{
-                channel.source.bundle,
-                PortKind::sample,
-                channel.source.port,
+        std::vector<SampleCompositionContributionPlan> composition_contributions;
+        composition_contributions.reserve(
+            connection.projection_contributions.size());
+        std::vector<bool> populated_targets(channel_count(connection.target_layout), false);
+
+        for (auto const& semantic : connection.projection_contributions) {
+            auto const source_layout = ChannelLayout{
+                .channel_type = semantic.source_type,
+                .sample_layout = SampleStreamLayout::planar,
             };
-            auto const group = std::ranges::find_if(
-                connections.sample_producer_groups,
-                [&](SampleProducerGroupPlan const& candidate) {
-                    return candidate.source_port
-                        && *candidate.source_port == source_port;
+            auto const converted_layout = ChannelLayout{
+                .channel_type = semantic.target_type,
+                .sample_layout = SampleStreamLayout::planar,
+            };
+            if (semantic.source_channel_indices.size()
+                    != channel_count(source_layout)
+                || semantic.target_channels.size()
+                    != channel_count(converted_layout)) {
+                return std::unexpected(
+                    "GraphJit sample composition contribution has inconsistent semantic channel counts");
+            }
+            try {
+                (void)ChannelConversionRegistry::plan(
+                    source_layout, converted_layout);
+            } catch (std::exception const& e) {
+                return std::unexpected(
+                    "GraphJit sample composition conversion is unsupported: "
+                    + std::string(e.what()));
+            }
+
+            SampleCompositionContributionPlan contribution{
+                .source_layout = source_layout,
+                .converted_layout = converted_layout,
+            };
+            contribution.sources.reserve(semantic.source_channel_indices.size());
+            contribution.target_channels.reserve(semantic.target_channels.size());
+
+            for (auto const timing_index : semantic.source_channel_indices) {
+                if (timing_index >= connection.source_channel_timings.size()) {
+                    return std::unexpected(
+                        "GraphJit sample composition contribution lost a source timing");
+                }
+                auto const& channel = connection.source_channel_timings[timing_index];
+                NodeBundlePortId const source_port{
+                    channel.source.bundle,
+                    PortKind::sample,
+                    channel.source.port,
+                };
+                auto const group = std::ranges::find_if(
+                    connections.sample_producer_groups,
+                    [&](SampleProducerGroupPlan const& candidate) {
+                        return candidate.source_port
+                            && *candidate.source_port == source_port;
+                    });
+                if (group == connections.sample_producer_groups.end()) {
+                    return std::unexpected(
+                        "GraphJit sample composition lost a source producer group");
+                }
+                auto const group_index = static_cast<std::size_t>(
+                    std::distance(connections.sample_producer_groups.begin(), group));
+                if (group_index >= plan.producer_groups.size()
+                    || !plan.producer_groups[group_index]) {
+                    return std::unexpected(
+                        "GraphJit sample composition lost a source physical representation");
+                }
+                auto const source_representation =
+                    plan.producer_groups[group_index]->canonical_representation;
+                if (source_representation >= plan.representations.size()
+                    || channel.source.channel
+                        >= channel_count(plan.representations[source_representation].channel_layout)) {
+                    return std::unexpected(
+                        "GraphJit sample composition source channel is outside its producer representation");
+                }
+                contribution.sources.push_back(SampleCompositionInputPlan{
+                    .source_representation = source_representation,
+                    .source_channel = channel.source.channel,
+                    .read_latency = channel.read_latency,
                 });
-            if (group == connections.sample_producer_groups.end()) {
-                return std::unexpected(
-                    "GraphJit sample composition lost a source producer group");
             }
-            auto const group_index = static_cast<std::size_t>(
-                std::distance(connections.sample_producer_groups.begin(), group));
-            if (group_index >= plan.producer_groups.size()
-                || !plan.producer_groups[group_index]) {
-                return std::unexpected(
-                    "GraphJit sample composition lost a source physical representation");
+
+            for (auto const target_channel : semantic.target_channels) {
+                if (target_channel >= populated_targets.size()
+                    || populated_targets[target_channel]) {
+                    return std::unexpected(
+                        "GraphJit sample composition contribution has an invalid target projection");
+                }
+                populated_targets[target_channel] = true;
+                contribution.target_channels.push_back(target_channel);
             }
-            auto const source_representation =
-                plan.producer_groups[group_index]->canonical_representation;
-            if (source_representation >= plan.representations.size()
-                || channel.source.channel
-                    >= channel_count(plan.representations[source_representation].channel_layout)) {
-                return std::unexpected(
-                    "GraphJit sample composition source channel is outside its producer representation");
-            }
-            composition_sources.push_back(SampleCompositionSourcePlan{
-                .source_representation = source_representation,
-                .source_channel = channel.source.channel,
-                .target_channel = connection.target_channels[channel_index].channel,
-                .read_latency = channel.read_latency,
-            });
+            composition_contributions.push_back(std::move(contribution));
+        }
+        if (!std::ranges::all_of(
+                populated_targets, [](bool value) { return value; })) {
+            return std::unexpected(
+                "GraphJit sample composition does not populate every target channel");
         }
 
         if (detached) {
@@ -1067,13 +1130,13 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 .writer = SampleFeedbackTimelineWriterPlan{
                     .kind = SampleFeedbackTimelineWriterKind::composition,
                     .after_execution_position = begin,
-                    .composition_sources = std::move(composition_sources),
+                    .composition_contributions = std::move(composition_contributions),
                 },
             });
         } else {
             plan.compositions.push_back(SampleCompositionPlan{
                 .connection_index = connection_index,
-                .sources = std::move(composition_sources),
+                .contributions = std::move(composition_contributions),
                 .target_representation = target_representation,
                 .after_execution_position = begin,
                 .target_layout = connection.target_layout,

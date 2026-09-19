@@ -1294,7 +1294,7 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     EXPECT_EQ(timeline.writer.kind, SampleFeedbackTimelineWriterKind::copy);
     EXPECT_EQ(timeline.writer.source_representation, canonical);
     EXPECT_EQ(timeline.writer.after_execution_position, 0u);
-    EXPECT_TRUE(timeline.writer.composition_sources.empty());
+    EXPECT_TRUE(timeline.writer.composition_contributions.empty());
 
     iv::NodeLayoutBuilder builder(8);
     auto declared = declare_sample_physical_storage(builder, *physical);
@@ -1518,6 +1518,20 @@ TEST(GraphJitSamplePhysicalPlan, DetachedCompositionUsesPersistentShiftedTimelin
             .read_latency = 2,
         },
     };
+    feedback.projection_contributions = {
+        SampleProjectionContributionPlan{
+            .source_type = iv::ChannelTypeId::mono,
+            .source_channel_indices = {0},
+            .target_type = iv::ChannelTypeId::mono,
+            .target_channels = {0},
+        },
+        SampleProjectionContributionPlan{
+            .source_type = iv::ChannelTypeId::mono,
+            .source_channel_indices = {1},
+            .target_type = iv::ChannelTypeId::mono,
+            .target_channels = {1},
+        },
+    };
     feedback.target_type = iv::ChannelTypeId::stereo;
     feedback.target_layout = stereo;
     feedback.target_channels = {
@@ -1610,13 +1624,21 @@ TEST(GraphJitSamplePhysicalPlan, DetachedCompositionUsesPersistentShiftedTimelin
     EXPECT_EQ(
         timeline.writer.source_representation,
         no_sample_representation);
-    ASSERT_EQ(timeline.writer.composition_sources.size(), 2u);
-    EXPECT_EQ(timeline.writer.composition_sources[0].source_channel, 0u);
-    EXPECT_EQ(timeline.writer.composition_sources[0].target_channel, 0u);
-    EXPECT_EQ(timeline.writer.composition_sources[0].read_latency, 7u);
-    EXPECT_EQ(timeline.writer.composition_sources[1].source_channel, 0u);
-    EXPECT_EQ(timeline.writer.composition_sources[1].target_channel, 1u);
-    EXPECT_EQ(timeline.writer.composition_sources[1].read_latency, 2u);
+    ASSERT_EQ(timeline.writer.composition_contributions.size(), 2u);
+    auto const& left = timeline.writer.composition_contributions[0];
+    EXPECT_EQ(left.source_layout.channel_type, iv::ChannelTypeId::mono);
+    EXPECT_EQ(left.converted_layout.channel_type, iv::ChannelTypeId::mono);
+    ASSERT_EQ(left.sources.size(), 1u);
+    EXPECT_EQ(left.sources[0].source_channel, 0u);
+    EXPECT_EQ(left.sources[0].read_latency, 7u);
+    EXPECT_EQ(left.target_channels, std::vector<std::size_t>{0u});
+    auto const& right = timeline.writer.composition_contributions[1];
+    EXPECT_EQ(right.source_layout.channel_type, iv::ChannelTypeId::mono);
+    EXPECT_EQ(right.converted_layout.channel_type, iv::ChannelTypeId::mono);
+    ASSERT_EQ(right.sources.size(), 1u);
+    EXPECT_EQ(right.sources[0].source_channel, 0u);
+    EXPECT_EQ(right.sources[0].read_latency, 2u);
+    EXPECT_EQ(right.target_channels, std::vector<std::size_t>{1u});
 
     iv::NodeLayoutBuilder builder(8);
     auto declared = declare_sample_physical_storage(builder, *physical);
@@ -4034,14 +4056,33 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_projected_sample_feedback_
                 "GraphJit projected sample-feedback fixture lost its detached connection shape");
         }
         split_detached = true;
-        for (auto const target : connection.target_channels) {
-            projected.push_back(iv::ConfiguredSampleConnection{
-                .source_type = iv::ChannelTypeId::mono,
-                .source_channels = connection.source_channels,
-                .target_type = iv::ChannelTypeId::mono,
-                .target_channels = {target},
-                .detach = connection.detach,
-            });
+        for (std::size_t target_index = 0;
+             target_index < connection.target_channels.size(); ++target_index) {
+            auto const target = connection.target_channels[target_index];
+            if (target_index == 0) {
+                // Force the normalized projection path to preserve a real
+                // channel-count conversion boundary. The same mono source is
+                // gathered as semantic stereo and stereo->mono conversion
+                // therefore produces the same value while exercising mixing.
+                projected.push_back(iv::ConfiguredSampleConnection{
+                    .source_type = iv::ChannelTypeId::stereo,
+                    .source_channels = {
+                        connection.source_channels.front(),
+                        connection.source_channels.front(),
+                    },
+                    .target_type = iv::ChannelTypeId::mono,
+                    .target_channels = {target},
+                    .detach = connection.detach,
+                });
+            } else {
+                projected.push_back(iv::ConfiguredSampleConnection{
+                    .source_type = iv::ChannelTypeId::mono,
+                    .source_channels = connection.source_channels,
+                    .target_type = iv::ChannelTypeId::mono,
+                    .target_channels = {target},
+                    .detach = connection.detach,
+                });
+            }
         }
     }
     if (!split_detached) {
@@ -5291,6 +5332,19 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleLatency)
         composed_connection,
         composed_latency_analysis->sample_connections.end());
     ASSERT_EQ(composed_connection->source_channel_timings.size(), 2u);
+    ASSERT_EQ(composed_connection->projection_contributions.size(), 1u);
+    EXPECT_EQ(
+        composed_connection->projection_contributions[0].source_type,
+        iv::ChannelTypeId::stereo);
+    EXPECT_EQ(
+        composed_connection->projection_contributions[0].target_type,
+        iv::ChannelTypeId::stereo);
+    EXPECT_EQ(
+        composed_connection->projection_contributions[0].source_channel_indices,
+        (std::vector<std::size_t>{0u, 1u}));
+    EXPECT_EQ(
+        composed_connection->projection_contributions[0].target_channels,
+        (std::vector<std::size_t>{0u, 1u}));
     EXPECT_EQ(composed_connection->source_channel_timings[0].read_latency, 7u);
     EXPECT_EQ(composed_connection->source_channel_timings[1].read_latency, 2u);
 
@@ -5544,13 +5598,19 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
     ASSERT_TRUE(projected_physical.has_value())
         << (projected_physical ? std::string{} : projected_physical.error());
     ASSERT_EQ(projected_physical->compositions.size(), 1u);
-    ASSERT_EQ(projected_physical->compositions[0].sources.size(), 2u);
-    EXPECT_EQ(projected_physical->compositions[0].sources[0].source_channel, 1u);
-    EXPECT_EQ(projected_physical->compositions[0].sources[0].target_channel, 0u);
-    EXPECT_EQ(projected_physical->compositions[0].sources[0].read_latency, 7u);
-    EXPECT_EQ(projected_physical->compositions[0].sources[1].source_channel, 0u);
-    EXPECT_EQ(projected_physical->compositions[0].sources[1].target_channel, 1u);
-    EXPECT_EQ(projected_physical->compositions[0].sources[1].read_latency, 2u);
+    ASSERT_EQ(projected_physical->compositions[0].contributions.size(), 2u);
+    auto const& projected_left =
+        projected_physical->compositions[0].contributions[0];
+    ASSERT_EQ(projected_left.sources.size(), 1u);
+    EXPECT_EQ(projected_left.sources[0].source_channel, 1u);
+    EXPECT_EQ(projected_left.sources[0].read_latency, 7u);
+    EXPECT_EQ(projected_left.target_channels, std::vector<std::size_t>{0u});
+    auto const& projected_right =
+        projected_physical->compositions[0].contributions[1];
+    ASSERT_EQ(projected_right.sources.size(), 1u);
+    EXPECT_EQ(projected_right.sources[0].source_channel, 0u);
+    EXPECT_EQ(projected_right.sources[0].read_latency, 2u);
+    EXPECT_EQ(projected_right.target_channels, std::vector<std::size_t>{1u});
 
     auto projected = compile_graph(projected_graph, 122);
     ASSERT_TRUE(projected.succeeded())
@@ -6062,11 +6122,38 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
     EXPECT_EQ(detached->detach->loop_extra_latency, 6u);
     EXPECT_FALSE(detached->canonical_source_port.has_value());
     EXPECT_FALSE(detached->canonical_source_layout.has_value());
-    ASSERT_EQ(detached->source_channel_timings.size(), 2u);
+    ASSERT_EQ(detached->source_channel_timings.size(), 3u);
     EXPECT_EQ(detached->source_channel_timings[0].source.channel, 0u);
     EXPECT_EQ(detached->source_channel_timings[1].source.channel, 0u);
+    EXPECT_EQ(detached->source_channel_timings[2].source.channel, 0u);
     EXPECT_EQ(detached->source_channel_timings[0].read_latency, 2u);
     EXPECT_EQ(detached->source_channel_timings[1].read_latency, 2u);
+    EXPECT_EQ(detached->source_channel_timings[2].read_latency, 2u);
+    ASSERT_EQ(detached->projection_contributions.size(), 2u);
+    EXPECT_EQ(
+        detached->projection_contributions[0].source_type,
+        iv::ChannelTypeId::stereo);
+    EXPECT_EQ(
+        detached->projection_contributions[0].target_type,
+        iv::ChannelTypeId::mono);
+    EXPECT_EQ(
+        detached->projection_contributions[0].source_channel_indices,
+        (std::vector<std::size_t>{0u, 1u}));
+    EXPECT_EQ(
+        detached->projection_contributions[0].target_channels,
+        (std::vector<std::size_t>{0u}));
+    EXPECT_EQ(
+        detached->projection_contributions[1].source_type,
+        iv::ChannelTypeId::mono);
+    EXPECT_EQ(
+        detached->projection_contributions[1].target_type,
+        iv::ChannelTypeId::mono);
+    EXPECT_EQ(
+        detached->projection_contributions[1].source_channel_indices,
+        (std::vector<std::size_t>{2u}));
+    EXPECT_EQ(
+        detached->projection_contributions[1].target_channels,
+        (std::vector<std::size_t>{1u}));
     EXPECT_EQ(detached->target_layout.channel_type, iv::ChannelTypeId::stereo);
     ASSERT_TRUE(detached->detach_region.has_value());
     ASSERT_LT(*detached->detach_region, analysis->schedule.regions.size());
@@ -6109,9 +6196,27 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
     EXPECT_EQ(
         timeline.writer.kind,
         iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::composition);
-    ASSERT_EQ(timeline.writer.composition_sources.size(), 2u);
-    EXPECT_EQ(timeline.writer.composition_sources[0].read_latency, 2u);
-    EXPECT_EQ(timeline.writer.composition_sources[1].read_latency, 2u);
+    ASSERT_EQ(timeline.writer.composition_contributions.size(), 2u);
+    EXPECT_EQ(
+        timeline.writer.composition_contributions[0].source_layout.channel_type,
+        iv::ChannelTypeId::stereo);
+    EXPECT_EQ(
+        timeline.writer.composition_contributions[0].converted_layout.channel_type,
+        iv::ChannelTypeId::mono);
+    ASSERT_EQ(timeline.writer.composition_contributions[0].sources.size(), 2u);
+    ASSERT_EQ(timeline.writer.composition_contributions[1].sources.size(), 1u);
+    EXPECT_EQ(
+        timeline.writer.composition_contributions[0].sources[0].read_latency,
+        2u);
+    EXPECT_EQ(
+        timeline.writer.composition_contributions[0].sources[1].read_latency,
+        2u);
+    EXPECT_EQ(
+        timeline.writer.composition_contributions[0].target_channels,
+        (std::vector<std::size_t>{0u}));
+    EXPECT_EQ(
+        timeline.writer.composition_contributions[1].sources[0].read_latency,
+        2u);
 
     auto compiled = compile_graph(feedback_graph, 127);
     ASSERT_TRUE(compiled.succeeded())
