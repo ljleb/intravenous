@@ -1288,9 +1288,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             : nullptr;
     };
 
-    // Point 12 currently supports only exact realtime event transport inside a
-    // cyclic execution region. Retention, conversion and edges escaping the SCC
-    // remain separate capabilities.
+    // Point 12 currently supports exact realtime event transport inside a
+    // cyclic execution region and feed-forward fanout from a cyclic producer to
+    // downstream acyclic consumers. Retention, conversion, feed-forward ingress
+    // into a cycle, and edges between cyclic regions remain separate capabilities.
     for (auto const& connection : connections.event_connections) {
         std::optional<std::size_t> cyclic_region;
         auto observe = [&](NodeBundleHandle bundle)
@@ -1326,14 +1327,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             auto const* region = region_for_bundle(source.bundle);
             if (!region || !region->cyclic) {
                 return std::unexpected(
-                    "GraphJit event SCC lowering does not yet support fanout leaving a cyclic region");
-            }
-        }
-        for (auto const target : connection.targets) {
-            auto const* region = region_for_bundle(target.bundle);
-            if (!region || !region->cyclic) {
-                return std::unexpected(
-                    "GraphJit event SCC lowering does not yet support fanout leaving a cyclic region");
+                    "GraphJit event SCC lowering does not yet support feed-forward edges entering a cyclic region");
             }
         }
         if (connection.access != PlannedConnectionAccess::realtime_to_realtime

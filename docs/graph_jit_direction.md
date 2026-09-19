@@ -244,10 +244,12 @@ The current internal realtime connection surface is intentionally asymmetric:
   event ordering is deterministic before conversion/retention/fanout.
 - **Events, cyclic:** `detach()` currently requires one semantic source, exact event
   type, zero source/target history, zero source latency, realtime-to-realtime access,
-  and all participating edges to stay within one cyclic region. Same-delay detached
-  fanout shares one persistent delayed stream. Generalized conversion/retention in
-  cyclic regions and event fanout crossing an SCC boundary remain the main realtime
-  connection work.
+  and detached feedback edges to stay within one cyclic region. Same-delay detached
+  fanout shares one persistent delayed stream, and an exact-type zero-retention
+  producer may fan out from a cyclic SCC to downstream acyclic consumers through
+  the ordinary aggregate-sequence materialization path. Generalized
+  conversion/retention in cyclic regions, feed-forward ingress into a cycle, and
+  edges between cyclic regions remain the main realtime connection work.
 - **Both kinds:** the root graph is required to have zero public/boundary ports.
   Device I/O and communication with other application modules enter through
   concrete node types, so there is no future root-boundary transport ABI to add.

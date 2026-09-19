@@ -8254,7 +8254,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInPersistentRingRetainsBursts)
     EXPECT_EQ(probe->last_times[3], 197u);
 }
 
-TEST_F(GraphJitRuntimeFixture, EventFeedbackSccFanoutLeavingCycleRemainsCapabilityGated)
+TEST_F(GraphJitRuntimeFixture, EventFeedbackSccFansOutToAcyclicConsumer)
 {
     auto feedback_graph =
         configured_event_feedback_scc_external_fanout_graph(*revision);
@@ -8264,7 +8264,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccFanoutLeavingCycleRemainsCapabili
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
-    EXPECT_TRUE(std::ranges::any_of(
+    auto const fanout = std::ranges::find_if(
         analysis->event_connections,
         [&](iv::graph_jit::detail::EventConnectionPlan const& connection) {
             if (connection.detach || connection.sources.empty()
@@ -8287,11 +8287,51 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccFanoutLeavingCycleRemainsCapabili
                 && target_region < analysis->schedule.regions.size()
                 && analysis->schedule.regions[source_region].cyclic
                 && !analysis->schedule.regions[target_region].cyclic;
-        }));
+        });
+    ASSERT_NE(fanout, analysis->event_connections.end());
+    EXPECT_TRUE(fanout->requires_block_materialization);
 
-    expect_lowering_failure(
-        compile_graph(feedback_graph, 142),
-        "fanout leaving a cyclic region");
+    auto compiled = compile_graph(feedback_graph, 142);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    EventConsumerProbeStateMirror* observer = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(EventConsumerProbeStateMirror)) {
+            ASSERT_EQ(observer, nullptr);
+            observer = static_cast<EventConsumerProbeStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(observer, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 64);
+    EXPECT_EQ(observer->calls, 1u);
+    EXPECT_EQ(observer->last_index, 0u);
+    EXPECT_EQ(observer->last_block_size, 64u);
+    EXPECT_EQ(observer->event_count, 8u);
+    EXPECT_EQ(observer->trigger_count, 8u);
+    EXPECT_EQ(observer->first_time, 1u);
+    EXPECT_EQ(observer->last_time, 57u);
+    EXPECT_EQ(observer->marker, 0xe71e17u);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 64, 8);
+    EXPECT_EQ(observer->calls, 2u);
+    EXPECT_EQ(observer->last_index, 64u);
+    EXPECT_EQ(observer->last_block_size, 8u);
+    EXPECT_EQ(observer->event_count, 1u);
+    EXPECT_EQ(observer->trigger_count, 1u);
+    EXPECT_EQ(observer->first_time, 65u);
+    EXPECT_EQ(observer->last_time, 65u);
 }
 
 TEST_F(GraphJitRuntimeFixture, EventDetachFeedbackFanoutSharesDelayedStream)
