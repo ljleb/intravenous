@@ -1289,9 +1289,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
     };
 
     // Point 12 currently supports exact realtime event transport inside a
-    // cyclic execution region and feed-forward fanout from a cyclic producer to
-    // downstream acyclic consumers. Retention, conversion, feed-forward ingress
-    // into a cycle, and edges between cyclic regions remain separate capabilities.
+    // cyclic execution region and zero-retention fanout from a cyclic producer to
+    // downstream acyclic consumers, including non-expanding conversion at SCC
+    // exit. Retention, conversion inside a cycle, feed-forward ingress into a
+    // cycle, and edges between cyclic regions remain separate capabilities.
     for (auto const& connection : connections.event_connections) {
         std::optional<std::size_t> cyclic_region;
         auto observe = [&](NodeBundleHandle bundle)
@@ -1332,12 +1333,21 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         }
         if (connection.access != PlannedConnectionAccess::realtime_to_realtime
             || connection.external_boundary
-            || connection.requires_conversion
             || connection.source_history != 0
             || connection.source_latency != 0
             || connection.target_history != 0) {
             return std::unexpected(
-                "GraphJit event SCC lowering currently requires exact-type zero-history zero-latency realtime transport");
+                "GraphJit event SCC lowering currently requires zero-history zero-latency realtime transport");
+        }
+        if (connection.requires_conversion
+            && std::ranges::any_of(
+                connection.targets,
+                [&](EventInputPortId target) {
+                    auto const* region = region_for_bundle(target.bundle);
+                    return region != nullptr && region->cyclic;
+                })) {
+            return std::unexpected(
+                "GraphJit event SCC lowering does not yet support conversion consumed inside a cyclic region");
         }
     }
 

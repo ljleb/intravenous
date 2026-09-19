@@ -247,12 +247,13 @@ The current internal realtime connection surface is intentionally asymmetric:
   and detached feedback edges to stay within one cyclic region. Same-delay detached
   fanout shares one persistent delayed stream, and an exact-type zero-retention
   producer may fan out from a cyclic SCC to downstream acyclic consumers through
-  the ordinary aggregate-sequence materialization path. Cross-region event
-  materializations are scheduled once at SCC exit with the root invocation
-  index/size rather than after every producer slice; this is the structural
-  boundary required by future windowed conversion/retention. Generalized
-  conversion/retention in cyclic regions, feed-forward ingress into a cycle, and
-  edges between cyclic regions remain the main realtime connection work.
+  the ordinary aggregate-sequence materialization path. Non-expanding conversion
+  on such outbound branches is also supported. Cross-region event materializations
+  are scheduled once at SCC exit with the root invocation index/size rather than
+  after every producer slice; conversion therefore sees the complete root-call
+  aggregate. Retention in cyclic transport, conversion consumed inside a cycle,
+  feed-forward ingress into a cycle, and edges between cyclic regions remain the
+  main realtime connection work.
 - **Both kinds:** the root graph is required to have zero public/boundary ports.
   Device I/O and communication with other application modules enter through
   concrete node types, so there is no future root-boundary transport ABI to add.
@@ -402,9 +403,11 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     ordinary concrete system/communication nodes rather than boundary ports.
     Event feedback executes for the current exact-type, zero-history, zero-latency
     realtime slice, including same-delay detached fanout, burst retention, changing
-    root-call sizes, and generation migration. Cyclic event conversion,
-    history/latency retention, multi-producer fan-in inside a cycle, edges/fanout
-    leaving a cyclic region, and edges spanning distinct cyclic regions remain
+    root-call sizes, and generation migration. A cyclic producer may also fan out
+    to an acyclic consumer through one SCC-exit materialization, including
+    non-expanding event conversion. Conversion consumed inside a cycle,
+    history/latency retention, multi-producer fan-in inside a cycle, feed-forward
+    ingress into a cycle, and edges spanning distinct cyclic regions remain
     capability-gated.
 13. **Root I/O node integration.** Keep the configured project root zero-input and
     zero-output. Device I/O and communication with other application modules are

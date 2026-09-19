@@ -338,6 +338,18 @@ struct EventConsumerProbeStateMirror {
     std::uint32_t marker = 0;
 };
 
+struct EmptyEventConsumerProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t last_index = 0;
+    std::uint64_t last_block_size = 0;
+    std::uint64_t event_count = 0;
+    std::uint64_t empty_count = 0;
+    std::uint64_t first_time = 0;
+    std::uint64_t last_time = 0;
+    std::uint32_t marker = 0;
+    std::uint64_t distinct_padding = 0;
+};
+
 struct EventFeedbackAStateMirror {
     std::uint64_t calls = 0;
     std::uint64_t scc_feedback_latency = 0;
@@ -3621,6 +3633,53 @@ struct TriggerEventConsumer {
     }
 };
 
+struct EmptyEventConsumer {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t last_index = 0;
+        std::uint64_t last_block_size = 0;
+        std::uint64_t event_count = 0;
+        std::uint64_t empty_count = 0;
+        std::uint64_t first_time = 0;
+        std::uint64_t last_time = 0;
+        std::uint32_t marker = 0;
+        std::uint64_t distinct_padding = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input("empty", iv::EventTypeId::empty),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(iv::TickBlockContext<EmptyEventConsumer> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        ++state.calls;
+        state.last_index = ctx.index;
+        state.last_block_size = ctx.block_size;
+        state.event_count = events.size();
+        state.empty_count = 0;
+        state.marker = 0xe4717001u;
+        if (!events.empty()) {
+            state.first_time = events[0].time;
+            state.last_time = events[events.size() - 1].time;
+        }
+        for (auto const& event : events) {
+            if (std::holds_alternative<iv::EmptyEvent>(event.value)) {
+                ++state.empty_count;
+            }
+        }
+    }
+};
+
 struct RetainedMidiEventConsumer {
     struct State {
         std::uint64_t calls = 0;
@@ -4167,6 +4226,7 @@ IV_NODE("iv.test.graph_jit.state_context.event_feedback_b", EventFeedbackB);
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_burst_a", EventFeedbackBurstA);
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_fanout_a", EventFeedbackFanoutA);
 IV_NODE("iv.test.graph_jit.state_context.trigger_event_consumer", TriggerEventConsumer);
+IV_NODE("iv.test.graph_jit.state_context.empty_event_consumer", EmptyEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_consumer", LimitedTriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_source", RetainedTriggerEventSource);
 IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_consumer", RetainedTriggerEventConsumer);
@@ -4880,7 +4940,9 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_merged_retained_event_grap
 
 std::shared_ptr<iv::ConfiguredGraph const>
 configured_event_feedback_scc_external_fanout_graph(
-    iv::PackageRevision const& revision)
+    iv::PackageRevision const& revision,
+    std::string_view observer_definition =
+        "iv.test.graph_jit.state_context.trigger_event_consumer")
 {
     using Session = std::unique_ptr<iv::details::BuilderSession,
         decltype(&iv::details::iv_builder_session_destroy)>;
@@ -4907,10 +4969,7 @@ configured_event_feedback_scc_external_fanout_graph(
     auto second = iv::details::configure_package_definition_provider(
         graph, graph_jit_event_feedback_b_id, std::nullopt, {});
     auto observer = iv::details::configure_package_definition_provider(
-        graph,
-        "iv.test.graph_jit.state_context.trigger_event_consumer",
-        std::nullopt,
-        {});
+        graph, observer_definition, std::nullopt, {});
     first.connect_event_input(0, second.event_port());
     second.connect_event_input(0, first.event_port().detach(10));
     observer.connect_event_input(0, first.event_port());
@@ -5116,6 +5175,8 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
         "iv.test.graph_jit.state_context.limited_trigger_event_source"));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.trigger_event_consumer"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.empty_event_consumer"));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.limited_trigger_event_consumer"));
     EXPECT_TRUE(has_module_definition(graph_jit_direct_event_module_id));
@@ -8330,6 +8391,91 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccFansOutToAcyclicConsumer)
     EXPECT_EQ(observer->last_block_size, 8u);
     EXPECT_EQ(observer->event_count, 1u);
     EXPECT_EQ(observer->trigger_count, 1u);
+    EXPECT_EQ(observer->first_time, 65u);
+    EXPECT_EQ(observer->last_time, 65u);
+}
+
+TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConvertsFanoutToAcyclicConsumer)
+{
+    auto feedback_graph = configured_event_feedback_scc_external_fanout_graph(
+        *revision,
+        "iv.test.graph_jit.state_context.empty_event_consumer");
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    auto const fanout = std::ranges::find_if(
+        analysis->event_connections,
+        [](iv::graph_jit::detail::EventConnectionPlan const& connection) {
+            return !connection.detach
+                && connection.source_type == iv::EventTypeId::trigger
+                && connection.target_type == iv::EventTypeId::empty;
+        });
+    ASSERT_NE(fanout, analysis->event_connections.end());
+    EXPECT_TRUE(fanout->requires_conversion);
+    EXPECT_TRUE(fanout->requires_block_materialization);
+    ASSERT_EQ(fanout->conversion.step_count, 1u);
+    EXPECT_EQ(
+        fanout->conversion.steps[0],
+        iv::EventConversionStepId::trigger_to_empty);
+
+    auto const group = std::ranges::find_if(
+        analysis->event_producer_groups,
+        [&](iv::graph_jit::detail::EventProducerGroupPlan const& candidate) {
+            return std::ranges::find(
+                       candidate.connection_indices,
+                       static_cast<std::size_t>(
+                           std::distance(
+                               analysis->event_connections.begin(), fanout)))
+                != candidate.connection_indices.end();
+        });
+    ASSERT_NE(group, analysis->event_producer_groups.end());
+    ASSERT_TRUE(group->implementation.has_value());
+    EXPECT_EQ(
+        *group->implementation,
+        iv::EventConnectionImplementationKind::transient_sequence);
+
+    auto compiled = compile_graph(feedback_graph, 148);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    EmptyEventConsumerProbeStateMirror* observer = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(EmptyEventConsumerProbeStateMirror)) {
+            ASSERT_EQ(observer, nullptr);
+            observer = static_cast<EmptyEventConsumerProbeStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(observer, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 64);
+    EXPECT_EQ(observer->calls, 1u);
+    EXPECT_EQ(observer->last_index, 0u);
+    EXPECT_EQ(observer->last_block_size, 64u);
+    EXPECT_EQ(observer->event_count, 8u);
+    EXPECT_EQ(observer->empty_count, 8u);
+    EXPECT_EQ(observer->first_time, 1u);
+    EXPECT_EQ(observer->last_time, 57u);
+    EXPECT_EQ(observer->marker, 0xe4717001u);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 64, 8);
+    EXPECT_EQ(observer->calls, 2u);
+    EXPECT_EQ(observer->last_index, 64u);
+    EXPECT_EQ(observer->last_block_size, 8u);
+    EXPECT_EQ(observer->event_count, 1u);
+    EXPECT_EQ(observer->empty_count, 1u);
     EXPECT_EQ(observer->first_time, 65u);
     EXPECT_EQ(observer->last_time, 65u);
 }
