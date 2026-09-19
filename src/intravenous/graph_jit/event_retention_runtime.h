@@ -14,6 +14,8 @@ inline constexpr char event_persistent_ring_prune_symbol[] =
     "iv_graph_jit_prune_event_persistent_ring";
 inline constexpr char event_feedback_append_symbol[] =
     "iv_graph_jit_append_event_feedback";
+inline constexpr char event_feedback_append_ring_source_symbol[] =
+    "iv_graph_jit_append_event_feedback_ring_source";
 
 #if defined(_WIN32)
 #define IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT __declspec(dllexport)
@@ -62,6 +64,23 @@ iv_graph_jit_prune_event_persistent_ring(
 extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT void
 iv_graph_jit_append_event_feedback(
     void const* source_events,
+    std::size_t source_begin_index,
+    std::size_t source_end_index,
+    std::size_t sample_index,
+    std::size_t loop_extra_latency,
+    void* ring_events,
+    std::size_t ring_capacity,
+    std::size_t* ring_read_index,
+    std::size_t* ring_write_index) noexcept;
+
+// Persistent producer rings expose monotonic source indices rather than a
+// linear aggregate count. Copy the newly-authored [begin,end) suffix through
+// the source ring mask into the detached feedback ring without materializing an
+// intermediate linear sequence.
+extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT void
+iv_graph_jit_append_event_feedback_ring_source(
+    void const* source_events,
+    std::size_t source_capacity,
     std::size_t source_begin_index,
     std::size_t source_end_index,
     std::size_t sample_index,

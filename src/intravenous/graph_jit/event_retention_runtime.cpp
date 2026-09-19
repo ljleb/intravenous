@@ -119,4 +119,48 @@ extern "C" void iv_graph_jit_append_event_feedback(
     *ring_write_index = write_index;
 }
 
+extern "C" void iv_graph_jit_append_event_feedback_ring_source(
+    void const* source_events,
+    std::size_t source_capacity,
+    std::size_t source_begin_index,
+    std::size_t source_end_index,
+    std::size_t sample_index,
+    std::size_t loop_extra_latency,
+    void* ring_events,
+    std::size_t ring_capacity,
+    std::size_t* ring_read_index,
+    std::size_t* ring_write_index) noexcept
+{
+    if (source_events == nullptr || source_capacity == 0
+        || ring_events == nullptr || ring_capacity == 0
+        || ring_read_index == nullptr || ring_write_index == nullptr) {
+        return;
+    }
+
+    auto* target = static_cast<TimedEvent*>(ring_events);
+    auto const* source = static_cast<TimedEvent const*>(source_events);
+    auto const source_mask = source_capacity - 1;
+    auto const target_mask = ring_capacity - 1;
+    auto read_index = *ring_read_index;
+    auto write_index = *ring_write_index;
+
+    while (read_index != write_index) {
+        auto const& event = target[read_index & target_mask];
+        if (static_cast<std::size_t>(event.time) >= sample_index) break;
+        ++read_index;
+    }
+
+    source_begin_index = std::min(source_begin_index, source_end_index);
+    for (std::size_t i = source_begin_index; i < source_end_index; ++i) {
+        if (write_index - read_index >= ring_capacity) break;
+        auto delayed = source[i & source_mask];
+        delayed.time = static_cast<EventTime>(saturating_sample_index_add(
+            static_cast<SampleIndex>(delayed.time), loop_extra_latency));
+        target[write_index & target_mask] = std::move(delayed);
+        ++write_index;
+    }
+    *ring_read_index = read_index;
+    *ring_write_index = write_index;
+}
+
 } // namespace iv::graph_jit::detail

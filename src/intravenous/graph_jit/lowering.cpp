@@ -2108,7 +2108,6 @@ std::expected<void, std::string> emit_event_feedback_append(
     auto const& ring =
         event_ports.representations[feedback.ring_representation];
     if (!source.region.valid() || !ring.region.valid()
-        || source.persistent_ring
         || !ring.persistent || !ring.persistent_ring
         || source.type != ring.type) {
         return std::unexpected(
@@ -2119,27 +2118,42 @@ std::expected<void, std::string> emit_event_feedback_append(
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* pointer_type = llvm::PointerType::getUnqual(context);
-    auto* source_count_pointer = byte_offset_pointer(
-        builder,
-        storage_base,
-        source.count_storage_offset,
-        "event.feedback.source.count");
-    auto* source_count = builder.CreateLoad(
-        size_type,
-        source_count_pointer,
-        "event.feedback.source.count.value");
-    auto* source_capacity = llvm::ConstantInt::get(
-        size_type, source.event_capacity);
-    auto* source_count_bounded = builder.CreateSelect(
-        builder.CreateICmpULT(
-            source_count, source_capacity, "event.feedback.source.count.in_range"),
-        source_count,
-        source_capacity,
-        "event.feedback.source.count.bounded");
     auto* source_begin = builder.CreateLoad(
         size_type,
         feedback_cursor_pointer,
         "event.feedback.source.cursor");
+    llvm::Value* source_end = nullptr;
+    if (source.persistent_ring) {
+        auto* source_write_pointer = byte_offset_pointer(
+            builder,
+            storage_base,
+            source.write_index_storage_offset,
+            "event.feedback.source.write");
+        source_end = builder.CreateLoad(
+            size_type,
+            source_write_pointer,
+            "event.feedback.source.write.value");
+    } else {
+        auto* source_count_pointer = byte_offset_pointer(
+            builder,
+            storage_base,
+            source.count_storage_offset,
+            "event.feedback.source.count");
+        auto* source_count = builder.CreateLoad(
+            size_type,
+            source_count_pointer,
+            "event.feedback.source.count.value");
+        auto* source_capacity = llvm::ConstantInt::get(
+            size_type, source.event_capacity);
+        source_end = builder.CreateSelect(
+            builder.CreateICmpULT(
+                source_count,
+                source_capacity,
+                "event.feedback.source.count.in_range"),
+            source_count,
+            source_capacity,
+            "event.feedback.source.count.bounded");
+    }
     auto* source_events = byte_offset_pointer(
         builder,
         storage_base,
@@ -2161,21 +2175,32 @@ std::expected<void, std::string> emit_event_feedback_append(
         ring.events_storage_offset,
         "event.feedback.ring.events");
 
-    auto* helper_type = llvm::FunctionType::get(
-        llvm::Type::getVoidTy(context),
-        {pointer_type, size_type, size_type, size_type, size_type,
-         pointer_type, size_type, pointer_type, pointer_type},
-        false);
     auto* module = builder.GetInsertBlock()->getModule();
-    auto helper = module->getOrInsertFunction(
-        detail::event_feedback_append_symbol, helper_type);
+    llvm::FunctionCallee helper;
+    if (source.persistent_ring) {
+        auto* helper_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(context),
+            {pointer_type, size_type, size_type, size_type, size_type, size_type,
+             pointer_type, size_type, pointer_type, pointer_type},
+            false);
+        helper = module->getOrInsertFunction(
+            detail::event_feedback_append_ring_source_symbol, helper_type);
+    } else {
+        auto* helper_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(context),
+            {pointer_type, size_type, size_type, size_type, size_type,
+             pointer_type, size_type, pointer_type, pointer_type},
+            false);
+        helper = module->getOrInsertFunction(
+            detail::event_feedback_append_symbol, helper_type);
+    }
 
     // Most event slices produce no events. Keep the audio-thread fast path to a
-    // bounded count load/compare and avoid the out-of-line feedback helper
+    // source-index load/compare and avoid the out-of-line feedback helper
     // entirely unless this producer appended a new suffix.
-    builder.CreateStore(source_count_bounded, feedback_cursor_pointer);
+    builder.CreateStore(source_end, feedback_cursor_pointer);
     auto* has_new_events = builder.CreateICmpULT(
-        source_begin, source_count_bounded, "event.feedback.has_new_events");
+        source_begin, source_end, "event.feedback.has_new_events");
     auto* function = builder.GetInsertBlock()->getParent();
     auto* append_block = llvm::BasicBlock::Create(
         context, "event.feedback.append", function);
@@ -2184,17 +2209,32 @@ std::expected<void, std::string> emit_event_feedback_append(
     builder.CreateCondBr(has_new_events, append_block, continue_block);
 
     builder.SetInsertPoint(append_block);
-    builder.CreateCall(
-        helper,
-        {source_events,
-         source_begin,
-         source_count_bounded,
-         sample_index,
-         llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
-         ring_events,
-         llvm::ConstantInt::get(size_type, ring.event_capacity),
-         ring_read_pointer,
-         ring_write_pointer});
+    if (source.persistent_ring) {
+        builder.CreateCall(
+            helper,
+            {source_events,
+             llvm::ConstantInt::get(size_type, source.event_capacity),
+             source_begin,
+             source_end,
+             sample_index,
+             llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
+             ring_events,
+             llvm::ConstantInt::get(size_type, ring.event_capacity),
+             ring_read_pointer,
+             ring_write_pointer});
+    } else {
+        builder.CreateCall(
+            helper,
+            {source_events,
+             source_begin,
+             source_end,
+             sample_index,
+             llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
+             ring_events,
+             llvm::ConstantInt::get(size_type, ring.event_capacity),
+             ring_read_pointer,
+             ring_write_pointer});
+    }
     builder.CreateBr(continue_block);
     builder.SetInsertPoint(continue_block);
     return {};
@@ -2969,10 +3009,34 @@ std::expected<llvm::Function*, std::string> define_root_operation(
     std::vector<llvm::Value*> event_feedback_cursors;
     event_feedback_cursors.reserve(plan.event_ports.feedback_operations.size());
     for (std::size_t i = 0; i < plan.event_ports.feedback_operations.size(); ++i) {
+        auto const& feedback = plan.event_ports.feedback_operations[i];
+        if (feedback.source_representation
+            >= plan.event_ports.representations.size()) {
+            return std::unexpected(
+                "GraphJit event feedback cursor references a missing source representation");
+        }
+        auto const& source =
+            plan.event_ports.representations[feedback.source_representation];
         auto* cursor = builder.CreateAlloca(
             feedback_cursor_type, nullptr,
             "event.feedback.cursor." + std::to_string(i));
-        builder.CreateStore(feedback_cursor_zero, cursor);
+        llvm::Value* initial_cursor = feedback_cursor_zero;
+        if (source.persistent_ring) {
+            if (!source.region.valid()) {
+                return std::unexpected(
+                    "GraphJit persistent event feedback source has no storage region");
+            }
+            auto* source_write_pointer = byte_offset_pointer(
+                builder,
+                storage_base,
+                source.write_index_storage_offset,
+                "event.feedback.cursor.source.write." + std::to_string(i));
+            initial_cursor = builder.CreateLoad(
+                feedback_cursor_type,
+                source_write_pointer,
+                "event.feedback.cursor.initial." + std::to_string(i));
+        }
+        builder.CreateStore(initial_cursor, cursor);
         event_feedback_cursors.push_back(cursor);
     }
 

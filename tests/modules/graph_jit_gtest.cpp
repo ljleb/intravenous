@@ -388,6 +388,15 @@ struct PersistentEventRingConsumerProbeStateMirror {
     std::array<std::uint64_t, 5> last_times{};
 };
 
+struct PersistentEventFeedbackConsumerStateMirror {
+    std::uint64_t calls = 0;
+    std::array<std::uint64_t, 4> indices{};
+    std::array<std::uint64_t, 4> event_counts{};
+    std::array<std::uint64_t, 4> first_times{};
+    std::array<std::uint64_t, 4> last_times{};
+    std::uint64_t marker = 0;
+};
+
 struct RetainedMidiConsumerProbeStateMirror {
     std::uint64_t calls = 0;
     std::array<std::uint64_t, 4> indices{};
@@ -526,6 +535,33 @@ TEST(GraphJitEventFeedbackRuntime, AppendsEachSourceSuffixExactlyOnce)
     EXPECT_EQ(ring[1].time, 6u);
     EXPECT_EQ(ring[2].time, 9u);
     EXPECT_EQ(ring[3].time, 10u);
+}
+
+TEST(GraphJitEventFeedbackRuntime, AppendsWrappedPersistentSourceSuffixExactlyOnce)
+{
+    std::array<iv::TimedEvent, 4> source{};
+    // Monotonic source indices [3, 7) wrap once through this four-slot ring.
+    source[3] = iv::TimedEvent{.time = 3, .value = iv::TriggerEvent{}};
+    source[0] = iv::TimedEvent{.time = 4, .value = iv::TriggerEvent{}};
+    source[1] = iv::TimedEvent{.time = 5, .value = iv::TriggerEvent{}};
+    source[2] = iv::TimedEvent{.time = 6, .value = iv::TriggerEvent{}};
+    std::array<iv::TimedEvent, 8> ring{};
+    std::size_t read_index = 0;
+    std::size_t write_index = 0;
+
+    iv::graph_jit::detail::iv_graph_jit_append_event_feedback_ring_source(
+        source.data(), source.size(), 3, 5, 3, 5,
+        ring.data(), ring.size(), &read_index, &write_index);
+    iv::graph_jit::detail::iv_graph_jit_append_event_feedback_ring_source(
+        source.data(), source.size(), 5, 7, 5, 5,
+        ring.data(), ring.size(), &read_index, &write_index);
+
+    EXPECT_EQ(read_index, 0u);
+    ASSERT_EQ(write_index, 4u);
+    EXPECT_EQ(ring[0].time, 8u);
+    EXPECT_EQ(ring[1].time, 9u);
+    EXPECT_EQ(ring[2].time, 10u);
+    EXPECT_EQ(ring[3].time, 11u);
 }
 
 TEST(GraphJit, SpecializationIsLatchedAtConstruction)
@@ -3930,6 +3966,51 @@ struct PersistentEventRingConsumer {
     }
 };
 
+struct PersistentEventFeedbackConsumer {
+    struct State {
+        std::uint64_t calls = 0;
+        std::array<std::uint64_t, 4> indices{};
+        std::array<std::uint64_t, 4> event_counts{};
+        std::array<std::uint64_t, 4> first_times{};
+        std::array<std::uint64_t, 4> last_times{};
+        std::uint64_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input(
+                "trigger",
+                iv::EventTypeId::trigger,
+                iv::RealtimeInputConfig{.history = 320}),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<PersistentEventFeedbackConsumer> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = state.calls++;
+        if (slot >= state.indices.size()) return;
+        auto const history = ctx.index < 320 ? ctx.index : std::size_t{320};
+        auto const events = ctx.event_inputs[0].get_block(
+            ctx.index - history,
+            ctx.block_size + history);
+        state.indices[slot] = ctx.index;
+        state.event_counts[slot] = events.size();
+        if (!events.empty()) {
+            state.first_times[slot] = events[0].time;
+            state.last_times[slot] = events[events.size() - 1].time;
+        }
+        state.marker = 0xfeed320u;
+    }
+};
+
 struct PortedProbe {
     static constexpr auto inputs()
     {
@@ -4236,6 +4317,7 @@ IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_source", Retaine
 IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_consumer", RetainedTriggerEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.persistent_event_ring_source", PersistentEventRingSource);
 IV_NODE("iv.test.graph_jit.state_context.persistent_event_ring_consumer", PersistentEventRingConsumer);
+IV_NODE("iv.test.graph_jit.state_context.persistent_event_feedback_consumer", PersistentEventFeedbackConsumer);
 IV_NODE("iv.test.graph_jit.state_context.retained_midi_event_consumer", RetainedMidiEventConsumer);
 IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
@@ -5193,6 +5275,8 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
         "iv.test.graph_jit.state_context.persistent_event_ring_source"));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.persistent_event_ring_consumer"));
+    EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.persistent_event_feedback_consumer"));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.retained_midi_event_consumer"));
     EXPECT_TRUE(has_module_definition(graph_jit_persistent_event_ring_module_id));
@@ -8628,6 +8712,135 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
     EXPECT_EQ(observer->second_times[2], 129u);
     EXPECT_EQ(observer->last_times[2], 129u);
     EXPECT_EQ(feedback_write_index(), 17u);
+}
+
+TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsOutboundTargetHistory)
+{
+    auto feedback_graph = configured_event_feedback_scc_external_fanout_graph(
+        *revision,
+        "iv.test.graph_jit.state_context.persistent_event_feedback_consumer");
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    auto const fanout = std::ranges::find_if(
+        analysis->event_connections,
+        [&](iv::graph_jit::detail::EventConnectionPlan const& connection) {
+            if (connection.detach || connection.target_history != 320
+                || connection.sources.empty() || connection.targets.empty()) {
+                return false;
+            }
+            auto const source = connection.sources.front().bundle;
+            auto const target = connection.targets.front().bundle;
+            if (source >= analysis->schedule.bundle_to_region.size()
+                || target >= analysis->schedule.bundle_to_region.size()
+                || !analysis->schedule.bundle_to_region[source]
+                || !analysis->schedule.bundle_to_region[target]) {
+                return false;
+            }
+            auto const source_region =
+                *analysis->schedule.bundle_to_region[source];
+            auto const target_region =
+                *analysis->schedule.bundle_to_region[target];
+            return source_region < analysis->schedule.regions.size()
+                && target_region < analysis->schedule.regions.size()
+                && analysis->schedule.regions[source_region].cyclic
+                && !analysis->schedule.regions[target_region].cyclic;
+        });
+    ASSERT_NE(fanout, analysis->event_connections.end());
+    EXPECT_EQ(fanout->source_history, 0u);
+    EXPECT_EQ(fanout->source_latency, 0u);
+    EXPECT_EQ(fanout->target_history, 320u);
+    EXPECT_TRUE(fanout->requires_block_materialization);
+
+    auto const fanout_index = static_cast<std::size_t>(
+        std::distance(analysis->event_connections.begin(), fanout));
+    auto const group = std::ranges::find_if(
+        analysis->event_producer_groups,
+        [&](iv::graph_jit::detail::EventProducerGroupPlan const& candidate) {
+            return std::ranges::find(
+                       candidate.connection_indices, fanout_index)
+                != candidate.connection_indices.end();
+        });
+    ASSERT_NE(group, analysis->event_producer_groups.end());
+    ASSERT_TRUE(group->implementation.has_value());
+    EXPECT_EQ(
+        *group->implementation,
+        iv::EventConnectionImplementationKind::persistent_ring);
+    EXPECT_EQ(group->requirements.retained_window_samples, 320u);
+    ASSERT_TRUE(group->requirements.retained_event_capacity.has_value());
+    EXPECT_GT(*group->requirements.retained_event_capacity, 64u);
+
+    auto compiled = compile_graph(feedback_graph, 150);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    PersistentEventFeedbackConsumerStateMirror* observer = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        auto const state_size =
+            compiled.compiled_graph->node_layout.nodes[i].state_size;
+        if (state_size == sizeof(PersistentEventFeedbackConsumerStateMirror)) {
+            ASSERT_EQ(observer, nullptr);
+            observer = static_cast<PersistentEventFeedbackConsumerStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(observer, nullptr);
+
+    std::optional<iv::NodeLayout::RegionHandle> source_ring;
+    std::optional<iv::NodeLayout::RegionHandle> feedback_ring;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.regions.size(); ++i) {
+        auto const& region = compiled.compiled_graph->node_layout.regions[i];
+        if (region.kind != iv::NodeLayout::Region::Kind::raw) continue;
+        if (region.migration_identity.starts_with("graphjit.event.feedback:")) {
+            ASSERT_FALSE(feedback_ring.has_value());
+            feedback_ring = iv::NodeLayout::RegionHandle{.index = i};
+        } else if (region.migration_identity.find("kind=persistent_ring")
+                   != std::string::npos) {
+            ASSERT_FALSE(source_ring.has_value());
+            source_ring = iv::NodeLayout::RegionHandle{.index = i};
+        }
+    }
+    ASSERT_TRUE(source_ring.has_value());
+    ASSERT_TRUE(feedback_ring.has_value());
+
+    auto const write_index = [&](iv::NodeLayout::RegionHandle region) {
+        auto const bytes = storage.region_bytes(region);
+        EXPECT_GE(bytes.size(), 2 * sizeof(std::size_t));
+        std::size_t value = 0;
+        if (bytes.size() >= 2 * sizeof(std::size_t)) {
+            std::memcpy(
+                &value, bytes.data() + sizeof(std::size_t), sizeof(value));
+        }
+        return value;
+    };
+
+    for (std::size_t call = 0; call < 4; ++call) {
+        auto const index = call * 64;
+        compiled.compiled_graph->root_operations.tick_block(
+            storage.buffer().data(), index, 64);
+        ASSERT_EQ(observer->calls, call + 1);
+        EXPECT_EQ(observer->indices[call], index);
+        EXPECT_EQ(observer->event_counts[call], (call + 1) * 8);
+        EXPECT_EQ(observer->first_times[call], 1u);
+        EXPECT_EQ(observer->last_times[call], index + 57);
+        EXPECT_EQ(observer->marker, 0xfeed320u);
+
+        // The canonical retained ring and detached feedback ring advance only
+        // by events authored during this root call. Historical source entries
+        // remain readable for the outbound consumer but are never re-enqueued.
+        EXPECT_EQ(write_index(*source_ring), (call + 1) * 8);
+        EXPECT_EQ(write_index(*feedback_ring), (call + 1) * 8);
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture, EventDetachFeedbackFanoutSharesDelayedStream)

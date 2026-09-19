@@ -1290,8 +1290,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
 
     // Point 12 currently supports exact realtime event transport inside a
     // cyclic execution region and fanout from a cyclic producer to downstream
-    // acyclic consumers, including non-expanding conversion and compact-carry
-    // target history at SCC exit. Source history/latency, retained consumption
+    // acyclic consumers, including non-expanding conversion and retained target
+    // history at SCC exit. Source history/latency, retained consumption
     // inside a cycle, feed-forward ingress into a cycle, and edges between cyclic
     // regions remain separate capabilities.
     for (auto const& connection : connections.event_connections) {
@@ -1356,10 +1356,12 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 });
             if (group == connections.event_producer_groups.end()
                 || !group->implementation
-                || *group->implementation
-                    != EventConnectionImplementationKind::compact_persistent_carry) {
+                || (*group->implementation
+                        != EventConnectionImplementationKind::compact_persistent_carry
+                    && *group->implementation
+                        != EventConnectionImplementationKind::persistent_ring)) {
                 return std::unexpected(
-                    "GraphJit cyclic outbound event history currently requires compact persistent carry");
+                    "GraphJit cyclic outbound event history requires retained event storage");
             }
         }
         if (connection.requires_conversion

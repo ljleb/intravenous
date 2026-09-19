@@ -253,8 +253,10 @@ The current internal realtime connection surface is intentionally asymmetric:
   after every producer slice; conversion therefore sees the complete root-call
   aggregate. Execution regions also own SCC-entry persistent-ring pruning/carry
   restore and SCC-exit carry commit slots, so retained cyclic state has root-call
-  rather than slice lifetime once its capability gate is opened. Retention in
-  cyclic transport, conversion consumed inside a cycle,
+  rather than slice lifetime. Outbound target history works with both compact
+  carry and a canonical persistent producer ring; detached feedback copies only
+  the newly-authored monotonic suffix from either representation. Source
+  history/latency in cyclic transport, conversion consumed inside a cycle,
   feed-forward ingress into a cycle, and edges between cyclic regions remain the
   main realtime connection work.
 - **Both kinds:** the root graph is required to have zero public/boundary ports.
@@ -408,13 +410,15 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     realtime slice, including same-delay detached fanout, burst retention, changing
     root-call sizes, and generation migration. A cyclic producer may also fan out
     to an acyclic consumer through one SCC-exit materialization, including
-    non-expanding event conversion and compact-carry target history. Retained
-    outbound history restores once at SCC entry, materializes the root history
-    window once at SCC exit, then commits once; detached feedback cursors skip the
-    restored historical prefix so it is not re-enqueued as newly authored output.
-    The execution plan also has explicit SCC-entry persistent-ring prune and
-    SCC-exit carry-commit phases. Conversion consumed inside a cycle, source
-    history/latency, persistent-ring outbound retention, multi-producer fan-in
+    non-expanding event conversion and target history backed by either compact
+    carry or a canonical persistent producer ring. Compact retained outbound
+    history restores once at SCC entry, materializes the root history window once
+    at SCC exit, then commits once; detached feedback cursors skip the restored
+    historical prefix. Persistent-ring producers prune once at SCC entry and seed
+    detached feedback cursors from the prior monotonic write index, so feedback
+    copies only events authored during the current root call even when retained
+    source history remains resident. Conversion consumed inside a cycle, source
+    history/latency, multi-producer fan-in
     inside a cycle, feed-forward
     ingress into a cycle, and edges spanning distinct cyclic regions remain
     capability-gated.
