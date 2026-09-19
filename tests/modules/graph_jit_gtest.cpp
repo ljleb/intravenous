@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/graph_jit/connection_plan.h>
+#include <intravenous/graph_jit/event_conversion_runtime.h>
 #include <intravenous/graph_jit/event_retention_runtime.h>
 #include <intravenous/graph_jit/sample_physical_plan.h>
 #include <intravenous/graph_jit/transient_arena_plan.h>
@@ -32,6 +33,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 
@@ -3357,6 +3359,58 @@ struct LimitedTriggerEventSource {
     }
 };
 
+struct FanInBurstEventSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_event_output(
+            "out",
+            iv::EventOutputProperties{
+                .type = iv::EventTypeId::trigger,
+                .max_events_per_sample = 0.125,
+            })};
+    }
+
+    void tick_block(iv::TickBlockContext<FanInBurstEventSource> const& ctx) const
+    {
+        if (ctx.block_size == 0) return;
+        for (std::size_t i = 0; i < 12; ++i) {
+            ctx.event_outputs[0].push(
+                iv::TriggerEvent{}, 3, ctx.index, ctx.block_size);
+        }
+    }
+};
+
+struct FanInSparseEventSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::realtime_event_output(
+            "out",
+            iv::EventOutputProperties{
+                .type = iv::EventTypeId::trigger,
+                .max_events_per_sample = 0.125,
+            })};
+    }
+
+    void tick_block(iv::TickBlockContext<FanInSparseEventSource> const& ctx) const
+    {
+        if (ctx.block_size == 0) return;
+        for (std::size_t i = 0; i < 4; ++i) {
+            ctx.event_outputs[0].push(
+                iv::TriggerEvent{}, 3, ctx.index, ctx.block_size);
+        }
+    }
+};
+
 struct EventFeedbackA {
     struct State {
         std::uint64_t calls = 0;
@@ -4106,6 +4160,8 @@ IV_NODE("iv.test.graph_jit.state_context.interleaved_latency_compensation_probe"
 IV_NODE("iv.test.graph_jit.state_context.trigger_event_source", TriggerEventSource);
 IV_NODE("iv.test.graph_jit.state_context.midi_event_source", MidiEventSource);
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_source", LimitedTriggerEventSource);
+IV_NODE("iv.test.graph_jit.state_context.fan_in_burst_event_source", FanInBurstEventSource);
+IV_NODE("iv.test.graph_jit.state_context.fan_in_sparse_event_source", FanInSparseEventSource);
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_a", EventFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_b", EventFeedbackB);
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_burst_a", EventFeedbackBurstA);
@@ -4669,13 +4725,74 @@ configured_merged_feed_forward_event_graph(
         throw std::runtime_error(
             "GraphJit merged-event fixture lost its source shape");
     }
+    // Put the limited producer first semantically so transient fan-in uses a
+    // sliced producer as its canonical/home stream.
     std::array merged_sources{
-        first_port.sources().front(),
         second_port.sources().front(),
+        first_port.sources().front(),
     };
     auto merged = iv::EventPortRef(graph, first_port.type, merged_sources);
     sink.connect_event_input(0, merged);
     sink_b.connect_event_input(0, merged);
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
+std::shared_ptr<iv::ConfiguredGraph const>
+configured_bounded_merged_feed_forward_event_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create GraphJit bounded merged-event builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto burst = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.fan_in_burst_event_source",
+        std::nullopt,
+        {});
+    auto sparse = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.fan_in_sparse_event_source",
+        std::nullopt,
+        {});
+    auto sink = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.trigger_event_consumer",
+        std::nullopt,
+        {});
+
+    auto const burst_port = burst.event_port();
+    auto const sparse_port = sparse.event_port();
+    if (burst_port.type != sparse_port.type
+        || burst_port.sources().size() != 1
+        || sparse_port.sources().size() != 1) {
+        throw std::runtime_error(
+            "GraphJit bounded merged-event fixture lost its source shape");
+    }
+    std::array merged_sources{
+        burst_port.sources().front(),
+        sparse_port.sources().front(),
+    };
+    auto merged = iv::EventPortRef(graph, burst_port.type, merged_sources);
+    sink.connect_event_input(0, merged);
     graph.outputs();
     return std::make_shared<iv::ConfiguredGraph const>(
         iv::details::take_built_graph(session.get()));
@@ -7819,6 +7936,62 @@ TEST_F(GraphJitRuntimeFixture, EventRawStorageIsInitializedByNodeStorageLifecycl
     }
 }
 
+TEST(GraphJitEventMergeRuntime, KWayMergePreservesSemanticSourceOrder)
+{
+    auto midi = [](std::uint8_t note) {
+        iv::MidiEvent event{};
+        event.bytes = {0x90, note, 100};
+        event.size = 3;
+        return event;
+    };
+    auto timed = [&](std::uint64_t time, std::uint8_t note) {
+        return iv::TimedEvent{.time = time, .value = midi(note)};
+    };
+
+    std::array<iv::TimedEvent, 16> target{};
+    target[0] = timed(2, 10);
+    target[1] = timed(5, 11);
+    target[2] = timed(9, 12);
+    std::array source_1{
+        timed(1, 20),
+        timed(5, 21),
+        timed(9, 22),
+    };
+    std::array source_2{
+        timed(5, 31),
+        timed(7, 32),
+        timed(9, 33),
+    };
+    std::array<void const*, 2> source_events{
+        source_1.data(), source_2.data()};
+    std::array<std::size_t, 2> remaining{
+        source_1.size(), source_2.size()};
+
+    auto const count =
+        iv::graph_jit::detail::iv_graph_jit_merge_event_sequences_into_home(
+            target.data(),
+            target.size(),
+            3,
+            source_events.data(),
+            remaining.data(),
+            source_events.size());
+
+    ASSERT_EQ(count, 9u);
+    EXPECT_EQ(remaining[0], 0u);
+    EXPECT_EQ(remaining[1], 0u);
+    std::array<std::uint64_t, 9> const expected_times{
+        1, 2, 5, 5, 5, 7, 9, 9, 9};
+    std::array<std::uint8_t, 9> const expected_notes{
+        20, 10, 11, 21, 31, 32, 12, 22, 33};
+    for (std::size_t i = 0; i < count; ++i) {
+        EXPECT_EQ(target[i].time, expected_times[i]);
+        auto const* event = std::get_if<iv::MidiEvent>(&target[i].value);
+        ASSERT_NE(event, nullptr);
+        ASSERT_GE(event->size, 2u);
+        EXPECT_EQ(event->bytes[1], expected_notes[i]);
+    }
+}
+
 TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInMergesSlicedSourcesAndFansOut)
 {
     auto graph = configured_merged_feed_forward_event_graph(*revision);
@@ -7842,6 +8015,12 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInMergesSlicedSourcesAndFansOu
         << (compiled.diagnostics.empty()
                 ? ""
                 : compiled.diagnostics.front().message);
+    // Semantic source 0 is the canonical aggregate/home allocation and only
+    // source 1 needs a producer-local sequence. This fixture also needs one
+    // derived root-block materialization because the home producer is sliced
+    // at 16 frames while the consumers execute at 64. There is still no
+    // separate empty fan-in aggregate allocation.
+    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 3u);
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
     std::vector<EventConsumerProbeStateMirror*> probes;
@@ -7865,6 +8044,54 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInMergesSlicedSourcesAndFansOu
         EXPECT_EQ(probe->first_time, 3u);
         EXPECT_EQ(probe->last_time, 63u);
     }
+}
+
+TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInHomePreservesProducerCapacity)
+{
+    auto graph = configured_bounded_merged_feed_forward_event_graph(*revision);
+    ASSERT_TRUE(graph);
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    ASSERT_EQ(analysis->event_producer_groups.size(), 1u);
+    ASSERT_TRUE(analysis->event_producer_groups.front().implementation);
+    EXPECT_EQ(
+        *analysis->event_producer_groups.front().implementation,
+        iv::EventConnectionImplementationKind::transient_sequence);
+
+    auto compiled = compile_graph(graph, 147);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 2u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    EventConsumerProbeStateMirror* probe = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(EventConsumerProbeStateMirror)) {
+            probe = static_cast<EventConsumerProbeStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(probe, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 64);
+
+    // Each source declares 0.125 events/sample, so its local 64-frame bound is
+    // 8 events. Source 0 deliberately attempts 12 writes. Its canonical/home
+    // backing allocation has aggregate capacity 16, but its logical producer
+    // view must still overflow after 8; source 1 contributes four more.
+    EXPECT_EQ(probe->calls, 1u);
+    EXPECT_EQ(probe->event_count, 12u);
+    EXPECT_EQ(probe->trigger_count, 12u);
+    EXPECT_EQ(probe->first_time, 3u);
+    EXPECT_EQ(probe->last_time, 3u);
 }
 
 TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInConvertsAfterMerge)
@@ -7892,6 +8119,9 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInConvertsAfterMerge)
         << (compiled.diagnostics.empty()
                 ? ""
                 : compiled.diagnostics.front().message);
+    // Canonical MIDI home + one producer-local MIDI sequence + one converted
+    // trigger representation. There is no separate empty aggregate sequence.
+    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 3u);
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
     std::vector<EventConsumerProbeStateMirror*> probes;

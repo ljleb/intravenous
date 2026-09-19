@@ -13,6 +13,8 @@ inline constexpr char event_sequence_materialization_symbol[] =
     "iv_graph_jit_materialize_event_sequence";
 inline constexpr char event_sequence_merge_symbol[] =
     "iv_graph_jit_merge_event_sequence";
+inline constexpr char event_sequence_k_way_merge_symbol[] =
+    "iv_graph_jit_merge_event_sequences_into_home";
 
 #if defined(_WIN32)
 #define IV_GRAPH_JIT_RUNTIME_EXPORT __declspec(dllexport)
@@ -50,6 +52,24 @@ iv_graph_jit_merge_event_sequence(
     std::size_t source_capacity,
     std::size_t source_count) noexcept;
 
+
+
+// Stable k-way merge for transient fan-in where semantic source 0 already
+// resides in target storage. source_events/source_remaining describe semantic
+// sources 1..N in order. All streams are required by the EventOutputPort
+// contract to be nondecreasing by absolute sample index. The merge walks the
+// streams backwards so it can write the final aggregate in place without
+// allocating scratch event storage. Equal timestamps are ordered by semantic
+// source ordinal. source_remaining is caller-owned stack scratch and is
+// decremented in place; no heap allocation occurs.
+extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
+iv_graph_jit_merge_event_sequences_into_home(
+    void* target_events,
+    std::size_t target_capacity,
+    std::size_t target_count,
+    void const* const* source_events,
+    std::size_t* source_remaining,
+    std::size_t source_count) noexcept;
 
 // Runtime leaf for retained-source materialization. The source is described by
 // monotonic read/write indices over a power-of-two raw TimedEvent ring. Ordinary

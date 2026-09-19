@@ -447,12 +447,18 @@ as compact carry versus a persistent ring.
 
 Fanout does not multiply the sizing rate: several consumers of one logical
 producer share the same source event stream. A merge of independent producers
-sums their rates for the merged representation. Feed-forward multi-producer
-fan-in realizes one bounded producer-local sequence per source, then stable-merges
-those sequences in semantic source order into one canonical aggregate after the
-last producer completes. Equal-timestamp events therefore retain deterministic
-source ordering, and conversion/retention/fanout operate on the merged stream.
-Cyclic multi-producer fan-in remains a separate SCC capability. Implicit event
+sums their rates for the merged representation. Realtime event producers are
+contractually sorted by nondecreasing absolute sample index. For transient
+feed-forward multi-producer fan-in, semantic source 0 writes directly into the
+canonical aggregate allocation while retaining its own logical producer
+capacity; the other sources use bounded local sequences. After the last producer
+completes, one backwards k-way merge writes the final sorted aggregate in place.
+Each final event is therefore written at most once by merge rather than being
+rewritten through an incrementally growing pairwise aggregate. Equal-timestamp
+events retain deterministic semantic-source ordering, and conversion/fanout
+operate on the merged stream. Retained fan-in intentionally keeps the existing
+separate-target realization for now; cyclic multi-producer fan-in remains a
+separate SCC capability. Implicit event
 conversions are required to be
 **non-expanding**: each source event produces zero or one target event, timestamps
 are preserved, and the conversion may only preserve or discard information. Any

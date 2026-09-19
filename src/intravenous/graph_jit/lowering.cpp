@@ -666,6 +666,7 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                     .source_type = output.source_type,
                     .history = output.history,
                     .latency = output.latency,
+                    .write_capacity = output.write_capacity,
                     .append_existing = output.append_existing,
                 });
             }
@@ -2191,6 +2192,11 @@ std::expected<void, std::string> emit_event_merge(
         return std::unexpected(
             "GraphJit persistent event merge must preserve retained target events");
     }
+    if (merge.target_is_semantic_source
+        && (target.persistent_ring || merge.preserve_existing_target)) {
+        return std::unexpected(
+            "GraphJit transient event producer-home merge has inconsistent target storage");
+    }
 
     auto& context = builder.getContext();
     auto* size_type = llvm::IntegerType::get(
@@ -2227,11 +2233,94 @@ std::expected<void, std::string> emit_event_merge(
             storage_base,
             target.count_storage_offset,
             "event.merge.target.count.ptr");
-        if (merge.preserve_existing_target) {
+        if (merge.preserve_existing_target || merge.target_is_semantic_source) {
             target_write = builder.CreateLoad(
                 size_type, count_pointer, "event.merge.target.count");
         }
         target_count_or_write_pointer = count_pointer;
+    }
+
+    auto validate_source = [&](std::size_t representation_index)
+        -> std::expected<detail::EventRepresentationPlan const*, std::string> {
+        if (representation_index >= event_ports.representations.size()) {
+            return std::unexpected(
+                "GraphJit event merge references a missing source representation");
+        }
+        auto const& source = event_ports.representations[representation_index];
+        if (!source.region.valid() || source.persistent_ring
+            || source.type != target.type) {
+            return std::unexpected(
+                "GraphJit event merge source has inconsistent physical storage");
+        }
+        return &source;
+    };
+
+    if (merge.target_is_semantic_source) {
+        auto const source_count = merge.source_representations.size();
+        auto* source_event_pointers = builder.CreateAlloca(
+            pointer_type,
+            llvm::ConstantInt::get(size_type, source_count),
+            "event.merge.sources.ptrs");
+        auto* source_remaining = builder.CreateAlloca(
+            size_type,
+            llvm::ConstantInt::get(size_type, source_count),
+            "event.merge.sources.remaining");
+
+        for (std::size_t source_index = 0;
+             source_index < source_count; ++source_index) {
+            auto const representation_index =
+                merge.source_representations[source_index];
+            auto source = validate_source(representation_index);
+            if (!source) return std::unexpected(std::move(source.error()));
+
+            auto* source_count_pointer = byte_offset_pointer(
+                builder,
+                storage_base,
+                (*source)->count_storage_offset,
+                "event.merge.source.count.ptr." + std::to_string(source_index));
+            auto* source_count_value = builder.CreateLoad(
+                size_type,
+                source_count_pointer,
+                "event.merge.source.count." + std::to_string(source_index));
+            auto* source_events = byte_offset_pointer(
+                builder,
+                storage_base,
+                (*source)->events_storage_offset,
+                "event.merge.source.events." + std::to_string(source_index));
+
+            auto* source_pointer_slot = builder.CreateInBoundsGEP(
+                pointer_type,
+                source_event_pointers,
+                llvm::ConstantInt::get(size_type, source_index),
+                "event.merge.source.ptr.slot." + std::to_string(source_index));
+            builder.CreateStore(source_events, source_pointer_slot);
+            auto* source_count_slot = builder.CreateInBoundsGEP(
+                size_type,
+                source_remaining,
+                llvm::ConstantInt::get(size_type, source_index),
+                "event.merge.source.remaining.slot." + std::to_string(source_index));
+            builder.CreateStore(source_count_value, source_count_slot);
+        }
+
+        auto* helper_type = llvm::FunctionType::get(
+            size_type,
+            {pointer_type, size_type, size_type,
+             pointer_type, pointer_type, size_type},
+            false);
+        auto* module = builder.GetInsertBlock()->getModule();
+        auto helper = module->getOrInsertFunction(
+            detail::event_sequence_k_way_merge_symbol, helper_type);
+        auto* merged_count = builder.CreateCall(
+            helper,
+            {target_events,
+             llvm::ConstantInt::get(size_type, target.event_capacity),
+             target_write,
+             source_event_pointers,
+             source_remaining,
+             llvm::ConstantInt::get(size_type, source_count)},
+            "event.merge.kway.count");
+        builder.CreateStore(merged_count, target_count_or_write_pointer);
+        return {};
     }
 
     auto* helper_type = llvm::FunctionType::get(
@@ -2247,20 +2336,12 @@ std::expected<void, std::string> emit_event_merge(
          source_index < merge.source_representations.size(); ++source_index) {
         auto const representation_index =
             merge.source_representations[source_index];
-        if (representation_index >= event_ports.representations.size()) {
-            return std::unexpected(
-                "GraphJit event merge references a missing source representation");
-        }
-        auto const& source = event_ports.representations[representation_index];
-        if (!source.region.valid() || source.persistent_ring
-            || source.type != target.type) {
-            return std::unexpected(
-                "GraphJit event merge source has inconsistent physical storage");
-        }
+        auto source = validate_source(representation_index);
+        if (!source) return std::unexpected(std::move(source.error()));
         auto* source_count_pointer = byte_offset_pointer(
             builder,
             storage_base,
-            source.count_storage_offset,
+            (*source)->count_storage_offset,
             "event.merge.source.count.ptr." + std::to_string(source_index));
         auto* source_count = builder.CreateLoad(
             size_type,
@@ -2269,7 +2350,7 @@ std::expected<void, std::string> emit_event_merge(
         auto* source_events = byte_offset_pointer(
             builder,
             storage_base,
-            source.events_storage_offset,
+            (*source)->events_storage_offset,
             "event.merge.source.events." + std::to_string(source_index));
         target_write = builder.CreateCall(
             helper,
@@ -2278,7 +2359,7 @@ std::expected<void, std::string> emit_event_merge(
              target_read,
              target_write,
              source_events,
-             llvm::ConstantInt::get(size_type, source.event_capacity),
+             llvm::ConstantInt::get(size_type, (*source)->event_capacity),
              source_count},
             "event.merge.write." + std::to_string(source_index));
     }

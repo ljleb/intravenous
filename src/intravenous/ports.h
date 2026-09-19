@@ -1132,6 +1132,8 @@ namespace iv {
             size_t const block_end = block_index + block_size;
             size_t const mask = shared_data.buffer.size() - 1;
 
+            // EventOutputPort's producer contract keeps this sequence sorted
+            // by absolute time, so both scans may stop at the first boundary.
             while (shared_data.read_index != shared_data.write_index) {
                 TimedEvent const& oldest = shared_data.buffer[shared_data.read_index & mask];
                 if (oldest.time >= block_index) {
@@ -1169,6 +1171,11 @@ namespace iv {
         }
     };
 
+    // Realtime event producers must append each logical output in
+    // nondecreasing absolute TimedEvent::time order across sequential
+    // tick/tick_block invocations and any slices of one root call. Consumers
+    // and GraphJit merge paths rely on this ordering contract; EventOutputPort
+    // does not sort the stream or add an O(n) release-time validation pass.
     class EventOutputPort {
         EventSharedPortData* _shared_data = nullptr;
         EventTypeId _source_type {};

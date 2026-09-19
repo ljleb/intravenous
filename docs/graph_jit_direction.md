@@ -351,10 +351,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     consumer-facing sequence is materialized after the complete producer step.
     Event conversion plans are preserved by semantic analysis and realized as
     explicit transient sequence operations; identical converted fanout branches
-    share one derived representation/materialization. Multi-producer event inputs
-    use one bounded producer-local sequence per source and a stable merge into the
-    canonical aggregate after the last producer completes; retained aggregate
-    storage, conversion, and fanout all operate downstream of that merge.
+    share one derived representation/materialization. Realtime event outputs are
+    contractually emitted in nondecreasing absolute sample-index order. Transient
+    multi-producer event inputs place semantic source 0 directly in the canonical
+    aggregate allocation, keep the remaining producers in bounded local
+    sequences, and perform one stable backwards k-way merge after the last
+    producer completes. Retained fan-in still uses its separate canonical target;
+    retained aggregate storage, conversion, and fanout all operate downstream of
+    the merge.
     Implicit conversions are intentionally non-expanding: one source event may
     produce zero or one target event, never synthesize additional events.
 11. **Event retention.** **Compact carry and persistent-ring identity retention landed.**

@@ -1409,11 +1409,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                     "GraphJit event SCC lowering does not yet support multi-producer event fan-in");
             }
 
-            // Multi-producer event inputs cannot have their producers append
-            // directly into one sequence: producer execution order and slicing
-            // would not preserve global timestamp ordering. Give each source a
-            // producer-local sequence, then stable-merge them after the latest
-            // producer into one canonical aggregate representation.
+            // Producer streams are contractually time-sorted, but independent
+            // producers still cannot append concurrently into one sequence
+            // without disturbing global order. For transient fan-in, semantic
+            // source 0 writes directly into the canonical aggregate allocation
+            // while retaining its own logical capacity; other sources remain
+            // local and are k-way merged after the latest producer. Retained
+            // fan-in keeps a separate canonical target for now.
             struct ValidatedSource {
                 EventOutputPortId id{};
                 std::size_t primitive = 0;
@@ -1557,12 +1559,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 canonical_capacity = *rounded;
             }
 
+            auto const transient_producer_home = transient_materialized;
             auto const identity_base = event_group_identity(group);
             auto canonical = append_representation(
                 group_index,
                 group.source_type,
                 canonical_capacity,
-                false,
+                transient_producer_home,
                 persistent_ring,
                 persistent_ring
                     ? identity_base + ":kind=persistent_ring:history="
@@ -1608,19 +1611,28 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             EventMergePlan merge{
                 .target_representation = *canonical,
                 .after_execution_position = producer_execution_position,
+                .target_is_semantic_source = transient_producer_home,
                 .preserve_existing_target = retained_storage,
             };
-            merge.source_representations.reserve(validated_sources.size());
-            for (auto const& source : validated_sources) {
-                auto local = append_representation(
-                    group_index,
-                    group.source_type,
-                    source.capacity,
-                    true);
-                if (!local) {
-                    return std::unexpected(std::move(local.error()));
+            merge.source_representations.reserve(
+                validated_sources.size() - (transient_producer_home ? 1u : 0u));
+            for (std::size_t source_index = 0;
+                 source_index < validated_sources.size(); ++source_index) {
+                auto const& source = validated_sources[source_index];
+                std::size_t representation = *canonical;
+                if (!transient_producer_home || source_index != 0) {
+                    auto local = append_representation(
+                        group_index,
+                        group.source_type,
+                        source.capacity,
+                        true);
+                    if (!local) {
+                        return std::unexpected(std::move(local.error()));
+                    }
+                    representation = *local;
+                    merge.source_representations.push_back(representation);
                 }
-                merge.source_representations.push_back(*local);
+
                 auto& source_binding =
                     plan.primitives[source.primitive].outputs[source.id.port];
                 if (source_binding.representation) {
@@ -1628,10 +1640,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                         "GraphJit event output belongs to more than one producer group");
                 }
                 source_binding = PrimitiveEventOutputBindingPlan{
-                    .representation = *local,
+                    .representation = representation,
                     .source_type = group.source_type,
                     .history = realtime_history(source.config),
                     .latency = realtime_latency(source.config),
+                    .write_capacity = source.capacity,
                     .append_existing =
                         analysis.primitives[source.primitive]
                                 .bundle.maximum_block_size
@@ -1935,6 +1948,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             .source_type = group.source_type,
             .history = realtime_history(source),
             .latency = realtime_latency(source),
+            .write_capacity =
+                plan.representations[*source_representation].event_capacity,
             .append_existing = aggregate_sequence,
         };
 
@@ -2428,8 +2443,16 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             && event_ports.representations[
                    materialization.source_representation]
                    .persistent_ring;
+        auto const producer_home_source = std::ranges::any_of(
+            event_ports.merges,
+            [&](EventMergePlan const& merge) {
+                return merge.target_is_semantic_source
+                    && merge.target_representation
+                        == materialization.source_representation;
+            });
         if (!carry_source
             && !persistent_ring_source
+            && !producer_home_source
             && std::ranges::find(
                    step.event_sequence_resets_before,
                    materialization.source_representation)

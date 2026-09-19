@@ -166,6 +166,10 @@ struct PrimitiveEventOutputBindingPlan {
     EventTypeId source_type = EventTypeId::empty;
     std::size_t history = 0;
     std::size_t latency = 0;
+    // Logical capacity available to this producer. This normally matches the
+    // representation capacity; a transient fan-in home producer writes into a
+    // larger aggregate representation while retaining its own declared bound.
+    std::size_t write_capacity = 0;
     bool append_existing = false;
 };
 
@@ -201,15 +205,17 @@ struct EventPersistentRingPlan {
 };
 
 struct EventMergePlan {
-    // Independent producer-local sequences are stable-merged in semantic source
-    // order only after every producer has completed its root invocation. This
-    // keeps producer writes local and preserves one globally time-sorted input
-    // sequence for downstream consumers.
+    // Sorted producer streams are merged in semantic source order only after
+    // every producer has completed its root invocation. For transient fan-in,
+    // semantic source 0 writes directly into target_representation and the
+    // remaining source_representations are merged into it in one k-way pass.
+    // Retained fan-in keeps its current separate-target realization.
     std::vector<std::size_t> source_representations{};
     std::size_t target_representation = 0;
     std::size_t after_execution_position = 0;
+    bool target_is_semantic_source = false;
     // Retained targets already contain restored/pruned events from previous
-    // invocations; transient targets begin empty.
+    // invocations; transient producer-home targets contain source 0 instead.
     bool preserve_existing_target = false;
 };
 

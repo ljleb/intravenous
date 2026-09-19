@@ -116,6 +116,91 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequence(
 }
 
 
+extern "C" std::size_t iv_graph_jit_merge_event_sequences_into_home(
+    void* target_events,
+    std::size_t target_capacity,
+    std::size_t target_count,
+    void const* const* source_events,
+    std::size_t* source_remaining,
+    std::size_t source_count) noexcept
+{
+    if (target_events == nullptr
+        || (target_capacity != 0 && !is_power_of_2(target_capacity))
+        || target_count > target_capacity
+        || (source_count != 0
+            && (source_events == nullptr || source_remaining == nullptr))) {
+        return target_count;
+    }
+
+    std::size_t total_count = target_count;
+    for (std::size_t source = 0; source < source_count; ++source) {
+        if (source_remaining[source] != 0 && source_events[source] == nullptr) {
+            return target_count;
+        }
+        if (source_remaining[source] > target_capacity - total_count) {
+            // Planning reserves enough aggregate capacity. Preserve the
+            // producer-home sequence if that invariant is ever violated.
+            return target_count;
+        }
+        total_count += source_remaining[source];
+    }
+
+    auto* target = static_cast<TimedEvent*>(target_events);
+    std::size_t target_remaining = target_count;
+    std::size_t output_remaining = total_count;
+
+    while (output_remaining != 0) {
+        bool chose_target = target_remaining != 0;
+        std::size_t chosen_source = 0;
+        EventTime chosen_time = chose_target
+            ? target[target_remaining - 1].time
+            : EventTime{};
+        std::size_t chosen_ordinal = 0;
+
+        for (std::size_t source = 0; source < source_count; ++source) {
+            auto const remaining = source_remaining[source];
+            if (remaining == 0) continue;
+            auto const* events =
+                static_cast<TimedEvent const*>(source_events[source]);
+            auto const candidate_time = events[remaining - 1].time;
+            auto const candidate_ordinal = source + 1;
+            if (!chose_target && chosen_ordinal == 0) {
+                chosen_source = source;
+                chosen_time = candidate_time;
+                chosen_ordinal = candidate_ordinal;
+                continue;
+            }
+            if (candidate_time > chosen_time
+                || (candidate_time == chosen_time
+                    && candidate_ordinal > chosen_ordinal)) {
+                chose_target = false;
+                chosen_source = source;
+                chosen_time = candidate_time;
+                chosen_ordinal = candidate_ordinal;
+            }
+        }
+
+        auto const output_index = output_remaining - 1;
+        if (chose_target) {
+            auto const source_index = target_remaining - 1;
+            if (output_index != source_index) {
+                target[output_index] = target[source_index];
+            }
+            --target_remaining;
+        } else {
+            auto const remaining = source_remaining[chosen_source];
+            auto const* events = static_cast<TimedEvent const*>(
+                source_events[chosen_source]);
+            target[output_index] = events[remaining - 1];
+            --source_remaining[chosen_source];
+        }
+        --output_remaining;
+    }
+
+    return total_count;
+}
+
+
 extern "C" std::size_t iv_graph_jit_materialize_event_sequence(
     std::uint32_t source_type,
     std::uint32_t target_type,

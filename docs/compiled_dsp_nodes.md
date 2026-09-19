@@ -160,7 +160,12 @@ A realtime event output has a finite compiler-known production window determined
 by the current block plus its `RealtimeOutputConfig` history/latency. The
 compatibility runtime should reject realtime writes outside that legal window,
 and the whole-project JIT may specialize/eliminate those checks when validity is
-statically known.
+statically known. A user-defined realtime producer must also append each logical
+event output in nondecreasing **absolute sample-index order**, across repeated or
+sliced `tick_block()` calls as well as within one call. Equal timestamps are
+allowed. Event consumers and whole-graph fan-in rely on this producer contract;
+release execution does not sort each producer stream or perform an O(n)
+validation pass.
 
 A compiled event output instead carries `CompiledPortConfig` and has no finite
 realtime history/latency declaration. Its arbitrary `access_block()` queries may
