@@ -1906,16 +1906,21 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         step.sample_carry_commits_after.push_back(carry_index);
     }
 
-    for (std::size_t feedback_index = 0;
-         feedback_index < sample_ports.physical.feedback_operations.size();
-         ++feedback_index) {
-        auto const& feedback = sample_ports.physical.feedback_operations[feedback_index];
-        if (feedback.producer_execution_position >= plan.primitive_steps.size()) {
-            return std::unexpected(
-                "GraphJit sample feedback operation references an invalid execution position");
+    for (std::size_t timeline_index = 0;
+         timeline_index < sample_ports.physical.feedback_timelines.size();
+         ++timeline_index) {
+        auto const& timeline = sample_ports.physical.feedback_timelines[timeline_index];
+        if (timeline.writer.kind
+            == SampleFeedbackTimelineWriterKind::producer_home) {
+            continue;
         }
-        plan.primitive_steps[feedback.producer_execution_position]
-            .sample_feedback_copies_after.push_back(feedback_index);
+        if (timeline.writer.after_execution_position
+            >= plan.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit sample feedback timeline references an invalid execution position");
+        }
+        plan.primitive_steps[timeline.writer.after_execution_position]
+            .sample_feedback_writes_after.push_back(timeline_index);
     }
 
     for (std::size_t materialization_index = 0;

@@ -75,13 +75,12 @@ struct SampleCompositionSourcePlan {
     std::size_t read_latency = 0;
 };
 
-// A composed connection gathers independently-timed channels from canonical
-// producer representations into one target-layout representation. Feed-forward
-// composition writes a timestamp-aligned transient window, so its eventual
+// A feed-forward composed connection gathers independently-timed channels
+// from canonical producer representations into one target-layout transient
+// representation. It writes a timestamp-aligned window, so its eventual
 // InputPort binding reads with zero additional latency and target history is
-// reconstructed while composition runs. Detached composition instead owns a
-// persistent initialized ring and shifts current source writes forward by each
-// channel's read latency; its InputPort applies only the common detach delay.
+// reconstructed while composition runs. Detached composition is represented
+// uniformly by SampleFeedbackTimelinePlan below instead of a special mode here.
 struct SampleCompositionPlan {
     std::size_t connection_index = 0;
     std::vector<SampleCompositionSourcePlan> sources{};
@@ -89,14 +88,6 @@ struct SampleCompositionPlan {
     std::size_t after_execution_position = 0;
     ChannelLayout target_layout{};
     std::size_t target_history = 0;
-
-    // Detached composition stores one persistent target-layout timeline without
-    // first materializing a transient aggregate. Each producer channel writes
-    // its current source frame at target absolute index source + read_latency.
-    // This preserves per-channel path latency while leaving every unwritten
-    // pre-roll frame at the authored detach initial value. The eventual input
-    // binding therefore needs only the common detach latency.
-    bool shift_writes_by_read_latency = false;
 };
 
 // Exact transient byte range assigned to one representation. Ranges may overlap
@@ -147,20 +138,41 @@ struct SampleCarryOperationPlan {
     std::size_t retained_frames = 0;
 };
 
-// One fallback branch-local delayed copy of a canonical producer representation.
-// Compatible feedback may instead make the persistent ring the producer's
-// canonical home and needs no operation here. A copied ring is indexed in the
-// same absolute sample timeline as the source; execution lowering copies each
-// produced slice into it. Consumer bindings add loop_extra_latency to the
-// source's ordinary read latency, while the ring retains that full delay plus
-// target history. initial_value defines every unproduced frame observed before
-// the delayed source timeline reaches zero.
-struct SampleFeedbackOperationPlan {
+enum class SampleFeedbackTimelineWriterKind {
+    // The primitive output binding names the feedback timeline representation
+    // directly. No post-producer operation is emitted.
+    producer_home,
+    // Copy the newly-produced canonical slice into the branch-local timeline.
+    copy,
+    // Gather projected/permuted source channels into the target-layout timeline,
+    // shifting each current source write forward by its ordinary read latency.
+    composition,
+};
+
+// One write strategy for a detached branch timeline. Every feedback branch is
+// represented by the same persistent-timeline abstraction regardless of how
+// current samples arrive in it; consumer-side conversion/materialization then
+// reads uniformly from timeline_representation.
+struct SampleFeedbackTimelineWriterPlan {
+    SampleFeedbackTimelineWriterKind kind =
+        SampleFeedbackTimelineWriterKind::producer_home;
+    std::size_t after_execution_position = 0;
+
+    // copy only
     std::size_t source_representation = no_sample_representation;
-    std::size_t ring_representation = no_sample_representation;
-    std::size_t producer_execution_position = 0;
+
+    // composition only
+    std::vector<SampleCompositionSourcePlan> composition_sources{};
+};
+
+struct SampleFeedbackTimelinePlan {
+    std::size_t connection_index = 0;
+    std::size_t timeline_representation = no_sample_representation;
+    ChannelLayout channel_layout{};
+    std::size_t retained_frames = 0;
     std::size_t loop_extra_latency = 1;
     Sample initial_value{};
+    SampleFeedbackTimelineWriterPlan writer{};
 };
 
 struct SamplePhysicalPlan {
@@ -178,10 +190,14 @@ struct SamplePhysicalPlan {
     // the source producer and before every consumer bound to the target
     // representation.
     std::vector<SampleMaterializationPlan> materializations{};
+    // Feed-forward channel compositions only. Detached channel composition is
+    // a SampleFeedbackTimelinePlan with a composition writer.
     std::vector<SampleCompositionPlan> compositions{};
     std::vector<SampleCarryOperationPlan> carry_operations{};
-    // Only feedback branches that cannot alias the producer home appear here.
-    std::vector<SampleFeedbackOperationPlan> feedback_operations{};
+    // One entry per detached sample connection. producer_home timelines need no
+    // scheduled write; copy/composition writers are emitted after their source
+    // execution position.
+    std::vector<SampleFeedbackTimelinePlan> feedback_timelines{};
 
     // One exact range per transient representation. The arena high-water mark
     // is independent of any individual representation's maximum size.

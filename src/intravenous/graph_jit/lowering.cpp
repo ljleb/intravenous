@@ -1112,10 +1112,14 @@ std::expected<void, std::string> emit_sample_materialization(
 }
 
 
-std::expected<void, std::string> emit_sample_composition(
+std::expected<void, std::string> emit_sample_composition_write(
     llvm::IRBuilder<>& builder,
     detail::SamplePhysicalPlan const& physical,
-    detail::SampleCompositionPlan const& composition,
+    std::vector<detail::SampleCompositionSourcePlan> const& source_plans,
+    std::size_t target_representation_index,
+    ChannelLayout target_layout,
+    std::size_t target_history,
+    bool shift_writes_by_read_latency,
     llvm::Value* storage_base,
     llvm::Value* sample_index,
     llvm::Value* block_size)
@@ -1124,22 +1128,22 @@ std::expected<void, std::string> emit_sample_composition(
     static_assert(alignof(Sample) == alignof(Sample::storage));
     static_assert(std::is_same_v<Sample::storage, float>);
 
-    if (composition.target_representation >= physical.representations.size()) {
+    if (target_representation_index >= physical.representations.size()) {
         return std::unexpected(
             "GraphJit sample composition references a missing target representation");
     }
     auto const& target_representation =
-        physical.representations[composition.target_representation];
-    if (target_representation.channel_layout != composition.target_layout) {
+        physical.representations[target_representation_index];
+    if (target_representation.channel_layout != target_layout) {
         return std::unexpected(
             "GraphJit sample composition target layout disagrees with its representation");
     }
-    if (composition.sources.size() != channel_count(composition.target_layout)) {
+    if (source_plans.size() != channel_count(target_layout)) {
         return std::unexpected(
             "GraphJit sample composition requires exactly one source per target channel");
     }
-    if (composition.shift_writes_by_read_latency
-        && (composition.target_history != 0
+    if (shift_writes_by_read_latency
+        && (target_history != 0
             || target_representation.implementation
                 != SampleConnectionImplementationKind::feedback_ring
             || target_representation.persistent_allocation
@@ -1149,7 +1153,7 @@ std::expected<void, std::string> emit_sample_composition(
     }
 
     auto target = sample_storage_binding(
-        physical, composition.target_representation);
+        physical, target_representation_index);
     if (!target) return std::unexpected(std::move(target.error()));
     if (target->frame_capacity == 0
         || !is_power_of_2(target->frame_capacity)) {
@@ -1164,10 +1168,9 @@ std::expected<void, std::string> emit_sample_composition(
         std::size_t read_latency = 0;
     };
     std::vector<SourceBinding> sources;
-    sources.reserve(composition.sources.size());
-    std::vector<bool> target_channels(
-        channel_count(composition.target_layout), false);
-    for (auto const& source_plan : composition.sources) {
+    sources.reserve(source_plans.size());
+    std::vector<bool> target_channels(channel_count(target_layout), false);
+    for (auto const& source_plan : source_plans) {
         if (source_plan.source_representation >= physical.representations.size()) {
             return std::unexpected(
                 "GraphJit sample composition references a missing source representation");
@@ -1202,8 +1205,7 @@ std::expected<void, std::string> emit_sample_composition(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* sample_type = llvm::Type::getFloatTy(context);
     auto* zero = llvm::ConstantInt::get(size_type, 0);
-    auto* history = llvm::ConstantInt::get(
-        size_type, composition.target_history);
+    auto* history = llvm::ConstantInt::get(size_type, target_history);
     auto* compose_count = builder.CreateAdd(
         block_size, history, "sample.compose.count");
     auto* preheader = builder.GetInsertBlock();
@@ -1228,7 +1230,7 @@ std::expected<void, std::string> emit_sample_composition(
         auto const& source = sources[i];
         llvm::Value* source_frame = target_frame;
         llvm::Value* target_storage_frame = target_frame;
-        if (composition.shift_writes_by_read_latency) {
+        if (shift_writes_by_read_latency) {
             target_storage_frame = builder.CreateAdd(
                 target_frame,
                 llvm::ConstantInt::get(size_type, source.read_latency),
@@ -1272,10 +1274,31 @@ std::expected<void, std::string> emit_sample_composition(
     return {};
 }
 
-std::expected<void, std::string> emit_sample_feedback_copy(
+std::expected<void, std::string> emit_sample_composition(
     llvm::IRBuilder<>& builder,
     detail::SamplePhysicalPlan const& physical,
-    detail::SampleFeedbackOperationPlan const& operation,
+    detail::SampleCompositionPlan const& composition,
+    llvm::Value* storage_base,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
+{
+    return emit_sample_composition_write(
+        builder,
+        physical,
+        composition.sources,
+        composition.target_representation,
+        composition.target_layout,
+        composition.target_history,
+        false,
+        storage_base,
+        sample_index,
+        block_size);
+}
+
+std::expected<void, std::string> emit_sample_feedback_timeline_write(
+    llvm::IRBuilder<>& builder,
+    detail::SamplePhysicalPlan const& physical,
+    detail::SampleFeedbackTimelinePlan const& timeline,
     llvm::Value* storage_base,
     llvm::Value* sample_index,
     llvm::Value* block_size)
@@ -1283,45 +1306,81 @@ std::expected<void, std::string> emit_sample_feedback_copy(
     static_assert(sizeof(Sample) == sizeof(Sample::storage));
     static_assert(std::is_same_v<Sample::storage, float>);
 
-    if (operation.source_representation >= physical.representations.size()
-        || operation.ring_representation >= physical.representations.size()) {
+    if (timeline.timeline_representation >= physical.representations.size()) {
         return std::unexpected(
-            "GraphJit sample feedback copy references a missing representation");
+            "GraphJit sample feedback timeline references a missing representation");
     }
-    auto const& source_plan =
-        physical.representations[operation.source_representation];
-    auto const& ring_plan =
-        physical.representations[operation.ring_representation];
-    if (ring_plan.implementation
+    auto const& timeline_plan =
+        physical.representations[timeline.timeline_representation];
+    if (timeline_plan.implementation
             != SampleConnectionImplementationKind::feedback_ring
-        || ring_plan.persistent_allocation
+        || timeline_plan.persistent_allocation
             == detail::no_sample_persistent_allocation
-        || ring_plan.channel_layout != source_plan.channel_layout
-        || operation.loop_extra_latency == 0
-        || operation.loop_extra_latency >= ring_plan.frame_capacity) {
+        || timeline_plan.channel_layout != timeline.channel_layout
+        || timeline.loop_extra_latency == 0
+        || timeline.loop_extra_latency >= timeline_plan.frame_capacity) {
         return std::unexpected(
-            "GraphJit sample feedback copy plan is inconsistent with its ring representation");
+            "GraphJit sample feedback timeline is inconsistent with its ring representation");
     }
-    if (ring_plan.persistent_allocation >= physical.persistent_allocations.size()) {
+    if (timeline_plan.persistent_allocation
+        >= physical.persistent_allocations.size()) {
         return std::unexpected(
-            "GraphJit sample feedback copy references a missing persistent ring");
+            "GraphJit sample feedback timeline references a missing persistent ring");
     }
     auto const& allocation =
-        physical.persistent_allocations[ring_plan.persistent_allocation];
+        physical.persistent_allocations[timeline_plan.persistent_allocation];
     if (allocation.kind != detail::SamplePersistentStorageKind::ring
-        || allocation.representation_index != operation.ring_representation
+        || allocation.representation_index != timeline.timeline_representation
+        || allocation.retained_frames < timeline.retained_frames
         || !allocation.initialize_value
         || static_cast<float>(*allocation.initialize_value)
-            != static_cast<float>(operation.initial_value)) {
+            != static_cast<float>(timeline.initial_value)) {
         return std::unexpected(
-            "GraphJit sample feedback persistent ring lost its initialization semantics");
+            "GraphJit sample feedback timeline lost its persistent initialization semantics");
+    }
+
+    switch (timeline.writer.kind) {
+    case detail::SampleFeedbackTimelineWriterKind::producer_home:
+        return std::unexpected(
+            "GraphJit producer-home feedback timeline must not schedule a post-producer write");
+    case detail::SampleFeedbackTimelineWriterKind::composition:
+        if (timeline.writer.source_representation != detail::no_sample_representation
+            || timeline.writer.composition_sources.empty()) {
+            return std::unexpected(
+                "GraphJit composed sample feedback timeline has an invalid writer shape");
+        }
+        return emit_sample_composition_write(
+            builder,
+            physical,
+            timeline.writer.composition_sources,
+            timeline.timeline_representation,
+            timeline.channel_layout,
+            0,
+            true,
+            storage_base,
+            sample_index,
+            block_size);
+    case detail::SampleFeedbackTimelineWriterKind::copy:
+        break;
+    }
+
+    if (!timeline.writer.composition_sources.empty()
+        || timeline.writer.source_representation >= physical.representations.size()) {
+        return std::unexpected(
+            "GraphJit copied sample feedback timeline has an invalid writer shape");
+    }
+    auto const& source_plan =
+        physical.representations[timeline.writer.source_representation];
+    if (timeline_plan.channel_layout != source_plan.channel_layout) {
+        return std::unexpected(
+            "GraphJit sample feedback copy changed channel layout without composition");
     }
 
     auto source = sample_storage_binding(
-        physical, operation.source_representation);
+        physical, timeline.writer.source_representation);
     if (!source) return std::unexpected(std::move(source.error()));
     auto ring = sample_storage_binding(
-        physical, operation.ring_representation);
+        physical, timeline.timeline_representation);
     if (!ring) return std::unexpected(std::move(ring.error()));
 
     auto& context = builder.getContext();
@@ -2239,23 +2298,6 @@ std::expected<void, std::string> emit_execution_step(
             block_size);
     }
 
-    for (auto const feedback_index : step.sample_feedback_copies_after) {
-        if (feedback_index >= plan.sample_ports.physical.feedback_operations.size()) {
-            return std::unexpected(
-                "GraphJit execution plan references a missing sample feedback copy");
-        }
-        auto copied = emit_sample_feedback_copy(
-            builder,
-            plan.sample_ports.physical,
-            plan.sample_ports.physical.feedback_operations[feedback_index],
-            storage_base,
-            sample_index,
-            block_size);
-        if (!copied) {
-            return std::unexpected(std::move(copied.error()));
-        }
-    }
-
     for (auto const feedback_index : step.event_feedback_appends_after) {
         if (feedback_index >= plan.event_ports.feedback_operations.size()) {
             return std::unexpected(
@@ -2327,6 +2369,23 @@ std::expected<void, std::string> emit_execution_step(
             block_size);
         if (!materialized) {
             return std::unexpected(std::move(materialized.error()));
+        }
+    }
+
+    for (auto const timeline_index : step.sample_feedback_writes_after) {
+        if (timeline_index >= plan.sample_ports.physical.feedback_timelines.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing sample feedback timeline");
+        }
+        auto written = emit_sample_feedback_timeline_write(
+            builder,
+            plan.sample_ports.physical,
+            plan.sample_ports.physical.feedback_timelines[timeline_index],
+            storage_base,
+            sample_index,
+            block_size);
+        if (!written) {
+            return std::unexpected(std::move(written.error()));
         }
     }
 

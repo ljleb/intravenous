@@ -857,15 +857,23 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 plan.connection_representations[connection_index] =
                     ring_representation;
             }
-            if (!writes_directly_to_feedback) {
-                plan.feedback_operations.push_back(SampleFeedbackOperationPlan{
-                    .source_representation = canonical,
-                    .ring_representation = ring_representation,
-                    .producer_execution_position = producer_position,
-                    .loop_extra_latency = latency,
-                    .initial_value = *connection.detach_initial_value,
-                });
-            }
+            plan.feedback_timelines.push_back(SampleFeedbackTimelinePlan{
+                .connection_index = connection_index,
+                .timeline_representation = ring_representation,
+                .channel_layout = *group.canonical_source_layout,
+                .retained_frames = retained_frames,
+                .loop_extra_latency = latency,
+                .initial_value = *connection.detach_initial_value,
+                .writer = SampleFeedbackTimelineWriterPlan{
+                    .kind = writes_directly_to_feedback
+                        ? SampleFeedbackTimelineWriterKind::producer_home
+                        : SampleFeedbackTimelineWriterKind::copy,
+                    .after_execution_position = producer_position,
+                    .source_representation = writes_directly_to_feedback
+                        ? no_sample_representation
+                        : canonical,
+                },
+            });
         }
     }
 
@@ -922,8 +930,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             ConnectionLiveIntervalPlan{.begin = begin, .end = begin});
 
         std::size_t target_representation = no_sample_representation;
-        std::size_t composition_history = connection.target_history;
         bool const detached = connection.detach.has_value();
+        std::size_t feedback_retained_frames = 0;
         if (detached) {
             if (!connection.detach_initial_value) {
                 return std::unexpected(
@@ -943,10 +951,10 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 return std::unexpected(
                     "GraphJit composed sample feedback retained extent overflows size_t");
             }
-            auto const retained_frames = detach_latency
+            feedback_retained_frames = detach_latency
                 + connection.target_history + max_read_latency;
             auto capacity = working_ring_capacity(
-                kernel_block_size, retained_frames);
+                kernel_block_size, feedback_retained_frames);
             if (!capacity) {
                 return std::unexpected(std::move(capacity.error()));
             }
@@ -967,7 +975,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             auto persistent = append_synthetic_persistent_allocation(
                 target_representation,
                 connection.target_layout,
-                retained_frames,
+                feedback_retained_frames,
                 *capacity,
                 composition_feedback_identity(
                     connection,
@@ -979,12 +987,6 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             }
             plan.representations[target_representation].persistent_allocation =
                 *persistent;
-
-            // Persistent feedback owns the historical target timeline. The
-            // composition operation writes only newly produced source frames,
-            // shifted forward by their per-channel read latency. Rewriting the
-            // historical window would destroy authored detach pre-roll.
-            composition_history = 0;
         } else {
             auto capacity = working_ring_capacity(
                 kernel_block_size, connection.target_history);
@@ -1010,15 +1012,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             target_representation = *transient;
         }
 
-        SampleCompositionPlan composition{
-            .connection_index = connection_index,
-            .target_representation = target_representation,
-            .after_execution_position = begin,
-            .target_layout = connection.target_layout,
-            .target_history = composition_history,
-            .shift_writes_by_read_latency = detached,
-        };
-        composition.sources.reserve(connection.source_channel_timings.size());
+        std::vector<SampleCompositionSourcePlan> composition_sources;
+        composition_sources.reserve(connection.source_channel_timings.size());
         for (std::size_t channel_index = 0;
              channel_index < connection.source_channel_timings.size();
              ++channel_index) {
@@ -1053,14 +1048,38 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 return std::unexpected(
                     "GraphJit sample composition source channel is outside its producer representation");
             }
-            composition.sources.push_back(SampleCompositionSourcePlan{
+            composition_sources.push_back(SampleCompositionSourcePlan{
                 .source_representation = source_representation,
                 .source_channel = channel.source.channel,
                 .target_channel = connection.target_channels[channel_index].channel,
                 .read_latency = channel.read_latency,
             });
         }
-        plan.compositions.push_back(std::move(composition));
+
+        if (detached) {
+            plan.feedback_timelines.push_back(SampleFeedbackTimelinePlan{
+                .connection_index = connection_index,
+                .timeline_representation = target_representation,
+                .channel_layout = connection.target_layout,
+                .retained_frames = feedback_retained_frames,
+                .loop_extra_latency = connection.detach->loop_extra_latency,
+                .initial_value = *connection.detach_initial_value,
+                .writer = SampleFeedbackTimelineWriterPlan{
+                    .kind = SampleFeedbackTimelineWriterKind::composition,
+                    .after_execution_position = begin,
+                    .composition_sources = std::move(composition_sources),
+                },
+            });
+        } else {
+            plan.compositions.push_back(SampleCompositionPlan{
+                .connection_index = connection_index,
+                .sources = std::move(composition_sources),
+                .target_representation = target_representation,
+                .after_execution_position = begin,
+                .target_layout = connection.target_layout,
+                .target_history = connection.target_history,
+            });
+        }
         plan.connection_representations[connection_index] = target_representation;
     }
 

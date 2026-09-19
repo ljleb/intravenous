@@ -1251,7 +1251,7 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     ASSERT_EQ(physical->representations.size(), 2u);
     ASSERT_EQ(physical->transient_allocations.size(), 1u);
     ASSERT_EQ(physical->persistent_allocations.size(), 1u);
-    ASSERT_EQ(physical->feedback_operations.size(), 1u);
+    ASSERT_EQ(physical->feedback_timelines.size(), 1u);
     ASSERT_TRUE(physical->connection_representations[0].has_value());
 
     auto const canonical = physical->producer_groups[0]->canonical_representation;
@@ -1284,12 +1284,17 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
         persistent.migration_identity.find("graphjit.sample.feedback:"),
         std::string::npos);
 
-    auto const& operation = physical->feedback_operations[0];
-    EXPECT_EQ(operation.source_representation, canonical);
-    EXPECT_EQ(operation.ring_representation, ring);
-    EXPECT_EQ(operation.producer_execution_position, 0u);
-    EXPECT_EQ(operation.loop_extra_latency, 5u);
-    EXPECT_FLOAT_EQ(static_cast<float>(operation.initial_value), 0.25f);
+    auto const& timeline = physical->feedback_timelines[0];
+    EXPECT_EQ(timeline.connection_index, 0u);
+    EXPECT_EQ(timeline.timeline_representation, ring);
+    EXPECT_EQ(timeline.channel_layout, mono);
+    EXPECT_EQ(timeline.retained_frames, 10u);
+    EXPECT_EQ(timeline.loop_extra_latency, 5u);
+    EXPECT_FLOAT_EQ(static_cast<float>(timeline.initial_value), 0.25f);
+    EXPECT_EQ(timeline.writer.kind, SampleFeedbackTimelineWriterKind::copy);
+    EXPECT_EQ(timeline.writer.source_representation, canonical);
+    EXPECT_EQ(timeline.writer.after_execution_position, 0u);
+    EXPECT_TRUE(timeline.writer.composition_sources.empty());
 
     iv::NodeLayoutBuilder builder(8);
     auto declared = declare_sample_physical_storage(builder, *physical);
@@ -1402,7 +1407,7 @@ TEST(GraphJitSamplePhysicalPlan, ZeroInitializedFeedbackUsesProducerHomeAndCopie
     ASSERT_EQ(physical->representations.size(), 2u);
     EXPECT_TRUE(physical->transient_allocations.empty());
     ASSERT_EQ(physical->persistent_allocations.size(), 2u);
-    ASSERT_EQ(physical->feedback_operations.size(), 1u);
+    ASSERT_EQ(physical->feedback_timelines.size(), 3u);
 
     auto const canonical =
         physical->producer_groups[0]->canonical_representation;
@@ -1420,11 +1425,25 @@ TEST(GraphJitSamplePhysicalPlan, ZeroInitializedFeedbackUsesProducerHomeAndCopie
 
     auto const copied_ring = *physical->connection_representations[1];
     ASSERT_NE(copied_ring, canonical);
-    auto const& operation = physical->feedback_operations.front();
-    EXPECT_EQ(operation.source_representation, canonical);
-    EXPECT_EQ(operation.ring_representation, copied_ring);
-    EXPECT_EQ(operation.producer_execution_position, 0u);
-    EXPECT_FLOAT_EQ(static_cast<float>(operation.initial_value), 0.5f);
+    auto const copied = std::ranges::find_if(
+        physical->feedback_timelines,
+        [](SampleFeedbackTimelinePlan const& timeline) {
+            return timeline.connection_index == 1;
+        });
+    ASSERT_NE(copied, physical->feedback_timelines.end());
+    EXPECT_EQ(copied->timeline_representation, copied_ring);
+    EXPECT_EQ(copied->writer.kind, SampleFeedbackTimelineWriterKind::copy);
+    EXPECT_EQ(copied->writer.source_representation, canonical);
+    EXPECT_EQ(copied->writer.after_execution_position, 0u);
+    EXPECT_FLOAT_EQ(static_cast<float>(copied->initial_value), 0.5f);
+
+    auto const producer_home_count = std::ranges::count_if(
+        physical->feedback_timelines,
+        [](SampleFeedbackTimelinePlan const& timeline) {
+            return timeline.writer.kind
+                == SampleFeedbackTimelineWriterKind::producer_home;
+        });
+    EXPECT_EQ(producer_home_count, 2u);
 
     auto const home_persistent_index =
         physical->representations[canonical].persistent_allocation;
@@ -1544,8 +1563,8 @@ TEST(GraphJitSamplePhysicalPlan, DetachedCompositionUsesPersistentShiftedTimelin
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
     ASSERT_EQ(physical->producer_groups.size(), 2u);
-    ASSERT_EQ(physical->compositions.size(), 1u);
-    EXPECT_TRUE(physical->feedback_operations.empty());
+    EXPECT_TRUE(physical->compositions.empty());
+    ASSERT_EQ(physical->feedback_timelines.size(), 1u);
     ASSERT_EQ(physical->persistent_allocations.size(), 1u);
     ASSERT_TRUE(physical->connection_representations[0].has_value());
 
@@ -1577,18 +1596,27 @@ TEST(GraphJitSamplePhysicalPlan, DetachedCompositionUsesPersistentShiftedTimelin
         persistent.migration_identity.find("graphjit.sample.composed_feedback:"),
         std::string::npos);
 
-    auto const& composition = physical->compositions.front();
-    EXPECT_EQ(composition.target_representation, composed);
-    EXPECT_EQ(composition.after_execution_position, 1u);
-    EXPECT_EQ(composition.target_history, 0u);
-    EXPECT_TRUE(composition.shift_writes_by_read_latency);
-    ASSERT_EQ(composition.sources.size(), 2u);
-    EXPECT_EQ(composition.sources[0].source_channel, 0u);
-    EXPECT_EQ(composition.sources[0].target_channel, 0u);
-    EXPECT_EQ(composition.sources[0].read_latency, 7u);
-    EXPECT_EQ(composition.sources[1].source_channel, 0u);
-    EXPECT_EQ(composition.sources[1].target_channel, 1u);
-    EXPECT_EQ(composition.sources[1].read_latency, 2u);
+    auto const& timeline = physical->feedback_timelines.front();
+    EXPECT_EQ(timeline.connection_index, 0u);
+    EXPECT_EQ(timeline.timeline_representation, composed);
+    EXPECT_EQ(timeline.channel_layout, stereo);
+    EXPECT_EQ(timeline.retained_frames, 15u);
+    EXPECT_EQ(timeline.loop_extra_latency, 5u);
+    EXPECT_FLOAT_EQ(static_cast<float>(timeline.initial_value), 0.25f);
+    EXPECT_EQ(
+        timeline.writer.kind,
+        SampleFeedbackTimelineWriterKind::composition);
+    EXPECT_EQ(timeline.writer.after_execution_position, 1u);
+    EXPECT_EQ(
+        timeline.writer.source_representation,
+        no_sample_representation);
+    ASSERT_EQ(timeline.writer.composition_sources.size(), 2u);
+    EXPECT_EQ(timeline.writer.composition_sources[0].source_channel, 0u);
+    EXPECT_EQ(timeline.writer.composition_sources[0].target_channel, 0u);
+    EXPECT_EQ(timeline.writer.composition_sources[0].read_latency, 7u);
+    EXPECT_EQ(timeline.writer.composition_sources[1].source_channel, 0u);
+    EXPECT_EQ(timeline.writer.composition_sources[1].target_channel, 1u);
+    EXPECT_EQ(timeline.writer.composition_sources[1].read_latency, 2u);
 
     iv::NodeLayoutBuilder builder(8);
     auto declared = declare_sample_physical_storage(builder, *physical);
@@ -1685,12 +1713,14 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackKeepsCanonicalPersistentRing)
         << (physical ? std::string{} : physical.error());
     ASSERT_EQ(physical->representations.size(), 3u);
     ASSERT_EQ(physical->persistent_allocations.size(), 1u);
-    ASSERT_EQ(physical->feedback_operations.size(), 1u);
+    ASSERT_EQ(physical->feedback_timelines.size(), 1u);
     ASSERT_EQ(physical->materializations.size(), 1u);
 
     auto const canonical =
         physical->producer_groups[0]->canonical_representation;
-    auto const ring = physical->feedback_operations[0].ring_representation;
+    auto const& timeline = physical->feedback_timelines[0];
+    EXPECT_EQ(timeline.writer.kind, SampleFeedbackTimelineWriterKind::copy);
+    auto const ring = timeline.timeline_representation;
     auto const derived = *physical->connection_representations[0];
     ASSERT_NE(canonical, ring);
     ASSERT_NE(ring, derived);
@@ -5800,10 +5830,13 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTarg
         *analysis, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
-    ASSERT_EQ(physical->feedback_operations.size(), 1u);
+    ASSERT_EQ(physical->feedback_timelines.size(), 1u);
     ASSERT_EQ(physical->persistent_allocations.size(), 1u);
-    auto const ring_representation =
-        physical->feedback_operations.front().ring_representation;
+    auto const& timeline = physical->feedback_timelines.front();
+    EXPECT_EQ(
+        timeline.writer.kind,
+        iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::copy);
+    auto const ring_representation = timeline.timeline_representation;
     ASSERT_LT(ring_representation, physical->representations.size());
     auto const persistent_index =
         physical->representations[ring_representation].persistent_allocation;
@@ -5873,9 +5906,13 @@ TEST_F(GraphJitRuntimeFixture, ConvertedSampleDetachFeedback)
         *analysis, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
-    ASSERT_EQ(physical->feedback_operations.size(), 1u);
+    ASSERT_EQ(physical->feedback_timelines.size(), 1u);
     ASSERT_EQ(physical->materializations.size(), 1u);
-    auto const ring = physical->feedback_operations.front().ring_representation;
+    auto const& timeline = physical->feedback_timelines.front();
+    EXPECT_EQ(
+        timeline.writer.kind,
+        iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::copy);
+    auto const ring = timeline.timeline_representation;
     auto const derived = *physical->connection_representations.front();
     ASSERT_NE(ring, derived);
     EXPECT_EQ(
@@ -5945,7 +5982,10 @@ TEST_F(GraphJitRuntimeFixture, ZeroInitializedConvertedFeedbackWritesDirectlyToP
         *analysis, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
-    EXPECT_TRUE(physical->feedback_operations.empty());
+    ASSERT_EQ(physical->feedback_timelines.size(), 1u);
+    EXPECT_EQ(
+        physical->feedback_timelines.front().writer.kind,
+        iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::producer_home);
     ASSERT_EQ(physical->persistent_allocations.size(), 1u);
     ASSERT_EQ(physical->materializations.size(), 1u);
     ASSERT_EQ(physical->representations.size(), 2u);
@@ -6039,8 +6079,8 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
         *analysis, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
-    EXPECT_TRUE(physical->feedback_operations.empty());
-    ASSERT_EQ(physical->compositions.size(), 1u);
+    ASSERT_EQ(physical->feedback_timelines.size(), 1u);
+    EXPECT_TRUE(physical->compositions.empty());
     auto const detached_index = static_cast<std::size_t>(
         std::distance(analysis->sample_connections.begin(), detached));
     ASSERT_LT(detached_index, physical->connection_representations.size());
@@ -6063,14 +6103,15 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
     EXPECT_FLOAT_EQ(
         static_cast<float>(*persistent.initialize_value), -0.25f);
 
-    auto const& composition = physical->compositions.front();
-    EXPECT_EQ(composition.connection_index, detached_index);
-    EXPECT_EQ(composition.target_representation, composed);
-    EXPECT_EQ(composition.target_history, 0u);
-    EXPECT_TRUE(composition.shift_writes_by_read_latency);
-    ASSERT_EQ(composition.sources.size(), 2u);
-    EXPECT_EQ(composition.sources[0].read_latency, 2u);
-    EXPECT_EQ(composition.sources[1].read_latency, 2u);
+    auto const& timeline = physical->feedback_timelines.front();
+    EXPECT_EQ(timeline.connection_index, detached_index);
+    EXPECT_EQ(timeline.timeline_representation, composed);
+    EXPECT_EQ(
+        timeline.writer.kind,
+        iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::composition);
+    ASSERT_EQ(timeline.writer.composition_sources.size(), 2u);
+    EXPECT_EQ(timeline.writer.composition_sources[0].read_latency, 2u);
+    EXPECT_EQ(timeline.writer.composition_sources[1].read_latency, 2u);
 
     auto compiled = compile_graph(feedback_graph, 127);
     ASSERT_TRUE(compiled.succeeded())
