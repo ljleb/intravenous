@@ -8,12 +8,21 @@
 #include <cstddef>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 
 namespace iv::graph_jit::detail {
 namespace {
+void initialize_event_raw_region(
+    std::span<std::byte> storage,
+    std::span<std::byte const> payload)
+{
+    (void)payload;
+    std::ranges::fill(storage, std::byte{});
+}
+
 struct PrimitiveBundle {
     std::size_t node_bundle = 0;
     std::size_t node_size = 0;
@@ -276,7 +285,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         representation.region = layout_builder.declare_raw_region(
             representation.size_bytes,
             representation.alignment,
-            representation.persistent ? representation.migration_identity : std::string{});
+            representation.persistent ? representation.migration_identity : std::string{},
+            initialize_event_raw_region);
     }
 
     auto node_layout = std::move(layout_builder).build();
@@ -360,6 +370,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 != (representation.persistent
                         ? representation.migration_identity
                         : std::string{})
+            || region.raw_initialize_fn != initialize_event_raw_region
+            || !region.raw_initialize_payload.empty()
             || representation.count_relative_offset > region.size
             || representation.read_index_relative_offset > region.size
             || representation.write_index_relative_offset > region.size

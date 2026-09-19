@@ -90,7 +90,10 @@ constant offset fixed by the completed layout. It is still an ordinary
 
 Physical region order is a compiler choice and may be selected for locality of
 the optimized tick/access programs. Lifecycle order remains a separate
-`NodeLayout` concern derived from declaration dependencies.
+`NodeLayout` concern derived from declaration dependencies. Compiler-owned raw
+regions that require a defined fresh value must declare a raw-region initializer
+and receive that value through `NodeStorage::initialize()` before activation; the
+generated realtime root must not substitute a first-call/run-once guard.
 
 Truly request-sized caller data whose maximum size is not known at graph compile
 time need not be embedded in `NodeStorage`. This exception does not justify a
@@ -442,11 +445,14 @@ as compact carry versus a persistent ring.
 
 Fanout does not multiply the sizing rate: several consumers of one logical
 producer share the same source event stream. A merge of independent producers
-sums their rates for the merged representation. Implicit event conversions are
-required to be **non-expanding**: each source event produces zero or one target
-event, timestamps are preserved, and the conversion may only preserve or discard
-information. Any transformation that can synthesize multiple events belongs in
-an explicit node, whose own output declares its resulting sizing rate.
+sums their rates for the merged representation. Connection analysis already
+computes that aggregate sizing rate, but the current GraphJIT physical lowerer
+still capability-gates multi-producer event fan-in and realizes one producer
+stream per event group. Implicit event conversions are required to be
+**non-expanding**: each source event produces zero or one target event, timestamps
+are preserved, and the conversion may only preserve or discard information. Any
+transformation that can synthesize multiple events belongs in an explicit node,
+whose own output declares its resulting sizing rate.
 
 Retained canonical event storage and transient conversion are composable rather
 than mutually exclusive. A compact-carry working sequence or persistent ring may

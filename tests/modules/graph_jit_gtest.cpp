@@ -4594,6 +4594,155 @@ configured_permuted_unequal_latency_projected_sample_feedback_graph(
     return graph;
 }
 
+std::shared_ptr<iv::ConfiguredGraph const>
+configured_sample_feedback_scc_fanout_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create GraphJit sample-feedback SCC-fanout builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto first = iv::details::configure_package_definition_provider(
+        graph, graph_jit_sample_feedback_a_id, std::nullopt, {});
+    auto second = iv::details::configure_package_definition_provider(
+        graph, graph_jit_sample_feedback_b_id, std::nullopt, {});
+    auto identity_observer = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.sample_consumer",
+        std::nullopt,
+        {});
+    auto converted_history_observer =
+        iv::details::configure_package_definition_provider(
+            graph,
+            "iv.test.graph_jit.state_context.stereo_history_consumer",
+            std::nullopt,
+            {});
+
+    first(second);
+    second(static_cast<iv::SamplePortRef>(first).detach(
+        6, iv::Sample{-0.625f}));
+    identity_observer(first);
+    converted_history_observer(first);
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
+std::shared_ptr<iv::ConfiguredGraph const>
+configured_merged_feed_forward_event_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create GraphJit merged-event builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto first = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.trigger_event_source",
+        std::nullopt,
+        {});
+    auto second = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.trigger_event_source",
+        std::nullopt,
+        {});
+    auto sink = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.trigger_event_consumer",
+        std::nullopt,
+        {});
+
+    auto const first_port = first.event_port();
+    auto const second_port = second.event_port();
+    if (first_port.type != second_port.type
+        || first_port.sources().size() != 1
+        || second_port.sources().size() != 1) {
+        throw std::runtime_error(
+            "GraphJit merged-event fixture lost its source shape");
+    }
+    std::array merged_sources{
+        first_port.sources().front(),
+        second_port.sources().front(),
+    };
+    sink.connect_event_input(
+        0, iv::EventPortRef(graph, first_port.type, merged_sources));
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
+std::shared_ptr<iv::ConfiguredGraph const>
+configured_event_feedback_scc_external_fanout_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create GraphJit event-feedback SCC-fanout builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto first = iv::details::configure_package_definition_provider(
+        graph, graph_jit_event_feedback_a_id, std::nullopt, {});
+    auto second = iv::details::configure_package_definition_provider(
+        graph, graph_jit_event_feedback_b_id, std::nullopt, {});
+    auto observer = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.trigger_event_consumer",
+        std::nullopt,
+        {});
+    first.connect_event_input(0, second.event_port());
+    second.connect_event_input(0, first.event_port().detach(10));
+    observer.connect_event_input(0, first.event_port());
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
 
 std::shared_ptr<iv::ConfiguredGraph const> configured_event_feedback_graph(
     iv::PackageRevision const& revision,
@@ -6356,6 +6505,104 @@ TEST_F(GraphJitRuntimeFixture, ExactSampleDetachFeedback)
     EXPECT_FLOAT_EQ(migrated_b->last_inputs[1], 2.375f);
 }
 
+TEST_F(GraphJitRuntimeFixture, SampleFeedbackSccFansOutToAcyclicIdentityAndConvertedHistoryConsumers)
+{
+    auto feedback_graph = configured_sample_feedback_scc_fanout_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+
+    std::size_t fanout_leaving_cycle = 0;
+    for (auto const& connection : analysis->sample_connections) {
+        if (connection.detach || connection.source_channel_timings.empty()) continue;
+        auto const source_bundle =
+            connection.source_channel_timings.front().source.bundle;
+        auto const target_bundle = connection.target_port.node_bundle_handle;
+        if (source_bundle >= analysis->schedule.bundle_to_region.size()
+            || target_bundle >= analysis->schedule.bundle_to_region.size()
+            || !analysis->schedule.bundle_to_region[source_bundle]
+            || !analysis->schedule.bundle_to_region[target_bundle]) {
+            continue;
+        }
+        auto const source_region =
+            *analysis->schedule.bundle_to_region[source_bundle];
+        auto const target_region =
+            *analysis->schedule.bundle_to_region[target_bundle];
+        if (source_region >= analysis->schedule.regions.size()
+            || target_region >= analysis->schedule.regions.size()) {
+            continue;
+        }
+        if (analysis->schedule.regions[source_region].cyclic
+            && !analysis->schedule.regions[target_region].cyclic) {
+            ++fanout_leaving_cycle;
+        }
+    }
+    EXPECT_EQ(fanout_leaving_cycle, 2u);
+
+    auto compiled = compile_graph(feedback_graph, 140);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 64);
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 64, 8);
+
+    // Both probe states are 40 bytes, so state size alone cannot distinguish
+    // them. Identify the stereo/history probe by its post-execution marker and
+    // treat the other 40-byte state as the identity consumer.
+    SampleConsumerProbeStateMirror* identity = nullptr;
+    StereoHistoryConsumerStateMirror* converted_history = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            != sizeof(SampleConsumerProbeStateMirror)) {
+            continue;
+        }
+        auto* candidate = storage.state_ptr(i);
+        auto* history_candidate =
+            static_cast<StereoHistoryConsumerStateMirror*>(candidate);
+        if (history_candidate->marker == 0xa1b2c3d4e5f60718ull) {
+            ASSERT_EQ(converted_history, nullptr);
+            converted_history = history_candidate;
+        } else {
+            ASSERT_EQ(identity, nullptr);
+            identity = static_cast<SampleConsumerProbeStateMirror*>(candidate);
+        }
+    }
+    ASSERT_NE(identity, nullptr);
+    ASSERT_NE(converted_history, nullptr);
+
+    // A's output is 0.375 + floor(sample / 6). The acyclic identity consumer
+    // executes once per root call, after the feedback SCC has completed all of
+    // its internal 4-sample slices, and must still see the whole root window.
+    ASSERT_EQ(identity->calls, 2u);
+    EXPECT_EQ(identity->last_index, 64u);
+    EXPECT_EQ(identity->last_block_size, 8u);
+    EXPECT_FLOAT_EQ(identity->first, 10.375f);
+    EXPECT_FLOAT_EQ(identity->last, 11.375f);
+    EXPECT_FLOAT_EQ(identity->sum, 89.0f);
+
+    // The sibling branch simultaneously exercises mono->stereo conversion and
+    // five samples of target history across the SCC boundary. At sample 64,
+    // history 5 is sample 59, whose value is 9.375.
+    ASSERT_EQ(converted_history->calls, 2u);
+    EXPECT_EQ(converted_history->last_index, 64u);
+    EXPECT_FLOAT_EQ(converted_history->current_left, 10.375f);
+    EXPECT_FLOAT_EQ(converted_history->current_right, 10.375f);
+    EXPECT_FLOAT_EQ(converted_history->history_5_left, 9.375f);
+    EXPECT_FLOAT_EQ(converted_history->history_5_right, 9.375f);
+    EXPECT_EQ(converted_history->marker, 0xa1b2c3d4e5f60718ull);
+}
+
 TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndFallbackCopy)
 {
     auto feedback_graph = configured_multi_branch_sample_feedback_graph(*revision);
@@ -7538,6 +7785,97 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
         EXPECT_EQ(tail_b->input_counts[i], expected_b_counts[i]);
         EXPECT_EQ(tail_b->first_input_times[i], expected_b_times[i]);
     }
+}
+
+TEST_F(GraphJitRuntimeFixture, EventRawStorageIsInitializedByNodeStorageLifecycle)
+{
+    auto feedback_graph = configured_event_feedback_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto compiled = compile_graph(feedback_graph, 141);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    std::vector<iv::NodeLayout::RegionHandle> raw_regions;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.regions.size(); ++i) {
+        auto const& region = compiled.compiled_graph->node_layout.regions[i];
+        if (region.kind != iv::NodeLayout::Region::Kind::raw) continue;
+        EXPECT_NE(region.raw_initialize_fn, nullptr);
+        EXPECT_TRUE(region.raw_initialize_payload.empty());
+        raw_regions.push_back(iv::NodeLayout::RegionHandle{.index = i});
+        std::ranges::fill(
+            storage.region_bytes(raw_regions.back()), std::byte{0xa5});
+    }
+    ASSERT_FALSE(raw_regions.empty());
+
+    storage.initialize();
+    for (auto const region : raw_regions) {
+        auto const bytes = storage.region_bytes(region);
+        EXPECT_TRUE(std::ranges::all_of(
+            bytes, [](std::byte value) { return value == std::byte{}; }));
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInRemainsCapabilityGated)
+{
+    auto graph = configured_merged_feed_forward_event_graph(*revision);
+    ASSERT_TRUE(graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    ASSERT_EQ(analysis->event_connections.size(), 1u);
+    EXPECT_EQ(analysis->event_connections.front().sources.size(), 2u);
+    EXPECT_TRUE(analysis->event_connections.front().requires_conversion);
+
+    expect_lowering_failure(
+        compile_graph(graph, 143),
+        "requires exactly one producer output per event group");
+}
+
+TEST_F(GraphJitRuntimeFixture, EventFeedbackSccFanoutLeavingCycleRemainsCapabilityGated)
+{
+    auto feedback_graph =
+        configured_event_feedback_scc_external_fanout_graph(*revision);
+    ASSERT_TRUE(feedback_graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *feedback_graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    EXPECT_TRUE(std::ranges::any_of(
+        analysis->event_connections,
+        [&](iv::graph_jit::detail::EventConnectionPlan const& connection) {
+            if (connection.detach || connection.sources.empty()
+                || connection.targets.empty()) {
+                return false;
+            }
+            auto const source = connection.sources.front().bundle;
+            auto const target = connection.targets.front().bundle;
+            if (source >= analysis->schedule.bundle_to_region.size()
+                || target >= analysis->schedule.bundle_to_region.size()
+                || !analysis->schedule.bundle_to_region[source]
+                || !analysis->schedule.bundle_to_region[target]) {
+                return false;
+            }
+            auto const source_region =
+                *analysis->schedule.bundle_to_region[source];
+            auto const target_region =
+                *analysis->schedule.bundle_to_region[target];
+            return source_region < analysis->schedule.regions.size()
+                && target_region < analysis->schedule.regions.size()
+                && analysis->schedule.regions[source_region].cyclic
+                && !analysis->schedule.regions[target_region].cyclic;
+        }));
+
+    expect_lowering_failure(
+        compile_graph(feedback_graph, 142),
+        "fanout leaving a cyclic region");
 }
 
 TEST_F(GraphJitRuntimeFixture, EventDetachFeedbackFanoutSharesDelayedStream)
