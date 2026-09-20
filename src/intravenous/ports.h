@@ -1406,10 +1406,11 @@ namespace iv {
     };
 
     // Realtime event producers must append each logical output in
-    // nondecreasing absolute TimedEvent::time order across sequential
-    // tick/tick_block invocations and any slices of one root call. Consumers
-    // and GraphJit merge paths rely on this ordering contract; EventOutputPort
-    // does not sort the stream or add an O(n) release-time validation pass.
+    // nondecreasing absolute TimedEvent::time order within one tick/tick_block
+    // invocation. A history/latency window may overlap adjacent invocations;
+    // GraphJit therefore gives such cyclic producers an invocation-local stream
+    // and merges that sorted stream into the retained aggregate. EventOutputPort
+    // itself does not sort or add an O(n) release-time validation pass.
     class EventOutputPort {
         EventSharedPortData* _shared_data = nullptr;
         EventTypeId _source_type {};

@@ -195,6 +195,30 @@ struct PrimitiveEventOutputBindingPlan {
     bool append_existing = false;
 };
 
+enum class EventOperationScopeKind : std::uint8_t {
+    primitive,
+    region,
+};
+
+enum class EventOperationPhase : std::uint8_t {
+    before,
+    after,
+};
+
+// Event operations are planned against the invocation whose index/block-size
+// define their semantic window. A primitive scope executes for every SCC slice;
+// a region scope executes once around the complete root-call region. Keeping
+// this in the physical plan prevents execution planning from rediscovering a
+// materialization's consumers and guessing which window it meant.
+struct EventOperationScope {
+    EventOperationScopeKind kind = EventOperationScopeKind::primitive;
+    EventOperationPhase phase = EventOperationPhase::after;
+    std::size_t index = 0;
+
+    friend bool operator==(EventOperationScope const&, EventOperationScope const&)
+        = default;
+};
+
 struct EventMaterializationPlan {
     std::size_t source_representation = 0;
     std::size_t target_representation = 0;
@@ -209,10 +233,7 @@ struct EventMaterializationPlan {
     // only a storage-sizing rate, not a runtime density constraint.
     std::size_t history_samples = 0;
     bool select_invocation_window = false;
-    // Flattened schedule position of the producer. Execution planning keeps this
-    // operation step-local for consumers inside the same SCC, or lifts it to the
-    // cyclic region exit when every consumer is downstream of that SCC.
-    std::size_t after_execution_position = 0;
+    EventOperationScope scope{};
 };
 
 struct EventCarryPlan {
@@ -221,16 +242,21 @@ struct EventCarryPlan {
     // Restore may need to precede an early producer-home writer while commit
     // remains after the group's final merge. Ordinary single-producer carry
     // uses the same position for both.
-    std::size_t restore_execution_position = 0;
-    std::size_t commit_execution_position = 0;
+    EventOperationScope restore_scope{};
+    EventOperationScope commit_scope{};
     std::size_t retained_history_samples = 0;
     std::size_t retained_latency_samples = 0;
 };
 
 struct EventPersistentRingPlan {
     std::size_t representation = 0;
-    std::size_t producer_execution_position = 0;
+    EventOperationScope prune_scope{};
     std::size_t retained_history_samples = 0;
+};
+
+struct EventSequenceResetPlan {
+    std::size_t representation = 0;
+    EventOperationScope scope{};
 };
 
 struct EventMergePlan {
@@ -243,7 +269,7 @@ struct EventMergePlan {
     // the remaining producer-local streams.
     std::vector<std::size_t> source_representations{};
     std::size_t target_representation = 0;
-    std::size_t after_execution_position = 0;
+    EventOperationScope scope{};
     bool target_is_semantic_source = false;
     // Retained targets already contain restored/pruned events from previous
     // invocations; transient producer-home targets contain source 0 instead.
@@ -253,8 +279,9 @@ struct EventMergePlan {
 struct EventFeedbackPlan {
     std::size_t source_representation = 0;
     std::size_t target_representation = 0;
-    std::size_t producer_execution_position = 0;
-    std::size_t consumer_execution_position = 0;
+    bool source_resets_each_invocation = false;
+    EventOperationScope append_scope{};
+    EventOperationScope reset_scope{};
     RealtimeBufferStorageKind storage =
         RealtimeBufferStorageKind::transient_stack;
     std::size_t retained_window_samples = 0;
@@ -273,6 +300,7 @@ struct EventPortBindingPlan {
     std::vector<EventMaterializationPlan> materializations{};
     std::vector<EventCarryPlan> carry_operations{};
     std::vector<EventPersistentRingPlan> persistent_rings{};
+    std::vector<EventSequenceResetPlan> sequence_resets{};
     std::vector<EventMergePlan> merges{};
     std::vector<EventFeedbackPlan> feedback_operations{};
     std::vector<EventTransientAllocationPlan> transient_allocations{};
@@ -280,6 +308,21 @@ struct EventPortBindingPlan {
     std::size_t transient_arena_alignment = 1;
     // Indexed by analyzed concrete primitive.
     std::vector<PrimitiveEventPortPlan> primitives{};
+};
+
+enum class EventOperationKind : std::uint8_t {
+    sequence_reset,
+    persistent_ring_prune,
+    carry_restore,
+    merge,
+    materialize,
+    feedback_append,
+    carry_commit,
+};
+
+struct EventOperationRef {
+    EventOperationKind kind = EventOperationKind::sequence_reset;
+    std::size_t index = 0;
 };
 
 struct PrimitiveExecutionStep {
@@ -300,28 +343,14 @@ struct PrimitiveExecutionStep {
     std::vector<std::size_t> sample_compositions_after{};
     std::vector<std::size_t> sample_carry_commits_after{};
 
-    // Event transient-sequence flow clears the producer sequence once before
-    // all of its slices, then materializes a consumer-facing sequence after
-    // the complete producer step.
-    std::vector<std::size_t> event_sequence_resets_before{};
-    std::vector<std::size_t> event_persistent_ring_prunes_before{};
-    std::vector<std::size_t> event_carry_restores_before{};
-    std::vector<std::size_t> event_merges_after{};
-    std::vector<std::size_t> event_materializations_after{};
-    std::vector<std::size_t> event_carry_commits_after{};
-    std::vector<std::size_t> event_feedback_appends_after{};
+    std::vector<EventOperationRef> event_operations_before{};
+    std::vector<EventOperationRef> event_operations_after{};
 };
 
 struct ExecutionRegionPlan {
     std::vector<std::size_t> primitive_steps{};
-    // Retained event state owned by a cyclic producer is root-invocation state,
-    // not slice state. These operations therefore surround the complete
-    // slice-major SCC traversal. Indices refer to the corresponding
-    // EventPortBindingPlan vectors.
-    std::vector<std::size_t> event_persistent_ring_prunes_before{};
-    std::vector<std::size_t> event_carry_restores_before{};
-    std::vector<std::size_t> event_materializations_after{};
-    std::vector<std::size_t> event_carry_commits_after{};
+    std::vector<EventOperationRef> event_operations_before{};
+    std::vector<EventOperationRef> event_operations_after{};
     bool cyclic = false;
     std::size_t maximum_block_size = 0;
     std::size_t scc_feedback_latency = 0;

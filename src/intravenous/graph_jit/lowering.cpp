@@ -21,6 +21,7 @@
 #include <expected>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -2381,10 +2382,12 @@ std::expected<void, std::string> emit_event_feedback_append(
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* pointer_type = llvm::PointerType::getUnqual(context);
-    auto* source_begin = builder.CreateLoad(
-        size_type,
-        feedback_cursor_pointer,
-        "event.feedback.source.cursor");
+    auto* source_begin = feedback.source_resets_each_invocation
+        ? llvm::ConstantInt::get(size_type, 0)
+        : builder.CreateLoad(
+            size_type,
+            feedback_cursor_pointer,
+            "event.feedback.source.cursor");
     llvm::Value* source_end = nullptr;
     auto* source_base = realtime_storage.event_representations[
         feedback.source_representation];
@@ -2435,7 +2438,9 @@ std::expected<void, std::string> emit_event_feedback_append(
     // Most event slices produce no events. Keep the audio-thread fast path to a
     // source-index load/compare and avoid the out-of-line feedback helper
     // entirely unless this producer appended a new suffix.
-    builder.CreateStore(source_end, feedback_cursor_pointer);
+    if (!feedback.source_resets_each_invocation) {
+        builder.CreateStore(source_end, feedback_cursor_pointer);
+    }
     auto* has_new_events = builder.CreateICmpULT(
         source_begin, source_end, "event.feedback.has_new_events");
     auto* function = builder.GetInsertBlock()->getParent();
@@ -2975,6 +2980,115 @@ std::expected<void, std::string> emit_event_materialization(
     return {};
 }
 
+std::expected<void, std::string> emit_event_operations(
+    llvm::IRBuilder<>& builder,
+    detail::LoweringPlan const& plan,
+    std::span<detail::EventOperationRef const> operations,
+    std::vector<llvm::Value*> const& event_feedback_cursors,
+    EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
+{
+    for (auto const operation : operations) {
+        switch (operation.kind) {
+        case detail::EventOperationKind::sequence_reset: {
+            auto emitted = emit_event_sequence_reset(
+                builder, plan.event_ports, operation.index, realtime_storage);
+            if (!emitted) return std::unexpected(std::move(emitted.error()));
+            break;
+        }
+        case detail::EventOperationKind::persistent_ring_prune: {
+            if (operation.index >= plan.event_ports.persistent_rings.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing persistent event ring");
+            }
+            auto emitted = emit_event_persistent_ring_prune(
+                builder,
+                plan.event_ports,
+                plan.event_ports.persistent_rings[operation.index],
+                realtime_storage,
+                sample_index);
+            if (!emitted) return std::unexpected(std::move(emitted.error()));
+            break;
+        }
+        case detail::EventOperationKind::carry_restore:
+        case detail::EventOperationKind::carry_commit: {
+            if (operation.index >= plan.event_ports.carry_operations.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing event carry operation");
+            }
+            auto const restore = operation.kind
+                == detail::EventOperationKind::carry_restore;
+            auto const& carry = plan.event_ports.carry_operations[operation.index];
+            auto emitted = emit_event_carry_operation(
+                builder,
+                plan.event_ports,
+                carry,
+                realtime_storage,
+                sample_index,
+                block_size,
+                restore);
+            if (!emitted) return std::unexpected(std::move(emitted.error()));
+            if (restore) {
+                auto seeded = seed_event_feedback_cursors_after_carry_restore(
+                    builder,
+                    plan.event_ports,
+                    carry,
+                    event_feedback_cursors,
+                    realtime_storage);
+                if (!seeded) return std::unexpected(std::move(seeded.error()));
+            }
+            break;
+        }
+        case detail::EventOperationKind::merge: {
+            if (operation.index >= plan.event_ports.merges.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing event merge");
+            }
+            auto emitted = emit_event_merge(
+                builder,
+                plan.event_ports,
+                plan.event_ports.merges[operation.index],
+                realtime_storage);
+            if (!emitted) return std::unexpected(std::move(emitted.error()));
+            break;
+        }
+        case detail::EventOperationKind::materialize: {
+            if (operation.index >= plan.event_ports.materializations.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing event materialization");
+            }
+            auto emitted = emit_event_materialization(
+                builder,
+                plan.event_ports,
+                plan.event_ports.materializations[operation.index],
+                realtime_storage,
+                sample_index,
+                block_size);
+            if (!emitted) return std::unexpected(std::move(emitted.error()));
+            break;
+        }
+        case detail::EventOperationKind::feedback_append: {
+            if (operation.index >= plan.event_ports.feedback_operations.size()
+                || operation.index >= event_feedback_cursors.size()) {
+                return std::unexpected(
+                    "GraphJit execution plan references a missing event feedback append");
+            }
+            auto emitted = emit_event_feedback_append(
+                builder,
+                plan.event_ports,
+                plan.event_ports.feedback_operations[operation.index],
+                event_feedback_cursors[operation.index],
+                realtime_storage,
+                sample_index);
+            if (!emitted) return std::unexpected(std::move(emitted.error()));
+            break;
+        }
+        }
+    }
+    return {};
+}
+
 std::expected<void, std::string> emit_execution_step(
     llvm::Module& module,
     llvm::IRBuilder<>& builder,
@@ -2988,9 +3102,7 @@ std::expected<void, std::string> emit_execution_step(
     llvm::Value* sample_index,
     llvm::Value* block_size,
     bool skip,
-    bool allow_primitive_slicing,
-    bool emit_sequence_resets,
-    bool emit_ring_prunes)
+    bool allow_primitive_slicing)
 {
     if (step.configuration_index >= configurations.size()) {
         return std::unexpected(
@@ -3009,54 +3121,15 @@ std::expected<void, std::string> emit_execution_step(
             "GraphJit execution plan references a missing event-port runtime plan");
     }
 
-    if (emit_ring_prunes) {
-        for (auto const ring_index : step.event_persistent_ring_prunes_before) {
-            if (ring_index >= plan.event_ports.persistent_rings.size()) {
-                return std::unexpected(
-                    "GraphJit execution plan references a missing persistent event ring");
-            }
-            auto pruned = emit_event_persistent_ring_prune(
-                builder,
-                plan.event_ports,
-                plan.event_ports.persistent_rings[ring_index],
-                realtime_storage,
-                sample_index);
-            if (!pruned) {
-                return std::unexpected(std::move(pruned.error()));
-            }
-        }
-    }
-
-    if (emit_sequence_resets) {
-        for (auto const representation_index : step.event_sequence_resets_before) {
-            auto reset = emit_event_sequence_reset(
-                builder,
-                plan.event_ports,
-                representation_index,
-                realtime_storage);
-            if (!reset) {
-                return std::unexpected(std::move(reset.error()));
-            }
-        }
-    }
-
-    for (auto const carry_index : step.event_carry_restores_before) {
-        if (carry_index >= plan.event_ports.carry_operations.size()) {
-            return std::unexpected(
-                "GraphJit execution plan references a missing event carry restore");
-        }
-        auto restored = emit_event_carry_operation(
-            builder,
-            plan.event_ports,
-            plan.event_ports.carry_operations[carry_index],
-            realtime_storage,
-            sample_index,
-            block_size,
-            true);
-        if (!restored) {
-            return std::unexpected(std::move(restored.error()));
-        }
-    }
+    auto event_before = emit_event_operations(
+        builder,
+        plan,
+        step.event_operations_before,
+        event_feedback_cursors,
+        realtime_storage,
+        sample_index,
+        block_size);
+    if (!event_before) return std::unexpected(std::move(event_before.error()));
 
     for (auto const carry_index : step.sample_carry_restores_before) {
         if (carry_index >= plan.sample_ports.physical.carry_operations.size()) {
@@ -3135,76 +3208,15 @@ std::expected<void, std::string> emit_execution_step(
             block_size);
     }
 
-    for (auto const feedback_index : step.event_feedback_appends_after) {
-        if (feedback_index >= plan.event_ports.feedback_operations.size()) {
-            return std::unexpected(
-                "GraphJit execution plan references a missing event feedback append");
-        }
-        if (feedback_index >= event_feedback_cursors.size()) {
-            return std::unexpected(
-                "GraphJit execution plan has no cursor for an event feedback append");
-        }
-        auto appended = emit_event_feedback_append(
-            builder,
-            plan.event_ports,
-            plan.event_ports.feedback_operations[feedback_index],
-            event_feedback_cursors[feedback_index],
-            realtime_storage,
-            sample_index);
-        if (!appended) {
-            return std::unexpected(std::move(appended.error()));
-        }
-    }
-
-    for (auto const merge_index : step.event_merges_after) {
-        if (merge_index >= plan.event_ports.merges.size()) {
-            return std::unexpected(
-                "GraphJit execution plan references a missing event merge");
-        }
-        auto merged = emit_event_merge(
-            builder,
-            plan.event_ports,
-            plan.event_ports.merges[merge_index],
-            realtime_storage);
-        if (!merged) {
-            return std::unexpected(std::move(merged.error()));
-        }
-    }
-
-    for (auto const materialization_index : step.event_materializations_after) {
-        if (materialization_index >= plan.event_ports.materializations.size()) {
-            return std::unexpected(
-                "GraphJit execution plan references a missing event materialization");
-        }
-        auto materialized = emit_event_materialization(
-            builder,
-            plan.event_ports,
-            plan.event_ports.materializations[materialization_index],
-            realtime_storage,
-            sample_index,
-            block_size);
-        if (!materialized) {
-            return std::unexpected(std::move(materialized.error()));
-        }
-    }
-
-    for (auto const carry_index : step.event_carry_commits_after) {
-        if (carry_index >= plan.event_ports.carry_operations.size()) {
-            return std::unexpected(
-                "GraphJit execution plan references a missing event carry commit");
-        }
-        auto committed = emit_event_carry_operation(
-            builder,
-            plan.event_ports,
-            plan.event_ports.carry_operations[carry_index],
-            realtime_storage,
-            sample_index,
-            block_size,
-            false);
-        if (!committed) {
-            return std::unexpected(std::move(committed.error()));
-        }
-    }
+    auto event_after = emit_event_operations(
+        builder,
+        plan,
+        step.event_operations_after,
+        event_feedback_cursors,
+        realtime_storage,
+        sample_index,
+        block_size);
+    if (!event_after) return std::unexpected(std::move(event_after.error()));
 
     for (auto const materialization_index : step.sample_materializations_after) {
         if (materialization_index
@@ -3487,8 +3499,6 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                     sample_index,
                     block_size,
                     skip,
-                    true,
-                    true,
                     true);
                 if (!emitted) {
                     return std::unexpected(std::move(emitted.error()));
@@ -3503,75 +3513,16 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 "GraphJit cyclic execution region has invalid slice semantics");
         }
 
-        // Retained event state owned by an SCC producer spans the complete root
-        // invocation. Advance/restore it once before entering the slice-major
-        // loop. Feedback rings remain separate: they retire old events in the
-        // producer append operation after all same-slice consumers have run.
-        for (auto const ring_index : region.event_persistent_ring_prunes_before) {
-            if (ring_index >= plan.event_ports.persistent_rings.size()) {
-                return std::unexpected(
-                    "GraphJit cyclic execution references a missing persistent event ring");
-            }
-            auto pruned = emit_event_persistent_ring_prune(
-                builder,
-                plan.event_ports,
-                plan.event_ports.persistent_rings[ring_index],
-                realtime_storage,
-                sample_index);
-            if (!pruned) {
-                return std::unexpected(std::move(pruned.error()));
-            }
-        }
-        for (auto const carry_index : region.event_carry_restores_before) {
-            if (carry_index >= plan.event_ports.carry_operations.size()) {
-                return std::unexpected(
-                    "GraphJit cyclic execution references a missing event carry restore");
-            }
-            auto const& carry = plan.event_ports.carry_operations[carry_index];
-            auto restored = emit_event_carry_operation(
-                builder,
-                plan.event_ports,
-                carry,
-                realtime_storage,
-                sample_index,
-                block_size,
-                true);
-            if (!restored) {
-                return std::unexpected(std::move(restored.error()));
-            }
-            // The restored prefix exists only to satisfy retained outbound
-            // windows. Detached feedback branches must append only events
-            // authored during this root call, not enqueue that history again.
-            auto seeded = seed_event_feedback_cursors_after_carry_restore(
-                builder,
-                plan.event_ports,
-                carry,
-                event_feedback_cursors,
-                realtime_storage);
-            if (!seeded) {
-                return std::unexpected(std::move(seeded.error()));
-            }
-        }
-
-        // Aggregate transient event producer sequences also belong to the
-        // complete root call, not an individual SCC slice. Clear each once
-        // before entering the slice-major loop.
-        for (auto const step_index : region.primitive_steps) {
-            if (step_index >= plan.execution.primitive_steps.size()) {
-                return std::unexpected(
-                    "GraphJit cyclic execution region references a missing primitive step");
-            }
-            auto const& step = plan.execution.primitive_steps[step_index];
-            for (auto const representation_index : step.event_sequence_resets_before) {
-                auto reset = emit_event_sequence_reset(
-                    builder,
-                    plan.event_ports,
-                    representation_index,
-                    realtime_storage);
-                if (!reset) {
-                    return std::unexpected(std::move(reset.error()));
-                }
-            }
+        auto region_before = emit_event_operations(
+            builder,
+            plan,
+            region.event_operations_before,
+            event_feedback_cursors,
+            realtime_storage,
+            sample_index,
+            block_size);
+        if (!region_before) {
+            return std::unexpected(std::move(region_before.error()));
         }
 
         auto& context = module.getContext();
@@ -3624,8 +3575,6 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 slice_index,
                 slice_size,
                 skip,
-                false,
-                false,
                 false);
             if (!emitted) {
                 return std::unexpected(std::move(emitted.error()));
@@ -3640,43 +3589,16 @@ std::expected<llvm::Function*, std::string> define_root_operation(
         offset->addIncoming(next_offset, builder.GetInsertBlock());
         builder.SetInsertPoint(exit);
 
-        // A cyclic producer's aggregate event sequence represents the complete
-        // root invocation. Materializations feeding downstream regions therefore
-        // execute once here, with the root index/size, after all SCC slices have
-        // appended to that aggregate.
-        for (auto const materialization_index :
-             region.event_materializations_after) {
-            if (materialization_index >= plan.event_ports.materializations.size()) {
-                return std::unexpected(
-                    "GraphJit cyclic execution region references a missing event materialization");
-            }
-            auto materialized = emit_event_materialization(
-                builder,
-                plan.event_ports,
-                plan.event_ports.materializations[materialization_index],
-                realtime_storage,
-                sample_index,
-                block_size);
-            if (!materialized) {
-                return std::unexpected(std::move(materialized.error()));
-            }
-        }
-        for (auto const carry_index : region.event_carry_commits_after) {
-            if (carry_index >= plan.event_ports.carry_operations.size()) {
-                return std::unexpected(
-                    "GraphJit cyclic execution references a missing event carry commit");
-            }
-            auto committed = emit_event_carry_operation(
-                builder,
-                plan.event_ports,
-                plan.event_ports.carry_operations[carry_index],
-                realtime_storage,
-                sample_index,
-                block_size,
-                false);
-            if (!committed) {
-                return std::unexpected(std::move(committed.error()));
-            }
+        auto region_after = emit_event_operations(
+            builder,
+            plan,
+            region.event_operations_after,
+            event_feedback_cursors,
+            realtime_storage,
+            sample_index,
+            block_size);
+        if (!region_after) {
+            return std::unexpected(std::move(region_after.error()));
         }
     }
 

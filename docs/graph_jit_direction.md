@@ -261,15 +261,34 @@ The current internal realtime connection surface is intentionally asymmetric:
   implemented. Independent producers write bounded local sequences which are
   stable-merged in semantic source order after the final producer, so equal-time
   event ordering is deterministic before conversion/retention/fanout.
-- **Events, cyclic:** the implemented and missing combinations are recorded in
-  the matrix below. In particular, the current in-SCC history work is
-  **target-side history on a non-detached feed-forward edge**. It is not general
-  detached-feedback input history and does not yet provide source history or
-  source latency consumed directly inside the cycle.
+- **Events, cyclic:** event operations now carry their execution scope in the
+  physical plan. Primitive-scoped operations run for every SCC slice;
+  region-scoped operations run once at region entry or exit. This supports
+  cyclic source history/latency, ingress and inter-region streams, split fanout
+  scopes, same-SCC fan-in, converted/history-bearing feedback, and disconnected
+  ports without execution planning inferring a window from buffer consumers.
 - **Both kinds:** the root graph is required to have zero public/boundary ports.
   Device I/O and communication with other application modules enter through
   concrete node types, so there is no future root-boundary transport ABI to add.
   Compiled-access directions remain a separate lowering capability.
+
+#### Realtime sample capability matrix
+
+| Connection shape or feature | Current state | Physical behavior or remaining requirement |
+| --- | --- | --- |
+| One-source, exact-layout, zero-retention feed-forward | Implemented | Compatible consumers alias the producer representation directly. The producer still has addressable current-block backing, but the connection adds no copy. |
+| Producer/consumer block-size mismatch | Implemented | The physical plan places the required block materialization before or after the relevant primitive while preserving absolute sample indices. A sliced producer can accumulate a root-call representation for unsliced or differently sliced consumers. |
+| One producer with multiple consumers | Implemented | Identity fanout aliases one canonical representation. Equivalent converted branches share derived result channels and materialization work. |
+| Channel projection, permutation, or duplication | Implemented | Each target channel binds directly to its resolved source channel and frame delay. Layout-only conversion does not gather or copy a synthetic contiguous input buffer. |
+| Arithmetic channel/layout conversion | Implemented | Conversion reads the resolved semantic source channels and materializes only result channels that cannot be expressed as aliases. |
+| Multi-source channel composition/fan-in | Implemented | The target layout is resolved channel by channel. Aliasable channels remain direct; arithmetic mixing/conversion materializes only the affected result channels, with latency alignment applied before composition. |
+| Source history, output latency, and target read history/latency | Implemented | Timing analysis derives the exact retained horizon. Small horizons use stack working storage plus persistent carry; larger horizons use a full persistent timeline. Consumers retain one unconditional resolved-channel lookup path. |
+| Unequal feed-forward path latency | Implemented | Whole-graph cumulative latency analysis assigns compiler-owned read compensation to faster branches before conversion, composition, projection, or fanout. |
+| Detached feedback within one SCC | Implemented for internal realtime samples | A fixed-capacity delayed timeline uses the same transient/carry/full-storage alternatives. Producer-home and branch-local writers support history, latency, conversion, permutation, composition, and nonzero `loop_extra_latency`. |
+| Cyclic producer with ordinary downstream fanout | Implemented | The SCC timeline is updated slice by slice; downstream identity or converted/history-bearing branches are realized at the scope where the completed SCC result becomes available. |
+| Acyclic ingress or an edge between execution regions | Implemented | Explicit before/after materialization placement carries the resolved channel representation across the schedule; persistent storage is used only when the semantic history/latency lifetime crosses root calls. |
+| Mixed realtime/compiled or compiled-only sample access | Capability-gated separately | This belongs to the compiled-access executor rather than another realtime sample-buffer representation. |
+| Unconnected primitive sample port | Capability-gated | Physical sample planning currently requires every primitive sample input and output to have exactly one realized connection. |
 
 #### Realtime event SCC capability matrix
 
@@ -278,16 +297,16 @@ The current internal realtime connection surface is intentionally asymmetric:
 | Same-SCC, one-source, zero-retention exact-type feed-forward | Implemented | The cyclic producer appends into one aggregate sequence across all root-call slices. Same-region consumers select their current absolute-time slice directly. |
 | Same-SCC non-expanding conversion | Implemented | A derived sequence is materialized after each producer slice, before its in-region consumer. |
 | Same-SCC target history | Implemented | Canonical retained storage keeps restored root history and earlier-slice events visible. Exact-type consumers read that storage directly; a converted derived branch materializes `[slice-history, slice-end)` after each producer slice. |
-| Same-SCC source history | Capability-gated | Source-side retained-window ownership and per-slice visibility must be lowered without violating append order or replaying restored events. |
-| Same-SCC source latency consumed by a non-detached target | Capability-gated | Future events already fit the canonical retained timeline, but per-slice visibility and scheduling semantics still need lowering. |
-| Detached feedback within one SCC | Implemented for one exact-type source with zero source/target history | The delayed live span is derived exactly and selects the shared transient/carry/full storage planner. Compact carry keeps only the cross-root retained suffix in `NodeStorage`; full storage uses a fixed persistent ring. Both append only the newly authored suffix and add `loop_extra_latency`. Same-source, same-delay detached fanout shares the delayed representation and append operation. Authored source latency on the canonical producer is supported. |
+| Same-SCC source history | Implemented | A history-bearing cyclic output writes one bounded invocation-local sequence. A slice-scoped stable merge inserts it into the retained canonical aggregate, so an event authored behind the previous slice tail does not violate append ordering. |
+| Same-SCC source latency consumed by a non-detached target | Implemented | The same invocation-local merge keeps future-authored events sorted in the canonical retained timeline; exact consumers filter it directly and converted consumers receive a slice-scoped view. |
+| Detached feedback within one SCC | Implemented for realtime sources | The delayed live span includes source/target history, authored latency, and `loop_extra_latency`, then selects the shared transient/carry/full storage planner. Exact consumers alias the delayed stream; non-expanding conversions materialize before the consumer slice. Temporal sources feed feedback from an invocation-local stream, so only newly authored events are delayed, and bounded insertion preserves time order across overlapping history. |
 | Cyclic producer to acyclic consumer | Implemented | Materialize once at SCC exit from the complete root-call aggregate. Exact type, non-expanding conversion, outbound target history, and authored source latency compose with compact carry or a canonical persistent ring. |
-| Acyclic producer entering a cyclic region | Capability-gated | Requires an ingress lifetime/window rule and placement before the relevant SCC slices. |
-| Edge spanning distinct cyclic regions | Capability-gated | Requires explicit inter-region scheduling and retained-window ownership. |
-| Multi-producer fan-in touching a cyclic region | Capability-gated | The current stable fan-in merge is acyclic only. Cyclic fan-in needs slice ordering, aggregate ownership, and retained merge semantics. |
-| One derived materialization consumed both inside the source SCC and downstream | Capability-gated | The two consumers require different work scopes: per-slice inside the SCC and once-at-exit outside it. Physical lowering must split or otherwise represent those lifetimes. |
+| Acyclic producer entering a cyclic region | Implemented | Exact-type consumers read the completed root-call aggregate directly. Converted ingress is materialized once at target-region entry. |
+| Edge spanning distinct cyclic regions | Implemented | The source aggregate remains live across regions. Conversion runs at source-region exit and the downstream region reads its absolute-time slices. |
+| Multi-producer fan-in touching a cyclic region | Implemented when producers are acyclic or share one SCC | Acyclic producers merge once before region entry. Same-SCC producers write bounded locals and merge in semantic source order after the last producer on every slice, preserving the retained aggregate. Producers spanning multiple regions still require staged aggregation. |
+| One derived materialization consumed both inside the source SCC and downstream | Implemented | Representation sharing is keyed by conversion and execution scope. The in-SCC and SCC-exit branches receive distinct scope-correct derived representations. |
 | Mixed realtime/compiled or compiled-only event access | Capability-gated separately | This belongs to the compiled-access executor rather than another realtime storage kind. |
-| Unconnected primitive event port | Capability-gated | Every primitive event input and output currently must resolve to exactly one physical binding. |
+| Unconnected primitive event port | Implemented for realtime ports | Inputs receive a reset zero-capacity sequence. Outputs receive a bounded sink sized from `max_events_per_index`, history, latency, and root block size, with normal overflow telemetry. |
 
 #### Remaining event-connection work
 
@@ -295,23 +314,11 @@ The remaining work should be treated as compatibility between semantic windows,
 execution regions, and the existing physical representations—not as a request
 for one universal event buffer.
 
-Semantic capability work:
+Remaining semantic capability work:
 
-1. Add source history inside a cyclic region.
-2. Add source latency consumed directly inside a cyclic region, composing with
-   target history and non-expanding conversion.
-3. Define and lower acyclic-to-cyclic feed-forward ingress.
-4. Define and lower edges between distinct cyclic regions.
-5. Extend stable multi-producer fan-in to cyclic regions, including retained
-   aggregate ownership.
-6. Allow equivalent converted/materialized fanout to serve both in-SCC and
-   downstream consumers at their different execution scopes.
-7. Decide and implement the intended broader detach surface beyond the current
-   one-source, exact-type, zero-source/target-history contract, including which
-   combinations of conversion, history, and multi-source input are required.
-8. Add disconnected/default event-port bindings if primitive event ports are
-   intended to be optional.
-9. Implement mixed realtime/compiled and compiled-only event access through the
+1. Stage fan-in whose semantic producers themselves span multiple execution
+   regions, especially a mixture of already-completed and same-SCC producers.
+2. Implement mixed realtime/compiled and compiled-only event access through the
    compiled-access plan.
 
 Efficiency and observability work that does not change event semantics:
@@ -506,14 +513,15 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     persisting `EventSharedPortData`/port objects. Transient representations are
     lifetime-packed into a fixed generated-root stack arena, while bindings hold
     already-resolved pointers to stack or persistent storage. Exact-type, zero-retention,
-    unsliced realtime producer groups realize `direct` bounded sequences. Sliced
-    producers/consumers realize `transient_sequence`: the producer sequence is
-    cleared once per root invocation, producer slices append into it, and a
-    consumer-facing sequence is materialized after the complete producer step.
+    unsliced realtime producer groups realize direct bounded sequences. Sliced
+    producers use a bounded invocation aggregate. Exact-type consumers alias it
+    and select their absolute-time window without a copy; conversion creates an
+    explicitly scoped derived sequence.
     Event conversion plans are preserved by semantic analysis and realized as
     explicit transient sequence operations; identical converted fanout branches
     share one derived representation/materialization. Realtime event outputs are
-    contractually emitted in nondecreasing absolute sample-index order. Transient
+    contractually emitted in nondecreasing absolute sample-index order within
+    each callback invocation. Transient
     multi-producer event inputs place semantic source 0 directly in the canonical
     aggregate allocation, keep the remaining producers in bounded local
     sequences, and perform one stable backwards k-way merge after the last
@@ -550,8 +558,8 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     because the declared maximum does not require events to be distributed
     uniformly across timestamps. Event feedback storage lands in point 12; telemetry
     surfacing remains; transient event backing and direct-pointer binding are landed.
-12. **SCC/feedback execution.** **Sample feedback and the first event-feedback
-    slice landed.** Sample `detach()` now executes through feedback-aware SCC
+12. **SCC/feedback execution.** **Sample and realtime event feedback landed.**
+    Sample `detach()` now executes through feedback-aware SCC
     scheduling with nonzero reflected `scc_feedback_latency`, producer-home or
     branch-local retained timelines selected through the shared storage planner,
     source latency/history, channel conversion,
@@ -561,9 +569,9 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     connections this closes the normal transport surface; the remaining sample
     connection gates are compiled-access directions; root I/O is represented by
     ordinary concrete system/communication nodes rather than boundary ports.
-    Event feedback executes for the current one-source, exact-type,
-    zero-source/target-history realtime slice. Authored source latency is allowed
-    on the canonical producer timeline. The implementation covers same-delay
+    Event feedback accepts realtime exact or non-expanding converted streams,
+    including source/target history, source latency, and same-SCC fan-in. The
+    implementation covers same-delay
     detached fanout, burst retention, changing root-call sizes, and generation
     migration. Compact-carry feedback cursors skip the restored historical prefix;
     persistent-ring cursors start at the prior monotonic write index. Both paths
@@ -572,11 +580,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     fan out to an acyclic consumer through one SCC-exit materialization, including
     non-expanding conversion and target history backed by compact carry or a
     canonical persistent producer ring. Same-SCC non-detached conversion and
-    target-history consumption also run after each producer slice. Source history,
-    source latency consumed directly inside the cycle, multi-producer cyclic
-    fan-in, feed-forward ingress, edges spanning distinct cyclic regions, and
-    materializations shared across in-SCC and downstream consumers remain
-    capability-gated; the audit matrix above is authoritative for these
+    temporal consumption run after each producer slice. Ingress conversion runs
+    at region entry, inter-region conversion at source-region exit, and mixed
+    in-SCC/downstream fanout receives distinct scope-correct derived
+    representations. The audit matrix above is authoritative for the remaining
     combinations.
 13. **Root I/O node integration.** Keep the configured project root zero-input and
     zero-output. Device I/O and communication with other application modules are

@@ -248,6 +248,36 @@ categories:
   versus full-persistent alternatives; and
 - external I/O belongs to concrete nodes, not a root connection representation.
 
+Every planned event operation also owns an explicit execution scope. A
+primitive `before`/`after` scope uses that primitive invocation's index and block
+size and therefore repeats for SCC slices. A region `before`/`after` scope uses
+the complete root-call window and executes once outside the slice loop. Scope is
+part of representation sharing: two otherwise identical conversions do not
+share a derived buffer when one is required after every producer slice and the
+other is required once at SCC exit. Execution planning consumes these scopes
+directly; it must not inspect downstream bindings and infer placement after
+physical storage has already been chosen.
+
+This gives the event pipeline a fixed order of decisions:
+
+1. derive semantic source/target windows and SCC relationships;
+2. enumerate direct, conversion, merge, and delay operations with their scopes;
+3. establish representation readers and writers;
+4. derive exact capacities and cross-invocation lifetimes;
+5. compare the legal stack/carry/full-storage alternatives and copy work; and
+6. pack transient lifetimes and emit resolved bindings.
+
+For a cyclic producer with source history or latency, the callback writes an
+invocation-local bounded sequence. A slice-scoped stable merge inserts it into
+the canonical retained aggregate. This is necessary because a later slice may
+legally author an event whose timestamp precedes a future event authored by an
+earlier slice; direct append would violate the sorted-stream invariant. The same
+mechanism extends to same-SCC fan-in. It uses only statically sized buffers. The
+local capacity is derived from `SCC quantum + history + latency`; the aggregate
+capacity accounts for the root block plus the history/latency allowance for
+every possible slice, since each callback invocation may legally fill its whole
+declared authored window.
+
 For samples, the buffer unit is a channel. Identity channel routing, projection,
 permutation, layout-only conversion, and channel duplication bind existing channel
 storage directly. Arithmetic conversion reads its semantic input channels from
