@@ -15,22 +15,17 @@ Related documents:
 connection is logical dataflow semantics, not a declaration that a physical
 buffer must be allocated.
 
-The whole-project compiler may implement a realtime sample connection with:
+At the physical buffer level there are only two storage locations: the generated
+root's fixed stack frame and persistent `NodeStorage`. They produce three useful
+plans: an entirely stack-resident buffer, a stack working buffer plus exactly the
+history/latency carry that must persist in `NodeStorage`, or an entire persistent
+buffer in `NodeStorage`. This applies to an event stream and, independently, to
+each sample channel group.
 
-- direct SSA/register forwarding;
-- an aliased producer value/block;
-- pass-local stack storage;
-- a statically allocated reusable scratch slot;
-- compact persistent history/latency carry plus transient current-block storage;
-- persistent circular storage;
-- explicit feedback/SCC storage;
-- an explicitly materialized contiguous block;
-- a combination of the above for different consumers.
-
-Likewise, a realtime event connection may be represented by direct/fused event
-handling, an immutable transient event sequence shared by several consumers,
-conversion scratch, persistent delayed/history event storage, or another
-compiler-selected representation.
+Aliasing, direct forwarding, fan-in, conversion, feedback delay, and SCC work
+placement are operations over those buffers, not additional storage plans. LLVM
+may subsequently eliminate a buffer or scalarize it, but physical planning does
+not depend on that optimization.
 
 The compatibility runtime may continue to use ring-buffer-backed
 `InputPort`/`OutputPort`/shared-port objects. That implementation must not become
@@ -66,20 +61,24 @@ materialization when SSA/SROA/loop optimization proves it unnecessary.
 The planner therefore chooses the **minimum correct storage requirement**, not a
 mandatory final machine representation.
 
-## One generation uses one `NodeStorage` allocation model
+## Persistent generation state uses one `NodeStorage` allocation model
 
-Physical storage selected by whole-project lowering must feed the existing
-`NodeLayout`/`NodeStorage` machinery rather than create a second graph-kernel
-arena. The generated project behaves as a zero-input, zero-output root node whose
-`declare()` operation declares constituent nodes plus root/compiler-owned
-regions into one `NodeLayoutBuilder`. `GraphExecutor` owns the resulting single
-`NodeStorage`.
+Persistent storage selected by whole-project lowering must feed the existing
+`NodeLayout`/`NodeStorage` machinery rather than create a second persistent
+graph-kernel arena. The generated project behaves as a zero-input, zero-output
+root node whose `declare()` operation declares constituent nodes plus
+root/compiler-owned persistent regions into one `NodeLayoutBuilder`.
+`GraphExecutor` owns the resulting single `NodeStorage`; invocation-local
+temporaries belong to the generated root's fixed stack frame.
 
-Any project-owned data that must survive from one execution call to another, or
-that is intentionally retained as a bounded reusable workspace, should normally
-be represented in that same layout. This includes history/latency carry,
-feedback state, persistent event data, `State`, `CompiledState`, activity state,
-and compiler-selected reusable temporary regions.
+Any project-owned data that must survive from one execution call to another
+belongs in that layout. This includes history/latency carry, full persistent
+port buffers, feedback state, `State`, `CompiledState`, and activity state.
+Invocation-local port temporaries do not acquire persistent ownership merely
+because their maximum size is known: the generated root should reserve them in
+its fixed stack frame, subject to a compile-time stack budget, or choose a full
+`NodeStorage` representation for that port group. The audio thread never grows
+either storage class dynamically.
 
 The builder should expose a low-level aligned raw-region declaration operation
 for generated root code. Unlike authored `local_array()`, such a region need not
@@ -95,8 +94,9 @@ and receive that value through `NodeStorage::initialize()` before activation; th
 generated realtime root must not substitute a first-call/run-once guard.
 
 Truly request-sized caller data whose maximum size is not known at graph compile
-time need not be embedded in `NodeStorage`. This exception does not justify a
-second persistent project storage abstraction.
+time is not a legal realtime-port backing strategy. It belongs to a non-realtime
+request boundary and does not justify a second persistent project storage
+abstraction.
 
 ## History and latency are semantic windows, not storage classes
 
@@ -171,49 +171,134 @@ This stage answers correctness questions such as:
 - what is the pass-local live interval?
 - what temporal window is legal for realtime event production/consumption?
 
-Then choose among the legal representations using two explicit pure policy
-functions, one per payload class:
+Then choose among the legal storage plans using two explicit pure policy
+functions, one per payload class. Their result contains the common storage kind
+plus payload-specific capacity and layout facts:
 
 ```cpp
-SampleConnectionImplementationKind
-choose_sample_connection_implementation(
+SampleConnectionStoragePlan
+choose_sample_connection_storage_plan(
     SampleConnectionImplementationRequirements const&,
     SampleConnectionCostModel const&);
 
-EventConnectionImplementationKind
-choose_event_connection_implementation(
+EventConnectionStoragePlan
+choose_event_connection_storage_plan(
     EventConnectionImplementationRequirements const&,
     EventConnectionCostModel const&);
 ```
 
-The initial policy is deliberately conservative rather than pretending there is
-one globally optimal threshold:
+The storage chooser should enumerate legal fixed-capacity candidates and compare
+their copy work for the complete producer group. Storage lifetime/residence is
+one axis; conversion, merge, delay, and aliasing are separate operation axes.
+The existing `direct`/`transient_sequence`/`compact_persistent_carry`/
+`persistent_ring`/`feedback_ring` event enum conflates those axes and should not
+be treated as the destination model.
 
-- a zero-retention connection uses direct/fused handling when analysis proves it
-  legal, otherwise transient materialization;
-- feedback uses a persistent ring;
-- retained sample payloads use compact carry below a configurable byte budget
-  and a ring above it;
-- retained event payloads use the `max_events_per_sample` sizing rate to derive
-  the retained representation capacity, then use compact carry below a
-  configurable count budget and a ring above it; and
 The configured project root itself has no boundary ports. Device I/O and
 communication with other application modules are modeled by concrete node types,
-so root-boundary storage is not a connection implementation kind.
+so root-boundary handling is not a port-storage implementation kind.
 
-For events, the two retained implementations intentionally have different copy
-behavior. `compact_persistent_carry` keeps a transient producer sequence and copies
-only the bounded retained tail into/out of persistent storage at root-call boundaries.
-`persistent_ring` is itself the canonical producer representation: producer and
-consumers bind directly to one migration-identified power-of-two event ring carrying
-monotonic read/write indices. At the start of each root call GraphJIT advances the
-oldest retained index past events that are older than the required history boundary;
-retained event payloads remain in-place. The ring's static capacity is derived from
-the complete simultaneously-live temporal span (`history + current block + latency`)
-and the producer's sizing rate.
+### Realtime port storage plans
 
-These crossovers are heuristic policy only. They are intentionally isolated so
-benchmarking can change them without changing graph semantics or LLVM lowering.
+There are three useful physical storage plans for an event stream or a sample
+channel group:
+
+| Storage plan | Invocation-local storage | `NodeStorage` | Copies caused by retention |
+| --- | --- | --- | --- |
+| transient | One fixed-capacity buffer in the generated root stack frame. | None for the stream. | None. |
+| transient with persistent carry | One fixed-capacity working buffer in the generated root stack frame. | Exactly the history/latency tail that must cross root calls. | Restore the retained tail into the working buffer and commit the next retained tail back out. |
+| full persistent | None is required merely to reconstruct the stream. | One fixed-capacity buffer covering the complete simultaneously-live window. | No root-boundary reconstruction copies; producer and compatible consumers address the persistent buffer directly. |
+
+A shared physical-planning vocabulary can therefore begin with:
+
+```cpp
+enum class RealtimeBufferStorageKind {
+    transient_stack,
+    stack_with_persistent_carry,
+    full_node_storage,
+};
+```
+
+Sample and event plans then add their payload-specific capacity/layout facts and
+explicit operations. `direct`, `converted`, `merged`, and `feedback` describe
+how representations are related or scheduled; they are not values of this enum.
+
+The stack-versus-full-persistent choice may also respect a compile-time stack
+budget. It must never fall back to a runtime allocation. Every selected buffer
+has a capacity fixed while compiling the graph.
+
+`EventInputPort` and `EventOutputPort` require one power-of-two event span plus
+read/write indices. They do not require that span to live in `NodeStorage` and do
+not require a segmented carry/current view. For the carry plan, GraphJIT restores
+the carry into the one stack working buffer before the relevant callback or
+conversion; the port still sees one buffer. For the full-persistent plan, it sees
+the one `NodeStorage` buffer directly. Generated bindings should contain or
+materialize the already-selected concrete pointer, so fetching a port does not
+branch on its storage class.
+
+The following are operations over those representations, not additional storage
+categories:
+
+- identity/direct fanout aliases an existing representation and performs no copy;
+- fan-in performs an explicitly planned stable merge and chooses a producer home
+  that minimizes moved events;
+- conversion materializes one derived representation per distinct conversion and
+  visible window, shared by equivalent fanout consumers;
+- block/SCC adaptation determines when that materialization runs;
+- feedback is a delayed derived stream whose retained storage uses the same carry
+  versus full-persistent alternatives; and
+- external I/O belongs to concrete nodes, not a root connection representation.
+
+For samples, the buffer unit is a channel. Identity channel routing, projection,
+and permutation should bind the existing channel storage directly. Only channels
+that must actually be gathered, mixed, or payload-converted need a derived
+materialization. The same three storage plans then apply per canonical or derived
+channel group.
+
+Candidate selection should use the actual worst-case copied event/sample counts
+for the complete fan-in/fanout group. A fixed event-count threshold such as 64 is
+not the policy contract. For the simple single-source case, carry is useful when
+the retained history/latency tail is small relative to the current-block working
+set; full persistent storage becomes preferable when restoring and committing
+that tail costs more than addressing the entire retained buffer in place. A
+sensible initial sample crossover considers carry only while retained frames are
+less than one full block, then lets the whole-group copy model choose full
+persistent earlier when appropriate. The event equivalent compares the actual
+rate-derived retained-event capacity with the actual rate-derived current-block
+capacity; it never substitutes a fixed event count for either quantity.
+
+This crossover policy is intentionally isolated so benchmarking can change it
+without changing graph semantics or LLVM lowering.
+
+### Current implementation audit
+
+The current code is partly aligned with this model, but its names obscure that:
+
+- ordinary event capacities already start from
+  `ceil(max_events_per_sample * temporal_span)` and are rounded to a power of
+  two;
+- `compact_carry_max_events == 64` is currently compared with that calculated
+  retained-event count; it is not used as the carry capacity. For example, a
+  rate of 1000 over one retained sample calculates 1000 retained events and
+  cannot select the current carry path;
+- ordinary full persistent rings are fixed at compile time from the producer
+  rate and `history + block + latency`; no current event strategy grows a ring
+  dynamically on the audio thread;
+- an absent `retained_event_capacity` currently steers the chooser toward a ring,
+  but physical lowering subsequently rejects the unrepresentable capacity. This
+  should become an immediate planning error rather than looking like an
+  "unknown-sized" ring case;
+- detached feedback currently uses the separate conservative formula
+  `source_capacity * (loop_extra_latency + 1)` rather than deriving the delayed
+  stream's exact simultaneously-live span; and
+- current reflected event bindings contain one `event_storage_base` plus
+  offsets, which forces every event representation into `NodeStorage`. The port
+  API itself requires only one concrete buffer pointer/span and indices, so this
+  is a binding/lowering limitation rather than an authored-interface constraint.
+
+The refactor should preserve the already-correct rate propagation and static
+capacity failures while replacing the conflated chooser, feedback formula, and
+single-storage-base binding.
 
 The heuristic may consider:
 
@@ -251,22 +336,23 @@ ScratchAllocationPlan
  assign_scratch_slots(span<TransientStorageRequirement const>);
 ```
 
-The word "scratch" describes lifetime, not a second runtime storage object. A
-small temporary may disappear into SSA/registers or the machine stack. A larger
-fixed-capacity reusable slot should normally become a compiler-owned raw region
-in the root `NodeLayout` and therefore share the same `NodeStorage` allocation
-as persistent node/project state.
+The word "scratch" describes lifetime, not a second persistent runtime storage
+object. A temporary may disappear into SSA/registers or occupy a statically
+sized range in the generated root stack frame. If the fixed stack budget makes
+that plan unsuitable, the storage chooser may instead select a full-buffer
+`NodeStorage` representation; it must not silently put nominally transient
+storage into persistent state after physical planning.
 
 The important properties are:
 
 - no realtime heap allocation;
-- offsets/lifetimes are known before execution when storage is statically
-  reserved;
-- unrelated logical connections may reuse one physical region when their live
+- sizes, alignments, offsets, and lifetimes are known before execution;
+- unrelated stack temporaries may reuse one stack-frame range when their live
   intervals do not overlap;
-- placing reusable storage in `NodeStorage` does not make its contents
-  semantically persistent between calls; and
-- the compiler may order regions to improve locality in the generated hot path.
+- a full-buffer `NodeStorage` choice is explicit and participates in ordinary
+  generation migration only when its contents are semantically retained; and
+- the compiler may order stack slots and persistent regions for hot-path
+  locality.
 
 
 ## Event conversions are directional semantic conversions
@@ -372,9 +458,9 @@ struct EventOutputProperties {
 };
 ```
 
-`max_events_per_sample` is used only to derive a maximum static buffer size for
-a known temporal span. For a representation covering `W` sample positions, the
-planner starts from
+`max_events_per_sample` is the producer's declared maximum used to derive every
+event buffer capacity. For a representation covering `W` simultaneously-live
+sample positions, the planner starts from
 
 ```text
 ceil(max_events_per_sample * W)
@@ -382,11 +468,15 @@ ceil(max_events_per_sample * W)
 
 event slots. Fractional values therefore let sparse producers request smaller
 static buffers: for example, `0.24` over a 64-sample representation requests 16
-event slots. This is **not** a runtime rate limiter and does not impose a
-sliding-window constraint on event timestamps; all 16 events may occur at one
-sample position if that timestamp is otherwise legal. The value must be finite
-and nonnegative. `0.0` requests no event payload capacity for that span, so any
-producer attempt necessarily overflows the bounded sequence.
+event slots. The declaration constrains total capacity for the represented
+window, not the distribution of timestamps inside it: all 16 events may occur at
+one legal sample position. The value must be finite and nonnegative. `0.0`
+declares that the producer emits no events.
+
+Exceeding the declared maximum is outside the realtime producer contract and has
+implementation-defined behavior. A particular implementation may drop excess
+events and count them, but callers must not depend on that policy. It must never
+grow a buffer or allocate memory on the audio thread.
 
 This sizing rate belongs to the event **output payload properties**, not to
 `RealtimeOutputConfig`: history/latency define *when* an output may author data,
@@ -437,13 +527,36 @@ static event capacity. For a representation covering `W` sample positions from
 a producer with `D = max_events_per_sample`, GraphJIT starts from
 `ceil(D * W)` event slots. The current bounded-sequence representation rounds
 that count upward to a power of two because `EventSharedPortData` uses a ring
-mask. Neither calculation constrains the distribution of event timestamps inside
-that representation.
+mask. Every realtime event representation must have such a finite compile-time
+capacity. Failure to represent the calculated capacity is a graph-compilation
+error, not a reason to select a dynamically sized fallback.
+
+The span depends on the selected storage plan:
+
+- a transient producer buffer covers the maximum events that can be newly
+  authored into that invocation's legal output window;
+- persistent carry covers exactly the history/latency interval crossing root
+  calls;
+- the carry plan's stack working buffer covers the restored carry plus the
+  maximum newly authored events that may coexist with it;
+- a full persistent buffer covers the complete simultaneously-live interval,
+  including current block, history, authored latency, and any feedback delay
+  owned by that representation; and
+- an independently delayed feedback branch is sized from its delayed
+  simultaneously-live interval and source rate, not by multiplying a source
+  invocation buffer by a guessed number of outstanding callbacks.
+
+Fan-in sums the separately calculated source maxima before physical rounding;
+fanout does not multiply capacity. A non-expanding converted branch never needs
+more event slots than the source events visible to that operation, although it
+may conservatively inherit the source representation's capacity. These formulas
+do not constrain timestamp distribution within the representation: every event
+covered by the declared maximum may legally share one timestamp.
 
 The older `calculate_event_port_buffer_capacity(...)` value-size heuristic is
-therefore no longer the primary GraphJIT capacity calculation. Heuristics and
-cost-model limits remain useful for choosing among static representations such
-as compact carry versus a persistent ring.
+therefore no longer the GraphJIT capacity calculation. Heuristics remain useful
+only for choosing among already-sized storage candidates; they never replace the
+rate-times-live-span formula.
 
 Fanout does not multiply the sizing rate: several consumers of one logical
 producer share the same source event stream. A merge of independent producers
@@ -473,23 +586,49 @@ converting retained events that the consumer cannot observe during the current
 root invocation, while the canonical retained representation continues to serve
 identity/history consumers directly.
 
-The selected temporal interval does **not** justify shrinking the derived event
-capacity from the source capacity. Since `max_events_per_sample` is only a static
-sizing rate, every event currently resident in the source representation may
-legally share one timestamp inside the selected interval. For a non-expanding
-implicit conversion, source-sized derived capacity is therefore the conservative
-allocation that guarantees materialization cannot overflow merely because events
-are temporally clustered. Identical retained conversion branches may still share
-that one derived representation.
+The selected temporal interval does **not** by itself justify assuming that
+events are evenly distributed across samples. Every event covered by the
+producer's declared maximum may legally share one timestamp inside the selected
+interval. For a non-expanding implicit conversion, source-sized derived capacity
+is therefore a conservative allocation that cannot overflow merely because
+events are temporally clustered. Identical retained conversion branches may
+still share that one derived representation.
 
-Each logical event output also owns one saturating overflow counter in its
-canonical producer representation; derived conversion/materialization fanout
-never duplicates that telemetry. If the statically allocated producer sequence
-is full, realtime execution deterministically drops the excess event and
-increments that counter; it does not allocate. There is no per-sample or
-sliding-window policing beyond the ordinary bounded-buffer capacity. Overflow of
-compiler-owned conversion or materialization storage is a GraphJIT sizing
-invariant failure and must not be reported as a producer overflow.
+### Event work placement and avoidable-work rules
+
+Physical lowering schedules event work at the narrowest lifetime that is still
+semantically correct:
+
+- an ordinary producer materialization runs once after that producer;
+- a cyclic producer appends across slices into one root-call aggregate rather
+  than resetting and rebudgeting a sequence for every slice;
+- a derived sequence consumed inside that SCC is refreshed after each producer
+  slice using the current slice index and size;
+- a derived sequence consumed outside that SCC is materialized once at region
+  exit from the complete root-call aggregate;
+- persistent-ring pruning and compact-carry restore run once at root/SCC entry;
+- compact-carry commit runs once at root/SCC exit; and
+- detached feedback appends only the newly authored suffix after its producer,
+  never the restored retained prefix.
+
+These placements are part of the efficiency contract. Moving them to a more
+frequent scope can preserve simple test cases while repeating conversion/copy
+work, inflating static event budgets, or duplicating events in feedback state.
+
+Current event lowering declares a distinct raw `NodeStorage` region for every
+event representation, including invocation-local sequences. This is an
+implementation mismatch with the storage plans above. Transient event
+representations need fixed stack-frame allocation plus live-range reuse; only
+carry or explicitly selected full persistent buffers belong in `NodeStorage`.
+
+The current implementation gives each logical event output one saturating
+overflow counter and drops an event when that output's sequence is full. That is
+one allowed implementation-defined response to a producer exceeding its declared
+maximum, not part of the authored-port contract. Derived
+conversion/materialization fanout does not duplicate the counter. Realtime
+execution must never resize or allocate. Overflow of compiler-owned conversion
+or materialization storage while every producer respects its declaration is a
+GraphJIT sizing bug, not a producer overflow.
 
 Executor/device telemetry should remain separate when those layers land:
 GraphExecutor can count deadline misses, while the audio-device boundary can
@@ -543,12 +682,22 @@ At minimum cover:
   storage;
 - history requires only the persistent carry actually needed, not an automatic
   full-edge ring;
-- large history can select a ring under a cost model that makes it cheaper;
-- feedback/SCC requirements force the necessary persistent state;
-- disjoint transient live intervals reuse one scratch slot;
+- large history can select a full persistent buffer under a cost model that
+  makes it cheaper;
+- feedback/SCC requirements derive an ordinary delayed stream with the necessary
+  carry or full persistent state;
+- disjoint transient live intervals reuse one stack-frame range;
 - tiled/multi-channel layout changes planner facts without changing connection
   semantics;
 - realtime event production outside the legal window is rejected;
+- every event buffer capacity is derived from producer
+  `max_events_per_sample` and its exact simultaneously-live temporal span;
+- unrepresentable realtime capacities fail planning and never fall back to a
+  runtime allocation;
+- carry and full-persistent candidates preserve the same event semantics while
+  exposing their different copy counts to policy;
+- feedback capacity is derived from delayed live span rather than multiplying
+  one invocation capacity by a callback count;
 - realtime event identity fanout can share an immutable event representation;
 - compiled event/sample access remains independent from realtime storage
   planning.

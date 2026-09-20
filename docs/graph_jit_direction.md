@@ -159,9 +159,12 @@ emitted as immutable primitive bindings; realtime execution only uses those
 constant offsets and contains no allocator bookkeeping. The current packer is a
 deterministic lowest-gap heuristic rather than a globally optimal interval-packing
 solver; correctness and sub-range reuse are contractual, while globally minimal
-arena size remains an optimization opportunity if measurements justify it. The
-generic transient-arena planner is intentionally reusable by later event/workspace
-planning.
+arena size remains an optimization opportunity if measurements justify it.
+Currently that transient arena is declared as a raw `NodeStorage` region. The
+physical plan should retain its useful live-range packing but emit the arena as a
+fixed generated-root stack frame instead. Only compact carry and explicitly
+selected full persistent buffers belong in `NodeStorage`; the same stack allocator
+should serve later transient event/workspace planning.
 
 The physical planner consumes the implementation decisions already made by
 `choose_sample_connection_implementation()`; it does not choose policy again.
@@ -183,13 +186,18 @@ storage.
 
 The remaining port work should preserve these invariants:
 
-- **Canonical storage contains data, not API facades.** Persistent/transient sample
-  payloads and genuinely required implementation state belong in `NodeStorage`;
-  `InputPort`/`OutputPort` are invocation-local authored-node API adapters.
+- **Storage contains data, not API facades.** Invocation-local sample/event
+  payloads use the fixed generated-root stack frame. History/latency carry, full
+  persistent buffers, and genuinely cross-call implementation state use
+  `NodeStorage`. `InputPort`/`OutputPort` are invocation-local authored-node API
+  adapters over the selected concrete pointer.
 - **Bindings are immutable compiler facts.** Port implementation kind, offsets,
   capacities, layouts, history/latency parameters, and branch relationships should
-  be emitted as immutable LLVM-visible records whenever possible. Only the
-  `NodeStorage` base and current sample index/block size are dynamic.
+  be emitted as immutable LLVM-visible records whenever possible. The generated
+  root resolves each binding to its already-selected stack or `NodeStorage`
+  pointer before invoking the node; fetching a port must not branch between
+  storage classes. Only concrete base pointers and the current sample index/block
+  size are dynamic values.
 - **No audio-thread setup.** Root execution performs no heap allocation, lazy
   initialization, ownership changes, or first-call construction. Compiler-owned
   persistent sample/event state declares `NodeLayout` raw-region initializers and
@@ -205,10 +213,10 @@ The remaining port work should preserve these invariants:
   producer writes its canonical source-layout representation once. Identity branches
   share it; converted/remapped branches are planned materializations. Conversion is
   not hidden as mutable state inside `OutputPort`.
-- **Transient and persistent state stay distinct semantically.** Current-block
-  scratch may live in canonical allocation for bounded/reusable memory, but it is
-  not migration state. Compact carry/rings/feedback are separate representations
-  selected only when cross-kernel retention requires them.
+- **Transient and persistent state stay distinct physically and semantically.**
+  Current-block scratch is stack-frame storage and never migration state.
+  `NodeStorage` holds either the exact carry crossing calls or an explicitly
+  selected full persistent port buffer.
 - **Direct is allowed to have backing.** With the authored node API, producer output
   still needs an addressable current-block representation. `direct` means no extra
   connection copy/materialization between producer and consumer. A later fusion/SSA
@@ -242,35 +250,115 @@ The current internal realtime connection surface is intentionally asymmetric:
   implemented. Independent producers write bounded local sequences which are
   stable-merged in semantic source order after the final producer, so equal-time
   event ordering is deterministic before conversion/retention/fanout.
-- **Events, cyclic:** `detach()` currently requires one semantic source, exact event
-  type, zero source/target history, realtime-to-realtime access, and detached
-  feedback edges to stay within one cyclic region. Authored source latency is
-  permitted and retained on the canonical producer timeline. Same-delay detached
-  fanout shares one persistent delayed stream, and an exact-type zero-retention
-  producer may fan out from a cyclic SCC to downstream acyclic consumers through
-  the ordinary aggregate-sequence materialization path. Non-expanding conversion
-  on such outbound branches is also supported. Cross-region event materializations
-  are scheduled once at SCC exit with the root invocation index/size rather than
-  after every producer slice; conversion therefore sees the complete root-call
-  aggregate. Execution regions also own SCC-entry persistent-ring pruning/carry
-  restore and SCC-exit carry commit slots, so retained cyclic state has root-call
-  rather than slice lifetime. Outbound target history works with both compact
-  carry and a canonical persistent producer ring; detached feedback copies only
-  the newly-authored monotonic suffix from either representation. Authored
-  source latency is supported on outbound/detached cyclic transport with either
-  compact carry or a persistent canonical ring, and composes with outbound
-  target history and non-expanding conversion at SCC exit. Inside the SCC,
-  non-detached feed-forward event edges may now consume target-history windows
-  and non-expanding conversions after each producer slice; restored root-call
-  history and events authored by earlier slices remain visible to the current
-  slice without changing the append-only producer contract. Source history,
-  source latency consumed directly inside a cycle, feed-forward ingress into a
-  cycle, and edges between cyclic regions remain the main realtime connection
-  work.
+- **Events, cyclic:** the implemented and missing combinations are recorded in
+  the matrix below. In particular, the current in-SCC history work is
+  **target-side history on a non-detached feed-forward edge**. It is not general
+  detached-feedback input history and does not yet provide source history or
+  source latency consumed directly inside the cycle.
 - **Both kinds:** the root graph is required to have zero public/boundary ports.
   Device I/O and communication with other application modules enter through
   concrete node types, so there is no future root-boundary transport ABI to add.
   Compiled-access directions remain a separate lowering capability.
+
+#### Realtime event SCC capability matrix
+
+| Connection shape or feature | Current state | Physical behavior or remaining requirement |
+| --- | --- | --- |
+| Same-SCC, one-source, zero-retention exact-type feed-forward | Implemented | The cyclic producer appends into one aggregate sequence across all root-call slices. Same-region consumers select their current absolute-time slice directly. |
+| Same-SCC non-expanding conversion | Implemented | A derived sequence is materialized after each producer slice, before its in-region consumer. |
+| Same-SCC target history | Implemented | Canonical retained storage keeps restored root history and earlier-slice events visible. Exact-type consumers read that storage directly; a converted derived branch materializes `[slice-history, slice-end)` after each producer slice. |
+| Same-SCC source history | Capability-gated | Source-side retained-window ownership and per-slice visibility must be lowered without violating append order or replaying restored events. |
+| Same-SCC source latency consumed by a non-detached target | Capability-gated | Future events already fit the canonical retained timeline, but per-slice visibility and scheduling semantics still need lowering. |
+| Detached feedback within one SCC | Implemented for one exact-type source with zero source/target history | A branch-local persistent ring appends only the newly authored suffix and adds `loop_extra_latency`. Same-source, same-delay detached fanout shares the ring and append operation. Authored source latency on the canonical producer is supported. |
+| Cyclic producer to acyclic consumer | Implemented | Materialize once at SCC exit from the complete root-call aggregate. Exact type, non-expanding conversion, outbound target history, and authored source latency compose with compact carry or a canonical persistent ring. |
+| Acyclic producer entering a cyclic region | Capability-gated | Requires an ingress lifetime/window rule and placement before the relevant SCC slices. |
+| Edge spanning distinct cyclic regions | Capability-gated | Requires explicit inter-region scheduling and retained-window ownership. |
+| Multi-producer fan-in touching a cyclic region | Capability-gated | The current stable fan-in merge is acyclic only. Cyclic fan-in needs slice ordering, aggregate ownership, and retained merge semantics. |
+| One derived materialization consumed both inside the source SCC and downstream | Capability-gated | The two consumers require different work scopes: per-slice inside the SCC and once-at-exit outside it. Physical lowering must split or otherwise represent those lifetimes. |
+| Mixed realtime/compiled or compiled-only event access | Capability-gated separately | This belongs to the compiled-access executor rather than another realtime storage kind. |
+| Unconnected primitive event port | Capability-gated | Every primitive event input and output currently must resolve to exactly one physical binding. |
+
+#### Remaining event-connection work
+
+The remaining work should be treated as compatibility between semantic windows,
+execution regions, and the existing physical representations—not as a request
+for one universal event buffer.
+
+Semantic capability work:
+
+1. Add source history inside a cyclic region.
+2. Add source latency consumed directly inside a cyclic region, composing with
+   target history and non-expanding conversion.
+3. Define and lower acyclic-to-cyclic feed-forward ingress.
+4. Define and lower edges between distinct cyclic regions.
+5. Extend stable multi-producer fan-in to cyclic regions, including retained
+   aggregate ownership.
+6. Allow equivalent converted/materialized fanout to serve both in-SCC and
+   downstream consumers at their different execution scopes.
+7. Decide and implement the intended broader detach surface beyond the current
+   one-source, exact-type, zero-source/target-history contract, including which
+   combinations of conversion, history, and multi-source input are required.
+8. Add disconnected/default event-port bindings if primitive event ports are
+   intended to be optional.
+9. Implement mixed realtime/compiled and compiled-only event access through the
+   compiled-access plan.
+
+Efficiency and observability work that does not change event semantics:
+
+- replace the event implementation enum's mixture of storage and operations with
+  the three storage plans: transient stack, transient stack plus persistent carry,
+  and full persistent `NodeStorage`;
+- make every event capacity a required compile-time result of
+  `max_events_per_sample` and the exact simultaneously-live temporal span; an
+  invalid/unrepresentable result must fail compilation rather than select a
+  fallback;
+- move invocation-local sample and event backing out of `NodeStorage` and into one
+  live-range-packed generated-root stack frame;
+- plan feedback as an ordinary delayed derived stream using the same carry/full
+  alternatives, and replace the current `source_capacity * (latency + 1)` event
+  feedback sizing with rate-times-live-span sizing;
+- move retained fan-in away from its current separate canonical aggregate when
+  a producer-home realization is legal and measurably cheaper;
+- surface the existing per-logical-output saturating overflow counters; and
+- choose among legal physical candidates from their whole-group copy counts,
+  stack footprint, persistent footprint, and addressing cost instead of the
+  current fixed 64-event carry threshold.
+
+#### Event-connection implementation map
+
+Use these files as the phase boundaries when extending the matrix:
+
+- [`graph/realtime_port_planning.h`](../src/intravenous/graph/realtime_port_planning.h)
+  contains the current correctness-requirement records and cost-policy chooser.
+  Its event enum currently conflates storage with operations and is the primary
+  storage-plan refactor site; it should not acquire topology-specific lowering
+  logic.
+- [`graph_jit/connection_plan.h`](../src/intravenous/graph_jit/connection_plan.h)
+  and [`connection_plan.cpp`](../src/intravenous/graph_jit/connection_plan.cpp)
+  derive logical event connections, producer groups, SCC schedule facts,
+  retention requirements, and implementation choices before physical lowering.
+- [`graph_jit/lowering_plan.h`](../src/intravenous/graph_jit/lowering_plan.h)
+  and [`lowering_plan.cpp`](../src/intravenous/graph_jit/lowering_plan.cpp)
+  realize event representations and operations, apply explicit capability
+  gates, and place work at primitive or region entry/exit scope.
+- [`graph_jit/event_conversion_runtime.h`](../src/intravenous/graph_jit/event_conversion_runtime.h)
+  and [`event_conversion_runtime.cpp`](../src/intravenous/graph_jit/event_conversion_runtime.cpp)
+  own bounded conversion, visible-window materialization, and stable merge
+  leaves used by generated code.
+- [`graph_jit/event_retention_runtime.h`](../src/intravenous/graph_jit/event_retention_runtime.h)
+  and [`event_retention_runtime.cpp`](../src/intravenous/graph_jit/event_retention_runtime.cpp)
+  own compact-carry restore/commit, persistent-ring pruning, and feedback suffix
+  append behavior.
+- [`node/build_request.h`](../src/intravenous/node/build_request.h) and
+  [`ports.h`](../src/intravenous/ports.h) reconstruct invocation-local event
+  facades over the compiler-selected raw representation. They are the authored
+  node API contract, not the physical-policy layer.
+
+For a new combination, first extend semantic facts and scheduling legality, then
+choose one of the three storage plans for each canonical or derived
+representation. Identity aliasing, merge, conversion, block/SCC adaptation, and
+feedback delay are explicit operations over those representations rather than
+additional storage kinds.
 
 Sample output authored latency is also a revision horizon. `OutputPort::update()`
 may rewrite any of the preceding authored-latency frames, so canonical sample
@@ -301,15 +389,15 @@ GraphJit's generated root does not yet schedule primitive skips, so this remains
 generic callback contract until activity/TTL lowering lands.
 
 Fresh compiler-owned persistent connection state is lifecycle-owned. Sample
-feedback/carry/alignment raw regions and event raw representations install
+feedback/carry/alignment raw regions and persistent event representations install
 `NodeLayout` raw initializers; exact-shape persistent regions skip initialization
 when migration restores their bytes. The generated realtime root contains no
-first-call initialization guard. Event sequence resets occur once per root
-invocation because transient output sequences are invocation-scoped; event feedback
-cursors are stack/SSA state for one root call. Unequal-latency sample-feedback
-alignment uses the initialized alignment-ring samples directly as branch prehistory.
-As real source frames arrive they overwrite those slots naturally, so no validity
-counter, warmup branch, or post-activation initialization state is required.
+first-call initialization guard. Transient event sequences and feedback cursors
+are fixed stack/SSA state for one root call and reset there. Unequal-latency
+sample-feedback alignment uses the initialized alignment-ring samples directly as
+branch prehistory. As real source frames arrive they overwrite those slots
+naturally, so no validity counter, warmup branch, or post-activation
+initialization state is required.
 
 ### Ordered implementation sequence
 
@@ -420,18 +508,21 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     boundaries. Event outputs declare a finite nonnegative `max_events_per_sample`
     static sizing rate in `EventOutputProperties`; GraphJIT combines that rate with
     each representation's temporal span to derive static capacities and uses the
-    retained representation capacity as input to the compact-carry versus ring cost
-    decision. This is not a runtime per-sample/sliding-window limiter. Each logical
-    event output owns one saturating overflow counter and deterministically drops events
-    only when its bounded producer representation is full, without allocating.
+    retained representation capacity as input to physical-plan comparison. The
+    declared maximum bounds total events in the represented window without
+    constraining their timestamp distribution. Exceeding it has
+    implementation-defined behavior and must never grow storage or allocate on
+    the audio thread. The current implementation owns one saturating overflow
+    counter per logical output and drops an event when its bounded producer
+    representation is full; that response is not part of the port contract.
     Retained canonical representations may now feed transient consumer branches:
     compact-carry working sequences and persistent rings materialize the current root
     window plus each branch's declared input history, then apply the existing
     non-expanding conversion plan. Identical retained converted fanout branches share
     one transient representation. Derived capacity remains source-capacity-sized
-    because `max_events_per_sample` is only a sizing rate and does not constrain how
-    many resident source events may share one timestamp. Event feedback rings land
-    in point 12; telemetry surfacing and broader event-storage liveness reuse remain.
+    because the declared maximum does not require events to be distributed
+    uniformly across timestamps. Event feedback rings land in point 12; telemetry
+    surfacing and moving transient event backing to the generated-root stack remain.
 12. **SCC/feedback execution.** **Sample feedback and the first event-feedback
     slice landed.** Sample `detach()` now executes through feedback-aware SCC
     scheduling with nonzero reflected `scc_feedback_latency`, producer-home or
@@ -442,33 +533,23 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     connections this closes the normal transport surface; the remaining sample
     connection gates are compiled-access directions; root I/O is represented by
     ordinary concrete system/communication nodes rather than boundary ports.
-    Event feedback executes for the current exact-type, zero-history, zero-latency
-    realtime slice, including same-delay detached fanout, burst retention, changing
-    root-call sizes, and generation migration. A cyclic producer may also fan out
-    to an acyclic consumer through one SCC-exit materialization, including
-    non-expanding event conversion and target history backed by either compact
-    carry or a canonical persistent producer ring. Compact retained outbound
-    history restores once at SCC entry, materializes the root history window once
-    at SCC exit, then commits once; detached feedback cursors skip the restored
-    historical prefix. Persistent-ring producers prune once at SCC entry and seed
-    detached feedback cursors from the prior monotonic write index, so feedback
-    copies only events authored during the current root call even when retained
-    source history remains resident. Cyclic producers may also use compact-carry
-    authored source latency on outbound and detached branches: future events remain
-    in canonical retained storage across root calls, restored future events are not
-    re-enqueued into detached feedback, and producers remain responsible for globally
-    nondecreasing publication order rather than relying on a generated sort/back-fill
-    path. Authored source latency is supported with either compact carry or a
-    canonical persistent producer ring; persistent-ring sources preserve future
-    events across root calls and seed detached feedback from their prior monotonic
-    write index so retained future events are not re-enqueued. Source latency,
-    outbound target history, and non-expanding conversion also compose on the
-    same persistent canonical timeline: one SCC-exit materialization selects the
-    root-visible retained window and converts it for the acyclic consumer. Direct retained
-    consumption inside a cycle, conversion consumed inside a cycle, source history,
-    multi-producer fan-in inside
-    a cycle, feed-forward ingress into a cycle, and edges spanning distinct cyclic
-    regions remain capability-gated.
+    Event feedback executes for the current one-source, exact-type,
+    zero-source/target-history realtime slice. Authored source latency is allowed
+    on the canonical producer timeline. The implementation covers same-delay
+    detached fanout, burst retention, changing root-call sizes, and generation
+    migration. Compact-carry feedback cursors skip the restored historical prefix;
+    persistent-ring cursors start at the prior monotonic write index. Both paths
+    therefore copy only events authored during the current root call rather than
+    re-enqueueing retained history or future events. A cyclic producer may also
+    fan out to an acyclic consumer through one SCC-exit materialization, including
+    non-expanding conversion and target history backed by compact carry or a
+    canonical persistent producer ring. Same-SCC non-detached conversion and
+    target-history consumption also run after each producer slice. Source history,
+    source latency consumed directly inside the cycle, multi-producer cyclic
+    fan-in, feed-forward ingress, edges spanning distinct cyclic regions, and
+    materializations shared across in-SCC and downstream consumers remain
+    capability-gated; the audit matrix above is authoritative for these
+    combinations.
 13. **Root I/O node integration.** Keep the configured project root zero-input and
     zero-output. Device I/O and communication with other application modules are
     ordinary concrete node definitions that own the relevant external resource or
@@ -683,10 +764,12 @@ The root node has no compiled output ports, therefore it has no
 addressable through immutable `CompiledGraph` metadata described below; they are
 not exposed by pretending that the zero-port project root has synthetic outputs.
 
-## One canonical `NodeLayout` and one `NodeStorage`
+## One canonical persistent `NodeLayout` and `NodeStorage`
 
-There is exactly one runtime storage allocation model for an executable graph
-generation: the existing `NodeLayout`/`NodeStorage` machinery.
+There is exactly one persistent storage allocation model for an executable graph
+generation: the existing `NodeLayout`/`NodeStorage` machinery. This does not put
+invocation-local buffers in persistent storage; those occupy the generated
+root's fixed stack frame.
 
 `GraphJit` must not introduce `CompiledGraphNodeStorageLayout`,
 `GraphKernelStorage`, or another parallel state arena. Lowering populates one
@@ -708,17 +791,22 @@ same-process type token remains sufficient when both generations use the exact
 same loaded C++ type, but equal RTTI names or equal byte size alone are not a
 safe hot-reload migration contract.
 
-All project-owned memory whose lifetime can cross an execution call or be reused
-between calls should normally be allocated through the same `NodeLayout` and
-stored in the same `NodeStorage`, including for example:
+All project-owned memory whose contents must cross an execution call should be
+allocated through the same `NodeLayout` and stored in the same `NodeStorage`,
+including for example:
 
 - node `State` and `CompiledState`;
 - history/latency/feedback carry;
-- persistent event storage;
+- full persistent sample/event buffers;
 - root/compiler-owned activity state;
 - bounded reusable compiled-access workspaces;
-- one statically packed transient arena with compile-time byte ranges selected by liveness analysis;
 - other fixed-size compiler-selected project regions.
+
+Invocation-local sample/event temporaries instead occupy one statically packed
+generated-root stack frame with compile-time byte ranges selected by liveness
+analysis. If a candidate exceeds the configured stack budget, physical planning
+must explicitly select a full-buffer `NodeStorage` representation; execution
+never allocates a replacement dynamically.
 
 This gives the whole-project compiler control over physical declaration order.
 The current layout builder packs regions in declaration order while solving
@@ -730,9 +818,10 @@ without conflating physical locality with lifecycle ordering.
 
 Compiler-owned raw regions are bytes with semantic storage meaning, not a place
 to persist C++ port façade objects. GraphJit should prefer immutable LLVM binding
-records plus constant NodeStorage offsets over raw-region initializers or pointer
-fixup passes. The final storage base is supplied to generated root code, and the
-imported node wrapper derives invocation-local API views from that base.
+records plus already-resolved stack or `NodeStorage` pointers over raw-region
+initializers or pointer fixup passes. The generated root supplies the selected
+concrete pointer to the imported node wrapper, which derives invocation-local API
+views without branching on storage class.
 
 If a future physical representation genuinely requires nontrivial persistent
 runtime state, it should be modeled explicitly in the connection/storage plan and
@@ -990,11 +1079,13 @@ resolve generated root/component operations
 CompiledGraph + finalized NodeLayout
 ```
 
-Physical node state, persistent project state, and reusable compiler-selected
-regions all become one `NodeLayout`/`NodeStorage`. Pure storage analyses may
-still decide which logical values need regions, their size/alignment, liveness,
-and desirable declaration order before LLVM/declaration generation; they do not
-create a parallel runtime allocation model.
+Physical node state, persistent project state, and compiler-selected regions
+whose contents cross calls all become one `NodeLayout`/`NodeStorage`.
+Invocation-local representations instead use the statically packed generated-root
+stack frame. Pure storage analyses may still decide which logical values need
+either kind of region, their size/alignment, liveness, and desirable layout
+before LLVM/declaration generation; they do not create a parallel persistent
+allocation model.
 
 See [realtime_port_storage_planning.md](./realtime_port_storage_planning.md) for
 the rule that logical connections do not imply buffers, and
