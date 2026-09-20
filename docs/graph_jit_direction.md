@@ -345,12 +345,16 @@ Efficiency and observability work that does not change event semantics:
 - surface the existing per-logical-output saturating overflow counters; and
 - **In progress:** the shared chooser now enumerates and scores all three
   candidates from copied bytes, addressed bytes, stack footprint, persistent
-  footprint, and a hard per-candidate stack bound while preserving the old
-  crossover under default weights. Acyclic event fan-in supplies topology-local
-  sequence footprints and stable-merge copy counts, including producer-home
-  alternatives. Continue feeding conversion/fanout work into those candidates
-  and enforce the budget against the globally packed transient arenas. The fixed
-  64-event and 16-KiB thresholds have been removed.
+  footprint, and a configured stack bound while preserving the old crossover
+  under default weights. Acyclic event fan-in supplies topology-local sequence
+  footprints and stable-merge copy counts, including producer-home alternatives.
+  `GraphJitConfig` now supplies one cost model to sample, event, and feedback
+  planning, and lowering enforces its stack limit against the final packed
+  sample+event stack allocation, re-planning eligible buffers into `NodeStorage`
+  when necessary. Continue deriving conversion/fanout costs automatically from
+  explicit operations and refining which eligible buffer is moved when several
+  alternatives can satisfy the same limit. The fixed 64-event and 16-KiB
+  thresholds have been removed.
 
 #### Event-connection implementation map
 
@@ -837,11 +841,13 @@ including for example:
 - bounded reusable compiled-access workspaces;
 - other fixed-size compiler-selected project regions.
 
-Invocation-local sample/event temporaries instead occupy one statically packed
-generated-root stack frame with compile-time byte ranges selected by liveness
-analysis. If a candidate exceeds the configured stack budget, physical planning
-must explicitly select a full-buffer `NodeStorage` representation; execution
-never allocates a replacement dynamically.
+Invocation-local sample/event buffers instead occupy compile-time byte ranges in
+the generated root stack. Sample and event ranges are lifetime-packed within
+their payload class, then placed as two aligned subranges of one root allocation.
+If the resulting byte count exceeds the configured limit, lowering re-runs
+storage selection so eligible buffers use full `NodeStorage`; if the remaining
+conversion/merge buffers still do not fit, compilation fails. Execution never
+allocates a replacement dynamically.
 
 This gives the whole-project compiler control over physical declaration order.
 The current layout builder packs regions in declaration order while solving

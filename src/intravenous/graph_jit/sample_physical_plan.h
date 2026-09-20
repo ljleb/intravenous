@@ -313,7 +313,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     ConnectionAnalysisPlan const& connections,
     std::size_t kernel_block_size,
     std::span<SampleSinkPhysicalRequest const> sinks = {},
-    std::span<SampleConstantInputRequest const> constant_inputs = {});
+    std::span<SampleConstantInputRequest const> constant_inputs = {},
+    RealtimeStorageCostModel const& cost_model = {});
 
 // Reserve canonical NodeStorage for persistent connection state. Transient
 // backing belongs to the generated root stack. Retained feedback state with

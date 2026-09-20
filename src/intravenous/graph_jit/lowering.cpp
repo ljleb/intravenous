@@ -3334,16 +3334,37 @@ std::expected<llvm::Function*, std::string> define_root_operation(
         return arena;
     };
 
+    auto* transient_stack = allocate_arena(
+        plan.root_stack.size_bytes,
+        plan.root_stack.alignment,
+        "realtime.stack");
+    auto stack_pointer = [&](std::size_t offset,
+                             std::size_t size,
+                             llvm::Twine const& name) -> llvm::Value* {
+        if (size == 0) return nullptr;
+        if (transient_stack == nullptr
+            || offset > plan.root_stack.size_bytes
+            || size > plan.root_stack.size_bytes - offset) {
+            return nullptr;
+        }
+        if (offset == 0) return transient_stack;
+        return builder.CreateInBoundsGEP(
+            llvm::Type::getInt8Ty(module.getContext()),
+            transient_stack,
+            {llvm::ConstantInt::get(size_type, offset)},
+            name);
+    };
+
     EmittedRealtimeStorage realtime_storage{
         .persistent_base = storage_base,
-        .sample_transient_base = allocate_arena(
+        .sample_transient_base = stack_pointer(
+            plan.root_stack.sample_offset,
             plan.sample_ports.physical.transient_arena_size,
-            plan.sample_ports.physical.transient_arena_alignment,
-            "sample.transient.arena"),
-        .event_transient_base = allocate_arena(
+            "sample.stack.base"),
+        .event_transient_base = stack_pointer(
+            plan.root_stack.event_offset,
             plan.event_ports.transient_arena_size,
-            plan.event_ports.transient_arena_alignment,
-            "event.transient.arena"),
+            "event.stack.base"),
     };
     realtime_storage.sample_representations.resize(
         plan.sample_ports.physical.representations.size());

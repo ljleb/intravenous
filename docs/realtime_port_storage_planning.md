@@ -313,9 +313,17 @@ The storage-model and physical-residence refactors have landed:
   now enumerates transient, carry, and full-persistent candidates, exposes their
   copied bytes, ring-addressed bytes, stack footprint, persistent footprint, and
   weighted cost, and accepts candidate-specific whole-group copy counts plus a
-  hard stack-budget constraint. Its default weights preserve the landed
-  block-relative/rate-derived crossover until topology-specific costs justify an
-  earlier full-persistent choice;
+  configured stack-budget constraint. `GraphJit` now propagates one configured
+  cost model through connection, sample, event, and feedback planning. After the
+  sample/event stack buffers are independently lifetime-packed, lowering lays
+  those two byte ranges into one generated-root stack allocation and enforces
+  the budget against that final byte count. If it does not fit, lowering raises
+  the stack-byte cost and re-runs storage selection so eligible producer,
+  history/latency, feedback, and disconnected-output buffers move to
+  `NodeStorage`; a final minimum-stack pass either fits or reports that the
+  remaining mandatory conversion/merge buffers exceed the budget. The default
+  weights preserve the landed block-relative/rate-derived crossover until
+  topology-specific costs justify an earlier full-persistent choice;
 - invalid event rate/span capacities fail connection planning immediately;
 - ordinary full persistent rings are fixed at compile time from the producer
   rate and `history + block + latency`; no current event strategy grows a ring
@@ -339,10 +347,10 @@ The storage-model and physical-residence refactors have landed:
   feedback can remain transient. Event capacities are rate-times-live-span rather
   than `source_capacity * (loop_extra_latency + 1)`.
 
-The remaining efficiency work is to feed the chooser complete topology-specific
-operation counts (especially retained event fan-in producer-home alternatives),
-then enforce the stack budget against the globally packed sample/event arenas
-rather than only individual candidate footprints.
+The remaining cost-model work is to derive topology-specific copy/addressing
+counts directly from the explicit operations, including ordinary conversion and
+fanout, and to make stack-pressure promotion use those operation costs more
+selectively when several different storage moves can satisfy the same budget.
 
 The heuristic may consider:
 

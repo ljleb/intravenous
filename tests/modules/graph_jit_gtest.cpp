@@ -6728,6 +6728,141 @@ TEST_F(GraphJitRuntimeFixture, TransientArenaReuse)
 
 }
 
+TEST_F(GraphJitRuntimeFixture, StackBudgetUsesPackedSampleLifetimes)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_reused_sample_arena_module_id);
+    ASSERT_TRUE(graph);
+
+    iv::GraphJit budgeted_jit(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .realtime_storage_cost_model = iv::RealtimeStorageCostModel{
+            .stack_budget_bytes = 64u * sizeof(iv::Sample),
+        },
+    });
+    auto compiled = budgeted_jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = 211,
+        .graph = graph,
+        .definitions = definitions,
+    });
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+
+    // The two producer buffers are each 64 samples, but their lifetimes do not
+    // overlap. The final packed stack therefore fits one 64-sample range and
+    // must not force either producer into NodeStorage.
+    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 0u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 700, 64);
+
+    std::size_t observed = 0;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            != sizeof(SampleConsumerProbeStateMirror)) {
+            continue;
+        }
+        auto const* state = static_cast<SampleConsumerProbeStateMirror const*>(
+            storage.state_ptr(i));
+        ASSERT_NE(state, nullptr);
+        EXPECT_EQ(state->calls, 1u);
+        EXPECT_FLOAT_EQ(state->first, 700.0f);
+        EXPECT_FLOAT_EQ(state->last, 763.0f);
+        ++observed;
+    }
+    EXPECT_EQ(observed, 2u);
+}
+
+TEST_F(GraphJitRuntimeFixture, StackBudgetMovesOverlappingSampleBuffersToNodeStorage)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_composed_sample_revision_module_id);
+    ASSERT_TRUE(graph);
+
+    // Each one-sample-latency producer uses a 128-frame stack ring at the
+    // default policy. The two producer lifetimes overlap until the stereo
+    // consumer executes, so the packed stack is larger than one ring. A
+    // 512-byte limit therefore requires at least one full NodeStorage buffer.
+    iv::GraphJit budgeted_jit(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .realtime_storage_cost_model = iv::RealtimeStorageCostModel{
+            .stack_budget_bytes = 128u * sizeof(iv::Sample),
+        },
+    });
+    auto compiled = budgeted_jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = 212,
+        .graph = graph,
+        .definitions = definitions,
+    });
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+
+    std::size_t full_sample_buffers = 0;
+    for (auto const& region : compiled.compiled_graph->node_layout.regions) {
+        if (region.kind != iv::NodeLayout::Region::Kind::raw) continue;
+        if (region.migration_identity.starts_with("graphjit.sample:")
+            && region.size >= 128u * sizeof(iv::Sample)) {
+            ++full_sample_buffers;
+        }
+    }
+    EXPECT_GE(full_sample_buffers, 1u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    StereoSampleConsumerProbeStateMirror* consumer = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(StereoSampleConsumerProbeStateMirror)) {
+            consumer = static_cast<StereoSampleConsumerProbeStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(consumer, nullptr);
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 4);
+    EXPECT_EQ(consumer->calls, 1u);
+    EXPECT_FLOAT_EQ(consumer->first_left, 0.0f);
+    EXPECT_FLOAT_EQ(consumer->first_right, 0.0f);
+    EXPECT_FLOAT_EQ(consumer->last_left, 102.0f);
+    EXPECT_FLOAT_EQ(consumer->last_right, 102.0f);
+}
+
+TEST_F(GraphJitRuntimeFixture, StackBudgetRejectsMandatorySampleConversionBuffer)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_stereo_conversion_module_id);
+    ASSERT_TRUE(graph);
+
+    iv::GraphJit budgeted_jit(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .realtime_storage_cost_model = iv::RealtimeStorageCostModel{
+            .stack_budget_bytes = 32u * sizeof(iv::Sample),
+        },
+    });
+    auto compiled = budgeted_jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = 213,
+        .graph = graph,
+        .definitions = definitions,
+    });
+    ASSERT_FALSE(compiled.succeeded());
+    ASSERT_FALSE(compiled.diagnostics.empty());
+    EXPECT_NE(
+        compiled.diagnostics.front().message.find(
+            "packed realtime stack requires"),
+        std::string::npos);
+}
+
 TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
 {
     auto fanout_graph = configured_module_graph(

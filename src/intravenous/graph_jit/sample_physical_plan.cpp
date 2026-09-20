@@ -311,7 +311,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     ConnectionAnalysisPlan const& connections,
     std::size_t kernel_block_size,
     std::span<SampleSinkPhysicalRequest const> sinks,
-    std::span<SampleConstantInputRequest const> constant_inputs)
+    std::span<SampleConstantInputRequest const> constant_inputs,
+    RealtimeStorageCostModel const& cost_model)
 {
     if (kernel_block_size == 0 || !is_power_of_2(kernel_block_size)) {
         return std::unexpected(
@@ -636,7 +637,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                         .retained_frames = home_feedback_retained_frames,
                         .channel_count = channel_count(*group.canonical_source_layout),
                         .value_size_bytes = sizeof(Sample),
-                    });
+                    },
+                    cost_model);
                 auto capacity = working_ring_capacity(
                     kernel_block_size, home_feedback_retained_frames);
                 if (!capacity) {
@@ -1019,7 +1021,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     .retained_frames = retained_frames,
                     .channel_count = channel_count(*group.canonical_source_layout),
                     .value_size_bytes = sizeof(Sample),
-                });
+                },
+                cost_model);
             auto const writes_directly_to_feedback = has_feedback_home
                 && std::bit_cast<std::uint32_t>(
                     static_cast<float>(*connection.detach_initial_value))
@@ -1514,7 +1517,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     .retained_frames = feedback_retained_frames,
                     .channel_count = channel_count(connection.target_layout),
                     .value_size_bytes = sizeof(Sample),
-                });
+                },
+                cost_model);
             if (feedback_storage.kind
                 == RealtimeBufferStorageKind::full_node_storage) {
                 target_representation = append_representation(
@@ -1859,7 +1863,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 .retained_frames = retained_frames,
                 .channel_count = channel_count(sink.channel_layout),
                 .value_size_bytes = sizeof(Sample),
-            });
+            },
+            cost_model);
         // The writable stack buffer exists only while this callback runs.
         // When history/latency is kept with compact carry, the retained tail
         // lives in NodeStorage between root calls and is restored/committed by

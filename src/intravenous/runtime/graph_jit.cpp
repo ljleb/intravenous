@@ -915,6 +915,7 @@ MaterializedProjectCode materialize_project_module(
 
 class GraphJit::Impl {
     GraphJitKernelSpecialization specialization_{};
+    RealtimeStorageCostModel realtime_storage_cost_model_{};
     std::unique_ptr<llvm::TargetMachine> optimization_target_{};
     std::shared_ptr<SharedProjectJit> shared_jit_{};
     std::mutex compile_mutex_{};
@@ -929,6 +930,8 @@ public:
             throw std::invalid_argument(
                 "GraphJit block size must be a valid Intravenous block size");
         }
+
+        realtime_storage_cost_model_ = config.realtime_storage_cost_model;
 
         initialize_graph_jit_target();
         auto target = take_llvm_expected(
@@ -1098,6 +1101,7 @@ public:
         graph_jit::LoweringInput lowering_input{
             .graph = *request.graph,
             .specialization = specialization_,
+            .realtime_storage_cost_model = realtime_storage_cost_model_,
             .packages = package_modules,
             .node_implementations = implementations,
             .config_relocations = relocations,

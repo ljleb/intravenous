@@ -68,6 +68,7 @@ struct ConfigRelocation {
 struct LoweringInput {
     ConfiguredGraph const& graph;
     GraphJitKernelSpecialization const& specialization;
+    RealtimeStorageCostModel const& realtime_storage_cost_model;
     std::span<PackageModule> packages{};
     // One entry for each registered concrete primitive. Synthetic/host graph
     // nodes remain represented by ConfiguredGraph and are lowered structurally.

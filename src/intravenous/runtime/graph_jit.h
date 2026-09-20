@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/configured_graph.hpp>
+#include <intravenous/graph/realtime_port_planning.h>
 #include <intravenous/node/layout.h>
 #include <intravenous/runtime/node_definition_types.h>
 
@@ -15,6 +16,10 @@ namespace iv {
 struct GraphJitConfig {
     std::size_t sample_rate = 48000;
     std::size_t block_size = 256;
+    // One compiler-wide policy for realtime sample/event buffer placement.
+    // stack_budget_bytes is enforced against the packed generated-root stack,
+    // not independently against every buffer choice.
+    RealtimeStorageCostModel realtime_storage_cost_model{};
 };
 
 // Immutable specialization facts for one project kernel. CPU/features are

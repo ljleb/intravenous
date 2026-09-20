@@ -363,6 +363,14 @@ struct ExecutionPlan {
     std::vector<ExecutionRegionPlan> regions{};
 };
 
+
+struct RootStackBufferPlan {
+    std::size_t size_bytes = 0;
+    std::size_t alignment = 1;
+    std::size_t sample_offset = 0;
+    std::size_t event_offset = 0;
+};
+
 struct LoweringPlan {
     // Pure graph/topology analysis remains part of the stable lowering plan;
     // sample physical realization consumes it without introducing a parallel
@@ -373,6 +381,7 @@ struct LoweringPlan {
     ConfigurationPlan configurations{};
     SamplePortBindingPlan sample_ports{};
     EventPortBindingPlan event_ports{};
+    RootStackBufferPlan root_stack{};
     ExecutionPlan execution{};
 };
 

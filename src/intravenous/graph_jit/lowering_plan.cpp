@@ -815,7 +815,8 @@ std::expected<ConfigurationPlan, std::string> plan_node_configurations(
 std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
-    ConnectionAnalysisPlan const& connections)
+    ConnectionAnalysisPlan const& connections,
+    RealtimeStorageCostModel const& cost_model)
 {
     SamplePortBindingPlan plan;
     if (analysis.empty) return plan;
@@ -1242,7 +1243,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         connections,
         input.specialization.block_size,
         sink_requests,
-        constant_input_requests);
+        constant_input_requests,
+        cost_model);
     if (!physical) return std::unexpected(std::move(physical.error()));
     plan.physical = std::move(*physical);
 
@@ -1436,7 +1438,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 std::expected<EventPortBindingPlan, std::string> plan_event_ports(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
-    ConnectionAnalysisPlan const& connections)
+    ConnectionAnalysisPlan const& connections,
+    RealtimeStorageCostModel const& cost_model)
 {
     EventPortBindingPlan plan;
     if (analysis.empty) return plan;
@@ -1852,7 +1855,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                         total_invocation_local_capacity,
                 };
                 storage_kind = choose_event_connection_storage_plan(
-                    requirements).kind;
+                    requirements, cost_model).kind;
                 compact_carry = storage_kind
                     == RealtimeBufferStorageKind::stack_with_persistent_carry;
                 persistent_ring = storage_kind
@@ -2667,7 +2670,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 .current_event_capacity = *current_event_count,
                 .retained_event_capacity = *retained_event_count,
                 .value_size_bytes = sizeof(TimedEvent),
-            });
+            },
+            cost_model);
 
         // Multiple detached branches from one source with the same authored
         // latency are the same delayed event stream. Share one planned delayed
@@ -3624,68 +3628,248 @@ std::expected<ExecutionPlan, std::string> plan_execution(
 
     return plan;
 }
+
+std::expected<RootStackBufferPlan, std::string> plan_root_stack_buffers(
+    SamplePortBindingPlan const& sample_ports,
+    EventPortBindingPlan const& event_ports)
+{
+    auto align_up = [](std::size_t value, std::size_t alignment)
+        -> std::optional<std::size_t> {
+        if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
+            return std::nullopt;
+        }
+        auto const mask = alignment - 1;
+        if (value > std::numeric_limits<std::size_t>::max() - mask) {
+            return std::nullopt;
+        }
+        return (value + mask) & ~mask;
+    };
+    auto checked_total = [](std::size_t offset, std::size_t size)
+        -> std::optional<std::size_t> {
+        if (size > std::numeric_limits<std::size_t>::max() - offset) {
+            return std::nullopt;
+        }
+        return offset + size;
+    };
+
+    auto const sample_size = sample_ports.physical.transient_arena_size;
+    auto const sample_alignment = std::max(
+        std::size_t{1}, sample_ports.physical.transient_arena_alignment);
+    auto const event_size = event_ports.transient_arena_size;
+    auto const event_alignment = std::max(
+        std::size_t{1}, event_ports.transient_arena_alignment);
+
+    auto sample_first_event_offset = align_up(sample_size, event_alignment);
+    auto event_first_sample_offset = align_up(event_size, sample_alignment);
+    if (!sample_first_event_offset || !event_first_sample_offset) {
+        return std::unexpected(
+            "GraphJit root stack buffer alignment overflows size_t");
+    }
+    auto sample_first_size = checked_total(
+        *sample_first_event_offset, event_size);
+    auto event_first_size = checked_total(
+        *event_first_sample_offset, sample_size);
+    if (!sample_first_size || !event_first_size) {
+        return std::unexpected(
+            "GraphJit root stack buffer size overflows size_t");
+    }
+
+    RootStackBufferPlan result{
+        .size_bytes = *sample_first_size,
+        .alignment = std::max(sample_alignment, event_alignment),
+        .sample_offset = 0,
+        .event_offset = *sample_first_event_offset,
+    };
+    if (*event_first_size < *sample_first_size) {
+        result.size_bytes = *event_first_size;
+        result.sample_offset = *event_first_sample_offset;
+        result.event_offset = 0;
+    }
+    return result;
+}
 } // namespace
 
 std::expected<LoweringPlan, std::string> build_lowering_plan(
     LoweringInput const& input)
 {
-    // Build the pure connection/schedule plan before realization. Topology,
-    // physical sample planning, declaration, and LLVM emission therefore share
-    // one immutable analysis rather than rediscovering graph facts downstream.
-    auto connections = build_connection_analysis_plan(
-        input.graph, input.specialization.block_size);
-    if (!connections) {
-        return std::unexpected(std::move(connections.error()));
-    }
-    if (connections->boundary_bundle < input.graph.node_bundles.size()) {
-        auto const& boundary = input.graph.node_bundles.bundle(
-            connections->boundary_bundle);
-        if (boundary.sample_input_count() != 0
-            || boundary.sample_output_count() != 0
-            || boundary.event_input_count() != 0
-            || boundary.event_output_count() != 0) {
-            return std::unexpected(
-                "GraphJit root graph must not declare boundary ports; system I/O and inter-module communication belong in concrete node types");
-        }
-    }
     auto analysis = analyze_graph(input);
     if (!analysis) return std::unexpected(std::move(analysis.error()));
 
-    auto sample_ports = plan_sample_ports(input, *analysis, *connections);
-    if (!sample_ports) return std::unexpected(std::move(sample_ports.error()));
+    struct RealtimePortPlans {
+        ConnectionAnalysisPlan connections{};
+        SamplePortBindingPlan sample_ports{};
+        EventPortBindingPlan event_ports{};
+        RootStackBufferPlan root_stack{};
+    };
 
-    auto event_ports = plan_event_ports(input, *analysis, *connections);
-    if (!event_ports) return std::unexpected(std::move(event_ports.error()));
+    auto plan_realtime_ports = [&](RealtimeStorageCostModel const& cost_model)
+        -> std::expected<RealtimePortPlans, std::string> {
+        auto connections = build_connection_analysis_plan(
+            input.graph, input.specialization.block_size, cost_model);
+        if (!connections) {
+            return std::unexpected(std::move(connections.error()));
+        }
+        if (connections->boundary_bundle < input.graph.node_bundles.size()) {
+            auto const& boundary = input.graph.node_bundles.bundle(
+                connections->boundary_bundle);
+            if (boundary.sample_input_count() != 0
+                || boundary.sample_output_count() != 0
+                || boundary.event_input_count() != 0
+                || boundary.event_output_count() != 0) {
+                return std::unexpected(
+                    "GraphJit root graph must not declare boundary ports; system I/O and inter-module communication belong in concrete node types");
+            }
+        }
+
+        auto sample_ports = plan_sample_ports(
+            input, *analysis, *connections, cost_model);
+        if (!sample_ports) {
+            return std::unexpected(std::move(sample_ports.error()));
+        }
+        auto event_ports = plan_event_ports(
+            input, *analysis, *connections, cost_model);
+        if (!event_ports) {
+            return std::unexpected(std::move(event_ports.error()));
+        }
+        auto root_stack = plan_root_stack_buffers(*sample_ports, *event_ports);
+        if (!root_stack) {
+            return std::unexpected(std::move(root_stack.error()));
+        }
+        return RealtimePortPlans{
+            .connections = std::move(*connections),
+            .sample_ports = std::move(*sample_ports),
+            .event_ports = std::move(*event_ports),
+            .root_stack = *root_stack,
+        };
+    };
+
+    auto const& configured_cost_model = input.realtime_storage_cost_model;
+    auto realtime_ports = plan_realtime_ports(configured_cost_model);
+    if (!realtime_ports) {
+        return std::unexpected(std::move(realtime_ports.error()));
+    }
+
+    auto const stack_budget = configured_cost_model.stack_budget_bytes;
+    if (realtime_ports->root_stack.size_bytes > stack_budget) {
+        // Local storage choices are costed before stack buffers are packed. If
+        // their packed high-water mark exceeds the project limit, increase the
+        // cost of stack bytes and re-plan. This moves ordinary producer,
+        // history/latency, feedback, and disconnected-output buffers to
+        // NodeStorage through their existing full_node_storage alternative;
+        // conversion/merge buffers that have no persistent implementation stay
+        // on the stack.
+        auto pressure_model = configured_cost_model;
+        auto pressure = pressure_model.stack_footprint_byte_weight;
+        auto last_insufficient_pressure = pressure;
+        std::optional<std::size_t> first_fitting_pressure;
+        std::optional<RealtimePortPlans> first_fitting_plan;
+        for (unsigned attempt = 0; attempt < 16; ++attempt) {
+            if (pressure == 0) {
+                pressure = 1;
+            } else if (pressure
+                       <= std::numeric_limits<std::size_t>::max() / 4) {
+                pressure *= 4;
+            } else {
+                break;
+            }
+            pressure_model.stack_footprint_byte_weight = pressure;
+            auto candidate = plan_realtime_ports(pressure_model);
+            if (!candidate) {
+                return std::unexpected(std::move(candidate.error()));
+            }
+            if (candidate->root_stack.size_bytes <= stack_budget) {
+                first_fitting_pressure = pressure;
+                first_fitting_plan = std::move(*candidate);
+                break;
+            }
+            last_insufficient_pressure = pressure;
+            realtime_ports = std::move(candidate);
+        }
+
+        // Find the smallest integer stack-byte weight that satisfies the hard
+        // limit. This avoids keeping buffers in NodeStorage merely because the
+        // exponential search overshot a storage-choice crossover.
+        if (first_fitting_pressure && first_fitting_plan) {
+            auto low = last_insufficient_pressure + 1;
+            auto high = *first_fitting_pressure;
+            auto best = std::move(*first_fitting_plan);
+            while (low < high) {
+                auto const midpoint = low + (high - low) / 2;
+                pressure_model.stack_footprint_byte_weight = midpoint;
+                auto candidate = plan_realtime_ports(pressure_model);
+                if (!candidate) {
+                    return std::unexpected(std::move(candidate.error()));
+                }
+                if (candidate->root_stack.size_bytes <= stack_budget) {
+                    high = midpoint;
+                    best = std::move(*candidate);
+                } else {
+                    low = midpoint + 1;
+                }
+            }
+            realtime_ports = std::move(best);
+        }
+
+        if (realtime_ports->root_stack.size_bytes > stack_budget) {
+            // The hard limit outranks the configured heuristic weights. This
+            // final pass asks every chooser for its minimum-stack legal
+            // realization. Any bytes left after this pass are mandatory
+            // invocation-local conversion/merge/output buffers.
+            auto minimum_stack_model = configured_cost_model;
+            minimum_stack_model.copied_byte_weight = 0;
+            minimum_stack_model.ring_addressed_byte_weight = 0;
+            minimum_stack_model.stack_footprint_byte_weight = 1;
+            minimum_stack_model.persistent_footprint_byte_weight = 0;
+            auto minimum_stack = plan_realtime_ports(minimum_stack_model);
+            if (!minimum_stack) {
+                return std::unexpected(std::move(minimum_stack.error()));
+            }
+            realtime_ports = std::move(minimum_stack);
+        }
+
+        if (realtime_ports->root_stack.size_bytes > stack_budget) {
+            return std::unexpected(
+                "GraphJit packed realtime stack requires "
+                + std::to_string(realtime_ports->root_stack.size_bytes)
+                + " bytes, exceeding the configured "
+                + std::to_string(stack_budget)
+                + "-byte stack budget after all eligible buffers were moved to NodeStorage");
+        }
+    }
 
     auto declarations = plan_declarations(
-        input, *analysis, *sample_ports, *event_ports);
+        input,
+        *analysis,
+        realtime_ports->sample_ports,
+        realtime_ports->event_ports);
     if (!declarations) return std::unexpected(std::move(declarations.error()));
 
     auto imports = plan_package_imports(input, *analysis);
     if (!imports) return std::unexpected(std::move(imports.error()));
 
     auto configurations = plan_node_configurations(
-        input, *analysis, *connections, *imports);
+        input, *analysis, realtime_ports->connections, *imports);
     if (!configurations) {
         return std::unexpected(std::move(configurations.error()));
     }
 
     auto execution = plan_execution(
         *analysis,
-        *connections,
+        realtime_ports->connections,
         *declarations,
         *imports,
-        *sample_ports,
-        *event_ports);
+        realtime_ports->sample_ports,
+        realtime_ports->event_ports);
     if (!execution) return std::unexpected(std::move(execution.error()));
 
     return LoweringPlan{
-        .connections = std::move(*connections),
+        .connections = std::move(realtime_ports->connections),
         .declarations = std::move(*declarations),
         .imports = std::move(*imports),
         .configurations = std::move(*configurations),
-        .sample_ports = std::move(*sample_ports),
-        .event_ports = std::move(*event_ports),
+        .sample_ports = std::move(realtime_ports->sample_ports),
+        .event_ports = std::move(realtime_ports->event_ports),
+        .root_stack = realtime_ports->root_stack,
         .execution = std::move(*execution),
     };
 }

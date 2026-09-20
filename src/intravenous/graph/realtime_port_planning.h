@@ -21,8 +21,10 @@ enum class RealtimeBufferStorageKind {
 // equality. Candidate-specific copy counts can move the crossover earlier;
 // correctness never depends on the weights.
 struct RealtimeStorageCostModel {
-    // A hard per-candidate bound. Candidates whose invocation-local footprint
-    // exceeds it are illegal rather than silently spilling to dynamic storage.
+    // Hard limit for the generated root's packed realtime stack buffers. A
+    // single candidate larger than this limit is necessarily illegal; GraphJit
+    // also checks the final packed sample+event stack and re-plans storage when
+    // several individually-legal buffers exceed the limit together.
     std::size_t stack_budget_bytes = std::numeric_limits<std::size_t>::max();
 
     std::size_t copied_byte_weight = 1;
