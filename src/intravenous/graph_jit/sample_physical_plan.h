@@ -8,6 +8,7 @@
 #include <expected>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,24 @@ struct SampleRepresentationPlan {
 
     std::size_t transient_allocation = no_sample_transient_allocation;
     std::size_t persistent_allocation = no_sample_persistent_allocation;
+
+    // A disconnected realtime input is one immutable, compiler-owned constant
+    // timeline. It needs neither stack storage nor retained NodeStorage: every
+    // addressable frame has the same declared default value. The generated
+    // module materializes this bounded representation as read-only data.
+    std::optional<Sample> constant_value{};
+};
+
+// A disconnected output still exposes its declared history/latency window to
+// its producer callback. It therefore needs an ordinary writable physical
+// representation even though no graph edge consumes it. These requests enter
+// the same residence/capacity planner as connected producer representations.
+struct SampleSinkPhysicalRequest {
+    ChannelLayout channel_layout{};
+    std::size_t history = 0;
+    std::size_t latency = 0;
+    std::size_t execution_position = 0;
+    std::string migration_identity{};
 };
 
 struct SampleProducerPhysicalPlan {
@@ -236,6 +255,10 @@ struct SamplePhysicalPlan {
     std::vector<std::optional<std::vector<SampleChannelBindingPlan>>>
         connection_channel_bindings{};
 
+    // Indexed by the SampleSinkPhysicalRequest sequence supplied to
+    // build_sample_physical_plan().
+    std::vector<std::size_t> sink_representations{};
+
     // Explicit conversion/materialization operations. These are scheduled after
     // the source producer and before every consumer bound to the target
     // representation.
@@ -276,7 +299,8 @@ struct SamplePhysicalPlan {
 // representations while conversion remains an explicit operation.
 std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     ConnectionAnalysisPlan const& connections,
-    std::size_t kernel_block_size);
+    std::size_t kernel_block_size,
+    std::span<SampleSinkPhysicalRequest const> sinks = {});
 
 // Reserve canonical NodeStorage for persistent connection state. Transient
 // backing belongs to the generated root stack. Retained feedback state with

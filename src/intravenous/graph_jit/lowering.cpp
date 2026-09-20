@@ -2382,12 +2382,10 @@ std::expected<void, std::string> emit_event_feedback_append(
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* pointer_type = llvm::PointerType::getUnqual(context);
-    auto* source_begin = feedback.source_resets_each_invocation
-        ? llvm::ConstantInt::get(size_type, 0)
-        : builder.CreateLoad(
-            size_type,
-            feedback_cursor_pointer,
-            "event.feedback.source.cursor");
+    auto* source_begin = builder.CreateLoad(
+        size_type,
+        feedback_cursor_pointer,
+        "event.feedback.source.cursor");
     llvm::Value* source_end = nullptr;
     auto* source_base = realtime_storage.event_representations[
         feedback.source_representation];
@@ -2438,9 +2436,7 @@ std::expected<void, std::string> emit_event_feedback_append(
     // Most event slices produce no events. Keep the audio-thread fast path to a
     // source-index load/compare and avoid the out-of-line feedback helper
     // entirely unless this producer appended a new suffix.
-    if (!feedback.source_resets_each_invocation) {
-        builder.CreateStore(source_end, feedback_cursor_pointer);
-    }
+    builder.CreateStore(source_end, feedback_cursor_pointer);
     auto* has_new_events = builder.CreateICmpULT(
         source_begin, source_end, "event.feedback.has_new_events");
     auto* function = builder.GetInsertBlock()->getParent();

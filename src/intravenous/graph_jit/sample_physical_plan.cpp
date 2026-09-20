@@ -309,7 +309,8 @@ std::string composition_feedback_alignment_identity(
 
 std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     ConnectionAnalysisPlan const& connections,
-    std::size_t kernel_block_size)
+    std::size_t kernel_block_size,
+    std::span<SampleSinkPhysicalRequest const> sinks)
 {
     if (kernel_block_size == 0 || !is_power_of_2(kernel_block_size)) {
         return std::unexpected(
@@ -1806,6 +1807,117 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             });
         }
         plan.connection_representations[connection_index] = target_representation;
+    }
+
+    plan.sink_representations.reserve(sinks.size());
+    for (auto const& sink : sinks) {
+        if (sink.execution_position >= connections.nodes.size()) {
+            return std::unexpected(
+                "GraphJit disconnected sample output has no execution position");
+        }
+        if (sink.migration_identity.empty()) {
+            return std::unexpected(
+                "GraphJit disconnected sample output requires a stable storage identity");
+        }
+        if (sink.history
+            > std::numeric_limits<std::size_t>::max() - sink.latency) {
+            return std::unexpected(
+                "GraphJit disconnected sample output retained extent overflows size_t");
+        }
+        auto const retained_frames = sink.history + sink.latency;
+        auto capacity = working_ring_capacity(
+            kernel_block_size, retained_frames);
+        if (!capacity) return std::unexpected(std::move(capacity.error()));
+
+        auto const storage = choose_sample_connection_storage_plan(
+            SampleConnectionStorageRequirements{
+                .current_block_frames = kernel_block_size,
+                .retained_frames = retained_frames,
+                .channel_count = channel_count(sink.channel_layout),
+                .value_size_bytes = sizeof(Sample),
+            });
+        auto const live = ConnectionLiveIntervalPlan{
+            .begin = sink.execution_position,
+            .end = sink.execution_position,
+            .crosses_kernel_invocations = retained_frames != 0,
+        };
+
+        auto persistent_identity = [&](SamplePersistentStorageKind kind) {
+            std::ostringstream out;
+            out << sink.migration_identity
+                << ":kind=" << static_cast<unsigned>(kind)
+                << ":retained=" << retained_frames
+                << ":capacity=" << *capacity;
+            return std::move(out).str();
+        };
+
+        std::size_t representation = no_sample_representation;
+        if (storage.kind == RealtimeBufferStorageKind::full_node_storage) {
+            representation = append_representation(SampleRepresentationPlan{
+                .producer_group_index = no_sample_producer_group,
+                .canonical_producer_representation = false,
+                .storage = storage.kind,
+                .channel_layout = sink.channel_layout,
+                .frame_capacity = *capacity,
+                .live_interval = live,
+            });
+            auto persistent = append_synthetic_persistent_allocation(
+                representation,
+                SamplePersistentStorageKind::ring,
+                sink.channel_layout,
+                retained_frames,
+                *capacity,
+                persistent_identity(SamplePersistentStorageKind::ring),
+                std::nullopt);
+            if (!persistent) {
+                return std::unexpected(std::move(persistent.error()));
+            }
+            plan.representations[representation].persistent_allocation =
+                *persistent;
+        } else {
+            auto transient = append_transient_representation(
+                SampleRepresentationPlan{
+                    .producer_group_index = no_sample_producer_group,
+                    .canonical_producer_representation = false,
+                    .storage = storage.kind,
+                    .channel_layout = sink.channel_layout,
+                    .frame_capacity = *capacity,
+                    .live_interval = live,
+                });
+            if (!transient) {
+                return std::unexpected(std::move(transient.error()));
+            }
+            representation = *transient;
+            if (storage.kind
+                == RealtimeBufferStorageKind::stack_with_persistent_carry) {
+                auto persistent = append_synthetic_persistent_allocation(
+                    representation,
+                    SamplePersistentStorageKind::compact_carry,
+                    sink.channel_layout,
+                    retained_frames,
+                    *capacity,
+                    persistent_identity(
+                        SamplePersistentStorageKind::compact_carry),
+                    std::nullopt);
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.representations[representation].persistent_allocation =
+                    *persistent;
+                plan.carry_operations.push_back(SampleCarryOperationPlan{
+                    .representation_index = representation,
+                    .persistent_allocation = *persistent,
+                    .restore_execution_position = sink.execution_position,
+                    .commit_execution_position = sink.execution_position,
+                    .retained_frames = retained_frames,
+                });
+            } else if (storage.kind
+                       != RealtimeBufferStorageKind::transient_stack) {
+                return std::unexpected(
+                    "GraphJit disconnected sample output selected an invalid storage kind");
+            }
+        }
+        plan.sink_representations.push_back(representation);
     }
 
     auto arena = plan_transient_arena(transient_requests);

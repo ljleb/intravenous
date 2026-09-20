@@ -2113,7 +2113,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         if (!aggregate_capacity) {
             return std::unexpected(std::move(aggregate_capacity.error()));
         }
-        std::size_t working_capacity = requires_cyclic_local_merge
+        // A producer inside an SCC is invoked once per slice, but its
+        // canonical sequence is the aggregate for the complete root call.
+        // Size that sequence for every event the SCC can author during the
+        // root call; only producer-local buffers use the single-slice bound.
+        std::size_t working_capacity = aggregate_sequence
             ? *aggregate_capacity
             : *base_capacity;
         std::size_t carry_capacity = 0;
@@ -2430,60 +2434,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             return std::unexpected(
                 "GraphJit event detach source representation is invalid");
         }
-        auto source_representation = canonical_source_representation;
-        bool source_resets_each_invocation = false;
-        if (connection.sources.size() == 1) {
-            auto const source_primitive = primitive_index_for_bundle(
-                connection.sources.front().bundle);
-            if (!source_primitive
-                || connection.sources.front().port
-                    >= plan.primitives[*source_primitive].outputs.size()) {
-                return std::unexpected(
-                    "GraphJit event feedback source binding is invalid");
-            }
-            auto const& source_binding = plan.primitives[*source_primitive]
-                .outputs[connection.sources.front().port];
-            if (source_binding.representation
-                && *source_binding.representation
-                    != canonical_source_representation) {
-                source_representation = *source_binding.representation;
-                source_resets_each_invocation = !source_binding.append_existing;
-            }
-        } else if (connection.source_history != 0
-            || connection.source_latency != 0) {
-            auto const group_merge = std::ranges::find_if(
-                plan.merges,
-                [&](EventMergePlan const& merge) {
-                    return merge.target_representation
-                            == canonical_source_representation
-                        && merge.scope
-                            == primitive_scope(
-                                producer_position,
-                                EventOperationPhase::after);
-                });
-            if (group_merge == plan.merges.end()
-                || group_merge->source_representations.empty()) {
-                return std::unexpected(
-                    "GraphJit temporal event feedback fan-in has no slice merge");
-            }
-            auto const slice_sources = group_merge->source_representations;
-            auto slice = append_representation(
-                source_group_index,
-                connection.source_type,
-                plan.representations[canonical_source_representation]
-                    .event_capacity);
-            if (!slice) return std::unexpected(std::move(slice.error()));
-            source_representation = *slice;
-            source_resets_each_invocation = true;
-            plan.merges.push_back(EventMergePlan{
-                .source_representations = slice_sources,
-                .target_representation = source_representation,
-                .scope = primitive_scope(
-                    producer_position, EventOperationPhase::after),
-                .target_is_semantic_source = false,
-                .preserve_existing_target = false,
-            });
-        }
+        // Detached feedback must observe the producer group's canonical
+        // root-call stream, not a producer-local per-slice buffer. Any local
+        // source-history/latency buffer is merged into this stream immediately
+        // before feedback_append runs. The feedback cursor then selects only
+        // the newly appended suffix, so retained events already present in a
+        // carry buffer or persistent ring are not copied into feedback again.
+        auto const source_representation = canonical_source_representation;
         auto const& source_storage = plan.representations[source_representation];
         if (source_storage.type != connection.source_type) {
             return std::unexpected(
@@ -2537,13 +2494,17 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             input.specialization.block_size
             + slice_count
                 * (connection.source_history + connection.source_latency);
+        auto const current_event_count = event_count_for_sample_span(
+            source_group_it->max_events_per_index,
+            input.specialization.block_size);
         auto const retained_event_count = event_count_for_sample_span(
             source_group_it->max_events_per_index,
             retained_window_samples);
         auto const authored_event_count = event_count_for_sample_span(
             source_group_it->max_events_per_index,
             authored_window_samples);
-        if (!retained_event_count || !authored_event_count) {
+        if (!current_event_count || !retained_event_count
+            || !authored_event_count) {
             return std::unexpected(
                 "GraphJit event feedback rate/span exceeds representable static capacity");
         }
@@ -2551,7 +2512,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             EventConnectionStorageRequirements{
                 .current_window_samples = input.specialization.block_size,
                 .retained_window_samples = retained_window_samples,
-                .current_event_capacity = *authored_event_count,
+                .current_event_capacity = *current_event_count,
                 .retained_event_capacity = *retained_event_count,
                 .value_size_bytes = sizeof(TimedEvent),
             });
@@ -2686,8 +2647,6 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             plan.feedback_operations.push_back(EventFeedbackPlan{
                 .source_representation = source_representation,
                 .target_representation = target_representation,
-                .source_resets_each_invocation =
-                    source_resets_each_invocation,
                 .append_scope = primitive_scope(
                     producer_position, EventOperationPhase::after),
                 .reset_scope = region_scope(
@@ -3063,9 +3022,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
     }
 
     // Feedback appends read the source and write the delayed buffer after the
-    // producer. Consumers have already been accounted for through input
-    // bindings; feedback that copies a retained suffix through `NodeStorage` is
-    // additionally widened by its restore/commit steps above.
+    // producer. The target is then consumed on a later SCC slice, so a stack
+    // buffer written inside an SCC crosses the loop back-edge. A linear
+    // first/last schedule interval cannot express that wrapped lifetime; keep
+    // the target allocated for the complete SCC invocation. Retained feedback
+    // buffers are already widened by their restore/commit operations above.
     for (auto const& feedback : plan.feedback_operations) {
         auto const operation_position = scope_position(feedback.append_scope);
         if (!operation_position) {
@@ -3077,9 +3038,32 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             !touched) {
             return std::unexpected(std::move(touched.error()));
         }
-        if (auto touched = touch_at(
+
+        auto target_begin = *operation_position;
+        auto target_end = *operation_position;
+        if (feedback.append_scope.kind == EventOperationScopeKind::region) {
+            if (feedback.append_scope.index >= region_bounds.size()) {
+                return std::unexpected(
+                    "GraphJit event feedback has an invalid region scope");
+            }
+            auto const& bounds = region_bounds[feedback.append_scope.index];
+            if (bounds.cyclic) {
+                target_begin = bounds.begin;
+                target_end = bounds.end;
+            }
+        } else if (*operation_position < execution_position_region.size()
+                   && execution_position_region[*operation_position]) {
+            auto const& bounds = region_bounds[
+                *execution_position_region[*operation_position]];
+            if (bounds.cyclic) {
+                target_begin = bounds.begin;
+                target_end = bounds.end;
+            }
+        }
+        if (auto touched = touch_buffer(
                 feedback.target_representation,
-                *operation_position);
+                target_begin,
+                target_end);
             !touched) {
             return std::unexpected(std::move(touched.error()));
         }
@@ -3153,6 +3137,8 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     ExecutionPlan plan{};
     plan.primitive_steps.reserve(analysis.primitives.size());
     plan.regions.reserve(connections.schedule.regions.size());
+    std::vector<std::optional<std::size_t>> schedule_region_execution_region(
+        connections.schedule.regions.size());
 
     // Keep one flattened primitive-step namespace because all physical plans
     // refer to producer execution positions in that namespace. Execution regions
@@ -3167,6 +3153,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 "GraphJit connection schedule contains an invalid region index");
         }
         auto const& source_region = connections.schedule.regions[region_index];
+        auto const execution_region_index = plan.regions.size();
         ExecutionRegionPlan region{
             .cyclic = source_region.cyclic,
             .maximum_block_size = source_region.maximum_block_size,
@@ -3205,6 +3192,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 "GraphJit cyclic execution region contains no executable primitive");
         }
         if (!region.primitive_steps.empty()) {
+            schedule_region_execution_region[region_index] = execution_region_index;
             plan.regions.push_back(std::move(region));
         }
     }
@@ -3322,13 +3310,16 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             operations.push_back(operation);
             return {};
         }
-        if (scope.index >= plan.regions.size()) {
+        if (scope.index >= schedule_region_execution_region.size()
+            || !schedule_region_execution_region[scope.index]) {
             return std::unexpected(
-                "GraphJit event operation references an invalid region scope");
+                "GraphJit event operation references an invalid schedule region scope");
         }
+        auto const execution_region =
+            *schedule_region_execution_region[scope.index];
         auto& operations = before
-            ? plan.regions[scope.index].event_operations_before
-            : plan.regions[scope.index].event_operations_after;
+            ? plan.regions[execution_region].event_operations_before
+            : plan.regions[execution_region].event_operations_after;
         operations.push_back(operation);
         return {};
     };
@@ -3436,10 +3427,17 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                         && operation.index == representation;
                 });
             if (!already_scheduled) {
-                auto reset = append_event_operation(
-                    reset_scope,
-                    {EventOperationKind::sequence_reset, representation});
-                if (!reset) return std::unexpected(std::move(reset.error()));
+                // reset_scope is constructed from step_regions above, so a
+                // region index here is already an ExecutionPlan::regions index
+                // rather than a ConnectionAnalysisPlan schedule-region index.
+                if (reset_scope.kind == EventOperationScopeKind::region) {
+                    plan.regions[reset_scope.index].event_operations_before.push_back(
+                        {EventOperationKind::sequence_reset, representation});
+                } else {
+                    plan.primitive_steps[reset_scope.index]
+                        .event_operations_before.push_back(
+                            {EventOperationKind::sequence_reset, representation});
+                }
             }
         }
     }

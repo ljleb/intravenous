@@ -279,7 +279,6 @@ struct EventMergePlan {
 struct EventFeedbackPlan {
     std::size_t source_representation = 0;
     std::size_t target_representation = 0;
-    bool source_resets_each_invocation = false;
     EventOperationScope append_scope{};
     EventOperationScope reset_scope{};
     RealtimeBufferStorageKind storage =
