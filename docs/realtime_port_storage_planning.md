@@ -240,18 +240,20 @@ categories:
 - identity/direct fanout aliases an existing representation and performs no copy;
 - fan-in performs an explicitly planned stable merge and chooses a producer home
   that minimizes moved events;
-- conversion materializes one derived representation per distinct conversion and
-  visible window, shared by equivalent fanout consumers;
+- sample conversion aliases existing channels when conversion is only layout,
+  permutation, or duplication; arithmetic conversion materializes only the
+  computed result channels, with equivalent fanout results shared where planned;
 - block/SCC adaptation determines when that materialization runs;
 - feedback is a delayed derived stream whose retained storage uses the same carry
   versus full-persistent alternatives; and
 - external I/O belongs to concrete nodes, not a root connection representation.
 
 For samples, the buffer unit is a channel. Identity channel routing, projection,
-and permutation should bind the existing channel storage directly. Only channels
-that must actually be gathered, mixed, or payload-converted need a derived
-materialization. The same three storage plans then apply per canonical or derived
-channel group.
+permutation, layout-only conversion, and channel duplication bind existing channel
+storage directly. Arithmetic conversion reads its semantic input channels from
+their resolved representations without a contiguous input gather and materializes
+only result channels that cannot be expressed as aliases. The same three storage
+plans then apply per canonical or derived channel group.
 
 Candidate selection should use the actual worst-case copied event/sample counts
 for the complete fan-in/fanout group. A fixed event-count threshold such as 64 is

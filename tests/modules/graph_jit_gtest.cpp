@@ -1147,7 +1147,7 @@ TEST(GraphJitSamplePhysicalPlan, LeavesCompiledAccessBranchesUnresolved)
         physical->producer_groups[0]->canonical_representation);
 }
 
-TEST(GraphJitSamplePhysicalPlan, BuildsAndDeduplicatesDerivedConvertedFanout)
+TEST(GraphJitSamplePhysicalPlan, AliasesLayoutAndMonoToStereoConvertedFanout)
 {
     using namespace iv::graph_jit::detail;
 
@@ -1201,61 +1201,41 @@ TEST(GraphJitSamplePhysicalPlan, BuildsAndDeduplicatesDerivedConvertedFanout)
     auto physical = build_sample_physical_plan(connections, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
-    ASSERT_EQ(physical->representations.size(), 2u);
-    ASSERT_EQ(physical->materializations.size(), 1u);
+    ASSERT_EQ(physical->representations.size(), 1u);
+    EXPECT_TRUE(physical->materializations.empty());
     ASSERT_EQ(physical->connection_representations.size(), 3u);
+    ASSERT_EQ(physical->connection_channel_bindings.size(), 3u);
     ASSERT_TRUE(physical->producer_groups[0].has_value());
     auto const canonical =
         physical->producer_groups[0]->canonical_representation;
     ASSERT_TRUE(physical->connection_representations[0].has_value());
-    ASSERT_TRUE(physical->connection_representations[1].has_value());
-    ASSERT_TRUE(physical->connection_representations[2].has_value());
-    auto const derived = *physical->connection_representations[1];
     EXPECT_EQ(*physical->connection_representations[0], canonical);
-    EXPECT_EQ(*physical->connection_representations[2], derived);
-    EXPECT_NE(derived, canonical);
+    EXPECT_FALSE(physical->connection_representations[1].has_value());
+    EXPECT_FALSE(physical->connection_representations[2].has_value());
+    ASSERT_TRUE(physical->connection_channel_bindings[1].has_value());
+    ASSERT_TRUE(physical->connection_channel_bindings[2].has_value());
+    for (auto connection_index : {1u, 2u}) {
+        auto const& channels =
+            *physical->connection_channel_bindings[connection_index];
+        ASSERT_EQ(channels.size(), 2u);
+        for (auto const& channel : channels) {
+            EXPECT_EQ(channel.representation, canonical);
+            EXPECT_EQ(channel.representation_channel, 0u);
+            EXPECT_EQ(channel.frame_delay, 0u);
+        }
+    }
     EXPECT_TRUE(physical->representations[canonical]
                     .canonical_producer_representation);
-    EXPECT_FALSE(physical->representations[derived]
-                     .canonical_producer_representation);
     EXPECT_EQ(physical->representations[canonical].channel_layout, mono);
-    EXPECT_EQ(
-        physical->representations[derived].channel_layout,
-        stereo_interleaved);
     EXPECT_EQ(physical->representations[canonical].live_interval.begin, 0u);
-    EXPECT_EQ(physical->representations[canonical].live_interval.end, 1u);
-    EXPECT_EQ(physical->representations[derived].live_interval.begin, 0u);
-    EXPECT_EQ(physical->representations[derived].live_interval.end, 3u);
+    EXPECT_EQ(physical->representations[canonical].live_interval.end, 3u);
 
-    auto const& materialization = physical->materializations.front();
-    EXPECT_EQ(materialization.source_representation, canonical);
-    EXPECT_EQ(materialization.target_representation, derived);
-    EXPECT_EQ(materialization.after_execution_position, 0u);
-    EXPECT_EQ(materialization.source_layout, mono);
-    EXPECT_EQ(materialization.target_layout, stereo_interleaved);
-
-    // Source and derived values overlap at the conversion point and therefore
-    // must occupy distinct byte ranges. Two consumers of the same converted
-    // layout share the one derived representation rather than duplicating it.
     auto const canonical_allocation = physical->representations[canonical]
         .transient_allocation;
-    auto const derived_allocation = physical->representations[derived]
-        .transient_allocation;
     ASSERT_LT(canonical_allocation, physical->transient_allocations.size());
-    ASSERT_LT(derived_allocation, physical->transient_allocations.size());
-    auto const& canonical_range =
-        physical->transient_allocations[canonical_allocation];
-    auto const& derived_range =
-        physical->transient_allocations[derived_allocation];
-    auto const canonical_end = canonical_range.region_relative_offset
-        + canonical_range.size_bytes;
-    auto const derived_end = derived_range.region_relative_offset
-        + derived_range.size_bytes;
-    EXPECT_TRUE(canonical_end <= derived_range.region_relative_offset
-        || derived_end <= canonical_range.region_relative_offset);
-    EXPECT_EQ(
-        physical->transient_arena_size,
-        3u * 64u * sizeof(iv::Sample));
+    EXPECT_EQ(physical->transient_allocations[canonical_allocation].size_bytes,
+        64u * sizeof(iv::Sample));
+    EXPECT_EQ(physical->transient_arena_size, 64u * sizeof(iv::Sample));
 }
 
 TEST(GraphJitSamplePhysicalPlan, RealizesCompactPersistentCarryExactly)
@@ -2119,10 +2099,10 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackUsesCompactCarryTimeline)
     auto physical = build_sample_physical_plan(connections, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
-    ASSERT_EQ(physical->representations.size(), 3u);
+    ASSERT_EQ(physical->representations.size(), 2u);
     ASSERT_EQ(physical->persistent_allocations.size(), 1u);
     ASSERT_EQ(physical->feedback_timelines.size(), 1u);
-    ASSERT_EQ(physical->materializations.size(), 1u);
+    EXPECT_TRUE(physical->materializations.empty());
     ASSERT_EQ(physical->carry_operations.size(), 1u);
 
     auto const canonical =
@@ -2130,17 +2110,21 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackUsesCompactCarryTimeline)
     auto const& timeline = physical->feedback_timelines[0];
     EXPECT_EQ(timeline.writer.kind, SampleFeedbackTimelineWriterKind::copy);
     auto const ring = timeline.timeline_representation;
-    auto const derived = *physical->connection_representations[0];
     ASSERT_NE(canonical, ring);
-    ASSERT_NE(ring, derived);
     EXPECT_EQ(physical->representations[ring].channel_layout, mono);
-    EXPECT_EQ(physical->representations[derived].channel_layout, stereo);
     EXPECT_EQ(
         physical->representations[ring].storage,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
-    EXPECT_EQ(
-        physical->representations[derived].storage,
-        iv::RealtimeBufferStorageKind::transient_stack);
+    EXPECT_FALSE(physical->connection_representations[0].has_value());
+    ASSERT_TRUE(physical->connection_channel_bindings[0].has_value());
+    auto const& converted_channels =
+        *physical->connection_channel_bindings[0];
+    ASSERT_EQ(converted_channels.size(), 2u);
+    for (auto const& channel : converted_channels) {
+        EXPECT_EQ(channel.representation, ring);
+        EXPECT_EQ(channel.representation_channel, 0u);
+        EXPECT_EQ(channel.frame_delay, 0u);
+    }
 
     auto const persistent_index =
         physical->representations[ring].persistent_allocation;
@@ -2160,18 +2144,9 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackUsesCompactCarryTimeline)
     EXPECT_EQ(carry.retained_frames, 9u);
     EXPECT_EQ(timeline.writer.after_execution_position, 1u);
 
-    auto const& materialization = physical->materializations.front();
-    EXPECT_EQ(materialization.source_representation, ring);
-    EXPECT_EQ(materialization.target_representation, derived);
-    ASSERT_TRUE(materialization.before_execution_position.has_value());
-    EXPECT_EQ(*materialization.before_execution_position, 0u);
-    EXPECT_EQ(materialization.source_layout, mono);
-    EXPECT_EQ(materialization.target_layout, stereo);
-    EXPECT_EQ(materialization.retained_before, 9u);
-    EXPECT_EQ(materialization.latest_read_latency, 6u);
 }
 
-TEST(GraphJitSamplePhysicalPlan, ConvertedRetentionMaterializesHistoricalWindow)
+TEST(GraphJitSamplePhysicalPlan, AliasableConversionReadsRetainedProducerHistoryDirectly)
 {
     using namespace iv::graph_jit::detail;
 
@@ -2220,36 +2195,30 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedRetentionMaterializesHistoricalWindow)
     auto physical = build_sample_physical_plan(connections, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
-    ASSERT_EQ(physical->representations.size(), 2u);
-    ASSERT_EQ(physical->materializations.size(), 1u);
+    ASSERT_EQ(physical->representations.size(), 1u);
+    EXPECT_TRUE(physical->materializations.empty());
     ASSERT_EQ(physical->carry_operations.size(), 1u);
     auto const canonical =
         physical->producer_groups[0]->canonical_representation;
-    auto const derived = *physical->connection_representations[0];
-    ASSERT_NE(canonical, derived);
     EXPECT_EQ(physical->representations[canonical].frame_capacity, 128u);
-    EXPECT_EQ(physical->representations[derived].frame_capacity, 128u);
-    auto const& materialization = physical->materializations[0];
-    EXPECT_EQ(materialization.source_representation, canonical);
-    EXPECT_EQ(materialization.target_representation, derived);
-    EXPECT_EQ(materialization.retained_before, 7u);
-    EXPECT_EQ(materialization.latest_read_latency, 2u);
-
+    EXPECT_FALSE(physical->connection_representations[0].has_value());
+    ASSERT_TRUE(physical->connection_channel_bindings[0].has_value());
+    auto const& channels = *physical->connection_channel_bindings[0];
+    ASSERT_EQ(channels.size(), 2u);
+    for (auto const& channel : channels) {
+        EXPECT_EQ(channel.representation, canonical);
+        EXPECT_EQ(channel.representation_channel, 0u);
+        EXPECT_EQ(channel.frame_delay, 0u);
+    }
     auto const canonical_allocation = physical->representations[canonical]
         .transient_allocation;
-    auto const derived_allocation = physical->representations[derived]
-        .transient_allocation;
     ASSERT_LT(canonical_allocation, physical->transient_allocations.size());
-    ASSERT_LT(derived_allocation, physical->transient_allocations.size());
-    auto const& source_range = physical->transient_allocations[canonical_allocation];
-    auto const& target_range = physical->transient_allocations[derived_allocation];
-    auto const source_end = source_range.region_relative_offset + source_range.size_bytes;
-    auto const target_end = target_range.region_relative_offset + target_range.size_bytes;
-    EXPECT_TRUE(source_end <= target_range.region_relative_offset
-        || target_end <= source_range.region_relative_offset);
+    EXPECT_EQ(
+        physical->transient_allocations[canonical_allocation].size_bytes,
+        128u * sizeof(iv::Sample));
 }
 
-TEST(GraphJitSamplePhysicalPlan, SharedConvertedFanoutMaterializesUnionOfReadWindows)
+TEST(GraphJitSamplePhysicalPlan, AliasableConvertedFanoutSharesRetainedProducerTimeline)
 {
     using namespace iv::graph_jit::detail;
 
@@ -2303,21 +2272,26 @@ TEST(GraphJitSamplePhysicalPlan, SharedConvertedFanoutMaterializesUnionOfReadWin
     auto physical = build_sample_physical_plan(connections, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
-    ASSERT_EQ(physical->representations.size(), 2u);
-    ASSERT_EQ(physical->materializations.size(), 1u);
+    ASSERT_EQ(physical->representations.size(), 1u);
+    EXPECT_TRUE(physical->materializations.empty());
     ASSERT_EQ(physical->connection_representations.size(), 2u);
-    ASSERT_TRUE(physical->connection_representations[0].has_value());
-    ASSERT_TRUE(physical->connection_representations[1].has_value());
-    EXPECT_EQ(
-        *physical->connection_representations[0],
-        *physical->connection_representations[1]);
-
-    auto const& materialization = physical->materializations[0];
-    EXPECT_EQ(materialization.retained_before, 7u);
-    EXPECT_EQ(materialization.latest_read_latency, 0u);
-    EXPECT_EQ(
-        physical->representations[materialization.target_representation].frame_capacity,
-        128u);
+    EXPECT_FALSE(physical->connection_representations[0].has_value());
+    EXPECT_FALSE(physical->connection_representations[1].has_value());
+    ASSERT_TRUE(physical->connection_channel_bindings[0].has_value());
+    ASSERT_TRUE(physical->connection_channel_bindings[1].has_value());
+    auto const canonical =
+        physical->producer_groups[0]->canonical_representation;
+    EXPECT_EQ(physical->representations[canonical].frame_capacity, 128u);
+    for (auto connection_index : {0u, 1u}) {
+        auto const& channels =
+            *physical->connection_channel_bindings[connection_index];
+        ASSERT_EQ(channels.size(), 2u);
+        for (auto const& channel : channels) {
+            EXPECT_EQ(channel.representation, canonical);
+            EXPECT_EQ(channel.representation_channel, 0u);
+            EXPECT_EQ(channel.frame_delay, 0u);
+        }
+    }
 }
 
 TEST(GraphJitSamplePhysicalPlan, RejectsTransientStorageThatCrossesKernelCalls)
@@ -6548,64 +6522,42 @@ TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
         << (fanout_physical ? std::string{} : fanout_physical.error());
     ASSERT_EQ(fanout_physical->producer_groups.size(), 1u);
     ASSERT_TRUE(fanout_physical->producer_groups[0].has_value());
-    ASSERT_EQ(fanout_physical->representations.size(), 3u);
-    ASSERT_EQ(fanout_physical->materializations.size(), 2u);
+    ASSERT_EQ(fanout_physical->representations.size(), 1u);
+    EXPECT_TRUE(fanout_physical->materializations.empty());
     ASSERT_EQ(fanout_physical->connection_representations.size(), 4u);
+    ASSERT_EQ(fanout_physical->connection_channel_bindings.size(), 4u);
     auto const fanout_canonical =
         fanout_physical->producer_groups[0]->canonical_representation;
-    std::size_t canonical_connection_count = 0;
-    std::optional<std::size_t> mono_interleaved_representation;
-    std::optional<std::size_t> stereo_representation;
-    std::size_t mono_interleaved_connection_count = 0;
-    std::size_t stereo_connection_count = 0;
-    for (auto const representation : fanout_physical->connection_representations) {
-        ASSERT_TRUE(representation.has_value());
-        if (*representation == fanout_canonical) {
-            ++canonical_connection_count;
+    std::size_t direct_whole_port = 0;
+    std::size_t channel_granular = 0;
+    for (std::size_t connection_index = 0;
+         connection_index < fanout_physical->connection_representations.size();
+         ++connection_index) {
+        if (fanout_physical->connection_representations[connection_index]) {
+            EXPECT_EQ(
+                *fanout_physical->connection_representations[connection_index],
+                fanout_canonical);
+            ++direct_whole_port;
             continue;
         }
-        auto const layout = fanout_physical->representations[*representation]
-            .channel_layout;
-        if (layout.channel_type == iv::ChannelTypeId::mono) {
-            if (mono_interleaved_representation) {
-                EXPECT_EQ(*representation, *mono_interleaved_representation);
-            }
-            mono_interleaved_representation = *representation;
-            ++mono_interleaved_connection_count;
-        } else {
-            ASSERT_EQ(layout.channel_type, iv::ChannelTypeId::stereo);
-            if (stereo_representation) {
-                EXPECT_EQ(*representation, *stereo_representation);
-            }
-            stereo_representation = *representation;
-            ++stereo_connection_count;
+        ASSERT_TRUE(
+            fanout_physical->connection_channel_bindings[connection_index]
+                .has_value());
+        auto const& channels =
+            *fanout_physical->connection_channel_bindings[connection_index];
+        ASSERT_FALSE(channels.empty());
+        for (auto const& channel : channels) {
+            EXPECT_EQ(channel.representation, fanout_canonical);
+            EXPECT_EQ(channel.representation_channel, 0u);
+            EXPECT_EQ(channel.frame_delay, 0u);
         }
+        ++channel_granular;
     }
-    EXPECT_EQ(canonical_connection_count, 1u);
-    EXPECT_EQ(mono_interleaved_connection_count, 1u);
-    EXPECT_EQ(stereo_connection_count, 2u);
-    ASSERT_TRUE(mono_interleaved_representation.has_value());
-    ASSERT_TRUE(stereo_representation.has_value());
+    EXPECT_EQ(direct_whole_port, 1u);
+    EXPECT_EQ(channel_granular, 3u);
     EXPECT_EQ(
-        fanout_physical->representations[*mono_interleaved_representation]
-            .channel_layout,
-        (iv::ChannelLayout{
-            .channel_type = iv::ChannelTypeId::mono,
-            .sample_layout = iv::SampleStreamLayout::interleaved,
-        }));
-    EXPECT_EQ(
-        fanout_physical->representations[*stereo_representation].channel_layout,
-        (iv::ChannelLayout{
-            .channel_type = iv::ChannelTypeId::stereo,
-            .sample_layout = iv::SampleStreamLayout::interleaved,
-        }));
-    EXPECT_EQ(
-        std::ranges::count_if(
-            fanout_physical->materializations,
-            [&](auto const& materialization) {
-                return materialization.source_representation == fanout_canonical;
-            }),
-        2);
+        fanout_physical->transient_arena_size,
+        64u * sizeof(iv::Sample));
 
     auto fanout = compile_graph(fanout_graph, 112);
     ASSERT_TRUE(fanout.succeeded())
@@ -6633,9 +6585,9 @@ TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
     ASSERT_EQ(fanout_mono_states.size(), 2u);
     ASSERT_EQ(fanout_stereo_states.size(), 2u);
 
-    // 37..100 crosses the 64-frame physical ring boundary. Conversion must use
-    // absolute-index addressing rather than treating the representation as one
-    // contiguous block. Both converted consumers share the same derived block.
+    // 37..100 crosses the 64-frame physical ring boundary. Converted consumers
+    // now read the canonical source channel directly, so absolute-index alias
+    // addressing must remain correct across the wrap.
     fanout.compiled_graph->root_operations.tick_block(
         fanout_storage.buffer().data(), 37, 64);
     for (auto const* state : fanout_mono_states) {
@@ -6710,8 +6662,13 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
         << (stereo_conversion_physical
                 ? std::string{}
                 : stereo_conversion_physical.error());
-    EXPECT_EQ(stereo_conversion_physical->representations.size(), 3u);
-    EXPECT_EQ(stereo_conversion_physical->materializations.size(), 2u);
+    EXPECT_EQ(stereo_conversion_physical->representations.size(), 2u);
+    EXPECT_EQ(stereo_conversion_physical->materializations.size(), 1u);
+    EXPECT_EQ(
+        std::ranges::count_if(
+            stereo_conversion_physical->connection_channel_bindings,
+            [](auto const& binding) { return binding.has_value(); }),
+        1);
 
     auto stereo_conversion = compile_graph(stereo_conversion_graph, 113);
     ASSERT_TRUE(stereo_conversion.succeeded())
@@ -6790,7 +6747,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
     EXPECT_EQ(
         physical->persistent_allocations.front().kind,
         iv::graph_jit::detail::SamplePersistentStorageKind::compact_carry);
-    ASSERT_EQ(physical->materializations.size(), 1u);
+    EXPECT_TRUE(physical->materializations.empty());
 
     auto compiled = compile_graph(graph, 114);
     ASSERT_TRUE(compiled.succeeded())
@@ -7148,21 +7105,25 @@ TEST_F(GraphJitRuntimeFixture, ConvertedFanoutLatencyWindows)
     auto const latency_source_representation =
         latency_conversion_physical->producer_groups[latency_source_group_index]
             ->canonical_representation;
-    auto source_conversion = std::ranges::find_if(
-        latency_conversion_physical->materializations,
-        [&](auto const& materialization) {
-            return materialization.source_representation
-                    == latency_source_representation
-                && materialization.target_layout.channel_type
-                    == iv::ChannelTypeId::mono
-                && materialization.target_layout.sample_layout
-                    == iv::SampleStreamLayout::interleaved;
-        });
-    ASSERT_NE(
-        source_conversion,
-        latency_conversion_physical->materializations.end());
-    EXPECT_EQ(source_conversion->retained_before, 7u);
-    EXPECT_EQ(source_conversion->latest_read_latency, 0u);
+    EXPECT_TRUE(latency_conversion_physical->materializations.empty());
+    std::size_t aliased_converted_connections = 0;
+    for (auto const connection_index : latency_source_group->connection_indices) {
+        auto const& connection =
+            latency_conversion_analysis->sample_connections[connection_index];
+        if (!connection.requires_conversion) continue;
+        ASSERT_LT(
+            connection_index,
+            latency_conversion_physical->connection_channel_bindings.size());
+        auto const& bindings =
+            latency_conversion_physical->connection_channel_bindings[connection_index];
+        ASSERT_TRUE(bindings.has_value());
+        ASSERT_EQ(bindings->size(), 1u);
+        EXPECT_EQ(bindings->front().representation, latency_source_representation);
+        EXPECT_EQ(bindings->front().representation_channel, 0u);
+        EXPECT_EQ(bindings->front().frame_delay, 0u);
+        ++aliased_converted_connections;
+    }
+    EXPECT_EQ(aliased_converted_connections, 2u);
 
     auto latency_conversion_fanout =
         compile_graph(latency_conversion_fanout_graph, 115);
@@ -7489,14 +7450,26 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
             && connection.target_type == iv::ChannelTypeId::stereo
             && connection.source_channels.size() == 2
             && connection.target_channels.size() == 2) {
-            for (std::size_t channel = 0; channel < 2; ++channel) {
-                projected_connections.push_back(iv::ConfiguredSampleConnection{
-                    .source_type = iv::ChannelTypeId::mono,
-                    .source_channels = {connection.source_channels[channel]},
-                    .target_type = iv::ChannelTypeId::mono,
-                    .target_channels = {connection.target_channels[channel]},
-                });
-            }
+            // The left target is deliberately expressed as stereo->mono using
+            // semantic channels from two distinct producer representations. The
+            // conversion must read those sources directly without gathering a
+            // contiguous stereo input. The right target remains a direct alias,
+            // so one logical input mixes computed and aliased channel bindings.
+            projected_connections.push_back(iv::ConfiguredSampleConnection{
+                .source_type = iv::ChannelTypeId::stereo,
+                .source_channels = {
+                    connection.source_channels[0],
+                    connection.source_channels[1],
+                },
+                .target_type = iv::ChannelTypeId::mono,
+                .target_channels = {connection.target_channels[0]},
+            });
+            projected_connections.push_back(iv::ConfiguredSampleConnection{
+                .source_type = iv::ChannelTypeId::mono,
+                .source_channels = {connection.source_channels[1]},
+                .target_type = iv::ChannelTypeId::mono,
+                .target_channels = {connection.target_channels[1]},
+            });
         } else {
             projected_connections.push_back(connection);
         }
@@ -7520,12 +7493,26 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
         });
     ASSERT_NE(projected_connection, projected_analysis->sample_connections.end());
     EXPECT_FALSE(projected_connection->canonical_source_port.has_value());
-    ASSERT_EQ(projected_connection->source_channel_timings.size(), 2u);
+    ASSERT_GE(projected_connection->source_channel_timings.size(), 2u);
     ASSERT_EQ(projected_connection->target_channels.size(), 2u);
-    EXPECT_EQ(projected_connection->source_channel_timings[0].source.channel, 1u);
-    EXPECT_EQ(projected_connection->source_channel_timings[0].read_latency, 7u);
-    EXPECT_EQ(projected_connection->source_channel_timings[1].source.channel, 0u);
-    EXPECT_EQ(projected_connection->source_channel_timings[1].read_latency, 2u);
+    ASSERT_EQ(projected_connection->projection_contributions.size(), 2u);
+    auto const mixed = std::ranges::find_if(
+        projected_connection->projection_contributions,
+        [](auto const& contribution) {
+            return contribution.source_type == iv::ChannelTypeId::stereo
+                && contribution.target_type == iv::ChannelTypeId::mono;
+        });
+    ASSERT_NE(mixed, projected_connection->projection_contributions.end());
+    ASSERT_EQ(mixed->source_channel_indices.size(), 2u);
+    ASSERT_EQ(mixed->target_channels, (std::vector<std::size_t>{0u}));
+    auto const aliased = std::ranges::find_if(
+        projected_connection->projection_contributions,
+        [](auto const& contribution) {
+            return contribution.source_type == iv::ChannelTypeId::mono
+                && contribution.target_type == iv::ChannelTypeId::mono;
+        });
+    ASSERT_NE(aliased, projected_connection->projection_contributions.end());
+    ASSERT_EQ(aliased->target_channels, (std::vector<std::size_t>{1u}));
     EXPECT_EQ(projected_connection->target_channels[0].channel, 0u);
     EXPECT_EQ(projected_connection->target_channels[1].channel, 1u);
 
@@ -7533,7 +7520,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
         *projected_analysis, 64);
     ASSERT_TRUE(projected_physical.has_value())
         << (projected_physical ? std::string{} : projected_physical.error());
-    EXPECT_TRUE(projected_physical->compositions.empty());
+    ASSERT_EQ(projected_physical->compositions.size(), 1u);
     auto const projected_connection_index = static_cast<std::size_t>(
         std::distance(
             projected_analysis->sample_connections.begin(),
@@ -7545,17 +7532,31 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
         projected_physical
             ->connection_channel_bindings[projected_connection_index]
             .has_value());
-    auto const& projected_aliases =
+    auto const& projected_bindings =
         *projected_physical
             ->connection_channel_bindings[projected_connection_index];
-    ASSERT_EQ(projected_aliases.size(), 2u);
-    EXPECT_EQ(projected_aliases[0].representation_channel, 1u);
-    EXPECT_EQ(projected_aliases[0].frame_delay, 7u);
-    EXPECT_EQ(projected_aliases[1].representation_channel, 0u);
-    EXPECT_EQ(projected_aliases[1].frame_delay, 2u);
+    ASSERT_EQ(projected_bindings.size(), 2u);
+
+    auto const& computed = projected_physical->compositions.front();
+    ASSERT_EQ(computed.connection_index, projected_connection_index);
+    ASSERT_EQ(computed.contributions.size(), 1u);
+    EXPECT_EQ(
+        computed.contributions.front().source_layout.channel_type,
+        iv::ChannelTypeId::stereo);
+    EXPECT_EQ(
+        computed.contributions.front().converted_layout.channel_type,
+        iv::ChannelTypeId::mono);
+    ASSERT_EQ(computed.contributions.front().sources.size(), 2u);
     EXPECT_NE(
-        projected_aliases[0].representation,
-        projected_aliases[1].representation);
+        computed.contributions.front().sources[0].source_representation,
+        computed.contributions.front().sources[1].source_representation);
+    EXPECT_EQ(projected_bindings[0].representation, computed.target_representation);
+    EXPECT_EQ(projected_bindings[0].representation_channel, 0u);
+    EXPECT_EQ(projected_bindings[0].frame_delay, 0u);
+
+    EXPECT_NE(projected_bindings[1].representation, computed.target_representation);
+    EXPECT_EQ(projected_bindings[1].representation_channel, 0u);
+    EXPECT_EQ(projected_bindings[1].frame_delay, 2u);
 
     auto projected = compile_graph(projected_graph, 122);
     ASSERT_TRUE(projected.succeeded())
@@ -7582,19 +7583,19 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
     EXPECT_EQ(projected_probe->calls, 1u);
     EXPECT_FLOAT_EQ(projected_probe->first_left, 0.0f);
     EXPECT_FLOAT_EQ(projected_probe->first_right, 0.0f);
-    EXPECT_FLOAT_EQ(projected_probe->last_left, 1056.0f);
+    EXPECT_FLOAT_EQ(projected_probe->last_left, 556.0f);
     EXPECT_FLOAT_EQ(projected_probe->last_right, 56.0f);
-    EXPECT_FLOAT_EQ(projected_probe->sum_left, 58596.0f);
+    EXPECT_FLOAT_EQ(projected_probe->sum_left, 30096.0f);
     EXPECT_FLOAT_EQ(projected_probe->sum_right, 1596.0f);
 
     projected.compiled_graph->root_operations.tick_block(
         projected_storage.buffer().data(), 64, 64);
     EXPECT_EQ(projected_probe->calls, 2u);
-    EXPECT_FLOAT_EQ(projected_probe->first_left, 1057.0f);
+    EXPECT_FLOAT_EQ(projected_probe->first_left, 557.0f);
     EXPECT_FLOAT_EQ(projected_probe->first_right, 57.0f);
-    EXPECT_FLOAT_EQ(projected_probe->last_left, 1120.0f);
+    EXPECT_FLOAT_EQ(projected_probe->last_left, 620.0f);
     EXPECT_FLOAT_EQ(projected_probe->last_right, 120.0f);
-    EXPECT_FLOAT_EQ(projected_probe->sum_left, 69664.0f);
+    EXPECT_FLOAT_EQ(projected_probe->sum_left, 37664.0f);
     EXPECT_FLOAT_EQ(projected_probe->sum_right, 5664.0f);
 
 }
@@ -8358,24 +8359,25 @@ TEST_F(GraphJitRuntimeFixture, ConvertedSampleDetachFeedback)
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
     ASSERT_EQ(physical->feedback_timelines.size(), 1u);
-    ASSERT_EQ(physical->materializations.size(), 1u);
+    EXPECT_TRUE(physical->materializations.empty());
     auto const& timeline = physical->feedback_timelines.front();
     EXPECT_EQ(
         timeline.writer.kind,
         iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::copy);
     auto const ring = timeline.timeline_representation;
-    auto const derived = *physical->connection_representations.front();
-    ASSERT_NE(ring, derived);
     EXPECT_EQ(
         physical->representations[ring].channel_layout.channel_type,
         iv::ChannelTypeId::mono);
-    EXPECT_EQ(
-        physical->representations[derived].channel_layout.channel_type,
-        iv::ChannelTypeId::stereo);
-    auto const& materialization = physical->materializations.front();
-    EXPECT_EQ(materialization.source_representation, ring);
-    EXPECT_EQ(materialization.target_representation, derived);
-    ASSERT_TRUE(materialization.before_execution_position.has_value());
+    EXPECT_FALSE(physical->connection_representations.front().has_value());
+    ASSERT_TRUE(physical->connection_channel_bindings.front().has_value());
+    auto const& converted_channels =
+        *physical->connection_channel_bindings.front();
+    ASSERT_EQ(converted_channels.size(), 2u);
+    for (auto const& channel : converted_channels) {
+        EXPECT_EQ(channel.representation, ring);
+        EXPECT_EQ(channel.representation_channel, 0u);
+        EXPECT_EQ(channel.frame_delay, 0u);
+    }
 
     auto compiled = compile_graph(feedback_graph, 125);
     ASSERT_TRUE(compiled.succeeded())
@@ -8439,13 +8441,11 @@ TEST_F(GraphJitRuntimeFixture, ZeroInitializedConvertedFeedbackWritesDirectlyToP
         iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::producer_home);
     EXPECT_EQ(physical->feedback_timelines.front().writer.revision_frames, 0u);
     ASSERT_EQ(physical->persistent_allocations.size(), 1u);
-    ASSERT_EQ(physical->materializations.size(), 1u);
-    ASSERT_EQ(physical->representations.size(), 2u);
+    EXPECT_TRUE(physical->materializations.empty());
+    ASSERT_EQ(physical->representations.size(), 1u);
 
     auto const canonical =
         physical->producer_groups.front()->canonical_representation;
-    auto const derived = *physical->connection_representations.front();
-    ASSERT_NE(canonical, derived);
     EXPECT_TRUE(
         physical->representations[canonical].canonical_producer_representation);
     EXPECT_EQ(
@@ -8454,13 +8454,16 @@ TEST_F(GraphJitRuntimeFixture, ZeroInitializedConvertedFeedbackWritesDirectlyToP
     EXPECT_EQ(
         physical->representations[canonical].channel_layout.channel_type,
         iv::ChannelTypeId::mono);
-    EXPECT_EQ(
-        physical->representations[derived].channel_layout.channel_type,
-        iv::ChannelTypeId::stereo);
-    auto const& materialization = physical->materializations.front();
-    EXPECT_EQ(materialization.source_representation, canonical);
-    EXPECT_EQ(materialization.target_representation, derived);
-    ASSERT_TRUE(materialization.before_execution_position.has_value());
+    EXPECT_FALSE(physical->connection_representations.front().has_value());
+    ASSERT_TRUE(physical->connection_channel_bindings.front().has_value());
+    auto const& converted_channels =
+        *physical->connection_channel_bindings.front();
+    ASSERT_EQ(converted_channels.size(), 2u);
+    for (auto const& channel : converted_channels) {
+        EXPECT_EQ(channel.representation, canonical);
+        EXPECT_EQ(channel.representation_channel, 0u);
+        EXPECT_EQ(channel.frame_delay, 0u);
+    }
 
     auto compiled = compile_graph(feedback_graph, 126);
     ASSERT_TRUE(compiled.succeeded())
@@ -11294,7 +11297,7 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
         << (history_physical ? std::string{} : history_physical.error());
     ASSERT_EQ(history_physical->carry_operations.size(), 1u);
     ASSERT_EQ(history_physical->persistent_allocations.size(), 1u);
-    ASSERT_EQ(history_physical->materializations.size(), 1u);
+    EXPECT_TRUE(history_physical->materializations.empty());
     EXPECT_EQ(
         history_physical->persistent_allocations[0].kind,
         iv::graph_jit::detail::SamplePersistentStorageKind::compact_carry);

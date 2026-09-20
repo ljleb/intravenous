@@ -173,14 +173,18 @@ The physical planner consumes the storage decision already made by
 `choose_sample_connection_storage_plan()`; it does not choose policy again.
 Only realtime branches receive realtime representation handles here; compiled
 access branches remain unresolved for the later compiled-access executor. Whole-
-port layout/channel-type conversion is represented by explicit derived branches
-and generated materialization operations. Semantic channel projection and
+port conversion is channel-granular: layout-only conversion and mono-to-stereo
+duplication bind existing producer channels directly, while arithmetic conversion
+materializes only its computed result channels. Semantic channel projection and
 permutation preserve each source channel's physical producer identity and
 independent read latency while complete target contributions normalize into
-canonical target order. Feed-forward identity projection/permutation binds those
-producer channels directly; contributions that require channel-count mixing or
-conversion still gather a target-layout representation. Detached composition
-writes into a persistent feedback timeline, including conversion, permutation,
+canonical target order. Feed-forward conversion kernels read resolved semantic
+channels directly, including channels backed by different producer
+representations, rather than gathering a contiguous conversion input. GraphJIT
+uses `ChannelConversionRegistry` to validate supported semantic conversions but
+does not invoke its contiguous-block conversion callback for these operations.
+Detached composition writes into a persistent feedback timeline, including
+conversion, permutation,
 unequal-latency alignment, and migration. This does not reintroduce connection
 helper nodes. External boundaries remain capability-gated rather than being
 approximated with transient storage.
@@ -212,10 +216,11 @@ The remaining port work should preserve these invariants:
 - **Producer groups own physical representations.** Fanout consumers reference one
   producer-group representation or explicit derived branches; there is no default
   one-buffer/one-object-per-edge model.
-- **Conversions and fanout materialization are explicit execution steps.** A
-  producer writes its canonical source-layout representation once. Identity branches
-  share it; converted/remapped branches are planned materializations. Conversion is
-  not hidden as mutable state inside `OutputPort`.
+- **Conversions and fanout materialization are explicit physical choices.** A
+  producer writes its canonical source-layout representation once. Identity and
+  aliasable converted/remapped branches bind its channels directly; arithmetic
+  conversions use planned derived-result operations. Conversion is not hidden as
+  mutable state inside `OutputPort`.
 - **Transient and persistent state stay distinct physically and semantically.**
   Current-block scratch is stack-frame storage and never migration state.
   `NodeStorage` holds either the exact carry crossing calls or an explicitly
@@ -456,14 +461,15 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    kinds remain capability-gated for their dedicated later steps.
 8. **Sample fanout, layout conversion, and channel composition.** **Landed for
    feed-forward realtime branches.** One canonical producer-layout representation
-   is written once; identity consumers share it directly, while converted consumers
-   bind explicit derived transient representations. Identical converted fanout
-   branches are deduplicated to one representation/materialization. Pure semantic
-   channel projection/permutation now binds target channels directly to resolved
-   producer channel slices, preserving each producer's independent capacity and
-   read latency without gathering a synthetic target-layout representation.
-   Contributions that require channel-count mixing/conversion still use explicit
-   whole-target composition materialization. Materialization is generated
+   is written once; identity, layout-only, and mono-to-stereo consumers bind its
+   channels directly. Arithmetic converted fanout still uses a deduplicated derived
+   result representation. Pure semantic channel projection/permutation and
+   aliasable conversion bind target channels directly to resolved producer channel
+   slices, preserving each producer's independent capacity and read latency without
+   gathering a synthetic target-layout representation. Mixed compositions are
+   channel-selective: aliasable channels remain direct, while arithmetic conversion
+   reads distinct resolved source channels and materializes only its result channels.
+   Materialization is generated
    whole-project LLVM using absolute-indexed physical storage and contains no
    runtime converter object, heap allocation, or `OutputPort` conversion state.
 9. **Sample history and latency.** **Landed for declared realtime sample history/latency.**
@@ -471,9 +477,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    exactly the retained tail in persistent raw `NodeStorage`; the tail is restored
    before its producer and committed after producer-side materializations. Larger
    retention uses `persistent_ring`, binding primitives directly to one power-of-two
-   persistent ring. Immutable input bindings carry authored history/read latency,
-   converted branches materialize the complete historical read window, and both
-   modes use absolute sample-index addressing. Persistent compiler-owned raw regions
+   persistent ring. Immutable input bindings carry authored history/read latency;
+   aliasable converted branches read retained producer history directly, while
+   arithmetic derived results materialize the historical window they actually need.
+   Both modes use absolute sample-index addressing. Persistent compiler-owned raw regions
    carry stable migration identities and exact-shape `NodeStorage` migration copies
    their bytes across generations; transient arenas never migrate. This point covers
    declared output latency and input/output history. Feed-forward whole-graph

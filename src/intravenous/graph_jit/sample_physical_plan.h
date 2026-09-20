@@ -46,7 +46,9 @@ struct SampleProducerPhysicalPlan {
 // One target semantic channel resolved directly to a channel of an existing
 // physical representation. frame_delay is an additional per-channel read
 // delay, in frames, applied by InputPort on top of its port-level read latency.
-// This is the physical binding form used by zero-copy projection/permutation.
+// This is the physical binding form used by zero-copy projection, permutation,
+// layout conversion, and channel duplication, as well as the final binding of a
+// selectively materialized conversion result.
 struct SampleChannelBindingPlan {
     std::size_t representation = no_sample_representation;
     std::size_t representation_channel = 0;
@@ -84,9 +86,11 @@ struct SampleCompositionInputPlan {
     std::size_t read_latency = 0;
 };
 
-// One normalized gather -> semantic conversion -> projection contribution.
-// sources are ordered by source_layout's semantic channels; target_channels
-// map converted semantic channels into the final target-port representation.
+// One normalized semantic conversion -> projection contribution. sources are
+// ordered by source_layout's semantic channels and may resolve to different
+// physical representations; conversion reads them directly without first
+// gathering a contiguous source buffer. target_channels map converted semantic
+// channels into this operation's target representation.
 struct SampleCompositionContributionPlan {
     ChannelLayout source_layout{};
     ChannelLayout converted_layout{};
@@ -103,13 +107,13 @@ struct SampleCompositionContributionPlan {
     std::size_t feedback_alignment_write_latency = 0;
 };
 
-// A feed-forward composed connection gathers independently-timed semantic
-// source channels, applies each configured channel-count/layout conversion,
-// and projects the converted channels into one target-layout transient
-// representation. It writes a timestamp-aligned window, so its eventual
-// InputPort binding reads with zero additional latency and target history is
-// reconstructed while composition runs. Detached composition is represented
-// uniformly by SampleFeedbackTimelinePlan below instead of a special mode here.
+// One explicit feed-forward composition/conversion operation. Independently
+// resolved source channels are read directly. The operation may represent the
+// legacy whole-target fallback or just one arithmetic conversion contribution;
+// aliasable target channels bypass it entirely through SampleChannelBindingPlan.
+// It writes a timestamp-aligned window, so bindings to its result use zero
+// additional per-channel latency. Detached composition is represented uniformly
+// by SampleFeedbackTimelinePlan below instead of a special mode here.
 struct SampleCompositionPlan {
     std::size_t connection_index = 0;
     std::vector<SampleCompositionContributionPlan> contributions{};
@@ -219,15 +223,16 @@ struct SamplePhysicalPlan {
     std::vector<std::optional<SampleProducerPhysicalPlan>> producer_groups{};
     // Indexed by physical representation handle.
     std::vector<SampleRepresentationPlan> representations{};
-    // Indexed by ConnectionAnalysisPlan::sample_connections. Identity fanout
-    // branches resolve to the producer's canonical representation; converted
-    // branches resolve to a shared derived representation when their static
-    // transformation is identical.
+    // Indexed by ConnectionAnalysisPlan::sample_connections. Whole-port
+    // bindings resolve here when every target channel shares one physical
+    // representation. Arithmetic converted branches may resolve to a shared
+    // derived representation when their static transformation is identical.
     std::vector<std::optional<std::size_t>> connection_representations{};
-    // Feed-forward identity channel compositions may bind each target channel
-    // directly to an existing producer representation instead of allocating a
-    // gathered target representation. Indexed by sample connection; when
-    // present, entries are in canonical target-channel order.
+    // Channel-granular connections bind each target semantic channel to its
+    // resolved source/result representation. This covers projection,
+    // permutation, aliasable conversion, and mixed alias/computed composition.
+    // Indexed by sample connection; when present, entries are in canonical
+    // target-channel order.
     std::vector<std::optional<std::vector<SampleChannelBindingPlan>>>
         connection_channel_bindings{};
 

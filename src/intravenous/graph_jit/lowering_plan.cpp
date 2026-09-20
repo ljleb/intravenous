@@ -1069,7 +1069,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             }
         } else {
             // Projection/permutation normalization preserves one semantic
-            // gather -> conversion -> projection contribution per configured
+            // source-set -> conversion -> projection contribution per configured
             // connection. The flattened source vector is only producer/timing
             // inventory; contribution metadata is authoritative for channel
             // conversion and final target placement.
@@ -1122,8 +1122,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 return std::unexpected(
                     "GraphJit sample composition does not populate every target channel");
             }
-            // Feed-forward composition materializes a timestamp-aligned
-            // transient value and therefore reads at latency zero. Detached
+            // Feed-forward composition exposes timestamp-aligned target
+            // channels and therefore reads at port latency zero; channels may
+            // be direct delayed aliases or computed transient results. Detached
             // composition writes each source frame forward by its channel's
             // read latency into a persistent aligned timeline, leaving only
             // the authored loop delay for the InputPort binding.
