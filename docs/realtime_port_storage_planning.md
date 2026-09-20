@@ -270,7 +270,7 @@ without changing graph semantics or LLVM lowering.
 
 ### Current implementation status
 
-The first storage-model refactor has landed:
+The storage-model and physical-residence refactors have landed:
 
 - sample and event producer groups now select the shared three-kind storage
   model, while event invocation aggregation is a separate operation fact;
@@ -284,18 +284,25 @@ The first storage-model refactor has landed:
 - ordinary full persistent rings are fixed at compile time from the producer
   rate and `history + block + latency`; no current event strategy grows a ring
   dynamically on the audio thread;
+- sample and event transient representations are packed independently by their
+  inclusive schedule live intervals into fixed-size generated-root stack
+  arenas. Dead ranges may reuse the same bytes; neither arena is a
+  `NodeLayout` region or migration state;
+- compact sample/event carry and full persistent buffers remain canonical
+  `NodeStorage` raw regions. Event producer overflow counters are separate
+  persistent regions, so telemetry survives even when the producer sequence is
+  transient;
+- reflected sample/event bindings now contain already-resolved representation
+  pointers. The generated root resolves stack versus `NodeStorage` residence
+  while emitting straight-line LLVM; node wrappers do not branch on a storage
+  kind or reconstruct an address from one universal storage base;
 - detached feedback currently uses the separate conservative formula
   `source_capacity * (loop_extra_latency + 1)` rather than deriving the delayed
-  stream's exact simultaneously-live span; and
-- current reflected event bindings contain one `event_storage_base` plus
-  offsets, which forces every event representation into `NodeStorage`. The port
-  API itself requires only one concrete buffer pointer/span and indices, so this
-  is a binding/lowering limitation rather than an authored-interface constraint.
+  stream's exact simultaneously-live span.
 
-The remaining refactor work is physical: move transient backing to the generated
-root stack, replace the single-storage-base binding, derive feedback capacity
-from exact live span, and extend selection from the landed block-relative
-baseline to complete multiedge copy costs.
+The remaining efficiency work is to derive feedback capacity from its exact live
+span, enforce a deliberate compile-time stack budget, and extend selection from
+the landed block-relative baseline to complete multiedge copy costs.
 
 The heuristic may consider:
 
@@ -612,11 +619,9 @@ These placements are part of the efficiency contract. Moving them to a more
 frequent scope can preserve simple test cases while repeating conversion/copy
 work, inflating static event budgets, or duplicating events in feedback state.
 
-Current event lowering declares a distinct raw `NodeStorage` region for every
-event representation, including invocation-local sequences. This is an
-implementation mismatch with the storage plans above. Transient event
-representations need fixed stack-frame allocation plus live-range reuse; only
-carry or explicitly selected full persistent buffers belong in `NodeStorage`.
+Current event lowering uses a live-range-packed fixed root-stack arena for
+invocation-local representations. Only carry, explicitly selected full
+persistent buffers, and per-producer overflow telemetry belong in `NodeStorage`.
 
 The current implementation gives each logical event output one saturating
 overflow counter and drops an event when that output's sequence is full. That is
@@ -724,7 +729,8 @@ transient liveness + reusable-region allocation
         v
 root declaration / canonical NodeLayout planning
         |
-        | one NodeStorage contains persistent + reserved reusable regions
+        | NodeStorage contains only cross-call state;
+        | generated root owns fixed transient arenas
         v
 specialized whole-project LLVM
         |

@@ -135,6 +135,9 @@ struct SamplePortBindingPlan {
 // output; derived fanout representations never duplicate producer telemetry.
 // Primitive callbacks receive only immutable bindings and reconstruct
 // invocation-local EventInputPort/EventOutputPort facades.
+inline constexpr std::size_t no_event_transient_allocation =
+    std::numeric_limits<std::size_t>::max();
+
 struct EventRepresentationPlan {
     std::size_t producer_group_index = 0;
     EventTypeId type = EventTypeId::empty;
@@ -146,16 +149,24 @@ struct EventRepresentationPlan {
     std::size_t count_relative_offset = 0;
     std::size_t read_index_relative_offset = 0;
     std::size_t write_index_relative_offset = 0;
-    std::size_t overflow_count_relative_offset = 0;
     std::size_t events_relative_offset = 0;
     std::size_t size_bytes = 0;
     std::size_t alignment = 1;
+    std::size_t transient_allocation = no_event_transient_allocation;
     NodeLayout::RegionHandle region{};
-    std::size_t count_storage_offset = 0;
-    std::size_t read_index_storage_offset = 0;
-    std::size_t write_index_storage_offset = 0;
+    NodeLayout::RegionHandle overflow_region{};
+    // Canonical NodeStorage offsets exist only for persistent representations
+    // and producer telemetry. Transient representation addresses come from the
+    // generated root's event arena plus region_relative_offset.
+    std::size_t storage_offset = 0;
     std::size_t overflow_count_storage_offset = 0;
-    std::size_t events_storage_offset = 0;
+};
+
+struct EventTransientAllocationPlan {
+    std::size_t representation_index = 0;
+    std::size_t size_bytes = 0;
+    std::size_t alignment = 1;
+    std::size_t region_relative_offset = 0;
 };
 
 struct PrimitiveEventInputBindingPlan {
@@ -244,6 +255,9 @@ struct EventPortBindingPlan {
     std::vector<EventPersistentRingPlan> persistent_rings{};
     std::vector<EventMergePlan> merges{};
     std::vector<EventFeedbackPlan> feedback_operations{};
+    std::vector<EventTransientAllocationPlan> transient_allocations{};
+    std::size_t transient_arena_size = 0;
+    std::size_t transient_arena_alignment = 1;
     // Indexed by analyzed concrete primitive.
     std::vector<PrimitiveEventPortPlan> primitives{};
 };

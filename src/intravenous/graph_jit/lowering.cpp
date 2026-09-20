@@ -32,12 +32,10 @@ namespace {
 constexpr std::string_view root_tick_block_symbol = "__iv_graph_root_tick_block";
 
 struct ReflectedContextByteOffsets {
-    std::size_t sample_storage_base = 0;
     std::size_t sample_input_bindings_data = 0;
     std::size_t sample_input_bindings_size = 0;
     std::size_t sample_output_bindings_data = 0;
     std::size_t sample_output_bindings_size = 0;
-    std::size_t event_storage_base = 0;
     std::size_t event_input_bindings_data = 0;
     std::size_t event_input_bindings_size = 0;
     std::size_t event_output_bindings_data = 0;
@@ -54,9 +52,9 @@ struct EmittedNodeConfiguration {
 };
 
 struct EmittedPrimitiveSamplePorts {
-    llvm::GlobalVariable* input_bindings = nullptr;
+    llvm::Value* input_bindings = nullptr;
     std::size_t input_count = 0;
-    llvm::GlobalVariable* output_bindings = nullptr;
+    llvm::Value* output_bindings = nullptr;
     std::size_t output_count = 0;
 };
 
@@ -65,9 +63,9 @@ struct EmittedSamplePortBindings {
 };
 
 struct EmittedPrimitiveEventPorts {
-    llvm::GlobalVariable* input_bindings = nullptr;
+    llvm::Value* input_bindings = nullptr;
     std::size_t input_count = 0;
-    llvm::GlobalVariable* output_bindings = nullptr;
+    llvm::Value* output_bindings = nullptr;
     std::size_t output_count = 0;
 };
 
@@ -75,10 +73,18 @@ struct EmittedEventPortBindings {
     std::vector<EmittedPrimitiveEventPorts> primitives{};
 };
 
+struct EmittedRealtimeStorage {
+    llvm::Value* persistent_base = nullptr;
+    llvm::Value* sample_transient_base = nullptr;
+    llvm::Value* event_transient_base = nullptr;
+    std::vector<llvm::Value*> sample_representations{};
+    std::vector<llvm::Value*> event_representations{};
+    std::vector<llvm::Value*> event_overflow_counts{};
+};
+
 constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
 {
     return {
-        .sample_storage_base = offsetof(ReflectedNodeTickContext, sample_storage_base),
         .sample_input_bindings_data =
             offsetof(ReflectedNodeTickContext, sample_input_bindings)
             + offsetof(ReflectedSpan<ReflectedSampleInputPortBinding const>, pointer),
@@ -91,7 +97,6 @@ constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
         .sample_output_bindings_size =
             offsetof(ReflectedNodeTickContext, sample_output_bindings)
             + offsetof(ReflectedSpan<ReflectedSampleOutputPortBinding const>, extent),
-        .event_storage_base = offsetof(ReflectedNodeTickContext, event_storage_base),
         .event_input_bindings_data =
             offsetof(ReflectedNodeTickContext, event_input_bindings)
             + offsetof(ReflectedSpan<ReflectedEventInputPortBinding const>, pointer),
@@ -472,7 +477,6 @@ sample_storage_binding(
     }
     auto const& representation = plan.representations[representation_index];
 
-    std::optional<std::size_t> storage_offset;
     if (representation.transient_allocation
         != detail::no_sample_transient_allocation) {
         if (representation.transient_allocation >= plan.transient_allocations.size()) {
@@ -485,7 +489,6 @@ sample_storage_binding(
             return std::unexpected(
                 "GraphJit sample transient allocation points at the wrong representation");
         }
-        storage_offset = allocation.storage_offset;
     } else if (representation.persistent_allocation
                != detail::no_sample_persistent_allocation) {
         if (representation.persistent_allocation >= plan.persistent_allocations.size()) {
@@ -502,24 +505,56 @@ sample_storage_binding(
             return std::unexpected(
                 "GraphJit compact sample carry must bind through its transient working representation");
         }
-        storage_offset = allocation.storage_offset;
-    }
-
-    if (!storage_offset) {
+    } else {
         return std::unexpected(
             "GraphJit sample representation has no realized physical storage");
     }
     return ReflectedSamplePortStorageBinding{
-        .storage_offset = *storage_offset,
+        .storage = nullptr,
         .frame_capacity = representation.frame_capacity,
         .storage_latency = 0,
         .channel_layout = representation.channel_layout,
     };
 }
 
-std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
+llvm::Value* runtime_bytes_copy(
+    llvm::IRBuilder<>& builder,
     llvm::Module& module,
-    detail::SamplePortBindingPlan const& plan)
+    void const* data,
+    std::size_t size,
+    std::size_t alignment,
+    llvm::Twine const& name)
+{
+    auto* size_type = llvm::IntegerType::get(
+        builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* result = builder.CreateAlloca(
+        llvm::Type::getInt8Ty(builder.getContext()),
+        llvm::ConstantInt::get(size_type, size),
+        name + ".runtime");
+    result->setAlignment(llvm::Align(alignment));
+    auto* initial = immutable_bytes_global(
+        module, data, size, alignment, name + ".template");
+    builder.CreateMemCpy(
+        result, llvm::Align(alignment), initial, llvm::Align(alignment), size);
+    return result;
+}
+
+void store_runtime_pointer(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* bytes,
+    std::size_t offset,
+    llvm::Value* value)
+{
+    builder.CreateStore(
+        value,
+        byte_offset_pointer(builder, bytes, offset, "binding.pointer.slot"));
+}
+
+std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
+    llvm::IRBuilder<>& builder,
+    llvm::Module& module,
+    detail::SamplePortBindingPlan const& plan,
+    EmittedRealtimeStorage const& realtime_storage)
 {
     EmittedSamplePortBindings emitted;
     emitted.primitives.resize(plan.primitives.size());
@@ -549,12 +584,26 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                     .read_latency = input.read_latency,
                 });
             }
-            result.input_bindings = immutable_bytes_global(
-                module,
+            result.input_bindings = runtime_bytes_copy(
+                builder, module,
                 bindings.data(),
                 bindings.size() * sizeof(ReflectedSampleInputPortBinding),
                 alignof(ReflectedSampleInputPortBinding),
                 "__iv_graph_sample_inputs_" + std::to_string(primitive_index));
+            for (std::size_t i = 0; i < primitive.inputs.size(); ++i) {
+                auto const representation = *primitive.inputs[i].representation;
+                if (representation >= realtime_storage.sample_representations.size()) {
+                    return std::unexpected(
+                        "GraphJit sample input binding lost its resolved storage");
+                }
+                store_runtime_pointer(
+                    builder,
+                    result.input_bindings,
+                    i * sizeof(ReflectedSampleInputPortBinding)
+                        + offsetof(ReflectedSampleInputPortBinding, storage)
+                        + offsetof(ReflectedSamplePortStorageBinding, storage),
+                    realtime_storage.sample_representations[representation]);
+            }
         }
 
         if (!primitive.outputs.empty()) {
@@ -574,20 +623,36 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                     .latency = output.latency,
                 });
             }
-            result.output_bindings = immutable_bytes_global(
-                module,
+            result.output_bindings = runtime_bytes_copy(
+                builder, module,
                 bindings.data(),
                 bindings.size() * sizeof(ReflectedSampleOutputPortBinding),
                 alignof(ReflectedSampleOutputPortBinding),
                 "__iv_graph_sample_outputs_" + std::to_string(primitive_index));
+            for (std::size_t i = 0; i < primitive.outputs.size(); ++i) {
+                auto const representation = *primitive.outputs[i].representation;
+                if (representation >= realtime_storage.sample_representations.size()) {
+                    return std::unexpected(
+                        "GraphJit sample output binding lost its resolved storage");
+                }
+                store_runtime_pointer(
+                    builder,
+                    result.output_bindings,
+                    i * sizeof(ReflectedSampleOutputPortBinding)
+                        + offsetof(ReflectedSampleOutputPortBinding, storage)
+                        + offsetof(ReflectedSamplePortStorageBinding, storage),
+                    realtime_storage.sample_representations[representation]);
+            }
         }
     }
     return emitted;
 }
 
 std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
+    llvm::IRBuilder<>& builder,
     llvm::Module& module,
-    detail::EventPortBindingPlan const& plan)
+    detail::EventPortBindingPlan const& plan,
+    EmittedRealtimeStorage const& realtime_storage)
 {
     EmittedEventPortBindings emitted;
     emitted.primitives.resize(plan.primitives.size());
@@ -599,15 +664,12 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                 "GraphJit event binding references a missing physical representation");
         }
         auto const& representation = plan.representations[representation_index];
-        if (!representation.region.valid()) {
-            return std::unexpected(
-                "GraphJit event representation has no finalized raw storage region");
-        }
         return ReflectedEventPortStorageBinding{
-            .count_offset = representation.count_storage_offset,
-            .read_index_offset = representation.read_index_storage_offset,
-            .write_index_offset = representation.write_index_storage_offset,
-            .events_offset = representation.events_storage_offset,
+            .storage = nullptr,
+            .count_offset = representation.count_relative_offset,
+            .read_index_offset = representation.read_index_relative_offset,
+            .write_index_offset = representation.write_index_relative_offset,
+            .events_offset = representation.events_relative_offset,
             .event_capacity = representation.event_capacity,
             .type = representation.type,
             .persistent_ring = representation.persistent_ring,
@@ -636,12 +698,26 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                     .storage = *storage,
                 });
             }
-            result.input_bindings = immutable_bytes_global(
-                module,
+            result.input_bindings = runtime_bytes_copy(
+                builder, module,
                 bindings.data(),
                 bindings.size() * sizeof(ReflectedEventInputPortBinding),
                 alignof(ReflectedEventInputPortBinding),
                 "__iv_graph_event_inputs_" + std::to_string(primitive_index));
+            for (std::size_t i = 0; i < primitive.inputs.size(); ++i) {
+                auto const representation = *primitive.inputs[i].representation;
+                if (representation >= realtime_storage.event_representations.size()) {
+                    return std::unexpected(
+                        "GraphJit event input binding lost its resolved storage");
+                }
+                store_runtime_pointer(
+                    builder,
+                    result.input_bindings,
+                    i * sizeof(ReflectedEventInputPortBinding)
+                        + offsetof(ReflectedEventInputPortBinding, storage)
+                        + offsetof(ReflectedEventPortStorageBinding, storage),
+                    realtime_storage.event_representations[representation]);
+            }
         }
 
         if (!primitive.outputs.empty()) {
@@ -662,8 +738,7 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                 }
                 bindings.push_back(ReflectedEventOutputPortBinding{
                     .storage = *storage,
-                    .overflow_count_offset =
-                        representation.overflow_count_storage_offset,
+                    .overflow_count = nullptr,
                     .source_type = output.source_type,
                     .history = output.history,
                     .latency = output.latency,
@@ -671,33 +746,39 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                     .append_existing = output.append_existing,
                 });
             }
-            result.output_bindings = immutable_bytes_global(
-                module,
+            result.output_bindings = runtime_bytes_copy(
+                builder, module,
                 bindings.data(),
                 bindings.size() * sizeof(ReflectedEventOutputPortBinding),
                 alignof(ReflectedEventOutputPortBinding),
                 "__iv_graph_event_outputs_" + std::to_string(primitive_index));
+            for (std::size_t i = 0; i < primitive.outputs.size(); ++i) {
+                auto const representation = *primitive.outputs[i].representation;
+                if (representation >= realtime_storage.event_representations.size()
+                    || representation
+                        >= realtime_storage.event_overflow_counts.size()
+                    || realtime_storage.event_overflow_counts[representation]
+                        == nullptr) {
+                    return std::unexpected(
+                        "GraphJit event output binding lost its resolved storage or telemetry");
+                }
+                store_runtime_pointer(
+                    builder,
+                    result.output_bindings,
+                    i * sizeof(ReflectedEventOutputPortBinding)
+                        + offsetof(ReflectedEventOutputPortBinding, storage)
+                        + offsetof(ReflectedEventPortStorageBinding, storage),
+                    realtime_storage.event_representations[representation]);
+                store_runtime_pointer(
+                    builder,
+                    result.output_bindings,
+                    i * sizeof(ReflectedEventOutputPortBinding)
+                        + offsetof(ReflectedEventOutputPortBinding, overflow_count),
+                    realtime_storage.event_overflow_counts[representation]);
+            }
         }
     }
     return emitted;
-}
-
-void store_context_pointer(
-    llvm::IRBuilder<>& builder,
-    llvm::Value* context_storage,
-    std::size_t field_offset,
-    llvm::Value* value)
-{
-    auto& llvm_context = builder.getContext();
-    auto* byte_type = llvm::Type::getInt8Ty(llvm_context);
-    auto* size_type = llvm::IntegerType::get(
-        llvm_context, static_cast<unsigned>(sizeof(std::size_t) * 8));
-    auto* slot = builder.CreateInBoundsGEP(
-        byte_type,
-        context_storage,
-        llvm::ConstantInt::get(size_type, field_offset),
-        "context.pointer.slot");
-    builder.CreateStore(value, slot);
 }
 
 void store_context_span_pointer(
@@ -770,11 +851,6 @@ void emit_primitive_call(
         sizeof(ReflectedNodeTickContext));
 
     auto const offsets = reflected_context_byte_offsets();
-    store_context_pointer(
-        builder,
-        context_storage,
-        offsets.sample_storage_base,
-        storage_base);
     if (sample_ports.input_count != 0) {
         store_context_span_pointer(
             builder,
@@ -793,11 +869,6 @@ void emit_primitive_call(
             sample_ports.output_bindings,
             sample_ports.output_count);
     }
-    store_context_pointer(
-        builder,
-        context_storage,
-        offsets.event_storage_base,
-        storage_base);
     if (event_ports.input_count != 0) {
         store_context_span_pointer(
             builder,
@@ -904,7 +975,7 @@ void emit_sliced_primitive_calls(
 
 llvm::Value* sample_element_pointer(
     llvm::IRBuilder<>& builder,
-    llvm::Value* storage_base,
+    llvm::Value* representation_base,
     ReflectedSamplePortStorageBinding const& binding,
     llvm::Value* absolute_frame,
     std::size_t channel,
@@ -935,16 +1006,15 @@ llvm::Value* sample_element_pointer(
             llvm::ConstantInt::get(size_type, channel),
             name + ".element");
     }
-    auto* base = byte_offset_pointer(
-        builder, storage_base, binding.storage_offset, name + ".base");
-    return builder.CreateInBoundsGEP(sample_type, base, element, name + ".ptr");
+    return builder.CreateInBoundsGEP(
+        sample_type, representation_base, element, name + ".ptr");
 }
 
 std::expected<void, std::string> emit_sample_materialization(
     llvm::IRBuilder<>& builder,
     detail::SamplePhysicalPlan const& physical,
     detail::SampleMaterializationPlan const& materialization,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
@@ -972,6 +1042,17 @@ std::expected<void, std::string> emit_sample_materialization(
     auto target = sample_storage_binding(
         physical, materialization.target_representation);
     if (!target) return std::unexpected(std::move(target.error()));
+    if (materialization.source_representation
+            >= realtime_storage.sample_representations.size()
+        || materialization.target_representation
+            >= realtime_storage.sample_representations.size()) {
+        return std::unexpected(
+            "GraphJit sample materialization lost resolved representation storage");
+    }
+    auto* source_base = realtime_storage.sample_representations[
+        materialization.source_representation];
+    auto* target_base = realtime_storage.sample_representations[
+        materialization.target_representation];
     if (source->frame_capacity == 0 || target->frame_capacity == 0
         || !is_power_of_2(source->frame_capacity)
         || !is_power_of_2(target->frame_capacity)) {
@@ -1027,7 +1108,7 @@ std::expected<void, std::string> emit_sample_materialization(
             sample_type,
             sample_element_pointer(
                 builder,
-                storage_base,
+                source_base,
                 *source,
                 absolute_frame,
                 channel,
@@ -1041,7 +1122,7 @@ std::expected<void, std::string> emit_sample_materialization(
             value,
             sample_element_pointer(
                 builder,
-                storage_base,
+                target_base,
                 *target,
                 absolute_frame,
                 channel,
@@ -1121,7 +1202,7 @@ std::expected<void, std::string> emit_sample_composition_write(
     ChannelLayout target_layout,
     std::size_t target_history,
     bool shift_writes_by_read_latency,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
@@ -1155,6 +1236,13 @@ std::expected<void, std::string> emit_sample_composition_write(
     auto target = sample_storage_binding(
         physical, target_representation_index);
     if (!target) return std::unexpected(std::move(target.error()));
+    if (target_representation_index
+        >= realtime_storage.sample_representations.size()) {
+        return std::unexpected(
+            "GraphJit sample composition lost resolved target storage");
+    }
+    auto* target_base = realtime_storage.sample_representations[
+        target_representation_index];
     if (target->frame_capacity == 0
         || !is_power_of_2(target->frame_capacity)) {
         return std::unexpected(
@@ -1163,6 +1251,7 @@ std::expected<void, std::string> emit_sample_composition_write(
 
     struct SourceBinding {
         ReflectedSamplePortStorageBinding storage{};
+        llvm::Value* base = nullptr;
         std::size_t source_channel = 0;
         std::size_t read_latency = 0;
     };
@@ -1173,6 +1262,7 @@ std::expected<void, std::string> emit_sample_composition_write(
         std::vector<std::size_t> target_channels{};
         std::vector<std::size_t> shifted_write_latencies{};
         std::optional<ReflectedSamplePortStorageBinding> feedback_alignment_storage{};
+        llvm::Value* feedback_alignment_base = nullptr;
         std::size_t feedback_alignment_write_latency = 0;
     };
 
@@ -1221,6 +1311,8 @@ std::expected<void, std::string> emit_sample_composition_write(
             }
             contribution.sources.push_back(SourceBinding{
                 .storage = *source,
+                .base = realtime_storage.sample_representations[
+                    source_plan.source_representation],
                 .source_channel = source_plan.source_channel,
                 .read_latency = source_plan.read_latency,
             });
@@ -1287,6 +1379,9 @@ std::expected<void, std::string> emit_sample_composition_write(
                             "GraphJit unequal-latency feedback mixing has invalid alignment storage");
                     }
                     contribution.feedback_alignment_storage = *alignment;
+                    contribution.feedback_alignment_base =
+                        realtime_storage.sample_representations[
+                            contribution_plan.feedback_alignment_representation];
                     contribution.feedback_alignment_write_latency =
                         minimum_latency;
                 } else if (contribution_plan.feedback_alignment_representation
@@ -1364,7 +1459,7 @@ std::expected<void, std::string> emit_sample_composition_write(
             }
             auto* source_pointer = sample_element_pointer(
                 builder,
-                storage_base,
+                source.base,
                 source.storage,
                 source_frame,
                 source.source_channel,
@@ -1384,7 +1479,7 @@ std::expected<void, std::string> emit_sample_composition_write(
                  source_index < contribution.sources.size(); ++source_index) {
                 auto* alignment_pointer = sample_element_pointer(
                     builder,
-                    storage_base,
+                    contribution.feedback_alignment_base,
                     *contribution.feedback_alignment_storage,
                     target_frame,
                     source_index,
@@ -1408,7 +1503,7 @@ std::expected<void, std::string> emit_sample_composition_write(
                         + std::to_string(source_index));
                 auto* alignment_pointer = sample_element_pointer(
                     builder,
-                    storage_base,
+                    contribution.feedback_alignment_base,
                     *contribution.feedback_alignment_storage,
                     aligned_frame,
                     source_index,
@@ -1490,7 +1585,7 @@ std::expected<void, std::string> emit_sample_composition_write(
             }
             auto* target_pointer = sample_element_pointer(
                 builder,
-                storage_base,
+                target_base,
                 *target,
                 target_storage_frame,
                 contribution.target_channels[converted_channel],
@@ -1526,7 +1621,7 @@ std::expected<void, std::string> emit_sample_composition(
     llvm::IRBuilder<>& builder,
     detail::SamplePhysicalPlan const& physical,
     detail::SampleCompositionPlan const& composition,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
@@ -1538,7 +1633,7 @@ std::expected<void, std::string> emit_sample_composition(
         composition.target_layout,
         composition.target_history,
         false,
-        storage_base,
+        realtime_storage,
         sample_index,
         block_size);
 }
@@ -1547,7 +1642,7 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
     llvm::IRBuilder<>& builder,
     detail::SamplePhysicalPlan const& physical,
     detail::SampleFeedbackTimelinePlan const& timeline,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
@@ -1605,7 +1700,7 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
             timeline.channel_layout,
             timeline.writer.revision_frames,
             true,
-            storage_base,
+            realtime_storage,
             sample_index,
             block_size);
     case detail::SampleFeedbackTimelineWriterKind::copy:
@@ -1630,6 +1725,17 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
     auto ring = sample_storage_binding(
         physical, timeline.timeline_representation);
     if (!ring) return std::unexpected(std::move(ring.error()));
+    if (timeline.writer.source_representation
+            >= realtime_storage.sample_representations.size()
+        || timeline.timeline_representation
+            >= realtime_storage.sample_representations.size()) {
+        return std::unexpected(
+            "GraphJit sample feedback copy lost resolved storage");
+    }
+    auto* source_base = realtime_storage.sample_representations[
+        timeline.writer.source_representation];
+    auto* ring_base = realtime_storage.sample_representations[
+        timeline.timeline_representation];
 
     auto& context = builder.getContext();
     auto* function = builder.GetInsertBlock()->getParent();
@@ -1675,7 +1781,7 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
     for (std::size_t channel = 0; channel < channels; ++channel) {
         auto* source_pointer = sample_element_pointer(
             builder,
-            storage_base,
+            source_base,
             *source,
             absolute_frame,
             channel,
@@ -1686,7 +1792,7 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
             "sample.feedback.value." + std::to_string(channel));
         auto* ring_pointer = sample_element_pointer(
             builder,
-            storage_base,
+            ring_base,
             *ring,
             absolute_frame,
             channel,
@@ -1774,7 +1880,7 @@ std::expected<void, std::string> emit_sample_carry_operation(
     llvm::IRBuilder<>& builder,
     detail::SamplePhysicalPlan const& physical,
     detail::SampleCarryOperationPlan const& operation,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* sample_index,
     llvm::Value* block_size,
     bool restore)
@@ -1786,6 +1892,13 @@ std::expected<void, std::string> emit_sample_carry_operation(
     if (!allocation) return std::unexpected(std::move(allocation.error()));
     auto working = sample_storage_binding(physical, operation.representation_index);
     if (!working) return std::unexpected(std::move(working.error()));
+    if (operation.representation_index
+        >= realtime_storage.sample_representations.size()) {
+        return std::unexpected(
+            "GraphJit sample carry lost resolved working storage");
+    }
+    auto* working_base = realtime_storage.sample_representations[
+        operation.representation_index];
     if (working->frame_capacity == 0
         || !is_power_of_2(working->frame_capacity)
         || working->channel_layout != (*allocation)->channel_layout) {
@@ -1845,7 +1958,7 @@ std::expected<void, std::string> emit_sample_carry_operation(
     for (std::size_t channel = 0; channel < channels; ++channel) {
         auto* carry_pointer = compact_carry_element_pointer(
             builder,
-            storage_base,
+            realtime_storage.persistent_base,
             **allocation,
             carry_frame,
             channel,
@@ -1853,7 +1966,7 @@ std::expected<void, std::string> emit_sample_carry_operation(
                     : "sample.carry.commit.persist");
         auto* working_pointer = sample_element_pointer(
             builder,
-            storage_base,
+            working_base,
             *working,
             absolute_frame,
             channel,
@@ -1889,7 +2002,7 @@ std::expected<void, std::string> emit_event_carry_operation(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
     detail::EventCarryPlan const& carry,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* sample_index,
     llvm::Value* block_size,
     bool restore)
@@ -1903,8 +2016,7 @@ std::expected<void, std::string> emit_event_carry_operation(
         event_ports.representations[carry.working_representation];
     auto const& persistent =
         event_ports.representations[carry.persistent_representation];
-    if (!working.region.valid() || !persistent.region.valid()
-        || working.persistent || !persistent.persistent
+    if (working.persistent || !persistent.persistent
         || working.type != persistent.type) {
         return std::unexpected(
             "GraphJit event carry has inconsistent physical representations");
@@ -1914,28 +2026,32 @@ std::expected<void, std::string> emit_event_carry_operation(
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* working_base = realtime_storage.event_representations[
+        carry.working_representation];
+    auto* persistent_base = realtime_storage.event_representations[
+        carry.persistent_representation];
     auto* working_count_pointer = byte_offset_pointer(
         builder,
-        storage_base,
-        working.count_storage_offset,
+        working_base,
+        working.count_relative_offset,
         restore ? "event.carry.restore.working.count"
                 : "event.carry.commit.working.count");
     auto* persistent_count_pointer = byte_offset_pointer(
         builder,
-        storage_base,
-        persistent.count_storage_offset,
+        persistent_base,
+        persistent.count_relative_offset,
         restore ? "event.carry.restore.persist.count"
                 : "event.carry.commit.persist.count");
     auto* working_events = byte_offset_pointer(
         builder,
-        storage_base,
-        working.events_storage_offset,
+        working_base,
+        working.events_relative_offset,
         restore ? "event.carry.restore.working.events"
                 : "event.carry.commit.working.events");
     auto* persistent_events = byte_offset_pointer(
         builder,
-        storage_base,
-        persistent.events_storage_offset,
+        persistent_base,
+        persistent.events_relative_offset,
         restore ? "event.carry.restore.persist.events"
                 : "event.carry.commit.persist.events");
 
@@ -1996,7 +2112,7 @@ std::expected<void, std::string> seed_event_feedback_cursors_after_carry_restore
     detail::EventPortBindingPlan const& event_ports,
     detail::EventCarryPlan const& carry,
     std::vector<llvm::Value*> const& event_feedback_cursors,
-    llvm::Value* storage_base)
+    EmittedRealtimeStorage const& realtime_storage)
 {
     if (carry.working_representation >= event_ports.representations.size()) {
         return std::unexpected(
@@ -2004,8 +2120,7 @@ std::expected<void, std::string> seed_event_feedback_cursors_after_carry_restore
     }
     auto const& working =
         event_ports.representations[carry.working_representation];
-    if (!working.region.valid() || working.persistent
-        || working.persistent_ring) {
+    if (working.persistent || working.persistent_ring) {
         return std::unexpected(
             "GraphJit event carry feedback cursor has invalid working storage");
     }
@@ -2031,8 +2146,8 @@ std::expected<void, std::string> seed_event_feedback_cursors_after_carry_restore
         builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* working_count_pointer = byte_offset_pointer(
         builder,
-        storage_base,
-        working.count_storage_offset,
+        realtime_storage.event_representations[carry.working_representation],
+        working.count_relative_offset,
         "event.carry.feedback.seed.count");
     auto* restored_count = builder.CreateLoad(
         size_type, working_count_pointer, "event.carry.feedback.seed.value");
@@ -2052,7 +2167,7 @@ std::expected<void, std::string> emit_event_persistent_ring_prune(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
     detail::EventPersistentRingPlan const& ring,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* sample_index)
 {
     if (ring.representation >= event_ports.representations.size()) {
@@ -2071,20 +2186,22 @@ std::expected<void, std::string> emit_event_persistent_ring_prune(
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* representation_base =
+        realtime_storage.event_representations[ring.representation];
     auto* read_index_pointer = byte_offset_pointer(
         builder,
-        storage_base,
-        representation.read_index_storage_offset,
+        representation_base,
+        representation.read_index_relative_offset,
         "event.ring.prune.read");
     auto* write_index_pointer = byte_offset_pointer(
         builder,
-        storage_base,
-        representation.write_index_storage_offset,
+        representation_base,
+        representation.write_index_relative_offset,
         "event.ring.prune.write");
     auto* events = byte_offset_pointer(
         builder,
-        storage_base,
-        representation.events_storage_offset,
+        representation_base,
+        representation.events_relative_offset,
         "event.ring.prune.events");
     auto* read_index = builder.CreateLoad(
         size_type, read_index_pointer, "event.ring.prune.read.value");
@@ -2116,7 +2233,7 @@ std::expected<void, std::string> emit_event_feedback_append(
     detail::EventPortBindingPlan const& event_ports,
     detail::EventFeedbackPlan const& feedback,
     llvm::Value* feedback_cursor_pointer,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* sample_index)
 {
     if (feedback.source_representation >= event_ports.representations.size()
@@ -2132,8 +2249,7 @@ std::expected<void, std::string> emit_event_feedback_append(
         event_ports.representations[feedback.source_representation];
     auto const& ring =
         event_ports.representations[feedback.ring_representation];
-    if (!source.region.valid() || !ring.region.valid()
-        || !ring.persistent || !ring.persistent_ring
+    if (!ring.persistent || !ring.persistent_ring
         || source.type != ring.type) {
         return std::unexpected(
             "GraphJit exact-type event feedback has inconsistent physical storage");
@@ -2148,11 +2264,15 @@ std::expected<void, std::string> emit_event_feedback_append(
         feedback_cursor_pointer,
         "event.feedback.source.cursor");
     llvm::Value* source_end = nullptr;
+    auto* source_base = realtime_storage.event_representations[
+        feedback.source_representation];
+    auto* ring_base = realtime_storage.event_representations[
+        feedback.ring_representation];
     if (source.persistent_ring) {
         auto* source_write_pointer = byte_offset_pointer(
             builder,
-            storage_base,
-            source.write_index_storage_offset,
+            source_base,
+            source.write_index_relative_offset,
             "event.feedback.source.write");
         source_end = builder.CreateLoad(
             size_type,
@@ -2161,8 +2281,8 @@ std::expected<void, std::string> emit_event_feedback_append(
     } else {
         auto* source_count_pointer = byte_offset_pointer(
             builder,
-            storage_base,
-            source.count_storage_offset,
+            source_base,
+            source.count_relative_offset,
             "event.feedback.source.count");
         auto* source_count = builder.CreateLoad(
             size_type,
@@ -2181,23 +2301,23 @@ std::expected<void, std::string> emit_event_feedback_append(
     }
     auto* source_events = byte_offset_pointer(
         builder,
-        storage_base,
-        source.events_storage_offset,
+        source_base,
+        source.events_relative_offset,
         "event.feedback.source.events");
     auto* ring_read_pointer = byte_offset_pointer(
         builder,
-        storage_base,
-        ring.read_index_storage_offset,
+        ring_base,
+        ring.read_index_relative_offset,
         "event.feedback.ring.read");
     auto* ring_write_pointer = byte_offset_pointer(
         builder,
-        storage_base,
-        ring.write_index_storage_offset,
+        ring_base,
+        ring.write_index_relative_offset,
         "event.feedback.ring.write");
     auto* ring_events = byte_offset_pointer(
         builder,
-        storage_base,
-        ring.events_storage_offset,
+        ring_base,
+        ring.events_relative_offset,
         "event.feedback.ring.events");
 
     auto* module = builder.GetInsertBlock()->getModule();
@@ -2269,23 +2389,19 @@ std::expected<void, std::string> emit_event_sequence_reset(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
     std::size_t representation_index,
-    llvm::Value* storage_base)
+    EmittedRealtimeStorage const& realtime_storage)
 {
     if (representation_index >= event_ports.representations.size()) {
         return std::unexpected(
             "GraphJit event sequence reset references a missing representation");
     }
     auto const& representation = event_ports.representations[representation_index];
-    if (!representation.region.valid()) {
-        return std::unexpected(
-            "GraphJit event sequence reset references unfinalized storage");
-    }
     auto* size_type = llvm::IntegerType::get(
         builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* count = byte_offset_pointer(
         builder,
-        storage_base,
-        representation.count_storage_offset,
+        realtime_storage.event_representations[representation_index],
+        representation.count_relative_offset,
         "event.reset.count");
     builder.CreateStore(llvm::ConstantInt::get(size_type, 0), count);
     return {};
@@ -2295,7 +2411,7 @@ std::expected<void, std::string> emit_event_merge(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
     detail::EventMergePlan const& merge,
-    llvm::Value* storage_base)
+    EmittedRealtimeStorage const& realtime_storage)
 {
     if (merge.target_representation >= event_ports.representations.size()
         || merge.source_representations.empty()) {
@@ -2304,8 +2420,7 @@ std::expected<void, std::string> emit_event_merge(
     }
     auto const& target =
         event_ports.representations[merge.target_representation];
-    if (!target.region.valid()
-        || (target.event_capacity != 0
+    if ((target.event_capacity != 0
             && !is_power_of_2(target.event_capacity))) {
         return std::unexpected(
             "GraphJit event merge target has invalid physical storage");
@@ -2324,10 +2439,12 @@ std::expected<void, std::string> emit_event_merge(
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* target_base = realtime_storage.event_representations[
+        merge.target_representation];
     auto* target_events = byte_offset_pointer(
         builder,
-        storage_base,
-        target.events_storage_offset,
+        target_base,
+        target.events_relative_offset,
         "event.merge.target.events");
 
     llvm::Value* target_read = llvm::ConstantInt::get(size_type, 0);
@@ -2336,13 +2453,13 @@ std::expected<void, std::string> emit_event_merge(
     if (target.persistent_ring) {
         auto* read_pointer = byte_offset_pointer(
             builder,
-            storage_base,
-            target.read_index_storage_offset,
+            target_base,
+            target.read_index_relative_offset,
             "event.merge.target.read.ptr");
         auto* write_pointer = byte_offset_pointer(
             builder,
-            storage_base,
-            target.write_index_storage_offset,
+            target_base,
+            target.write_index_relative_offset,
             "event.merge.target.write.ptr");
         target_read = builder.CreateLoad(
             size_type, read_pointer, "event.merge.target.read");
@@ -2352,8 +2469,8 @@ std::expected<void, std::string> emit_event_merge(
     } else {
         auto* count_pointer = byte_offset_pointer(
             builder,
-            storage_base,
-            target.count_storage_offset,
+            target_base,
+            target.count_relative_offset,
             "event.merge.target.count.ptr");
         if (merge.preserve_existing_target || merge.target_is_semantic_source) {
             target_write = builder.CreateLoad(
@@ -2369,8 +2486,7 @@ std::expected<void, std::string> emit_event_merge(
                 "GraphJit event merge references a missing source representation");
         }
         auto const& source = event_ports.representations[representation_index];
-        if (!source.region.valid() || source.persistent_ring
-            || source.type != target.type) {
+        if (source.persistent_ring || source.type != target.type) {
             return std::unexpected(
                 "GraphJit event merge source has inconsistent physical storage");
         }
@@ -2397,8 +2513,8 @@ std::expected<void, std::string> emit_event_merge(
 
             auto* source_count_pointer = byte_offset_pointer(
                 builder,
-                storage_base,
-                (*source)->count_storage_offset,
+                realtime_storage.event_representations[representation_index],
+                (*source)->count_relative_offset,
                 "event.merge.source.count.ptr." + std::to_string(source_index));
             auto* source_count_value = builder.CreateLoad(
                 size_type,
@@ -2406,8 +2522,8 @@ std::expected<void, std::string> emit_event_merge(
                 "event.merge.source.count." + std::to_string(source_index));
             auto* source_events = byte_offset_pointer(
                 builder,
-                storage_base,
-                (*source)->events_storage_offset,
+                realtime_storage.event_representations[representation_index],
+                (*source)->events_relative_offset,
                 "event.merge.source.events." + std::to_string(source_index));
 
             auto* source_pointer_slot = builder.CreateInBoundsGEP(
@@ -2462,8 +2578,8 @@ std::expected<void, std::string> emit_event_merge(
         if (!source) return std::unexpected(std::move(source.error()));
         auto* source_count_pointer = byte_offset_pointer(
             builder,
-            storage_base,
-            (*source)->count_storage_offset,
+            realtime_storage.event_representations[representation_index],
+            (*source)->count_relative_offset,
             "event.merge.source.count.ptr." + std::to_string(source_index));
         auto* source_count = builder.CreateLoad(
             size_type,
@@ -2471,8 +2587,8 @@ std::expected<void, std::string> emit_event_merge(
             "event.merge.source.count." + std::to_string(source_index));
         auto* source_events = byte_offset_pointer(
             builder,
-            storage_base,
-            (*source)->events_storage_offset,
+            realtime_storage.event_representations[representation_index],
+            (*source)->events_relative_offset,
             "event.merge.source.events." + std::to_string(source_index));
         target_write = builder.CreateCall(
             helper,
@@ -2493,7 +2609,7 @@ std::expected<void, std::string> emit_event_materialization(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
     detail::EventMaterializationPlan const& materialization,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
@@ -2506,10 +2622,6 @@ std::expected<void, std::string> emit_event_materialization(
         event_ports.representations[materialization.source_representation];
     auto const& target =
         event_ports.representations[materialization.target_representation];
-    if (!source.region.valid() || !target.region.valid()) {
-        return std::unexpected(
-            "GraphJit event materialization references unfinalized storage");
-    }
     if (materialization.conversion.source_type != source.type
         || materialization.conversion.target_type != target.type
         || materialization.conversion.step_count
@@ -2521,20 +2633,24 @@ std::expected<void, std::string> emit_event_materialization(
     auto& context = builder.getContext();
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* source_base = realtime_storage.event_representations[
+        materialization.source_representation];
+    auto* target_base = realtime_storage.event_representations[
+        materialization.target_representation];
     auto* target_count_pointer = byte_offset_pointer(
         builder,
-        storage_base,
-        target.count_storage_offset,
+        target_base,
+        target.count_relative_offset,
         "event.materialize.target.count");
     auto* source_events = byte_offset_pointer(
         builder,
-        storage_base,
-        source.events_storage_offset,
+        source_base,
+        source.events_relative_offset,
         "event.materialize.source.events");
     auto* target_events = byte_offset_pointer(
         builder,
-        storage_base,
-        target.events_storage_offset,
+        target_base,
+        target.events_relative_offset,
         "event.materialize.target.events");
 
     if (materialization.select_invocation_window || source.persistent_ring) {
@@ -2543,13 +2659,13 @@ std::expected<void, std::string> emit_event_materialization(
         if (source.persistent_ring) {
             auto* read_index_pointer = byte_offset_pointer(
                 builder,
-                storage_base,
-                source.read_index_storage_offset,
+                source_base,
+                source.read_index_relative_offset,
                 "event.materialize.source.read.index");
             auto* write_index_pointer = byte_offset_pointer(
                 builder,
-                storage_base,
-                source.write_index_storage_offset,
+                source_base,
+                source.write_index_relative_offset,
                 "event.materialize.source.write.index");
             source_read_index = builder.CreateLoad(
                 size_type,
@@ -2562,8 +2678,8 @@ std::expected<void, std::string> emit_event_materialization(
         } else {
             auto* source_count_pointer = byte_offset_pointer(
                 builder,
-                storage_base,
-                source.count_storage_offset,
+                source_base,
+                source.count_relative_offset,
                 "event.materialize.source.count");
             source_write_index = builder.CreateLoad(
                 size_type,
@@ -2617,8 +2733,8 @@ std::expected<void, std::string> emit_event_materialization(
 
     auto* source_count_pointer = byte_offset_pointer(
         builder,
-        storage_base,
-        source.count_storage_offset,
+        source_base,
+        source.count_relative_offset,
         "event.materialize.source.count");
     auto* count = builder.CreateLoad(
         size_type, source_count_pointer, "event.materialize.count");
@@ -2706,7 +2822,7 @@ std::expected<void, std::string> emit_execution_step(
     EmittedEventPortBindings const& event_bindings,
     detail::PrimitiveExecutionStep const& step,
     std::vector<llvm::Value*> const& event_feedback_cursors,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* sample_index,
     llvm::Value* block_size,
     bool skip,
@@ -2741,7 +2857,7 @@ std::expected<void, std::string> emit_execution_step(
                 builder,
                 plan.event_ports,
                 plan.event_ports.persistent_rings[ring_index],
-                storage_base,
+                realtime_storage,
                 sample_index);
             if (!pruned) {
                 return std::unexpected(std::move(pruned.error()));
@@ -2755,7 +2871,7 @@ std::expected<void, std::string> emit_execution_step(
                 builder,
                 plan.event_ports,
                 representation_index,
-                storage_base);
+                realtime_storage);
             if (!reset) {
                 return std::unexpected(std::move(reset.error()));
             }
@@ -2771,7 +2887,7 @@ std::expected<void, std::string> emit_execution_step(
             builder,
             plan.event_ports,
             plan.event_ports.carry_operations[carry_index],
-            storage_base,
+            realtime_storage,
             sample_index,
             block_size,
             true);
@@ -2789,7 +2905,7 @@ std::expected<void, std::string> emit_execution_step(
             builder,
             plan.sample_ports.physical,
             plan.sample_ports.physical.carry_operations[carry_index],
-            storage_base,
+            realtime_storage,
             sample_index,
             block_size,
             true);
@@ -2808,7 +2924,7 @@ std::expected<void, std::string> emit_execution_step(
             builder,
             plan.sample_ports.physical,
             plan.sample_ports.physical.materializations[materialization_index],
-            storage_base,
+            realtime_storage,
             sample_index,
             block_size);
         if (!materialized) {
@@ -2840,7 +2956,7 @@ std::expected<void, std::string> emit_execution_step(
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
-            storage_base,
+            realtime_storage.persistent_base,
             sample_index,
             block_size,
             step.maximum_block_size);
@@ -2852,7 +2968,7 @@ std::expected<void, std::string> emit_execution_step(
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
-            storage_base,
+            realtime_storage.persistent_base,
             sample_index,
             block_size);
     }
@@ -2871,7 +2987,7 @@ std::expected<void, std::string> emit_execution_step(
             plan.event_ports,
             plan.event_ports.feedback_operations[feedback_index],
             event_feedback_cursors[feedback_index],
-            storage_base,
+            realtime_storage,
             sample_index);
         if (!appended) {
             return std::unexpected(std::move(appended.error()));
@@ -2887,7 +3003,7 @@ std::expected<void, std::string> emit_execution_step(
             builder,
             plan.event_ports,
             plan.event_ports.merges[merge_index],
-            storage_base);
+            realtime_storage);
         if (!merged) {
             return std::unexpected(std::move(merged.error()));
         }
@@ -2902,7 +3018,7 @@ std::expected<void, std::string> emit_execution_step(
             builder,
             plan.event_ports,
             plan.event_ports.materializations[materialization_index],
-            storage_base,
+            realtime_storage,
             sample_index,
             block_size);
         if (!materialized) {
@@ -2919,7 +3035,7 @@ std::expected<void, std::string> emit_execution_step(
             builder,
             plan.event_ports,
             plan.event_ports.carry_operations[carry_index],
-            storage_base,
+            realtime_storage,
             sample_index,
             block_size,
             false);
@@ -2938,7 +3054,7 @@ std::expected<void, std::string> emit_execution_step(
             builder,
             plan.sample_ports.physical,
             plan.sample_ports.physical.materializations[materialization_index],
-            storage_base,
+            realtime_storage,
             sample_index,
             block_size);
         if (!materialized) {
@@ -2955,7 +3071,7 @@ std::expected<void, std::string> emit_execution_step(
             builder,
             plan.sample_ports.physical,
             plan.sample_ports.physical.feedback_timelines[timeline_index],
-            storage_base,
+            realtime_storage,
             sample_index,
             block_size);
         if (!written) {
@@ -2972,7 +3088,7 @@ std::expected<void, std::string> emit_execution_step(
             builder,
             plan.sample_ports.physical,
             plan.sample_ports.physical.compositions[composition_index],
-            storage_base,
+            realtime_storage,
             sample_index,
             block_size);
         if (!composed) {
@@ -2989,7 +3105,7 @@ std::expected<void, std::string> emit_execution_step(
             builder,
             plan.sample_ports.physical,
             plan.sample_ports.physical.carry_operations[carry_index],
-            storage_base,
+            realtime_storage,
             sample_index,
             block_size,
             false);
@@ -3005,8 +3121,6 @@ std::expected<llvm::Function*, std::string> define_root_operation(
     std::string_view symbol,
     detail::LoweringPlan const& plan,
     std::vector<EmittedNodeConfiguration> const& configurations,
-    EmittedSamplePortBindings const& sample_bindings,
-    EmittedEventPortBindings const& event_bindings,
     bool skip)
 {
     auto* root_type = root_block_operation_type(module.getContext());
@@ -3027,6 +3141,129 @@ std::expected<llvm::Function*, std::string> define_root_operation(
 
     auto* entry = llvm::BasicBlock::Create(module.getContext(), "entry", function);
     llvm::IRBuilder<> builder(entry);
+
+    auto* size_type = llvm::IntegerType::get(
+        module.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto allocate_arena = [&](std::size_t size,
+                              std::size_t alignment,
+                              llvm::Twine const& name) -> llvm::Value* {
+        if (size == 0) return nullptr;
+        auto* arena = builder.CreateAlloca(
+            llvm::Type::getInt8Ty(module.getContext()),
+            llvm::ConstantInt::get(size_type, size),
+            name);
+        arena->setAlignment(llvm::Align(alignment));
+        return arena;
+    };
+
+    EmittedRealtimeStorage realtime_storage{
+        .persistent_base = storage_base,
+        .sample_transient_base = allocate_arena(
+            plan.sample_ports.physical.transient_arena_size,
+            plan.sample_ports.physical.transient_arena_alignment,
+            "sample.transient.arena"),
+        .event_transient_base = allocate_arena(
+            plan.event_ports.transient_arena_size,
+            plan.event_ports.transient_arena_alignment,
+            "event.transient.arena"),
+    };
+    realtime_storage.sample_representations.resize(
+        plan.sample_ports.physical.representations.size());
+    for (std::size_t representation_index = 0;
+         representation_index
+            < plan.sample_ports.physical.representations.size();
+         ++representation_index) {
+        auto const& representation =
+            plan.sample_ports.physical.representations[representation_index];
+        if (representation.transient_allocation
+            != detail::no_sample_transient_allocation) {
+            if (realtime_storage.sample_transient_base == nullptr
+                || representation.transient_allocation
+                    >= plan.sample_ports.physical.transient_allocations.size()) {
+                return std::unexpected(
+                    "GraphJit sample representation lost its transient root storage");
+            }
+            auto const& allocation = plan.sample_ports.physical
+                .transient_allocations[representation.transient_allocation];
+            realtime_storage.sample_representations[representation_index] =
+                byte_offset_pointer(
+                    builder,
+                    realtime_storage.sample_transient_base,
+                    allocation.region_relative_offset,
+                    "sample.representation." + std::to_string(representation_index));
+        } else if (representation.persistent_allocation
+                   != detail::no_sample_persistent_allocation) {
+            if (representation.persistent_allocation
+                >= plan.sample_ports.physical.persistent_allocations.size()) {
+                return std::unexpected(
+                    "GraphJit sample representation lost its persistent storage");
+            }
+            auto const& allocation = plan.sample_ports.physical
+                .persistent_allocations[representation.persistent_allocation];
+            realtime_storage.sample_representations[representation_index] =
+                byte_offset_pointer(
+                    builder,
+                    storage_base,
+                    allocation.storage_offset,
+                    "sample.representation." + std::to_string(representation_index));
+        } else {
+            return std::unexpected(
+                "GraphJit sample representation has no resolved storage");
+        }
+    }
+
+    realtime_storage.event_representations.resize(
+        plan.event_ports.representations.size());
+    realtime_storage.event_overflow_counts.resize(
+        plan.event_ports.representations.size());
+    for (std::size_t representation_index = 0;
+         representation_index < plan.event_ports.representations.size();
+         ++representation_index) {
+        auto const& representation =
+            plan.event_ports.representations[representation_index];
+        if (representation.persistent) {
+            realtime_storage.event_representations[representation_index] =
+                byte_offset_pointer(
+                    builder,
+                    storage_base,
+                    representation.storage_offset,
+                    "event.representation." + std::to_string(representation_index));
+        } else {
+            if (realtime_storage.event_transient_base == nullptr
+                || representation.transient_allocation
+                    >= plan.event_ports.transient_allocations.size()) {
+                return std::unexpected(
+                    "GraphJit event representation lost its transient root storage");
+            }
+            auto const& allocation = plan.event_ports.transient_allocations[
+                representation.transient_allocation];
+            realtime_storage.event_representations[representation_index] =
+                byte_offset_pointer(
+                    builder,
+                    realtime_storage.event_transient_base,
+                    allocation.region_relative_offset,
+                    "event.representation." + std::to_string(representation_index));
+        }
+        if (representation.has_producer_overflow_counter) {
+            realtime_storage.event_overflow_counts[representation_index] =
+                byte_offset_pointer(
+                    builder,
+                    storage_base,
+                    representation.overflow_count_storage_offset,
+                    "event.overflow." + std::to_string(representation_index));
+        }
+    }
+
+    auto sample_bindings = emit_sample_port_bindings(
+        builder, module, plan.sample_ports, realtime_storage);
+    if (!sample_bindings) {
+        return std::unexpected(std::move(sample_bindings.error()));
+    }
+    auto event_bindings = emit_event_port_bindings(
+        builder, module, plan.event_ports, realtime_storage);
+    if (!event_bindings) {
+        return std::unexpected(std::move(event_bindings.error()));
+    }
 
     auto* feedback_cursor_type = llvm::IntegerType::get(
         module.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
@@ -3053,8 +3290,9 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             }
             auto* source_write_pointer = byte_offset_pointer(
                 builder,
-                storage_base,
-                source.write_index_storage_offset,
+                realtime_storage.event_representations[
+                    feedback.source_representation],
+                source.write_index_relative_offset,
                 "event.feedback.cursor.source.write." + std::to_string(i));
             initial_cursor = builder.CreateLoad(
                 feedback_cursor_type,
@@ -3079,11 +3317,11 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                     builder,
                     plan,
                     configurations,
-                    sample_bindings,
-                    event_bindings,
+                    *sample_bindings,
+                    *event_bindings,
                     plan.execution.primitive_steps[step_index],
                     event_feedback_cursors,
-                    storage_base,
+                    realtime_storage,
                     sample_index,
                     block_size,
                     skip,
@@ -3116,7 +3354,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 builder,
                 plan.event_ports,
                 plan.event_ports.persistent_rings[ring_index],
-                storage_base,
+                realtime_storage,
                 sample_index);
             if (!pruned) {
                 return std::unexpected(std::move(pruned.error()));
@@ -3132,7 +3370,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 builder,
                 plan.event_ports,
                 carry,
-                storage_base,
+                realtime_storage,
                 sample_index,
                 block_size,
                 true);
@@ -3147,7 +3385,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 plan.event_ports,
                 carry,
                 event_feedback_cursors,
-                storage_base);
+                realtime_storage);
             if (!seeded) {
                 return std::unexpected(std::move(seeded.error()));
             }
@@ -3167,7 +3405,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                     builder,
                     plan.event_ports,
                     representation_index,
-                    storage_base);
+                    realtime_storage);
                 if (!reset) {
                     return std::unexpected(std::move(reset.error()));
                 }
@@ -3216,11 +3454,11 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 builder,
                 plan,
                 configurations,
-                sample_bindings,
-                event_bindings,
+                *sample_bindings,
+                *event_bindings,
                 step,
                 event_feedback_cursors,
-                storage_base,
+                realtime_storage,
                 slice_index,
                 slice_size,
                 skip,
@@ -3254,7 +3492,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 builder,
                 plan.event_ports,
                 plan.event_ports.materializations[materialization_index],
-                storage_base,
+                realtime_storage,
                 sample_index,
                 block_size);
             if (!materialized) {
@@ -3270,7 +3508,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 builder,
                 plan.event_ports,
                 plan.event_ports.carry_operations[carry_index],
-                storage_base,
+                realtime_storage,
                 sample_index,
                 block_size,
                 false);
@@ -3298,24 +3536,11 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
         return std::unexpected(std::move(configurations.error()));
     }
 
-    auto sample_bindings = emit_sample_port_bindings(
-        output_module, plan.sample_ports);
-    if (!sample_bindings) {
-        return std::unexpected(std::move(sample_bindings.error()));
-    }
-    auto event_bindings = emit_event_port_bindings(
-        output_module, plan.event_ports);
-    if (!event_bindings) {
-        return std::unexpected(std::move(event_bindings.error()));
-    }
-
     auto tick = define_root_operation(
         output_module,
         root_tick_block_symbol,
         plan,
         *configurations,
-        *sample_bindings,
-        *event_bindings,
         false);
     if (!tick) return std::unexpected(std::move(tick.error()));
 

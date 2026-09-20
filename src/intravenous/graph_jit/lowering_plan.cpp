@@ -1,11 +1,13 @@
 #include <intravenous/graph_jit/lowering_plan.h>
 #include <intravenous/graph_jit/sample_physical_plan.h>
+#include <intravenous/graph_jit/transient_arena_plan.h>
 #include <intravenous/runtime/package_pipeline_types.h>
 
 #include <llvm/IR/Function.h>
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -282,12 +284,57 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     if (!declared_sample_storage) {
         return std::unexpected(std::move(declared_sample_storage.error()));
     }
+    if (event_ports.transient_allocations.empty()) {
+        if (event_ports.transient_arena_size != 0) {
+            return std::unexpected(
+                "GraphJit empty transient event plan has a non-zero arena size");
+        }
+    } else if (event_ports.transient_arena_size == 0
+        || !is_power_of_two(event_ports.transient_arena_alignment)) {
+        return std::unexpected(
+            "GraphJit transient event arena has invalid size/alignment");
+    }
+    for (auto const& allocation : event_ports.transient_allocations) {
+        if (allocation.representation_index
+                >= event_ports.representations.size()
+            || allocation.size_bytes == 0
+            || !is_power_of_two(allocation.alignment)
+            || allocation.alignment > event_ports.transient_arena_alignment
+            || allocation.region_relative_offset % allocation.alignment != 0
+            || allocation.region_relative_offset
+                > event_ports.transient_arena_size
+            || allocation.size_bytes > event_ports.transient_arena_size
+                    - allocation.region_relative_offset) {
+            return std::unexpected(
+                "GraphJit transient event allocation lies outside its stack arena");
+        }
+    }
     for (auto& representation : event_ports.representations) {
-        representation.region = layout_builder.declare_raw_region(
-            representation.size_bytes,
-            representation.alignment,
-            representation.persistent ? representation.migration_identity : std::string{},
-            initialize_event_raw_region);
+        if (representation.persistent) {
+            if (representation.transient_allocation
+                    != no_event_transient_allocation
+                || representation.migration_identity.empty()) {
+                return std::unexpected(
+                    "GraphJit persistent event representation has invalid ownership");
+            }
+            representation.region = layout_builder.declare_raw_region(
+                representation.size_bytes,
+                representation.alignment,
+                representation.migration_identity,
+                initialize_event_raw_region);
+        } else if (representation.transient_allocation
+                       >= event_ports.transient_allocations.size()
+            || !representation.migration_identity.empty()) {
+            return std::unexpected(
+                "GraphJit transient event representation has invalid ownership");
+        }
+        if (representation.has_producer_overflow_counter) {
+            representation.overflow_region = layout_builder.declare_raw_region(
+                sizeof(std::uint64_t),
+                alignof(std::uint64_t),
+                {},
+                initialize_event_raw_region);
+        }
     }
 
     auto node_layout = std::move(layout_builder).build();
@@ -307,10 +354,6 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     }
     auto sample_physical_owns_region =
         [&](std::size_t region_index) {
-            if (sample_ports.physical.transient_region.valid()
-                && region_index == sample_ports.physical.transient_region.index) {
-                return true;
-            }
             if (std::any_of(
                     sample_ports.physical.persistent_allocations.begin(),
                     sample_ports.physical.persistent_allocations.end(),
@@ -334,8 +377,10 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         auto const event_physical_owns_region = std::ranges::any_of(
             event_ports.representations,
             [&](EventRepresentationPlan const& representation) {
-                return representation.region.valid()
-                    && representation.region.index == region_index;
+                return (representation.region.valid()
+                           && representation.region.index == region_index)
+                    || (representation.overflow_region.valid()
+                        && representation.overflow_region.index == region_index);
             });
         if (region.kind == NodeLayout::Region::Kind::raw
             && (sample_physical_owns_region(region_index)
@@ -351,43 +396,77 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     if (!finalized_sample_storage) {
         return std::unexpected(std::move(finalized_sample_storage.error()));
     }
-    for (auto& representation : event_ports.representations) {
-        if (!representation.region.valid()
-            || representation.region.index >= node_layout.regions.size()) {
-            return std::unexpected(
-                "GraphJit event physical storage lost its raw region");
+    for (std::size_t representation_index = 0;
+         representation_index < event_ports.representations.size();
+         ++representation_index) {
+        auto& representation = event_ports.representations[representation_index];
+        if (representation.persistent) {
+            if (!representation.region.valid()
+                || representation.region.index >= node_layout.regions.size()) {
+                return std::unexpected(
+                    "GraphJit persistent event storage lost its raw region");
+            }
+            auto const& region = node_layout.regions[representation.region.index];
+            if (region.kind != NodeLayout::Region::Kind::raw
+                || region.size != representation.size_bytes
+                || region.alignment != representation.alignment
+                || region.migration_identity != representation.migration_identity
+                || region.raw_initialize_fn != initialize_event_raw_region
+                || !region.raw_initialize_payload.empty()) {
+                return std::unexpected(
+                    "GraphJit persistent event storage disagrees with finalized NodeLayout");
+            }
+            representation.storage_offset = region.storage_offset;
+        } else {
+            if (representation.region.valid()
+                || representation.transient_allocation
+                    >= event_ports.transient_allocations.size()) {
+                return std::unexpected(
+                    "GraphJit transient event storage lost its stack allocation");
+            }
+            auto const& allocation = event_ports.transient_allocations[
+                representation.transient_allocation];
+            if (allocation.representation_index != representation_index
+                || allocation.size_bytes != representation.size_bytes
+                || allocation.alignment != representation.alignment
+                || allocation.region_relative_offset
+                    > event_ports.transient_arena_size
+                || allocation.size_bytes > event_ports.transient_arena_size
+                        - allocation.region_relative_offset) {
+                return std::unexpected(
+                    "GraphJit transient event storage disagrees with its stack arena");
+            }
         }
-        auto const& region = node_layout.regions[representation.region.index];
-        if (region.kind != NodeLayout::Region::Kind::raw
-            || region.size != representation.size_bytes
-            || region.alignment != representation.alignment
-            || region.migration_identity
-                != (representation.persistent
-                        ? representation.migration_identity
-                        : std::string{})
-            || region.raw_initialize_fn != initialize_event_raw_region
-            || !region.raw_initialize_payload.empty()
-            || representation.count_relative_offset > region.size
-            || representation.read_index_relative_offset > region.size
-            || representation.write_index_relative_offset > region.size
-            || (representation.has_producer_overflow_counter
-                && representation.overflow_count_relative_offset > region.size)
-            || representation.events_relative_offset > region.size) {
+        if (representation.count_relative_offset > representation.size_bytes
+            || representation.read_index_relative_offset > representation.size_bytes
+            || representation.write_index_relative_offset > representation.size_bytes
+            || representation.events_relative_offset > representation.size_bytes) {
             return std::unexpected(
-                "GraphJit event physical storage disagrees with finalized NodeLayout");
+                "GraphJit event storage contains an invalid relative field offset");
         }
-        representation.count_storage_offset =
-            region.storage_offset + representation.count_relative_offset;
-        representation.read_index_storage_offset =
-            region.storage_offset + representation.read_index_relative_offset;
-        representation.write_index_storage_offset =
-            region.storage_offset + representation.write_index_relative_offset;
         if (representation.has_producer_overflow_counter) {
-            representation.overflow_count_storage_offset =
-                region.storage_offset + representation.overflow_count_relative_offset;
+            if (!representation.overflow_region.valid()
+                || representation.overflow_region.index
+                    >= node_layout.regions.size()) {
+                return std::unexpected(
+                    "GraphJit event producer telemetry lost its persistent region");
+            }
+            auto const& overflow =
+                node_layout.regions[representation.overflow_region.index];
+            if (overflow.kind != NodeLayout::Region::Kind::raw
+                || overflow.size != sizeof(std::uint64_t)
+                || overflow.alignment != alignof(std::uint64_t)
+                || !overflow.migration_identity.empty()
+                || overflow.raw_initialize_fn != initialize_event_raw_region
+                || !overflow.raw_initialize_payload.empty()) {
+                return std::unexpected(
+                    "GraphJit event producer telemetry disagrees with finalized NodeLayout");
+            }
+            representation.overflow_count_storage_offset = overflow.storage_offset;
+        } else if (representation.overflow_region.valid()) {
+            return std::unexpected(
+                "GraphJit derived event storage unexpectedly owns producer telemetry");
         }
-        representation.events_storage_offset =
-            region.storage_offset + representation.events_relative_offset;
     }
 
 
@@ -1209,22 +1288,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         std::size_t header_end = persistent_ring
             ? 2 * sizeof(std::size_t)
             : sizeof(std::size_t);
-        std::size_t overflow_relative = 0;
         std::size_t alignment = std::max(
             alignof(std::size_t), alignof(TimedEvent));
-        if (producer_telemetry) {
-            auto const aligned_overflow = align_up(
-                header_end, alignof(std::uint64_t));
-            if (!aligned_overflow
-                || *aligned_overflow > std::numeric_limits<std::size_t>::max()
-                    - sizeof(std::uint64_t)) {
-                return std::unexpected(
-                    "GraphJit event producer telemetry header overflows size_t");
-            }
-            overflow_relative = *aligned_overflow;
-            header_end = overflow_relative + sizeof(std::uint64_t);
-            alignment = std::max(alignment, alignof(std::uint64_t));
-        }
         auto const events_relative = align_up(header_end, alignof(TimedEvent));
         if (!events_relative
             || capacity > (std::numeric_limits<std::size_t>::max()
@@ -1244,7 +1309,6 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             .count_relative_offset = 0,
             .read_index_relative_offset = read_index_relative,
             .write_index_relative_offset = write_index_relative,
-            .overflow_count_relative_offset = overflow_relative,
             .events_relative_offset = *events_relative,
             .size_bytes = *events_relative + capacity * sizeof(TimedEvent),
             .alignment = alignment,
@@ -2270,6 +2334,54 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             return std::unexpected(
                 "GraphJit event flow requires every primitive event port to be connected exactly once");
         }
+    }
+
+    std::vector<TransientArenaAllocationRequest> transient_requests;
+    std::vector<std::size_t> transient_representations;
+    transient_requests.reserve(plan.representations.size());
+    transient_representations.reserve(plan.representations.size());
+    for (std::size_t representation_index = 0;
+         representation_index < plan.representations.size();
+         ++representation_index) {
+        auto const& representation = plan.representations[representation_index];
+        if (representation.persistent) continue;
+        if (representation.producer_group_index
+            >= connections.event_producer_groups.size()) {
+            return std::unexpected(
+                "GraphJit transient event representation lost its producer group");
+        }
+        // Persistent carry/rings realize the cross-invocation portion. The
+        // working sequence itself is live only within this root invocation,
+        // over the producer group's flattened schedule interval.
+        auto live = connections.event_producer_groups[
+            representation.producer_group_index].live_interval;
+        live.crosses_kernel_invocations = false;
+        transient_requests.push_back(TransientArenaAllocationRequest{
+            .size_bytes = representation.size_bytes,
+            .alignment = representation.alignment,
+            .live_interval = live,
+        });
+        transient_representations.push_back(representation_index);
+    }
+    auto arena = plan_transient_arena(transient_requests);
+    if (!arena) return std::unexpected(std::move(arena.error()));
+    plan.transient_arena_size = arena->size_bytes;
+    plan.transient_arena_alignment = arena->alignment;
+    plan.transient_allocations.reserve(arena->allocations.size());
+    for (std::size_t request_index = 0;
+         request_index < arena->allocations.size();
+         ++request_index) {
+        auto const representation_index = transient_representations[request_index];
+        auto const& allocation = arena->allocations[request_index];
+        auto const allocation_index = plan.transient_allocations.size();
+        plan.transient_allocations.push_back(EventTransientAllocationPlan{
+            .representation_index = representation_index,
+            .size_bytes = allocation.size_bytes,
+            .alignment = allocation.alignment,
+            .region_relative_offset = allocation.offset,
+        });
+        plan.representations[representation_index].transient_allocation =
+            allocation_index;
     }
 
     return plan;

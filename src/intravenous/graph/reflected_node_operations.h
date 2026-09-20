@@ -10,6 +10,7 @@
 #include <intravenous/ports.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <type_traits>
 #include <utility>
@@ -54,10 +55,9 @@ static_assert(std::is_standard_layout_v<ReflectedSpan<std::byte>>);
 static_assert(std::is_trivially_copyable_v<ReflectedSpan<std::byte>>);
 
 struct ReflectedSamplePortStorageBinding {
-    // Byte offset from ReflectedNodeTickContext::sample_storage_base. The
-    // backing itself is canonical compiler-owned NodeStorage; façade objects
-    // are invocation-local values created by the imported primitive wrapper.
-    std::size_t storage_offset = 0;
+    // Already-resolved compiler-owned backing. It may refer to the generated
+    // root frame's fixed transient arena or to canonical NodeStorage.
+    std::byte* storage = nullptr;
     std::size_t frame_capacity = 0;
     std::size_t storage_latency = 0;
     ChannelLayout channel_layout {
@@ -78,7 +78,7 @@ struct ReflectedSampleOutputPortBinding {
     std::size_t latency = 0;
 };
 
-// Immutable compiler-owned event storage binding. Ordinary bounded sequences
+// Fixed compiler-owned event storage binding. Ordinary bounded sequences
 // store one event-count word followed by a TimedEvent array. Persistent event
 // rings instead store monotonic read/write indices followed by the same bounded
 // power-of-two TimedEvent array. EventInputPort and EventOutputPort remain
@@ -88,6 +88,9 @@ static_assert(std::is_trivially_copyable_v<TimedEvent>,
     "GraphJit raw event storage requires TimedEvent to remain byte-storable");
 
 struct ReflectedEventPortStorageBinding {
+    // Already-resolved representation base. Field offsets below are relative
+    // to this one bounded sequence/ring allocation.
+    std::byte* storage = nullptr;
     std::size_t count_offset = 0;
     std::size_t read_index_offset = 0;
     std::size_t write_index_offset = 0;
@@ -105,7 +108,7 @@ struct ReflectedEventOutputPortBinding {
     ReflectedEventPortStorageBinding storage {};
     // Per-logical-output producer overflow telemetry. Derived event
     // representations never allocate or bind their own copy of this counter.
-    std::size_t overflow_count_offset = 0;
+    std::uint64_t* overflow_count = nullptr;
     EventTypeId source_type = EventTypeId::empty;
     std::size_t history = 0;
     std::size_t latency = 0;
@@ -138,19 +141,17 @@ struct ReflectedNodeTickContext {
     ReflectedSpan<InputPort> inputs {};
     ReflectedSpan<OutputPort> outputs {};
 
-    // Whole-project sample bindings are immutable compiler records. Imported
+    // Whole-project sample bindings are compiler records resolved once in the
+    // generated root frame. Imported
     // primitive wrappers reconstruct short-lived InputPort/OutputPort values
     // from these bindings and the current absolute sample index. This avoids
     // persistent façade/cursor state and makes implementation constants visible
     // to whole-project O3 after inlining.
-    std::byte* sample_storage_base = nullptr;
     ReflectedSpan<ReflectedSampleInputPortBinding const> sample_input_bindings {};
     ReflectedSpan<ReflectedSampleOutputPortBinding const> sample_output_bindings {};
 
     // GraphJit event bindings mirror the sample binding architecture. Legacy
-    // reflected event facade spans remain as the compatibility fallback when
-    // event_storage_base is null.
-    std::byte* event_storage_base = nullptr;
+    // reflected event facade spans remain for the old Graph implementation.
     ReflectedSpan<ReflectedEventInputPortBinding const> event_input_bindings {};
     ReflectedSpan<ReflectedEventOutputPortBinding const> event_output_bindings {};
     ReflectedSpan<EventInputPort> event_inputs {};

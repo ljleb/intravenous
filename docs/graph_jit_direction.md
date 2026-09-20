@@ -116,13 +116,13 @@ until a later scheduler proves a shared subdivision. At the point this refactor
 landed, the lowering capability gate still rejected ports/connections; the sample-
 edge slice below was the first consumer of this analysis.
 
-The first sample-edge realization has now landed, but with an important whole-
-project-JIT-specific ABI: canonical `NodeStorage` contains only compiler-selected
-sample backing, never `SharedPortData`, `InputPort`, or `OutputPort` objects.
-GraphJit emits immutable per-node sample binding records containing final storage
-offsets/capacities and passes the canonical storage base to the imported primitive
-wrapper. The wrapper reconstructs short-lived node-API `InputPort`/`OutputPort`
-values for that primitive invocation, anchored to the absolute sample index. Those
+The sample-edge realization uses an important whole-project-JIT-specific ABI:
+canonical `NodeStorage` contains only compiler-selected cross-call sample state,
+never `SharedPortData`, `InputPort`, or `OutputPort` objects. GraphJit creates
+per-node sample binding records containing capacities/layout facts and concrete
+representation pointers resolved by the generated root. The wrapper reconstructs
+short-lived node-API `InputPort`/`OutputPort` values for that primitive invocation,
+anchored to the absolute sample index. Those
 facades have no cross-call identity; after whole-project inlining/O3 they are
 expected to scalarize into address/index arithmetic. The direct and transient
 materialization choices therefore allocate only bounded sample backing. There is
@@ -154,17 +154,17 @@ new representation in the lowest aligned free gap, so dead ranges can be split,
 combined, and partially reused rather than leaving a historical whole-slot size
 reserved. Equal-start allocations are considered size/alignment-first to reduce
 fragmentation. Overlapping lifetimes never alias. The arena high-water mark and
-all representation offsets are finalized before `NodeLayout` declaration and are
-emitted as immutable primitive bindings; realtime execution only uses those
-constant offsets and contains no allocator bookkeeping. The current packer is a
+all representation offsets are finalized before LLVM emission. The generated
+root allocates that fixed arena in its stack frame and resolves each primitive
+binding to a concrete representation pointer; realtime execution contains no
+allocator bookkeeping or storage-class branch. The current packer is a
 deterministic lowest-gap heuristic rather than a globally optimal interval-packing
 solver; correctness and sub-range reuse are contractual, while globally minimal
 arena size remains an optimization opportunity if measurements justify it.
-Currently that transient arena is declared as a raw `NodeStorage` region. The
-physical plan should retain its useful live-range packing but emit the arena as a
-fixed generated-root stack frame instead. Only compact carry and explicitly
-selected full persistent buffers belong in `NodeStorage`; the same stack allocator
-should serve later transient event/workspace planning.
+Only compact carry and explicitly selected full persistent buffers belong in
+`NodeStorage`. Event transient representations use the same lifetime-based arena
+model in a separate fixed root-stack arena; producer overflow counters remain
+independent persistent telemetry.
 
 The physical planner consumes the storage decision already made by
 `choose_sample_connection_storage_plan()`; it does not choose policy again.
@@ -313,8 +313,9 @@ Efficiency and observability work that does not change event semantics:
   `max_events_per_sample` and the exact simultaneously-live temporal span; an
   invalid/unrepresentable result must fail compilation rather than select a
   fallback;
-- move invocation-local sample and event backing out of `NodeStorage` and into one
-  live-range-packed generated-root stack frame;
+- **Landed:** move invocation-local sample and event backing out of
+  `NodeStorage` and into live-range-packed generated-root stack arenas, with
+  direct resolved-pointer bindings and no runtime storage-kind branch;
 - plan feedback as an ordinary delayed derived stream using the same carry/full
   alternatives, and replace the current `source_capacity * (latency + 1)` event
   feedback sizing with rate-times-live-span sizing;
@@ -434,9 +435,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    virtual/runtime helper nodes.
 6. **Simple feed-forward sample connections.** **Landed.** Internal whole-port
    realtime sample edges realize `direct` and `transient_materialization` with
-   bounded sample backing only. Immutable reflected binding records hold canonical
-   storage offsets; imported primitive wrappers reconstruct invocation-local
-   `InputPort`/`OutputPort` facades from the storage base and absolute sample index.
+   bounded sample backing only. Reflected binding records hold concrete resolved
+   representation pointers; imported primitive wrappers reconstruct
+   invocation-local `InputPort`/`OutputPort` facades from those pointers and the
+   absolute sample index.
    No sample facade, cursor object, `SharedPortData`, or raw-region initializer is
    stored in `NodeStorage`.
 7. **Stable sample-representation realization.** **Landed.** The point-6
@@ -477,9 +479,11 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    history, and target-channel projection/permutation. Feedback/SCC latency is
    realized by point 12 below.
 10. **Event-port realization refactor and simple event flow.** **Landed for direct, transient block adaptation, conversion, feed-forward fanout, and multi-producer fan-in.**
-    Events use immutable compiler bindings over bounded raw `NodeStorage`; imported
+    Events use compiler-planned bindings over bounded representations; imported
     primitive wrappers reconstruct invocation-local event facades rather than
-    persisting `EventSharedPortData`/port objects. Exact-type, zero-retention,
+    persisting `EventSharedPortData`/port objects. Transient representations are
+    lifetime-packed into a fixed generated-root stack arena, while bindings hold
+    already-resolved pointers to stack or persistent storage. Exact-type, zero-retention,
     unsliced realtime producer groups realize `direct` bounded sequences. Sliced
     producers/consumers realize `transient_sequence`: the producer sequence is
     cleared once per root invocation, producer slices append into it, and a
@@ -522,7 +526,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     one transient representation. Derived capacity remains source-capacity-sized
     because the declared maximum does not require events to be distributed
     uniformly across timestamps. Event feedback rings land in point 12; telemetry
-    surfacing and moving transient event backing to the generated-root stack remain.
+    surfacing remains; transient event backing and direct-pointer binding are landed.
 12. **SCC/feedback execution.** **Sample feedback and the first event-feedback
     slice landed.** Sample `detach()` now executes through feedback-aware SCC
     scheduling with nonzero reflected `scc_feedback_latency`, producer-home or

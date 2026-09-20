@@ -1287,8 +1287,6 @@ std::expected<void, std::string> declare_sample_physical_storage(
                         "GraphJit sample transient allocation lies outside its arena");
                 }
             }
-            plan.transient_region = builder.declare_raw_region(
-                plan.transient_arena_size, plan.transient_arena_alignment);
         }
 
         for (auto& allocation : plan.persistent_allocations) {
@@ -1321,37 +1319,21 @@ std::expected<void, std::string> finalize_sample_physical_storage(
     SamplePhysicalPlan& plan)
 {
     if (plan.transient_allocations.empty()) {
-        if (plan.transient_region.valid()) {
+        if (plan.transient_arena_size != 0) {
             return std::unexpected(
-                "GraphJit empty sample transient plan unexpectedly owns a raw region");
+                "GraphJit empty sample transient plan has a non-zero stack arena");
         }
     } else {
-        if (!plan.transient_region.valid()
-            || plan.transient_region.index >= layout.regions.size()) {
-            return std::unexpected(
-                "GraphJit sample transient region was lost during NodeLayout finalization");
-        }
-        auto const& region = layout.regions[plan.transient_region.index];
-        if (region.kind != NodeLayout::Region::Kind::raw) {
-            return std::unexpected(
-                "GraphJit sample transient storage was not finalized as raw storage");
-        }
-        if (region.size != plan.transient_arena_size
-            || !region.migration_identity.empty()) {
-            return std::unexpected(
-                "GraphJit finalized sample transient arena changed semantics");
-        }
-        for (auto& allocation : plan.transient_allocations) {
-            if (allocation.region_relative_offset > region.size
-                || allocation.size_bytes > region.size - allocation.region_relative_offset) {
+        for (auto const& allocation : plan.transient_allocations) {
+            if (allocation.region_relative_offset > plan.transient_arena_size
+                || allocation.size_bytes
+                    > plan.transient_arena_size - allocation.region_relative_offset) {
                 return std::unexpected(
-                    "GraphJit sample transient allocation lies outside its raw region");
+                    "GraphJit sample transient allocation lies outside its stack arena");
             }
-            allocation.storage_offset =
-                region.storage_offset + allocation.region_relative_offset;
-            if (allocation.storage_offset % allocation.alignment != 0) {
+            if (allocation.region_relative_offset % allocation.alignment != 0) {
                 return std::unexpected(
-                    "GraphJit finalized sample transient allocation lost alignment");
+                    "GraphJit sample transient stack allocation lost alignment");
             }
         }
     }

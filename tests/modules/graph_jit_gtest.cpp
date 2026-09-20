@@ -1051,14 +1051,7 @@ TEST(GraphJitSamplePhysicalPlan, PacksExactTransientByteRangesAcrossLifetimes)
     auto finalized = finalize_sample_physical_storage(layout, *physical);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
-    ASSERT_TRUE(physical->transient_region.valid());
-    ASSERT_LT(physical->transient_region.index, layout.regions.size());
-    auto const& region = layout.regions[physical->transient_region.index];
-    EXPECT_EQ(region.kind, iv::NodeLayout::Region::Kind::raw);
-    EXPECT_EQ(region.size, stereo_bytes);
-    EXPECT_EQ(large.storage_offset, region.storage_offset);
-    EXPECT_EQ(small_a.storage_offset, region.storage_offset);
-    EXPECT_EQ(small_b.storage_offset, region.storage_offset + mono_bytes);
+    EXPECT_TRUE(layout.regions.empty());
 }
 
 TEST(GraphJitSamplePhysicalPlan, LeavesCompiledAccessBranchesUnresolved)
@@ -1282,10 +1275,8 @@ TEST(GraphJitSamplePhysicalPlan, RealizesCompactPersistentCarryExactly)
     auto finalized = finalize_sample_physical_storage(layout, *physical);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
-    ASSERT_EQ(layout.regions.size(), 2u);
-    auto const& transient_region = layout.regions[physical->transient_region.index];
+    ASSERT_EQ(layout.regions.size(), 1u);
     auto const& persistent_region = layout.regions[persistent.region.index];
-    EXPECT_TRUE(transient_region.migration_identity.empty());
     EXPECT_EQ(
         persistent_region.migration_identity,
         persistent.migration_identity);
@@ -1487,7 +1478,7 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     auto finalized = finalize_sample_physical_storage(layout, *physical);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
-    ASSERT_EQ(layout.regions.size(), 2u);
+    ASSERT_EQ(layout.regions.size(), 1u);
     auto const& persistent_region = layout.regions[persistent.region.index];
     EXPECT_EQ(persistent_region.size, 32u * sizeof(iv::Sample));
     EXPECT_EQ(
@@ -6297,16 +6288,7 @@ TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)
     ASSERT_TRUE(direct.succeeded())
         << (direct.diagnostics.empty() ? "" : direct.diagnostics.front().message);
     ASSERT_EQ(direct.compiled_graph->node_layout.nodes.size(), 2u);
-    ASSERT_EQ(count_raw_regions(direct.compiled_graph->node_layout), 1u);
-    auto const direct_raw = std::ranges::find_if(
-        direct.compiled_graph->node_layout.regions,
-        [](iv::NodeLayout::Region const& region) {
-            return region.kind == iv::NodeLayout::Region::Kind::raw;
-        });
-    ASSERT_NE(direct_raw, direct.compiled_graph->node_layout.regions.end());
-    EXPECT_EQ(
-        direct_raw->size,
-        64u * sizeof(iv::Sample));
+    ASSERT_EQ(count_raw_regions(direct.compiled_graph->node_layout), 0u);
 
     auto direct_storage = direct.compiled_graph->node_layout.create_storage(resources);
     direct_storage.initialize();
@@ -6367,16 +6349,7 @@ TEST_F(GraphJitRuntimeFixture, TransientSampleStorage)
                 ? ""
                 : transient.diagnostics.front().message);
     ASSERT_EQ(transient.compiled_graph->node_layout.nodes.size(), 2u);
-    ASSERT_EQ(count_raw_regions(transient.compiled_graph->node_layout), 1u);
-    auto const transient_raw = std::ranges::find_if(
-        transient.compiled_graph->node_layout.regions,
-        [](iv::NodeLayout::Region const& region) {
-            return region.kind == iv::NodeLayout::Region::Kind::raw;
-        });
-    ASSERT_NE(transient_raw, transient.compiled_graph->node_layout.regions.end());
-    EXPECT_EQ(
-        transient_raw->size,
-        64u * sizeof(iv::Sample));
+    ASSERT_EQ(count_raw_regions(transient.compiled_graph->node_layout), 0u);
     auto transient_storage =
         transient.compiled_graph->node_layout.create_storage(resources);
     transient_storage.initialize();
@@ -6453,14 +6426,7 @@ TEST_F(GraphJitRuntimeFixture, TransientArenaReuse)
                 ? ""
                 : reused_arena.diagnostics.front().message);
     ASSERT_EQ(reused_arena.compiled_graph->node_layout.nodes.size(), 4u);
-    ASSERT_EQ(count_raw_regions(reused_arena.compiled_graph->node_layout), 1u);
-    auto const reused_raw = std::ranges::find_if(
-        reused_arena.compiled_graph->node_layout.regions,
-        [](iv::NodeLayout::Region const& region) {
-            return region.kind == iv::NodeLayout::Region::Kind::raw;
-        });
-    ASSERT_NE(reused_raw, reused_arena.compiled_graph->node_layout.regions.end());
-    EXPECT_EQ(reused_raw->size, 64u * sizeof(iv::Sample));
+    ASSERT_EQ(count_raw_regions(reused_arena.compiled_graph->node_layout), 0u);
 
     auto reused_storage =
         reused_arena.compiled_graph->node_layout.create_storage(resources);
@@ -6575,14 +6541,7 @@ TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
     ASSERT_TRUE(fanout.succeeded())
         << (fanout.diagnostics.empty() ? "" : fanout.diagnostics.front().message);
     ASSERT_EQ(fanout.compiled_graph->node_layout.nodes.size(), 5u);
-    ASSERT_EQ(count_raw_regions(fanout.compiled_graph->node_layout), 1u);
-    auto const fanout_raw = std::ranges::find_if(
-        fanout.compiled_graph->node_layout.regions,
-        [](iv::NodeLayout::Region const& region) {
-            return region.kind == iv::NodeLayout::Region::Kind::raw;
-        });
-    ASSERT_NE(fanout_raw, fanout.compiled_graph->node_layout.regions.end());
-    EXPECT_EQ(fanout_raw->size, 4u * 64u * sizeof(iv::Sample));
+    ASSERT_EQ(count_raw_regions(fanout.compiled_graph->node_layout), 0u);
 
     auto fanout_storage =
         fanout.compiled_graph->node_layout.create_storage(resources);
@@ -6690,18 +6649,8 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
                 ? ""
                 : stereo_conversion.diagnostics.front().message);
     ASSERT_EQ(stereo_conversion.compiled_graph->node_layout.nodes.size(), 3u);
-    ASSERT_EQ(count_raw_regions(stereo_conversion.compiled_graph->node_layout), 1u);
-    auto const stereo_conversion_raw = std::ranges::find_if(
-        stereo_conversion.compiled_graph->node_layout.regions,
-        [](iv::NodeLayout::Region const& region) {
-            return region.kind == iv::NodeLayout::Region::Kind::raw;
-        });
-    ASSERT_NE(
-        stereo_conversion_raw,
-        stereo_conversion.compiled_graph->node_layout.regions.end());
-    EXPECT_EQ(
-        stereo_conversion_raw->size,
-        5u * 64u * sizeof(iv::Sample));
+    ASSERT_EQ(
+        count_raw_regions(stereo_conversion.compiled_graph->node_layout), 0u);
 
     auto stereo_conversion_storage =
         stereo_conversion.compiled_graph->node_layout.create_storage(resources);
@@ -9369,12 +9318,10 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInMergesSlicedSourcesAndFansOu
         << (compiled.diagnostics.empty()
                 ? ""
                 : compiled.diagnostics.front().message);
-    // Semantic source 0 is the canonical aggregate/home allocation and only
-    // source 1 needs a producer-local sequence. This fixture also needs one
-    // derived root-block materialization because the home producer is sliced
-    // at 16 frames while the consumers execute at 64. There is still no
-    // separate empty fan-in aggregate allocation.
-    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 3u);
+    // The canonical aggregate/home sequence, producer-local sequence, and
+    // derived root-block materialization all live in the root stack arena.
+    // NodeStorage owns only one overflow counter per logical producer output.
+    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 2u);
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
     std::vector<EventConsumerProbeStateMirror*> probes;
@@ -9473,9 +9420,9 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInConvertsAfterMerge)
         << (compiled.diagnostics.empty()
                 ? ""
                 : compiled.diagnostics.front().message);
-    // Canonical MIDI home + one producer-local MIDI sequence + one converted
-    // trigger representation. There is no separate empty aggregate sequence.
-    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 3u);
+    // All three sequences are transient stack allocations; NodeStorage owns
+    // only the two logical producers' overflow counters.
+    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 2u);
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
     std::vector<EventConsumerProbeStateMirror*> probes;
@@ -10672,9 +10619,9 @@ TEST_F(GraphJitRuntimeFixture, TransientEventSlicing)
                 ? ""
                 : transient_event.diagnostics.front().message);
     ASSERT_EQ(transient_event.compiled_graph->node_layout.nodes.size(), 2u);
-    // One producer sequence accumulates all 16-frame source slices; a second
-    // transient sequence is materialized once for the sliced consumer.
-    ASSERT_EQ(count_raw_regions(transient_event.compiled_graph->node_layout), 2u);
+    // Both sequences live in the root stack arena. NodeStorage owns only the
+    // logical producer's overflow counter.
+    ASSERT_EQ(count_raw_regions(transient_event.compiled_graph->node_layout), 1u);
 
     auto transient_event_storage =
         transient_event.compiled_graph->node_layout.create_storage(resources);
@@ -10772,8 +10719,9 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
                 ? ""
                 : converted_event.diagnostics.front().message);
     ASSERT_EQ(converted_event.compiled_graph->node_layout.nodes.size(), 3u);
-    // Canonical MIDI producer sequence + one deduplicated trigger sequence.
-    ASSERT_EQ(count_raw_regions(converted_event.compiled_graph->node_layout), 2u);
+    // Both sequences are root-stack allocations; the sole raw region is the
+    // MIDI producer's overflow counter.
+    ASSERT_EQ(count_raw_regions(converted_event.compiled_graph->node_layout), 1u);
 
     auto converted_event_storage =
         converted_event.compiled_graph->node_layout.create_storage(resources);
@@ -10964,11 +10912,11 @@ TEST_F(GraphJitRuntimeFixture, PersistentEventRing)
     ASSERT_EQ(
         persistent_event_ring.compiled_graph->node_layout.nodes.size(),
         2u);
-    // The persistent ring is the canonical producer representation: no
-    // transient working copy or compact carry region is required.
+    // The persistent ring is the canonical producer representation; the only
+    // other raw region is its independent producer overflow counter.
     ASSERT_EQ(
         count_raw_regions(persistent_event_ring.compiled_graph->node_layout),
-        1u);
+        2u);
     auto persistent_event_ring_region = std::ranges::find_if(
         persistent_event_ring.compiled_graph->node_layout.regions,
         [](iv::NodeLayout::Region const& region) {
@@ -11103,8 +11051,8 @@ TEST_F(GraphJitRuntimeFixture, RetainedConvertedEventFanout)
     ASSERT_EQ(
         retained_converted_event.compiled_graph->node_layout.nodes.size(),
         4u);
-    // One persistent canonical MIDI ring + one deduplicated transient trigger
-    // representation shared by both converted consumers.
+    // One persistent canonical MIDI ring plus its producer overflow counter;
+    // the deduplicated converted trigger representation is root-stack storage.
     ASSERT_EQ(
         count_raw_regions(retained_converted_event.compiled_graph->node_layout),
         2u);
@@ -11114,7 +11062,7 @@ TEST_F(GraphJitRuntimeFixture, RetainedConvertedEventFanout)
             return region.kind == iv::NodeLayout::Region::Kind::raw
                 && !region.migration_identity.empty();
         });
-    auto retained_converted_transient_region = std::ranges::find_if(
+    auto retained_converted_telemetry_region = std::ranges::find_if(
         retained_converted_event.compiled_graph->node_layout.regions,
         [](iv::NodeLayout::Region const& region) {
             return region.kind == iv::NodeLayout::Region::Kind::raw
@@ -11124,7 +11072,7 @@ TEST_F(GraphJitRuntimeFixture, RetainedConvertedEventFanout)
         retained_converted_persistent_region,
         retained_converted_event.compiled_graph->node_layout.regions.end());
     ASSERT_NE(
-        retained_converted_transient_region,
+        retained_converted_telemetry_region,
         retained_converted_event.compiled_graph->node_layout.regions.end());
     EXPECT_NE(
         retained_converted_persistent_region->migration_identity.find(
@@ -11197,12 +11145,10 @@ TEST_F(GraphJitRuntimeFixture, RetainedConvertedEventFanout)
     EXPECT_EQ(retained_sliced_trigger_probe->indices[3], 96u);
     EXPECT_EQ(retained_sliced_trigger_probe->event_counts[2], 2u);
     EXPECT_EQ(retained_sliced_trigger_probe->event_counts[3], 0u);
-    // Although the persistent source now contains both root calls, the
-    // converted transient contains only the current root window.
-    auto const* converted_count = reinterpret_cast<std::size_t const*>(
+    auto const* overflow_count = reinterpret_cast<std::uint64_t const*>(
         retained_converted_event_storage.buffer().data()
-        + retained_converted_transient_region->storage_offset);
-    EXPECT_EQ(*converted_count, 2u);
+        + retained_converted_telemetry_region->storage_offset);
+    EXPECT_EQ(*overflow_count, 0u);
 
 }
 
@@ -11241,7 +11187,7 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
     ASSERT_TRUE(history.succeeded())
         << (history.diagnostics.empty() ? "" : history.diagnostics.front().message);
     ASSERT_EQ(history.compiled_graph->node_layout.nodes.size(), 3u);
-    ASSERT_EQ(count_raw_regions(history.compiled_graph->node_layout), 2u);
+    ASSERT_EQ(count_raw_regions(history.compiled_graph->node_layout), 1u);
     auto history_persistent_region = std::ranges::find_if(
         history.compiled_graph->node_layout.regions,
         [](iv::NodeLayout::Region const& region) {

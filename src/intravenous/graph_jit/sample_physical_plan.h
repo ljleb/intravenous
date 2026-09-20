@@ -117,9 +117,6 @@ struct SampleTransientAllocationPlan {
     std::size_t size_bytes = 0;
     std::size_t alignment = alignof(Sample);
     std::size_t region_relative_offset = 0;
-
-    // Assigned after canonical NodeLayout finalization.
-    std::size_t storage_offset = 0;
 };
 
 enum class SamplePersistentStorageKind {
@@ -232,7 +229,6 @@ struct SamplePhysicalPlan {
     std::vector<SampleTransientAllocationPlan> transient_allocations{};
     std::size_t transient_arena_size = 0;
     std::size_t transient_arena_alignment = 1;
-    NodeLayout::RegionHandle transient_region{};
 
     // Persistent allocations never alias. They are separate raw regions so the
     // canonical NodeLayout can carry stable migration identities per logical
@@ -253,10 +249,10 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     ConnectionAnalysisPlan const& connections,
     std::size_t kernel_block_size);
 
-// Reserve canonical NodeStorage for transient scratch and persistent connection
-// state. No C++ objects are constructed. Persistent feedback rings with authored
-// initial values install raw-region initialization callbacks, so realtime
-// execution performs no setup/allocation.
+// Reserve canonical NodeStorage for persistent connection state. Transient
+// backing belongs to the generated root stack. Persistent feedback rings with
+// authored initial values install raw-region initialization callbacks, so
+// realtime execution performs no setup/allocation.
 std::expected<void, std::string> declare_sample_physical_storage(
     NodeLayoutBuilder& builder,
     SamplePhysicalPlan& plan);
