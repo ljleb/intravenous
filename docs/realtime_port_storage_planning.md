@@ -277,7 +277,7 @@ The storage-model and physical-residence refactors have landed:
 - sample and event producer groups now select the shared three-kind storage
   model, while event invocation aggregation is a separate operation fact;
 - ordinary event capacities start from
-  `ceil(max_events_per_sample * temporal_span)` and are rounded to a power of
+  `ceil(max_events_per_index * temporal_span)` and are rounded to a power of
   two;
 - the fixed 64-event and 16-KiB thresholds are gone. The shared pure chooser
   now enumerates transient, carry, and full-persistent candidates, exposes their
@@ -468,16 +468,16 @@ accidentally acquire a finite realtime history or latency.
 ```cpp
 struct EventOutputProperties {
     EventTypeId type {};
-    double max_events_per_sample = 1.0;
+    double max_events_per_index = 1.0;
 };
 ```
 
-`max_events_per_sample` is the producer's declared maximum used to derive every
+`max_events_per_index` is the producer's declared maximum used to derive every
 event buffer capacity. For a representation covering `W` simultaneously-live
 sample positions, the planner starts from
 
 ```text
-ceil(max_events_per_sample * W)
+ceil(max_events_per_index * W)
 ```
 
 event slots. Fractional values therefore let sparse producers request smaller
@@ -494,7 +494,7 @@ grow a buffer or allocate memory on the audio thread.
 
 This sizing rate belongs to the event **output payload properties**, not to
 `RealtimeOutputConfig`: history/latency define *when* an output may author data,
-while `max_events_per_sample` lets GraphJIT determine how much static event
+while `max_events_per_index` lets GraphJIT determine how much static event
 storage to reserve for the selected temporal representation.
 
 ## Compiled ports remain random-access
@@ -538,7 +538,7 @@ latency/history/feedback event stream
 
 A representation's temporal span and the producer sizing rate determine its
 static event capacity. For a representation covering `W` sample positions from
-a producer with `D = max_events_per_sample`, GraphJIT starts from
+a producer with `D = max_events_per_index`, GraphJIT starts from
 `ceil(D * W)` event slots. The current bounded-sequence representation rounds
 that count upward to a power of two because `EventSharedPortData` uses a ring
 mask. Every realtime event representation must have such a finite compile-time
@@ -629,9 +629,16 @@ These placements are part of the efficiency contract. Moving them to a more
 frequent scope can preserve simple test cases while repeating conversion/copy
 work, inflating static event budgets, or duplicating events in feedback state.
 
-Current event lowering uses a live-range-packed fixed root-stack arena for
-invocation-local representations. Only carry, explicitly selected full
-persistent buffers, and per-producer overflow telemetry belong in `NodeStorage`.
+Current event lowering packs invocation-local event buffers into one fixed
+root-stack allocation. Each buffer is live only from its first scheduled access
+to its last scheduled access: producer-local fan-in buffers end at the merge,
+conversion/materialization results begin when they are written and end at their
+last consumer, and feedback working buffers include their restore/append/consume/
+commit steps. Buffers whose intervals do not overlap may use the same stack
+bytes. An event output that appends across SCC slices remains live across the
+whole SCC root invocation; per-slice conversion buffers do not inherit that
+longer lifetime. Buffers that preserve events across root invocations and
+per-producer overflow telemetry belong in `NodeStorage`.
 
 The current implementation gives each logical event output one saturating
 overflow counter and drops an event when that output's sequence is full. That is
@@ -703,7 +710,7 @@ At minimum cover:
   semantics;
 - realtime event production outside the legal window is rejected;
 - every event buffer capacity is derived from producer
-  `max_events_per_sample` and its exact simultaneously-live temporal span;
+  `max_events_per_index` and its exact simultaneously-live temporal span;
 - unrepresentable realtime capacities fail planning and never fall back to a
   runtime allocation;
 - carry and full-persistent candidates preserve the same event semantics while

@@ -215,7 +215,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     iv::EventOutputConfig const realtime_event_output {
         .name = "realtime-event-output",
         .type = iv::EventTypeId::midi,
-        .max_events_per_sample = 0.24,
+        .max_events_per_index = 0.24,
         .access = iv::RealtimeOutputConfig{.history = 13, .latency = 2},
     };
     iv::EventOutputConfig const compiled_event_output {
@@ -267,7 +267,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     EXPECT_TRUE(iv::is_compiled(decoded_compiled_event_input));
 
     EXPECT_EQ(decoded_realtime_event_output.type, realtime_event_output.type);
-    EXPECT_DOUBLE_EQ(decoded_realtime_event_output.max_events_per_sample, 0.24);
+    EXPECT_DOUBLE_EQ(decoded_realtime_event_output.max_events_per_index, 0.24);
     EXPECT_EQ(iv::realtime_history(decoded_realtime_event_output), 13u);
     EXPECT_EQ(iv::realtime_latency(decoded_realtime_event_output), 2u);
     EXPECT_TRUE(iv::is_compiled(decoded_compiled_event_output));

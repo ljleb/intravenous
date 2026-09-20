@@ -76,7 +76,7 @@ iv_graph_jit_merge_event_sequences_into_home(
 // bounded sequences use read_index=0 and write_index=count. The helper selects
 // the current root invocation plus declared target history before applying the
 // immutable non-expanding conversion plan. Target capacity is intentionally not
-// derived from the narrower selected window: max_events_per_sample is a static
+// derived from the narrower selected window: max_events_per_index is a static
 // sizing rate, not a runtime density constraint.
 extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
 iv_graph_jit_materialize_event_sequence(

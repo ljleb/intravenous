@@ -178,6 +178,9 @@ struct EventTransientAllocationPlan {
     std::size_t size_bytes = 0;
     std::size_t alignment = 1;
     std::size_t region_relative_offset = 0;
+    // Inclusive flattened schedule positions where this stack buffer may be
+    // accessed. This is compile-time planning data only.
+    ConnectionLiveIntervalPlan live_interval{};
 };
 
 struct PrimitiveEventInputBindingPlan {
@@ -189,10 +192,6 @@ struct PrimitiveEventOutputBindingPlan {
     EventTypeId source_type = EventTypeId::empty;
     std::size_t history = 0;
     std::size_t latency = 0;
-    // Logical capacity available to this producer. This normally matches the
-    // representation capacity; a transient fan-in home producer writes into a
-    // larger aggregate representation while retaining its own declared bound.
-    std::size_t write_capacity = 0;
     bool append_existing = false;
 };
 
@@ -206,7 +205,7 @@ struct EventMaterializationPlan {
     // materialization therefore selects one SCC slice, while a region-exit
     // materialization selects the complete root call. In both cases the window
     // is [index-history_samples, index+block_size) before conversion. Target
-    // capacity remains source-capacity-sized because max_events_per_sample is
+    // capacity remains source-capacity-sized because max_events_per_index is
     // only a storage-sizing rate, not a runtime density constraint.
     std::size_t history_samples = 0;
     bool select_invocation_window = false;
@@ -219,7 +218,11 @@ struct EventMaterializationPlan {
 struct EventCarryPlan {
     std::size_t working_representation = 0;
     std::size_t persistent_representation = 0;
-    std::size_t producer_execution_position = 0;
+    // Restore may need to precede an early producer-home writer while commit
+    // remains after the group's final merge. Ordinary single-producer carry
+    // uses the same position for both.
+    std::size_t restore_execution_position = 0;
+    std::size_t commit_execution_position = 0;
     std::size_t retained_history_samples = 0;
     std::size_t retained_latency_samples = 0;
 };
@@ -235,7 +238,9 @@ struct EventMergePlan {
     // every producer has completed its root invocation. For transient fan-in,
     // semantic source 0 writes directly into target_representation and the
     // remaining source_representations are merged into it in one k-way pass.
-    // Retained fan-in keeps its current separate-target realization.
+    // Retained producer-home fan-in instead treats the restored/pruned target
+    // plus semantic source 0 as the existing target sequence, then merges only
+    // the remaining producer-local streams.
     std::vector<std::size_t> source_representations{};
     std::size_t target_representation = 0;
     std::size_t after_execution_position = 0;

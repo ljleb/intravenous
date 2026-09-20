@@ -130,9 +130,6 @@ struct ReflectedEventOutputPortBinding {
     EventTypeId source_type = EventTypeId::empty;
     std::size_t history = 0;
     std::size_t latency = 0;
-    // A producer may write into a larger aggregate representation while still
-    // being limited to its own statically planned sequence capacity.
-    std::size_t write_capacity = 0;
     // Direct flow owns one primitive invocation, so the wrapper may clear the
     // sequence when reconstructing the output facade. Materialized flow can
     // span several primitive slices; in that case lowering clears the raw

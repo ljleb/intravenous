@@ -165,9 +165,12 @@ deterministic lowest-gap heuristic rather than a globally optimal interval-packi
 solver; correctness and sub-range reuse are contractual, while globally minimal
 arena size remains an optimization opportunity if measurements justify it.
 Only compact carry and explicitly selected full persistent buffers belong in
-`NodeStorage`. Event transient representations use the same lifetime-based arena
-model in a separate fixed root-stack arena; producer overflow counters remain
-independent persistent telemetry.
+`NodeStorage`. Event stack buffers are packed separately. Their intervals are
+derived from the callbacks and merge/materialization/feedback operations that
+actually access them rather than from the complete producer-group interval, so
+producer-local and converted buffers can reuse stack bytes as soon as their last
+reader has run. Producer overflow counters remain independent persistent
+telemetry.
 
 The physical planner consumes the storage decision already made by
 `choose_sample_connection_storage_plan()`; it does not choose policy again.
@@ -318,7 +321,7 @@ Efficiency and observability work that does not change event semantics:
   persistent `NodeStorage`—while keeping aggregation/conversion/feedback as
   separate operation facts;
 - make every event capacity a required compile-time result of
-  `max_events_per_sample` and the exact simultaneously-live temporal span; an
+  `max_events_per_index` and the exact simultaneously-live temporal span; an
   invalid/unrepresentable result must fail compilation rather than select a
   fallback;
 - **Landed:** move invocation-local sample and event backing out of
@@ -327,15 +330,20 @@ Efficiency and observability work that does not change event semantics:
 - **Landed:** plan feedback as an ordinary delayed derived stream using the same
   transient/carry/full alternatives, with event feedback sized from
   rate-times-live-span rather than `source_capacity * (latency + 1)`;
-- move retained fan-in away from its current separate canonical aggregate when
-  a producer-home realization is legal and measurably cheaper;
+- **Landed for acyclic exact-type fan-in:** retained fan-in now compares the
+  separate canonical aggregate with producer-home using whole-group copy and
+  stack costs. When authored timing preserves append order and producer-home is
+  cheaper, semantic source 0 writes directly into the restored/pruned canonical
+  sequence and only the remaining producer-local streams are merged;
 - surface the existing per-logical-output saturating overflow counters; and
 - **In progress:** the shared chooser now enumerates and scores all three
   candidates from copied bytes, addressed bytes, stack footprint, persistent
   footprint, and a hard per-candidate stack bound while preserving the old
-  crossover under default weights. Feed topology-specific operation counts into
-  those candidates and enforce the budget against the globally packed transient
-  arenas. The fixed 64-event and 16-KiB thresholds have been removed.
+  crossover under default weights. Acyclic event fan-in supplies topology-local
+  sequence footprints and stable-merge copy counts, including producer-home
+  alternatives. Continue feeding conversion/fanout work into those candidates
+  and enforce the budget against the globally packed transient arenas. The fixed
+  64-event and 16-KiB thresholds have been removed.
 
 #### Event-connection implementation map
 
@@ -509,9 +517,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     multi-producer event inputs place semantic source 0 directly in the canonical
     aggregate allocation, keep the remaining producers in bounded local
     sequences, and perform one stable backwards k-way merge after the last
-    producer completes. Retained fan-in still uses its separate canonical target;
-    retained aggregate storage, conversion, and fanout all operate downstream of
-    the merge.
+    producer completes. Retained acyclic fan-in may instead select semantic
+    source 0 as the canonical producer-home when whole-group costing and authored
+    timing make that realization legal. Retained aggregate storage, conversion,
+    and fanout all operate downstream of the merge.
     Implicit conversions are intentionally non-expanding: one source event may
     produce zero or one target event, never synthesize additional events.
 11. **Event retention.** **Compact carry and persistent-ring identity retention landed.**
@@ -523,7 +532,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     migration-identified persistent power-of-two ring. The ring stores monotonic
     read/write indices and expires only events older than the current retained-history
     boundary before producer execution, so no retained tail is copied at root-call
-    boundaries. Event outputs declare a finite nonnegative `max_events_per_sample`
+    boundaries. Event outputs declare a finite nonnegative `max_events_per_index`
     static sizing rate in `EventOutputProperties`; GraphJIT combines that rate with
     each representation's temporal span to derive static capacities and uses the
     retained representation capacity as input to physical-plan comparison. The

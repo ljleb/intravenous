@@ -334,7 +334,6 @@ IV_FORCEINLINE void initialize_reflected_event_outputs(
         result.write_indices[I] = write_index;
         auto output_buffer = reflected_event_buffer(
             binding.storage);
-        output_buffer = output_buffer.first(binding.write_capacity);
         result.shared[I] = EventSharedPortData{
             output_buffer,
             initial_read,

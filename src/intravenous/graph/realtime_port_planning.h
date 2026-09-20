@@ -43,6 +43,15 @@ struct RealtimeStorageOperationCounts {
     std::size_t carry_extra_copied_values = 0;
     std::size_t full_extra_copied_values = 0;
     std::size_t full_ring_addressed_values = 0;
+
+    // Additional invocation-local working storage required by a realization
+    // beyond the canonical current+retained sequence. Fan-in producer-local
+    // streams are the first user: producer-home realization removes the home
+    // source from these footprints rather than pretending those temporaries do
+    // not exist in whole-group costing.
+    std::size_t transient_extra_stack_values = 0;
+    std::size_t carry_extra_stack_values = 0;
+    std::size_t full_extra_stack_values = 0;
 };
 
 struct RealtimeStorageCandidateCost {
@@ -168,7 +177,9 @@ struct RealtimeStorageSelectionResult {
         saturating_add(
             invariant, input.operations.transient_extra_copied_values),
         0,
-        input.current_values,
+        saturating_add(
+            input.current_values,
+            input.operations.transient_extra_stack_values),
         0,
         input.value_size_bytes,
         model);
@@ -182,7 +193,9 @@ struct RealtimeStorageSelectionResult {
             saturating_add(invariant, input.operations.carry_extra_copied_values),
             retention_copies),
         0,
-        working_values,
+        saturating_add(
+            working_values,
+            input.operations.carry_extra_stack_values),
         input.retained_values,
         input.value_size_bytes,
         model);
@@ -191,7 +204,7 @@ struct RealtimeStorageSelectionResult {
         true,
         saturating_add(invariant, input.operations.full_extra_copied_values),
         input.operations.full_ring_addressed_values,
-        0,
+        input.operations.full_extra_stack_values,
         working_values,
         input.value_size_bytes,
         model);
@@ -262,7 +275,7 @@ struct EventConnectionStorageRequirements {
     std::size_t current_window_samples = 0;
     std::size_t retained_window_samples = 0;
     // Exact unrounded maximum event counts derived from
-    // max_events_per_sample for the current block and retained span.
+    // max_events_per_index for the current block and retained span.
     std::size_t current_event_capacity = 0;
     std::size_t retained_event_capacity = 0;
     std::size_t value_size_bytes = 1;

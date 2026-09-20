@@ -431,7 +431,7 @@ namespace iv {
     }
 
     // Legacy/value-size capacity heuristic. GraphJIT static event-buffer sizing
-    // uses EventOutputProperties::max_events_per_sample instead; keep this for
+    // uses EventOutputProperties::max_events_per_index instead; keep this for
     // compatibility and other heuristic/default-policy decisions.
     inline constexpr size_t calculate_event_port_buffer_capacity(size_t base_multiplier, EventTypeId type)
     {
@@ -447,25 +447,27 @@ namespace iv {
     inline constexpr double DEFAULT_MAX_EVENTS_PER_SAMPLE = 1.0;
 
     [[nodiscard]] constexpr bool is_valid_event_buffer_rate(
-        double max_events_per_sample) noexcept
+        double max_events_per_index) noexcept
     {
         // Both comparisons are false for NaN; +infinity exceeds max().
-        return max_events_per_sample >= 0.0
-            && max_events_per_sample <= std::numeric_limits<double>::max();
+        return max_events_per_index >= 0.0
+            && max_events_per_index <= std::numeric_limits<double>::max();
     }
 
     // Static event-buffer sizing rule. For a representation whose relevant
-    // temporal span is W samples, reserve ceil(max_events_per_sample * W)
+    // temporal span is W samples, reserve ceil(max_events_per_index * W)
     // event slots before any physical power-of-two sequence rounding. This is
-    // not a runtime constraint on how those events are distributed by timestamp.
+    // sizing metadata, not a runtime producer quota. Runtime writers are bounded
+    // only by the physical representation capacity; overflow clipping is not a
+    // semantic guarantee.
     [[nodiscard]] inline std::optional<size_t> event_count_for_sample_span(
-        double max_events_per_sample,
+        double max_events_per_index,
         size_t sample_count) noexcept
     {
-        if (!is_valid_event_buffer_rate(max_events_per_sample)) return std::nullopt;
-        if (max_events_per_sample == 0.0 || sample_count == 0) return size_t{0};
+        if (!is_valid_event_buffer_rate(max_events_per_index)) return std::nullopt;
+        if (max_events_per_index == 0.0 || sample_count == 0) return size_t{0};
 
-        long double const product = static_cast<long double>(max_events_per_sample)
+        long double const product = static_cast<long double>(max_events_per_index)
             * static_cast<long double>(sample_count);
         long double const limit = static_cast<long double>(
             std::numeric_limits<size_t>::max());
@@ -477,11 +479,11 @@ namespace iv {
     // sequences therefore round the requested event count upward while
     // preserving zero-capacity declarations exactly.
     [[nodiscard]] inline std::optional<size_t> event_sequence_capacity_for_sample_span(
-        double max_events_per_sample,
+        double max_events_per_index,
         size_t sample_count) noexcept
     {
         auto const required = event_count_for_sample_span(
-            max_events_per_sample, sample_count);
+            max_events_per_index, sample_count);
         if (!required) return std::nullopt;
         if (*required == 0) return size_t{0};
         constexpr size_t highest_power_of_two =
@@ -1650,9 +1652,9 @@ namespace iv {
     struct EventOutputProperties {
         EventTypeId type {};
         // Static storage-sizing rate. For a representation spanning W samples,
-        // GraphJIT reserves ceil(max_events_per_sample * W) event slots. This
+        // GraphJIT reserves ceil(max_events_per_index * W) event slots. This
         // does not constrain how events are distributed among sample timestamps.
-        double max_events_per_sample = DEFAULT_MAX_EVENTS_PER_SAMPLE;
+        double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
     };
 
     struct RealtimeInputConfig {
@@ -1955,7 +1957,7 @@ namespace iv {
     struct EventOutputConfig {
         std::string name {};
         EventTypeId type {};
-        double max_events_per_sample = DEFAULT_MAX_EVENTS_PER_SAMPLE;
+        double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
         OutputAccessConfig access {RealtimeOutputConfig{}};
     };
 
@@ -2163,7 +2165,7 @@ namespace iv {
         return {
             .name = config.name,
             .type = properties.type,
-            .max_events_per_sample = properties.max_events_per_sample,
+            .max_events_per_index = properties.max_events_per_index,
             .access = config.access,
         };
     }
@@ -2211,7 +2213,7 @@ namespace iv {
             config.name,
             EventOutputProperties{
                 .type = config.type,
-                .max_events_per_sample = config.max_events_per_sample,
+                .max_events_per_index = config.max_events_per_index,
             },
             config.access,
         };

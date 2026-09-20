@@ -851,7 +851,6 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                     .source_type = output.source_type,
                     .history = output.history,
                     .latency = output.latency,
-                    .write_capacity = output.write_capacity,
                     .append_existing = output.append_existing,
                 });
             }

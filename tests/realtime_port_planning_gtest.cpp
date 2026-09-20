@@ -185,6 +185,40 @@ TEST(EventOutputPort, CountsProducerSequenceOverflowWithoutAllocating)
     EXPECT_EQ(overflow_count, 1u);
 }
 
+TEST(EventOutputPort, LogicalQuotaCanExcludeExistingRetainedPrefix)
+{
+    std::array<iv::TimedEvent, 16> storage{};
+    iv::EventSharedPortData shared(
+        storage, 0, 4, iv::EventTypeId::trigger);
+    std::uint64_t overflow_count = 0;
+    iv::EventOutputPort output(
+        shared,
+        iv::EventTypeId::trigger,
+        0,
+        0,
+        &overflow_count,
+        2,
+        4);
+
+    output.begin_block(64, 64);
+    output.push(iv::TimedEvent{
+        .time = 64,
+        .value = iv::TriggerEvent{},
+    });
+    output.push(iv::TimedEvent{
+        .time = 65,
+        .value = iv::TriggerEvent{},
+    });
+    output.push(iv::TimedEvent{
+        .time = 66,
+        .value = iv::TriggerEvent{},
+    });
+    output.end_block();
+
+    EXPECT_EQ(shared.write_index, 6u);
+    EXPECT_EQ(overflow_count, 1u);
+}
+
 TEST(SampleConnectionStorageChooser, UsesBlockRelativeRetention)
 {
     using Kind = iv::RealtimeBufferStorageKind;
@@ -296,6 +330,30 @@ TEST(SampleConnectionStorageChooser, StackBudgetForcesExplicitPersistentStorage)
         iv::RealtimeStorageCostModel{.stack_budget_bytes = 1024});
     EXPECT_EQ(unretained.kind, Kind::full_node_storage);
     EXPECT_FALSE(unretained.candidate_costs.transient_stack.legal);
+}
+
+TEST(EventConnectionStorageChooser, AccountsForTopologyLocalStackFootprint)
+{
+    using Kind = iv::RealtimeBufferStorageKind;
+
+    auto const plan = iv::choose_event_connection_storage_plan({
+        .current_event_capacity = 100,
+        .retained_event_capacity = 10,
+        .value_size_bytes = sizeof(iv::TimedEvent),
+        .operations = {
+            .invariant_copied_values = 40,
+            .carry_extra_stack_values = 40,
+            .full_extra_stack_values = 40,
+        },
+    });
+
+    EXPECT_EQ(plan.kind, Kind::stack_with_persistent_carry);
+    EXPECT_EQ(
+        plan.candidate_costs.stack_with_persistent_carry.stack_bytes,
+        150u * sizeof(iv::TimedEvent));
+    EXPECT_EQ(
+        plan.candidate_costs.full_node_storage.stack_bytes,
+        40u * sizeof(iv::TimedEvent));
 }
 
 TEST(EventConnectionStorageChooser, UsesByteCostsAndStackBudget)

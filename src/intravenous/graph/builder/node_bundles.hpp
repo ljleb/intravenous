@@ -352,9 +352,9 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
       description.type_name,
       "event");
   for (auto const& output : event_outputs) {
-    if (!is_valid_event_buffer_rate(output.max_events_per_sample)) {
+    if (!is_valid_event_buffer_rate(output.max_events_per_index)) {
       details::error(std::string(description.type_name)
-          + ": event output max_events_per_sample must be finite and nonnegative");
+          + ": event output max_events_per_index must be finite and nonnegative");
     }
   }
 

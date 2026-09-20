@@ -76,7 +76,7 @@ struct PlainEventPass {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
-                .max_events_per_sample = 0.25,
+                .max_events_per_index = 0.25,
             })};
     }
 

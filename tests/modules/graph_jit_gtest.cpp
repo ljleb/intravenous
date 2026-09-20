@@ -3685,14 +3685,14 @@ struct FanInBurstEventSource {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
-                .max_events_per_sample = 0.125,
+                .max_events_per_index = 0.125,
             })};
     }
 
     void tick_block(iv::TickBlockContext<FanInBurstEventSource> const& ctx) const
     {
         if (ctx.block_size == 0) return;
-        for (std::size_t i = 0; i < 12; ++i) {
+        for (std::size_t i = 0; i < 8; ++i) {
             ctx.event_outputs[0].push(
                 iv::TriggerEvent{}, 3, ctx.index, ctx.block_size);
         }
@@ -3711,7 +3711,7 @@ struct FanInSparseEventSource {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
-                .max_events_per_sample = 0.125,
+                .max_events_per_index = 0.125,
             })};
     }
 
@@ -3749,7 +3749,7 @@ struct EventFeedbackA {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
-                .max_events_per_sample = 0.25,
+                .max_events_per_index = 0.25,
             })};
     }
 
@@ -3799,7 +3799,7 @@ struct LatentEventFeedbackA {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
-                .max_events_per_sample = 0.25,
+                .max_events_per_index = 0.25,
             },
             iv::RealtimeOutputConfig{.latency = 16})};
     }
@@ -3852,7 +3852,7 @@ struct PersistentLatentEventFeedbackA {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
-                .max_events_per_sample = 0.25,
+                .max_events_per_index = 0.25,
             },
             iv::RealtimeOutputConfig{.latency = 320})};
     }
@@ -3896,7 +3896,7 @@ struct PersistentLatentBoundaryEventFeedbackA {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::boundary,
-                .max_events_per_sample = 0.25,
+                .max_events_per_index = 0.25,
             },
             iv::RealtimeOutputConfig{.latency = 320})};
     }
@@ -3928,7 +3928,7 @@ struct EventFeedbackBurstA {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
-                .max_events_per_sample = 16.0,
+                .max_events_per_index = 16.0,
             })};
     }
 
@@ -3959,7 +3959,7 @@ struct EventFeedbackFanoutA {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
-                .max_events_per_sample = 0.25,
+                .max_events_per_index = 0.25,
             })};
     }
 
@@ -4001,7 +4001,7 @@ struct EventFeedbackB {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
-                .max_events_per_sample = 0.25,
+                .max_events_per_index = 0.25,
             })};
     }
 
@@ -4062,7 +4062,7 @@ struct RetainedDualEventFeedbackA {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
-                .max_events_per_sample = 0.25,
+                .max_events_per_index = 0.25,
             })};
     }
 
@@ -4114,13 +4114,13 @@ struct DualEventFeedbackB {
                 "exact",
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::trigger,
-                    .max_events_per_sample = 0.25,
+                    .max_events_per_index = 0.25,
                 }),
             iv::realtime_event_output(
                 "converted",
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::boundary,
-                    .max_events_per_sample = 0.25,
+                    .max_events_per_index = 0.25,
                 }),
         };
     }
@@ -4248,7 +4248,7 @@ struct BoundaryEventFeedbackA {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::boundary,
-                .max_events_per_sample = 0.25,
+                .max_events_per_index = 0.25,
             })};
     }
 
@@ -4278,7 +4278,7 @@ struct BoundaryEventFeedbackB {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::boundary,
-                .max_events_per_sample = 0.25,
+                .max_events_per_index = 0.25,
             })};
     }
 
@@ -4354,7 +4354,7 @@ struct RetainedTriggerEventSource {
                 "trigger",
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::trigger,
-                    .max_events_per_sample = 0.5,
+                    .max_events_per_index = 0.5,
                 },
                 iv::RealtimeOutputConfig{.latency = 8}),
         };
@@ -4433,7 +4433,7 @@ struct PersistentEventRingSource {
                 "trigger",
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::trigger,
-                    .max_events_per_sample = 0.5,
+                    .max_events_per_index = 0.5,
                 }),
         };
     }
@@ -5667,6 +5667,56 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_merged_converted_event_gra
     auto merged = iv::EventPortRef(graph, first_port.type, sources);
     sink_a.connect_event_input(0, merged);
     sink_b.connect_event_input(0, merged);
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
+std::shared_ptr<iv::ConfiguredGraph const>
+configured_merged_target_history_event_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create merged target-history event session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto first = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.trigger_event_source",
+        std::nullopt,
+        {});
+    auto second = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.trigger_event_source",
+        std::nullopt,
+        {});
+    auto sink = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.retained_trigger_event_consumer",
+        std::nullopt,
+        {});
+    auto const first_port = first.event_port();
+    auto const second_port = second.event_port();
+    std::array sources{
+        first_port.sources().front(), second_port.sources().front()};
+    sink.connect_event_input(
+        0, iv::EventPortRef(graph, first_port.type, sources));
     graph.outputs();
     return std::make_shared<iv::ConfiguredGraph const>(
         iv::details::take_built_graph(session.get()));
@@ -9454,7 +9504,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInMergesSlicedSourcesAndFansOu
     }
 }
 
-TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInHomePreservesProducerCapacity)
+TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInHomeUsesPlannedCapacity)
 {
     auto graph = configured_bounded_merged_feed_forward_event_graph(*revision);
     ASSERT_TRUE(graph);
@@ -9467,6 +9517,11 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInHomePreservesProducerCapacit
     EXPECT_EQ(
         analysis->event_producer_groups.front().storage_plan->kind,
         iv::RealtimeBufferStorageKind::transient_stack);
+    ASSERT_TRUE(
+        analysis->event_producer_groups.front().producer_home_source_index);
+    EXPECT_EQ(
+        *analysis->event_producer_groups.front().producer_home_source_index,
+        0u);
 
     auto compiled = compile_graph(graph, 147);
     ASSERT_TRUE(compiled.succeeded())
@@ -9491,15 +9546,31 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInHomePreservesProducerCapacit
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), 0, 64);
 
-    // Each source declares 0.125 events/sample, so its local 64-frame bound is
-    // 8 events. Source 0 deliberately attempts 12 writes. Its canonical/home
-    // backing allocation has aggregate capacity 16, but its logical producer
-    // view must still overflow after 8; source 1 contributes four more.
+    // Each source declares 0.125 events/sample, so the 64-frame sizing input
+    // reserves eight events per producer. Source 0 emits eight and source 1
+    // emits four; runtime correctness depends only on the resulting physical
+    // aggregate capacity, not on a separate per-producer write quota.
     EXPECT_EQ(probe->calls, 1u);
     EXPECT_EQ(probe->event_count, 12u);
     EXPECT_EQ(probe->trigger_count, 12u);
     EXPECT_EQ(probe->first_time, 3u);
     EXPECT_EQ(probe->last_time, 3u);
+}
+
+TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInRejectsUnavoidableLocalStackOverBudget)
+{
+    auto graph = configured_bounded_merged_feed_forward_event_graph(*revision);
+    ASSERT_TRUE(graph);
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *graph,
+        64,
+        iv::RealtimeStorageCostModel{
+            .stack_budget_bytes = 7u * sizeof(iv::TimedEvent),
+        });
+    ASSERT_FALSE(analysis.has_value());
+    EXPECT_NE(
+        analysis.error().find("no storage realization within the compile-time stack budget"),
+        std::string::npos);
 }
 
 TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInConvertsAfterMerge)
@@ -9552,6 +9623,70 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInConvertsAfterMerge)
     }
 }
 
+TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInTargetHistoryUsesRetainedProducerHome)
+{
+    auto graph = configured_merged_target_history_event_graph(*revision);
+    ASSERT_TRUE(graph);
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    ASSERT_EQ(analysis->event_producer_groups.size(), 1u);
+    auto const& group = analysis->event_producer_groups.front();
+    ASSERT_TRUE(group.storage_plan);
+    EXPECT_EQ(
+        group.storage_plan->kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
+    ASSERT_TRUE(group.producer_home_source_index);
+    EXPECT_EQ(*group.producer_home_source_index, 0u);
+    EXPECT_EQ(
+        group.storage_requirements.operations.invariant_copied_values,
+        128u);
+    EXPECT_EQ(
+        group.storage_requirements.operations.carry_extra_copied_values,
+        16u);
+    EXPECT_EQ(
+        group.storage_plan->candidate_costs.stack_with_persistent_carry
+            .copied_bytes,
+        176u * sizeof(iv::TimedEvent));
+    EXPECT_EQ(
+        group.storage_plan->candidate_costs.stack_with_persistent_carry
+            .stack_bytes,
+        208u * sizeof(iv::TimedEvent));
+
+    auto compiled = compile_graph(graph, 148);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    RetainedEventConsumerProbeStateMirror* probe = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(RetainedEventConsumerProbeStateMirror)) {
+            probe = static_cast<RetainedEventConsumerProbeStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(probe, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 64);
+    EXPECT_EQ(probe->event_counts[0], 4u);
+    EXPECT_EQ(probe->first_times[0], 3u);
+    EXPECT_EQ(probe->second_times[0], 3u);
+    EXPECT_EQ(probe->last_times[0], 63u);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 64, 64);
+    EXPECT_EQ(probe->event_counts[1], 6u);
+    EXPECT_EQ(probe->first_times[1], 63u);
+    EXPECT_EQ(probe->second_times[1], 63u);
+    EXPECT_EQ(probe->last_times[1], 127u);
+}
+
 TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
 {
     auto graph = configured_merged_retained_event_graph(*revision, false);
@@ -9565,6 +9700,11 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
     EXPECT_EQ(
         analysis->event_producer_groups.front().storage_plan->kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
+    // Authored source latency means a previous invocation may retain an event
+    // later than a newly-authored current event, so direct retained append is
+    // not order-safe for this group.
+    EXPECT_FALSE(
+        analysis->event_producer_groups.front().producer_home_source_index);
 
     auto compiled = compile_graph(graph, 145);
     ASSERT_TRUE(compiled.succeeded())
@@ -9632,6 +9772,11 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInPersistentRingRetainsBursts)
     EXPECT_EQ(
         analysis->event_producer_groups.front().storage_plan->kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
+    ASSERT_TRUE(
+        analysis->event_producer_groups.front().producer_home_source_index);
+    EXPECT_EQ(
+        *analysis->event_producer_groups.front().producer_home_source_index,
+        0u);
 
     auto compiled = compile_graph(graph, 147);
     ASSERT_TRUE(compiled.succeeded())
@@ -10903,10 +11048,10 @@ TEST_F(GraphJitRuntimeFixture, CompactRetainedEvents)
         retained_event_analysis->event_connections.front();
     EXPECT_EQ(retained_event_connection.source_latency, 8u);
     EXPECT_EQ(retained_event_connection.target_history, 8u);
-    EXPECT_DOUBLE_EQ(retained_event_connection.max_events_per_sample, 0.5);
+    EXPECT_DOUBLE_EQ(retained_event_connection.max_events_per_index, 0.5);
     auto const& retained_event_group =
         retained_event_analysis->event_producer_groups.front();
-    EXPECT_DOUBLE_EQ(retained_event_group.max_events_per_sample, 0.5);
+    EXPECT_DOUBLE_EQ(retained_event_group.max_events_per_index, 0.5);
     ASSERT_TRUE(retained_event_group.storage_plan.has_value());
     EXPECT_EQ(
         retained_event_group.storage_plan->kind,

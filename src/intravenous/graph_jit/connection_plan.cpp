@@ -528,14 +528,14 @@ std::expected<void, std::string> inventory_event_connections(
                 connection_plan.source_latency = std::max(
                     connection_plan.source_latency,
                     realtime_latency_or_zero(source));
-                if (!is_valid_event_buffer_rate(source.max_events_per_sample)) {
+                if (!is_valid_event_buffer_rate(source.max_events_per_index)) {
                     return std::unexpected(
-                        "event output max_events_per_sample must be finite and nonnegative");
+                        "event output max_events_per_index must be finite and nonnegative");
                 }
-                connection_plan.max_events_per_sample += source.max_events_per_sample;
-                if (!is_valid_event_buffer_rate(connection_plan.max_events_per_sample)) {
+                connection_plan.max_events_per_index += source.max_events_per_index;
+                if (!is_valid_event_buffer_rate(connection_plan.max_events_per_index)) {
                     return std::unexpected(
-                        "event connection aggregate max_events_per_sample is not representable");
+                        "event connection aggregate max_events_per_index is not representable");
                 }
                 auto const this_source_realtime = is_realtime(source.access);
                 if (source_realtime && *source_realtime != this_source_realtime) {
@@ -1502,6 +1502,7 @@ void plan_sample_groups(
 }
 
 std::expected<void, std::string> plan_event_groups(
+    ConfiguredGraph const& graph,
     ConnectionAnalysisPlan& plan,
     std::size_t kernel_block_size,
     RealtimeStorageCostModel const& cost_model)
@@ -1558,7 +1559,7 @@ std::expected<void, std::string> plan_event_groups(
             plan.event_producer_groups.push_back(EventProducerGroupPlan{
                 .source_type = connection.source_type,
                 .sources = connection.sources,
-                .max_events_per_sample = connection.max_events_per_sample,
+                .max_events_per_index = connection.max_events_per_index,
             });
             group = std::prev(plan.event_producer_groups.end());
         }
@@ -1603,25 +1604,189 @@ std::expected<void, std::string> plan_event_groups(
             retained = std::max(retained, connection_retained);
         }
         auto const current_event_capacity = event_count_for_sample_span(
-            group.max_events_per_sample, kernel_block_size);
+            group.max_events_per_index, kernel_block_size);
         auto const retained_event_capacity = event_count_for_sample_span(
-            group.max_events_per_sample, retained);
+            group.max_events_per_index, retained);
         if (!current_event_capacity || !retained_event_capacity) {
             return std::unexpected(
                 "GraphJit event producer sizing rate/sample span exceeds representable static capacity");
         }
-        group.storage_requirements = EventConnectionStorageRequirements{
+        auto base_requirements = EventConnectionStorageRequirements{
             .current_window_samples = kernel_block_size,
             .retained_window_samples = retained,
             .current_event_capacity = *current_event_capacity,
             .retained_event_capacity = *retained_event_capacity,
             .value_size_bytes = sizeof(TimedEvent),
         };
+        group.storage_requirements = base_requirements;
         group.requires_invocation_aggregate = requires_invocation_aggregate;
+        group.producer_home_source_index.reset();
         if (!group.has_realtime_connections) continue;
         if (!external) {
-            group.storage_plan = choose_event_connection_storage_plan(
-                group.storage_requirements, cost_model);
+            if (group.sources.size() > 1) {
+                std::vector<std::size_t> local_capacities;
+                local_capacities.reserve(group.sources.size());
+                std::size_t total_local_capacity = 0;
+                bool retained_home_is_order_safe = true;
+
+                for (std::size_t source_index = 0;
+                     source_index < group.sources.size(); ++source_index) {
+                    auto const source_id = group.sources[source_index];
+                    NodeBundlePortId const source_port{
+                        source_id.bundle, PortKind::event, source_id.port};
+                    auto const source = graph.node_bundles
+                        .resolve_event_output(source_port).config;
+                    auto const source_history = realtime_history(source);
+                    auto const source_latency = realtime_latency(source);
+                    if (retained != 0
+                        && (source_latency != 0
+                            || (source_index == 0 && source_history != 0))) {
+                        // The retained prefix is globally sorted. Any authored
+                        // source latency may leave a previous-invocation event
+                        // at or beyond the next block boundary; source 0
+                        // history may also author a new event before that
+                        // prefix. Either case makes direct source-0 append
+                        // order-unsafe. Other producers remain separate sorted
+                        // streams, so their history is handled by the merge.
+                        retained_home_is_order_safe = false;
+                    }
+                    if (source_history
+                            > std::numeric_limits<std::size_t>::max()
+                                - kernel_block_size
+                        || source_latency
+                            > std::numeric_limits<std::size_t>::max()
+                                - kernel_block_size - source_history) {
+                        return std::unexpected(
+                            "GraphJit event fan-in producer temporal window overflows size_t during costing");
+                    }
+                    auto const local_capacity =
+                        event_sequence_capacity_for_sample_span(
+                            source.max_events_per_index,
+                            kernel_block_size + source_history + source_latency);
+                    if (!local_capacity
+                        || *local_capacity
+                            > std::numeric_limits<std::size_t>::max()
+                                - total_local_capacity) {
+                        return std::unexpected(
+                            "GraphJit event fan-in producer capacity is not representable during costing");
+                    }
+                    total_local_capacity += *local_capacity;
+                    local_capacities.push_back(*local_capacity);
+                }
+
+
+                // event_sequence_merge rewrites the complete aggregate prefix
+                // for each merged source. Count those destination copies rather
+                // than treating fan-in as one copy per source event. This makes
+                // the producer-home saving explicit: source 0 is authored in
+                // place and the first whole-prefix rewrite disappears.
+                auto merge_copy_values = [&](std::size_t initial_values,
+                                             std::size_t first_source) {
+                    auto aggregate_values = initial_values;
+                    std::size_t copied_values = 0;
+                    for (std::size_t source_index = first_source;
+                         source_index < local_capacities.size(); ++source_index) {
+                        aggregate_values = saturating_add(
+                            aggregate_values, local_capacities[source_index]);
+                        copied_values = saturating_add(
+                            copied_values, aggregate_values);
+                    }
+                    return copied_values;
+                };
+                auto const retained_capacity =
+                    base_requirements.retained_event_capacity;
+                auto const separate_merge_copies = merge_copy_values(
+                    retained_capacity, 0);
+                auto const home_prefix = saturating_add(
+                    retained_capacity, local_capacities.front());
+                auto const home_sequential_merge_copies = merge_copy_values(
+                    home_prefix, 1);
+                // The transient producer-home helper performs one backwards
+                // k-way merge, so every final event is written at most once.
+                // Carry/full producer-home instead preserve an existing target
+                // and use the stable one-source-at-a-time merge helper.
+                auto const home_k_way_merge_copies = total_local_capacity;
+                auto const home_invariant_copies = std::min(
+                    home_k_way_merge_copies, home_sequential_merge_copies);
+
+                auto operations_for = [&](std::size_t local_values,
+                                          std::size_t invariant_copies,
+                                          std::size_t transient_copies,
+                                          std::size_t retained_copies,
+                                          std::size_t full_ring_values) {
+                    return RealtimeStorageOperationCounts{
+                        .invariant_copied_values = invariant_copies,
+                        .transient_extra_copied_values =
+                            transient_copies - invariant_copies,
+                        .carry_extra_copied_values =
+                            retained_copies - invariant_copies,
+                        .full_extra_copied_values =
+                            retained_copies - invariant_copies,
+                        .full_ring_addressed_values = full_ring_values,
+                        .transient_extra_stack_values = local_values,
+                        .carry_extra_stack_values = local_values,
+                        .full_extra_stack_values = local_values,
+                    };
+                };
+
+                auto separate_requirements = base_requirements;
+                separate_requirements.operations = operations_for(
+                    total_local_capacity,
+                    separate_merge_copies,
+                    separate_merge_copies,
+                    separate_merge_copies,
+                    separate_merge_copies);
+                auto separate_plan = choose_event_connection_storage_plan(
+                    separate_requirements, cost_model);
+
+                auto const home_local_capacity =
+                    total_local_capacity - local_capacities.front();
+                auto home_requirements = base_requirements;
+                home_requirements.operations = operations_for(
+                    home_local_capacity,
+                    home_invariant_copies,
+                    home_k_way_merge_copies,
+                    home_sequential_merge_copies,
+                    saturating_add(
+                        home_sequential_merge_copies,
+                        local_capacities.front()));
+                auto home_plan = choose_event_connection_storage_plan(
+                    home_requirements, cost_model);
+
+                auto selected_cost = [](EventConnectionStoragePlan const& plan)
+                    -> std::optional<std::size_t> {
+                    auto const& candidate = plan.candidate_costs.for_kind(
+                        plan.kind);
+                    return candidate.legal
+                        ? std::optional<std::size_t>{candidate.weighted_cost}
+                        : std::nullopt;
+                };
+                auto const separate_cost = selected_cost(separate_plan);
+                auto const home_legal = retained == 0
+                    || retained_home_is_order_safe;
+                auto const home_cost = home_legal
+                    ? selected_cost(home_plan)
+                    : std::optional<std::size_t>{};
+                if (home_cost
+                    && (!separate_cost || *home_cost < *separate_cost)) {
+                    group.producer_home_source_index = 0;
+                    group.storage_requirements = home_requirements;
+                    group.storage_plan = home_plan;
+                } else if (separate_cost) {
+                    group.storage_requirements = separate_requirements;
+                    group.storage_plan = separate_plan;
+                } else if (home_cost) {
+                    group.producer_home_source_index = 0;
+                    group.storage_requirements = home_requirements;
+                    group.storage_plan = home_plan;
+                } else {
+                    return std::unexpected(
+                        "GraphJit event fan-in has no storage realization within the compile-time stack budget");
+                }
+            } else {
+                group.storage_plan = choose_event_connection_storage_plan(
+                    group.storage_requirements, cost_model);
+            }
         }
 
         auto live = live_interval_for_event_group(plan, group);
@@ -1714,7 +1879,8 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         return std::unexpected(std::move(latency.error()));
     }
     plan_sample_groups(plan, kernel_block_size, cost_model);
-    if (auto events = plan_event_groups(plan, kernel_block_size, cost_model); !events) {
+    if (auto events = plan_event_groups(
+            graph, plan, kernel_block_size, cost_model); !events) {
         return std::unexpected(std::move(events.error()));
     }
     return plan;

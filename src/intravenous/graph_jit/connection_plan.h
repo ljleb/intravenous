@@ -148,7 +148,7 @@ struct EventConnectionPlan {
     std::size_t source_history = 0;
     std::size_t source_latency = 0;
     std::size_t target_history = 0;
-    double max_events_per_sample = 0.0;
+    double max_events_per_index = 0.0;
     PlannedConnectionAccess access = PlannedConnectionAccess::realtime_to_realtime;
     bool requires_conversion = false;
     bool requires_block_materialization = false;
@@ -184,13 +184,17 @@ struct SampleProducerGroupPlan {
 struct EventProducerGroupPlan {
     EventTypeId source_type = EventTypeId::empty;
     std::vector<EventOutputPortId> sources{};
-    double max_events_per_sample = 0.0;
+    double max_events_per_index = 0.0;
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
     bool has_compiled_connections = false;
     // Cyclic or block-adapted producers append into one invocation-wide
     // sequence. This is an execution/materialization fact, not a storage kind.
     bool requires_invocation_aggregate = false;
+    // When present, this semantic source writes directly into the canonical
+    // aggregate representation. Source 0 is currently the only legal home
+    // because equal-timestamp fan-in ordering is semantic-source ordered.
+    std::optional<std::size_t> producer_home_source_index{};
     EventConnectionStorageRequirements storage_requirements{};
     std::optional<EventConnectionStoragePlan> storage_plan{};
     ConnectionLiveIntervalPlan live_interval{};

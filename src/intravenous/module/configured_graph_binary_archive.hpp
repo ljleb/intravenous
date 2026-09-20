@@ -309,7 +309,7 @@ inline void write_event_output(Writer& w, EventOutputConfig const& value)
 {
     w.string(value.name);
     write_enum(w, value.type);
-    w.pod(value.max_events_per_sample);
+    w.pod(value.max_events_per_index);
     write_output_access(w, value.access);
 }
 
@@ -318,7 +318,7 @@ inline EventOutputConfig read_event_output(Reader& r)
     return {
         .name = r.string(),
         .type = read_enum<EventTypeId>(r),
-        .max_events_per_sample = r.pod<double>(),
+        .max_events_per_index = r.pod<double>(),
         .access = read_output_access(r),
     };
 }
