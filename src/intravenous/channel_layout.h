@@ -58,6 +58,18 @@ namespace iv {
         return channel_count(layout.channel_type);
     }
 
+    template<class... Types>
+    consteval size_t maximum_channel_count(ChannelTypeList<Types...>)
+    {
+        size_t result = 0;
+        ((result = std::max(result, Types::channel_count)), ...);
+        return result;
+    }
+
+    inline constexpr size_t maximum_supported_channel_count =
+        maximum_channel_count(SupportedChannelTypes{});
+    static_assert(maximum_supported_channel_count != 0);
+
     constexpr size_t sample_storage_size(ChannelLayout layout, size_t frames)
     {
         return frames * channel_count(layout);

@@ -701,8 +701,35 @@ namespace iv {
     // GraphJit therefore treats InputPort/OutputPort as invocation-local API
     // facades reconstructed from immutable compiler bindings, never as
     // persistent connection state or NodeStorage-owned objects.
+    struct SampleChannelStorageView {
+        Sample* storage = nullptr;
+        size_t frame_capacity = 0;
+        size_t frame_stride = 1;
+        size_t frame_delay = 0;
+
+        constexpr Sample& sample(size_t frame) const
+        {
+            IV_ASSERT(storage != nullptr, "sample channel storage is null");
+            IV_ASSERT(frame < frame_capacity, "sample channel frame index out of bounds");
+            IV_ASSERT(frame_stride != 0, "sample channel frame stride must be non-zero");
+            return storage[frame * frame_stride];
+        }
+
+        constexpr Sample& sample_absolute(SampleIndex logical_frame) const
+        {
+            IV_ASSERT(
+                frame_capacity != 0 && is_power_of_2(frame_capacity),
+                "sample channel capacity must be a power of two");
+            auto const mask = frame_capacity - 1;
+            auto const delayed = logical_frame + frame_capacity
+                - (frame_delay & mask);
+            return sample(static_cast<size_t>(delayed & mask));
+        }
+    };
+
     struct SamplePortStorageView {
-        std::span<Sample> buffer;
+        std::array<SampleChannelStorageView, maximum_supported_channel_count>
+            channels{};
         size_t latency = 0;
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
@@ -719,7 +746,6 @@ namespace iv {
             },
             size_t frame_capacity = 0
         ) :
-            buffer(buffer),
             latency(latency),
             channel_layout(channel_layout),
             frame_capacity(frame_capacity == 0
@@ -732,6 +758,53 @@ namespace iv {
             IV_ASSERT(
                 this->frame_capacity == 0 || is_power_of_2(this->frame_capacity),
                 "port buffer frame capacity should be a power of 2");
+            auto const count = channel_count(channel_layout);
+            for (size_t channel = 0; channel < count; ++channel) {
+                channels[channel] = SampleChannelStorageView{
+                    .storage = buffer.empty()
+                        ? nullptr
+                        : buffer.data() + (channel_layout.sample_layout
+                            == SampleStreamLayout::planar
+                                ? channel * this->frame_capacity
+                                : channel),
+                    .frame_capacity = this->frame_capacity,
+                    .frame_stride = channel_layout.sample_layout
+                            == SampleStreamLayout::planar
+                        ? 1
+                        : count,
+                };
+            }
+        }
+
+        constexpr explicit SamplePortStorageView(
+            std::array<
+                SampleChannelStorageView,
+                maximum_supported_channel_count> channels,
+            size_t latency,
+            ChannelLayout channel_layout,
+            size_t frame_capacity
+        ) :
+            channels(channels),
+            latency(latency),
+            channel_layout(channel_layout),
+            frame_capacity(frame_capacity)
+        {
+            IV_ASSERT(
+                frame_capacity == 0 || is_power_of_2(frame_capacity),
+                "port buffer frame capacity should be a power of 2");
+            auto const count = channel_count(channel_layout);
+            for (size_t channel = 0; channel < count; ++channel) {
+                IV_ASSERT(
+                    frame_capacity == 0 || channels[channel].storage != nullptr,
+                    "active sample channel storage is null");
+                IV_ASSERT(
+                    channels[channel].frame_capacity != 0
+                        && is_power_of_2(channels[channel].frame_capacity),
+                    "sample channel capacity must be a power of two");
+                IV_ASSERT(
+                    channels[channel].frame_stride != 0,
+                    "sample channel frame stride must be non-zero");
+            }
         }
 
         constexpr explicit SamplePortStorageView(SharedPortData const& shared_data)
@@ -742,13 +815,38 @@ namespace iv {
                 shared_data.frame_capacity)
         {}
 
+        constexpr Sample& sample(size_t frame, size_t channel) const
+        {
+            IV_ASSERT(channel < channel_count(channel_layout), "port channel index out of bounds");
+            return channels[channel].sample(frame);
+        }
+
+        // Compatibility helper for callers that retain the original contiguous
+        // backing buffer. Channel-granular views should use sample() instead.
         constexpr size_t sample_index(size_t frame, size_t channel) const
         {
             IV_ASSERT(frame < frame_capacity, "port frame index out of bounds");
-            IV_ASSERT(channel < channel_count(channel_layout), "port channel index out of bounds");
+            IV_ASSERT(
+                channel < channel_count(channel_layout),
+                "port channel index out of bounds");
             return channel_layout.sample_layout == SampleStreamLayout::planar
                 ? channel * frame_capacity + frame
                 : frame * channel_count(channel_layout) + channel;
+        }
+
+        constexpr BlockView<Sample> channel_block(
+            size_t channel, size_t start, size_t count) const
+        {
+            IV_ASSERT(channel < channel_count(channel_layout), "port channel index out of bounds");
+            IV_ASSERT(
+                channels[channel].frame_stride == 1,
+                "scalar block access requires contiguous channel storage");
+            return make_block_view(
+                std::span<Sample>{
+                    channels[channel].storage,
+                    channels[channel].frame_capacity},
+                start,
+                count);
         }
     };
 
@@ -804,13 +902,13 @@ namespace iv {
         {
             if (offset > _history) return 0.0f;
             size_t const idx = (current_read_position() + buffer_size() - offset) & (buffer_size() - 1);
-            return _storage.buffer[_storage.sample_index(idx, channel)];
+            return _storage.sample(idx, channel);
         }
 
         IV_FORCEINLINE constexpr Sample get_frame(size_t sample_offset, size_t channel = 0) const
         {
             size_t const sample = (current_read_position() + sample_offset) & (buffer_size() - 1);
-            return _storage.buffer[_storage.sample_index(sample, channel)];
+            return _storage.sample(sample, channel);
         }
 
         IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
@@ -820,7 +918,7 @@ namespace iv {
             }
 
             size_t const start = (current_read_position() + sample_offset) & (buffer_size() - 1);
-            return make_block_view(_storage.buffer, start, block_size - sample_offset);
+            return _storage.channel_block(0, start, block_size - sample_offset);
         }
 
         IV_FORCEINLINE constexpr size_t latency() const
@@ -853,7 +951,7 @@ namespace iv {
         {
             IV_ASSERT(values.size() == channel_count(_storage.channel_layout), "output frame does not match target channel layout");
             for (size_t channel = 0; channel < values.size(); ++channel) {
-                _storage.buffer[_storage.sample_index(frame, channel)] = values[channel];
+                _storage.sample(frame, channel) = values[channel];
             }
         }
 
@@ -973,14 +1071,14 @@ namespace iv {
             size_t const idx = (
                 _position + _storage.latency + buffer_size() - 1 - offset
             ) & (buffer_size() - 1);
-            return _storage.buffer[_storage.sample_index(idx, channel)];
+            return _storage.sample(idx, channel);
         }
 
         IV_FORCEINLINE constexpr void write_frame(size_t frame_offset, size_t channel, Sample value)
         {
             IV_ASSERT(_source_layout == _storage.channel_layout, "direct frame writes require matching source and target channel layouts");
             size_t const frame = (_position + _storage.latency + frame_offset) & (buffer_size() - 1);
-            _storage.buffer[_storage.sample_index(frame, channel)] = value;
+            _storage.sample(frame, channel) = value;
             _direct_write_extent = std::max(_direct_write_extent, frame_offset + 1);
         }
 
@@ -1019,7 +1117,7 @@ namespace iv {
                 _position + _storage.latency + buffer_size() - (sample_offset + count)
             ) & (buffer_size() - 1);
 
-            return make_block_view(_storage.buffer, start, count);
+            return _storage.channel_block(0, start, count);
         }
 
         IV_FORCEINLINE constexpr void push(Sample value)
@@ -1064,7 +1162,7 @@ namespace iv {
             size_t const start = (
                 _position + _storage.latency + buffer_size() - samples.size()
             ) & (buffer_size() - 1);
-            auto dst = make_block_view(_storage.buffer, start, samples.size());
+            auto dst = _storage.channel_block(0, start, samples.size());
             auto src = make_block_view(samples, 0, samples.size());
             for (size_t i = 0; i < samples.size(); ++i) {
                 dst[i] += src[i];
@@ -1076,7 +1174,7 @@ namespace iv {
             size_t const start = (
                 _position + _storage.latency + buffer_size() - samples.size()
             ) & (buffer_size() - 1);
-            auto dst = make_block_view(_storage.buffer, start, samples.size());
+            auto dst = _storage.channel_block(0, start, samples.size());
             for (size_t i = 0; i < samples.size(); ++i) {
                 dst[i] += samples[i];
             }
@@ -1090,7 +1188,7 @@ namespace iv {
             for (size_t frame_offset = 0; frame_offset < block_size; ++frame_offset) {
                 size_t const frame = (start + frame_offset) & mask;
                 for (size_t channel = 0; channel < channels; ++channel) {
-                    _storage.buffer[_storage.sample_index(frame, channel)] = 0.0f;
+                    _storage.sample(frame, channel) = 0.0f;
                 }
             }
             _position = (_position + block_size) & mask;
@@ -1131,7 +1229,7 @@ namespace iv {
         IV_FORCEINLINE constexpr BlockView<Sample const> current_block(size_t block_size) const
         {
             size_t const start = (_position + buffer_size() - block_size) & (buffer_size() - 1);
-            return make_block_view(std::span<Sample const>(_storage.buffer), start, block_size);
+            return static_cast<BlockView<Sample const>>(_storage.channel_block(0, start, block_size));
         }
 
         // The primary output writes the source-layout ring once.  Converted
@@ -1154,8 +1252,7 @@ namespace iv {
                     & (buffer_size() - 1);
                 for (size_t channel = 0;
                      channel < channel_count(_source_layout); ++channel) {
-                    frame[channel] = _storage.buffer[
-                        _storage.sample_index(source_frame, channel)];
+                    frame[channel] = _storage.sample(source_frame, channel);
                 }
                 target.push_frame(std::span<Sample const>(
                     frame, channel_count(_source_layout)));

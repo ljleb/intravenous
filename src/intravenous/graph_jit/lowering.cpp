@@ -509,12 +509,21 @@ sample_storage_binding(
         return std::unexpected(
             "GraphJit sample representation has no realized physical storage");
     }
-    return ReflectedSamplePortStorageBinding{
-        .storage = nullptr,
+    ReflectedSamplePortStorageBinding binding{
         .frame_capacity = representation.frame_capacity,
         .storage_latency = 0,
         .channel_layout = representation.channel_layout,
     };
+    auto const channels = channel_count(representation.channel_layout);
+    for (std::size_t channel = 0; channel < channels; ++channel) {
+        binding.channels[channel].frame_capacity = representation.frame_capacity;
+        binding.channels[channel].frame_stride =
+            representation.channel_layout.sample_layout
+                    == SampleStreamLayout::planar
+                ? 1
+                : channels;
+    }
+    return binding;
 }
 
 llvm::Value* runtime_bytes_copy(
@@ -548,6 +557,37 @@ void store_runtime_pointer(
     builder.CreateStore(
         value,
         byte_offset_pointer(builder, bytes, offset, "binding.pointer.slot"));
+}
+
+void store_sample_binding_channel_pointers(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* binding_bytes,
+    std::size_t storage_binding_offset,
+    detail::SampleRepresentationPlan const& representation,
+    llvm::Value* representation_base)
+{
+    auto const channels = channel_count(representation.channel_layout);
+    for (std::size_t channel = 0; channel < channels; ++channel) {
+        auto const sample_offset = representation.channel_layout.sample_layout
+                == SampleStreamLayout::planar
+            ? channel * representation.frame_capacity
+            : channel;
+        auto* channel_base = sample_offset == 0
+            ? representation_base
+            : byte_offset_pointer(
+                builder,
+                representation_base,
+                sample_offset * sizeof(Sample),
+                "sample.binding.channel");
+        store_runtime_pointer(
+            builder,
+            binding_bytes,
+            storage_binding_offset
+                + offsetof(ReflectedSamplePortStorageBinding, channels)
+                + channel * sizeof(ReflectedSampleChannelStorageBinding)
+                + offsetof(ReflectedSampleChannelStorageBinding, storage),
+            channel_base);
+    }
 }
 
 std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
@@ -596,12 +636,12 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                     return std::unexpected(
                         "GraphJit sample input binding lost its resolved storage");
                 }
-                store_runtime_pointer(
+                store_sample_binding_channel_pointers(
                     builder,
                     result.input_bindings,
                     i * sizeof(ReflectedSampleInputPortBinding)
-                        + offsetof(ReflectedSampleInputPortBinding, storage)
-                        + offsetof(ReflectedSamplePortStorageBinding, storage),
+                        + offsetof(ReflectedSampleInputPortBinding, storage),
+                    plan.physical.representations[representation],
                     realtime_storage.sample_representations[representation]);
             }
         }
@@ -635,12 +675,12 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                     return std::unexpected(
                         "GraphJit sample output binding lost its resolved storage");
                 }
-                store_runtime_pointer(
+                store_sample_binding_channel_pointers(
                     builder,
                     result.output_bindings,
                     i * sizeof(ReflectedSampleOutputPortBinding)
-                        + offsetof(ReflectedSampleOutputPortBinding, storage)
-                        + offsetof(ReflectedSamplePortStorageBinding, storage),
+                        + offsetof(ReflectedSampleOutputPortBinding, storage),
+                    plan.physical.representations[representation],
                     realtime_storage.sample_representations[representation]);
             }
         }

@@ -133,11 +133,20 @@ inline constexpr std::size_t reflected_event_output_count_v =
 IV_FORCEINLINE SamplePortStorageView reflected_sample_storage_view(
     ReflectedSamplePortStorageBinding const& binding)
 {
-    auto const sample_count = sample_storage_size(
-        binding.channel_layout, binding.frame_capacity);
-    auto* samples = reinterpret_cast<Sample*>(binding.storage);
+    std::array<SampleChannelStorageView, maximum_supported_channel_count>
+        channels{};
+    auto const count = channel_count(binding.channel_layout);
+    for (std::size_t channel = 0; channel < count; ++channel) {
+        channels[channel] = SampleChannelStorageView{
+            .storage = reinterpret_cast<Sample*>(
+                binding.channels[channel].storage),
+            .frame_capacity = binding.channels[channel].frame_capacity,
+            .frame_stride = binding.channels[channel].frame_stride,
+            .frame_delay = binding.channels[channel].frame_delay,
+        };
+    }
     return SamplePortStorageView{
-        std::span<Sample>{samples, sample_count},
+        channels,
         binding.storage_latency,
         binding.channel_layout,
         binding.frame_capacity,

@@ -120,7 +120,10 @@ The sample-edge realization uses an important whole-project-JIT-specific ABI:
 canonical `NodeStorage` contains only compiler-selected cross-call sample state,
 never `SharedPortData`, `InputPort`, or `OutputPort` objects. GraphJit creates
 per-node sample binding records containing capacities/layout facts and concrete
-representation pointers resolved by the generated root. The wrapper reconstructs
+per-channel pointer/stride slices resolved by the generated root. Contiguous
+representations currently populate those slices from one physical base, but the
+ABI does not require channels of one logical port to share a representation. The
+wrapper reconstructs
 short-lived node-API `InputPort`/`OutputPort` values for that primitive invocation,
 anchored to the absolute sample index. Those
 facades have no cross-call identity; after whole-project inlining/O3 they are
@@ -436,7 +439,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
 6. **Simple feed-forward sample connections.** **Landed.** Internal whole-port
    realtime sample edges realize `direct` and `transient_materialization` with
    bounded sample backing only. Reflected binding records hold concrete resolved
-   representation pointers; imported primitive wrappers reconstruct
+   per-channel pointer/stride slices; imported primitive wrappers reconstruct
    invocation-local `InputPort`/`OutputPort` facades from those pointers and the
    absolute sample index.
    No sample facade, cursor object, `SharedPortData`, or raw-region initializer is

@@ -9,6 +9,7 @@
 #include <intravenous/node/compiled_port_context.h>
 #include <intravenous/ports.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -54,10 +55,27 @@ struct ReflectedSpan {
 static_assert(std::is_standard_layout_v<ReflectedSpan<std::byte>>);
 static_assert(std::is_trivially_copyable_v<ReflectedSpan<std::byte>>);
 
-struct ReflectedSamplePortStorageBinding {
-    // Already-resolved compiler-owned backing. It may refer to the generated
-    // root frame's fixed transient arena or to canonical NodeStorage.
+struct ReflectedSampleChannelStorageBinding {
+    // Resolved address of logical frame zero for one semantic channel.
+    // frame_stride is measured in Sample elements, so planar channels normally
+    // use stride 1 while an interleaved N-channel representation uses stride N.
+    // Different channels may name unrelated producer representations.
     std::byte* storage = nullptr;
+    std::size_t frame_capacity = 0;
+    std::size_t frame_stride = 1;
+    // Additional logical delay between the port timeline and this backing
+    // channel. Zero preserves the ordinary whole-representation mapping; a
+    // future channel alias may bind an independently delayed producer channel.
+    std::size_t frame_delay = 0;
+};
+
+struct ReflectedSamplePortStorageBinding {
+    // Channel-granular resolved backing. The first channel_count(channel_layout)
+    // entries are active; unused entries remain null. This deliberately avoids
+    // requiring one contiguous representation base for a logical sample port.
+    std::array<
+        ReflectedSampleChannelStorageBinding,
+        maximum_supported_channel_count> channels{};
     std::size_t frame_capacity = 0;
     std::size_t storage_latency = 0;
     ChannelLayout channel_layout {
@@ -122,8 +140,16 @@ struct ReflectedEventOutputPortBinding {
     bool append_existing = false;
 };
 
+static_assert(std::is_standard_layout_v<ReflectedSampleChannelStorageBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedSampleChannelStorageBinding>);
 static_assert(std::is_standard_layout_v<ReflectedSamplePortStorageBinding>);
 static_assert(std::is_trivially_copyable_v<ReflectedSamplePortStorageBinding>);
+static_assert(
+    sizeof(std::array<
+        ReflectedSampleChannelStorageBinding,
+        maximum_supported_channel_count>)
+    == sizeof(ReflectedSampleChannelStorageBinding)
+        * maximum_supported_channel_count);
 static_assert(std::is_standard_layout_v<ReflectedSampleInputPortBinding>);
 static_assert(std::is_trivially_copyable_v<ReflectedSampleInputPortBinding>);
 static_assert(std::is_standard_layout_v<ReflectedSampleOutputPortBinding>);

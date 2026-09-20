@@ -1233,6 +1233,77 @@ TEST(Channels, SamplePortStorageViewConstructsFacadesWithoutSharedPortData)
     EXPECT_FLOAT_EQ(block[3], 4.0f);
 }
 
+TEST(Channels, SamplePortStorageViewSupportsDiscontiguousPlanarChannels)
+{
+    std::array<iv::Sample, 8> left{};
+    std::array<iv::Sample, 8> right{};
+    std::array<
+        iv::SampleChannelStorageView,
+        iv::maximum_supported_channel_count> channels{};
+    channels[0] = iv::SampleChannelStorageView{
+        .storage = left.data(),
+        .frame_capacity = 8,
+        .frame_stride = 1,
+    };
+    channels[1] = iv::SampleChannelStorageView{
+        .storage = right.data(),
+        .frame_capacity = 8,
+        .frame_stride = 1,
+    };
+    iv::ChannelLayout const layout{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    iv::SamplePortStorageView storage{channels, 0, layout, 8};
+    iv::OutputPort output(storage, 0, 6);
+    iv::InputPort input(storage, 0, 0, 6);
+
+    output.write_frame(0, 0, 1.25f);
+    output.write_frame(0, 1, 2.5f);
+
+    EXPECT_FLOAT_EQ(left[6], 1.25f);
+    EXPECT_FLOAT_EQ(right[6], 2.5f);
+    EXPECT_FLOAT_EQ(input.get_frame(0, 0), 1.25f);
+    EXPECT_FLOAT_EQ(input.get_frame(0, 1), 2.5f);
+}
+
+TEST(Channels, SamplePortStorageViewSupportsStridedChannelPointers)
+{
+    std::array<iv::Sample, 16> interleaved{};
+    for (std::size_t frame = 0; frame < 8; ++frame) {
+        interleaved[frame * 2] = static_cast<iv::Sample>(100 + frame);
+        interleaved[frame * 2 + 1] = static_cast<iv::Sample>(200 + frame);
+    }
+    std::array<
+        iv::SampleChannelStorageView,
+        iv::maximum_supported_channel_count> channels{};
+    channels[0] = iv::SampleChannelStorageView{
+        .storage = interleaved.data(),
+        .frame_capacity = 8,
+        .frame_stride = 2,
+    };
+    channels[1] = iv::SampleChannelStorageView{
+        .storage = interleaved.data() + 1,
+        .frame_capacity = 8,
+        .frame_stride = 2,
+    };
+    iv::SamplePortStorageView storage{
+        channels,
+        0,
+        iv::ChannelLayout{
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::interleaved,
+        },
+        8,
+    };
+    iv::InputPort input(storage, 0, 0, 5);
+
+    EXPECT_FLOAT_EQ(input.get_frame(0, 0), 105.0f);
+    EXPECT_FLOAT_EQ(input.get_frame(0, 1), 205.0f);
+    EXPECT_FLOAT_EQ(input.get_frame(2, 0), 107.0f);
+    EXPECT_FLOAT_EQ(input.get_frame(2, 1), 207.0f);
+}
+
 TEST(Channels, OutputPortUpdateRevisesOnlyUnpublishedLatencyWindow)
 {
     std::array<iv::Sample, 8> samples{};
