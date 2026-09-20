@@ -478,8 +478,16 @@ sample_storage_binding(
     }
     auto const& representation = plan.representations[representation_index];
 
-    if (representation.transient_allocation
-        != detail::no_sample_transient_allocation) {
+    if (representation.constant_value) {
+        if (representation.transient_allocation
+                != detail::no_sample_transient_allocation
+            || representation.persistent_allocation
+                != detail::no_sample_persistent_allocation) {
+            return std::unexpected(
+                "GraphJit constant sample input unexpectedly owns writable storage");
+        }
+    } else if (representation.transient_allocation
+               != detail::no_sample_transient_allocation) {
         if (representation.transient_allocation >= plan.transient_allocations.size()) {
             return std::unexpected(
                 "GraphJit sample representation references a missing transient allocation");
@@ -3345,8 +3353,28 @@ std::expected<llvm::Function*, std::string> define_root_operation(
          ++representation_index) {
         auto const& representation =
             plan.sample_ports.physical.representations[representation_index];
-        if (representation.transient_allocation
-            != detail::no_sample_transient_allocation) {
+        if (representation.constant_value) {
+            auto const channels = channel_count(representation.channel_layout);
+            if (channels == 0
+                || representation.frame_capacity
+                    > std::numeric_limits<std::size_t>::max() / channels) {
+                return std::unexpected(
+                    "GraphJit disconnected sample input buffer size overflows size_t");
+            }
+            auto const sample_count =
+                channels * representation.frame_capacity;
+            std::vector<Sample> samples(
+                sample_count, *representation.constant_value);
+            realtime_storage.sample_representations[representation_index] =
+                immutable_bytes_global(
+                    module,
+                    samples.data(),
+                    samples.size() * sizeof(Sample),
+                    alignof(Sample),
+                    "__iv_graph_sample_default_"
+                        + std::to_string(representation_index));
+        } else if (representation.transient_allocation
+                   != detail::no_sample_transient_allocation) {
             if (realtime_storage.sample_transient_base == nullptr
                 || representation.transient_allocation
                     >= plan.sample_ports.physical.transient_allocations.size()) {

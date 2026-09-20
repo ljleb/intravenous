@@ -1144,8 +1144,105 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         });
     }
 
+    struct DisconnectedSampleInput {
+        std::size_t primitive = 0;
+        std::size_t port = 0;
+        SampleInputConfig config{};
+    };
+    struct DisconnectedSampleOutput {
+        std::size_t primitive = 0;
+        std::size_t port = 0;
+        SampleOutputConfig config{};
+    };
+    std::vector<DisconnectedSampleInput> disconnected_inputs;
+    std::vector<DisconnectedSampleOutput> disconnected_outputs;
+    std::vector<SampleConstantInputRequest> constant_input_requests;
+    std::vector<SampleSinkPhysicalRequest> sink_requests;
+
+    auto execution_position_for_bundle = [&](NodeBundleHandle bundle)
+        -> std::expected<std::size_t, std::string> {
+        if (bundle >= connections.schedule.bundle_execution_position.size()
+            || !connections.schedule.bundle_execution_position[bundle]) {
+            return std::unexpected(
+                "GraphJit disconnected sample port has no execution position");
+        }
+        return *connections.schedule.bundle_execution_position[bundle];
+    };
+
+    for (std::size_t primitive_index = 0;
+         primitive_index < analysis.primitives.size(); ++primitive_index) {
+        auto const bundle = analysis.primitives[primitive_index].bundle.node_bundle;
+        auto execution_position = execution_position_for_bundle(bundle);
+        if (!execution_position) {
+            return std::unexpected(std::move(execution_position.error()));
+        }
+
+        for (std::size_t port = 0;
+             port < plan.primitives[primitive_index].inputs.size(); ++port) {
+            auto const connected = std::ranges::any_of(
+                validated_targets,
+                [&](ValidatedSampleTargetBinding const& target) {
+                    return target.target_primitive == primitive_index
+                        && target.target_port == port;
+                });
+            if (connected) continue;
+
+            auto const config = input.graph.node_bundles.resolve_sample_input(
+                NodeBundlePortId{bundle, PortKind::sample, port}).config;
+            if (!is_realtime(config.access)) {
+                return std::unexpected(
+                    "GraphJit disconnected compiled sample input is not supported");
+            }
+            disconnected_inputs.push_back(DisconnectedSampleInput{
+                .primitive = primitive_index,
+                .port = port,
+                .config = config,
+            });
+            constant_input_requests.push_back(SampleConstantInputRequest{
+                .channel_layout = config.channel_layout,
+                .default_value = config.default_value,
+                .execution_position = *execution_position,
+            });
+        }
+
+        for (std::size_t port = 0;
+             port < plan.primitives[primitive_index].outputs.size(); ++port) {
+            auto const connected = std::ranges::any_of(
+                validated_sources,
+                [&](ValidatedSampleSourceBinding const& source) {
+                    return source.source_primitive == primitive_index
+                        && source.source_port == port;
+                });
+            if (connected) continue;
+
+            auto const config = input.graph.node_bundles.resolve_sample_output(
+                NodeBundlePortId{bundle, PortKind::sample, port}).config;
+            if (!is_realtime(config.access)) {
+                return std::unexpected(
+                    "GraphJit disconnected compiled sample output is not supported");
+            }
+            disconnected_outputs.push_back(DisconnectedSampleOutput{
+                .primitive = primitive_index,
+                .port = port,
+                .config = config,
+            });
+            sink_requests.push_back(SampleSinkPhysicalRequest{
+                .channel_layout = config.channel_layout,
+                .history = realtime_history(config),
+                .latency = realtime_latency(config),
+                .execution_position = *execution_position,
+                .migration_identity =
+                    "graphjit.sample.disconnected_output:"
+                    + std::to_string(bundle) + "." + std::to_string(port),
+            });
+        }
+    }
+
     auto physical = build_sample_physical_plan(
-        connections, input.specialization.block_size);
+        connections,
+        input.specialization.block_size,
+        sink_requests,
+        constant_input_requests);
     if (!physical) return std::unexpected(std::move(physical.error()));
     plan.physical = std::move(*physical);
 
@@ -1260,6 +1357,61 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
     }
 
+    if (plan.physical.constant_input_representations.size()
+        != disconnected_inputs.size()) {
+        return std::unexpected(
+            "GraphJit disconnected sample input planning lost a constant buffer");
+    }
+    for (std::size_t i = 0; i < disconnected_inputs.size(); ++i) {
+        auto const& disconnected = disconnected_inputs[i];
+        auto const representation =
+            plan.physical.constant_input_representations[i];
+        if (representation >= plan.physical.representations.size()) {
+            return std::unexpected(
+                "GraphJit disconnected sample input references an invalid constant buffer");
+        }
+        auto const& storage = plan.physical.representations[representation];
+        if (!storage.constant_value
+            || storage.channel_layout != disconnected.config.channel_layout) {
+            return std::unexpected(
+                "GraphJit disconnected sample input lost its declared default buffer");
+        }
+
+        auto& binding = plan.primitives[disconnected.primitive]
+            .inputs[disconnected.port];
+        binding.channel_layout = disconnected.config.channel_layout;
+        binding.history = realtime_history(disconnected.config);
+        binding.read_latency = 0;
+        auto const channels = channel_count(disconnected.config.channel_layout);
+        binding.channels.reserve(channels);
+        for (std::size_t channel = 0; channel < channels; ++channel) {
+            binding.channels.push_back(PrimitiveSampleInputChannelBindingPlan{
+                .representation = representation,
+                .representation_channel = channel,
+                .frame_delay = 0,
+            });
+        }
+    }
+
+    if (plan.physical.sink_representations.size()
+        != disconnected_outputs.size()) {
+        return std::unexpected(
+            "GraphJit disconnected sample output planning lost a writable buffer");
+    }
+    for (std::size_t i = 0; i < disconnected_outputs.size(); ++i) {
+        auto const& disconnected = disconnected_outputs[i];
+        auto const representation = plan.physical.sink_representations[i];
+        if (representation >= plan.physical.representations.size()) {
+            return std::unexpected(
+                "GraphJit disconnected sample output references an invalid buffer");
+        }
+        auto& binding = plan.primitives[disconnected.primitive]
+            .outputs[disconnected.port];
+        binding.representation = representation;
+        binding.history = realtime_history(disconnected.config);
+        binding.latency = realtime_latency(disconnected.config);
+    }
+
     for (auto const& primitive : plan.primitives) {
         if (!std::ranges::all_of(
                 primitive.inputs,
@@ -1274,7 +1426,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                     return binding.representation.has_value();
                 })) {
             return std::unexpected(
-                "GraphJit sample-edge slice requires every primitive sample port to be connected exactly once");
+                "GraphJit sample port planning left an unresolved primitive port");
         }
     }
 

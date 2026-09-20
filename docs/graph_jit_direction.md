@@ -288,7 +288,7 @@ The current internal realtime connection surface is intentionally asymmetric:
 | Cyclic producer with ordinary downstream fanout | Implemented | The SCC timeline is updated slice by slice; downstream identity or converted/history-bearing branches are realized at the scope where the completed SCC result becomes available. |
 | Acyclic ingress or an edge between execution regions | Implemented | Explicit before/after materialization placement carries the resolved channel representation across the schedule; persistent storage is used only when the semantic history/latency lifetime crosses root calls. |
 | Mixed realtime/compiled or compiled-only sample access | Capability-gated separately | This belongs to the compiled-access executor rather than another realtime sample-buffer representation. |
-| Unconnected primitive sample port | Capability-gated | Physical sample planning currently requires every primitive sample input and output to have exactly one realized connection. |
+| Unconnected realtime sample port | Implemented | An unconnected input binds to compiler-emitted constant sample data filled with its declared `default_value`. An unconnected output receives an ordinary writable buffer sized from its declared history/latency; retained samples use the same stack-plus-`NodeStorage` or full-`NodeStorage` choice as connected outputs. |
 
 #### Realtime event SCC capability matrix
 

@@ -50,6 +50,8 @@ constexpr char graph_jit_skippable_pair_module_id[] = "iv.test.graph_jit.state_c
 constexpr char graph_jit_limited_block_module_id[] = "iv.test.graph_jit.state_context.limited_block_module";
 constexpr char graph_jit_ported_module_id[] = "iv.test.graph_jit.state_context.ported_module";
 constexpr char graph_jit_direct_sample_module_id[] = "iv.test.graph_jit.state_context.direct_sample_module";
+constexpr char graph_jit_disconnected_sample_input_module_id[] = "iv.test.graph_jit.state_context.disconnected_sample_input_module";
+constexpr char graph_jit_disconnected_sample_output_module_id[] = "iv.test.graph_jit.state_context.disconnected_sample_output_module";
 constexpr char graph_jit_transient_sample_module_id[] = "iv.test.graph_jit.state_context.transient_sample_module";
 constexpr char graph_jit_reused_sample_arena_module_id[] = "iv.test.graph_jit.state_context.reused_sample_arena_module";
 constexpr char graph_jit_sample_fanout_conversion_module_id[] = "iv.test.graph_jit.state_context.sample_fanout_conversion_module";
@@ -324,6 +326,20 @@ struct HistoryConsumerStateMirror {
     float current = 0.0f;
     float history_1 = 0.0f;
     float history_5 = 0.0f;
+    std::uint32_t marker = 0;
+};
+
+struct DisconnectedSampleInputProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t last_index = 0;
+    std::uint64_t last_block_size = 0;
+    float current_left = 0.0f;
+    float current_right = 0.0f;
+    float history_left = 0.0f;
+    float history_right = 0.0f;
+    float block_first = 0.0f;
+    float block_last = 0.0f;
+    float block_sum = 0.0f;
     std::uint32_t marker = 0;
 };
 
@@ -3589,6 +3605,61 @@ struct InterleavedLatencyCompensationProbe {
     }
 };
 
+struct DisconnectedSampleInputProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t last_index = 0;
+        std::uint64_t last_block_size = 0;
+        float current_left = 0.0f;
+        float current_right = 0.0f;
+        float history_left = 0.0f;
+        float history_right = 0.0f;
+        float block_first = 0.0f;
+        float block_last = 0.0f;
+        float block_sum = 0.0f;
+        std::uint32_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input(
+            "in",
+            {.channel_layout = {
+                 .channel_type = iv::ChannelTypeId::stereo,
+                 .sample_layout = iv::SampleStreamLayout::interleaved,
+             },
+             .default_value = iv::Sample{0.375f}},
+            {.history = 5})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<DisconnectedSampleInputProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const& input = ctx.inputs[0];
+        auto const block = input.get_block(ctx.block_size);
+        ++state.calls;
+        state.last_index = ctx.index;
+        state.last_block_size = ctx.block_size;
+        state.current_left = input.get(0, 0);
+        state.current_right = input.get(0, 1);
+        state.history_left = input.get(5, 0);
+        state.history_right = input.get(5, 1);
+        state.block_first = block.empty() ? 0.0f : static_cast<float>(block[0]);
+        state.block_last = block.empty()
+            ? 0.0f
+            : static_cast<float>(block[block.size() - 1]);
+        state.block_sum = 0.0f;
+        for (auto const sample : block) state.block_sum += sample;
+        state.marker = 0xd15c0a11u;
+    }
+};
+
 struct TriggerEventSource {
     static constexpr auto inputs()
     {
@@ -4617,6 +4688,18 @@ void limited_block_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void disconnected_sample_input_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.state_context.disconnected_sample_input_probe">();
+    graph.outputs();
+}
+
+void disconnected_sample_output_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.state_context.history_ramp_source">();
+    graph.outputs();
+}
+
 void direct_sample_module(iv::GraphBuilder& graph)
 {
     auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
@@ -4866,6 +4949,7 @@ IV_NODE("iv.test.graph_jit.state_context.large_history_consumer", LargeHistoryCo
 IV_NODE("iv.test.graph_jit.state_context.five_sample_delay", FiveSampleDelay);
 IV_NODE("iv.test.graph_jit.state_context.latency_compensation_probe", LatencyCompensationProbe);
 IV_NODE("iv.test.graph_jit.state_context.interleaved_latency_compensation_probe", InterleavedLatencyCompensationProbe);
+IV_NODE("iv.test.graph_jit.state_context.disconnected_sample_input_probe", DisconnectedSampleInputProbe);
 IV_NODE("iv.test.graph_jit.state_context.trigger_event_source", TriggerEventSource);
 IV_NODE("iv.test.graph_jit.state_context.midi_event_source", MidiEventSource);
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_source", LimitedTriggerEventSource);
@@ -4900,6 +4984,8 @@ IV_MODULE("iv.test.graph_jit.state_context.pointer_configured_module", pointer_c
 IV_MODULE("iv.test.graph_jit.state_context.multiple_module", multiple_module);
 IV_MODULE("iv.test.graph_jit.state_context.skippable_pair_module", skippable_pair_module);
 IV_MODULE("iv.test.graph_jit.state_context.limited_block_module", limited_block_module);
+IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_input_module", disconnected_sample_input_module);
+IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_output_module", disconnected_sample_output_module);
 IV_MODULE("iv.test.graph_jit.state_context.direct_sample_module", direct_sample_module);
 IV_MODULE("iv.test.graph_jit.state_context.transient_sample_module", transient_sample_module);
 IV_MODULE("iv.test.graph_jit.state_context.reused_sample_arena_module", reused_sample_arena_module);
@@ -6350,6 +6436,98 @@ TEST_F(GraphJitRuntimeFixture, MultipleNodesAndBlockSlicing)
     EXPECT_EQ(limited_state->tick_indices[4], 300u);
     EXPECT_EQ(limited_state->tick_sizes[4], 8u);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, DisconnectedSampleInputUsesDeclaredDefault)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_disconnected_sample_input_module_id);
+    ASSERT_TRUE(graph);
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    EXPECT_TRUE(analysis->sample_connections.empty());
+    EXPECT_TRUE(analysis->sample_producer_groups.empty());
+
+    auto compiled = compile_graph(graph, 121);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 0u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* state = static_cast<DisconnectedSampleInputProbeStateMirror*>(
+        storage.state_ptr(0));
+    ASSERT_NE(state, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 100, 64);
+    EXPECT_EQ(state->calls, 1u);
+    EXPECT_EQ(state->last_index, 100u);
+    EXPECT_EQ(state->last_block_size, 64u);
+    EXPECT_FLOAT_EQ(state->current_left, 0.375f);
+    EXPECT_FLOAT_EQ(state->current_right, 0.375f);
+    EXPECT_FLOAT_EQ(state->history_left, 0.375f);
+    EXPECT_FLOAT_EQ(state->history_right, 0.375f);
+    EXPECT_FLOAT_EQ(state->block_first, 0.375f);
+    EXPECT_FLOAT_EQ(state->block_last, 0.375f);
+    EXPECT_FLOAT_EQ(state->block_sum, 24.0f);
+    EXPECT_EQ(state->marker, 0xd15c0a11u);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 164, 16);
+    EXPECT_EQ(state->calls, 2u);
+    EXPECT_EQ(state->last_index, 164u);
+    EXPECT_EQ(state->last_block_size, 16u);
+    EXPECT_FLOAT_EQ(state->history_left, 0.375f);
+    EXPECT_FLOAT_EQ(state->history_right, 0.375f);
+    EXPECT_FLOAT_EQ(state->block_sum, 6.0f);
+}
+
+TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_disconnected_sample_output_module_id);
+    ASSERT_TRUE(graph);
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    EXPECT_TRUE(analysis->sample_connections.empty());
+    EXPECT_TRUE(analysis->sample_producer_groups.empty());
+
+    auto compiled = compile_graph(graph, 122);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 1u);
+    auto const raw = std::ranges::find_if(
+        compiled.compiled_graph->node_layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.kind == iv::NodeLayout::Region::Kind::raw;
+        });
+    ASSERT_NE(raw, compiled.compiled_graph->node_layout.regions.end());
+    EXPECT_EQ(raw->size, 5u * sizeof(iv::Sample));
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* state = static_cast<HistoryRampSourceStateMirror*>(storage.state_ptr(0));
+    ASSERT_NE(state, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 64);
+    EXPECT_EQ(state->calls, 1u);
+    EXPECT_FLOAT_EQ(state->previous_output, 0.0f);
+    EXPECT_EQ(state->marker, 0x91a2b3c4u);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 64, 64);
+    EXPECT_EQ(state->calls, 2u);
+    EXPECT_FLOAT_EQ(state->previous_output, 63.0f);
 }
 
 TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)

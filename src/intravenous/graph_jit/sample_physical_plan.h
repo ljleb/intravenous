@@ -58,6 +58,15 @@ struct SampleSinkPhysicalRequest {
     std::string migration_identity{};
 };
 
+// A disconnected realtime input reads its declared default value at every
+// sample index. The generated module can therefore bind it to immutable data
+// instead of reserving stack or NodeStorage bytes.
+struct SampleConstantInputRequest {
+    ChannelLayout channel_layout{};
+    Sample default_value{};
+    std::size_t execution_position = 0;
+};
+
 struct SampleProducerPhysicalPlan {
     std::size_t canonical_representation = no_sample_representation;
 };
@@ -258,6 +267,9 @@ struct SamplePhysicalPlan {
     // Indexed by the SampleSinkPhysicalRequest sequence supplied to
     // build_sample_physical_plan().
     std::vector<std::size_t> sink_representations{};
+    // Indexed by the SampleConstantInputRequest sequence supplied to
+    // build_sample_physical_plan().
+    std::vector<std::size_t> constant_input_representations{};
 
     // Explicit conversion/materialization operations. These are scheduled after
     // the source producer and before every consumer bound to the target
@@ -300,7 +312,8 @@ struct SamplePhysicalPlan {
 std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     ConnectionAnalysisPlan const& connections,
     std::size_t kernel_block_size,
-    std::span<SampleSinkPhysicalRequest const> sinks = {});
+    std::span<SampleSinkPhysicalRequest const> sinks = {},
+    std::span<SampleConstantInputRequest const> constant_inputs = {});
 
 // Reserve canonical NodeStorage for persistent connection state. Transient
 // backing belongs to the generated root stack. Retained feedback state with

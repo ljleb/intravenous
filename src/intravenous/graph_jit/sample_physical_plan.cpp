@@ -310,7 +310,8 @@ std::string composition_feedback_alignment_identity(
 std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     ConnectionAnalysisPlan const& connections,
     std::size_t kernel_block_size,
-    std::span<SampleSinkPhysicalRequest const> sinks)
+    std::span<SampleSinkPhysicalRequest const> sinks,
+    std::span<SampleConstantInputRequest const> constant_inputs)
 {
     if (kernel_block_size == 0 || !is_power_of_2(kernel_block_size)) {
         return std::unexpected(
@@ -1809,6 +1810,29 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         plan.connection_representations[connection_index] = target_representation;
     }
 
+    plan.constant_input_representations.reserve(constant_inputs.size());
+    for (auto const& input : constant_inputs) {
+        if (input.execution_position >= connections.nodes.size()) {
+            return std::unexpected(
+                "GraphJit disconnected sample input has no execution position");
+        }
+        auto const representation = append_representation(
+            SampleRepresentationPlan{
+                .producer_group_index = no_sample_producer_group,
+                .canonical_producer_representation = false,
+                .storage = RealtimeBufferStorageKind::transient_stack,
+                .channel_layout = input.channel_layout,
+                .frame_capacity = kernel_block_size,
+                .live_interval = ConnectionLiveIntervalPlan{
+                    .begin = input.execution_position,
+                    .end = input.execution_position,
+                    .crosses_kernel_invocations = false,
+                },
+                .constant_value = input.default_value,
+            });
+        plan.constant_input_representations.push_back(representation);
+    }
+
     plan.sink_representations.reserve(sinks.size());
     for (auto const& sink : sinks) {
         if (sink.execution_position >= connections.nodes.size()) {
@@ -1836,10 +1860,14 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 .channel_count = channel_count(sink.channel_layout),
                 .value_size_bytes = sizeof(Sample),
             });
+        // The writable stack buffer exists only while this callback runs.
+        // When history/latency is kept with compact carry, the retained tail
+        // lives in NodeStorage between root calls and is restored/committed by
+        // the carry operations below.
         auto const live = ConnectionLiveIntervalPlan{
             .begin = sink.execution_position,
             .end = sink.execution_position,
-            .crosses_kernel_invocations = retained_frames != 0,
+            .crosses_kernel_invocations = false,
         };
 
         auto persistent_identity = [&](SamplePersistentStorageKind kind) {
