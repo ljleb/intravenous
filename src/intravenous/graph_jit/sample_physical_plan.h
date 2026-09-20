@@ -69,6 +69,10 @@ struct SampleConstantInputRequest {
 
 struct SampleProducerPhysicalPlan {
     std::size_t canonical_representation = no_sample_representation;
+    // Final storage choice made by sample physical planning after accounting for
+    // compiler-generated conversion/fanout/feedback work that reads this
+    // producer buffer.
+    SampleConnectionStoragePlan storage_plan{};
 };
 
 // One target semantic channel resolved directly to a channel of an existing
@@ -238,6 +242,9 @@ struct SampleFeedbackTimelineWriterPlan {
 
 struct SampleFeedbackTimelinePlan {
     std::size_t connection_index = 0;
+    // Costed storage choice for this feedback buffer. Producer-home feedback
+    // shares the producer buffer and therefore carries that producer choice.
+    SampleConnectionStoragePlan storage_plan{};
     std::size_t timeline_representation = no_sample_representation;
     ChannelLayout channel_layout{};
     std::size_t retained_frames = 0;

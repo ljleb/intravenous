@@ -1513,6 +1513,13 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     EXPECT_EQ(timeline.writer.source_representation, canonical);
     EXPECT_EQ(timeline.writer.after_execution_position, 0u);
     EXPECT_TRUE(timeline.writer.composition_contributions.empty());
+    EXPECT_EQ(
+        timeline.storage_plan.candidate_costs.full_node_storage.copied_bytes,
+        10u * sizeof(iv::Sample));
+    EXPECT_EQ(
+        timeline.storage_plan.candidate_costs.full_node_storage
+            .ring_addressed_bytes,
+        10u * sizeof(iv::Sample));
 
     iv::NodeLayoutBuilder builder(8);
     auto declared = declare_sample_physical_storage(builder, *physical);
@@ -2125,6 +2132,17 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackUsesCompactCarryTimeline)
         physical->producer_groups[0]->canonical_representation;
     auto const& timeline = physical->feedback_timelines[0];
     EXPECT_EQ(timeline.writer.kind, SampleFeedbackTimelineWriterKind::copy);
+    EXPECT_EQ(
+        timeline.storage_plan.kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
+    EXPECT_EQ(
+        timeline.storage_plan.candidate_costs.stack_with_persistent_carry
+            .copied_bytes,
+        (64u + 2u * 9u) * sizeof(iv::Sample));
+    EXPECT_EQ(
+        timeline.storage_plan.candidate_costs.full_node_storage
+            .ring_addressed_bytes,
+        64u * sizeof(iv::Sample));
     auto const ring = timeline.timeline_representation;
     ASSERT_NE(canonical, ring);
     EXPECT_EQ(physical->representations[ring].channel_layout, mono);
@@ -2308,6 +2326,106 @@ TEST(GraphJitSamplePhysicalPlan, AliasableConvertedFanoutSharesRetainedProducerT
             EXPECT_EQ(channel.frame_delay, 0u);
         }
     }
+}
+
+TEST(GraphJitSamplePhysicalPlan, GeneratedConversionReadsAffectProducerStorageCost)
+{
+    using namespace iv::graph_jit::detail;
+
+    iv::ChannelLayout const stereo{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::interleaved,
+    };
+    iv::ChannelLayout const mono{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    iv::NodeBundlePortId const source_port{1, iv::PortKind::sample, 0};
+    std::array const source_channels{
+        iv::SampleOutputChannelId{.bundle = 1, .port = 0, .channel = 0},
+        iv::SampleOutputChannelId{.bundle = 1, .port = 0, .channel = 1},
+    };
+
+    ConnectionAnalysisPlan connections;
+    connections.schedule.bundle_execution_position.resize(3);
+    connections.schedule.bundle_execution_position[1] = 0;
+    connections.schedule.bundle_execution_position[2] = 1;
+
+    SampleConnectionPlan converted;
+    converted.source_type = iv::ChannelTypeId::stereo;
+    converted.source_channels.assign(source_channels.begin(), source_channels.end());
+    converted.source_channel_timings = {
+        SampleSourceChannelTimingPlan{
+            .source = source_channels[0],
+            .source_layout = stereo,
+            .source_history = 1,
+        },
+        SampleSourceChannelTimingPlan{
+            .source = source_channels[1],
+            .source_layout = stereo,
+            .source_history = 1,
+        },
+    };
+    converted.canonical_source_port = source_port;
+    converted.canonical_source_layout = stereo;
+    converted.target_type = iv::ChannelTypeId::mono;
+    converted.target_layout = mono;
+    converted.target_channels = {
+        iv::SampleInputChannelId{.bundle = 2, .port = 0, .channel = 0},
+    };
+    converted.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
+    converted.access = PlannedConnectionAccess::realtime_to_realtime;
+    converted.requires_conversion = true;
+    connections.sample_connections.push_back(converted);
+
+    SampleProducerGroupPlan group;
+    group.source_port = source_port;
+    group.source_type = iv::ChannelTypeId::stereo;
+    group.source_channels.assign(source_channels.begin(), source_channels.end());
+    group.canonical_source_layout = stereo;
+    group.connection_indices = {0};
+    group.has_realtime_connections = true;
+    group.storage_requirements = iv::SampleConnectionStorageRequirements{
+        .current_block_frames = 64,
+        .retained_frames = 1,
+        .channel_count = 2,
+        .value_size_bytes = sizeof(iv::Sample),
+    };
+    // Connection analysis has not yet seen the generated conversion reads. The
+    // sample-buffer planner must replace this provisional choice using the work
+    // it is about to emit.
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::full_node_storage};
+    group.live_interval = ConnectionLiveIntervalPlan{
+        .begin = 0,
+        .end = 1,
+        .crosses_kernel_invocations = true,
+    };
+    connections.sample_producer_groups.push_back(group);
+
+    auto physical = build_sample_physical_plan(
+        connections,
+        64,
+        {},
+        {},
+        iv::RealtimeStorageCostModel{
+            .copied_byte_weight = 0,
+            .ring_addressed_byte_weight = 1,
+            .stack_footprint_byte_weight = 0,
+            .persistent_footprint_byte_weight = 0,
+        });
+    ASSERT_TRUE(physical.has_value())
+        << (physical ? std::string{} : physical.error());
+    ASSERT_TRUE(physical->producer_groups[0]);
+    EXPECT_EQ(
+        physical->producer_groups[0]->storage_plan.kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
+    EXPECT_EQ(
+        physical->producer_groups[0]
+            ->storage_plan.candidate_costs.full_node_storage
+            .ring_addressed_bytes,
+        128u * sizeof(iv::Sample));
+    ASSERT_EQ(physical->materializations.size(), 1u);
 }
 
 TEST(GraphJitSamplePhysicalPlan, RejectsTransientStorageThatCrossesKernelCalls)
@@ -6891,6 +7009,15 @@ TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
     ASSERT_EQ(fanout_physical->connection_channel_bindings.size(), 4u);
     auto const fanout_canonical =
         fanout_physical->producer_groups[0]->canonical_representation;
+    EXPECT_EQ(
+        fanout_physical->producer_groups[0]
+            ->storage_plan.candidate_costs.full_node_storage.copied_bytes,
+        0u);
+    EXPECT_EQ(
+        fanout_physical->producer_groups[0]
+            ->storage_plan.candidate_costs.full_node_storage
+            .ring_addressed_bytes,
+        0u);
     std::size_t direct_whole_port = 0;
     std::size_t channel_granular = 0;
     for (std::size_t connection_index = 0;
@@ -7027,6 +7154,19 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
                 : stereo_conversion_physical.error());
     EXPECT_EQ(stereo_conversion_physical->representations.size(), 2u);
     EXPECT_EQ(stereo_conversion_physical->materializations.size(), 1u);
+    ASSERT_TRUE(stereo_conversion_physical->producer_groups[0]);
+    auto const& stereo_source_costs =
+        stereo_conversion_physical->producer_groups[0]
+            ->storage_plan.candidate_costs;
+    EXPECT_EQ(
+        stereo_source_costs.transient_stack.copied_bytes,
+        64u * sizeof(iv::Sample));
+    EXPECT_EQ(
+        stereo_source_costs.full_node_storage.copied_bytes,
+        64u * sizeof(iv::Sample));
+    EXPECT_EQ(
+        stereo_source_costs.full_node_storage.ring_addressed_bytes,
+        128u * sizeof(iv::Sample));
     EXPECT_EQ(
         std::ranges::count_if(
             stereo_conversion_physical->connection_channel_bindings,

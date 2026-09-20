@@ -281,6 +281,239 @@ bool composition_group_has_direct_alias(
     return false;
 }
 
+
+
+std::size_t sample_values(ChannelLayout layout, std::size_t frames)
+{
+    return iv::detail::saturating_multiply(
+        frames, channel_count(layout));
+}
+
+bool source_channel_belongs_to_group(
+    SampleSourceChannelTimingPlan const& timing,
+    SampleProducerGroupPlan const& group)
+{
+    return group.source_port
+        && timing.source.bundle == group.source_port->node_bundle_handle
+        && timing.source.port == group.source_port->port_ordinal;
+}
+
+bool feedback_can_use_producer_buffer(
+    SampleConnectionPlan const& connection,
+    SampleProducerGroupPlan const& group)
+{
+    return connection.access == PlannedConnectionAccess::realtime_to_realtime
+        && connection.detach
+        && connection.detach_initial_value
+        && std::bit_cast<std::uint32_t>(
+            static_cast<float>(*connection.detach_initial_value))
+            == std::bit_cast<std::uint32_t>(0.0f)
+        && group.source_port
+        && connection.canonical_source_port
+        && *connection.canonical_source_port == *group.source_port
+        && group.canonical_source_layout
+        && connection.canonical_source_layout
+        && *connection.canonical_source_layout == *group.canonical_source_layout;
+}
+
+RealtimeStorageOperationCounts copied_feedback_buffer_operation_counts(
+    SampleConnectionPlan const& connection,
+    ChannelLayout source_layout,
+    std::size_t kernel_block_size)
+{
+    RealtimeStorageOperationCounts result;
+
+    auto const copied_frames = iv::detail::saturating_add(
+        kernel_block_size, connection.source_latency);
+    auto const copied_values = sample_values(source_layout, copied_frames);
+    result.invariant_copied_values = iv::detail::saturating_add(
+        result.invariant_copied_values, copied_values);
+    // With full NodeStorage the feedback copy writes directly into the ring.
+    // The compact alternative writes the same values into its stack buffer and
+    // copies only the delayed tail to/from NodeStorage at root-call edges.
+    result.full_ring_addressed_values = iv::detail::saturating_add(
+        result.full_ring_addressed_values, copied_values);
+
+    if (connection.requires_conversion
+        && !can_alias_sample_conversion(source_layout, connection.target_layout)) {
+        // emit_sample_materialization() covers exactly the current block plus
+        // the target history prefix. Its source is the feedback buffer and its
+        // target is a separate stack buffer.
+        auto const frames = iv::detail::saturating_add(
+            kernel_block_size, connection.target_history);
+        auto const source_reads = sample_values(source_layout, frames);
+        auto const target_writes = sample_values(connection.target_layout, frames);
+        result.invariant_copied_values = iv::detail::saturating_add(
+            result.invariant_copied_values, target_writes);
+        result.full_ring_addressed_values = iv::detail::saturating_add(
+            result.full_ring_addressed_values, source_reads);
+    }
+
+    return result;
+}
+
+RealtimeStorageOperationCounts composed_feedback_buffer_operation_counts(
+    SampleConnectionPlan const& connection,
+    std::size_t kernel_block_size,
+    std::size_t revision_frames)
+{
+    RealtimeStorageOperationCounts result;
+    // emit_sample_composition_write() writes one value per target channel for
+    // the current block plus every source frame that may be revised by latency.
+    auto const frames = iv::detail::saturating_add(
+        kernel_block_size, revision_frames);
+    auto const writes = sample_values(connection.target_layout, frames);
+    result.invariant_copied_values = writes;
+    result.full_ring_addressed_values = writes;
+    return result;
+}
+
+RealtimeStorageOperationCounts sample_producer_operation_counts(
+    ConnectionAnalysisPlan const& connections,
+    SampleProducerGroupPlan const& group,
+    std::size_t kernel_block_size,
+    bool uses_feedback_buffer_as_producer_output)
+{
+    RealtimeStorageOperationCounts result = group.storage_requirements.operations;
+    if (!group.canonical_source_layout) return result;
+
+    struct MaterializationWindow {
+        ChannelLayout target_layout{};
+        std::size_t retained_before = 0;
+        std::size_t latest_read_latency = std::numeric_limits<std::size_t>::max();
+    };
+    std::vector<MaterializationWindow> shared_materializations;
+
+    for (auto const connection_index : group.connection_indices) {
+        if (connection_index >= connections.sample_connections.size()) continue;
+        auto const& connection = connections.sample_connections[connection_index];
+        if (connection.access != PlannedConnectionAccess::realtime_to_realtime) {
+            continue;
+        }
+
+        auto const canonical_branch = group.source_port
+            && connection.canonical_source_port
+            && *connection.canonical_source_port == *group.source_port;
+        if (canonical_branch) {
+            if (connection.detach) {
+                auto const producer_home = uses_feedback_buffer_as_producer_output
+                    && feedback_can_use_producer_buffer(connection, group);
+                if (!producer_home) {
+                    auto const copied_frames = iv::detail::saturating_add(
+                        kernel_block_size, connection.source_latency);
+                    auto const copied_values = sample_values(
+                        *group.canonical_source_layout, copied_frames);
+                    result.invariant_copied_values = iv::detail::saturating_add(
+                        result.invariant_copied_values, copied_values);
+                    result.full_ring_addressed_values = iv::detail::saturating_add(
+                        result.full_ring_addressed_values, copied_values);
+                } else if (connection.requires_conversion
+                           && !can_alias_sample_conversion(
+                               *group.canonical_source_layout,
+                               connection.target_layout)) {
+                    // Producer-home feedback makes the producer buffer itself
+                    // the feedback buffer, so consumer-side conversion reads
+                    // this candidate directly.
+                    auto const frames = iv::detail::saturating_add(
+                        kernel_block_size, connection.target_history);
+                    result.invariant_copied_values = iv::detail::saturating_add(
+                        result.invariant_copied_values,
+                        sample_values(connection.target_layout, frames));
+                    result.full_ring_addressed_values = iv::detail::saturating_add(
+                        result.full_ring_addressed_values,
+                        sample_values(*group.canonical_source_layout, frames));
+                }
+                continue;
+            }
+
+            if (!connection.requires_conversion
+                || can_alias_sample_conversion(
+                    *group.canonical_source_layout, connection.target_layout)) {
+                continue;
+            }
+
+            auto const retained_before = iv::detail::saturating_add(
+                connection.target_history, connection.read_latency);
+            auto found = std::ranges::find_if(
+                shared_materializations,
+                [&](MaterializationWindow const& candidate) {
+                    return candidate.target_layout == connection.target_layout;
+                });
+            if (found == shared_materializations.end()) {
+                shared_materializations.push_back(MaterializationWindow{
+                    .target_layout = connection.target_layout,
+                    .retained_before = retained_before,
+                    .latest_read_latency = connection.read_latency,
+                });
+            } else {
+                found->retained_before = std::max(
+                    found->retained_before, retained_before);
+                found->latest_read_latency = std::min(
+                    found->latest_read_latency, connection.read_latency);
+            }
+            continue;
+        }
+
+        if (connection.canonical_source_port
+            || connection.source_channel_timings.empty()) {
+            continue;
+        }
+
+        auto const channel_selective = can_plan_sample_composition_channels(connection);
+        std::size_t revision_frames = 0;
+        if (connection.detach) {
+            for (auto const& timing : connection.source_channel_timings) {
+                revision_frames = std::max(revision_frames, timing.source_latency);
+            }
+        }
+        auto const frames = iv::detail::saturating_add(
+            kernel_block_size,
+            connection.detach ? revision_frames : connection.target_history);
+
+        for (auto const& contribution : connection.projection_contributions) {
+            auto const source_layout = ChannelLayout{
+                .channel_type = contribution.source_type,
+                .sample_layout = SampleStreamLayout::planar,
+            };
+            auto const target_layout = ChannelLayout{
+                .channel_type = contribution.target_type,
+                .sample_layout = SampleStreamLayout::planar,
+            };
+            if (channel_selective
+                && can_alias_sample_conversion(source_layout, target_layout)) {
+                continue;
+            }
+            for (auto const timing_index : contribution.source_channel_indices) {
+                if (timing_index >= connection.source_channel_timings.size()) continue;
+                if (!source_channel_belongs_to_group(
+                        connection.source_channel_timings[timing_index], group)) {
+                    continue;
+                }
+                result.full_ring_addressed_values = iv::detail::saturating_add(
+                    result.full_ring_addressed_values, frames);
+            }
+        }
+    }
+
+    for (auto const& materialization : shared_materializations) {
+        if (materialization.latest_read_latency
+            == std::numeric_limits<std::size_t>::max()) {
+            continue;
+        }
+        auto const prefix = materialization.retained_before
+            - materialization.latest_read_latency;
+        auto const frames = iv::detail::saturating_add(kernel_block_size, prefix);
+        result.full_ring_addressed_values = iv::detail::saturating_add(
+            result.full_ring_addressed_values,
+            sample_values(*group.canonical_source_layout, frames));
+        result.invariant_copied_values = iv::detail::saturating_add(
+            result.invariant_copied_values,
+            sample_values(materialization.target_layout, frames));
+    }
+
+    return result;
+}
+
 std::string composition_feedback_alignment_identity(
     SampleConnectionPlan const& connection,
     std::size_t contribution_index,
@@ -497,13 +730,6 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 return connection_index < connections.sample_connections.size()
                     && connections.sample_connections[connection_index].detach.has_value();
             });
-        if (group.live_interval.crosses_kernel_invocations
-            && !has_feedback_branch
-            && group.storage_plan->kind
-                == RealtimeBufferStorageKind::transient_stack) {
-            return std::unexpected(
-                "GraphJit transient sample storage cannot satisfy cross-kernel retained storage");
-        }
 
         auto producer_position = group.source_port
             ? source_position(*group.source_port, group.live_interval)
@@ -594,9 +820,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         std::size_t home_feedback_capacity = 0;
         std::size_t home_feedback_restore_position = producer_position;
         SampleConnectionStoragePlan home_feedback_storage{};
-        if (group.storage_requirements.retained_frames == 0
-            && group.storage_plan->kind
-                == RealtimeBufferStorageKind::transient_stack) {
+        if (group.storage_requirements.retained_frames == 0) {
             for (auto const connection_index : group.connection_indices) {
                 auto const& connection = connections.sample_connections[connection_index];
                 if (connection.access != PlannedConnectionAccess::realtime_to_realtime
@@ -637,6 +861,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                         .retained_frames = home_feedback_retained_frames,
                         .channel_count = channel_count(*group.canonical_source_layout),
                         .value_size_bytes = sizeof(Sample),
+                        .operations = sample_producer_operation_counts(
+                            connections, group, kernel_block_size, true),
                     },
                     cost_model);
                 auto capacity = working_ring_capacity(
@@ -646,6 +872,22 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 }
                 home_feedback_capacity = *capacity;
             }
+        }
+
+        auto producer_storage_requirements = group.storage_requirements;
+        producer_storage_requirements.operations = sample_producer_operation_counts(
+            connections, group, kernel_block_size, false);
+        auto const producer_storage_plan = has_feedback_home
+            ? home_feedback_storage
+            : choose_sample_connection_storage_plan(
+                producer_storage_requirements, cost_model);
+
+        if (group.live_interval.crosses_kernel_invocations
+            && !has_feedback_branch
+            && producer_storage_plan.kind
+                == RealtimeBufferStorageKind::transient_stack) {
+            return std::unexpected(
+                "GraphJit transient sample storage cannot satisfy cross-kernel retained storage");
         }
 
         std::size_t canonical = no_sample_representation;
@@ -724,12 +966,12 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 return std::unexpected(
                     "GraphJit sample feedback with retained frames selected transient storage");
             }
-        } else if (group.storage_plan->kind
+        } else if (producer_storage_plan.kind
                    == RealtimeBufferStorageKind::full_node_storage) {
             auto const index = append_representation(SampleRepresentationPlan{
                 .producer_group_index = group_index,
                 .canonical_producer_representation = true,
-                .storage = group.storage_plan->kind,
+                .storage = producer_storage_plan.kind,
                 .channel_layout = *group.canonical_source_layout,
                 .frame_capacity = canonical_capacity,
                 .live_interval = group.live_interval,
@@ -748,7 +990,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             auto transient_canonical = append_transient_representation(SampleRepresentationPlan{
                 .producer_group_index = group_index,
                 .canonical_producer_representation = true,
-                .storage = group.storage_plan->kind,
+                .storage = producer_storage_plan.kind,
                 .channel_layout = *group.canonical_source_layout,
                 .frame_capacity = canonical_capacity,
                 .live_interval = canonical_live,
@@ -757,7 +999,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 return std::unexpected(std::move(transient_canonical.error()));
             }
             canonical = *transient_canonical;
-            if (group.storage_plan->kind
+            if (producer_storage_plan.kind
                 == RealtimeBufferStorageKind::stack_with_persistent_carry) {
                 if (group.storage_requirements.retained_frames == 0) {
                     return std::unexpected(
@@ -790,6 +1032,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         }
         plan.producer_groups[group_index] = SampleProducerPhysicalPlan{
             .canonical_representation = canonical,
+            .storage_plan = producer_storage_plan,
         };
 
         struct DerivedKey {
@@ -1015,18 +1258,22 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             if (!working_capacity) {
                 return std::unexpected(std::move(working_capacity.error()));
             }
-            auto const feedback_storage = choose_sample_connection_storage_plan(
-                SampleConnectionStorageRequirements{
-                    .current_block_frames = kernel_block_size,
-                    .retained_frames = retained_frames,
-                    .channel_count = channel_count(*group.canonical_source_layout),
-                    .value_size_bytes = sizeof(Sample),
-                },
-                cost_model);
             auto const writes_directly_to_feedback = has_feedback_home
-                && std::bit_cast<std::uint32_t>(
-                    static_cast<float>(*connection.detach_initial_value))
-                    == std::bit_cast<std::uint32_t>(0.0f);
+                && feedback_can_use_producer_buffer(connection, group);
+            auto const feedback_storage = writes_directly_to_feedback
+                ? producer_storage_plan
+                : choose_sample_connection_storage_plan(
+                    SampleConnectionStorageRequirements{
+                        .current_block_frames = kernel_block_size,
+                        .retained_frames = retained_frames,
+                        .channel_count = channel_count(*group.canonical_source_layout),
+                        .value_size_bytes = sizeof(Sample),
+                        .operations = copied_feedback_buffer_operation_counts(
+                            connection,
+                            *group.canonical_source_layout,
+                            kernel_block_size),
+                    },
+                    cost_model);
             std::size_t timeline_representation = canonical;
             if (writes_directly_to_feedback) {
                 auto const& home = plan.representations[canonical];
@@ -1186,6 +1433,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             }
             plan.feedback_timelines.push_back(SampleFeedbackTimelinePlan{
                 .connection_index = connection_index,
+                .storage_plan = feedback_storage,
                 .timeline_representation = timeline_representation,
                 .channel_layout = *group.canonical_source_layout,
                 .retained_frames = retained_frames,
@@ -1480,6 +1728,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
 
         std::size_t target_representation = no_sample_representation;
         bool const detached = connection.detach.has_value();
+        std::optional<SampleConnectionStoragePlan> feedback_storage{};
         std::size_t feedback_retained_frames = 0;
         std::size_t max_source_latency = 0;
         if (detached) {
@@ -1511,21 +1760,23 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 return std::unexpected(std::move(capacity.error()));
             }
 
-            auto const feedback_storage = choose_sample_connection_storage_plan(
+            feedback_storage = choose_sample_connection_storage_plan(
                 SampleConnectionStorageRequirements{
                     .current_block_frames = kernel_block_size,
                     .retained_frames = feedback_retained_frames,
                     .channel_count = channel_count(connection.target_layout),
                     .value_size_bytes = sizeof(Sample),
+                    .operations = composed_feedback_buffer_operation_counts(
+                        connection, kernel_block_size, max_source_latency),
                 },
                 cost_model);
-            if (feedback_storage.kind
+            if (feedback_storage->kind
                 == RealtimeBufferStorageKind::full_node_storage) {
                 target_representation = append_representation(
                     SampleRepresentationPlan{
                         .producer_group_index = no_sample_producer_group,
                         .canonical_producer_representation = false,
-                        .storage = feedback_storage.kind,
+                        .storage = feedback_storage->kind,
                         .channel_layout = connection.target_layout,
                         .frame_capacity = *capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
@@ -1551,13 +1802,13 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 }
                 plan.representations[target_representation].persistent_allocation =
                     *persistent;
-            } else if (feedback_storage.kind
+            } else if (feedback_storage->kind
                        == RealtimeBufferStorageKind::stack_with_persistent_carry) {
                 auto transient = append_transient_representation(
                     SampleRepresentationPlan{
                         .producer_group_index = no_sample_producer_group,
                         .canonical_producer_representation = false,
-                        .storage = feedback_storage.kind,
+                        .storage = feedback_storage->kind,
                         .channel_layout = connection.target_layout,
                         .frame_capacity = *capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
@@ -1789,6 +2040,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         if (detached) {
             plan.feedback_timelines.push_back(SampleFeedbackTimelinePlan{
                 .connection_index = connection_index,
+                .storage_plan = *feedback_storage,
                 .timeline_representation = target_representation,
                 .channel_layout = connection.target_layout,
                 .retained_frames = feedback_retained_frames,
