@@ -185,95 +185,44 @@ TEST(EventOutputPort, CountsProducerSequenceOverflowWithoutAllocating)
     EXPECT_EQ(overflow_count, 1u);
 }
 
-TEST(SampleConnectionImplementationChooser, UsesSimpleConservativePolicy)
+TEST(SampleConnectionStorageChooser, UsesBlockRelativeRetention)
 {
-    using Kind = iv::SampleConnectionImplementationKind;
+    using Kind = iv::RealtimeBufferStorageKind;
 
-    EXPECT_EQ(iv::choose_sample_connection_implementation({
-        .direct_implementation_legal = true,
-    }), Kind::direct);
+    EXPECT_EQ(iv::choose_sample_connection_storage_plan({
+        .current_block_frames = 256,
+    }).kind, Kind::transient_stack);
 
-    EXPECT_EQ(iv::choose_sample_connection_implementation({
-        .direct_implementation_legal = true,
-        .requires_materialization = true,
-    }), Kind::transient_materialization);
-
-    EXPECT_EQ(iv::choose_sample_connection_implementation({
+    EXPECT_EQ(iv::choose_sample_connection_storage_plan({
+        .current_block_frames = 256,
         .retained_frames = 32,
         .channel_count = 2,
-        .value_size_bytes = sizeof(iv::Sample),
-    }), Kind::compact_persistent_carry);
+    }).kind, Kind::stack_with_persistent_carry);
 
-    EXPECT_EQ(iv::choose_sample_connection_implementation({
-        .retained_frames = 4096,
+    EXPECT_EQ(iv::choose_sample_connection_storage_plan({
+        .current_block_frames = 256,
+        .retained_frames = 256,
         .channel_count = 2,
-        .value_size_bytes = sizeof(iv::Sample),
-    }), Kind::persistent_ring);
-
-    EXPECT_EQ(iv::choose_sample_connection_implementation({
-        .feedback = true,
-    }), Kind::feedback_ring);
+    }).kind, Kind::full_node_storage);
 }
 
-TEST(SampleConnectionImplementationChooser, CrossoverIsExplicitlyTunable)
+TEST(EventConnectionStorageChooser, UsesRateDerivedCapacities)
 {
-    auto requirements = iv::SampleConnectionImplementationRequirements{
-        .retained_frames = 128,
-        .channel_count = 1,
-        .value_size_bytes = sizeof(iv::Sample),
-    };
+    using Kind = iv::RealtimeBufferStorageKind;
 
-    EXPECT_EQ(iv::choose_sample_connection_implementation(
-        requirements,
-        {.compact_carry_max_bytes = 1024}),
-        iv::SampleConnectionImplementationKind::compact_persistent_carry);
-    EXPECT_EQ(iv::choose_sample_connection_implementation(
-        requirements,
-        {.compact_carry_max_bytes = 128}),
-        iv::SampleConnectionImplementationKind::persistent_ring);
-}
+    EXPECT_EQ(iv::choose_event_connection_storage_plan({
+        .current_event_capacity = 1024,
+    }).kind, Kind::transient_stack);
 
-TEST(EventConnectionImplementationChooser, UsesSizedRetainedCapacityForCompactCarry)
-{
-    using Kind = iv::EventConnectionImplementationKind;
+    EXPECT_EQ(iv::choose_event_connection_storage_plan({
+        .current_event_capacity = 1000,
+        .retained_event_capacity = 999,
+    }).kind, Kind::stack_with_persistent_carry);
 
-    EXPECT_EQ(iv::choose_event_connection_implementation({
-        .direct_implementation_legal = true,
-    }), Kind::direct);
-
-    EXPECT_EQ(iv::choose_event_connection_implementation({
-        .requires_materialization = true,
-    }), Kind::transient_sequence);
-
-    EXPECT_EQ(iv::choose_event_connection_implementation({
-        .retained_window_samples = 64,
-        .retained_event_capacity = 8,
-    }), Kind::compact_persistent_carry);
-
-    EXPECT_EQ(iv::choose_event_connection_implementation({
-        .retained_window_samples = 64,
-    }), Kind::persistent_ring);
-
-    EXPECT_EQ(iv::choose_event_connection_implementation({
-        .feedback = true,
-    }), Kind::feedback_ring);
-}
-
-TEST(EventConnectionImplementationChooser, CrossoverIsExplicitlyTunable)
-{
-    auto requirements = iv::EventConnectionImplementationRequirements{
-        .retained_window_samples = 64,
-        .retained_event_capacity = 12,
-    };
-
-    EXPECT_EQ(iv::choose_event_connection_implementation(
-        requirements,
-        {.compact_carry_max_events = 16}),
-        iv::EventConnectionImplementationKind::compact_persistent_carry);
-    EXPECT_EQ(iv::choose_event_connection_implementation(
-        requirements,
-        {.compact_carry_max_events = 8}),
-        iv::EventConnectionImplementationKind::persistent_ring);
+    EXPECT_EQ(iv::choose_event_connection_storage_plan({
+        .current_event_capacity = 1000,
+        .retained_event_capacity = 1000,
+    }).kind, Kind::full_node_storage);
 }
 
 } // namespace

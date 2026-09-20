@@ -24,13 +24,13 @@ inline constexpr std::size_t no_sample_persistent_allocation =
 
 // One compiler-visible physical sample representation. Node API facades are
 // reconstructed from these immutable facts and never become persistent graph
-// objects. A representation may use transient storage, a persistent ring, or
-// transient working storage backed by compact persistent carry state.
+// objects. Storage residence is independent from the conversion, composition,
+// or feedback operations which read and write the representation.
 struct SampleRepresentationPlan {
     std::size_t producer_group_index = 0;
     bool canonical_producer_representation = true;
-    SampleConnectionImplementationKind implementation =
-        SampleConnectionImplementationKind::direct;
+    RealtimeBufferStorageKind storage =
+        RealtimeBufferStorageKind::transient_stack;
     ChannelLayout channel_layout{};
     std::size_t frame_capacity = 0;
     ConnectionLiveIntervalPlan live_interval{};
@@ -147,8 +147,8 @@ struct SamplePersistentAllocationPlan {
     std::size_t storage_offset = 0;
 };
 
-// compact_persistent_carry uses a transient absolute-indexed working ring while
-// a minimal persistent tail crosses root invocations. The tail is restored
+// stack_with_persistent_carry uses a transient absolute-indexed working ring
+// while a minimal persistent tail crosses root invocations. The tail is restored
 // immediately before the producer and committed after its materializations.
 struct SampleCarryOperationPlan {
     std::size_t representation_index = no_sample_representation;
@@ -246,9 +246,9 @@ struct SamplePhysicalPlan {
 };
 
 // Pure host-side physical-representation planning. This consumes already-made
-// choose_sample_connection_implementation() decisions; it does not duplicate
-// policy. compact carry and persistent ring are realized as distinct physical
-// representations while converted fanout remains explicit transient materialization.
+// choose_sample_connection_storage_plan() decisions; it does not duplicate
+// policy. Carry and full persistent storage are realized as distinct physical
+// representations while conversion remains an explicit operation.
 std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     ConnectionAnalysisPlan const& connections,
     std::size_t kernel_block_size);

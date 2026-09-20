@@ -178,21 +178,19 @@ plus payload-specific capacity and layout facts:
 ```cpp
 SampleConnectionStoragePlan
 choose_sample_connection_storage_plan(
-    SampleConnectionImplementationRequirements const&,
-    SampleConnectionCostModel const&);
+    SampleConnectionStorageRequirements const&);
 
 EventConnectionStoragePlan
 choose_event_connection_storage_plan(
-    EventConnectionImplementationRequirements const&,
-    EventConnectionCostModel const&);
+    EventConnectionStorageRequirements const&);
 ```
 
 The storage chooser should enumerate legal fixed-capacity candidates and compare
 their copy work for the complete producer group. Storage lifetime/residence is
 one axis; conversion, merge, delay, and aliasing are separate operation axes.
-The existing `direct`/`transient_sequence`/`compact_persistent_carry`/
-`persistent_ring`/`feedback_ring` event enum conflates those axes and should not
-be treated as the destination model.
+The former `direct`/`transient_sequence`/`compact_persistent_carry`/
+`persistent_ring`/`feedback_ring` enums conflated those axes and have been
+removed rather than retained as compatibility aliases.
 
 The configured project root itself has no boundary ports. Device I/O and
 communication with other application modules are modeled by concrete node types,
@@ -270,24 +268,22 @@ capacity; it never substitutes a fixed event count for either quantity.
 This crossover policy is intentionally isolated so benchmarking can change it
 without changing graph semantics or LLVM lowering.
 
-### Current implementation audit
+### Current implementation status
 
-The current code is partly aligned with this model, but its names obscure that:
+The first storage-model refactor has landed:
 
-- ordinary event capacities already start from
+- sample and event producer groups now select the shared three-kind storage
+  model, while event invocation aggregation is a separate operation fact;
+- ordinary event capacities start from
   `ceil(max_events_per_sample * temporal_span)` and are rounded to a power of
   two;
-- `compact_carry_max_events == 64` is currently compared with that calculated
-  retained-event count; it is not used as the carry capacity. For example, a
-  rate of 1000 over one retained sample calculates 1000 retained events and
-  cannot select the current carry path;
+- the fixed 64-event and 16-KiB thresholds are gone. The initial sample policy
+  compares retained frames with block frames, and the event policy compares
+  rate-derived retained capacity with rate-derived current-block capacity;
+- invalid event rate/span capacities fail connection planning immediately;
 - ordinary full persistent rings are fixed at compile time from the producer
   rate and `history + block + latency`; no current event strategy grows a ring
   dynamically on the audio thread;
-- an absent `retained_event_capacity` currently steers the chooser toward a ring,
-  but physical lowering subsequently rejects the unrepresentable capacity. This
-  should become an immediate planning error rather than looking like an
-  "unknown-sized" ring case;
 - detached feedback currently uses the separate conservative formula
   `source_capacity * (loop_extra_latency + 1)` rather than deriving the delayed
   stream's exact simultaneously-live span; and
@@ -296,9 +292,10 @@ The current code is partly aligned with this model, but its names obscure that:
   API itself requires only one concrete buffer pointer/span and indices, so this
   is a binding/lowering limitation rather than an authored-interface constraint.
 
-The refactor should preserve the already-correct rate propagation and static
-capacity failures while replacing the conflated chooser, feedback formula, and
-single-storage-base binding.
+The remaining refactor work is physical: move transient backing to the generated
+root stack, replace the single-storage-base binding, derive feedback capacity
+from exact live span, and extend selection from the landed block-relative
+baseline to complete multiedge copy costs.
 
 The heuristic may consider:
 

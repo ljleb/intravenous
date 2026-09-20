@@ -1144,8 +1144,8 @@ std::expected<void, std::string> emit_sample_composition_write(
             "GraphJit sample composition contains no semantic contributions");
     }
     if (shift_writes_by_read_latency
-        && (target_representation.implementation
-                != SampleConnectionImplementationKind::feedback_ring
+        && (target_representation.storage
+                != RealtimeBufferStorageKind::full_node_storage
             || target_representation.persistent_allocation
                 == detail::no_sample_persistent_allocation)) {
         return std::unexpected(
@@ -1560,8 +1560,8 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
     }
     auto const& timeline_plan =
         physical.representations[timeline.timeline_representation];
-    if (timeline_plan.implementation
-            != SampleConnectionImplementationKind::feedback_ring
+    if (timeline_plan.storage
+            != RealtimeBufferStorageKind::full_node_storage
         || timeline_plan.persistent_allocation
             == detail::no_sample_persistent_allocation
         || timeline_plan.channel_layout != timeline.channel_layout

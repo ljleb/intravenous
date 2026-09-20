@@ -988,7 +988,8 @@ TEST(GraphJitSamplePhysicalPlan, PacksExactTransientByteRangesAcrossLifetimes)
         SampleProducerGroupPlan result;
         result.canonical_source_layout = layout;
         result.has_realtime_connections = true;
-        result.implementation = iv::SampleConnectionImplementationKind::direct;
+        result.storage_plan = iv::SampleConnectionStoragePlan{
+            iv::RealtimeBufferStorageKind::transient_stack};
         result.live_interval = ConnectionLiveIntervalPlan{
             .begin = begin,
             .end = end,
@@ -1084,7 +1085,8 @@ TEST(GraphJitSamplePhysicalPlan, LeavesCompiledAccessBranchesUnresolved)
     group.connection_indices = {0, 1};
     group.has_realtime_connections = true;
     group.has_compiled_connections = true;
-    group.implementation = iv::SampleConnectionImplementationKind::direct;
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -1147,8 +1149,8 @@ TEST(GraphJitSamplePhysicalPlan, BuildsAndDeduplicatesDerivedConvertedFanout)
     group.canonical_source_layout = mono;
     group.connection_indices = {0, 1, 2};
     group.has_realtime_connections = true;
-    group.implementation =
-        iv::SampleConnectionImplementationKind::transient_materialization;
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 3,
@@ -1227,10 +1229,13 @@ TEST(GraphJitSamplePhysicalPlan, RealizesCompactPersistentCarryExactly)
     SampleProducerGroupPlan group;
     group.canonical_source_layout = mono;
     group.has_realtime_connections = true;
-    group.requirements.retained_frames = 7;
-    group.requirements.channel_count = 1;
-    group.requirements.value_size_bytes = sizeof(iv::Sample);
-    group.implementation = iv::SampleConnectionImplementationKind::compact_persistent_carry;
+    group.storage_requirements = iv::SampleConnectionStorageRequirements{
+        .current_block_frames = 64,
+        .retained_frames = 7,
+        .channel_count = 1,
+    };
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -1299,10 +1304,13 @@ TEST(GraphJitSamplePhysicalPlan, RealizesLargeRetentionAsPersistentRing)
     SampleProducerGroupPlan group;
     group.canonical_source_layout = mono;
     group.has_realtime_connections = true;
-    group.requirements.retained_frames = 5000;
-    group.requirements.channel_count = 1;
-    group.requirements.value_size_bytes = sizeof(iv::Sample);
-    group.implementation = iv::SampleConnectionImplementationKind::persistent_ring;
+    group.storage_requirements = iv::SampleConnectionStorageRequirements{
+        .current_block_frames = 64,
+        .retained_frames = 5000,
+        .channel_count = 1,
+    };
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::full_node_storage};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -1410,8 +1418,8 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     group.canonical_source_layout = mono;
     group.connection_indices = {0};
     group.has_realtime_connections = true;
-    group.implementation =
-        iv::SampleConnectionImplementationKind::transient_materialization;
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -1432,11 +1440,11 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     auto const ring = *physical->connection_representations[0];
     ASSERT_NE(canonical, ring);
     EXPECT_EQ(
-        physical->representations[canonical].implementation,
-        iv::SampleConnectionImplementationKind::transient_materialization);
+        physical->representations[canonical].storage,
+        iv::RealtimeBufferStorageKind::transient_stack);
     EXPECT_EQ(
-        physical->representations[ring].implementation,
-        iv::SampleConnectionImplementationKind::feedback_ring);
+        physical->representations[ring].storage,
+        iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(physical->representations[ring].frame_capacity, 32u);
     EXPECT_EQ(
         physical->representations[ring].transient_allocation,
@@ -1567,8 +1575,8 @@ TEST(GraphJitSamplePhysicalPlan, ZeroInitializedFeedbackUsesProducerHomeAndCopie
     group.canonical_source_layout = mono;
     group.connection_indices = {0, 1, 2};
     group.has_realtime_connections = true;
-    group.implementation =
-        iv::SampleConnectionImplementationKind::transient_materialization;
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 3,
@@ -1590,8 +1598,8 @@ TEST(GraphJitSamplePhysicalPlan, ZeroInitializedFeedbackUsesProducerHomeAndCopie
     EXPECT_TRUE(
         physical->representations[canonical].canonical_producer_representation);
     EXPECT_EQ(
-        physical->representations[canonical].implementation,
-        iv::SampleConnectionImplementationKind::feedback_ring);
+        physical->representations[canonical].storage,
+        iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(physical->representations[canonical].frame_capacity, 32u);
     ASSERT_TRUE(physical->connection_representations[0].has_value());
     ASSERT_TRUE(physical->connection_representations[2].has_value());
@@ -1736,8 +1744,8 @@ TEST(GraphJitSamplePhysicalPlan, DetachedCompositionUsesPersistentShiftedTimelin
         group.canonical_source_layout = mono;
         group.connection_indices = {0};
         group.has_realtime_connections = true;
-        group.implementation =
-            iv::SampleConnectionImplementationKind::transient_materialization;
+        group.storage_plan = iv::SampleConnectionStoragePlan{
+            iv::RealtimeBufferStorageKind::transient_stack};
         group.live_interval = ConnectionLiveIntervalPlan{
             .begin = begin,
             .end = 2,
@@ -1762,8 +1770,8 @@ TEST(GraphJitSamplePhysicalPlan, DetachedCompositionUsesPersistentShiftedTimelin
     auto const& representation = physical->representations[composed];
     EXPECT_FALSE(representation.canonical_producer_representation);
     EXPECT_EQ(
-        representation.implementation,
-        iv::SampleConnectionImplementationKind::feedback_ring);
+        representation.storage,
+        iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(representation.channel_layout, stereo);
     EXPECT_EQ(representation.frame_capacity, 32u);
     EXPECT_EQ(
@@ -1918,8 +1926,8 @@ TEST(GraphJitSamplePhysicalPlan, DetachedMixingAlignsUnequalSourceLatencies)
         group.canonical_source_layout = mono;
         group.connection_indices = {0};
         group.has_realtime_connections = true;
-        group.implementation =
-            iv::SampleConnectionImplementationKind::transient_materialization;
+        group.storage_plan = iv::SampleConnectionStoragePlan{
+            iv::RealtimeBufferStorageKind::transient_stack};
         group.live_interval = ConnectionLiveIntervalPlan{
             .begin = begin,
             .end = 2,
@@ -1948,8 +1956,8 @@ TEST(GraphJitSamplePhysicalPlan, DetachedMixingAlignsUnequalSourceLatencies)
     auto const& alignment = physical->representations[
         contribution.feedback_alignment_representation];
     EXPECT_EQ(
-        alignment.implementation,
-        iv::SampleConnectionImplementationKind::persistent_ring);
+        alignment.storage,
+        iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(alignment.channel_layout.channel_type, iv::ChannelTypeId::stereo);
     EXPECT_EQ(alignment.frame_capacity, 16u);
     ASSERT_LT(
@@ -2048,8 +2056,8 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackKeepsCanonicalPersistentRing)
     group.canonical_source_layout = mono;
     group.connection_indices = {0};
     group.has_realtime_connections = true;
-    group.implementation =
-        iv::SampleConnectionImplementationKind::transient_materialization;
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -2076,11 +2084,11 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackKeepsCanonicalPersistentRing)
     EXPECT_EQ(physical->representations[ring].channel_layout, mono);
     EXPECT_EQ(physical->representations[derived].channel_layout, stereo);
     EXPECT_EQ(
-        physical->representations[ring].implementation,
-        iv::SampleConnectionImplementationKind::feedback_ring);
+        physical->representations[ring].storage,
+        iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(
-        physical->representations[derived].implementation,
-        iv::SampleConnectionImplementationKind::transient_materialization);
+        physical->representations[derived].storage,
+        iv::RealtimeBufferStorageKind::transient_stack);
 
     auto const persistent_index =
         physical->representations[ring].persistent_allocation;
@@ -2133,10 +2141,13 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedRetentionMaterializesHistoricalWindow)
     group.canonical_source_layout = mono;
     group.connection_indices = {0};
     group.has_realtime_connections = true;
-    group.requirements.retained_frames = 7;
-    group.requirements.channel_count = 1;
-    group.requirements.value_size_bytes = sizeof(iv::Sample);
-    group.implementation = iv::SampleConnectionImplementationKind::compact_persistent_carry;
+    group.storage_requirements = iv::SampleConnectionStorageRequirements{
+        .current_block_frames = 64,
+        .retained_frames = 7,
+        .channel_count = 1,
+    };
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -2213,11 +2224,13 @@ TEST(GraphJitSamplePhysicalPlan, SharedConvertedFanoutMaterializesUnionOfReadWin
     group.canonical_source_layout = mono;
     group.connection_indices = {0, 1};
     group.has_realtime_connections = true;
-    group.requirements.retained_frames = 7;
-    group.requirements.channel_count = 1;
-    group.requirements.value_size_bytes = sizeof(iv::Sample);
-    group.implementation =
-        iv::SampleConnectionImplementationKind::compact_persistent_carry;
+    group.storage_requirements = iv::SampleConnectionStorageRequirements{
+        .current_block_frames = 64,
+        .retained_frames = 7,
+        .channel_count = 1,
+    };
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 2,
@@ -2256,7 +2269,8 @@ TEST(GraphJitSamplePhysicalPlan, RejectsTransientStorageThatCrossesKernelCalls)
         .sample_layout = iv::SampleStreamLayout::planar,
     };
     group.has_realtime_connections = true;
-    group.implementation = iv::SampleConnectionImplementationKind::direct;
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -6263,10 +6277,10 @@ TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)
     ASSERT_TRUE(direct_analysis.has_value())
         << (direct_analysis ? std::string{} : direct_analysis.error());
     ASSERT_EQ(direct_analysis->sample_producer_groups.size(), 1u);
-    ASSERT_TRUE(direct_analysis->sample_producer_groups[0].implementation.has_value());
+    ASSERT_TRUE(direct_analysis->sample_producer_groups[0].storage_plan.has_value());
     EXPECT_EQ(
-        *direct_analysis->sample_producer_groups[0].implementation,
-        iv::SampleConnectionImplementationKind::direct);
+        direct_analysis->sample_producer_groups[0].storage_plan->kind,
+        iv::RealtimeBufferStorageKind::transient_stack);
     auto direct_physical = iv::graph_jit::detail::build_sample_physical_plan(
         *direct_analysis, 64);
     ASSERT_TRUE(direct_physical.has_value())
@@ -6328,10 +6342,10 @@ TEST_F(GraphJitRuntimeFixture, TransientSampleStorage)
         << (transient_analysis ? std::string{} : transient_analysis.error());
     ASSERT_EQ(transient_analysis->sample_producer_groups.size(), 1u);
     ASSERT_TRUE(
-        transient_analysis->sample_producer_groups[0].implementation.has_value());
+        transient_analysis->sample_producer_groups[0].storage_plan.has_value());
     EXPECT_EQ(
-        *transient_analysis->sample_producer_groups[0].implementation,
-        iv::SampleConnectionImplementationKind::transient_materialization);
+        transient_analysis->sample_producer_groups[0].storage_plan->kind,
+        iv::RealtimeBufferStorageKind::transient_stack);
     auto transient_physical =
         iv::graph_jit::detail::build_sample_physical_plan(
             *transient_analysis, 64);
@@ -6487,10 +6501,10 @@ TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
         << (fanout_analysis ? std::string{} : fanout_analysis.error());
     ASSERT_EQ(fanout_analysis->sample_producer_groups.size(), 1u);
     ASSERT_EQ(fanout_analysis->sample_producer_groups[0].connection_indices.size(), 4u);
-    ASSERT_TRUE(fanout_analysis->sample_producer_groups[0].implementation.has_value());
+    ASSERT_TRUE(fanout_analysis->sample_producer_groups[0].storage_plan.has_value());
     EXPECT_EQ(
-        *fanout_analysis->sample_producer_groups[0].implementation,
-        iv::SampleConnectionImplementationKind::transient_materialization);
+        fanout_analysis->sample_producer_groups[0].storage_plan->kind,
+        iv::RealtimeBufferStorageKind::transient_stack);
 
     auto fanout_physical = iv::graph_jit::detail::build_sample_physical_plan(
         *fanout_analysis, 64);
@@ -6656,10 +6670,10 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
         2u);
     ASSERT_TRUE(
         stereo_conversion_analysis->sample_producer_groups[0]
-            .implementation.has_value());
+            .storage_plan.has_value());
     EXPECT_EQ(
-        *stereo_conversion_analysis->sample_producer_groups[0].implementation,
-        iv::SampleConnectionImplementationKind::transient_materialization);
+        stereo_conversion_analysis->sample_producer_groups[0].storage_plan->kind,
+        iv::RealtimeBufferStorageKind::transient_stack);
     auto stereo_conversion_physical =
         iv::graph_jit::detail::build_sample_physical_plan(
             *stereo_conversion_analysis, 64);
@@ -6743,11 +6757,11 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
         << (analysis ? std::string{} : analysis.error());
     ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
     auto const& producer = analysis->sample_producer_groups.front();
-    EXPECT_EQ(producer.requirements.retained_frames, 1u);
-    ASSERT_TRUE(producer.implementation.has_value());
+    EXPECT_EQ(producer.storage_requirements.retained_frames, 1u);
+    ASSERT_TRUE(producer.storage_plan.has_value());
     EXPECT_EQ(
-        *producer.implementation,
-        iv::SampleConnectionImplementationKind::compact_persistent_carry);
+        producer.storage_plan->kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
 
     auto physical = iv::graph_jit::detail::build_sample_physical_plan(
         *analysis, 64);
@@ -6830,11 +6844,11 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateSurvivesPersistentRingStorage)
         << (analysis ? std::string{} : analysis.error());
     ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
     auto const& producer = analysis->sample_producer_groups.front();
-    EXPECT_EQ(producer.requirements.retained_frames, 5002u);
-    ASSERT_TRUE(producer.implementation.has_value());
+    EXPECT_EQ(producer.storage_requirements.retained_frames, 5002u);
+    ASSERT_TRUE(producer.storage_plan.has_value());
     EXPECT_EQ(
-        *producer.implementation,
-        iv::SampleConnectionImplementationKind::persistent_ring);
+        producer.storage_plan->kind,
+        iv::RealtimeBufferStorageKind::full_node_storage);
 
     auto physical = iv::graph_jit::detail::build_sample_physical_plan(
         *analysis, 64);
@@ -6895,11 +6909,11 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateFeedsComposedFanout)
         << (analysis ? std::string{} : analysis.error());
     ASSERT_EQ(analysis->sample_producer_groups.size(), 2u);
     for (auto const& producer : analysis->sample_producer_groups) {
-        EXPECT_EQ(producer.requirements.retained_frames, 1u);
-        ASSERT_TRUE(producer.implementation.has_value());
+        EXPECT_EQ(producer.storage_requirements.retained_frames, 1u);
+        ASSERT_TRUE(producer.storage_plan.has_value());
         EXPECT_EQ(
-            *producer.implementation,
-            iv::SampleConnectionImplementationKind::compact_persistent_carry);
+            producer.storage_plan->kind,
+            iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     }
 
     auto physical = iv::graph_jit::detail::build_sample_physical_plan(
@@ -7073,11 +7087,11 @@ TEST_F(GraphJitRuntimeFixture, ConvertedFanoutLatencyWindows)
     ASSERT_NE(
         latency_source_group,
         latency_conversion_analysis->sample_producer_groups.end());
-    EXPECT_EQ(latency_source_group->requirements.retained_frames, 7u);
-    ASSERT_TRUE(latency_source_group->implementation.has_value());
+    EXPECT_EQ(latency_source_group->storage_requirements.retained_frames, 7u);
+    ASSERT_TRUE(latency_source_group->storage_plan.has_value());
     EXPECT_EQ(
-        *latency_source_group->implementation,
-        iv::SampleConnectionImplementationKind::compact_persistent_carry);
+        latency_source_group->storage_plan->kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
 
     std::size_t converted_read_0 = 0;
     std::size_t converted_read_7 = 0;
@@ -7346,8 +7360,8 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleHistory)
     ASSERT_NE(
         delayed_history_group,
         composed_history_analysis->sample_producer_groups.end());
-    EXPECT_EQ(direct_history_group->requirements.retained_frames, 12u);
-    EXPECT_EQ(delayed_history_group->requirements.retained_frames, 7u);
+    EXPECT_EQ(direct_history_group->storage_requirements.retained_frames, 12u);
+    EXPECT_EQ(delayed_history_group->storage_requirements.retained_frames, 7u);
 
     auto composed_history_physical =
         iv::graph_jit::detail::build_sample_physical_plan(
@@ -7559,10 +7573,10 @@ TEST_F(GraphJitRuntimeFixture, DirectEventFlow)
     ASSERT_EQ(direct_event_analysis->event_producer_groups.size(), 1u);
     auto const& direct_event_group =
         direct_event_analysis->event_producer_groups.front();
-    ASSERT_TRUE(direct_event_group.implementation.has_value());
+    ASSERT_TRUE(direct_event_group.storage_plan.has_value());
     EXPECT_EQ(
-        *direct_event_group.implementation,
-        iv::EventConnectionImplementationKind::direct);
+        direct_event_group.storage_plan->kind,
+        iv::RealtimeBufferStorageKind::transient_stack);
     EXPECT_EQ(direct_event_group.sources.size(), 1u);
     EXPECT_EQ(direct_event_group.connection_indices.size(), 1u);
 
@@ -7866,8 +7880,8 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndF
         physical->producer_groups.front()->canonical_representation;
     ASSERT_LT(canonical, physical->representations.size());
     EXPECT_EQ(
-        physical->representations[canonical].implementation,
-        iv::SampleConnectionImplementationKind::feedback_ring);
+        physical->representations[canonical].storage,
+        iv::RealtimeBufferStorageKind::full_node_storage);
 
     auto const timeline_for_latency = [&](std::size_t latency)
         -> iv::graph_jit::detail::SampleFeedbackTimelinePlan const* {
@@ -8081,11 +8095,11 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTarg
     // Feedback delay/history remains branch-local, but the canonical producer
     // must retain its own authored latency horizon because OutputPort::update()
     // may revise those already-authored frames on a later invocation.
-    EXPECT_EQ(producer.requirements.retained_frames, 2u);
-    ASSERT_TRUE(producer.implementation.has_value());
+    EXPECT_EQ(producer.storage_requirements.retained_frames, 2u);
+    ASSERT_TRUE(producer.storage_plan.has_value());
     EXPECT_EQ(
-        *producer.implementation,
-        iv::SampleConnectionImplementationKind::compact_persistent_carry);
+        producer.storage_plan->kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
 
     auto physical = iv::graph_jit::detail::build_sample_physical_plan(
         *analysis, 64);
@@ -8160,7 +8174,7 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackRecopiesAuthoredLatencyHorizo
     EXPECT_EQ(connection.detach->loop_extra_latency, 6u);
     ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
     EXPECT_EQ(
-        analysis->sample_producer_groups.front().requirements.retained_frames,
+        analysis->sample_producer_groups.front().storage_requirements.retained_frames,
         2u);
 
     auto physical = iv::graph_jit::detail::build_sample_physical_plan(
@@ -8370,7 +8384,7 @@ TEST_F(GraphJitRuntimeFixture, ZeroInitializedConvertedFeedbackWritesDirectlyToP
     ASSERT_EQ(analysis->sample_connections.size(), 1u);
     ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
     EXPECT_EQ(
-        analysis->sample_producer_groups.front().requirements.retained_frames,
+        analysis->sample_producer_groups.front().storage_requirements.retained_frames,
         0u);
 
     auto physical = iv::graph_jit::detail::build_sample_physical_plan(
@@ -8393,8 +8407,8 @@ TEST_F(GraphJitRuntimeFixture, ZeroInitializedConvertedFeedbackWritesDirectlyToP
     EXPECT_TRUE(
         physical->representations[canonical].canonical_producer_representation);
     EXPECT_EQ(
-        physical->representations[canonical].implementation,
-        iv::SampleConnectionImplementationKind::feedback_ring);
+        physical->representations[canonical].storage,
+        iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(
         physical->representations[canonical].channel_layout.channel_type,
         iv::ChannelTypeId::mono);
@@ -8512,8 +8526,8 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
         *physical->connection_representations[detached_index];
     ASSERT_LT(composed, physical->representations.size());
     EXPECT_EQ(
-        physical->representations[composed].implementation,
-        iv::SampleConnectionImplementationKind::feedback_ring);
+        physical->representations[composed].storage,
+        iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(
         physical->representations[composed].channel_layout.channel_type,
         iv::ChannelTypeId::stereo);
@@ -9345,10 +9359,10 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInMergesSlicedSourcesAndFansOu
     ASSERT_EQ(analysis->event_producer_groups.size(), 1u);
     EXPECT_EQ(analysis->event_connections.front().sources.size(), 2u);
     EXPECT_TRUE(analysis->event_connections.front().requires_conversion);
-    ASSERT_TRUE(analysis->event_producer_groups.front().implementation);
+    ASSERT_TRUE(analysis->event_producer_groups.front().storage_plan);
     EXPECT_EQ(
-        *analysis->event_producer_groups.front().implementation,
-        iv::EventConnectionImplementationKind::transient_sequence);
+        analysis->event_producer_groups.front().storage_plan->kind,
+        iv::RealtimeBufferStorageKind::transient_stack);
 
     auto compiled = compile_graph(graph, 143);
     ASSERT_TRUE(compiled.succeeded())
@@ -9395,10 +9409,10 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInHomePreservesProducerCapacit
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
     ASSERT_EQ(analysis->event_producer_groups.size(), 1u);
-    ASSERT_TRUE(analysis->event_producer_groups.front().implementation);
+    ASSERT_TRUE(analysis->event_producer_groups.front().storage_plan);
     EXPECT_EQ(
-        *analysis->event_producer_groups.front().implementation,
-        iv::EventConnectionImplementationKind::transient_sequence);
+        analysis->event_producer_groups.front().storage_plan->kind,
+        iv::RealtimeBufferStorageKind::transient_stack);
 
     auto compiled = compile_graph(graph, 147);
     ASSERT_TRUE(compiled.succeeded())
@@ -9493,10 +9507,10 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
     ASSERT_EQ(analysis->event_producer_groups.size(), 1u);
-    ASSERT_TRUE(analysis->event_producer_groups.front().implementation);
+    ASSERT_TRUE(analysis->event_producer_groups.front().storage_plan);
     EXPECT_EQ(
-        *analysis->event_producer_groups.front().implementation,
-        iv::EventConnectionImplementationKind::compact_persistent_carry);
+        analysis->event_producer_groups.front().storage_plan->kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
 
     auto compiled = compile_graph(graph, 145);
     ASSERT_TRUE(compiled.succeeded())
@@ -9560,10 +9574,10 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInPersistentRingRetainsBursts)
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
     ASSERT_EQ(analysis->event_producer_groups.size(), 1u);
-    ASSERT_TRUE(analysis->event_producer_groups.front().implementation);
+    ASSERT_TRUE(analysis->event_producer_groups.front().storage_plan);
     EXPECT_EQ(
-        *analysis->event_producer_groups.front().implementation,
-        iv::EventConnectionImplementationKind::persistent_ring);
+        analysis->event_producer_groups.front().storage_plan->kind,
+        iv::RealtimeBufferStorageKind::full_node_storage);
 
     auto compiled = compile_graph(graph, 147);
     ASSERT_TRUE(compiled.succeeded())
@@ -9738,11 +9752,11 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->implementation.has_value());
+    ASSERT_TRUE(group->storage_plan.has_value());
     EXPECT_EQ(
-        *group->implementation,
-        iv::EventConnectionImplementationKind::compact_persistent_carry);
-    EXPECT_EQ(group->requirements.retained_window_samples, 16u);
+        group->storage_plan->kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
+    EXPECT_EQ(group->storage_requirements.retained_window_samples, 16u);
 
     auto compiled = compile_graph(feedback_graph, 151);
     ASSERT_TRUE(compiled.succeeded())
@@ -9886,13 +9900,14 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsAuthoredFutu
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->implementation.has_value());
+    ASSERT_TRUE(group->storage_plan.has_value());
     EXPECT_EQ(
-        *group->implementation,
-        iv::EventConnectionImplementationKind::persistent_ring);
-    EXPECT_EQ(group->requirements.retained_window_samples, 320u);
-    ASSERT_TRUE(group->requirements.retained_event_capacity.has_value());
-    EXPECT_GT(*group->requirements.retained_event_capacity, 64u);
+        group->storage_plan->kind,
+        iv::RealtimeBufferStorageKind::full_node_storage);
+    EXPECT_EQ(group->storage_requirements.retained_window_samples, 320u);
+    EXPECT_GE(
+        group->storage_requirements.retained_event_capacity,
+        group->storage_requirements.current_event_capacity);
 
     auto compiled = compile_graph(feedback_graph, 152);
     ASSERT_TRUE(compiled.succeeded())
@@ -10028,10 +10043,10 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConvertsFanoutToAcyclicConsumer)
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->implementation.has_value());
+    ASSERT_TRUE(group->storage_plan.has_value());
     EXPECT_EQ(
-        *group->implementation,
-        iv::EventConnectionImplementationKind::transient_sequence);
+        group->storage_plan->kind,
+        iv::RealtimeBufferStorageKind::transient_stack);
 
     auto compiled = compile_graph(feedback_graph, 148);
     ASSERT_TRUE(compiled.succeeded())
@@ -10127,11 +10142,11 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->implementation.has_value());
+    ASSERT_TRUE(group->storage_plan.has_value());
     EXPECT_EQ(
-        *group->implementation,
-        iv::EventConnectionImplementationKind::compact_persistent_carry);
-    EXPECT_EQ(group->requirements.retained_window_samples, 8u);
+        group->storage_plan->kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
+    EXPECT_EQ(group->storage_requirements.retained_window_samples, 8u);
 
     auto compiled = compile_graph(feedback_graph, 149);
     ASSERT_TRUE(compiled.succeeded())
@@ -10279,16 +10294,17 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversi
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->implementation.has_value());
+    ASSERT_TRUE(group->storage_plan.has_value());
     EXPECT_EQ(
-        *group->implementation,
-        iv::EventConnectionImplementationKind::persistent_ring);
+        group->storage_plan->kind,
+        iv::RealtimeBufferStorageKind::full_node_storage);
     // The canonical producer timeline must retain both sides of the root
     // window: 320 samples of target history behind it and 320 samples of
     // authored source latency ahead of it.
-    EXPECT_EQ(group->requirements.retained_window_samples, 640u);
-    ASSERT_TRUE(group->requirements.retained_event_capacity.has_value());
-    EXPECT_GT(*group->requirements.retained_event_capacity, 64u);
+    EXPECT_EQ(group->storage_requirements.retained_window_samples, 640u);
+    EXPECT_GE(
+        group->storage_requirements.retained_event_capacity,
+        group->storage_requirements.current_event_capacity);
 
     auto compiled = compile_graph(feedback_graph, 153);
     ASSERT_TRUE(compiled.succeeded())
@@ -10427,13 +10443,14 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsOutboundTarg
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->implementation.has_value());
+    ASSERT_TRUE(group->storage_plan.has_value());
     EXPECT_EQ(
-        *group->implementation,
-        iv::EventConnectionImplementationKind::persistent_ring);
-    EXPECT_EQ(group->requirements.retained_window_samples, 320u);
-    ASSERT_TRUE(group->requirements.retained_event_capacity.has_value());
-    EXPECT_GT(*group->requirements.retained_event_capacity, 64u);
+        group->storage_plan->kind,
+        iv::RealtimeBufferStorageKind::full_node_storage);
+    EXPECT_EQ(group->storage_requirements.retained_window_samples, 320u);
+    EXPECT_GE(
+        group->storage_requirements.retained_event_capacity,
+        group->storage_requirements.current_event_capacity);
 
     auto compiled = compile_graph(feedback_graph, 150);
     ASSERT_TRUE(compiled.succeeded())
@@ -10643,10 +10660,11 @@ TEST_F(GraphJitRuntimeFixture, TransientEventSlicing)
             .requires_block_materialization);
     auto const& transient_event_group =
         transient_event_analysis->event_producer_groups.front();
-    ASSERT_TRUE(transient_event_group.implementation.has_value());
+    ASSERT_TRUE(transient_event_group.storage_plan.has_value());
     EXPECT_EQ(
-        *transient_event_group.implementation,
-        iv::EventConnectionImplementationKind::transient_sequence);
+        transient_event_group.storage_plan->kind,
+        iv::RealtimeBufferStorageKind::transient_stack);
+    EXPECT_TRUE(transient_event_group.requires_invocation_aggregate);
 
     auto transient_event = compile_graph(transient_event_graph, 124);
     ASSERT_TRUE(transient_event.succeeded())
@@ -10730,10 +10748,11 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
     ASSERT_EQ(converted_event_analysis->event_producer_groups.size(), 1u);
     auto const& converted_event_group =
         converted_event_analysis->event_producer_groups.front();
-    ASSERT_TRUE(converted_event_group.implementation.has_value());
+    ASSERT_TRUE(converted_event_group.storage_plan.has_value());
     EXPECT_EQ(
-        *converted_event_group.implementation,
-        iv::EventConnectionImplementationKind::transient_sequence);
+        converted_event_group.storage_plan->kind,
+        iv::RealtimeBufferStorageKind::transient_stack);
+    EXPECT_TRUE(converted_event_group.requires_invocation_aggregate);
     ASSERT_EQ(converted_event_group.connection_indices.size(), 2u);
     for (auto const& connection : converted_event_analysis->event_connections) {
         EXPECT_EQ(connection.source_type, iv::EventTypeId::midi);
@@ -10818,18 +10837,19 @@ TEST_F(GraphJitRuntimeFixture, CompactRetainedEvents)
     auto const& retained_event_group =
         retained_event_analysis->event_producer_groups.front();
     EXPECT_DOUBLE_EQ(retained_event_group.max_events_per_sample, 0.5);
-    ASSERT_TRUE(retained_event_group.implementation.has_value());
+    ASSERT_TRUE(retained_event_group.storage_plan.has_value());
     EXPECT_EQ(
-        *retained_event_group.implementation,
-        iv::EventConnectionImplementationKind::compact_persistent_carry);
-    EXPECT_EQ(retained_event_group.requirements.retained_window_samples, 16u);
-    ASSERT_TRUE(retained_event_group.requirements.retained_event_capacity);
+        retained_event_group.storage_plan->kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     EXPECT_EQ(
-        *retained_event_group.requirements.retained_event_capacity,
+        retained_event_group.storage_requirements.retained_window_samples,
+        16u);
+    EXPECT_EQ(
+        retained_event_group.storage_requirements.retained_event_capacity,
         8u);
-    EXPECT_LE(
-        *retained_event_group.requirements.retained_event_capacity,
-        iv::EventConnectionCostModel{}.compact_carry_max_events);
+    EXPECT_LT(
+        retained_event_group.storage_requirements.retained_event_capacity,
+        retained_event_group.storage_requirements.current_event_capacity);
 
     auto retained_event = compile_graph(retained_event_graph, 126);
     ASSERT_TRUE(retained_event.succeeded())
@@ -10921,21 +10941,19 @@ TEST_F(GraphJitRuntimeFixture, PersistentEventRing)
     ASSERT_EQ(persistent_event_ring_analysis->event_producer_groups.size(), 1u);
     auto const& persistent_event_ring_group =
         persistent_event_ring_analysis->event_producer_groups.front();
-    ASSERT_TRUE(persistent_event_ring_group.implementation.has_value());
+    ASSERT_TRUE(persistent_event_ring_group.storage_plan.has_value());
     EXPECT_EQ(
-        *persistent_event_ring_group.implementation,
-        iv::EventConnectionImplementationKind::persistent_ring);
+        persistent_event_ring_group.storage_plan->kind,
+        iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(
-        persistent_event_ring_group.requirements.retained_window_samples,
+        persistent_event_ring_group.storage_requirements.retained_window_samples,
         160u);
-    ASSERT_TRUE(
-        persistent_event_ring_group.requirements.retained_event_capacity);
     EXPECT_EQ(
-        *persistent_event_ring_group.requirements.retained_event_capacity,
+        persistent_event_ring_group.storage_requirements.retained_event_capacity,
         80u);
-    EXPECT_GT(
-        *persistent_event_ring_group.requirements.retained_event_capacity,
-        iv::EventConnectionCostModel{}.compact_carry_max_events);
+    EXPECT_GE(
+        persistent_event_ring_group.storage_requirements.retained_event_capacity,
+        persistent_event_ring_group.storage_requirements.current_event_capacity);
 
     auto persistent_event_ring = compile_graph(
         persistent_event_ring_graph, 127);
@@ -11048,14 +11066,14 @@ TEST_F(GraphJitRuntimeFixture, RetainedConvertedEventFanout)
         1u);
     auto const& retained_converted_event_group =
         retained_converted_event_analysis->event_producer_groups.front();
-    ASSERT_TRUE(retained_converted_event_group.implementation.has_value());
+    ASSERT_TRUE(retained_converted_event_group.storage_plan.has_value());
     EXPECT_EQ(
-        *retained_converted_event_group.implementation,
-        iv::EventConnectionImplementationKind::persistent_ring);
+        retained_converted_event_group.storage_plan->kind,
+        iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(
-        retained_converted_event_group.requirements.retained_window_samples,
+        retained_converted_event_group.storage_requirements.retained_window_samples,
         160u);
-    EXPECT_TRUE(retained_converted_event_group.requirements.requires_materialization);
+    EXPECT_TRUE(retained_converted_event_group.requires_invocation_aggregate);
     ASSERT_EQ(
         retained_converted_event_analysis->event_connections.size(),
         3u);
@@ -11199,11 +11217,11 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
         << (history_analysis ? std::string{} : history_analysis.error());
     ASSERT_EQ(history_analysis->sample_producer_groups.size(), 1u);
     auto const& history_group = history_analysis->sample_producer_groups[0];
-    ASSERT_TRUE(history_group.implementation.has_value());
+    ASSERT_TRUE(history_group.storage_plan.has_value());
     EXPECT_EQ(
-        *history_group.implementation,
-        iv::SampleConnectionImplementationKind::compact_persistent_carry);
-    EXPECT_EQ(history_group.requirements.retained_frames, 7u);
+        history_group.storage_plan->kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
+    EXPECT_EQ(history_group.storage_requirements.retained_frames, 7u);
 
     auto history_physical = iv::graph_jit::detail::build_sample_physical_plan(
         *history_analysis, 64);
@@ -11342,13 +11360,13 @@ TEST_F(GraphJitRuntimeFixture, PersistentSampleHistory)
     ASSERT_EQ(persistent_history_analysis->sample_producer_groups.size(), 1u);
     ASSERT_TRUE(
         persistent_history_analysis->sample_producer_groups[0]
-            .implementation.has_value());
+            .storage_plan.has_value());
     EXPECT_EQ(
-        *persistent_history_analysis->sample_producer_groups[0].implementation,
-        iv::SampleConnectionImplementationKind::persistent_ring);
+        persistent_history_analysis->sample_producer_groups[0].storage_plan->kind,
+        iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(
         persistent_history_analysis->sample_producer_groups[0]
-            .requirements.retained_frames,
+            .storage_requirements.retained_frames,
         5000u);
 
     auto persistent_history = compile_graph(persistent_history_graph, 118);

@@ -129,8 +129,8 @@ materialization choices therefore allocate only bounded sample backing. There is
 no realtime heap allocation, lazy initialization, placement construction,
 persistent façade cursor, or `SharedPortData` tax.
 
-The existing `choose_sample_connection_implementation()` and
-`choose_event_connection_implementation()` functions remain the physical-storage
+The `choose_sample_connection_storage_plan()` and
+`choose_event_connection_storage_plan()` functions are the physical-storage
 policy boundary; GraphJit derives their requirement inputs and realizes their
 returned choices rather than creating a competing policy layer. The old `Graph`
 implementation is reference material only and must not constrain this runtime
@@ -166,8 +166,8 @@ fixed generated-root stack frame instead. Only compact carry and explicitly
 selected full persistent buffers belong in `NodeStorage`; the same stack allocator
 should serve later transient event/workspace planning.
 
-The physical planner consumes the implementation decisions already made by
-`choose_sample_connection_implementation()`; it does not choose policy again.
+The physical planner consumes the storage decision already made by
+`choose_sample_connection_storage_plan()`; it does not choose policy again.
 Only realtime branches receive realtime representation handles here; compiled
 access branches remain unresolved for the later compiled-access executor. Whole-
 port layout/channel-type conversion is represented by explicit derived branches
@@ -305,9 +305,10 @@ Semantic capability work:
 
 Efficiency and observability work that does not change event semantics:
 
-- replace the event implementation enum's mixture of storage and operations with
-  the three storage plans: transient stack, transient stack plus persistent carry,
-  and full persistent `NodeStorage`;
+- **Landed:** replace the sample/event implementation enums with the three
+  storage plans—transient stack, transient stack plus persistent carry, and full
+  persistent `NodeStorage`—while keeping aggregation/conversion/feedback as
+  separate operation facts;
 - make every event capacity a required compile-time result of
   `max_events_per_sample` and the exact simultaneously-live temporal span; an
   invalid/unrepresentable result must fail compilation rather than select a
@@ -320,19 +321,18 @@ Efficiency and observability work that does not change event semantics:
 - move retained fan-in away from its current separate canonical aggregate when
   a producer-home realization is legal and measurably cheaper;
 - surface the existing per-logical-output saturating overflow counters; and
-- choose among legal physical candidates from their whole-group copy counts,
-  stack footprint, persistent footprint, and addressing cost instead of the
-  current fixed 64-event carry threshold.
+- extend the landed block-relative sample and rate-derived event crossover to
+  whole-group copy counts, stack footprint, persistent footprint, and addressing
+  cost. The fixed 64-event and 16-KiB thresholds have been removed.
 
 #### Event-connection implementation map
 
 Use these files as the phase boundaries when extending the matrix:
 
 - [`graph/realtime_port_planning.h`](../src/intravenous/graph/realtime_port_planning.h)
-  contains the current correctness-requirement records and cost-policy chooser.
-  Its event enum currently conflates storage with operations and is the primary
-  storage-plan refactor site; it should not acquire topology-specific lowering
-  logic.
+  contains the shared storage-kind vocabulary, payload-specific requirement
+  records, and pure policy choosers. It must not acquire topology-specific
+  lowering logic.
 - [`graph_jit/connection_plan.h`](../src/intravenous/graph_jit/connection_plan.h)
   and [`connection_plan.cpp`](../src/intravenous/graph_jit/connection_plan.cpp)
   derive logical event connections, producer groups, SCC schedule facts,

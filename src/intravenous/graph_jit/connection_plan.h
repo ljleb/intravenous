@@ -176,8 +176,8 @@ struct SampleProducerGroupPlan {
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
     bool has_compiled_connections = false;
-    SampleConnectionImplementationRequirements requirements{};
-    std::optional<SampleConnectionImplementationKind> implementation{};
+    SampleConnectionStorageRequirements storage_requirements{};
+    std::optional<SampleConnectionStoragePlan> storage_plan{};
     ConnectionLiveIntervalPlan live_interval{};
 };
 
@@ -188,8 +188,11 @@ struct EventProducerGroupPlan {
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
     bool has_compiled_connections = false;
-    EventConnectionImplementationRequirements requirements{};
-    std::optional<EventConnectionImplementationKind> implementation{};
+    // Cyclic or block-adapted producers append into one invocation-wide
+    // sequence. This is an execution/materialization fact, not a storage kind.
+    bool requires_invocation_aggregate = false;
+    EventConnectionStorageRequirements storage_requirements{};
+    std::optional<EventConnectionStoragePlan> storage_plan{};
     ConnectionLiveIntervalPlan live_interval{};
 };
 
@@ -200,7 +203,7 @@ enum class ConnectionStorageLifetime {
 };
 
 // This is a semantic storage request, not an allocated region. Sample physical
-// realization consumes these requirements after implementation selection;
+// realization consumes these requirements after storage-plan selection;
 // transient byte-range arena allocation is a separate concern from policy choice.
 struct ConnectionStorageRegionRequirement {
     PlannedConnectionPayload payload = PlannedConnectionPayload::sample;

@@ -793,15 +793,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             return std::unexpected(
                 "GraphJit sample-edge slice does not yet support mixed realtime/compiled sample fanout");
         }
-        if (!group.implementation) {
+        if (!group.storage_plan) {
             return std::unexpected(
-                "GraphJit sample-edge planning lost its realtime implementation choice");
-        }
-        if (*group.implementation == SampleConnectionImplementationKind::feedback_ring
-            || *group.implementation
-                == SampleConnectionImplementationKind::external_boundary) {
-            return std::unexpected(
-                "GraphJit sample-edge slice does not yet support feedback or external sample storage");
+                "GraphJit sample-edge planning has no internal realtime storage plan");
         }
         if (!group.source_port || !group.canonical_source_layout) {
             return std::unexpected(
@@ -1359,11 +1353,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                         && candidate.sources == connection.sources;
                 });
             if (group == connections.event_producer_groups.end()
-                || !group->implementation
-                || (*group->implementation
-                        != EventConnectionImplementationKind::compact_persistent_carry
-                    && *group->implementation
-                        != EventConnectionImplementationKind::persistent_ring)) {
+                || !group->storage_plan
+                || group->storage_plan->kind
+                    == RealtimeBufferStorageKind::transient_stack) {
                 return std::unexpected(
                     "GraphJit cyclic event source latency requires retained event storage");
             }
@@ -1376,11 +1368,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                         && candidate.sources == connection.sources;
                 });
             if (group == connections.event_producer_groups.end()
-                || !group->implementation
-                || (*group->implementation
-                        != EventConnectionImplementationKind::compact_persistent_carry
-                    && *group->implementation
-                        != EventConnectionImplementationKind::persistent_ring)) {
+                || !group->storage_plan
+                || group->storage_plan->kind
+                    == RealtimeBufferStorageKind::transient_stack) {
                 return std::unexpected(
                     "GraphJit cyclic event target history requires retained event storage");
             }
@@ -1399,27 +1389,22 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
             return std::unexpected(
                 "GraphJit event flow does not yet support mixed realtime/compiled event fanout");
         }
-        if (!group.implementation) {
+        if (!group.storage_plan) {
             return std::unexpected(
-                "GraphJit event planning lost its realtime implementation choice");
+                "GraphJit event planning has no internal realtime storage plan");
         }
-        auto const implementation = *group.implementation;
-        if (implementation != EventConnectionImplementationKind::direct
-            && implementation != EventConnectionImplementationKind::transient_sequence
-            && implementation != EventConnectionImplementationKind::compact_persistent_carry
-            && implementation != EventConnectionImplementationKind::persistent_ring) {
-            return std::unexpected(
-                "GraphJit event flow does not yet support feedback or external event storage");
-        }
+        auto const storage_kind = group.storage_plan->kind;
         auto const transient_materialized =
-            implementation == EventConnectionImplementationKind::transient_sequence;
+            storage_kind == RealtimeBufferStorageKind::transient_stack
+            && group.requires_invocation_aggregate;
         auto const compact_carry =
-            implementation == EventConnectionImplementationKind::compact_persistent_carry;
+            storage_kind
+            == RealtimeBufferStorageKind::stack_with_persistent_carry;
         auto const persistent_ring =
-            implementation == EventConnectionImplementationKind::persistent_ring;
+            storage_kind == RealtimeBufferStorageKind::full_node_storage;
         auto const retained_storage = compact_carry || persistent_ring;
         auto const aggregate_sequence =
-            transient_materialized || retained_storage;
+            group.requires_invocation_aggregate || retained_storage;
 
         if (group.sources.size() > 1) {
             auto const touches_cyclic_region =
@@ -1871,10 +1856,6 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         std::size_t carry_capacity = 0;
         std::size_t ring_capacity = 0;
         if (compact_carry) {
-            if (!group.requirements.retained_event_capacity) {
-                return std::unexpected(
-                    "GraphJit compact event carry lost its hard retained-event bound");
-            }
             if (retained_latency > std::numeric_limits<std::size_t>::max()
                     - retained_history) {
                 return std::unexpected(
@@ -1888,7 +1869,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                     "GraphJit compact event carry exceeds representable static capacity");
             }
             carry_capacity = *carry_capacity_bound;
-            auto const carry_max_events = *group.requirements.retained_event_capacity;
+            auto const carry_max_events =
+                group.storage_requirements.retained_event_capacity;
             if (*base_max_events > std::numeric_limits<std::size_t>::max()
                     - carry_max_events) {
                 return std::unexpected(

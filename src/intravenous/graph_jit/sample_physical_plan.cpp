@@ -376,25 +376,13 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
          group_index < connections.sample_producer_groups.size(); ++group_index) {
         auto const& group = connections.sample_producer_groups[group_index];
         if (!group.has_realtime_connections) continue;
-        if (!group.implementation) {
+        if (!group.storage_plan) {
             return std::unexpected(
-                "GraphJit sample physical plan lost a realtime implementation choice");
+                "GraphJit sample physical plan has no internal realtime storage plan");
         }
         if (!group.canonical_source_layout) {
             return std::unexpected(
                 "GraphJit sample physical plan requires a canonical realtime source layout");
-        }
-
-        switch (*group.implementation) {
-        case SampleConnectionImplementationKind::direct:
-        case SampleConnectionImplementationKind::transient_materialization:
-        case SampleConnectionImplementationKind::compact_persistent_carry:
-        case SampleConnectionImplementationKind::persistent_ring:
-            break;
-        case SampleConnectionImplementationKind::feedback_ring:
-        case SampleConnectionImplementationKind::external_boundary:
-            return std::unexpected(
-                "GraphJit point-9 sample physical plan does not yet realize feedback or external storage");
         }
 
         auto const has_feedback_branch = std::ranges::any_of(
@@ -405,9 +393,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             });
         if (group.live_interval.crosses_kernel_invocations
             && !has_feedback_branch
-            && (*group.implementation == SampleConnectionImplementationKind::direct
-                || *group.implementation
-                    == SampleConnectionImplementationKind::transient_materialization)) {
+            && group.storage_plan->kind
+                == RealtimeBufferStorageKind::transient_stack) {
             return std::unexpected(
                 "GraphJit transient sample storage cannot satisfy cross-kernel retained storage");
         }
@@ -465,9 +452,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         }
 
         std::size_t canonical_capacity = kernel_block_size;
-        if (group.requirements.retained_frames != 0) {
+        if (group.storage_requirements.retained_frames != 0) {
             auto capacity = working_ring_capacity(
-                kernel_block_size, group.requirements.retained_frames);
+                kernel_block_size, group.storage_requirements.retained_frames);
             if (!capacity) return std::unexpected(std::move(capacity.error()));
             canonical_capacity = *capacity;
         }
@@ -482,10 +469,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         bool has_feedback_home = false;
         std::size_t home_feedback_retained_frames = 0;
         std::size_t home_feedback_capacity = 0;
-        if (group.requirements.retained_frames == 0
-            && (*group.implementation == SampleConnectionImplementationKind::direct
-                || *group.implementation
-                    == SampleConnectionImplementationKind::transient_materialization)) {
+        if (group.storage_requirements.retained_frames == 0
+            && group.storage_plan->kind
+                == RealtimeBufferStorageKind::transient_stack) {
             for (auto const connection_index : group.connection_indices) {
                 auto const& connection = connections.sample_connections[connection_index];
                 if (connection.access != PlannedConnectionAccess::realtime_to_realtime
@@ -531,7 +517,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             auto const index = append_representation(SampleRepresentationPlan{
                 .producer_group_index = group_index,
                 .canonical_producer_representation = true,
-                .implementation = SampleConnectionImplementationKind::feedback_ring,
+                .storage = RealtimeBufferStorageKind::full_node_storage,
                 .channel_layout = *group.canonical_source_layout,
                 .frame_capacity = home_feedback_capacity,
                 .live_interval = group.live_interval,
@@ -552,11 +538,12 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             if (!persistent) return std::unexpected(std::move(persistent.error()));
             plan.representations[index].persistent_allocation = *persistent;
             canonical = index;
-        } else if (*group.implementation == SampleConnectionImplementationKind::persistent_ring) {
+        } else if (group.storage_plan->kind
+                   == RealtimeBufferStorageKind::full_node_storage) {
             auto const index = append_representation(SampleRepresentationPlan{
                 .producer_group_index = group_index,
                 .canonical_producer_representation = true,
-                .implementation = *group.implementation,
+                .storage = group.storage_plan->kind,
                 .channel_layout = *group.canonical_source_layout,
                 .frame_capacity = canonical_capacity,
                 .live_interval = group.live_interval,
@@ -566,7 +553,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 group,
                 SamplePersistentStorageKind::ring,
                 *group.canonical_source_layout,
-                group.requirements.retained_frames,
+                group.storage_requirements.retained_frames,
                 canonical_capacity);
             if (!persistent) return std::unexpected(std::move(persistent.error()));
             plan.representations[index].persistent_allocation = *persistent;
@@ -575,7 +562,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             auto transient_canonical = append_transient_representation(SampleRepresentationPlan{
                 .producer_group_index = group_index,
                 .canonical_producer_representation = true,
-                .implementation = *group.implementation,
+                .storage = group.storage_plan->kind,
                 .channel_layout = *group.canonical_source_layout,
                 .frame_capacity = canonical_capacity,
                 .live_interval = canonical_live,
@@ -584,9 +571,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 return std::unexpected(std::move(transient_canonical.error()));
             }
             canonical = *transient_canonical;
-            if (*group.implementation
-                == SampleConnectionImplementationKind::compact_persistent_carry) {
-                if (group.requirements.retained_frames == 0) {
+            if (group.storage_plan->kind
+                == RealtimeBufferStorageKind::stack_with_persistent_carry) {
+                if (group.storage_requirements.retained_frames == 0) {
                     return std::unexpected(
                         "GraphJit compact sample carry has no retained frames");
                 }
@@ -595,7 +582,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     group,
                     SamplePersistentStorageKind::compact_carry,
                     *group.canonical_source_layout,
-                    group.requirements.retained_frames,
+                    group.storage_requirements.retained_frames,
                     canonical_capacity);
                 if (!persistent) {
                     return std::unexpected(std::move(persistent.error()));
@@ -605,7 +592,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     .representation_index = canonical,
                     .persistent_allocation = *persistent,
                     .producer_execution_position = producer_position,
-                    .retained_frames = group.requirements.retained_frames,
+                    .retained_frames = group.storage_requirements.retained_frames,
                 });
             }
         }
@@ -691,7 +678,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     SampleRepresentationPlan{
                         .producer_group_index = group_index,
                         .canonical_producer_representation = false,
-                        .implementation = SampleConnectionImplementationKind::transient_materialization,
+                        .storage = RealtimeBufferStorageKind::transient_stack,
                         .channel_layout = connection.target_layout,
                         .frame_capacity = *derived_capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
@@ -817,8 +804,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             if (writes_directly_to_feedback) {
                 auto const& home = plan.representations[canonical];
                 if (!home.canonical_producer_representation
-                    || home.implementation
-                        != SampleConnectionImplementationKind::feedback_ring
+                    || home.storage
+                        != RealtimeBufferStorageKind::full_node_storage
                     || home.channel_layout != *group.canonical_source_layout
                     || home.frame_capacity < *ring_capacity
                     || home.persistent_allocation
@@ -831,7 +818,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     SampleRepresentationPlan{
                         .producer_group_index = group_index,
                         .canonical_producer_representation = false,
-                        .implementation = SampleConnectionImplementationKind::feedback_ring,
+                        .storage = RealtimeBufferStorageKind::full_node_storage,
                         .channel_layout = *group.canonical_source_layout,
                         .frame_capacity = *ring_capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
@@ -867,7 +854,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     SampleRepresentationPlan{
                         .producer_group_index = group_index,
                         .canonical_producer_representation = false,
-                        .implementation = SampleConnectionImplementationKind::transient_materialization,
+                        .storage = RealtimeBufferStorageKind::transient_stack,
                         .channel_layout = connection.target_layout,
                         .frame_capacity = *ring_capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
@@ -1003,7 +990,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 SampleRepresentationPlan{
                     .producer_group_index = no_sample_producer_group,
                     .canonical_producer_representation = false,
-                    .implementation = SampleConnectionImplementationKind::feedback_ring,
+                    .storage = RealtimeBufferStorageKind::full_node_storage,
                     .channel_layout = connection.target_layout,
                     .frame_capacity = *capacity,
                     .live_interval = ConnectionLiveIntervalPlan{
@@ -1037,7 +1024,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 SampleRepresentationPlan{
                     .producer_group_index = no_sample_producer_group,
                     .canonical_producer_representation = false,
-                    .implementation = SampleConnectionImplementationKind::transient_materialization,
+                    .storage = RealtimeBufferStorageKind::transient_stack,
                     .channel_layout = connection.target_layout,
                     .frame_capacity = *capacity,
                     .live_interval = ConnectionLiveIntervalPlan{
@@ -1168,7 +1155,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                         SampleRepresentationPlan{
                             .producer_group_index = no_sample_producer_group,
                             .canonical_producer_representation = false,
-                            .implementation = SampleConnectionImplementationKind::persistent_ring,
+                            .storage = RealtimeBufferStorageKind::full_node_storage,
                             .channel_layout = source_layout,
                             .frame_capacity = *alignment_capacity,
                             .live_interval = ConnectionLiveIntervalPlan{

@@ -1399,8 +1399,6 @@ void plan_sample_groups(
     for (std::size_t group_index = 0;
          group_index < plan.sample_producer_groups.size(); ++group_index) {
         auto& group = plan.sample_producer_groups[group_index];
-        bool direct = true;
-        bool requires_materialization = false;
         bool external = false;
         std::size_t retained = 0;
         for (auto const connection_index : group.connection_indices) {
@@ -1414,16 +1412,6 @@ void plan_sample_groups(
             // remains an ordinary aggregate sequence and detached branches
             // acquire their own persistent rings during physical lowering.
             external = external || connection.external_boundary;
-
-            auto const canonical_branch = group.source_port
-                && connection.canonical_source_port
-                && *connection.canonical_source_port == *group.source_port;
-            auto const branch_requires_materialization =
-                !canonical_branch
-                || connection.requires_conversion
-                || connection.requires_block_materialization;
-            requires_materialization = requires_materialization
-                || branch_requires_materialization;
 
             std::size_t connection_retained = 0;
             bool saw_group_channel = false;
@@ -1449,32 +1437,23 @@ void plan_sample_groups(
             }
             if (!saw_group_channel) continue;
             retained = std::max(retained, connection_retained);
-            direct = direct
-                && canonical_branch
-                && !connection.requires_conversion
-                && !connection.requires_block_materialization
-                && !connection.detach
-                && !connection.external_boundary
-                && connection_retained == 0;
         }
-        group.requirements = SampleConnectionImplementationRequirements{
-            .direct_implementation_legal = direct,
-            .requires_materialization = requires_materialization,
-            .feedback = false,
-            .external_boundary = external,
+        group.storage_requirements = SampleConnectionStorageRequirements{
+            .current_block_frames = kernel_block_size,
             .retained_frames = retained,
             .channel_count = group.canonical_source_layout
                 ? channel_count(*group.canonical_source_layout)
                 : channel_count(group.source_type),
-            .value_size_bytes = sizeof(Sample),
         };
         if (!group.has_realtime_connections) continue;
-        group.implementation = choose_sample_connection_implementation(
-            group.requirements);
+        if (!external) {
+            group.storage_plan = choose_sample_connection_storage_plan(
+                group.storage_requirements);
+        }
 
         auto live = live_interval_for_sample_group(plan, group);
         live.crosses_kernel_invocations = live.crosses_kernel_invocations
-            || group.requirements.retained_frames != 0;
+            || group.storage_requirements.retained_frames != 0;
         group.live_interval = live;
         auto append_storage = [&](ConnectionStorageLifetime lifetime,
                                   std::size_t current_block_frames,
@@ -1486,43 +1465,41 @@ void plan_sample_groups(
                 .live_interval = live,
                 .current_block_frames = current_block_frames,
                 .retained_extent = retained_extent_value,
-                .channel_count = group.requirements.channel_count,
-                .value_size_bytes = group.requirements.value_size_bytes,
+                .channel_count = group.storage_requirements.channel_count,
+                .value_size_bytes = sizeof(Sample),
             });
         };
-        switch (*group.implementation) {
-        case SampleConnectionImplementationKind::direct:
-            break;
-        case SampleConnectionImplementationKind::transient_materialization:
-            append_storage(
-                ConnectionStorageLifetime::transient, kernel_block_size, 0);
-            break;
-        case SampleConnectionImplementationKind::compact_persistent_carry:
-            append_storage(
-                ConnectionStorageLifetime::persistent,
-                0,
-                group.requirements.retained_frames);
-            append_storage(
-                ConnectionStorageLifetime::transient, kernel_block_size, 0);
-            break;
-        case SampleConnectionImplementationKind::persistent_ring:
-        case SampleConnectionImplementationKind::feedback_ring:
-            append_storage(
-                ConnectionStorageLifetime::persistent,
-                kernel_block_size,
-                group.requirements.retained_frames);
-            break;
-        case SampleConnectionImplementationKind::external_boundary:
+        if (external) {
             append_storage(
                 ConnectionStorageLifetime::external,
                 kernel_block_size,
-                group.requirements.retained_frames);
+                group.storage_requirements.retained_frames);
+            continue;
+        }
+        switch (group.storage_plan->kind) {
+        case RealtimeBufferStorageKind::transient_stack:
+            append_storage(
+                ConnectionStorageLifetime::transient, kernel_block_size, 0);
+            break;
+        case RealtimeBufferStorageKind::stack_with_persistent_carry:
+            append_storage(
+                ConnectionStorageLifetime::persistent,
+                0,
+                group.storage_requirements.retained_frames);
+            append_storage(
+                ConnectionStorageLifetime::transient, kernel_block_size, 0);
+            break;
+        case RealtimeBufferStorageKind::full_node_storage:
+            append_storage(
+                ConnectionStorageLifetime::persistent,
+                kernel_block_size,
+                group.storage_requirements.retained_frames);
             break;
         }
     }
 }
 
-void plan_event_groups(
+std::expected<void, std::string> plan_event_groups(
     ConnectionAnalysisPlan& plan,
     std::size_t kernel_block_size)
 {
@@ -1588,18 +1565,16 @@ void plan_event_groups(
     for (std::size_t group_index = 0;
          group_index < plan.event_producer_groups.size(); ++group_index) {
         auto& group = plan.event_producer_groups[group_index];
-        bool direct = true;
-        bool requires_materialization = false;
         bool external = false;
+        bool requires_invocation_aggregate = group.sources.size() > 1;
         std::size_t retained = 0;
-        bool source_in_cyclic_region = false;
         for (auto const source : group.sources) {
             if (source.bundle >= plan.schedule.bundle_to_region.size()
                 || !plan.schedule.bundle_to_region[source.bundle]) {
                 continue;
             }
             auto const region = *plan.schedule.bundle_to_region[source.bundle];
-            source_in_cyclic_region = source_in_cyclic_region
+            requires_invocation_aggregate = requires_invocation_aggregate
                 || (region < plan.schedule.regions.size()
                     && plan.schedule.regions[region].cyclic);
         }
@@ -1614,49 +1589,40 @@ void plan_event_groups(
             // remains an ordinary aggregate sequence and detached branches
             // acquire their own persistent rings during physical lowering.
             external = external || connection.external_boundary;
-            requires_materialization = requires_materialization
+            requires_invocation_aggregate = requires_invocation_aggregate
                 || connection.requires_conversion
-                || connection.requires_block_materialization;
+                || connection.requires_block_materialization
+                || connection.detach.has_value();
             auto const connection_retained = retained_extent(
                 connection.source_history,
                 connection.source_latency,
                 connection.target_history);
             retained = std::max(retained, connection_retained);
-            direct = direct
-                && !connection.requires_conversion
-                && !connection.requires_block_materialization
-                && !connection.detach
-                && !connection.external_boundary
-                && connection_retained == 0;
         }
-        std::optional<std::size_t> retained_event_capacity;
-        if (retained != 0) {
-            retained_event_capacity = event_count_for_sample_span(
-                group.max_events_per_sample, retained);
+        auto const current_event_capacity = event_count_for_sample_span(
+            group.max_events_per_sample, kernel_block_size);
+        auto const retained_event_capacity = event_count_for_sample_span(
+            group.max_events_per_sample, retained);
+        if (!current_event_capacity || !retained_event_capacity) {
+            return std::unexpected(
+                "GraphJit event producer sizing rate/sample span exceeds representable static capacity");
         }
-        // A cyclic region executes slice-major. Keep one aggregate producer
-        // sequence for the whole root call so per-slice callbacks do not reset
-        // and thereby enlarge the authored static event budget. Same-region
-        // consumers still bind that representation directly and select their
-        // current absolute-time window.
-        requires_materialization = requires_materialization
-            || source_in_cyclic_region;
-        direct = direct && !source_in_cyclic_region;
-        group.requirements = EventConnectionImplementationRequirements{
-            .direct_implementation_legal = direct,
-            .requires_materialization = requires_materialization,
-            .feedback = false,
-            .external_boundary = external,
+        group.storage_requirements = EventConnectionStorageRequirements{
+            .current_window_samples = kernel_block_size,
             .retained_window_samples = retained,
-            .retained_event_capacity = retained_event_capacity,
+            .current_event_capacity = *current_event_capacity,
+            .retained_event_capacity = *retained_event_capacity,
         };
+        group.requires_invocation_aggregate = requires_invocation_aggregate;
         if (!group.has_realtime_connections) continue;
-        group.implementation = choose_event_connection_implementation(
-            group.requirements);
+        if (!external) {
+            group.storage_plan = choose_event_connection_storage_plan(
+                group.storage_requirements);
+        }
 
         auto live = live_interval_for_event_group(plan, group);
         live.crosses_kernel_invocations = live.crosses_kernel_invocations
-            || group.requirements.retained_window_samples != 0;
+            || retained != 0;
         group.live_interval = live;
         auto append_storage = [&](ConnectionStorageLifetime lifetime,
                                   std::size_t current_block_frames,
@@ -1672,36 +1638,35 @@ void plan_event_groups(
                 .value_size_bytes = 0,
             });
         };
-        switch (*group.implementation) {
-        case EventConnectionImplementationKind::direct:
-            break;
-        case EventConnectionImplementationKind::transient_sequence:
-            append_storage(
-                ConnectionStorageLifetime::transient, kernel_block_size, 0);
-            break;
-        case EventConnectionImplementationKind::compact_persistent_carry:
-            append_storage(
-                ConnectionStorageLifetime::persistent,
-                0,
-                group.requirements.retained_window_samples);
-            append_storage(
-                ConnectionStorageLifetime::transient, kernel_block_size, 0);
-            break;
-        case EventConnectionImplementationKind::persistent_ring:
-        case EventConnectionImplementationKind::feedback_ring:
-            append_storage(
-                ConnectionStorageLifetime::persistent,
-                kernel_block_size,
-                group.requirements.retained_window_samples);
-            break;
-        case EventConnectionImplementationKind::external_boundary:
+        if (external) {
             append_storage(
                 ConnectionStorageLifetime::external,
                 kernel_block_size,
-                group.requirements.retained_window_samples);
+                retained);
+            continue;
+        }
+        switch (group.storage_plan->kind) {
+        case RealtimeBufferStorageKind::transient_stack:
+            append_storage(
+                ConnectionStorageLifetime::transient, kernel_block_size, 0);
+            break;
+        case RealtimeBufferStorageKind::stack_with_persistent_carry:
+            append_storage(
+                ConnectionStorageLifetime::persistent,
+                0,
+                retained);
+            append_storage(
+                ConnectionStorageLifetime::transient, kernel_block_size, 0);
+            break;
+        case RealtimeBufferStorageKind::full_node_storage:
+            append_storage(
+                ConnectionStorageLifetime::persistent,
+                kernel_block_size,
+                retained);
             break;
         }
     }
+    return {};
 }
 
 } // namespace
@@ -1744,7 +1709,9 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         return std::unexpected(std::move(latency.error()));
     }
     plan_sample_groups(plan, kernel_block_size);
-    plan_event_groups(plan, kernel_block_size);
+    if (auto events = plan_event_groups(plan, kernel_block_size); !events) {
+        return std::unexpected(std::move(events.error()));
+    }
     return plan;
 }
 
