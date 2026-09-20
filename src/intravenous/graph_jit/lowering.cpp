@@ -1226,11 +1226,11 @@ std::expected<void, std::string> emit_sample_composition_write(
     }
     if (shift_writes_by_read_latency
         && (target_representation.storage
-                != RealtimeBufferStorageKind::full_node_storage
+                == RealtimeBufferStorageKind::transient_stack
             || target_representation.persistent_allocation
                 == detail::no_sample_persistent_allocation)) {
         return std::unexpected(
-            "GraphJit shifted sample composition requires a persistent feedback target");
+            "GraphJit shifted sample composition requires retained feedback storage");
     }
 
     auto target = sample_storage_binding(
@@ -1655,24 +1655,27 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
     }
     auto const& timeline_plan =
         physical.representations[timeline.timeline_representation];
-    if (timeline_plan.storage
-            != RealtimeBufferStorageKind::full_node_storage
+    if (timeline_plan.storage == RealtimeBufferStorageKind::transient_stack
         || timeline_plan.persistent_allocation
             == detail::no_sample_persistent_allocation
         || timeline_plan.channel_layout != timeline.channel_layout
         || timeline.loop_extra_latency == 0
         || timeline.loop_extra_latency >= timeline_plan.frame_capacity) {
         return std::unexpected(
-            "GraphJit sample feedback timeline is inconsistent with its ring representation");
+            "GraphJit sample feedback timeline is inconsistent with its retained representation");
     }
     if (timeline_plan.persistent_allocation
         >= physical.persistent_allocations.size()) {
         return std::unexpected(
-            "GraphJit sample feedback timeline references a missing persistent ring");
+            "GraphJit sample feedback timeline references a missing persistent allocation");
     }
     auto const& allocation =
         physical.persistent_allocations[timeline_plan.persistent_allocation];
-    if (allocation.kind != detail::SamplePersistentStorageKind::ring
+    auto const expected_persistent_kind = timeline_plan.storage
+            == RealtimeBufferStorageKind::stack_with_persistent_carry
+        ? detail::SamplePersistentStorageKind::compact_carry
+        : detail::SamplePersistentStorageKind::ring;
+    if (allocation.kind != expected_persistent_kind
         || allocation.representation_index != timeline.timeline_representation
         || allocation.retained_frames < timeline.retained_frames
         || !allocation.initialize_value
@@ -1835,7 +1838,8 @@ compact_carry_allocation(
         || representation.transient_allocation
                == detail::no_sample_transient_allocation
         || allocation.retained_frames != operation.retained_frames
-        || operation.retained_frames == 0) {
+        || operation.retained_frames == 0
+        || operation.future_frames >= operation.retained_frames) {
         return std::unexpected(
             "GraphJit sample carry plan is inconsistent with its physical representation");
     }
@@ -1937,15 +1941,17 @@ std::expected<void, std::string> emit_sample_carry_operation(
         restore ? "sample.carry.restore.frame" : "sample.carry.commit.frame");
     carry_frame->addIncoming(zero, preheader);
     auto* retained = llvm::ConstantInt::get(size_type, operation.retained_frames);
+    auto* retained_before = llvm::ConstantInt::get(
+        size_type, operation.retained_frames - operation.future_frames);
     llvm::Value* first_absolute = nullptr;
     if (restore) {
         first_absolute = builder.CreateSub(
-            sample_index, retained, "sample.carry.restore.first");
+            sample_index, retained_before, "sample.carry.restore.first");
     } else {
         first_absolute = builder.CreateSub(
             builder.CreateAdd(
                 sample_index, block_size, "sample.carry.commit.end.index"),
-            retained,
+            retained_before,
             "sample.carry.commit.first");
     }
     auto* absolute_frame = builder.CreateAdd(
@@ -2237,7 +2243,7 @@ std::expected<void, std::string> emit_event_feedback_append(
     llvm::Value* sample_index)
 {
     if (feedback.source_representation >= event_ports.representations.size()
-        || feedback.ring_representation >= event_ports.representations.size()) {
+        || feedback.target_representation >= event_ports.representations.size()) {
         return std::unexpected(
             "GraphJit event feedback references a missing representation");
     }
@@ -2247,12 +2253,20 @@ std::expected<void, std::string> emit_event_feedback_append(
     }
     auto const& source =
         event_ports.representations[feedback.source_representation];
-    auto const& ring =
-        event_ports.representations[feedback.ring_representation];
-    if (!ring.persistent || !ring.persistent_ring
-        || source.type != ring.type) {
+    auto const& target =
+        event_ports.representations[feedback.target_representation];
+    if (source.type != target.type) {
         return std::unexpected(
-            "GraphJit exact-type event feedback has inconsistent physical storage");
+            "GraphJit exact-type event feedback changed event type");
+    }
+    if (feedback.storage == RealtimeBufferStorageKind::full_node_storage) {
+        if (!target.persistent || !target.persistent_ring) {
+            return std::unexpected(
+                "GraphJit full event feedback has no persistent ring");
+        }
+    } else if (target.persistent || target.persistent_ring) {
+        return std::unexpected(
+            "GraphJit transient/carry event feedback has invalid working storage");
     }
 
     auto& context = builder.getContext();
@@ -2266,8 +2280,8 @@ std::expected<void, std::string> emit_event_feedback_append(
     llvm::Value* source_end = nullptr;
     auto* source_base = realtime_storage.event_representations[
         feedback.source_representation];
-    auto* ring_base = realtime_storage.event_representations[
-        feedback.ring_representation];
+    auto* target_base = realtime_storage.event_representations[
+        feedback.target_representation];
     if (source.persistent_ring) {
         auto* source_write_pointer = byte_offset_pointer(
             builder,
@@ -2304,41 +2318,11 @@ std::expected<void, std::string> emit_event_feedback_append(
         source_base,
         source.events_relative_offset,
         "event.feedback.source.events");
-    auto* ring_read_pointer = byte_offset_pointer(
+    auto* target_events = byte_offset_pointer(
         builder,
-        ring_base,
-        ring.read_index_relative_offset,
-        "event.feedback.ring.read");
-    auto* ring_write_pointer = byte_offset_pointer(
-        builder,
-        ring_base,
-        ring.write_index_relative_offset,
-        "event.feedback.ring.write");
-    auto* ring_events = byte_offset_pointer(
-        builder,
-        ring_base,
-        ring.events_relative_offset,
-        "event.feedback.ring.events");
-
-    auto* module = builder.GetInsertBlock()->getModule();
-    llvm::FunctionCallee helper;
-    if (source.persistent_ring) {
-        auto* helper_type = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(context),
-            {pointer_type, size_type, size_type, size_type, size_type, size_type,
-             pointer_type, size_type, pointer_type, pointer_type},
-            false);
-        helper = module->getOrInsertFunction(
-            detail::event_feedback_append_ring_source_symbol, helper_type);
-    } else {
-        auto* helper_type = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(context),
-            {pointer_type, size_type, size_type, size_type, size_type,
-             pointer_type, size_type, pointer_type, pointer_type},
-            false);
-        helper = module->getOrInsertFunction(
-            detail::event_feedback_append_symbol, helper_type);
-    }
+        target_base,
+        target.events_relative_offset,
+        "event.feedback.target.events");
 
     // Most event slices produce no events. Keep the audio-thread fast path to a
     // source-index load/compare and avoid the out-of-line feedback helper
@@ -2354,31 +2338,101 @@ std::expected<void, std::string> emit_event_feedback_append(
     builder.CreateCondBr(has_new_events, append_block, continue_block);
 
     builder.SetInsertPoint(append_block);
-    if (source.persistent_ring) {
-        builder.CreateCall(
-            helper,
-            {source_events,
-             llvm::ConstantInt::get(size_type, source.event_capacity),
-             source_begin,
-             source_end,
-             sample_index,
-             llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
-             ring_events,
-             llvm::ConstantInt::get(size_type, ring.event_capacity),
-             ring_read_pointer,
-             ring_write_pointer});
+    auto* module = builder.GetInsertBlock()->getModule();
+    if (target.persistent_ring) {
+        auto* target_read_pointer = byte_offset_pointer(
+            builder,
+            target_base,
+            target.read_index_relative_offset,
+            "event.feedback.ring.read");
+        auto* target_write_pointer = byte_offset_pointer(
+            builder,
+            target_base,
+            target.write_index_relative_offset,
+            "event.feedback.ring.write");
+        if (source.persistent_ring) {
+            auto* helper_type = llvm::FunctionType::get(
+                llvm::Type::getVoidTy(context),
+                {pointer_type, size_type, size_type, size_type, size_type, size_type,
+                 pointer_type, size_type, pointer_type, pointer_type},
+                false);
+            auto helper = module->getOrInsertFunction(
+                detail::event_feedback_append_ring_source_symbol, helper_type);
+            builder.CreateCall(
+                helper,
+                {source_events,
+                 llvm::ConstantInt::get(size_type, source.event_capacity),
+                 source_begin,
+                 source_end,
+                 sample_index,
+                 llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
+                 target_events,
+                 llvm::ConstantInt::get(size_type, target.event_capacity),
+                 target_read_pointer,
+                 target_write_pointer});
+        } else {
+            auto* helper_type = llvm::FunctionType::get(
+                llvm::Type::getVoidTy(context),
+                {pointer_type, size_type, size_type, size_type, size_type,
+                 pointer_type, size_type, pointer_type, pointer_type},
+                false);
+            auto helper = module->getOrInsertFunction(
+                detail::event_feedback_append_symbol, helper_type);
+            builder.CreateCall(
+                helper,
+                {source_events,
+                 source_begin,
+                 source_end,
+                 sample_index,
+                 llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
+                 target_events,
+                 llvm::ConstantInt::get(size_type, target.event_capacity),
+                 target_read_pointer,
+                 target_write_pointer});
+        }
     } else {
-        builder.CreateCall(
-            helper,
-            {source_events,
-             source_begin,
-             source_end,
-             sample_index,
-             llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
-             ring_events,
-             llvm::ConstantInt::get(size_type, ring.event_capacity),
-             ring_read_pointer,
-             ring_write_pointer});
+        auto* target_count_pointer = byte_offset_pointer(
+            builder,
+            target_base,
+            target.count_relative_offset,
+            "event.feedback.sequence.count");
+        if (source.persistent_ring) {
+            auto* helper_type = llvm::FunctionType::get(
+                llvm::Type::getVoidTy(context),
+                {pointer_type, size_type, size_type, size_type, size_type,
+                 pointer_type, size_type, pointer_type},
+                false);
+            auto helper = module->getOrInsertFunction(
+                detail::event_feedback_append_sequence_ring_source_symbol,
+                helper_type);
+            builder.CreateCall(
+                helper,
+                {source_events,
+                 llvm::ConstantInt::get(size_type, source.event_capacity),
+                 source_begin,
+                 source_end,
+                 llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
+                 target_events,
+                 llvm::ConstantInt::get(size_type, target.event_capacity),
+                 target_count_pointer});
+        } else {
+            auto* helper_type = llvm::FunctionType::get(
+                llvm::Type::getVoidTy(context),
+                {pointer_type, size_type, size_type, size_type,
+                 pointer_type, size_type, pointer_type},
+                false);
+            auto helper = module->getOrInsertFunction(
+                detail::event_feedback_append_sequence_symbol, helper_type);
+            builder.CreateCall(
+                helper,
+                {source_events,
+                 source_begin,
+                 source_end,
+                 llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
+                 target_events,
+                 llvm::ConstantInt::get(size_type, target.event_capacity),
+                 target_count_pointer});
+        }
     }
     builder.CreateBr(continue_block);
     builder.SetInsertPoint(continue_block);

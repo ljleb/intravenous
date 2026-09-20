@@ -1422,7 +1422,7 @@ void plan_sample_groups(
                 }
                 saw_group_channel = true;
                 // A detached consumer owns its delay/history retention in
-                // the branch-local feedback ring. The canonical producer still
+                // the branch-local retained feedback timeline. The canonical producer still
                 // retains its own declared output history, which its callback
                 // may address independently of any consumer.
                 connection_retained = std::max(

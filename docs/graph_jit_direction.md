@@ -269,7 +269,7 @@ The current internal realtime connection surface is intentionally asymmetric:
 | Same-SCC target history | Implemented | Canonical retained storage keeps restored root history and earlier-slice events visible. Exact-type consumers read that storage directly; a converted derived branch materializes `[slice-history, slice-end)` after each producer slice. |
 | Same-SCC source history | Capability-gated | Source-side retained-window ownership and per-slice visibility must be lowered without violating append order or replaying restored events. |
 | Same-SCC source latency consumed by a non-detached target | Capability-gated | Future events already fit the canonical retained timeline, but per-slice visibility and scheduling semantics still need lowering. |
-| Detached feedback within one SCC | Implemented for one exact-type source with zero source/target history | A branch-local persistent ring appends only the newly authored suffix and adds `loop_extra_latency`. Same-source, same-delay detached fanout shares the ring and append operation. Authored source latency on the canonical producer is supported. |
+| Detached feedback within one SCC | Implemented for one exact-type source with zero source/target history | The delayed live span is derived exactly and selects the shared transient/carry/full storage planner. Compact carry keeps only the cross-root retained suffix in `NodeStorage`; full storage uses a fixed persistent ring. Both append only the newly authored suffix and add `loop_extra_latency`. Same-source, same-delay detached fanout shares the delayed representation and append operation. Authored source latency on the canonical producer is supported. |
 | Cyclic producer to acyclic consumer | Implemented | Materialize once at SCC exit from the complete root-call aggregate. Exact type, non-expanding conversion, outbound target history, and authored source latency compose with compact carry or a canonical persistent ring. |
 | Acyclic producer entering a cyclic region | Capability-gated | Requires an ingress lifetime/window rule and placement before the relevant SCC slices. |
 | Edge spanning distinct cyclic regions | Capability-gated | Requires explicit inter-region scheduling and retained-window ownership. |
@@ -316,9 +316,9 @@ Efficiency and observability work that does not change event semantics:
 - **Landed:** move invocation-local sample and event backing out of
   `NodeStorage` and into live-range-packed generated-root stack arenas, with
   direct resolved-pointer bindings and no runtime storage-kind branch;
-- plan feedback as an ordinary delayed derived stream using the same carry/full
-  alternatives, and replace the current `source_capacity * (latency + 1)` event
-  feedback sizing with rate-times-live-span sizing;
+- **Landed:** plan feedback as an ordinary delayed derived stream using the same
+  transient/carry/full alternatives, with event feedback sized from
+  rate-times-live-span rather than `source_capacity * (latency + 1)`;
 - move retained fan-in away from its current separate canonical aggregate when
   a producer-home realization is legal and measurably cheaper;
 - surface the existing per-logical-output saturating overflow counters; and
@@ -525,12 +525,13 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     non-expanding conversion plan. Identical retained converted fanout branches share
     one transient representation. Derived capacity remains source-capacity-sized
     because the declared maximum does not require events to be distributed
-    uniformly across timestamps. Event feedback rings land in point 12; telemetry
+    uniformly across timestamps. Event feedback storage lands in point 12; telemetry
     surfacing remains; transient event backing and direct-pointer binding are landed.
 12. **SCC/feedback execution.** **Sample feedback and the first event-feedback
     slice landed.** Sample `detach()` now executes through feedback-aware SCC
     scheduling with nonzero reflected `scc_feedback_latency`, producer-home or
-    branch-local persistent timelines, source latency/history, channel conversion,
+    branch-local retained timelines selected through the shared storage planner,
+    source latency/history, channel conversion,
     projected/permuted composition, unequal-latency mixing alignment, exact-shape
     generation migration, and ordinary identity/converted/history fanout from an
     SCC producer into downstream acyclic regions. For internal realtime sample

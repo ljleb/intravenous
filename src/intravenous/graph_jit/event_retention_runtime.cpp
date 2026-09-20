@@ -119,6 +119,65 @@ extern "C" void iv_graph_jit_append_event_feedback(
     *ring_write_index = write_index;
 }
 
+extern "C" void iv_graph_jit_append_event_feedback_sequence(
+    void const* source_events,
+    std::size_t source_begin_index,
+    std::size_t source_end_index,
+    std::size_t loop_extra_latency,
+    void* target_events,
+    std::size_t target_capacity,
+    std::size_t* target_count) noexcept
+{
+    if (source_events == nullptr || target_events == nullptr
+        || target_count == nullptr || target_capacity == 0) {
+        return;
+    }
+
+    auto const* source = static_cast<TimedEvent const*>(source_events);
+    auto* target = static_cast<TimedEvent*>(target_events);
+    auto count = std::min(*target_count, target_capacity);
+    source_begin_index = std::min(source_begin_index, source_end_index);
+    for (std::size_t i = source_begin_index;
+         i < source_end_index && count < target_capacity; ++i) {
+        auto delayed = source[i];
+        delayed.time = static_cast<EventTime>(saturating_sample_index_add(
+            static_cast<SampleIndex>(delayed.time), loop_extra_latency));
+        target[count++] = std::move(delayed);
+    }
+    *target_count = count;
+}
+
+extern "C" void iv_graph_jit_append_event_feedback_sequence_ring_source(
+    void const* source_events,
+    std::size_t source_capacity,
+    std::size_t source_begin_index,
+    std::size_t source_end_index,
+    std::size_t loop_extra_latency,
+    void* target_events,
+    std::size_t target_capacity,
+    std::size_t* target_count) noexcept
+{
+    if (source_events == nullptr || source_capacity == 0
+        || target_events == nullptr || target_count == nullptr
+        || target_capacity == 0) {
+        return;
+    }
+
+    auto const* source = static_cast<TimedEvent const*>(source_events);
+    auto* target = static_cast<TimedEvent*>(target_events);
+    auto const source_mask = source_capacity - 1;
+    auto count = std::min(*target_count, target_capacity);
+    source_begin_index = std::min(source_begin_index, source_end_index);
+    for (std::size_t i = source_begin_index;
+         i < source_end_index && count < target_capacity; ++i) {
+        auto delayed = source[i & source_mask];
+        delayed.time = static_cast<EventTime>(saturating_sample_index_add(
+            static_cast<SampleIndex>(delayed.time), loop_extra_latency));
+        target[count++] = std::move(delayed);
+    }
+    *target_count = count;
+}
+
 extern "C" void iv_graph_jit_append_event_feedback_ring_source(
     void const* source_events,
     std::size_t source_capacity,

@@ -2217,8 +2217,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 "GraphJit event detach source representation is invalid");
         }
         auto const& source_storage = plan.representations[source_representation];
-        if (source_storage.type != connection.source_type
-            || source_storage.event_capacity == 0) {
+        if (source_storage.type != connection.source_type) {
             return std::unexpected(
                 "GraphJit event detach source representation disagrees with detach type");
         }
@@ -2233,72 +2232,191 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         auto const producer_position =
             *connections.schedule.bundle_execution_position[source_bundle];
 
+        std::size_t consumer_position = producer_position;
+        bool has_consumer_position = false;
+        for (auto const target_id : connection.targets) {
+            if (target_id.bundle
+                    >= connections.schedule.bundle_execution_position.size()
+                || !connections.schedule.bundle_execution_position[target_id.bundle]) {
+                return std::unexpected(
+                    "GraphJit event feedback consumer has no executable schedule position");
+            }
+            auto const position =
+                *connections.schedule.bundle_execution_position[target_id.bundle];
+            consumer_position = has_consumer_position
+                ? std::min(consumer_position, position)
+                : position;
+            has_consumer_position = true;
+        }
+        if (!has_consumer_position) {
+            return std::unexpected(
+                "GraphJit event feedback has no in-SCC consumer");
+        }
+
+        if (connection.source_latency
+            > std::numeric_limits<std::size_t>::max() - latency) {
+            return std::unexpected(
+                "GraphJit event feedback retained span overflows size_t");
+        }
+        auto const retained_window_samples = connection.source_latency + latency;
+        if (connection.source_latency
+            > std::numeric_limits<std::size_t>::max()
+                - input.specialization.block_size) {
+            return std::unexpected(
+                "GraphJit event feedback authored span overflows size_t");
+        }
+        auto const authored_window_samples =
+            input.specialization.block_size + connection.source_latency;
+        auto const current_event_count = event_count_for_sample_span(
+            source_group_it->max_events_per_sample,
+            input.specialization.block_size);
+        auto const retained_event_count = event_count_for_sample_span(
+            source_group_it->max_events_per_sample,
+            retained_window_samples);
+        auto const authored_event_count = event_count_for_sample_span(
+            source_group_it->max_events_per_sample,
+            authored_window_samples);
+        if (!current_event_count || !retained_event_count || !authored_event_count) {
+            return std::unexpected(
+                "GraphJit event feedback rate/span exceeds representable static capacity");
+        }
+        auto const feedback_storage = choose_event_connection_storage_plan(
+            EventConnectionStorageRequirements{
+                .current_window_samples = input.specialization.block_size,
+                .retained_window_samples = retained_window_samples,
+                .current_event_capacity = *current_event_count,
+                .retained_event_capacity = *retained_event_count,
+            });
+
         // Multiple detached branches from one source with the same authored
-        // latency are the same delayed event stream. Share one persistent ring
-        // and one producer-side append operation across all such consumers.
-        // This keeps fanout out of the audio-thread hot path instead of paying
-        // one ring copy/helper call per detached target.
+        // latency are the same delayed event stream. Share one planned delayed
+        // representation and one producer-side append operation across all such
+        // consumers, regardless of whether that representation is transient,
+        // compact carry, or a full persistent ring.
         auto existing_feedback = std::ranges::find_if(
             plan.feedback_operations,
             [&](EventFeedbackPlan const& feedback) {
                 return feedback.source_representation == source_representation
                     && feedback.producer_execution_position == producer_position
-                    && feedback.loop_extra_latency == latency;
+                    && feedback.loop_extra_latency == latency
+                    && feedback.retained_window_samples == retained_window_samples;
             });
 
-        std::size_t ring_representation = 0;
+        std::size_t target_representation = 0;
         if (existing_feedback != plan.feedback_operations.end()) {
-            ring_representation = existing_feedback->ring_representation;
+            target_representation = existing_feedback->target_representation;
+            existing_feedback->consumer_execution_position = std::min(
+                existing_feedback->consumer_execution_position,
+                consumer_position);
         } else {
-            if (latency == std::numeric_limits<std::size_t>::max()) {
-                return std::unexpected(
-                    "GraphJit event feedback latency exceeds representable static capacity");
-            }
-            // A runtime root call may be as small as one sample. The producer's
-            // event sequence capacity is a per-invocation bound, not a density
-            // limit, so up to latency+1 full invocations may coexist in the
-            // delayed ring regardless of the specialization block size.
-            auto const outstanding_invocations = latency + 1;
-            if (source_storage.event_capacity
-                > std::numeric_limits<std::size_t>::max()
-                    / outstanding_invocations) {
-                return std::unexpected(
-                    "GraphJit event feedback static capacity overflows size_t");
-            }
-            auto const required_capacity =
-                source_storage.event_capacity * outstanding_invocations;
-            constexpr auto highest_power_of_two = std::size_t{1}
-                << (std::numeric_limits<std::size_t>::digits - 1);
-            if (required_capacity > highest_power_of_two) {
-                return std::unexpected(
-                    "GraphJit event feedback exceeds representable static capacity");
-            }
-            auto const ring_capacity = next_power_of_2(required_capacity);
             auto const source_id = connection.sources.front();
-            std::string migration_identity =
+            auto identity_base =
                 "graphjit.event.feedback:source="
                 + std::to_string(source_id.bundle) + "."
                 + std::to_string(source_id.port)
                 + ":type="
                 + std::to_string(static_cast<unsigned>(connection.source_type))
                 + ":latency=" + std::to_string(latency)
-                + ":capacity=" + std::to_string(ring_capacity);
-            auto appended = append_representation(
-                source_group_index,
-                connection.source_type,
-                ring_capacity,
-                false,
-                true,
-                std::move(migration_identity),
-                true);
-            if (!appended) {
-                return std::unexpected(std::move(appended.error()));
+                + ":retained=" + std::to_string(retained_window_samples);
+
+            switch (feedback_storage.kind) {
+            case RealtimeBufferStorageKind::transient_stack: {
+                auto capacity = rounded_event_capacity(*authored_event_count);
+                if (!capacity) {
+                    return std::unexpected(std::move(capacity.error()));
+                }
+                auto appended = append_representation(
+                    source_group_index,
+                    connection.source_type,
+                    *capacity);
+                if (!appended) {
+                    return std::unexpected(std::move(appended.error()));
+                }
+                target_representation = *appended;
+                break;
             }
-            ring_representation = *appended;
+            case RealtimeBufferStorageKind::stack_with_persistent_carry: {
+                if (*authored_event_count
+                    > std::numeric_limits<std::size_t>::max()
+                        - *retained_event_count) {
+                    return std::unexpected(
+                        "GraphJit event feedback compact working capacity overflows size_t");
+                }
+                auto working_capacity = rounded_event_capacity(
+                    *authored_event_count + *retained_event_count);
+                auto carry_capacity = event_sequence_capacity_for_sample_span(
+                    source_group_it->max_events_per_sample,
+                    retained_window_samples);
+                if (!working_capacity || !carry_capacity) {
+                    return std::unexpected(
+                        "GraphJit event feedback compact capacity is not representable");
+                }
+                auto working = append_representation(
+                    source_group_index,
+                    connection.source_type,
+                    *working_capacity);
+                if (!working) {
+                    return std::unexpected(std::move(working.error()));
+                }
+                target_representation = *working;
+                auto persistent = append_representation(
+                    source_group_index,
+                    connection.source_type,
+                    *carry_capacity,
+                    false,
+                    true,
+                    identity_base + ":kind=compact_carry:capacity="
+                        + std::to_string(*carry_capacity));
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.carry_operations.push_back(EventCarryPlan{
+                    .working_representation = target_representation,
+                    .persistent_representation = *persistent,
+                    .producer_execution_position = producer_position,
+                    .retained_history_samples = 0,
+                    .retained_latency_samples = retained_window_samples,
+                });
+                break;
+            }
+            case RealtimeBufferStorageKind::full_node_storage: {
+                if (retained_window_samples
+                    > std::numeric_limits<std::size_t>::max()
+                        - input.specialization.block_size) {
+                    return std::unexpected(
+                        "GraphJit event feedback persistent span overflows size_t");
+                }
+                auto ring_capacity = event_sequence_capacity_for_sample_span(
+                    source_group_it->max_events_per_sample,
+                    input.specialization.block_size + retained_window_samples);
+                if (!ring_capacity) {
+                    return std::unexpected(
+                        "GraphJit event feedback persistent capacity is not representable");
+                }
+                auto appended = append_representation(
+                    source_group_index,
+                    connection.source_type,
+                    *ring_capacity,
+                    false,
+                    true,
+                    identity_base + ":kind=full_node_storage:capacity="
+                        + std::to_string(*ring_capacity),
+                    true);
+                if (!appended) {
+                    return std::unexpected(std::move(appended.error()));
+                }
+                target_representation = *appended;
+                break;
+            }
+            }
+
             plan.feedback_operations.push_back(EventFeedbackPlan{
                 .source_representation = source_representation,
-                .ring_representation = ring_representation,
+                .target_representation = target_representation,
                 .producer_execution_position = producer_position,
+                .consumer_execution_position = consumer_position,
+                .storage = feedback_storage.kind,
+                .retained_window_samples = retained_window_samples,
                 .loop_extra_latency = latency,
             });
         }
@@ -2316,7 +2434,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 return std::unexpected(
                     "GraphJit event feedback consumer input is connected more than once");
             }
-            target_binding.representation = ring_representation;
+            target_binding.representation = target_representation;
         }
     }
 
@@ -2355,6 +2473,23 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         // over the producer group's flattened schedule interval.
         auto live = connections.event_producer_groups[
             representation.producer_group_index].live_interval;
+        // Detached feedback working sequences may be restored/read before the
+        // semantic producer executes in the deterministic SCC order. The
+        // producer-group interval is source-oriented and can therefore begin
+        // too late for this branch-local representation. Widen only feedback
+        // targets here; the broader per-representation liveness rewrite remains
+        // separate optimization work.
+        for (auto const& feedback : plan.feedback_operations) {
+            if (feedback.target_representation != representation_index) continue;
+            live.begin = std::min(
+                live.begin, feedback.consumer_execution_position);
+            live.begin = std::min(
+                live.begin, feedback.producer_execution_position);
+            live.end = std::max(
+                live.end, feedback.consumer_execution_position);
+            live.end = std::max(
+                live.end, feedback.producer_execution_position);
+        }
         live.crosses_kernel_invocations = false;
         transient_requests.push_back(TransientArenaAllocationRequest{
             .size_bytes = representation.size_bytes,
@@ -2500,13 +2635,15 @@ std::expected<ExecutionPlan, std::string> plan_execution(
          carry_index < sample_ports.physical.carry_operations.size();
          ++carry_index) {
         auto const& carry = sample_ports.physical.carry_operations[carry_index];
-        if (carry.producer_execution_position >= plan.primitive_steps.size()) {
+        if (carry.restore_execution_position >= plan.primitive_steps.size()
+            || carry.commit_execution_position >= plan.primitive_steps.size()) {
             return std::unexpected(
                 "GraphJit sample carry operation references an invalid execution position");
         }
-        auto& step = plan.primitive_steps[carry.producer_execution_position];
-        step.sample_carry_restores_before.push_back(carry_index);
-        step.sample_carry_commits_after.push_back(carry_index);
+        plan.primitive_steps[carry.restore_execution_position]
+            .sample_carry_restores_before.push_back(carry_index);
+        plan.primitive_steps[carry.commit_execution_position]
+            .sample_carry_commits_after.push_back(carry_index);
     }
 
     for (std::size_t timeline_index = 0;
@@ -2762,9 +2899,18 @@ std::expected<ExecutionPlan, std::string> plan_execution(
          feedback_index < event_ports.feedback_operations.size();
          ++feedback_index) {
         auto const& feedback = event_ports.feedback_operations[feedback_index];
-        if (feedback.producer_execution_position >= plan.primitive_steps.size()) {
+        if (feedback.producer_execution_position >= plan.primitive_steps.size()
+            || feedback.consumer_execution_position >= plan.primitive_steps.size()) {
             return std::unexpected(
                 "GraphJit event feedback operation references an invalid execution position");
+        }
+        if (feedback.storage == RealtimeBufferStorageKind::transient_stack) {
+            auto& resets = plan.primitive_steps[feedback.consumer_execution_position]
+                .event_sequence_resets_before;
+            if (std::ranges::find(resets, feedback.target_representation)
+                == resets.end()) {
+                resets.push_back(feedback.target_representation);
+            }
         }
         plan.primitive_steps[feedback.producer_execution_position]
             .event_feedback_appends_after.push_back(feedback_index);

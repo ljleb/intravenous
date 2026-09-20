@@ -236,8 +236,12 @@ struct EventMergePlan {
 
 struct EventFeedbackPlan {
     std::size_t source_representation = 0;
-    std::size_t ring_representation = 0;
+    std::size_t target_representation = 0;
     std::size_t producer_execution_position = 0;
+    std::size_t consumer_execution_position = 0;
+    RealtimeBufferStorageKind storage =
+        RealtimeBufferStorageKind::transient_stack;
+    std::size_t retained_window_samples = 0;
     std::size_t loop_extra_latency = 1;
 };
 

@@ -607,6 +607,54 @@ TEST(GraphJitEventFeedbackRuntime, AppendsWrappedPersistentSourceSuffixExactlyOn
     EXPECT_EQ(ring[3].time, 11u);
 }
 
+TEST(GraphJitEventFeedbackRuntime, AppendsLinearFeedbackSuffixExactlyOnce)
+{
+    std::array<iv::TimedEvent, 4> const source{
+        iv::TimedEvent{.time = 0, .value = iv::TriggerEvent{}},
+        iv::TimedEvent{.time = 1, .value = iv::TriggerEvent{}},
+        iv::TimedEvent{.time = 4, .value = iv::TriggerEvent{}},
+        iv::TimedEvent{.time = 5, .value = iv::TriggerEvent{}},
+    };
+    std::array<iv::TimedEvent, 8> sequence{};
+    std::size_t count = 0;
+
+    iv::graph_jit::detail::iv_graph_jit_append_event_feedback_sequence(
+        source.data(), 0, 2, 5, sequence.data(), sequence.size(), &count);
+    iv::graph_jit::detail::iv_graph_jit_append_event_feedback_sequence(
+        source.data(), 2, source.size(), 5,
+        sequence.data(), sequence.size(), &count);
+
+    ASSERT_EQ(count, source.size());
+    EXPECT_EQ(sequence[0].time, 5u);
+    EXPECT_EQ(sequence[1].time, 6u);
+    EXPECT_EQ(sequence[2].time, 9u);
+    EXPECT_EQ(sequence[3].time, 10u);
+}
+
+TEST(GraphJitEventFeedbackRuntime, AppendsWrappedRingSourceIntoLinearFeedback)
+{
+    std::array<iv::TimedEvent, 4> source{};
+    source[3] = iv::TimedEvent{.time = 3, .value = iv::TriggerEvent{}};
+    source[0] = iv::TimedEvent{.time = 4, .value = iv::TriggerEvent{}};
+    source[1] = iv::TimedEvent{.time = 5, .value = iv::TriggerEvent{}};
+    source[2] = iv::TimedEvent{.time = 6, .value = iv::TriggerEvent{}};
+    std::array<iv::TimedEvent, 8> sequence{};
+    std::size_t count = 0;
+
+    iv::graph_jit::detail::iv_graph_jit_append_event_feedback_sequence_ring_source(
+        source.data(), source.size(), 3, 5, 5,
+        sequence.data(), sequence.size(), &count);
+    iv::graph_jit::detail::iv_graph_jit_append_event_feedback_sequence_ring_source(
+        source.data(), source.size(), 5, 7, 5,
+        sequence.data(), sequence.size(), &count);
+
+    ASSERT_EQ(count, 4u);
+    EXPECT_EQ(sequence[0].time, 8u);
+    EXPECT_EQ(sequence[1].time, 9u);
+    EXPECT_EQ(sequence[2].time, 10u);
+    EXPECT_EQ(sequence[3].time, 11u);
+}
+
 TEST(GraphJit, SpecializationIsLatchedAtConstruction)
 {
     iv::GraphJit jit(iv::GraphJitConfig{
@@ -1579,7 +1627,7 @@ TEST(GraphJitSamplePhysicalPlan, ZeroInitializedFeedbackUsesProducerHomeAndCopie
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
     ASSERT_EQ(physical->representations.size(), 2u);
-    EXPECT_TRUE(physical->transient_allocations.empty());
+    ASSERT_EQ(physical->transient_allocations.size(), 1u);
     ASSERT_EQ(physical->persistent_allocations.size(), 2u);
     ASSERT_EQ(physical->feedback_timelines.size(), 3u);
 
@@ -1599,6 +1647,18 @@ TEST(GraphJitSamplePhysicalPlan, ZeroInitializedFeedbackUsesProducerHomeAndCopie
 
     auto const copied_ring = *physical->connection_representations[1];
     ASSERT_NE(copied_ring, canonical);
+    EXPECT_EQ(
+        physical->representations[copied_ring].storage,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
+    auto const copied_persistent_index =
+        physical->representations[copied_ring].persistent_allocation;
+    ASSERT_LT(copied_persistent_index, physical->persistent_allocations.size());
+    EXPECT_EQ(
+        physical->persistent_allocations[copied_persistent_index].kind,
+        SamplePersistentStorageKind::compact_carry);
+    EXPECT_EQ(
+        physical->persistent_allocations[copied_persistent_index].retained_frames,
+        7u);
     auto const copied = std::ranges::find_if(
         physical->feedback_timelines,
         [](SampleFeedbackTimelinePlan const& timeline) {
@@ -1990,7 +2050,7 @@ TEST(GraphJitSamplePhysicalPlan, DetachedMixingAlignsUnequalSourceLatencies)
     }
 }
 
-TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackKeepsCanonicalPersistentRing)
+TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackUsesCompactCarryTimeline)
 {
     using namespace iv::graph_jit::detail;
 
@@ -2011,8 +2071,8 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackKeepsCanonicalPersistentRing)
 
     ConnectionAnalysisPlan connections;
     connections.schedule.bundle_execution_position.resize(3);
-    connections.schedule.bundle_execution_position[1] = 0;
-    connections.schedule.bundle_execution_position[2] = 1;
+    connections.schedule.bundle_execution_position[1] = 1;
+    connections.schedule.bundle_execution_position[2] = 0;
 
     SampleConnectionPlan feedback;
     feedback.source_type = iv::ChannelTypeId::mono;
@@ -2063,6 +2123,7 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackKeepsCanonicalPersistentRing)
     ASSERT_EQ(physical->persistent_allocations.size(), 1u);
     ASSERT_EQ(physical->feedback_timelines.size(), 1u);
     ASSERT_EQ(physical->materializations.size(), 1u);
+    ASSERT_EQ(physical->carry_operations.size(), 1u);
 
     auto const canonical =
         physical->producer_groups[0]->canonical_representation;
@@ -2076,7 +2137,7 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackKeepsCanonicalPersistentRing)
     EXPECT_EQ(physical->representations[derived].channel_layout, stereo);
     EXPECT_EQ(
         physical->representations[ring].storage,
-        iv::RealtimeBufferStorageKind::full_node_storage);
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     EXPECT_EQ(
         physical->representations[derived].storage,
         iv::RealtimeBufferStorageKind::transient_stack);
@@ -2085,15 +2146,25 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackKeepsCanonicalPersistentRing)
         physical->representations[ring].persistent_allocation;
     ASSERT_LT(persistent_index, physical->persistent_allocations.size());
     auto const& persistent = physical->persistent_allocations[persistent_index];
+    EXPECT_EQ(persistent.kind, SamplePersistentStorageKind::compact_carry);
     EXPECT_EQ(persistent.channel_layout, mono);
     EXPECT_EQ(persistent.retained_frames, 9u);
-    EXPECT_EQ(persistent.size_bytes, 128u * sizeof(iv::Sample));
+    EXPECT_EQ(persistent.frame_capacity, 128u);
+    EXPECT_EQ(persistent.size_bytes, 9u * sizeof(iv::Sample));
+
+    auto const& carry = physical->carry_operations.front();
+    EXPECT_EQ(carry.representation_index, ring);
+    EXPECT_EQ(carry.persistent_allocation, persistent_index);
+    EXPECT_EQ(carry.restore_execution_position, 0u);
+    EXPECT_EQ(carry.commit_execution_position, 1u);
+    EXPECT_EQ(carry.retained_frames, 9u);
+    EXPECT_EQ(timeline.writer.after_execution_position, 1u);
 
     auto const& materialization = physical->materializations.front();
     EXPECT_EQ(materialization.source_representation, ring);
     EXPECT_EQ(materialization.target_representation, derived);
     ASSERT_TRUE(materialization.before_execution_position.has_value());
-    EXPECT_EQ(*materialization.before_execution_position, 1u);
+    EXPECT_EQ(*materialization.before_execution_position, 0u);
     EXPECT_EQ(materialization.source_layout, mono);
     EXPECT_EQ(materialization.target_layout, stereo);
     EXPECT_EQ(materialization.retained_before, 9u);
@@ -3883,16 +3954,15 @@ struct EventFeedbackBurstA {
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
-                .max_events_per_sample = 0.25,
+                .max_events_per_sample = 16.0,
             })};
     }
 
     void tick_block(iv::TickBlockContext<EventFeedbackBurstA> const& ctx) const
     {
         if (ctx.block_size != 1) return;
-        // max_events_per_sample is a static sizing rate, not a runtime density
-        // limit. Fill the entire 64-frame-specialization sequence at one sample
-        // to stress persistent feedback capacity across tiny root calls.
+        // Publish the full declared one-sample rate at one timestamp to stress
+        // delayed feedback carry across tiny root calls.
         for (std::size_t i = 0; i < 16; ++i) {
             ctx.event_outputs[0].push(
                 iv::TriggerEvent{}, 0, ctx.index, ctx.block_size);
@@ -7659,7 +7729,7 @@ TEST_F(GraphJitRuntimeFixture, ExactSampleDetachFeedback)
 
     // The detached branch stores A's produced value at its absolute sample
     // index and reads it six samples later. Recompile at an awkward boundary:
-    // the next root call must observe A[7..12], proving the feedback ring was
+    // the next root call must observe A[7..12], proving the feedback timeline was
     // migrated rather than reinitialized to the authored -0.625 value.
     auto recompiled = compile_graph(feedback_graph, 123);
     ASSERT_TRUE(recompiled.succeeded())
@@ -7830,7 +7900,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndF
     ASSERT_LT(canonical, physical->representations.size());
     EXPECT_EQ(
         physical->representations[canonical].storage,
-        iv::RealtimeBufferStorageKind::full_node_storage);
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
 
     auto const timeline_for_latency = [&](std::size_t latency)
         -> iv::graph_jit::detail::SampleFeedbackTimelinePlan const* {
@@ -8357,7 +8427,7 @@ TEST_F(GraphJitRuntimeFixture, ZeroInitializedConvertedFeedbackWritesDirectlyToP
         physical->representations[canonical].canonical_producer_representation);
     EXPECT_EQ(
         physical->representations[canonical].storage,
-        iv::RealtimeBufferStorageKind::full_node_storage);
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     EXPECT_EQ(
         physical->representations[canonical].channel_layout.channel_type,
         iv::ChannelTypeId::mono);
@@ -8476,7 +8546,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
     ASSERT_LT(composed, physical->representations.size());
     EXPECT_EQ(
         physical->representations[composed].storage,
-        iv::RealtimeBufferStorageKind::full_node_storage);
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     EXPECT_EQ(
         physical->representations[composed].channel_layout.channel_type,
         iv::ChannelTypeId::stereo);
@@ -8484,7 +8554,18 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
         physical->representations[composed].persistent_allocation;
     ASSERT_LT(persistent_index, physical->persistent_allocations.size());
     auto const& persistent = physical->persistent_allocations[persistent_index];
+    EXPECT_EQ(
+        persistent.kind,
+        iv::graph_jit::detail::SamplePersistentStorageKind::compact_carry);
     EXPECT_EQ(persistent.retained_frames, 8u);
+    auto const carry = std::ranges::find_if(
+        physical->carry_operations,
+        [composed](auto const& operation) {
+            return operation.representation_index == composed;
+        });
+    ASSERT_NE(carry, physical->carry_operations.end());
+    EXPECT_EQ(carry->retained_frames, 8u);
+    EXPECT_EQ(carry->future_frames, 2u);
     ASSERT_TRUE(persistent.initialize_value.has_value());
     EXPECT_FLOAT_EQ(
         static_cast<float>(*persistent.initialize_value), -0.25f);
@@ -9011,7 +9092,7 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
     }
 
     // The last event emitted by A in the first root call is at 57. Detach adds
-    // 10, so the persistent feedback ring must carry time 67 across both the
+    // 10, so retained feedback storage must carry time 67 across both the
     // root boundary and a graph-generation migration. This also proves
     // transport latency (10) is independent of the SCC scheduling quantum (8).
     auto recompiled = compile_graph(feedback_graph, 125);
@@ -9726,32 +9807,34 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
     }
     ASSERT_NE(observer, nullptr);
 
-    std::optional<iv::NodeLayout::RegionHandle> feedback_ring;
+    std::optional<iv::NodeLayout::RegionHandle> feedback_carry;
     for (std::size_t i = 0;
          i < compiled.compiled_graph->node_layout.regions.size(); ++i) {
         auto const& region = compiled.compiled_graph->node_layout.regions[i];
         if (region.kind == iv::NodeLayout::Region::Kind::raw
             && region.migration_identity.starts_with(
                 "graphjit.event.feedback:")) {
-            ASSERT_FALSE(feedback_ring.has_value());
-            feedback_ring = iv::NodeLayout::RegionHandle{.index = i};
+            ASSERT_FALSE(feedback_carry.has_value());
+            EXPECT_NE(
+                region.migration_identity.find("kind=compact_carry"),
+                std::string::npos);
+            feedback_carry = iv::NodeLayout::RegionHandle{.index = i};
         }
     }
-    ASSERT_TRUE(feedback_ring.has_value());
-    auto const feedback_write_index = [&]() {
-        auto const bytes = storage.region_bytes(*feedback_ring);
-        EXPECT_GE(bytes.size(), 2 * sizeof(std::size_t));
+    ASSERT_TRUE(feedback_carry.has_value());
+    auto const feedback_carry_count = [&]() {
+        auto const bytes = storage.region_bytes(*feedback_carry);
+        EXPECT_GE(bytes.size(), sizeof(std::size_t));
         std::size_t value = 0;
-        if (bytes.size() >= 2 * sizeof(std::size_t)) {
-            std::memcpy(
-                &value, bytes.data() + sizeof(std::size_t), sizeof(value));
+        if (bytes.size() >= sizeof(std::size_t)) {
+            std::memcpy(&value, bytes.data(), sizeof(value));
         }
         return value;
     };
 
-    // The eight SCC slices author 9,17,...,65. Event 65 is legal because the
-    // producer declares 16 samples of latency, but it is outside this root
-    // consumer window and must remain retained for the next call.
+    // The eight SCC slices author 9,17,...,65. Delaying those events by ten
+    // samples leaves exactly 67 and 75 live across the root boundary, so the
+    // feedback stream uses a two-event compact carry here.
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), 0, 64);
     EXPECT_EQ(observer->calls, 1u);
@@ -9761,12 +9844,12 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
     EXPECT_EQ(observer->trigger_count, 7u);
     EXPECT_EQ(observer->first_time, 9u);
     EXPECT_EQ(observer->last_time, 57u);
-    EXPECT_EQ(feedback_write_index(), 8u);
+    EXPECT_EQ(feedback_carry_count(), 2u);
 
-    // Carry restore prepends the previously authored event at 65. New SCC
-    // slices then append 73,81,...,129, preserving global publication order.
-    // The restored event was already copied into detached feedback when it was
-    // first authored, so cursor seeding prevents a duplicate enqueue here.
+    // Source carry restore prepends the previously authored event at 65. New SCC
+    // slices then append 73,81,...,129. Feedback restore independently brings
+    // back delayed events 67 and 75; cursor seeding prevents source event 65
+    // from being delayed and enqueued a second time.
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), 64, 64);
     EXPECT_EQ(observer->calls, 2u);
@@ -9776,11 +9859,11 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
     EXPECT_EQ(observer->trigger_count, 8u);
     EXPECT_EQ(observer->first_time, 65u);
     EXPECT_EQ(observer->last_time, 121u);
-    EXPECT_EQ(feedback_write_index(), 16u);
+    EXPECT_EQ(feedback_carry_count(), 2u);
 
-    // A short root call restores event 129 and authors event 137 into the
-    // future. Only the restored event is visible in [128,136); the feedback
-    // cursor again advances only for the one newly authored event.
+    // A short root call restores source event 129 and authors 137. The delayed
+    // feedback carry still retains exactly the two events live beyond the new
+    // root boundary.
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), 128, 8);
     EXPECT_EQ(observer->calls, 3u);
@@ -9790,7 +9873,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
     EXPECT_EQ(observer->trigger_count, 1u);
     EXPECT_EQ(observer->first_time, 129u);
     EXPECT_EQ(observer->last_time, 129u);
-    EXPECT_EQ(feedback_write_index(), 17u);
+    EXPECT_EQ(feedback_carry_count(), 2u);
 }
 
 TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsAuthoredFutureEvents)
@@ -10117,25 +10200,27 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
     }
     ASSERT_NE(observer, nullptr);
 
-    std::optional<iv::NodeLayout::RegionHandle> feedback_ring;
+    std::optional<iv::NodeLayout::RegionHandle> feedback_carry;
     for (std::size_t i = 0;
          i < compiled.compiled_graph->node_layout.regions.size(); ++i) {
         auto const& region = compiled.compiled_graph->node_layout.regions[i];
         if (region.kind == iv::NodeLayout::Region::Kind::raw
             && region.migration_identity.starts_with(
                 "graphjit.event.feedback:")) {
-            ASSERT_FALSE(feedback_ring.has_value());
-            feedback_ring = iv::NodeLayout::RegionHandle{.index = i};
+            ASSERT_FALSE(feedback_carry.has_value());
+            EXPECT_NE(
+                region.migration_identity.find("kind=compact_carry"),
+                std::string::npos);
+            feedback_carry = iv::NodeLayout::RegionHandle{.index = i};
         }
     }
-    ASSERT_TRUE(feedback_ring.has_value());
-    auto const feedback_write_index = [&]() {
-        auto const bytes = storage.region_bytes(*feedback_ring);
-        EXPECT_GE(bytes.size(), 2 * sizeof(std::size_t));
+    ASSERT_TRUE(feedback_carry.has_value());
+    auto const feedback_carry_count = [&]() {
+        auto const bytes = storage.region_bytes(*feedback_carry);
+        EXPECT_GE(bytes.size(), sizeof(std::size_t));
         std::size_t value = 0;
-        if (bytes.size() >= 2 * sizeof(std::size_t)) {
-            std::memcpy(
-                &value, bytes.data() + sizeof(std::size_t), sizeof(value));
+        if (bytes.size() >= sizeof(std::size_t)) {
+            std::memcpy(&value, bytes.data(), sizeof(value));
         }
         return value;
     };
@@ -10148,7 +10233,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
     EXPECT_EQ(observer->first_times[0], 1u);
     EXPECT_EQ(observer->second_times[0], 9u);
     EXPECT_EQ(observer->last_times[0], 57u);
-    EXPECT_EQ(feedback_write_index(), 8u);
+    EXPECT_EQ(feedback_carry_count(), 1u);
 
     // The carry retains [56, 64), so event 57 becomes history for the next
     // root call. The SCC then appends eight current events before one root-exit
@@ -10163,9 +10248,9 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
     EXPECT_EQ(observer->last_times[1], 121u);
 
     // The restored event 57 is historical context, not newly authored output.
-    // The feedback ring write cursor therefore advances by exactly the eight
-    // events authored in this root call, rather than by a ninth restored event.
-    EXPECT_EQ(feedback_write_index(), 16u);
+    // Detached feedback retains only the one delayed event that lies beyond
+    // this root boundary; restored source history is never re-enqueued.
+    EXPECT_EQ(feedback_carry_count(), 1u);
 
     // Changing the root-call size still uses the root history window, not an
     // SCC-slice-sized window. Only prior event 121 and current event 129 fit.
@@ -10177,7 +10262,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
     EXPECT_EQ(observer->first_times[2], 121u);
     EXPECT_EQ(observer->second_times[2], 129u);
     EXPECT_EQ(observer->last_times[2], 129u);
-    EXPECT_EQ(feedback_write_index(), 17u);
+    EXPECT_EQ(feedback_carry_count(), 1u);
 }
 
 TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversion)
@@ -10422,14 +10507,17 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsOutboundTarg
     ASSERT_NE(observer, nullptr);
 
     std::optional<iv::NodeLayout::RegionHandle> source_ring;
-    std::optional<iv::NodeLayout::RegionHandle> feedback_ring;
+    std::optional<iv::NodeLayout::RegionHandle> feedback_carry;
     for (std::size_t i = 0;
          i < compiled.compiled_graph->node_layout.regions.size(); ++i) {
         auto const& region = compiled.compiled_graph->node_layout.regions[i];
         if (region.kind != iv::NodeLayout::Region::Kind::raw) continue;
         if (region.migration_identity.starts_with("graphjit.event.feedback:")) {
-            ASSERT_FALSE(feedback_ring.has_value());
-            feedback_ring = iv::NodeLayout::RegionHandle{.index = i};
+            ASSERT_FALSE(feedback_carry.has_value());
+            EXPECT_NE(
+                region.migration_identity.find("kind=compact_carry"),
+                std::string::npos);
+            feedback_carry = iv::NodeLayout::RegionHandle{.index = i};
         } else if (region.migration_identity.find("kind=persistent_ring")
                    != std::string::npos) {
             ASSERT_FALSE(source_ring.has_value());
@@ -10437,7 +10525,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsOutboundTarg
         }
     }
     ASSERT_TRUE(source_ring.has_value());
-    ASSERT_TRUE(feedback_ring.has_value());
+    ASSERT_TRUE(feedback_carry.has_value());
 
     auto const write_index = [&](iv::NodeLayout::RegionHandle region) {
         auto const bytes = storage.region_bytes(region);
@@ -10446,6 +10534,15 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsOutboundTarg
         if (bytes.size() >= 2 * sizeof(std::size_t)) {
             std::memcpy(
                 &value, bytes.data() + sizeof(std::size_t), sizeof(value));
+        }
+        return value;
+    };
+    auto const feedback_carry_count = [&]() {
+        auto const bytes = storage.region_bytes(*feedback_carry);
+        EXPECT_GE(bytes.size(), sizeof(std::size_t));
+        std::size_t value = 0;
+        if (bytes.size() >= sizeof(std::size_t)) {
+            std::memcpy(&value, bytes.data(), sizeof(value));
         }
         return value;
     };
@@ -10461,11 +10558,11 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsOutboundTarg
         EXPECT_EQ(observer->last_times[call], index + 57);
         EXPECT_EQ(observer->marker, 0xfeed320u);
 
-        // The canonical retained ring and detached feedback ring advance only
-        // by events authored during this root call. Historical source entries
-        // remain readable for the outbound consumer but are never re-enqueued.
+        // The canonical retained ring advances monotonically with authored
+        // source events. Detached feedback stores only the one delayed event
+        // crossing the current root boundary.
         EXPECT_EQ(write_index(*source_ring), (call + 1) * 8);
-        EXPECT_EQ(write_index(*feedback_ring), (call + 1) * 8);
+        EXPECT_EQ(feedback_carry_count(), 1u);
     }
 }
 
@@ -10568,10 +10665,9 @@ TEST_F(GraphJitRuntimeFixture, EventDetachFeedbackRetainsBurstAcrossTinyBlocks)
     }
     ASSERT_NE(state_b, nullptr);
 
-    // Each one-sample root call legally fills the entire 16-event producer
-    // sequence at one timestamp. Ten delayed calls can therefore be pending at
-    // once; a capacity derived from 64-frame root windows would silently lose
-    // events here.
+    // Each one-sample root call publishes the declared 16-event/sample peak at
+    // one timestamp. The exact ten-sample delayed live span therefore requires
+    // 160 events, rounded to a 256-event compact carry.
     for (std::size_t index = 0; index < 15; ++index) {
         compiled.compiled_graph->root_operations.tick_block(
             storage.buffer().data(), index, 1);

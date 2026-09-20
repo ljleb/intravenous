@@ -114,6 +114,7 @@ std::string persistent_identity(
 std::string feedback_identity(
     SampleProducerGroupPlan const& group,
     SampleConnectionPlan const& connection,
+    SamplePersistentStorageKind kind,
     Sample initial_value,
     std::size_t frame_capacity)
 {
@@ -139,6 +140,7 @@ std::string feedback_identity(
     }
     out
         << ":latency=" << connection.detach->loop_extra_latency
+        << ":kind=" << static_cast<unsigned>(kind)
         << ":initial_bits="
         << std::bit_cast<std::uint32_t>(static_cast<float>(initial_value))
         << ":capacity=" << frame_capacity;
@@ -147,6 +149,7 @@ std::string feedback_identity(
 
 std::string composition_feedback_identity(
     SampleConnectionPlan const& connection,
+    SamplePersistentStorageKind kind,
     Sample initial_value,
     std::size_t frame_capacity)
 {
@@ -177,6 +180,7 @@ std::string composition_feedback_identity(
     }
     out << ":latency=" << connection.detach->loop_extra_latency
         << ":history=" << connection.target_history
+        << ":kind=" << static_cast<unsigned>(kind)
         << ":initial_bits="
         << std::bit_cast<std::uint32_t>(static_cast<float>(initial_value))
         << ":capacity=" << frame_capacity;
@@ -345,6 +349,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
 
     auto append_synthetic_persistent_allocation = [&] (
         std::size_t representation_index,
+        SamplePersistentStorageKind kind,
         ChannelLayout layout,
         std::size_t retained_frames,
         std::size_t frame_capacity,
@@ -355,12 +360,15 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             return std::unexpected(
                 "GraphJit synthetic sample persistent allocation requires a migration identity");
         }
-        auto bytes = sample_bytes(layout, frame_capacity, false);
+        auto const storage_frames = kind == SamplePersistentStorageKind::compact_carry
+            ? retained_frames
+            : frame_capacity;
+        auto bytes = sample_bytes(layout, storage_frames, false);
         if (!bytes) return std::unexpected(std::move(bytes.error()));
         auto const allocation_index = plan.persistent_allocations.size();
         plan.persistent_allocations.push_back(SamplePersistentAllocationPlan{
             .representation_index = representation_index,
-            .kind = SamplePersistentStorageKind::ring,
+            .kind = kind,
             .channel_layout = layout,
             .retained_frames = retained_frames,
             .frame_capacity = frame_capacity,
@@ -469,6 +477,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         bool has_feedback_home = false;
         std::size_t home_feedback_retained_frames = 0;
         std::size_t home_feedback_capacity = 0;
+        std::size_t home_feedback_restore_position = producer_position;
+        SampleConnectionStoragePlan home_feedback_storage{};
         if (group.storage_requirements.retained_frames == 0
             && group.storage_plan->kind
                 == RealtimeBufferStorageKind::transient_stack) {
@@ -501,8 +511,17 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 home_feedback_retained_frames = std::max(
                     home_feedback_retained_frames,
                     latency + connection.read_latency + connection.target_history);
+                home_feedback_restore_position = std::min(
+                    home_feedback_restore_position,
+                    target_position(connection, group.live_interval));
             }
             if (has_feedback_home) {
+                home_feedback_storage = choose_sample_connection_storage_plan(
+                    SampleConnectionStorageRequirements{
+                        .current_block_frames = kernel_block_size,
+                        .retained_frames = home_feedback_retained_frames,
+                        .channel_count = channel_count(*group.canonical_source_layout),
+                    });
                 auto capacity = working_ring_capacity(
                     kernel_block_size, home_feedback_retained_frames);
                 if (!capacity) {
@@ -514,30 +533,80 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
 
         std::size_t canonical = no_sample_representation;
         if (has_feedback_home) {
-            auto const index = append_representation(SampleRepresentationPlan{
-                .producer_group_index = group_index,
-                .canonical_producer_representation = true,
-                .storage = RealtimeBufferStorageKind::full_node_storage,
-                .channel_layout = *group.canonical_source_layout,
-                .frame_capacity = home_feedback_capacity,
-                .live_interval = group.live_interval,
-            });
-            auto persistent = append_persistent_allocation(
-                index,
-                group,
-                SamplePersistentStorageKind::ring,
-                *group.canonical_source_layout,
-                home_feedback_retained_frames,
-                home_feedback_capacity,
-                persistent_identity(
+            if (home_feedback_storage.kind
+                == RealtimeBufferStorageKind::full_node_storage) {
+                auto const index = append_representation(SampleRepresentationPlan{
+                    .producer_group_index = group_index,
+                    .canonical_producer_representation = true,
+                    .storage = home_feedback_storage.kind,
+                    .channel_layout = *group.canonical_source_layout,
+                    .frame_capacity = home_feedback_capacity,
+                    .live_interval = group.live_interval,
+                });
+                auto persistent = append_persistent_allocation(
+                    index,
                     group,
                     SamplePersistentStorageKind::ring,
+                    *group.canonical_source_layout,
                     home_feedback_retained_frames,
-                    home_feedback_capacity),
-                Sample{});
-            if (!persistent) return std::unexpected(std::move(persistent.error()));
-            plan.representations[index].persistent_allocation = *persistent;
-            canonical = index;
+                    home_feedback_capacity,
+                    persistent_identity(
+                        group,
+                        SamplePersistentStorageKind::ring,
+                        home_feedback_retained_frames,
+                        home_feedback_capacity),
+                    Sample{});
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.representations[index].persistent_allocation = *persistent;
+                canonical = index;
+            } else if (home_feedback_storage.kind
+                       == RealtimeBufferStorageKind::stack_with_persistent_carry) {
+                canonical_live.begin = std::min(
+                    canonical_live.begin, home_feedback_restore_position);
+                canonical_live.end = std::max(canonical_live.end, producer_position);
+                auto transient = append_transient_representation(
+                    SampleRepresentationPlan{
+                        .producer_group_index = group_index,
+                        .canonical_producer_representation = true,
+                        .storage = home_feedback_storage.kind,
+                        .channel_layout = *group.canonical_source_layout,
+                        .frame_capacity = home_feedback_capacity,
+                        .live_interval = canonical_live,
+                    });
+                if (!transient) {
+                    return std::unexpected(std::move(transient.error()));
+                }
+                canonical = *transient;
+                auto persistent = append_persistent_allocation(
+                    canonical,
+                    group,
+                    SamplePersistentStorageKind::compact_carry,
+                    *group.canonical_source_layout,
+                    home_feedback_retained_frames,
+                    home_feedback_capacity,
+                    persistent_identity(
+                        group,
+                        SamplePersistentStorageKind::compact_carry,
+                        home_feedback_retained_frames,
+                        home_feedback_capacity),
+                    Sample{});
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.representations[canonical].persistent_allocation = *persistent;
+                plan.carry_operations.push_back(SampleCarryOperationPlan{
+                    .representation_index = canonical,
+                    .persistent_allocation = *persistent,
+                    .restore_execution_position = home_feedback_restore_position,
+                    .commit_execution_position = producer_position,
+                    .retained_frames = home_feedback_retained_frames,
+                });
+            } else {
+                return std::unexpected(
+                    "GraphJit sample feedback with retained frames selected transient storage");
+            }
         } else if (group.storage_plan->kind
                    == RealtimeBufferStorageKind::full_node_storage) {
             auto const index = append_representation(SampleRepresentationPlan{
@@ -591,7 +660,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 plan.carry_operations.push_back(SampleCarryOperationPlan{
                     .representation_index = canonical,
                     .persistent_allocation = *persistent,
-                    .producer_execution_position = producer_position,
+                    .restore_execution_position = producer_position,
+                    .commit_execution_position = producer_position,
                     .retained_frames = group.storage_requirements.retained_frames,
                 });
             }
@@ -791,36 +861,42 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             }
             auto const retained_frames =
                 latency + connection.read_latency + connection.target_history;
-            auto ring_capacity = working_ring_capacity(
+            auto working_capacity = working_ring_capacity(
                 kernel_block_size, retained_frames);
-            if (!ring_capacity) {
-                return std::unexpected(std::move(ring_capacity.error()));
+            if (!working_capacity) {
+                return std::unexpected(std::move(working_capacity.error()));
             }
+            auto const feedback_storage = choose_sample_connection_storage_plan(
+                SampleConnectionStorageRequirements{
+                    .current_block_frames = kernel_block_size,
+                    .retained_frames = retained_frames,
+                    .channel_count = channel_count(*group.canonical_source_layout),
+                });
             auto const writes_directly_to_feedback = has_feedback_home
                 && std::bit_cast<std::uint32_t>(
                     static_cast<float>(*connection.detach_initial_value))
                     == std::bit_cast<std::uint32_t>(0.0f);
-            std::size_t ring_representation = canonical;
+            std::size_t timeline_representation = canonical;
             if (writes_directly_to_feedback) {
                 auto const& home = plan.representations[canonical];
                 if (!home.canonical_producer_representation
-                    || home.storage
-                        != RealtimeBufferStorageKind::full_node_storage
+                    || home.storage != home_feedback_storage.kind
                     || home.channel_layout != *group.canonical_source_layout
-                    || home.frame_capacity < *ring_capacity
+                    || home.frame_capacity < *working_capacity
                     || home.persistent_allocation
                         == no_sample_persistent_allocation) {
                     return std::unexpected(
                         "GraphJit sample feedback producer-home representation is inconsistent");
                 }
-            } else {
-                ring_representation = append_representation(
+            } else if (feedback_storage.kind
+                       == RealtimeBufferStorageKind::full_node_storage) {
+                timeline_representation = append_representation(
                     SampleRepresentationPlan{
                         .producer_group_index = group_index,
                         .canonical_producer_representation = false,
-                        .storage = RealtimeBufferStorageKind::full_node_storage,
+                        .storage = feedback_storage.kind,
                         .channel_layout = *group.canonical_source_layout,
-                        .frame_capacity = *ring_capacity,
+                        .frame_capacity = *working_capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
                             .begin = producer_position,
                             .end = target_position(connection, group.live_interval),
@@ -828,23 +904,75 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                         },
                     });
                 auto persistent = append_persistent_allocation(
-                    ring_representation,
+                    timeline_representation,
                     group,
                     SamplePersistentStorageKind::ring,
                     *group.canonical_source_layout,
                     retained_frames,
-                    *ring_capacity,
+                    *working_capacity,
                     feedback_identity(
                         group,
                         connection,
+                        SamplePersistentStorageKind::ring,
                         *connection.detach_initial_value,
-                        *ring_capacity),
+                        *working_capacity),
                     *connection.detach_initial_value);
                 if (!persistent) {
                     return std::unexpected(std::move(persistent.error()));
                 }
-                plan.representations[ring_representation].persistent_allocation =
+                plan.representations[timeline_representation].persistent_allocation =
                     *persistent;
+            } else if (feedback_storage.kind
+                       == RealtimeBufferStorageKind::stack_with_persistent_carry) {
+                auto const consumer_position =
+                    target_position(connection, group.live_interval);
+                auto transient = append_transient_representation(
+                    SampleRepresentationPlan{
+                        .producer_group_index = group_index,
+                        .canonical_producer_representation = false,
+                        .storage = feedback_storage.kind,
+                        .channel_layout = *group.canonical_source_layout,
+                        .frame_capacity = *working_capacity,
+                        .live_interval = ConnectionLiveIntervalPlan{
+                            .begin = std::min(producer_position, consumer_position),
+                            .end = std::max(producer_position, consumer_position),
+                            .crosses_kernel_invocations = false,
+                        },
+                    });
+                if (!transient) {
+                    return std::unexpected(std::move(transient.error()));
+                }
+                timeline_representation = *transient;
+                auto persistent = append_persistent_allocation(
+                    timeline_representation,
+                    group,
+                    SamplePersistentStorageKind::compact_carry,
+                    *group.canonical_source_layout,
+                    retained_frames,
+                    *working_capacity,
+                    feedback_identity(
+                        group,
+                        connection,
+                        SamplePersistentStorageKind::compact_carry,
+                        *connection.detach_initial_value,
+                        *working_capacity),
+                    *connection.detach_initial_value);
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.representations[timeline_representation].persistent_allocation =
+                    *persistent;
+                plan.carry_operations.push_back(SampleCarryOperationPlan{
+                    .representation_index = timeline_representation,
+                    .persistent_allocation = *persistent,
+                    .restore_execution_position = std::min(
+                        producer_position, consumer_position),
+                    .commit_execution_position = producer_position,
+                    .retained_frames = retained_frames,
+                });
+            } else {
+                return std::unexpected(
+                    "GraphJit sample feedback with retained frames selected transient storage");
             }
 
             if (connection.requires_conversion) {
@@ -856,7 +984,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                         .canonical_producer_representation = false,
                         .storage = RealtimeBufferStorageKind::transient_stack,
                         .channel_layout = connection.target_layout,
-                        .frame_capacity = *ring_capacity,
+                        .frame_capacity = *working_capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
                             .begin = consumer_position,
                             .end = consumer_position,
@@ -867,7 +995,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     return std::unexpected(std::move(derived.error()));
                 }
                 plan.materializations.push_back(SampleMaterializationPlan{
-                    .source_representation = ring_representation,
+                    .source_representation = timeline_representation,
                     .target_representation = *derived,
                     .after_execution_position = consumer_position,
                     .before_execution_position = consumer_position,
@@ -879,11 +1007,11 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 plan.connection_representations[connection_index] = *derived;
             } else {
                 plan.connection_representations[connection_index] =
-                    ring_representation;
+                    timeline_representation;
             }
             plan.feedback_timelines.push_back(SampleFeedbackTimelinePlan{
                 .connection_index = connection_index,
-                .timeline_representation = ring_representation,
+                .timeline_representation = timeline_representation,
                 .channel_layout = *group.canonical_source_layout,
                 .retained_frames = retained_frames,
                 .loop_extra_latency = latency,
@@ -986,34 +1114,92 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 return std::unexpected(std::move(capacity.error()));
             }
 
-            target_representation = append_representation(
-                SampleRepresentationPlan{
-                    .producer_group_index = no_sample_producer_group,
-                    .canonical_producer_representation = false,
-                    .storage = RealtimeBufferStorageKind::full_node_storage,
-                    .channel_layout = connection.target_layout,
-                    .frame_capacity = *capacity,
-                    .live_interval = ConnectionLiveIntervalPlan{
-                        .begin = std::min(begin, end),
-                        .end = std::max(begin, end),
-                        .crosses_kernel_invocations = true,
-                    },
+            auto const feedback_storage = choose_sample_connection_storage_plan(
+                SampleConnectionStorageRequirements{
+                    .current_block_frames = kernel_block_size,
+                    .retained_frames = feedback_retained_frames,
+                    .channel_count = channel_count(connection.target_layout),
                 });
-            auto persistent = append_synthetic_persistent_allocation(
-                target_representation,
-                connection.target_layout,
-                feedback_retained_frames,
-                *capacity,
-                composition_feedback_identity(
-                    connection,
-                    *connection.detach_initial_value,
-                    *capacity),
-                *connection.detach_initial_value);
-            if (!persistent) {
-                return std::unexpected(std::move(persistent.error()));
+            if (feedback_storage.kind
+                == RealtimeBufferStorageKind::full_node_storage) {
+                target_representation = append_representation(
+                    SampleRepresentationPlan{
+                        .producer_group_index = no_sample_producer_group,
+                        .canonical_producer_representation = false,
+                        .storage = feedback_storage.kind,
+                        .channel_layout = connection.target_layout,
+                        .frame_capacity = *capacity,
+                        .live_interval = ConnectionLiveIntervalPlan{
+                            .begin = std::min(begin, end),
+                            .end = std::max(begin, end),
+                            .crosses_kernel_invocations = true,
+                        },
+                    });
+                auto persistent = append_synthetic_persistent_allocation(
+                    target_representation,
+                    SamplePersistentStorageKind::ring,
+                    connection.target_layout,
+                    feedback_retained_frames,
+                    *capacity,
+                    composition_feedback_identity(
+                        connection,
+                        SamplePersistentStorageKind::ring,
+                        *connection.detach_initial_value,
+                        *capacity),
+                    *connection.detach_initial_value);
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.representations[target_representation].persistent_allocation =
+                    *persistent;
+            } else if (feedback_storage.kind
+                       == RealtimeBufferStorageKind::stack_with_persistent_carry) {
+                auto transient = append_transient_representation(
+                    SampleRepresentationPlan{
+                        .producer_group_index = no_sample_producer_group,
+                        .canonical_producer_representation = false,
+                        .storage = feedback_storage.kind,
+                        .channel_layout = connection.target_layout,
+                        .frame_capacity = *capacity,
+                        .live_interval = ConnectionLiveIntervalPlan{
+                            .begin = std::min(begin, end),
+                            .end = std::max(begin, end),
+                            .crosses_kernel_invocations = false,
+                        },
+                    });
+                if (!transient) {
+                    return std::unexpected(std::move(transient.error()));
+                }
+                target_representation = *transient;
+                auto persistent = append_synthetic_persistent_allocation(
+                    target_representation,
+                    SamplePersistentStorageKind::compact_carry,
+                    connection.target_layout,
+                    feedback_retained_frames,
+                    *capacity,
+                    composition_feedback_identity(
+                        connection,
+                        SamplePersistentStorageKind::compact_carry,
+                        *connection.detach_initial_value,
+                        *capacity),
+                    *connection.detach_initial_value);
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.representations[target_representation].persistent_allocation =
+                    *persistent;
+                plan.carry_operations.push_back(SampleCarryOperationPlan{
+                    .representation_index = target_representation,
+                    .persistent_allocation = *persistent,
+                    .restore_execution_position = std::min(begin, end),
+                    .commit_execution_position = begin,
+                    .retained_frames = feedback_retained_frames,
+                    .future_frames = max_read_latency,
+                });
+            } else {
+                return std::unexpected(
+                    "GraphJit composed sample feedback with retained frames selected transient storage");
             }
-            plan.representations[target_representation].persistent_allocation =
-                *persistent;
         } else {
             auto capacity = working_ring_capacity(
                 kernel_block_size, connection.target_history);
@@ -1175,6 +1361,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                             *connection.detach_initial_value);
                     auto persistent = append_synthetic_persistent_allocation(
                         alignment_representation,
+                        SamplePersistentStorageKind::ring,
                         source_layout,
                         alignment_history,
                         *alignment_capacity,

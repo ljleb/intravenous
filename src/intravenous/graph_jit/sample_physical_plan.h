@@ -53,7 +53,7 @@ struct SampleMaterializationPlan {
     // Feedback conversion is consumer-driven rather than producer-driven: in a
     // cyclic region the consumer may precede the producer in deterministic
     // execution order, so the delayed window must be materialized from the
-    // persistent feedback ring immediately before that consumer executes.
+    // retained feedback timeline immediately before that consumer executes.
     std::optional<std::size_t> before_execution_position{};
     ChannelLayout source_layout{};
     ChannelLayout target_layout{};
@@ -145,13 +145,20 @@ struct SamplePersistentAllocationPlan {
 };
 
 // stack_with_persistent_carry uses a transient absolute-indexed working ring
-// while a minimal persistent tail crosses root invocations. The tail is restored
-// immediately before the producer and committed after its materializations.
+// while a minimal persistent tail crosses root invocations. Ordinary producer
+// storage restores/commits around the producer. Feedback storage may need to
+// restore before an earlier cyclic consumer while still committing after the
+// producer-side feedback writer.
 struct SampleCarryOperationPlan {
     std::size_t representation_index = no_sample_representation;
     std::size_t persistent_allocation = no_sample_persistent_allocation;
-    std::size_t producer_execution_position = 0;
+    std::size_t restore_execution_position = 0;
+    std::size_t commit_execution_position = 0;
     std::size_t retained_frames = 0;
+    // Number of retained frames at or after the next invocation boundary.
+    // Ordinary producer carry and copied feedback use zero. Shifted composed
+    // feedback may author aligned samples ahead of the current block end.
+    std::size_t future_frames = 0;
 };
 
 enum class SampleFeedbackTimelineWriterKind {
@@ -166,7 +173,7 @@ enum class SampleFeedbackTimelineWriterKind {
 };
 
 // One write strategy for a detached branch timeline. Every feedback branch is
-// represented by the same persistent-timeline abstraction regardless of how
+// represented by the same retained-timeline abstraction regardless of how
 // current samples arrive in it; consumer-side conversion/materialization then
 // reads uniformly from timeline_representation.
 struct SampleFeedbackTimelineWriterPlan {
@@ -241,17 +248,18 @@ struct SamplePhysicalPlan {
     }
 };
 
-// Pure host-side physical-representation planning. This consumes already-made
-// choose_sample_connection_storage_plan() decisions; it does not duplicate
-// policy. Carry and full persistent storage are realized as distinct physical
+// Pure host-side physical-representation planning. Producer-group decisions are
+// consumed from connection analysis; derived feedback requirements are fed back
+// through choose_sample_connection_storage_plan() rather than duplicating policy.
+// Carry and full persistent storage are realized as distinct physical
 // representations while conversion remains an explicit operation.
 std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     ConnectionAnalysisPlan const& connections,
     std::size_t kernel_block_size);
 
 // Reserve canonical NodeStorage for persistent connection state. Transient
-// backing belongs to the generated root stack. Persistent feedback rings with
-// authored initial values install raw-region initialization callbacks, so
+// backing belongs to the generated root stack. Retained feedback state with
+// authored initial values installs raw-region initialization callbacks, so
 // realtime execution performs no setup/allocation.
 std::expected<void, std::string> declare_sample_physical_storage(
     NodeLayoutBuilder& builder,

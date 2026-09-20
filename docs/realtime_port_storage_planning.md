@@ -296,13 +296,16 @@ The storage-model and physical-residence refactors have landed:
   pointers. The generated root resolves stack versus `NodeStorage` residence
   while emitting straight-line LLVM; node wrappers do not branch on a storage
   kind or reconstruct an address from one universal storage base;
-- detached feedback currently uses the separate conservative formula
-  `source_capacity * (loop_extra_latency + 1)` rather than deriving the delayed
-  stream's exact simultaneously-live span.
+- detached sample and event feedback now derive the exact retained delayed
+  span and use the same three-kind planners as ordinary history/latency. Compact
+  feedback carry stores only the cross-invocation tail in `NodeStorage`; full
+  feedback storage remains a fixed persistent ring, and zero-capacity event
+  feedback can remain transient. Event capacities are rate-times-live-span rather
+  than `source_capacity * (loop_extra_latency + 1)`.
 
-The remaining efficiency work is to derive feedback capacity from its exact live
-span, enforce a deliberate compile-time stack budget, and extend selection from
-the landed block-relative baseline to complete multiedge copy costs.
+The remaining efficiency work is to enforce a deliberate compile-time stack
+budget and extend selection from the landed block-relative baseline to complete
+whole-group copy and footprint costs.
 
 The heuristic may consider:
 
