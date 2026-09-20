@@ -191,10 +191,6 @@ struct EventProducerGroupPlan {
     // Cyclic or block-adapted producers append into one invocation-wide
     // sequence. This is an execution/materialization fact, not a storage kind.
     bool requires_invocation_aggregate = false;
-    // When present, this semantic source writes directly into the canonical
-    // aggregate representation. Source 0 is currently the only legal home
-    // because equal-timestamp fan-in ordering is semantic-source ordered.
-    std::optional<std::size_t> producer_home_source_index{};
     EventConnectionStorageRequirements storage_requirements{};
     std::optional<EventConnectionStoragePlan> storage_plan{};
     ConnectionLiveIntervalPlan live_interval{};

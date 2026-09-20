@@ -9970,12 +9970,8 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInHomeUsesPlannedCapacity)
     EXPECT_EQ(
         analysis->event_producer_groups.front().storage_plan->kind,
         iv::RealtimeBufferStorageKind::transient_stack);
-    ASSERT_TRUE(
-        analysis->event_producer_groups.front().producer_home_source_index);
-    EXPECT_EQ(
-        *analysis->event_producer_groups.front().producer_home_source_index,
-        0u);
-
+    // Producer-home is an implementation choice made after concrete producer
+    // buffers and merge operations exist in lowering.
     auto compiled = compile_graph(graph, 147);
     ASSERT_TRUE(compiled.succeeded())
         << (compiled.diagnostics.empty()
@@ -10014,15 +10010,35 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInRejectsUnavoidableLocalStack
 {
     auto graph = configured_bounded_merged_feed_forward_event_graph(*revision);
     ASSERT_TRUE(graph);
+
+    // Connection analysis no longer invents producer-local fan-in buffers, so
+    // the hard stack failure belongs to lowering where those buffers exist.
     auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
         *graph,
         64,
         iv::RealtimeStorageCostModel{
             .stack_budget_bytes = 7u * sizeof(iv::TimedEvent),
         });
-    ASSERT_FALSE(analysis.has_value());
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+
+    iv::GraphJit budgeted_jit(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .realtime_storage_cost_model = iv::RealtimeStorageCostModel{
+            .stack_budget_bytes = 7u * sizeof(iv::TimedEvent),
+        },
+    });
+    auto compiled = budgeted_jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = 212,
+        .graph = graph,
+        .definitions = definitions,
+    });
+    ASSERT_FALSE(compiled.succeeded());
+    ASSERT_FALSE(compiled.diagnostics.empty());
     EXPECT_NE(
-        analysis.error().find("no storage realization within the compile-time stack budget"),
+        compiled.diagnostics.front().message.find(
+            "no storage realization within the compile-time stack budget"),
         std::string::npos);
 }
 
@@ -10090,22 +10106,11 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInTargetHistoryUsesRetainedPro
     EXPECT_EQ(
         group.storage_plan->kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
-    ASSERT_TRUE(group.producer_home_source_index);
-    EXPECT_EQ(*group.producer_home_source_index, 0u);
-    EXPECT_EQ(
-        group.storage_requirements.operations.invariant_copied_values,
-        128u);
-    EXPECT_EQ(
-        group.storage_requirements.operations.carry_extra_copied_values,
-        16u);
-    EXPECT_EQ(
-        group.storage_plan->candidate_costs.stack_with_persistent_carry
-            .copied_bytes,
-        176u * sizeof(iv::TimedEvent));
-    EXPECT_EQ(
-        group.storage_plan->candidate_costs.stack_with_persistent_carry
-            .stack_bytes,
-        208u * sizeof(iv::TimedEvent));
+    // Connection analysis carries only the root-call and retained event bounds.
+    // Merge copies and producer-local stack buffers are costed from the concrete
+    // fan-in operations during lowering.
+    EXPECT_EQ(group.storage_requirements.operations.invariant_copied_values, 0u);
+    EXPECT_EQ(group.storage_requirements.operations.carry_extra_copied_values, 0u);
 
     auto compiled = compile_graph(graph, 148);
     ASSERT_TRUE(compiled.succeeded())
@@ -10153,12 +10158,8 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
     EXPECT_EQ(
         analysis->event_producer_groups.front().storage_plan->kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
-    // Authored source latency means a previous invocation may retain an event
-    // later than a newly-authored current event, so direct retained append is
-    // not order-safe for this group.
-    EXPECT_FALSE(
-        analysis->event_producer_groups.front().producer_home_source_index);
-
+    // Authored source latency is validated when lowering considers whether
+    // source 0 may append directly into retained storage.
     auto compiled = compile_graph(graph, 145);
     ASSERT_TRUE(compiled.succeeded())
         << (compiled.diagnostics.empty()
@@ -10225,12 +10226,6 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInPersistentRingRetainsBursts)
     EXPECT_EQ(
         analysis->event_producer_groups.front().storage_plan->kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
-    ASSERT_TRUE(
-        analysis->event_producer_groups.front().producer_home_source_index);
-    EXPECT_EQ(
-        *analysis->event_producer_groups.front().producer_home_source_index,
-        0u);
-
     auto compiled = compile_graph(graph, 147);
     ASSERT_TRUE(compiled.succeeded())
         << (compiled.diagnostics.empty()

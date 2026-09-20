@@ -1471,6 +1471,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         plan.primitives[i].outputs.resize(node->event_output_count);
     }
 
+    plan.producer_group_storage_plans.resize(
+        connections.event_producer_groups.size());
+    plan.producer_home_source_indices.resize(
+        connections.event_producer_groups.size());
     plan.producer_group_representations.resize(
         connections.event_producer_groups.size());
 
@@ -1642,6 +1646,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 "GraphJit event planning has no internal realtime storage plan");
         }
         auto storage_kind = group.storage_plan->kind;
+        std::optional<std::size_t> producer_home_source_index;
+        plan.producer_group_storage_plans[group_index] = *group.storage_plan;
+        plan.producer_home_source_indices[group_index] =
+            producer_home_source_index;
         auto compact_carry =
             storage_kind
             == RealtimeBufferStorageKind::stack_with_persistent_carry;
@@ -1677,10 +1685,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
 
             // Producer streams are contractually time-sorted, but independent
             // producers still cannot append concurrently into one sequence
-            // without disturbing global order. When connection analysis selects
-            // producer-home, semantic source 0 writes directly into the
-            // canonical aggregate; other sources remain local and are merged
-            // after the latest producer.
+            // without disturbing global order. Lowering costs both concrete
+            // choices below: either every producer writes a local sequence, or
+            // semantic source 0 writes directly into the aggregate and the
+            // remaining source sequences are merged afterward.
             // Retained producer-home restores/prunes the canonical prefix before
             // source 0 executes and merges the remaining streams afterward.
             struct ValidatedSource {
@@ -1822,47 +1830,206 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                     retained_latency, connection.source_latency);
             }
 
-            // Connection analysis may have costed a producer-home alternative.
-            // A cyclic fan-in cannot use that representation: every producer
-            // must remain invocation-local so the aggregate can be merged in
-            // semantic order after the final producer slice. Re-cost the legal
-            // physical alternative here, after its actual readers/writers and
-            // copy pattern are known.
-            if (cyclic_source_region && group.producer_home_source_index) {
-                auto saturating_add = [](std::size_t lhs, std::size_t rhs) {
-                    return rhs > std::numeric_limits<std::size_t>::max() - lhs
-                        ? std::numeric_limits<std::size_t>::max()
-                        : lhs + rhs;
-                };
-                auto aggregate_values =
-                    group.storage_requirements.retained_event_capacity;
-                std::size_t merge_copies = 0;
-                for (auto const& source : validated_sources) {
-                    aggregate_values = saturating_add(
-                        aggregate_values, source.aggregate_event_bound);
-                    merge_copies = saturating_add(
-                        merge_copies, aggregate_values);
-                }
-                auto requirements = group.storage_requirements;
-                requirements.operations = RealtimeStorageOperationCounts{
-                    .invariant_copied_values = merge_copies,
-                    .full_ring_addressed_values = merge_copies,
-                    .transient_extra_stack_values =
-                        total_invocation_local_capacity,
-                    .carry_extra_stack_values =
-                        total_invocation_local_capacity,
-                    .full_extra_stack_values =
-                        total_invocation_local_capacity,
-                };
-                storage_kind = choose_event_connection_storage_plan(
-                    requirements, cost_model).kind;
-                compact_carry = storage_kind
-                    == RealtimeBufferStorageKind::stack_with_persistent_carry;
-                persistent_ring = storage_kind
-                    == RealtimeBufferStorageKind::full_node_storage;
-                retained_storage = compact_carry || persistent_ring;
-                aggregate_sequence = true;
+            // Build and cost the fan-in alternatives here, next to the exact
+            // producer-local buffers and merge operation that lowering emits.
+            // Connection analysis intentionally does not reconstruct these
+            // implementation details.
+            auto const saturating_add_values = [](std::size_t lhs,
+                                                  std::size_t rhs) {
+                return iv::detail::saturating_add(lhs, rhs);
+            };
+            auto const retained_values =
+                group.storage_requirements.retained_event_capacity;
+
+            std::size_t slice_count = 1;
+            if (cyclic_source_region) {
+                auto const quantum = connections.schedule.regions[
+                    *cyclic_source_region].maximum_block_size;
+                slice_count = input.specialization.block_size / quantum
+                    + (input.specialization.block_size % quantum != 0);
             }
+
+            auto sequential_merge_writes = [&](std::size_t initial_values,
+                                                std::size_t first_source) {
+                auto target_values = initial_values;
+                std::size_t writes = 0;
+                if (!cyclic_source_region) {
+                    for (std::size_t source_index = first_source;
+                         source_index < validated_sources.size(); ++source_index) {
+                        target_values = saturating_add_values(
+                            target_values,
+                            validated_sources[source_index].aggregate_event_bound);
+                        writes = saturating_add_values(writes, target_values);
+                    }
+                    return writes;
+                }
+
+                std::vector<std::size_t> remaining;
+                remaining.reserve(validated_sources.size());
+                for (auto const& source : validated_sources) {
+                    remaining.push_back(source.aggregate_event_bound);
+                }
+                for (std::size_t slice = 0; slice < slice_count; ++slice) {
+                    for (std::size_t source_index = first_source;
+                         source_index < validated_sources.size(); ++source_index) {
+                        auto const produced = std::min(
+                            validated_sources[source_index].capacity,
+                            remaining[source_index]);
+                        remaining[source_index] -= produced;
+                        target_values = saturating_add_values(
+                            target_values, produced);
+                        writes = saturating_add_values(writes, target_values);
+                    }
+                }
+                return writes;
+            };
+
+            auto sequential_ring_accesses = [&](std::size_t initial_values,
+                                                 std::size_t first_source) {
+                auto target_values = initial_values;
+                std::size_t accesses = 0;
+                auto account_source = [&](std::size_t produced) {
+                    auto const previous_target = target_values;
+                    target_values = saturating_add_values(
+                        target_values, produced);
+                    // event_sequence_merge() reads the existing target sequence
+                    // and writes the complete merged target sequence. Source
+                    // reads remain in producer-local stack buffers.
+                    accesses = saturating_add_values(
+                        accesses,
+                        saturating_add_values(previous_target, target_values));
+                };
+
+                if (!cyclic_source_region) {
+                    for (std::size_t source_index = first_source;
+                         source_index < validated_sources.size(); ++source_index) {
+                        account_source(
+                            validated_sources[source_index].aggregate_event_bound);
+                    }
+                    return accesses;
+                }
+
+                std::vector<std::size_t> remaining;
+                remaining.reserve(validated_sources.size());
+                for (auto const& source : validated_sources) {
+                    remaining.push_back(source.aggregate_event_bound);
+                }
+                for (std::size_t slice = 0; slice < slice_count; ++slice) {
+                    for (std::size_t source_index = first_source;
+                         source_index < validated_sources.size(); ++source_index) {
+                        auto const produced = std::min(
+                            validated_sources[source_index].capacity,
+                            remaining[source_index]);
+                        remaining[source_index] -= produced;
+                        account_source(produced);
+                    }
+                }
+                return accesses;
+            };
+
+            auto const separate_transient_writes =
+                sequential_merge_writes(0, 0);
+            auto const separate_retained_writes =
+                sequential_merge_writes(retained_values, 0);
+            auto const separate_ring_accesses =
+                sequential_ring_accesses(retained_values, 0);
+            auto separate_requirements = group.storage_requirements;
+            separate_requirements.operations = RealtimeStorageOperationCounts{
+                .transient_extra_copied_values = separate_transient_writes,
+                .carry_extra_copied_values = separate_retained_writes,
+                .full_extra_copied_values = separate_retained_writes,
+                .full_ring_addressed_values = separate_ring_accesses,
+                .transient_extra_stack_values =
+                    total_invocation_local_capacity,
+                .carry_extra_stack_values = total_invocation_local_capacity,
+                .full_extra_stack_values = total_invocation_local_capacity,
+            };
+            auto const separate_plan = choose_event_connection_storage_plan(
+                separate_requirements, cost_model);
+
+            bool retained_home_is_order_safe = true;
+            if (retained_values != 0) {
+                for (std::size_t source_index = 0;
+                     source_index < validated_sources.size(); ++source_index) {
+                    auto const& source = validated_sources[source_index].config;
+                    if (realtime_latency(source) != 0
+                        || (source_index == 0
+                            && realtime_history(source) != 0)) {
+                        retained_home_is_order_safe = false;
+                        break;
+                    }
+                }
+            }
+            auto const home_legal = !cyclic_source_region
+                && retained_home_is_order_safe;
+
+            std::optional<EventConnectionStoragePlan> home_plan;
+            EventConnectionStorageRequirements home_requirements{};
+            if (home_legal) {
+                auto const source_zero_values =
+                    validated_sources.front().aggregate_event_bound;
+                auto const home_transient_writes = total_local_capacity;
+                auto const home_prefix = saturating_add_values(
+                    retained_values, source_zero_values);
+                auto const home_retained_writes =
+                    sequential_merge_writes(home_prefix, 1);
+                auto const home_ring_accesses = saturating_add_values(
+                    source_zero_values,
+                    sequential_ring_accesses(home_prefix, 1));
+                auto const home_local_stack = total_invocation_local_capacity
+                    - validated_sources.front().capacity;
+
+                home_requirements = group.storage_requirements;
+                home_requirements.operations = RealtimeStorageOperationCounts{
+                    .transient_extra_copied_values = home_transient_writes,
+                    .carry_extra_copied_values = home_retained_writes,
+                    .full_extra_copied_values = home_retained_writes,
+                    .full_ring_addressed_values = home_ring_accesses,
+                    .transient_extra_stack_values = home_local_stack,
+                    .carry_extra_stack_values = home_local_stack,
+                    .full_extra_stack_values = home_local_stack,
+                };
+                home_plan = choose_event_connection_storage_plan(
+                    home_requirements, cost_model);
+            }
+
+            auto selected_cost = [](EventConnectionStoragePlan const& candidate)
+                -> std::optional<std::size_t> {
+                auto const& cost = candidate.candidate_costs.for_kind(
+                    candidate.kind);
+                if (!cost.legal) return std::nullopt;
+                return cost.weighted_cost;
+            };
+            auto const separate_cost = selected_cost(separate_plan);
+            auto const home_cost = home_plan
+                ? selected_cost(*home_plan)
+                : std::optional<std::size_t>{};
+
+            EventConnectionStoragePlan selected_plan{};
+            if (home_cost && (!separate_cost || *home_cost < *separate_cost)) {
+                producer_home_source_index = 0;
+                selected_plan = *home_plan;
+            } else if (separate_cost) {
+                producer_home_source_index.reset();
+                selected_plan = separate_plan;
+            } else if (home_cost) {
+                producer_home_source_index = 0;
+                selected_plan = *home_plan;
+            } else {
+                return std::unexpected(
+                    "GraphJit event fan-in has no storage realization within the compile-time stack budget");
+            }
+
+            storage_kind = selected_plan.kind;
+            plan.producer_group_storage_plans[group_index] = selected_plan;
+            plan.producer_home_source_indices[group_index] =
+                producer_home_source_index;
+            compact_carry = storage_kind
+                == RealtimeBufferStorageKind::stack_with_persistent_carry;
+            persistent_ring = storage_kind
+                == RealtimeBufferStorageKind::full_node_storage;
+            retained_storage = compact_carry || persistent_ring;
+            aggregate_sequence = true;
 
             std::size_t carry_capacity = 0;
             std::size_t canonical_capacity = 0;
@@ -1911,13 +2078,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 canonical_capacity = *rounded;
             }
 
-            if (group.producer_home_source_index
-                && *group.producer_home_source_index != 0) {
+            if (producer_home_source_index
+                && *producer_home_source_index != 0) {
                 return std::unexpected(
                     "GraphJit event fan-in producer-home source must be semantic source 0");
             }
             auto const producer_home =
-                group.producer_home_source_index.has_value()
+                producer_home_source_index.has_value()
                 && !cyclic_source_region;
             auto const transient_producer_home =
                 producer_home && !retained_storage;

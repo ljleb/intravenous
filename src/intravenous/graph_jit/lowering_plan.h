@@ -293,7 +293,12 @@ struct PrimitiveEventPortPlan {
 };
 
 struct EventPortBindingPlan {
-    // Indexed by ConnectionAnalysisPlan::event_producer_groups.
+    // Indexed by ConnectionAnalysisPlan::event_producer_groups. These are the
+    // final lowering decisions after concrete producer buffers and operations
+    // are known; connection analysis carries only the temporal requirements.
+    std::vector<std::optional<EventConnectionStoragePlan>>
+        producer_group_storage_plans{};
+    std::vector<std::optional<std::size_t>> producer_home_source_indices{};
     std::vector<std::optional<std::size_t>> producer_group_representations{};
     std::vector<EventRepresentationPlan> representations{};
     std::vector<EventMaterializationPlan> materializations{};
