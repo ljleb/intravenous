@@ -251,7 +251,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
 
     for (auto const& primitive : sample_ports.primitives) {
         for (auto const& binding : primitive.inputs) {
-            if (!binding.representation) {
+            if (binding.channels.empty()
+                || binding.channels.size() != channel_count(binding.channel_layout)) {
                 return std::unexpected(
                     "GraphJit sample runtime declaration has an unbound input port");
             }
@@ -844,6 +845,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         std::size_t connection_index = 0;
         std::size_t target_primitive = 0;
         std::size_t target_port = 0;
+        ChannelLayout target_layout{};
         std::size_t target_history = 0;
         std::size_t read_latency = 0;
     };
@@ -1134,6 +1136,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             .connection_index = connection_index,
             .target_primitive = *target_primitive,
             .target_port = target_port.port_ordinal,
+            .target_layout = connection.target_layout,
             .target_history = connection.target_history,
             .read_latency = target_read_latency,
         });
@@ -1179,7 +1182,56 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     for (auto const& target : validated_targets) {
         if (target.connection_index
                 >= plan.physical.connection_representations.size()
-            || !plan.physical.connection_representations[target.connection_index]) {
+            || target.connection_index
+                >= plan.physical.connection_channel_bindings.size()) {
+            return std::unexpected(
+                "GraphJit sample target lost its connection physical binding");
+        }
+
+        auto& target_binding =
+            plan.primitives[target.target_primitive].inputs[target.target_port];
+        if (!target_binding.channels.empty()) {
+            return std::unexpected(
+                "GraphJit sample input has more than one realized connection");
+        }
+        target_binding.channel_layout = target.target_layout;
+        target_binding.history = target.target_history;
+        target_binding.read_latency = target.read_latency;
+
+        auto const target_channel_count = channel_count(target.target_layout);
+        if (plan.physical.connection_channel_bindings[target.connection_index]) {
+            auto const& channel_bindings =
+                *plan.physical.connection_channel_bindings[target.connection_index];
+            if (channel_bindings.size() != target_channel_count) {
+                return std::unexpected(
+                    "GraphJit sample target channel binding count disagrees with its target layout");
+            }
+            target_binding.channels.reserve(channel_bindings.size());
+            for (auto const& channel : channel_bindings) {
+                if (channel.representation == no_sample_representation
+                    || channel.representation >= plan.physical.representations.size()) {
+                    return std::unexpected(
+                        "GraphJit sample target channel references an invalid physical representation");
+                }
+                auto const& representation =
+                    plan.physical.representations[channel.representation];
+                if (channel.representation_channel
+                        >= channel_count(representation.channel_layout)
+                    || channel.frame_delay >= representation.frame_capacity) {
+                    return std::unexpected(
+                        "GraphJit sample target channel exceeds its physical representation");
+                }
+                target_binding.channels.push_back(
+                    PrimitiveSampleInputChannelBindingPlan{
+                        .representation = channel.representation,
+                        .representation_channel = channel.representation_channel,
+                        .frame_delay = channel.frame_delay,
+                    });
+            }
+            continue;
+        }
+
+        if (!plan.physical.connection_representations[target.connection_index]) {
             return std::unexpected(
                 "GraphJit sample target lost its connection physical representation");
         }
@@ -1189,22 +1241,30 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             return std::unexpected(
                 "GraphJit sample target references an invalid physical representation");
         }
-        auto& target_binding =
-            plan.primitives[target.target_primitive].inputs[target.target_port];
-        if (target_binding.representation) {
+        auto const& representation =
+            plan.physical.representations[input_representation];
+        if (channel_count(representation.channel_layout) != target_channel_count) {
             return std::unexpected(
-                "GraphJit sample input has more than one realized connection");
+                "GraphJit sample target representation channel count disagrees with its target layout");
         }
-        target_binding.representation = input_representation;
-        target_binding.history = target.target_history;
-        target_binding.read_latency = target.read_latency;
+        target_binding.channels.reserve(target_channel_count);
+        for (std::size_t channel = 0; channel < target_channel_count; ++channel) {
+            target_binding.channels.push_back(
+                PrimitiveSampleInputChannelBindingPlan{
+                    .representation = input_representation,
+                    .representation_channel = channel,
+                    .frame_delay = 0,
+                });
+        }
     }
 
     for (auto const& primitive : plan.primitives) {
         if (!std::ranges::all_of(
                 primitive.inputs,
                 [](auto const& binding) {
-                    return binding.representation.has_value();
+                    return !binding.channels.empty()
+                        && binding.channels.size()
+                            == channel_count(binding.channel_layout);
                 })
             || !std::ranges::all_of(
                 primitive.outputs,

@@ -474,43 +474,44 @@ TEST(GraphJitConnectionPlan, EqualizesChannelsInsideComposedSampleInput)
     auto physical = graph_jit::detail::build_sample_physical_plan(*plan, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
-    ASSERT_EQ(physical->compositions.size(), 1u);
-    ASSERT_LT(
-        static_cast<std::size_t>(std::distance(
-            plan->sample_connections.begin(), connection)),
-        physical->connection_representations.size());
+    EXPECT_TRUE(physical->compositions.empty());
     auto const connection_index = static_cast<std::size_t>(std::distance(
         plan->sample_connections.begin(), connection));
-    ASSERT_TRUE(physical->connection_representations[connection_index].has_value());
+    ASSERT_LT(connection_index, physical->connection_representations.size());
+    ASSERT_LT(connection_index, physical->connection_channel_bindings.size());
+    EXPECT_FALSE(physical->connection_representations[connection_index].has_value());
+    ASSERT_TRUE(physical->connection_channel_bindings[connection_index].has_value());
 
-    auto const& composition = physical->compositions.front();
-    EXPECT_EQ(composition.connection_index, connection_index);
-    EXPECT_EQ(composition.target_layout, connection->target_layout);
-    EXPECT_EQ(composition.target_history, connection->target_history);
-    EXPECT_EQ(composition.target_representation,
-        *physical->connection_representations[connection_index]);
-    ASSERT_EQ(composition.contributions.size(), 1u);
-    auto const& contribution = composition.contributions.front();
-    EXPECT_EQ(contribution.source_layout.channel_type, ChannelTypeId::stereo);
-    EXPECT_EQ(contribution.converted_layout.channel_type, ChannelTypeId::stereo);
-    ASSERT_EQ(contribution.sources.size(), 2u);
-    ASSERT_EQ(contribution.target_channels.size(), 2u);
-    EXPECT_NE(
-        contribution.sources[0].source_representation,
-        contribution.sources[1].source_representation);
-    EXPECT_EQ(contribution.sources[0].source_channel, 0u);
-    EXPECT_EQ(contribution.sources[0].read_latency, 7u);
-    EXPECT_EQ(contribution.sources[1].source_channel, 0u);
-    EXPECT_EQ(contribution.sources[1].read_latency, 2u);
-    EXPECT_EQ(contribution.target_channels[0], 0u);
-    EXPECT_EQ(contribution.target_channels[1], 1u);
+    auto const& aliases =
+        *physical->connection_channel_bindings[connection_index];
+    ASSERT_EQ(aliases.size(), 2u);
+    auto const source_group_index = static_cast<std::size_t>(std::distance(
+        plan->sample_producer_groups.begin(), source_group));
+    auto const latent_group_index = static_cast<std::size_t>(std::distance(
+        plan->sample_producer_groups.begin(), latent_group));
+    ASSERT_TRUE(physical->producer_groups[source_group_index].has_value());
+    ASSERT_TRUE(physical->producer_groups[latent_group_index].has_value());
+    EXPECT_EQ(
+        aliases[0].representation,
+        physical->producer_groups[source_group_index]->canonical_representation);
+    EXPECT_EQ(aliases[0].representation_channel, 0u);
+    EXPECT_EQ(aliases[0].frame_delay, 7u);
+    EXPECT_EQ(
+        aliases[1].representation,
+        physical->producer_groups[latent_group_index]->canonical_representation);
+    EXPECT_EQ(aliases[1].representation_channel, 0u);
+    EXPECT_EQ(aliases[1].frame_delay, 2u);
 
-    auto const& target_representation =
-        physical->representations[composition.target_representation];
-    EXPECT_FALSE(target_representation.canonical_producer_representation);
-    EXPECT_EQ(target_representation.producer_group_index,
-        graph_jit::detail::no_sample_producer_group);
-    EXPECT_EQ(target_representation.channel_layout, connection->target_layout);
+    ASSERT_LT(sink_handle, plan->schedule.bundle_execution_position.size());
+    ASSERT_TRUE(plan->schedule.bundle_execution_position[sink_handle].has_value());
+    auto const sink_position =
+        *plan->schedule.bundle_execution_position[sink_handle];
+    EXPECT_GE(
+        physical->representations[aliases[0].representation].live_interval.end,
+        sink_position);
+    EXPECT_GE(
+        physical->representations[aliases[1].representation].live_interval.end,
+        sink_position);
 }
 
 TEST(GraphJitConnectionPlan, PropagatesAlignedLatencyAcrossMultipleConvergences)

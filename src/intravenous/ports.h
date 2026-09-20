@@ -527,8 +527,13 @@ namespace iv {
     // callers cannot accidentally treat interleaved storage as scalar samples.
     template<typename A, ChannelLayout Layout = mono_planar_channel_layout>
     struct BlockView {
+        // first/second sizes are logical element counts. A stride greater than
+        // one lets a scalar block view alias one channel of interleaved sample
+        // storage without gathering it into a contiguous temporary.
         std::span<A> first {};
         std::span<A> second {};
+        size_t first_stride = 1;
+        size_t second_stride = 1;
 
         template<typename B = A>
             requires (!std::is_const_v<B>)
@@ -537,6 +542,8 @@ namespace iv {
             return {
                 std::span<std::add_const_t<B>>(first),
                 std::span<std::add_const_t<B>>(second),
+                first_stride,
+                second_stride,
             };
         }
 
@@ -553,8 +560,8 @@ namespace iv {
         constexpr A& operator[](size_t index) const
         {
             return index < first.size()
-                ? first[index]
-                : second[index - first.size()];
+                ? first.data()[index * first_stride]
+                : second.data()[(index - first.size()) * second_stride];
         }
 
         struct iterator {
@@ -566,15 +573,17 @@ namespace iv {
             using pointer = void;
 
             A const* first_ptr = nullptr;
+            A const* second_ptr = nullptr;
             size_t split = 0;
-            std::ptrdiff_t second_offset = 0;
+            size_t first_stride = 1;
+            size_t second_stride = 1;
             size_t index = 0;
 
             constexpr reference operator*() const
             {
                 return index < split
-                    ? first_ptr[index]
-                    : (first_ptr + second_offset)[index - split];
+                    ? first_ptr[index * first_stride]
+                    : second_ptr[(index - split) * second_stride];
             }
 
             constexpr iterator& operator++()
@@ -597,8 +606,10 @@ namespace iv {
         {
             return iterator{
                 first.data(),
+                second.data(),
                 first.size(),
-                second.data() - first.data(),
+                first_stride,
+                second_stride,
                 0
             };
         }
@@ -607,8 +618,10 @@ namespace iv {
         {
             return iterator{
                 first.data(),
+                second.data(),
                 first.size(),
-                second.data() - first.data(),
+                first_stride,
+                second_stride,
                 size()
             };
         }
@@ -617,23 +630,28 @@ namespace iv {
         IV_FORCEINLINE constexpr void copy_to(BlockView<Dst, Layout> dst) const
         {
             IV_ASSERT(size() == dst.size(), "BlockView::copy_to requires matching block sizes");
+            if (first_stride == 1 && second_stride == 1
+                && dst.first_stride == 1 && dst.second_stride == 1) {
+                auto src_first = first;
+                auto src_second = second;
+                auto dst_first = dst.first;
+                auto dst_second = dst.second;
 
-            auto src_first = first;
-            auto src_second = second;
-            auto dst_first = dst.first;
-            auto dst_second = dst.second;
+                auto copy_partial = [](auto& source, auto& target) {
+                    size_t const n = std::min(source.size(), target.size());
+                    std::copy_n(source.data(), n, target.data());
+                    source = source.subspan(n);
+                    target = target.subspan(n);
+                };
 
-            auto copy_partial = [](auto& source, auto& target) {
-                size_t const n = std::min(source.size(), target.size());
-                std::copy_n(source.data(), n, target.data());
-                source = source.subspan(n);
-                target = target.subspan(n);
-            };
+                copy_partial(src_first, dst_first);
+                copy_partial(src_first, dst_second);
+                copy_partial(src_second, dst_first);
+                copy_partial(src_second, dst_second);
+                return;
+            }
 
-            copy_partial(src_first, dst_first);
-            copy_partial(src_first, dst_second);
-            copy_partial(src_second, dst_first);
-            copy_partial(src_second, dst_second);
+            for (size_t i = 0; i < size(); ++i) dst[i] = (*this)[i];
         }
     };
 
@@ -715,15 +733,20 @@ namespace iv {
             return storage[frame * frame_stride];
         }
 
-        constexpr Sample& sample_absolute(SampleIndex logical_frame) const
+        constexpr size_t frame_index_absolute(SampleIndex logical_frame) const
         {
             IV_ASSERT(
                 frame_capacity != 0 && is_power_of_2(frame_capacity),
                 "sample channel capacity must be a power of two");
             auto const mask = frame_capacity - 1;
-            auto const delayed = logical_frame + frame_capacity
-                - (frame_delay & mask);
-            return sample(static_cast<size_t>(delayed & mask));
+            auto const delayed = logical_frame
+                - static_cast<SampleIndex>(frame_delay);
+            return static_cast<size_t>(delayed & mask);
+        }
+
+        constexpr Sample& sample_absolute(SampleIndex logical_frame) const
+        {
+            return sample(frame_index_absolute(logical_frame));
         }
     };
 
@@ -838,14 +861,31 @@ namespace iv {
             size_t channel, size_t start, size_t count) const
         {
             IV_ASSERT(channel < channel_count(channel_layout), "port channel index out of bounds");
-            IV_ASSERT(
-                channels[channel].frame_stride == 1,
-                "scalar block access requires contiguous channel storage");
-            return make_block_view(
-                std::span<Sample>{
-                    channels[channel].storage,
-                    channels[channel].frame_capacity},
-                start,
+            auto const& source = channels[channel];
+            IV_ASSERT(start < source.frame_capacity || count == 0, "port channel block start is out of bounds");
+            IV_ASSERT(count <= source.frame_capacity, "port channel block exceeds source capacity");
+            if (count == 0) return {};
+
+            auto const first_size = std::min(
+                count, source.frame_capacity - start);
+            auto const second_size = count - first_size;
+            return BlockView<Sample>{
+                .first = std::span<Sample>{
+                    source.storage + start * source.frame_stride, first_size},
+                .second = std::span<Sample>{
+                    source.storage, second_size},
+                .first_stride = source.frame_stride,
+                .second_stride = source.frame_stride,
+            };
+        }
+
+        constexpr BlockView<Sample> channel_block_absolute(
+            size_t channel, SampleIndex logical_start, size_t count) const
+        {
+            IV_ASSERT(channel < channel_count(channel_layout), "port channel index out of bounds");
+            return channel_block(
+                channel,
+                channels[channel].frame_index_absolute(logical_start),
                 count);
         }
     };
@@ -854,20 +894,15 @@ namespace iv {
         SamplePortStorageView _storage;
         size_t _history;
         size_t _latency_samples = 0;
-        size_t _read_position = 0;
+        SampleIndex _read_index = 0;
 
         friend void advance_input(InputPort&, size_t);
         friend void advance_inputs(std::span<InputPort>, size_t);
 
-        IV_FORCEINLINE constexpr size_t current_read_position() const
-        {
-            return _read_position & (buffer_size() - 1);
-        }
-
     private:
         IV_FORCEINLINE constexpr void advance(size_t amount = 1)
         {
-            _read_position = (_read_position + amount) & (buffer_size() - 1);
+            _read_index += static_cast<SampleIndex>(amount);
         }
 
     public:
@@ -879,14 +914,25 @@ namespace iv {
         ) :
             _storage(storage),
             _history(history),
-            _latency_samples(latency_samples)
+            _latency_samples(latency_samples),
+            _read_index(index - static_cast<SampleIndex>(latency_samples))
         {
-            IV_ASSERT(is_power_of_2(_storage.frame_capacity), "buffer frame capacity should be a power of 2");
-            IV_ASSERT(_latency_samples < _storage.frame_capacity, "input latency must fit its shared ring buffer");
-            auto const mask = _storage.frame_capacity - 1;
-            _read_position = static_cast<size_t>(index & mask);
-            _read_position = (_read_position + _storage.frame_capacity
-                - _latency_samples) & mask;
+            auto const count = channel_count(_storage.channel_layout);
+            for (size_t channel = 0; channel < count; ++channel) {
+                IV_ASSERT(
+                    _storage.channels[channel].frame_capacity != 0
+                        && is_power_of_2(
+                            _storage.channels[channel].frame_capacity),
+                    "input channel frame capacity should be a power of 2");
+                IV_ASSERT(
+                    _storage.channels[channel].frame_delay
+                        < _storage.channels[channel].frame_capacity,
+                    "input channel delay must fit its source ring buffer");
+                IV_ASSERT(
+                    _latency_samples
+                        < _storage.channels[channel].frame_capacity,
+                    "input latency must fit its source ring buffer");
+            }
         }
 
         explicit InputPort(
@@ -901,14 +947,16 @@ namespace iv {
         IV_FORCEINLINE constexpr Sample get(size_t offset = 0, size_t channel = 0) const
         {
             if (offset > _history) return 0.0f;
-            size_t const idx = (current_read_position() + buffer_size() - offset) & (buffer_size() - 1);
-            return _storage.sample(idx, channel);
+            IV_ASSERT(channel < channel_count(_storage.channel_layout), "port channel index out of bounds");
+            return _storage.channels[channel].sample_absolute(
+                _read_index - static_cast<SampleIndex>(offset));
         }
 
         IV_FORCEINLINE constexpr Sample get_frame(size_t sample_offset, size_t channel = 0) const
         {
-            size_t const sample = (current_read_position() + sample_offset) & (buffer_size() - 1);
-            return _storage.sample(sample, channel);
+            IV_ASSERT(channel < channel_count(_storage.channel_layout), "port channel index out of bounds");
+            return _storage.channels[channel].sample_absolute(
+                _read_index + static_cast<SampleIndex>(sample_offset));
         }
 
         IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
@@ -917,8 +965,10 @@ namespace iv {
                 return {};
             }
 
-            size_t const start = (current_read_position() + sample_offset) & (buffer_size() - 1);
-            return _storage.channel_block(0, start, block_size - sample_offset);
+            return _storage.channel_block_absolute(
+                0,
+                _read_index + static_cast<SampleIndex>(sample_offset),
+                block_size - sample_offset);
         }
 
         IV_FORCEINLINE constexpr size_t latency() const
@@ -928,7 +978,7 @@ namespace iv {
 
         IV_FORCEINLINE constexpr size_t buffer_size() const
         {
-            return _storage.frame_capacity;
+            return _storage.channels[0].frame_capacity;
         }
 
         IV_FORCEINLINE constexpr ChannelLayout channel_layout() const

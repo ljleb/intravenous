@@ -6939,7 +6939,12 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateFeedsComposedFanout)
         *analysis, 64);
     ASSERT_TRUE(physical.has_value())
         << (physical ? std::string{} : physical.error());
-    ASSERT_EQ(physical->compositions.size(), 1u);
+    EXPECT_TRUE(physical->compositions.empty());
+    EXPECT_EQ(
+        std::ranges::count_if(
+            physical->connection_channel_bindings,
+            [](auto const& binding) { return binding.has_value(); }),
+        1u);
     EXPECT_TRUE(physical->feedback_timelines.empty());
 
     auto compiled = compile_graph(graph, 154);
@@ -7304,9 +7309,9 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleLatency)
     EXPECT_FLOAT_EQ(composed_probe->sum_left, 1596.0f);
     EXPECT_FLOAT_EQ(composed_probe->sum_right, 1596.0f);
 
-    // The second call proves composition reads each producer's independently
-    // restored history (7 frames from the direct source, 2 from the delayed
-    // source) before gathering them into one zero-latency stereo input.
+    // The second call proves the channel-granular input reads each producer's
+    // independently restored history (7 frames from the direct source, 2 from
+    // the delayed source) without a gathered stereo representation.
     composed_latency.compiled_graph->root_operations.tick_block(
         composed_latency_storage.buffer().data(), 64, 64);
     EXPECT_EQ(composed_probe->calls, 2u);
@@ -7319,11 +7324,10 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleLatency)
     EXPECT_FLOAT_EQ(composed_probe->sum_left, 5664.0f);
     EXPECT_FLOAT_EQ(composed_probe->sum_right, 5664.0f);
 
-    // A composed input with history must extend each producer's retention by
-    // the target history before gathering the independently delayed channels.
-    // The direct channel therefore needs 5 + 7 frames while the delayed
-    // channel needs 5 + 2. The synthetic stereo representation itself is
-    // timestamp-aligned and exposes those five historical frames at latency 0.
+    // A composed input with history must extend each aliased producer's
+    // retention by the target history. The direct channel therefore needs
+    // 5 + 7 frames while the delayed channel needs 5 + 2; the logical stereo
+    // input remains timestamp-aligned at port latency 0.
 }
 
 TEST_F(GraphJitRuntimeFixture, ComposedSampleHistory)
@@ -7389,17 +7393,27 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleHistory)
         << (composed_history_physical
                 ? std::string{}
                 : composed_history_physical.error());
-    ASSERT_EQ(composed_history_physical->compositions.size(), 1u);
-    EXPECT_EQ(composed_history_physical->compositions[0].target_history, 5u);
-    auto const composed_history_representation =
-        composed_history_physical->compositions[0].target_representation;
+    EXPECT_TRUE(composed_history_physical->compositions.empty());
+    auto const composed_history_connection_index = static_cast<std::size_t>(
+        std::distance(
+            composed_history_analysis->sample_connections.begin(),
+            composed_history_connection));
     ASSERT_LT(
-        composed_history_representation,
-        composed_history_physical->representations.size());
-    EXPECT_EQ(
-        composed_history_physical->representations[composed_history_representation]
-            .frame_capacity,
-        128u);
+        composed_history_connection_index,
+        composed_history_physical->connection_channel_bindings.size());
+    ASSERT_TRUE(
+        composed_history_physical
+            ->connection_channel_bindings[composed_history_connection_index]
+            .has_value());
+    auto const& composed_history_aliases =
+        *composed_history_physical
+            ->connection_channel_bindings[composed_history_connection_index];
+    ASSERT_EQ(composed_history_aliases.size(), 2u);
+    EXPECT_EQ(composed_history_aliases[0].frame_delay, 7u);
+    EXPECT_EQ(composed_history_aliases[1].frame_delay, 2u);
+    EXPECT_NE(
+        composed_history_aliases[0].representation,
+        composed_history_aliases[1].representation);
 
     auto composed_history = compile_graph(composed_history_graph, 121);
     ASSERT_TRUE(composed_history.succeeded())
@@ -7519,20 +7533,29 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
         *projected_analysis, 64);
     ASSERT_TRUE(projected_physical.has_value())
         << (projected_physical ? std::string{} : projected_physical.error());
-    ASSERT_EQ(projected_physical->compositions.size(), 1u);
-    ASSERT_EQ(projected_physical->compositions[0].contributions.size(), 2u);
-    auto const& projected_left =
-        projected_physical->compositions[0].contributions[0];
-    ASSERT_EQ(projected_left.sources.size(), 1u);
-    EXPECT_EQ(projected_left.sources[0].source_channel, 1u);
-    EXPECT_EQ(projected_left.sources[0].read_latency, 7u);
-    EXPECT_EQ(projected_left.target_channels, std::vector<std::size_t>{0u});
-    auto const& projected_right =
-        projected_physical->compositions[0].contributions[1];
-    ASSERT_EQ(projected_right.sources.size(), 1u);
-    EXPECT_EQ(projected_right.sources[0].source_channel, 0u);
-    EXPECT_EQ(projected_right.sources[0].read_latency, 2u);
-    EXPECT_EQ(projected_right.target_channels, std::vector<std::size_t>{1u});
+    EXPECT_TRUE(projected_physical->compositions.empty());
+    auto const projected_connection_index = static_cast<std::size_t>(
+        std::distance(
+            projected_analysis->sample_connections.begin(),
+            projected_connection));
+    ASSERT_LT(
+        projected_connection_index,
+        projected_physical->connection_channel_bindings.size());
+    ASSERT_TRUE(
+        projected_physical
+            ->connection_channel_bindings[projected_connection_index]
+            .has_value());
+    auto const& projected_aliases =
+        *projected_physical
+            ->connection_channel_bindings[projected_connection_index];
+    ASSERT_EQ(projected_aliases.size(), 2u);
+    EXPECT_EQ(projected_aliases[0].representation_channel, 1u);
+    EXPECT_EQ(projected_aliases[0].frame_delay, 7u);
+    EXPECT_EQ(projected_aliases[1].representation_channel, 0u);
+    EXPECT_EQ(projected_aliases[1].frame_delay, 2u);
+    EXPECT_NE(
+        projected_aliases[0].representation,
+        projected_aliases[1].representation);
 
     auto projected = compile_graph(projected_graph, 122);
     ASSERT_TRUE(projected.succeeded())

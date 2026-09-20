@@ -175,15 +175,15 @@ Only realtime branches receive realtime representation handles here; compiled
 access branches remain unresolved for the later compiled-access executor. Whole-
 port layout/channel-type conversion is represented by explicit derived branches
 and generated materialization operations. Semantic channel projection and
-permutation are represented by explicit sample compositions: source channels keep
-their physical producer identity and independent read latency, complete sets of
-per-channel target contributions normalize into canonical target order, and one
-target-layout representation is gathered before the consumer. Feed-forward
-composition uses transient storage; detached composition writes into a persistent
-feedback timeline, including conversion, permutation, unequal-latency alignment,
-and migration. This does not reintroduce connection helper nodes. External
-boundaries remain capability-gated rather than being approximated with transient
-storage.
+permutation preserve each source channel's physical producer identity and
+independent read latency while complete target contributions normalize into
+canonical target order. Feed-forward identity projection/permutation binds those
+producer channels directly; contributions that require channel-count mixing or
+conversion still gather a target-layout representation. Detached composition
+writes into a persistent feedback timeline, including conversion, permutation,
+unequal-latency alignment, and migration. This does not reintroduce connection
+helper nodes. External boundaries remain capability-gated rather than being
+approximated with transient storage.
 
 ### Realtime port realization rules
 
@@ -458,13 +458,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    feed-forward realtime branches.** One canonical producer-layout representation
    is written once; identity consumers share it directly, while converted consumers
    bind explicit derived transient representations. Identical converted fanout
-   branches are deduplicated to one representation/materialization. Semantic
-   channel projection/permutation uses explicit composition materialization,
-   including complete sets of separately configured target-channel contributions;
-   each source channel retains its producer storage and independent read latency.
-   Materialization is generated whole-project LLVM using absolute-indexed physical
-   storage and contains no runtime converter object, heap allocation, or
-   `OutputPort` conversion state.
+   branches are deduplicated to one representation/materialization. Pure semantic
+   channel projection/permutation now binds target channels directly to resolved
+   producer channel slices, preserving each producer's independent capacity and
+   read latency without gathering a synthetic target-layout representation.
+   Contributions that require channel-count mixing/conversion still use explicit
+   whole-target composition materialization. Materialization is generated
+   whole-project LLVM using absolute-indexed physical storage and contains no
+   runtime converter object, heap allocation, or `OutputPort` conversion state.
 9. **Sample history and latency.** **Landed for declared realtime sample history/latency.**
    `compact_persistent_carry` uses one transient absolute-indexed working ring plus
    exactly the retained tail in persistent raw `NodeStorage`; the tail is restored

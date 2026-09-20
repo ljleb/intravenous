@@ -92,8 +92,19 @@ struct ConfigurationPlan {
 };
 
 
+struct PrimitiveSampleInputChannelBindingPlan {
+    std::size_t representation = no_sample_representation;
+    std::size_t representation_channel = 0;
+    std::size_t frame_delay = 0;
+};
+
 struct PrimitiveSampleInputBindingPlan {
-    std::optional<std::size_t> representation{};
+    // Canonical target-channel order. Each semantic channel may resolve to a
+    // different physical representation/capacity/timing. Materialized inputs
+    // simply bind every channel to the corresponding channel of one target
+    // representation.
+    std::vector<PrimitiveSampleInputChannelBindingPlan> channels{};
+    ChannelLayout channel_layout{};
     std::size_t history = 0;
     std::size_t read_latency = 0;
 };

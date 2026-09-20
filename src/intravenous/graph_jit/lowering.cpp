@@ -526,6 +526,47 @@ sample_storage_binding(
     return binding;
 }
 
+std::expected<ReflectedSamplePortStorageBinding, std::string>
+sample_input_storage_binding(
+    detail::SamplePhysicalPlan const& physical,
+    detail::PrimitiveSampleInputBindingPlan const& input)
+{
+    auto const target_channels = channel_count(input.channel_layout);
+    if (input.channels.size() != target_channels || target_channels == 0) {
+        return std::unexpected(
+            "GraphJit sample input binding has an invalid channel count");
+    }
+
+    ReflectedSamplePortStorageBinding binding{
+        .storage_latency = 0,
+        .channel_layout = input.channel_layout,
+    };
+    for (std::size_t target_channel = 0;
+         target_channel < target_channels; ++target_channel) {
+        auto const& channel = input.channels[target_channel];
+        if (channel.representation == detail::no_sample_representation) {
+            return std::unexpected(
+                "GraphJit sample input channel has no physical representation");
+        }
+        auto source = sample_storage_binding(
+            physical, channel.representation);
+        if (!source) return std::unexpected(std::move(source.error()));
+        auto const source_channel_count = channel_count(source->channel_layout);
+        if (channel.representation_channel >= source_channel_count) {
+            return std::unexpected(
+                "GraphJit sample input channel is outside its physical representation");
+        }
+        binding.channels[target_channel] =
+            source->channels[channel.representation_channel];
+        binding.channels[target_channel].frame_delay = channel.frame_delay;
+        if (target_channel == 0) {
+            binding.frame_capacity =
+                binding.channels[target_channel].frame_capacity;
+        }
+    }
+    return binding;
+}
+
 llvm::Value* runtime_bytes_copy(
     llvm::IRBuilder<>& builder,
     llvm::Module& module,
@@ -559,6 +600,40 @@ void store_runtime_pointer(
         byte_offset_pointer(builder, bytes, offset, "binding.pointer.slot"));
 }
 
+void store_sample_binding_channel_pointer(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* binding_bytes,
+    std::size_t storage_binding_offset,
+    std::size_t target_channel,
+    detail::SampleRepresentationPlan const& representation,
+    std::size_t representation_channel,
+    llvm::Value* representation_base)
+{
+    auto const channels = channel_count(representation.channel_layout);
+    IV_ASSERT(
+        representation_channel < channels,
+        "sample binding source channel is outside its representation");
+    auto const sample_offset = representation.channel_layout.sample_layout
+            == SampleStreamLayout::planar
+        ? representation_channel * representation.frame_capacity
+        : representation_channel;
+    auto* channel_base = sample_offset == 0
+        ? representation_base
+        : byte_offset_pointer(
+            builder,
+            representation_base,
+            sample_offset * sizeof(Sample),
+            "sample.binding.channel");
+    store_runtime_pointer(
+        builder,
+        binding_bytes,
+        storage_binding_offset
+            + offsetof(ReflectedSamplePortStorageBinding, channels)
+            + target_channel * sizeof(ReflectedSampleChannelStorageBinding)
+            + offsetof(ReflectedSampleChannelStorageBinding, storage),
+        channel_base);
+}
+
 void store_sample_binding_channel_pointers(
     llvm::IRBuilder<>& builder,
     llvm::Value* binding_bytes,
@@ -568,25 +643,14 @@ void store_sample_binding_channel_pointers(
 {
     auto const channels = channel_count(representation.channel_layout);
     for (std::size_t channel = 0; channel < channels; ++channel) {
-        auto const sample_offset = representation.channel_layout.sample_layout
-                == SampleStreamLayout::planar
-            ? channel * representation.frame_capacity
-            : channel;
-        auto* channel_base = sample_offset == 0
-            ? representation_base
-            : byte_offset_pointer(
-                builder,
-                representation_base,
-                sample_offset * sizeof(Sample),
-                "sample.binding.channel");
-        store_runtime_pointer(
+        store_sample_binding_channel_pointer(
             builder,
             binding_bytes,
-            storage_binding_offset
-                + offsetof(ReflectedSamplePortStorageBinding, channels)
-                + channel * sizeof(ReflectedSampleChannelStorageBinding)
-                + offsetof(ReflectedSampleChannelStorageBinding, storage),
-            channel_base);
+            storage_binding_offset,
+            channel,
+            representation,
+            channel,
+            representation_base);
     }
 }
 
@@ -611,12 +675,8 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
             std::vector<ReflectedSampleInputPortBinding> bindings;
             bindings.reserve(primitive.inputs.size());
             for (auto const& input : primitive.inputs) {
-                if (!input.representation) {
-                    return std::unexpected(
-                        "GraphJit sample input binding has no physical representation");
-                }
-                auto storage = sample_storage_binding(
-                    plan.physical, *input.representation);
+                auto storage = sample_input_storage_binding(
+                    plan.physical, input);
                 if (!storage) return std::unexpected(std::move(storage.error()));
                 bindings.push_back(ReflectedSampleInputPortBinding{
                     .storage = *storage,
@@ -631,18 +691,27 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                 alignof(ReflectedSampleInputPortBinding),
                 "__iv_graph_sample_inputs_" + std::to_string(primitive_index));
             for (std::size_t i = 0; i < primitive.inputs.size(); ++i) {
-                auto const representation = *primitive.inputs[i].representation;
-                if (representation >= realtime_storage.sample_representations.size()) {
-                    return std::unexpected(
-                        "GraphJit sample input binding lost its resolved storage");
+                auto const& input = primitive.inputs[i];
+                for (std::size_t target_channel = 0;
+                     target_channel < input.channels.size();
+                     ++target_channel) {
+                    auto const& channel = input.channels[target_channel];
+                    auto const representation = channel.representation;
+                    if (representation >= realtime_storage.sample_representations.size()
+                        || representation >= plan.physical.representations.size()) {
+                        return std::unexpected(
+                            "GraphJit sample input binding lost its resolved storage");
+                    }
+                    store_sample_binding_channel_pointer(
+                        builder,
+                        result.input_bindings,
+                        i * sizeof(ReflectedSampleInputPortBinding)
+                            + offsetof(ReflectedSampleInputPortBinding, storage),
+                        target_channel,
+                        plan.physical.representations[representation],
+                        channel.representation_channel,
+                        realtime_storage.sample_representations[representation]);
                 }
-                store_sample_binding_channel_pointers(
-                    builder,
-                    result.input_bindings,
-                    i * sizeof(ReflectedSampleInputPortBinding)
-                        + offsetof(ReflectedSampleInputPortBinding, storage),
-                    plan.physical.representations[representation],
-                    realtime_storage.sample_representations[representation]);
             }
         }
 

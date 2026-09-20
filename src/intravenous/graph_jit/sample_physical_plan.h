@@ -43,6 +43,16 @@ struct SampleProducerPhysicalPlan {
     std::size_t canonical_representation = no_sample_representation;
 };
 
+// One target semantic channel resolved directly to a channel of an existing
+// physical representation. frame_delay is an additional per-channel read
+// delay, in frames, applied by InputPort on top of its port-level read latency.
+// This is the physical binding form used by zero-copy projection/permutation.
+struct SampleChannelBindingPlan {
+    std::size_t representation = no_sample_representation;
+    std::size_t representation_channel = 0;
+    std::size_t frame_delay = 0;
+};
+
 // One explicit post-producer transformation from a canonical/derived sample
 // representation into another transient representation. History/latency are
 // part of the materialization window rather than mutable OutputPort state.
@@ -214,6 +224,12 @@ struct SamplePhysicalPlan {
     // branches resolve to a shared derived representation when their static
     // transformation is identical.
     std::vector<std::optional<std::size_t>> connection_representations{};
+    // Feed-forward identity channel compositions may bind each target channel
+    // directly to an existing producer representation instead of allocating a
+    // gathered target representation. Indexed by sample connection; when
+    // present, entries are in canonical target-channel order.
+    std::vector<std::optional<std::vector<SampleChannelBindingPlan>>>
+        connection_channel_bindings{};
 
     // Explicit conversion/materialization operations. These are scheduled after
     // the source producer and before every consumer bound to the target

@@ -1302,6 +1302,50 @@ TEST(Channels, SamplePortStorageViewSupportsStridedChannelPointers)
     EXPECT_FLOAT_EQ(input.get_frame(0, 1), 205.0f);
     EXPECT_FLOAT_EQ(input.get_frame(2, 0), 107.0f);
     EXPECT_FLOAT_EQ(input.get_frame(2, 1), 207.0f);
+
+    auto const block = input.get_block(3);
+    ASSERT_EQ(block.size(), 3u);
+    EXPECT_EQ(block.first_stride, 2u);
+    EXPECT_FLOAT_EQ(block[0], 105.0f);
+    EXPECT_FLOAT_EQ(block[1], 106.0f);
+    EXPECT_FLOAT_EQ(block[2], 107.0f);
+}
+
+TEST(Channels, SamplePortStorageViewSupportsIndependentChannelCapacityAndDelay)
+{
+    std::array<iv::Sample, 8> short_ring{};
+    std::array<iv::Sample, 16> long_ring{};
+    short_ring[0] = 11.0f;
+    long_ring[5] = 22.0f;
+
+    std::array<
+        iv::SampleChannelStorageView,
+        iv::maximum_supported_channel_count> channels{};
+    channels[0] = iv::SampleChannelStorageView{
+        .storage = short_ring.data(),
+        .frame_capacity = short_ring.size(),
+        .frame_stride = 1,
+        .frame_delay = 2,
+    };
+    channels[1] = iv::SampleChannelStorageView{
+        .storage = long_ring.data(),
+        .frame_capacity = long_ring.size(),
+        .frame_stride = 1,
+        .frame_delay = 5,
+    };
+    iv::SamplePortStorageView storage{
+        channels,
+        0,
+        iv::ChannelLayout{
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        },
+        short_ring.size(),
+    };
+    iv::InputPort input(storage, 0, 0, 10);
+
+    EXPECT_FLOAT_EQ(input.get_frame(0, 0), 11.0f);
+    EXPECT_FLOAT_EQ(input.get_frame(0, 1), 22.0f);
 }
 
 TEST(Channels, OutputPortUpdateRevisesOnlyUnpublishedLatencyWindow)
