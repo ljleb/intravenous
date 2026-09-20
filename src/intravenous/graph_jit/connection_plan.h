@@ -238,6 +238,7 @@ struct ConnectionAnalysisPlan {
 // analyzed and unit-tested before their port contexts are executable.
 std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
     ConfiguredGraph const& graph,
-    std::size_t kernel_block_size);
+    std::size_t kernel_block_size,
+    RealtimeStorageCostModel const& cost_model = {});
 
 } // namespace iv::graph_jit::detail

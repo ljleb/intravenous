@@ -225,4 +225,105 @@ TEST(EventConnectionStorageChooser, UsesRateDerivedCapacities)
     }).kind, Kind::full_node_storage);
 }
 
+TEST(SampleConnectionStorageChooser, ExposesWholeGroupCandidateCosts)
+{
+    using Kind = iv::RealtimeBufferStorageKind;
+
+    auto const plan = iv::choose_sample_connection_storage_plan({
+        .current_block_frames = 256,
+        .retained_frames = 32,
+        .channel_count = 2,
+        .value_size_bytes = 4,
+    });
+
+    EXPECT_EQ(plan.kind, Kind::stack_with_persistent_carry);
+    auto const& carry = plan.candidate_costs.stack_with_persistent_carry;
+    EXPECT_TRUE(carry.legal);
+    EXPECT_EQ(carry.copied_bytes, 2u * 32u * 2u * 4u);
+    EXPECT_EQ(carry.stack_bytes, (256u + 32u) * 2u * 4u);
+    EXPECT_EQ(carry.persistent_bytes, 32u * 2u * 4u);
+
+    auto const& full = plan.candidate_costs.full_node_storage;
+    EXPECT_TRUE(full.legal);
+    EXPECT_EQ(full.copied_bytes, 0u);
+    EXPECT_EQ(full.stack_bytes, 0u);
+    EXPECT_EQ(full.persistent_bytes, (256u + 32u) * 2u * 4u);
+}
+
+TEST(SampleConnectionStorageChooser, WholeGroupCopyCostCanSelectFullEarlier)
+{
+    using Kind = iv::RealtimeBufferStorageKind;
+
+    auto const plan = iv::choose_sample_connection_storage_plan({
+        .current_block_frames = 256,
+        .retained_frames = 32,
+        .channel_count = 1,
+        .value_size_bytes = 4,
+        .operations = {
+            .carry_extra_copied_values = 512,
+        },
+    });
+
+    EXPECT_EQ(plan.kind, Kind::full_node_storage);
+    EXPECT_GT(
+        plan.candidate_costs.stack_with_persistent_carry.weighted_cost,
+        plan.candidate_costs.full_node_storage.weighted_cost);
+}
+
+TEST(SampleConnectionStorageChooser, StackBudgetForcesExplicitPersistentStorage)
+{
+    using Kind = iv::RealtimeBufferStorageKind;
+
+    auto const retained = iv::choose_sample_connection_storage_plan(
+        {
+            .current_block_frames = 256,
+            .retained_frames = 32,
+            .channel_count = 2,
+            .value_size_bytes = 4,
+        },
+        iv::RealtimeStorageCostModel{.stack_budget_bytes = 2048});
+    EXPECT_EQ(retained.kind, Kind::full_node_storage);
+    EXPECT_FALSE(
+        retained.candidate_costs.stack_with_persistent_carry.legal);
+    EXPECT_TRUE(retained.candidate_costs.full_node_storage.legal);
+
+    auto const unretained = iv::choose_sample_connection_storage_plan(
+        {
+            .current_block_frames = 256,
+            .channel_count = 2,
+            .value_size_bytes = 4,
+        },
+        iv::RealtimeStorageCostModel{.stack_budget_bytes = 1024});
+    EXPECT_EQ(unretained.kind, Kind::full_node_storage);
+    EXPECT_FALSE(unretained.candidate_costs.transient_stack.legal);
+}
+
+TEST(EventConnectionStorageChooser, UsesByteCostsAndStackBudget)
+{
+    using Kind = iv::RealtimeBufferStorageKind;
+
+    auto const carry = iv::choose_event_connection_storage_plan({
+        .current_event_capacity = 1000,
+        .retained_event_capacity = 100,
+        .value_size_bytes = sizeof(iv::TimedEvent),
+    });
+    EXPECT_EQ(carry.kind, Kind::stack_with_persistent_carry);
+    EXPECT_EQ(
+        carry.candidate_costs.stack_with_persistent_carry.copied_bytes,
+        200u * sizeof(iv::TimedEvent));
+
+    auto const budgeted = iv::choose_event_connection_storage_plan(
+        {
+            .current_event_capacity = 1000,
+            .retained_event_capacity = 100,
+            .value_size_bytes = sizeof(iv::TimedEvent),
+        },
+        iv::RealtimeStorageCostModel{
+            .stack_budget_bytes = 1000u * sizeof(iv::TimedEvent),
+        });
+    EXPECT_EQ(budgeted.kind, Kind::full_node_storage);
+    EXPECT_FALSE(
+        budgeted.candidate_costs.stack_with_persistent_carry.legal);
+}
+
 } // namespace

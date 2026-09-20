@@ -633,6 +633,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                         .current_block_frames = kernel_block_size,
                         .retained_frames = home_feedback_retained_frames,
                         .channel_count = channel_count(*group.canonical_source_layout),
+                        .value_size_bytes = sizeof(Sample),
                     });
                 auto capacity = working_ring_capacity(
                     kernel_block_size, home_feedback_retained_frames);
@@ -1015,6 +1016,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     .current_block_frames = kernel_block_size,
                     .retained_frames = retained_frames,
                     .channel_count = channel_count(*group.canonical_source_layout),
+                    .value_size_bytes = sizeof(Sample),
                 });
             auto const writes_directly_to_feedback = has_feedback_home
                 && std::bit_cast<std::uint32_t>(
@@ -1509,6 +1511,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     .current_block_frames = kernel_block_size,
                     .retained_frames = feedback_retained_frames,
                     .channel_count = channel_count(connection.target_layout),
+                    .value_size_bytes = sizeof(Sample),
                 });
             if (feedback_storage.kind
                 == RealtimeBufferStorageKind::full_node_storage) {

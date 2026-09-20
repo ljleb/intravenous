@@ -330,9 +330,12 @@ Efficiency and observability work that does not change event semantics:
 - move retained fan-in away from its current separate canonical aggregate when
   a producer-home realization is legal and measurably cheaper;
 - surface the existing per-logical-output saturating overflow counters; and
-- extend the landed block-relative sample and rate-derived event crossover to
-  whole-group copy counts, stack footprint, persistent footprint, and addressing
-  cost. The fixed 64-event and 16-KiB thresholds have been removed.
+- **In progress:** the shared chooser now enumerates and scores all three
+  candidates from copied bytes, addressed bytes, stack footprint, persistent
+  footprint, and a hard per-candidate stack bound while preserving the old
+  crossover under default weights. Feed topology-specific operation counts into
+  those candidates and enforce the budget against the globally packed transient
+  arenas. The fixed 64-event and 16-KiB thresholds have been removed.
 
 #### Event-connection implementation map
 

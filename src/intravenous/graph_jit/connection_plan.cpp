@@ -1325,7 +1325,8 @@ ConnectionLiveIntervalPlan live_interval_for_event_group(
 
 void plan_sample_groups(
     ConnectionAnalysisPlan& plan,
-    std::size_t kernel_block_size)
+    std::size_t kernel_block_size,
+    RealtimeStorageCostModel const& cost_model)
 {
     auto source_port_for = [](SampleOutputChannelId channel) {
         return NodeBundlePortId{
@@ -1444,11 +1445,12 @@ void plan_sample_groups(
             .channel_count = group.canonical_source_layout
                 ? channel_count(*group.canonical_source_layout)
                 : channel_count(group.source_type),
+            .value_size_bytes = sizeof(Sample),
         };
         if (!group.has_realtime_connections) continue;
         if (!external) {
             group.storage_plan = choose_sample_connection_storage_plan(
-                group.storage_requirements);
+                group.storage_requirements, cost_model);
         }
 
         auto live = live_interval_for_sample_group(plan, group);
@@ -1501,7 +1503,8 @@ void plan_sample_groups(
 
 std::expected<void, std::string> plan_event_groups(
     ConnectionAnalysisPlan& plan,
-    std::size_t kernel_block_size)
+    std::size_t kernel_block_size,
+    RealtimeStorageCostModel const& cost_model)
 {
     for (std::size_t i = 0; i < plan.event_connections.size(); ++i) {
         auto& connection = plan.event_connections[i];
@@ -1612,12 +1615,13 @@ std::expected<void, std::string> plan_event_groups(
             .retained_window_samples = retained,
             .current_event_capacity = *current_event_capacity,
             .retained_event_capacity = *retained_event_capacity,
+            .value_size_bytes = sizeof(TimedEvent),
         };
         group.requires_invocation_aggregate = requires_invocation_aggregate;
         if (!group.has_realtime_connections) continue;
         if (!external) {
             group.storage_plan = choose_event_connection_storage_plan(
-                group.storage_requirements);
+                group.storage_requirements, cost_model);
         }
 
         auto live = live_interval_for_event_group(plan, group);
@@ -1673,7 +1677,8 @@ std::expected<void, std::string> plan_event_groups(
 
 std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
     ConfiguredGraph const& graph,
-    std::size_t kernel_block_size)
+    std::size_t kernel_block_size,
+    RealtimeStorageCostModel const& cost_model)
 {
     if (kernel_block_size == 0) {
         return std::unexpected(
@@ -1708,8 +1713,8 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto latency = plan_sample_latency_compensation(plan); !latency) {
         return std::unexpected(std::move(latency.error()));
     }
-    plan_sample_groups(plan, kernel_block_size);
-    if (auto events = plan_event_groups(plan, kernel_block_size); !events) {
+    plan_sample_groups(plan, kernel_block_size, cost_model);
+    if (auto events = plan_event_groups(plan, kernel_block_size, cost_model); !events) {
         return std::unexpected(std::move(events.error()));
     }
     return plan;

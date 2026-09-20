@@ -279,9 +279,13 @@ The storage-model and physical-residence refactors have landed:
 - ordinary event capacities start from
   `ceil(max_events_per_sample * temporal_span)` and are rounded to a power of
   two;
-- the fixed 64-event and 16-KiB thresholds are gone. The initial sample policy
-  compares retained frames with block frames, and the event policy compares
-  rate-derived retained capacity with rate-derived current-block capacity;
+- the fixed 64-event and 16-KiB thresholds are gone. The shared pure chooser
+  now enumerates transient, carry, and full-persistent candidates, exposes their
+  copied bytes, ring-addressed bytes, stack footprint, persistent footprint, and
+  weighted cost, and accepts candidate-specific whole-group copy counts plus a
+  hard stack-budget constraint. Its default weights preserve the landed
+  block-relative/rate-derived crossover until topology-specific costs justify an
+  earlier full-persistent choice;
 - invalid event rate/span capacities fail connection planning immediately;
 - ordinary full persistent rings are fixed at compile time from the producer
   rate and `history + block + latency`; no current event strategy grows a ring
@@ -305,9 +309,10 @@ The storage-model and physical-residence refactors have landed:
   feedback can remain transient. Event capacities are rate-times-live-span rather
   than `source_capacity * (loop_extra_latency + 1)`.
 
-The remaining efficiency work is to enforce a deliberate compile-time stack
-budget and extend selection from the landed block-relative baseline to complete
-whole-group copy and footprint costs.
+The remaining efficiency work is to feed the chooser complete topology-specific
+operation counts (especially retained event fan-in producer-home alternatives),
+then enforce the stack budget against the globally packed sample/event arenas
+rather than only individual candidate footprints.
 
 The heuristic may consider:
 

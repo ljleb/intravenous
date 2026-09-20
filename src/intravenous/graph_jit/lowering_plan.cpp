@@ -2347,6 +2347,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
                 .retained_window_samples = retained_window_samples,
                 .current_event_capacity = *current_event_count,
                 .retained_event_capacity = *retained_event_count,
+                .value_size_bytes = sizeof(TimedEvent),
             });
 
         // Multiple detached branches from one source with the same authored
