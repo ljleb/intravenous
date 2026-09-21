@@ -10,6 +10,10 @@ inline constexpr char event_carry_restore_symbol[] =
     "iv_graph_jit_restore_event_carry";
 inline constexpr char event_carry_commit_symbol[] =
     "iv_graph_jit_commit_event_carry";
+inline constexpr char ordered_event_carry_restore_symbol[] =
+    "iv_graph_jit_restore_ordered_event_carry";
+inline constexpr char ordered_event_carry_commit_symbol[] =
+    "iv_graph_jit_commit_ordered_event_carry";
 inline constexpr char event_persistent_ring_prune_symbol[] =
     "iv_graph_jit_prune_event_persistent_ring";
 inline constexpr char event_feedback_append_symbol[] =
@@ -27,9 +31,10 @@ inline constexpr char event_feedback_append_sequence_ring_source_symbol[] =
 #define IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT __attribute__((visibility("default")))
 #endif
 
-// Raw bounded-sequence helpers used by generated project code. The persistent
-// carry stores only TimedEvent payloads plus its count word; no EventPort or
-// compatibility runtime objects cross root invocations.
+// Raw bounded-sequence helpers used by generated project code. An ordinary
+// persistent carry stores TimedEvent payloads plus its count word; staged
+// multi-region fan-in additionally stores one compiler-private source ordinal
+// per event. No EventPort or compatibility runtime objects cross invocations.
 extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT std::size_t
 iv_graph_jit_restore_event_carry(
     void const* carry_events,
@@ -46,6 +51,31 @@ iv_graph_jit_commit_event_carry(
     std::size_t retained_history_samples,
     std::size_t retained_latency_samples,
     void* carry_events,
+    std::size_t carry_capacity) noexcept;
+
+// Staged fan-in carry preserves the compiler-private semantic source ordinal
+// stored beside each event. The payload array remains the ordinary TimedEvent
+// sequence consumed by authored ports.
+extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT std::size_t
+iv_graph_jit_restore_ordered_event_carry(
+    void const* carry_events,
+    std::size_t const* carry_source_ordinals,
+    std::size_t carry_count,
+    void* working_events,
+    std::size_t* working_source_ordinals,
+    std::size_t working_capacity) noexcept;
+
+extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT std::size_t
+iv_graph_jit_commit_ordered_event_carry(
+    void const* working_events,
+    std::size_t const* working_source_ordinals,
+    std::size_t working_count,
+    std::size_t sample_index,
+    std::size_t block_size,
+    std::size_t retained_history_samples,
+    std::size_t retained_latency_samples,
+    void* carry_events,
+    std::size_t* carry_source_ordinals,
     std::size_t carry_capacity) noexcept;
 
 // Advance only the persistent ring's oldest retained index. Producer and

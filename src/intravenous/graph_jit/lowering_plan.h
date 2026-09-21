@@ -161,6 +161,12 @@ struct EventRepresentationPlan {
     std::size_t read_index_relative_offset = 0;
     std::size_t write_index_relative_offset = 0;
     std::size_t events_relative_offset = 0;
+    // Staged fan-in may merge semantic sources in execution-region order rather
+    // than source order. Its canonical representation carries one compiler-only
+    // source ordinal beside each TimedEvent so later stages can preserve stable
+    // equal-time ordering. Authored port facades still see only TimedEvent.
+    bool has_source_ordinals = false;
+    std::size_t source_ordinals_relative_offset = 0;
     std::size_t size_bytes = 0;
     std::size_t alignment = 1;
     std::size_t transient_allocation = no_event_transient_allocation;
@@ -275,6 +281,10 @@ struct EventMergePlan {
     // plus semantic source 0 as the existing target sequence, then merges only
     // the remaining producer-local streams.
     std::vector<std::size_t> source_representations{};
+    // Empty for ordinary stable merges. Staged fan-in supplies one semantic
+    // source ordinal per source representation; the target representation then
+    // owns a parallel ordinal sidecar used only by compiler runtime helpers.
+    std::vector<std::size_t> source_ordinals{};
     std::size_t target_representation = 0;
     EventOperationScope scope{};
     bool target_is_semantic_source = false;

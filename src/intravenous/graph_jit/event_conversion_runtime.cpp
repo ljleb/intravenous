@@ -115,6 +115,74 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequence(
     return target_read_index + target_count + bounded_source_count;
 }
 
+extern "C" std::size_t iv_graph_jit_merge_ordered_event_sequence(
+    void* target_events,
+    std::size_t* target_source_ordinals,
+    std::size_t target_capacity,
+    std::size_t target_read_index,
+    std::size_t target_write_index,
+    void const* source_events,
+    std::size_t source_capacity,
+    std::size_t source_count,
+    std::size_t source_ordinal) noexcept
+{
+    if (target_events == nullptr || target_source_ordinals == nullptr
+        || source_events == nullptr
+        || (target_capacity != 0 && !is_power_of_2(target_capacity))) {
+        return target_write_index;
+    }
+    if (target_write_index < target_read_index || target_capacity == 0) {
+        return target_write_index;
+    }
+
+    auto const target_count = std::min(
+        target_write_index - target_read_index, target_capacity);
+    auto const bounded_source_count = std::min(source_count, source_capacity);
+    if (bounded_source_count > target_capacity - target_count) {
+        return target_write_index;
+    }
+
+    auto* target = static_cast<TimedEvent*>(target_events);
+    auto const* source = static_cast<TimedEvent const*>(source_events);
+    auto const mask = target_capacity - 1;
+    auto target_remaining = target_count;
+    auto source_remaining = bounded_source_count;
+    auto output_remaining = target_count + bounded_source_count;
+
+    while (output_remaining != 0) {
+        bool take_target = false;
+        if (source_remaining == 0) {
+            take_target = true;
+        } else if (target_remaining != 0) {
+            auto const target_index =
+                (target_read_index + target_remaining - 1) & mask;
+            auto const& target_event = target[target_index];
+            auto const& source_event = source[source_remaining - 1];
+            auto const target_ordinal = target_source_ordinals[target_index];
+            take_target = target_event.time > source_event.time
+                || (target_event.time == source_event.time
+                    && target_ordinal > source_ordinal);
+        }
+
+        auto const output_index =
+            (target_read_index + output_remaining - 1) & mask;
+        if (take_target) {
+            auto const input_index =
+                (target_read_index + target_remaining - 1) & mask;
+            target[output_index] = target[input_index];
+            target_source_ordinals[output_index] =
+                target_source_ordinals[input_index];
+            --target_remaining;
+        } else {
+            target[output_index] = source[source_remaining - 1];
+            target_source_ordinals[output_index] = source_ordinal;
+            --source_remaining;
+        }
+        --output_remaining;
+    }
+    return target_read_index + target_count + bounded_source_count;
+}
+
 
 extern "C" std::size_t iv_graph_jit_merge_event_sequences_into_home(
     void* target_events,

@@ -353,7 +353,14 @@ The storage-model and physical-residence refactors have landed:
   delayed feedback stream accounts once for producer-to-feedback writes, exact
   compact-tail restore/commit work, persistent-ring addressing, and any shared
   consumer conversion. Fan-in producer-home and separate-target alternatives
-  receive the same downstream operation costs before the final choice.
+  receive the same downstream operation costs before the final choice;
+- event fan-in whose producers span execution regions is staged into one
+  canonical aggregate. Because execution order need not match semantic source
+  order, only these canonical staged aggregates carry a fixed-capacity parallel
+  source-ordinal array. Merge, compact-carry, and persistent-ring operations
+  preserve that compiler-private metadata; `InputPort` and `OutputPort` still
+  expose only the ordinary `TimedEvent` payload buffer and require no storage
+  dispatch.
 
 The remaining cost-model work is primarily alias-versus-materialize comparison,
 weight calibration, and making stack-pressure promotion choose more selectively

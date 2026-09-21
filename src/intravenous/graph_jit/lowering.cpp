@@ -2140,7 +2140,8 @@ std::expected<void, std::string> emit_event_carry_operation(
     auto const& persistent =
         event_ports.representations[carry.persistent_representation];
     if (working.persistent || !persistent.persistent
-        || working.type != persistent.type) {
+        || working.type != persistent.type
+        || working.has_source_ordinals != persistent.has_source_ordinals) {
         return std::unexpected(
             "GraphJit event carry has inconsistent physical representations");
     }
@@ -2177,26 +2178,62 @@ std::expected<void, std::string> emit_event_carry_operation(
         persistent.events_relative_offset,
         restore ? "event.carry.restore.persist.events"
                 : "event.carry.commit.persist.events");
+    llvm::Value* working_source_ordinals = nullptr;
+    llvm::Value* persistent_source_ordinals = nullptr;
+    if (working.has_source_ordinals) {
+        working_source_ordinals = byte_offset_pointer(
+            builder,
+            working_base,
+            working.source_ordinals_relative_offset,
+            restore ? "event.carry.restore.working.ordinals"
+                    : "event.carry.commit.working.ordinals");
+        persistent_source_ordinals = byte_offset_pointer(
+            builder,
+            persistent_base,
+            persistent.source_ordinals_relative_offset,
+            restore ? "event.carry.restore.persist.ordinals"
+                    : "event.carry.commit.persist.ordinals");
+    }
 
     if (restore) {
         auto* persistent_count = builder.CreateLoad(
             size_type,
             persistent_count_pointer,
             "event.carry.restore.persist.count.value");
-        auto* helper_type = llvm::FunctionType::get(
-            size_type,
-            {pointer_type, size_type, pointer_type, size_type},
-            false);
         auto* module = builder.GetInsertBlock()->getModule();
-        auto helper = module->getOrInsertFunction(
-            detail::event_carry_restore_symbol, helper_type);
-        auto* restored_count = builder.CreateCall(
-            helper,
-            {persistent_events,
-             persistent_count,
-             working_events,
-             llvm::ConstantInt::get(size_type, working.event_capacity)},
-            "event.carry.restore.count");
+        llvm::Value* restored_count = nullptr;
+        if (working.has_source_ordinals) {
+            auto* helper_type = llvm::FunctionType::get(
+                size_type,
+                {pointer_type, pointer_type, size_type, pointer_type,
+                 pointer_type, size_type},
+                false);
+            auto helper = module->getOrInsertFunction(
+                detail::ordered_event_carry_restore_symbol, helper_type);
+            restored_count = builder.CreateCall(
+                helper,
+                {persistent_events,
+                 persistent_source_ordinals,
+                 persistent_count,
+                 working_events,
+                 working_source_ordinals,
+                 llvm::ConstantInt::get(size_type, working.event_capacity)},
+                "event.carry.restore.count");
+        } else {
+            auto* helper_type = llvm::FunctionType::get(
+                size_type,
+                {pointer_type, size_type, pointer_type, size_type},
+                false);
+            auto helper = module->getOrInsertFunction(
+                detail::event_carry_restore_symbol, helper_type);
+            restored_count = builder.CreateCall(
+                helper,
+                {persistent_events,
+                 persistent_count,
+                 working_events,
+                 llvm::ConstantInt::get(size_type, working.event_capacity)},
+                "event.carry.restore.count");
+        }
         builder.CreateStore(restored_count, working_count_pointer);
         return {};
     }
@@ -2205,27 +2242,53 @@ std::expected<void, std::string> emit_event_carry_operation(
         size_type,
         working_count_pointer,
         "event.carry.commit.working.count.value");
-    auto* helper_type = llvm::FunctionType::get(
-        size_type,
-        {pointer_type, size_type, size_type, size_type, size_type, size_type,
-         pointer_type, size_type},
-        false);
     auto* module = builder.GetInsertBlock()->getModule();
-    auto helper = module->getOrInsertFunction(
-        detail::event_carry_commit_symbol, helper_type);
-    auto* committed_count = builder.CreateCall(
-        helper,
-        {working_events,
-         working_count,
-         sample_index,
-         block_size,
-         llvm::ConstantInt::get(
-             size_type, carry.retained_history_samples),
-         llvm::ConstantInt::get(
-             size_type, carry.retained_latency_samples),
-         persistent_events,
-         llvm::ConstantInt::get(size_type, persistent.event_capacity)},
-        "event.carry.commit.count");
+    llvm::Value* committed_count = nullptr;
+    if (working.has_source_ordinals) {
+        auto* helper_type = llvm::FunctionType::get(
+            size_type,
+            {pointer_type, pointer_type, size_type, size_type, size_type,
+             size_type, size_type, pointer_type, pointer_type, size_type},
+            false);
+        auto helper = module->getOrInsertFunction(
+            detail::ordered_event_carry_commit_symbol, helper_type);
+        committed_count = builder.CreateCall(
+            helper,
+            {working_events,
+             working_source_ordinals,
+             working_count,
+             sample_index,
+             block_size,
+             llvm::ConstantInt::get(
+                 size_type, carry.retained_history_samples),
+             llvm::ConstantInt::get(
+                 size_type, carry.retained_latency_samples),
+             persistent_events,
+             persistent_source_ordinals,
+             llvm::ConstantInt::get(size_type, persistent.event_capacity)},
+            "event.carry.commit.count");
+    } else {
+        auto* helper_type = llvm::FunctionType::get(
+            size_type,
+            {pointer_type, size_type, size_type, size_type, size_type, size_type,
+             pointer_type, size_type},
+            false);
+        auto helper = module->getOrInsertFunction(
+            detail::event_carry_commit_symbol, helper_type);
+        committed_count = builder.CreateCall(
+            helper,
+            {working_events,
+             working_count,
+             sample_index,
+             block_size,
+             llvm::ConstantInt::get(
+                 size_type, carry.retained_history_samples),
+             llvm::ConstantInt::get(
+                 size_type, carry.retained_latency_samples),
+             persistent_events,
+             llvm::ConstantInt::get(size_type, persistent.event_capacity)},
+            "event.carry.commit.count");
+    }
     builder.CreateStore(committed_count, persistent_count_pointer);
     return {};
 }
@@ -2592,6 +2655,14 @@ std::expected<void, std::string> emit_event_merge(
     }
     auto const& target =
         event_ports.representations[merge.target_representation];
+    auto const ordered_merge = target.has_source_ordinals;
+    if ((ordered_merge
+            && merge.source_ordinals.size()
+                != merge.source_representations.size())
+        || (!ordered_merge && !merge.source_ordinals.empty())) {
+        return std::unexpected(
+            "GraphJit staged event merge has inconsistent source ordinals");
+    }
     if ((target.event_capacity != 0
             && !is_power_of_2(target.event_capacity))) {
         return std::unexpected(
@@ -2606,6 +2677,10 @@ std::expected<void, std::string> emit_event_merge(
         return std::unexpected(
             "GraphJit transient event producer-home merge has inconsistent target storage");
     }
+    if (merge.target_is_semantic_source && ordered_merge) {
+        return std::unexpected(
+            "GraphJit staged event merge cannot use producer-home storage");
+    }
 
     auto& context = builder.getContext();
     auto* size_type = llvm::IntegerType::get(
@@ -2618,6 +2693,14 @@ std::expected<void, std::string> emit_event_merge(
         target_base,
         target.events_relative_offset,
         "event.merge.target.events");
+    llvm::Value* target_source_ordinals = nullptr;
+    if (ordered_merge) {
+        target_source_ordinals = byte_offset_pointer(
+            builder,
+            target_base,
+            target.source_ordinals_relative_offset,
+            "event.merge.target.ordinals");
+    }
 
     llvm::Value* target_read = llvm::ConstantInt::get(size_type, 0);
     llvm::Value* target_write = llvm::ConstantInt::get(size_type, 0);
@@ -2658,7 +2741,8 @@ std::expected<void, std::string> emit_event_merge(
                 "GraphJit event merge references a missing source representation");
         }
         auto const& source = event_ports.representations[representation_index];
-        if (source.persistent_ring || source.type != target.type) {
+        if (source.persistent_ring || source.type != target.type
+            || source.has_source_ordinals) {
             return std::unexpected(
                 "GraphJit event merge source has inconsistent physical storage");
         }
@@ -2733,14 +2817,7 @@ std::expected<void, std::string> emit_event_merge(
         return {};
     }
 
-    auto* helper_type = llvm::FunctionType::get(
-        size_type,
-        {pointer_type, size_type, size_type, size_type,
-         pointer_type, size_type, size_type},
-        false);
     auto* module = builder.GetInsertBlock()->getModule();
-    auto helper = module->getOrInsertFunction(
-        detail::event_sequence_merge_symbol, helper_type);
 
     for (std::size_t source_index = 0;
          source_index < merge.source_representations.size(); ++source_index) {
@@ -2762,16 +2839,46 @@ std::expected<void, std::string> emit_event_merge(
             realtime_storage.event_representations[representation_index],
             (*source)->events_relative_offset,
             "event.merge.source.events." + std::to_string(source_index));
-        target_write = builder.CreateCall(
-            helper,
-            {target_events,
-             llvm::ConstantInt::get(size_type, target.event_capacity),
-             target_read,
-             target_write,
-             source_events,
-             llvm::ConstantInt::get(size_type, (*source)->event_capacity),
-             source_count},
-            "event.merge.write." + std::to_string(source_index));
+        if (ordered_merge) {
+            auto* helper_type = llvm::FunctionType::get(
+                size_type,
+                {pointer_type, pointer_type, size_type, size_type, size_type,
+                 pointer_type, size_type, size_type, size_type},
+                false);
+            auto helper = module->getOrInsertFunction(
+                detail::ordered_event_sequence_merge_symbol, helper_type);
+            target_write = builder.CreateCall(
+                helper,
+                {target_events,
+                 target_source_ordinals,
+                 llvm::ConstantInt::get(size_type, target.event_capacity),
+                 target_read,
+                 target_write,
+                 source_events,
+                 llvm::ConstantInt::get(size_type, (*source)->event_capacity),
+                 source_count,
+                 llvm::ConstantInt::get(
+                     size_type, merge.source_ordinals[source_index])},
+                "event.merge.ordered.write." + std::to_string(source_index));
+        } else {
+            auto* helper_type = llvm::FunctionType::get(
+                size_type,
+                {pointer_type, size_type, size_type, size_type,
+                 pointer_type, size_type, size_type},
+                false);
+            auto helper = module->getOrInsertFunction(
+                detail::event_sequence_merge_symbol, helper_type);
+            target_write = builder.CreateCall(
+                helper,
+                {target_events,
+                 llvm::ConstantInt::get(size_type, target.event_capacity),
+                 target_read,
+                 target_write,
+                 source_events,
+                 llvm::ConstantInt::get(size_type, (*source)->event_capacity),
+                 source_count},
+                "event.merge.write." + std::to_string(source_index));
+        }
     }
     builder.CreateStore(target_write, target_count_or_write_pointer);
     return {};

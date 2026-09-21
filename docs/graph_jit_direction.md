@@ -303,7 +303,7 @@ The current internal realtime connection surface is intentionally asymmetric:
 | Cyclic producer to acyclic consumer | Implemented | Materialize once at SCC exit from the complete root-call aggregate. Exact type, non-expanding conversion, outbound target history, and authored source latency compose with compact carry or a canonical persistent ring. |
 | Acyclic producer entering a cyclic region | Implemented | Exact-type consumers read the completed root-call aggregate directly. Converted ingress is materialized once at target-region entry. |
 | Edge spanning distinct cyclic regions | Implemented | The source aggregate remains live across regions. Conversion runs at source-region exit and the downstream region reads its absolute-time slices. |
-| Multi-producer fan-in touching a cyclic region | Implemented when producers are acyclic or share one SCC | Acyclic producers merge once before region entry. Same-SCC producers write bounded locals and merge in semantic source order after the last producer on every slice, preserving the retained aggregate. Producers spanning multiple regions still require staged aggregation. |
+| Multi-producer fan-in touching a cyclic region | Implemented | Acyclic producers merge once after their completed invocation; each cyclic-region stage merges bounded producer-local streams after that region's final producer on every slice. A compiler-private source-ordinal sidecar on the canonical aggregate preserves semantic equal-time ordering even when execution-region order differs from source order. Compact carry and persistent rings retain the ordinals with their events. |
 | One derived materialization consumed both inside the source SCC and downstream | Implemented | Representation sharing is keyed by conversion and execution scope. The in-SCC and SCC-exit branches receive distinct scope-correct derived representations. |
 | Mixed realtime/compiled or compiled-only event access | Capability-gated separately | This belongs to the compiled-access executor rather than another realtime storage kind. |
 | Unconnected primitive event port | Implemented for realtime ports | Inputs receive a reset zero-capacity sequence. Outputs receive a bounded sink sized from `max_events_per_index`, history, latency, and root block size, with normal overflow telemetry. |
@@ -316,9 +316,7 @@ for one universal event buffer.
 
 Remaining semantic capability work:
 
-1. Stage fan-in whose semantic producers themselves span multiple execution
-   regions, especially a mixture of already-completed and same-SCC producers.
-2. Implement mixed realtime/compiled and compiled-only event access through the
+1. Implement mixed realtime/compiled and compiled-only event access through the
    compiled-access plan.
 
 Efficiency and observability work that does not change event semantics:
@@ -536,7 +534,12 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     producer completes. Retained acyclic fan-in may instead select semantic
     source 0 as the canonical producer-home when whole-group costing and authored
     timing make that realization legal. Retained aggregate storage, conversion,
-    and fanout all operate downstream of the merge.
+    and fanout all operate downstream of the merge. Fan-in spanning several
+    execution regions instead stages producer-local streams into one canonical
+    aggregate as each region makes them available. Its compiler-private
+    source-ordinal sidecar lets later stages insert equal-time events at their
+    semantic source position while authored ports continue to see an ordinary
+    contiguous `TimedEvent` sequence.
     Implicit conversions are intentionally non-expanding: one source event may
     produce zero or one target event, never synthesize additional events.
 11. **Event retention.** **Compact carry and persistent-ring identity retention landed.**
@@ -611,7 +614,11 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
 17. **Optimization refinements.** Verify generated hot-path assembly and then improve
     liveness reuse, storage cost choices, fusion/SSA direct forwarding, vectorization,
     and target-specific optimization only after the semantic compiler surface is
-    complete.
+    complete. Add `tick_block_batch` here as a schedule optimization: group concrete
+    nodes sharing one implementation/type when topology permits, without changing
+    dependency order, SCC slice boundaries, port windows, or per-instance state.
+    Batch formation belongs after semantic scheduling and physical port planning are
+    stable; it consumes those facts rather than introducing a second execution model.
 
 The root-build transaction remains:
 

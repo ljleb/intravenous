@@ -442,9 +442,17 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         if (representation.count_relative_offset > representation.size_bytes
             || representation.read_index_relative_offset > representation.size_bytes
             || representation.write_index_relative_offset > representation.size_bytes
-            || representation.events_relative_offset > representation.size_bytes) {
+            || representation.events_relative_offset > representation.size_bytes
+            || (representation.has_source_ordinals
+                && representation.source_ordinals_relative_offset
+                    > representation.size_bytes)) {
             return std::unexpected(
                 "GraphJit event storage contains an invalid relative field offset");
+        }
+        if (!representation.has_source_ordinals
+            && representation.source_ordinals_relative_offset != 0) {
+            return std::unexpected(
+                "GraphJit ordinary event storage unexpectedly has source ordinals");
         }
         if (representation.has_producer_overflow_counter) {
             if (!representation.overflow_region.valid()
@@ -1525,7 +1533,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         bool producer_telemetry = false,
         bool persistent = false,
         std::string migration_identity = {},
-        bool persistent_ring = false)
+        bool persistent_ring = false,
+        bool source_ordinals = false)
         -> std::expected<std::size_t, std::string> {
         if (persistent_ring && !persistent) {
             return std::unexpected(
@@ -1547,6 +1556,23 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             return std::unexpected(
                 "GraphJit event storage size overflows size_t");
         }
+        auto const events_end = *events_relative + capacity * sizeof(TimedEvent);
+        std::size_t source_ordinals_relative = 0;
+        auto size_bytes = events_end;
+        if (source_ordinals) {
+            auto const ordinals_relative = align_up(
+                events_end, alignof(std::size_t));
+            if (!ordinals_relative
+                || capacity > (std::numeric_limits<std::size_t>::max()
+                        - *ordinals_relative) / sizeof(std::size_t)) {
+                return std::unexpected(
+                    "GraphJit event source-ordinal storage size overflows size_t");
+            }
+            source_ordinals_relative = *ordinals_relative;
+            size_bytes = source_ordinals_relative
+                + capacity * sizeof(std::size_t);
+            alignment = std::max(alignment, alignof(std::size_t));
+        }
         auto const representation_index = plan.representations.size();
         plan.representations.push_back(EventRepresentationPlan{
             .producer_group_index = group_index,
@@ -1560,7 +1586,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             .read_index_relative_offset = read_index_relative,
             .write_index_relative_offset = write_index_relative,
             .events_relative_offset = *events_relative,
-            .size_bytes = *events_relative + capacity * sizeof(TimedEvent),
+            .has_source_ordinals = source_ordinals,
+            .source_ordinals_relative_offset = source_ordinals_relative,
+            .size_bytes = size_bytes,
             .alignment = alignment,
         });
         return representation_index;
@@ -1786,11 +1814,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 }
                 cyclic_source_region = *region_index;
             }
-            if (incompatible_cyclic_sources
-                || (cyclic_source_region && has_acyclic_source)) {
-                return std::unexpected(
-                    "GraphJit event fan-in producers must currently share one cyclic region or all precede it");
-            }
+            auto const staged_fan_in = incompatible_cyclic_sources
+                || (cyclic_source_region && has_acyclic_source);
 
             // Producer streams are contractually time-sorted, but independent
             // producers still cannot append concurrently into one sequence
@@ -1807,6 +1832,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 EventOutputConfig config{};
                 std::size_t capacity = 0;
                 std::size_t aggregate_event_bound = 0;
+                std::optional<std::size_t> cyclic_region{};
             };
             std::vector<ValidatedSource> validated_sources;
             validated_sources.reserve(group.sources.size());
@@ -1842,11 +1868,18 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 }
                 auto const source_history = realtime_history(source);
                 auto const source_latency = realtime_latency(source);
+                auto const source_region = region_index_for_bundle(
+                    source_id.bundle);
+                auto const source_cyclic_region = source_region
+                        && *source_region < connections.schedule.regions.size()
+                        && connections.schedule.regions[*source_region].cyclic
+                    ? source_region
+                    : std::optional<std::size_t>{};
                 auto producer_window_samples = input.specialization.block_size;
                 auto aggregate_window_samples = input.specialization.block_size;
-                if (cyclic_source_region) {
+                if (source_cyclic_region) {
                     auto const quantum = connections.schedule.regions[
-                        *cyclic_source_region].maximum_block_size;
+                        *source_cyclic_region].maximum_block_size;
                     if (quantum == 0) {
                         return std::unexpected(
                             "GraphJit event fan-in source region has no SCC quantum");
@@ -1880,7 +1913,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 producer_window_samples += source_history + source_latency;
                 auto const capacity = event_sequence_capacity_for_sample_span(
                     source.max_events_per_index, producer_window_samples);
-                auto const aggregate_event_bound = cyclic_source_region
+                auto const aggregate_event_bound = source_cyclic_region
                     ? event_count_for_sample_span(
                         source.max_events_per_index,
                         aggregate_window_samples)
@@ -1916,6 +1949,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     .config = source,
                     .capacity = *capacity,
                     .aggregate_event_bound = *aggregate_event_bound,
+                    .cyclic_region = source_cyclic_region,
                 });
             }
             if (observed_rate != group.max_events_per_index) {
@@ -1937,6 +1971,455 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     std::max(connection.source_history, connection.target_history));
                 retained_latency = std::max(
                     retained_latency, connection.source_latency);
+            }
+
+            if (staged_fan_in) {
+                struct FanInStage {
+                    std::optional<std::size_t> cyclic_region{};
+                    std::size_t execution_position = 0;
+                    std::vector<std::size_t> source_indices{};
+                };
+                std::vector<FanInStage> stages;
+                for (std::size_t source_index = 0;
+                     source_index < validated_sources.size(); ++source_index) {
+                    auto const& source = validated_sources[source_index];
+                    auto stage = source.cyclic_region
+                        ? std::ranges::find_if(
+                            stages,
+                            [&](FanInStage const& candidate) {
+                                return candidate.cyclic_region
+                                    == source.cyclic_region;
+                            })
+                        : stages.end();
+                    if (stage == stages.end()) {
+                        stages.push_back(FanInStage{
+                            .cyclic_region = source.cyclic_region,
+                            .execution_position = source.execution_position,
+                            .source_indices = {source_index},
+                        });
+                    } else {
+                        stage->execution_position = std::max(
+                            stage->execution_position,
+                            source.execution_position);
+                        stage->source_indices.push_back(source_index);
+                    }
+                }
+                std::ranges::sort(
+                    stages,
+                    {},
+                    &FanInStage::execution_position);
+                if (stages.empty()) {
+                    return std::unexpected(
+                        "GraphJit staged event fan-in has no execution stages");
+                }
+
+                std::size_t staged_local_stack = 0;
+                for (auto const& source : validated_sources) {
+                    auto const capacity = source.cyclic_region
+                        ? source.capacity
+                        : source.aggregate_event_bound;
+                    staged_local_stack = iv::detail::saturating_add(
+                        staged_local_stack, capacity);
+                }
+
+                struct StagedMergeCost {
+                    std::size_t writes = 0;
+                    std::size_t ring_accesses = 0;
+                };
+                auto staged_merge_cost = [&](std::size_t initial_values) {
+                    auto target_values = initial_values;
+                    StagedMergeCost result;
+                    for (auto const& stage : stages) {
+                        std::size_t executions = 1;
+                        if (stage.cyclic_region) {
+                            auto const quantum = connections.schedule.regions[
+                                *stage.cyclic_region].maximum_block_size;
+                            executions = input.specialization.block_size / quantum
+                                + (input.specialization.block_size % quantum != 0);
+                        }
+                        std::vector<std::size_t> remaining;
+                        remaining.reserve(stage.source_indices.size());
+                        for (auto const source_index : stage.source_indices) {
+                            remaining.push_back(
+                                validated_sources[source_index]
+                                    .aggregate_event_bound);
+                        }
+                        for (std::size_t execution = 0;
+                             execution < executions; ++execution) {
+                            for (std::size_t stage_source = 0;
+                                 stage_source < stage.source_indices.size();
+                                 ++stage_source) {
+                                auto const& source = validated_sources[
+                                    stage.source_indices[stage_source]];
+                                auto const produced = std::min(
+                                    source.cyclic_region
+                                        ? source.capacity
+                                        : source.aggregate_event_bound,
+                                    remaining[stage_source]);
+                                remaining[stage_source] -= produced;
+                                auto const previous_target = target_values;
+                                target_values = iv::detail::saturating_add(
+                                    target_values, produced);
+                                result.writes = iv::detail::saturating_add(
+                                    result.writes, target_values);
+                                result.ring_accesses = iv::detail::saturating_add(
+                                    result.ring_accesses,
+                                    iv::detail::saturating_add(
+                                        previous_target, target_values));
+                            }
+                        }
+                    }
+                    return result;
+                };
+
+                auto const retained_values =
+                    group.storage_requirements.retained_event_capacity;
+                auto const transient_merge = staged_merge_cost(0);
+                auto const retained_merge = staged_merge_cost(retained_values);
+                auto staged_requirements = group.storage_requirements;
+                staged_requirements.operations = RealtimeStorageOperationCounts{
+                    .transient_extra_copied_values = transient_merge.writes,
+                    .carry_extra_copied_values = retained_merge.writes,
+                    .full_extra_copied_values = retained_merge.writes,
+                    .full_ring_addressed_values =
+                        retained_merge.ring_accesses,
+                    .transient_extra_stack_values = staged_local_stack,
+                    .carry_extra_stack_values = staged_local_stack,
+                    .full_extra_stack_values = staged_local_stack,
+                };
+                group_cost_alternatives[group_index] = EventGroupCostAlternatives{
+                    .separate = staged_requirements,
+                };
+
+                auto selected_plan = decisions
+                    ? decisions->producer_groups[group_index].storage
+                    : choose_event_connection_storage_plan(
+                        staged_requirements, cost_model);
+                if (decisions
+                    && decisions->producer_groups[group_index]
+                        .producer_home_source_index) {
+                    return std::unexpected(
+                        "GraphJit staged event fan-in cannot use producer-home storage");
+                }
+                storage_kind = selected_plan.kind;
+                plan.producer_group_storage_plans[group_index] = selected_plan;
+                plan.producer_home_source_indices[group_index].reset();
+                compact_carry = storage_kind
+                    == RealtimeBufferStorageKind::stack_with_persistent_carry;
+                persistent_ring = storage_kind
+                    == RealtimeBufferStorageKind::full_node_storage;
+                retained_storage = compact_carry || persistent_ring;
+                aggregate_sequence = true;
+
+                std::size_t carry_capacity = 0;
+                std::size_t canonical_capacity = 0;
+                if (compact_carry || persistent_ring) {
+                    if (retained_history
+                            > std::numeric_limits<std::size_t>::max()
+                                - retained_latency) {
+                        return std::unexpected(
+                            "GraphJit staged event fan-in retained window overflows size_t");
+                    }
+                    auto retained = event_sequence_capacity_for_sample_span(
+                        group.max_events_per_index,
+                        retained_history + retained_latency);
+                    if (!retained
+                        || *retained
+                            > std::numeric_limits<std::size_t>::max()
+                                - total_local_capacity) {
+                        return std::unexpected(
+                            "GraphJit staged event fan-in retained capacity is not representable");
+                    }
+                    if (compact_carry) carry_capacity = *retained;
+                    auto rounded = rounded_event_capacity(
+                        total_local_capacity + *retained);
+                    if (!rounded) {
+                        return std::unexpected(std::move(rounded.error()));
+                    }
+                    canonical_capacity = *rounded;
+                } else {
+                    auto rounded = rounded_event_capacity(total_local_capacity);
+                    if (!rounded) {
+                        return std::unexpected(std::move(rounded.error()));
+                    }
+                    canonical_capacity = *rounded;
+                }
+
+                auto const identity_base = event_group_identity(group);
+                auto canonical = append_representation(
+                    group_index,
+                    group.source_type,
+                    canonical_capacity,
+                    false,
+                    persistent_ring,
+                    persistent_ring
+                        ? identity_base
+                            + ":kind=ordered_persistent_ring:history="
+                            + std::to_string(retained_history) + ":latency="
+                            + std::to_string(retained_latency) + ":capacity="
+                            + std::to_string(canonical_capacity)
+                        : std::string{},
+                    persistent_ring,
+                    true);
+                if (!canonical) {
+                    return std::unexpected(std::move(canonical.error()));
+                }
+                plan.producer_group_representations[group_index] = *canonical;
+
+                auto const first_scope = stages.front().cyclic_region
+                    ? region_scope(
+                        *stages.front().cyclic_region,
+                        EventOperationPhase::before)
+                    : primitive_scope(
+                        stages.front().execution_position,
+                        EventOperationPhase::before);
+                auto const last_scope = stages.back().cyclic_region
+                    ? region_scope(
+                        *stages.back().cyclic_region,
+                        EventOperationPhase::after)
+                    : primitive_scope(
+                        stages.back().execution_position,
+                        EventOperationPhase::after);
+
+                if (compact_carry) {
+                    auto persistent = append_representation(
+                        group_index,
+                        group.source_type,
+                        carry_capacity,
+                        false,
+                        true,
+                        identity_base
+                            + ":kind=ordered_compact_carry:history="
+                            + std::to_string(retained_history) + ":latency="
+                            + std::to_string(retained_latency) + ":capacity="
+                            + std::to_string(carry_capacity),
+                        false,
+                        true);
+                    if (!persistent) {
+                        return std::unexpected(std::move(persistent.error()));
+                    }
+                    plan.carry_operations.push_back(EventCarryPlan{
+                        .working_representation = *canonical,
+                        .persistent_representation = *persistent,
+                        .restore_scope = first_scope,
+                        .commit_scope = last_scope,
+                        .retained_history_samples = retained_history,
+                        .retained_latency_samples = retained_latency,
+                    });
+                } else if (persistent_ring) {
+                    plan.persistent_rings.push_back(EventPersistentRingPlan{
+                        .representation = *canonical,
+                        .prune_scope = first_scope,
+                        .retained_history_samples = retained_history,
+                    });
+                } else {
+                    plan.sequence_resets.push_back(EventSequenceResetPlan{
+                        .representation = *canonical,
+                        .scope = first_scope,
+                    });
+                }
+
+                for (auto const& stage : stages) {
+                    EventMergePlan merge{
+                        .target_representation = *canonical,
+                        .scope = primitive_scope(
+                            stage.execution_position,
+                            EventOperationPhase::after),
+                        .target_is_semantic_source = false,
+                        .preserve_existing_target = true,
+                    };
+                    merge.source_representations.reserve(
+                        stage.source_indices.size());
+                    merge.source_ordinals.reserve(stage.source_indices.size());
+                    for (auto const source_index : stage.source_indices) {
+                        auto const& source = validated_sources[source_index];
+                        auto const local_capacity = source.cyclic_region
+                            ? source.capacity
+                            : source.aggregate_event_bound;
+                        auto local = append_representation(
+                            group_index,
+                            group.source_type,
+                            local_capacity,
+                            true);
+                        if (!local) {
+                            return std::unexpected(std::move(local.error()));
+                        }
+                        merge.source_representations.push_back(*local);
+                        merge.source_ordinals.push_back(source_index);
+
+                        auto& source_binding = plan.primitives[
+                            source.primitive].outputs[source.id.port];
+                        if (source_binding.representation) {
+                            return std::unexpected(
+                                "GraphJit event output belongs to more than one producer group");
+                        }
+                        source_binding = PrimitiveEventOutputBindingPlan{
+                            .representation = *local,
+                            .source_type = group.source_type,
+                            .history = realtime_history(source.config),
+                            .latency = realtime_latency(source.config),
+                            .append_existing = !source.cyclic_region
+                                && analysis.primitives[source.primitive]
+                                       .bundle.maximum_block_size
+                                    < input.specialization.block_size,
+                        };
+                    }
+                    plan.merges.push_back(std::move(merge));
+                }
+
+                for (auto const connection_index : group.connection_indices) {
+                    auto const& connection =
+                        connections.event_connections[connection_index];
+                    if (connection.detach) continue;
+                    auto const retained_connection =
+                        connection.source_history != 0
+                        || connection.source_latency != 0
+                        || connection.target_history != 0;
+                    if (connection.access
+                            != PlannedConnectionAccess::realtime_to_realtime
+                        || connection.external_boundary
+                        || connection.sources != group.sources
+                        || connection.source_type != group.source_type
+                        || connection.conversion.source_type
+                            != connection.source_type
+                        || connection.conversion.target_type
+                            != connection.target_type
+                        || (retained_connection && !retained_storage)) {
+                        return std::unexpected(
+                            "GraphJit staged event fan-in connection requires unsupported retention, feedback, external, or source semantics");
+                    }
+
+                    for (auto const target_id : connection.targets) {
+                        auto const target_primitive = primitive_index_for_bundle(
+                            target_id.bundle);
+                        if (!target_primitive
+                            || target_id.port
+                                >= plan.primitives[*target_primitive]
+                                       .inputs.size()) {
+                            return std::unexpected(
+                                "GraphJit staged event fan-in requires internal concrete consumers");
+                        }
+                        NodeBundlePortId const target_port{
+                            target_id.bundle, PortKind::event, target_id.port};
+                        auto const target = input.graph.node_bundles
+                            .resolve_event_input(target_port).config;
+                        if (!is_realtime(target.access)
+                            || target.type != connection.target_type) {
+                            return std::unexpected(
+                                "GraphJit staged event fan-in consumer disagrees with its declaration");
+                        }
+
+                        auto target_representation = *canonical;
+                        if (connection.requires_conversion) {
+                            auto const target_region = region_index_for_bundle(
+                                target_id.bundle);
+                            EventOperationScope scope = last_scope;
+                            if (target_region
+                                && *target_region
+                                    < connections.schedule.regions.size()
+                                && connections.schedule.regions[*target_region]
+                                       .cyclic) {
+                                auto const source_stage = std::ranges::find_if(
+                                    stages,
+                                    [&](FanInStage const& candidate) {
+                                        return candidate.cyclic_region
+                                            == target_region;
+                                    });
+                                scope = source_stage == stages.end()
+                                    ? region_scope(
+                                        *target_region,
+                                        EventOperationPhase::before)
+                                    : primitive_scope(
+                                        source_stage->execution_position,
+                                        EventOperationPhase::after);
+                            }
+                            auto const select_invocation_window =
+                                retained_connection
+                                || (target_region
+                                    && *target_region
+                                        < connections.schedule.regions.size()
+                                    && connections.schedule.regions[
+                                           *target_region].cyclic);
+                            auto materialized_events =
+                                materialization_event_bound(
+                                    group.max_events_per_index,
+                                    connection.target_history,
+                                    scope,
+                                    select_invocation_window,
+                                    iv::detail::saturating_add(
+                                        total_local_capacity,
+                                        group.storage_requirements
+                                            .retained_event_capacity));
+                            if (!materialized_events) {
+                                return std::unexpected(
+                                    std::move(materialized_events.error()));
+                            }
+                            auto existing = std::ranges::find_if(
+                                plan.materializations,
+                                [&](EventMaterializationPlan const& candidate) {
+                                    return candidate.source_representation
+                                            == *canonical
+                                        && candidate.conversion
+                                            == connection.conversion
+                                        && candidate.scope == scope
+                                        && candidate.target_representation
+                                            < plan.representations.size()
+                                        && plan.representations[
+                                               candidate.target_representation]
+                                               .type
+                                            == connection.target_type;
+                                });
+                            if (existing != plan.materializations.end()) {
+                                target_representation =
+                                    existing->target_representation;
+                                existing->history_samples = std::max(
+                                    existing->history_samples,
+                                    connection.target_history);
+                                existing->maximum_output_event_count = std::max(
+                                    existing->maximum_output_event_count,
+                                    materialized_events->output_writes);
+                                existing->maximum_source_event_reads = std::max(
+                                    existing->maximum_source_event_reads,
+                                    materialized_events->source_reads);
+                            } else {
+                                auto derived = append_representation(
+                                    group_index,
+                                    connection.target_type,
+                                    plan.representations[*canonical]
+                                        .event_capacity);
+                                if (!derived) {
+                                    return std::unexpected(
+                                        std::move(derived.error()));
+                                }
+                                target_representation = *derived;
+                                plan.materializations.push_back(
+                                    EventMaterializationPlan{
+                                        .source_representation = *canonical,
+                                        .target_representation =
+                                            target_representation,
+                                        .conversion = connection.conversion,
+                                        .history_samples =
+                                            connection.target_history,
+                                        .maximum_output_event_count =
+                                            materialized_events->output_writes,
+                                        .maximum_source_event_reads =
+                                            materialized_events->source_reads,
+                                        .select_invocation_window =
+                                            select_invocation_window,
+                                        .scope = scope,
+                                    });
+                            }
+                        }
+                        auto& target_binding = plan.primitives[
+                            *target_primitive].inputs[target_id.port];
+                        if (target_binding.representation) {
+                            return std::unexpected(
+                                "GraphJit event input has more than one realized connection");
+                        }
+                        target_binding.representation = target_representation;
+                    }
+                }
+                continue;
             }
 
             // Build and cost the fan-in alternatives here, next to the exact

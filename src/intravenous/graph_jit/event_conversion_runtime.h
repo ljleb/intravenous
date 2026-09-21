@@ -13,6 +13,8 @@ inline constexpr char event_sequence_materialization_symbol[] =
     "iv_graph_jit_materialize_event_sequence";
 inline constexpr char event_sequence_merge_symbol[] =
     "iv_graph_jit_merge_event_sequence";
+inline constexpr char ordered_event_sequence_merge_symbol[] =
+    "iv_graph_jit_merge_ordered_event_sequence";
 inline constexpr char event_sequence_k_way_merge_symbol[] =
     "iv_graph_jit_merge_event_sequences_into_home";
 
@@ -51,6 +53,22 @@ iv_graph_jit_merge_event_sequence(
     void const* source_events,
     std::size_t source_capacity,
     std::size_t source_count) noexcept;
+
+// Stable in-place merge used by staged fan-in. source_ordinals is parallel to
+// the target event ring/sequence; source_ordinal identifies every event in the
+// producer-local source. Ordering is lexicographic by (time, semantic source
+// ordinal), with existing events of the same source remaining first.
+extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
+iv_graph_jit_merge_ordered_event_sequence(
+    void* target_events,
+    std::size_t* target_source_ordinals,
+    std::size_t target_capacity,
+    std::size_t target_read_index,
+    std::size_t target_write_index,
+    void const* source_events,
+    std::size_t source_capacity,
+    std::size_t source_count,
+    std::size_t source_ordinal) noexcept;
 
 
 

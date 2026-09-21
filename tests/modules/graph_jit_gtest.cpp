@@ -81,6 +81,7 @@ constexpr char graph_jit_revising_sample_feedback_id[] = "iv.test.graph_jit.stat
 constexpr char graph_jit_projected_revising_sample_feedback_id[] = "iv.test.graph_jit.state_context.projected_revising_sample_feedback";
 constexpr char graph_jit_converted_sample_feedback_id[] = "iv.test.graph_jit.state_context.converted_sample_feedback";
 constexpr char graph_jit_event_feedback_a_id[] = "iv.test.graph_jit.state_context.event_feedback_a";
+constexpr char graph_jit_retained_fan_in_event_feedback_a_id[] = "iv.test.graph_jit.state_context.retained_fan_in_event_feedback_a";
 constexpr char graph_jit_latent_event_feedback_a_id[] = "iv.test.graph_jit.state_context.latent_event_feedback_a";
 constexpr char graph_jit_persistent_latent_event_feedback_a_id[] = "iv.test.graph_jit.state_context.persistent_latent_event_feedback_a";
 constexpr char graph_jit_persistent_latent_boundary_event_feedback_a_id[] = "iv.test.graph_jit.state_context.persistent_latent_boundary_event_feedback_a";
@@ -3964,6 +3965,49 @@ struct EventFeedbackA {
     }
 };
 
+struct RetainedFanInEventFeedbackA {
+    using State = EventFeedbackA::State;
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::realtime_event_input(
+                "in",
+                iv::EventTypeId::trigger,
+                iv::RealtimeInputConfig{.history = 8}),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return EventFeedbackA::outputs();
+    }
+
+    void tick_block(
+        iv::TickBlockContext<RetainedFanInEventFeedbackA> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const slot = static_cast<std::size_t>(state.calls);
+        auto const history = ctx.index < 8 ? ctx.index : std::size_t{8};
+        auto const events = ctx.event_inputs[0].get_block(
+            ctx.index - history, ctx.block_size + history);
+        if (slot < state.indices.size()) {
+            state.indices[slot] = ctx.index;
+            state.block_sizes[slot] = ctx.block_size;
+            state.input_counts[slot] = events.size();
+            state.first_input_times[slot] = events.empty() ? 0 : events[0].time;
+        }
+        ++state.calls;
+        state.scc_feedback_latency = ctx.scc_feedback_latency;
+        state.marker = 0xa11ce008u;
+        if (ctx.block_size != 0) {
+            auto const offset = std::min<std::size_t>(1, ctx.block_size - 1);
+            ctx.event_outputs[0].push(
+                iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+        }
+    }
+};
+
 struct LatentEventFeedbackA {
     struct State {
         std::uint64_t calls = 0;
@@ -5074,6 +5118,7 @@ IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_source", LimitedT
 IV_NODE("iv.test.graph_jit.state_context.fan_in_burst_event_source", FanInBurstEventSource);
 IV_NODE("iv.test.graph_jit.state_context.fan_in_sparse_event_source", FanInSparseEventSource);
 IV_NODE("iv.test.graph_jit.state_context.event_feedback_a", EventFeedbackA);
+IV_NODE("iv.test.graph_jit.state_context.retained_fan_in_event_feedback_a", RetainedFanInEventFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.latent_event_feedback_a", LatentEventFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.persistent_latent_event_feedback_a", PersistentLatentEventFeedbackA);
 IV_NODE("iv.test.graph_jit.state_context.persistent_latent_boundary_event_feedback_a", PersistentLatentBoundaryEventFeedbackA);
@@ -6039,6 +6084,56 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_event_feedback_graph(
     auto second = iv::details::configure_package_definition_provider(
         graph, graph_jit_event_feedback_b_id, std::nullopt, {});
     first.connect_event_input(0, second.event_port());
+    second.connect_event_input(0, first.event_port().detach(10));
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
+std::shared_ptr<iv::ConfiguredGraph const>
+configured_staged_event_fan_in_graph(iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create staged event fan-in builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    auto ingress = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.trigger_event_source",
+        std::nullopt,
+        {});
+    auto first = iv::details::configure_package_definition_provider(
+        graph,
+        graph_jit_retained_fan_in_event_feedback_a_id,
+        std::nullopt,
+        {});
+    auto second = iv::details::configure_package_definition_provider(
+        graph, graph_jit_event_feedback_b_id, std::nullopt, {});
+
+    auto const ingress_port = ingress.event_port();
+    auto const feedback_port = second.event_port();
+    std::array sources{
+        feedback_port.sources().front(),
+        ingress_port.sources().front(),
+    };
+    first.connect_event_input(
+        0, iv::EventPortRef(graph, feedback_port.type, sources));
     second.connect_event_input(0, first.event_port().detach(10));
     graph.outputs();
     return std::make_shared<iv::ConfiguredGraph const>(
@@ -9716,6 +9811,85 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
     }
 }
 
+TEST_F(GraphJitRuntimeFixture, EventFanInStagesAcyclicIngressIntoFeedbackScc)
+{
+    auto graph = configured_staged_event_fan_in_graph(*revision);
+    ASSERT_TRUE(graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    auto const mixed = std::ranges::find_if(
+        analysis->event_connections,
+        [](iv::graph_jit::detail::EventConnectionPlan const& connection) {
+            return !connection.detach && connection.sources.size() == 2;
+        });
+    ASSERT_NE(mixed, analysis->event_connections.end());
+    auto const first_region = analysis->schedule.bundle_to_region[
+        mixed->sources[0].bundle];
+    auto const second_region = analysis->schedule.bundle_to_region[
+        mixed->sources[1].bundle];
+    ASSERT_TRUE(first_region.has_value());
+    ASSERT_TRUE(second_region.has_value());
+    EXPECT_NE(*first_region, *second_region);
+    EXPECT_TRUE(analysis->schedule.regions[*first_region].cyclic);
+    EXPECT_FALSE(analysis->schedule.regions[*second_region].cyclic);
+
+    auto compiled = compile_graph(graph, 214);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    EXPECT_TRUE(std::ranges::any_of(
+        compiled.compiled_graph->node_layout.regions,
+        [](iv::NodeLayout::Region const& region) {
+            return region.migration_identity.find("kind=ordered_compact_carry")
+                != std::string::npos;
+        }));
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    EventFeedbackAStateMirror* state = nullptr;
+    for (std::size_t i = 0;
+         i < compiled.compiled_graph->node_layout.nodes.size(); ++i) {
+        if (compiled.compiled_graph->node_layout.nodes[i].state_size
+            == sizeof(EventFeedbackAStateMirror)) {
+            ASSERT_EQ(state, nullptr);
+            state = static_cast<EventFeedbackAStateMirror*>(
+                storage.state_ptr(i));
+        }
+    }
+    ASSERT_NE(state, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 0, 64);
+    ASSERT_EQ(state->calls, 8u);
+    for (std::size_t slice = 0; slice < 8; ++slice) {
+        auto const index = slice * 8u;
+        EXPECT_EQ(state->indices[slice], index);
+        EXPECT_EQ(state->block_sizes[slice], 8u);
+        auto const expected_count = slice == 0
+            ? 2u
+            : (slice == 1 || slice == 7 ? 3u : 2u);
+        EXPECT_EQ(state->input_counts[slice], expected_count);
+        EXPECT_EQ(
+            state->first_input_times[slice],
+            slice == 0 ? 2u : index - 6u);
+    }
+
+    // The mixed fan-in's ordered compact carry restores B's event at 58 and
+    // ingress event at 63. The next SCC slice inserts B's new event at 66 ahead
+    // of the ingress source's 67/71 events without losing semantic tie order.
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), 64, 8);
+    ASSERT_EQ(state->calls, 9u);
+    EXPECT_EQ(state->indices[8], 64u);
+    EXPECT_EQ(state->block_sizes[8], 8u);
+    EXPECT_EQ(state->input_counts[8], 5u);
+    EXPECT_EQ(state->first_input_times[8], 58u);
+}
+
 TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConsumesRetainedAndConvertedHistoryPerSlice)
 {
     auto feedback_graph = configured_retained_converted_event_feedback_graph(*revision);
@@ -9902,6 +10076,111 @@ TEST(GraphJitEventMergeRuntime, KWayMergePreservesSemanticSourceOrder)
         ASSERT_NE(event, nullptr);
         ASSERT_GE(event->size, 2u);
         EXPECT_EQ(event->bytes[1], expected_notes[i]);
+    }
+}
+
+TEST(GraphJitEventMergeRuntime, StagedMergePreservesSemanticSourceOrder)
+{
+    auto midi = [](std::uint8_t note) {
+        iv::MidiEvent event{};
+        event.bytes = {0x90, note, 100};
+        event.size = 3;
+        return event;
+    };
+    auto timed = [&](std::uint64_t time, std::uint8_t note) {
+        return iv::TimedEvent{.time = time, .value = midi(note)};
+    };
+
+    std::array<iv::TimedEvent, 8> target{};
+    std::array<std::size_t, 8> source_ordinals{};
+    target[0] = timed(5, 21);
+    source_ordinals[0] = 1;
+    std::array semantic_source_0{timed(5, 10)};
+    std::array semantic_source_2{timed(5, 32)};
+
+    auto count =
+        iv::graph_jit::detail::iv_graph_jit_merge_ordered_event_sequence(
+            target.data(),
+            source_ordinals.data(),
+            target.size(),
+            0,
+            1,
+            semantic_source_0.data(),
+            semantic_source_0.size(),
+            semantic_source_0.size(),
+            0);
+    count = iv::graph_jit::detail::iv_graph_jit_merge_ordered_event_sequence(
+        target.data(),
+        source_ordinals.data(),
+        target.size(),
+        0,
+        count,
+        semantic_source_2.data(),
+        semantic_source_2.size(),
+        semantic_source_2.size(),
+        2);
+
+    ASSERT_EQ(count, 3u);
+    std::array<std::uint8_t, 3> const expected_notes{10, 21, 32};
+    std::array<std::size_t, 3> const expected_ordinals{0, 1, 2};
+    for (std::size_t i = 0; i < count; ++i) {
+        auto const* event = std::get_if<iv::MidiEvent>(&target[i].value);
+        ASSERT_NE(event, nullptr);
+        ASSERT_GE(event->size, 2u);
+        EXPECT_EQ(event->bytes[1], expected_notes[i]);
+        EXPECT_EQ(source_ordinals[i], expected_ordinals[i]);
+    }
+}
+
+TEST(GraphJitEventMergeRuntime, StagedMergePreservesWrappedRingOrder)
+{
+    auto midi = [](std::uint8_t note) {
+        iv::MidiEvent event{};
+        event.bytes = {0x90, note, 100};
+        event.size = 3;
+        return event;
+    };
+    auto timed = [&](std::uint64_t time, std::uint8_t note) {
+        return iv::TimedEvent{.time = time, .value = midi(note)};
+    };
+
+    std::array<iv::TimedEvent, 8> ring{};
+    std::array<std::size_t, 8> source_ordinals{};
+    constexpr std::size_t read_index = 6;
+    ring[6] = timed(3, 30);
+    ring[7] = timed(5, 51);
+    ring[0] = timed(7, 70);
+    source_ordinals[6] = 2;
+    source_ordinals[7] = 1;
+    source_ordinals[0] = 0;
+    std::array source{
+        timed(2, 20),
+        timed(5, 50),
+        timed(8, 80),
+    };
+
+    auto const write_index =
+        iv::graph_jit::detail::iv_graph_jit_merge_ordered_event_sequence(
+            ring.data(),
+            source_ordinals.data(),
+            ring.size(),
+            read_index,
+            read_index + 3,
+            source.data(),
+            source.size(),
+            source.size(),
+            0);
+
+    ASSERT_EQ(write_index, read_index + 6);
+    std::array<std::uint8_t, 6> const expected_notes{20, 30, 50, 51, 70, 80};
+    std::array<std::size_t, 6> const expected_ordinals{0, 2, 0, 1, 0, 0};
+    for (std::size_t i = 0; i < expected_notes.size(); ++i) {
+        auto const index = (read_index + i) & (ring.size() - 1);
+        auto const* event = std::get_if<iv::MidiEvent>(&ring[index].value);
+        ASSERT_NE(event, nullptr);
+        ASSERT_GE(event->size, 2u);
+        EXPECT_EQ(event->bytes[1], expected_notes[i]);
+        EXPECT_EQ(source_ordinals[index], expected_ordinals[i]);
     }
 }
 
