@@ -573,6 +573,15 @@ processing after the pass rather than traversing dynamic indexed cache structure
 on the audio thread. Indexed work computed against an obsolete semantic version
 may not commit as valid for a newer one.
 
+Non-realtime indexed results are also versioned. If an application/UI query
+targets a newer semantic version whose selected pages are still being
+materialized, those pages are pending/not-ready rather than empty/default data. A
+presentation may retain its previously completed result until the newer requested
+result is ready; every completed result identifies the semantic version it came
+from. Rebinding an unchanged stable indexed output across a JIT generation keeps
+its existing valid pages immediately available and therefore does not introduce a
+blank/pending interval merely because executable code changed.
+
 The mechanism intentionally preserves the useful part of the deleted
 `TasksRunner` update model without preserving task-graph or lane semantics.
 
