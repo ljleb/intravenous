@@ -343,7 +343,7 @@ Efficiency and observability work that does not change event semantics:
   cheaper, semantic source 0 writes directly into the restored/pruned canonical
   sequence and only the remaining producer-local streams are merged;
 - surface the existing per-logical-output saturating overflow counters; and
-- **In progress:** the shared chooser now enumerates and scores all three
+- **Landed:** the shared chooser now enumerates and scores all three
   candidates from copied bytes, addressed bytes, stack footprint, persistent
   footprint, and a configured stack bound while preserving the old crossover
   under default weights. Acyclic event fan-in supplies topology-local sequence
@@ -351,10 +351,14 @@ Efficiency and observability work that does not change event semantics:
   `GraphJitConfig` now supplies one cost model to sample, event, and feedback
   planning, and lowering enforces its stack limit against the final packed
   sample+event stack allocation, re-planning eligible buffers into `NodeStorage`
-  when necessary. Continue deriving conversion/fanout costs automatically from
-  explicit operations and refining which eligible buffer is moved when several
-  alternatives can satisfy the same limit. The fixed 64-event and 16-KiB
-  thresholds have been removed.
+  when necessary. Event lowering then costs the concrete shared conversion and
+  feedback operations before final residence realization: conversion output
+  writes are counted once, full-persistent source reads and delayed-stream ring
+  writes are explicit, compact feedback includes restore/commit copies, and
+  identity fanout adds no copy. The remaining work is alias-versus-materialize
+  comparison, weight calibration, and refining which eligible buffer is moved
+  when several alternatives can satisfy the same limit. The fixed 64-event and
+  16-KiB thresholds have been removed.
 
 #### Event-connection implementation map
 

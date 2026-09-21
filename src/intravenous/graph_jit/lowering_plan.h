@@ -232,6 +232,13 @@ struct EventMaterializationPlan {
     // capacity remains source-capacity-sized because max_events_per_index is
     // only a storage-sizing rate, not a runtime density constraint.
     std::size_t history_samples = 0;
+    // Exact unrounded upper bound for events written by this one shared
+    // operation. Costing uses the operation once regardless of fanout count.
+    std::size_t maximum_output_event_count = 0;
+    // Total source events examined across every execution of this operation in
+    // one root call. This differs from output count for windowed SCC
+    // materialization and is charged only when the source candidate is a ring.
+    std::size_t maximum_source_event_reads = 0;
     bool select_invocation_window = false;
     EventOperationScope scope{};
 };
@@ -281,8 +288,13 @@ struct EventFeedbackPlan {
     std::size_t target_representation = 0;
     EventOperationScope append_scope{};
     EventOperationScope reset_scope{};
-    RealtimeBufferStorageKind storage =
-        RealtimeBufferStorageKind::transient_stack;
+    EventConnectionStorageRequirements storage_requirements{};
+    EventConnectionStoragePlan storage_plan{};
+    // Exact unrounded bounds for producer -> delayed-stream writes and the
+    // retained tail. Compact carry restore/commit work is derived from the
+    // latter by the shared residence cost model.
+    std::size_t authored_event_count = 0;
+    std::size_t retained_event_count = 0;
     std::size_t retained_window_samples = 0;
     std::size_t loop_extra_latency = 1;
 };

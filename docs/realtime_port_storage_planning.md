@@ -345,12 +345,19 @@ The storage-model and physical-residence refactors have landed:
   feedback carry stores only the cross-invocation tail in `NodeStorage`; full
   feedback storage remains a fixed persistent ring, and zero-capacity event
   feedback can remain transient. Event capacities are rate-times-live-span rather
-  than `source_capacity * (loop_extra_latency + 1)`.
+  than `source_capacity * (loop_extra_latency + 1)`;
+- event lowering now performs a physical-operation costing pass before final
+  residence realization. Shared conversion/materialization writes are counted
+  once per emitted operation, full-`NodeStorage` candidates include the ring
+  reads those operations perform, and identity fanout adds no copy. Each shared
+  delayed feedback stream accounts once for producer-to-feedback writes, exact
+  compact-tail restore/commit work, persistent-ring addressing, and any shared
+  consumer conversion. Fan-in producer-home and separate-target alternatives
+  receive the same downstream operation costs before the final choice.
 
-The remaining cost-model work is to derive topology-specific copy/addressing
-counts directly from the explicit operations, including ordinary conversion and
-fanout, and to make stack-pressure promotion use those operation costs more
-selectively when several different storage moves can satisfy the same budget.
+The remaining cost-model work is primarily alias-versus-materialize comparison,
+weight calibration, and making stack-pressure promotion choose more selectively
+when several different storage moves can satisfy the same budget.
 
 The heuristic may consider:
 
@@ -582,6 +589,16 @@ that count upward to a power of two because `EventSharedPortData` uses a ring
 mask. Every realtime event representation must have such a finite compile-time
 capacity. Failure to represent the calculated capacity is a graph-compilation
 error, not a reason to select a dynamically sized fallback.
+
+The storage chooser's **current** event count and an SCC feedback buffer's
+**authored** event count are deliberately different bounds. The current count is
+the maximum for one generated-root block and is compared with the state retained
+between root calls when choosing transient, carry, or full storage. A sliced SCC
+may author across a larger combined history/latency horizon during that root
+call; that authored bound sizes the physical feedback working buffer and its
+append work. Using the authored bound as the chooser's current footprint would
+make large source latency incorrectly render compact carry eligible even when
+the retained state is larger than one root block.
 
 The span depends on the selected storage plan:
 

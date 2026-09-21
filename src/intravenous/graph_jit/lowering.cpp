@@ -2376,7 +2376,8 @@ std::expected<void, std::string> emit_event_feedback_append(
         return std::unexpected(
             "GraphJit exact-type event feedback changed event type");
     }
-    if (feedback.storage == RealtimeBufferStorageKind::full_node_storage) {
+    if (feedback.storage_plan.kind
+        == RealtimeBufferStorageKind::full_node_storage) {
         if (!target.persistent || !target.persistent_ring) {
             return std::unexpected(
                 "GraphJit full event feedback has no persistent ring");
