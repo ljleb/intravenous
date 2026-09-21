@@ -6,7 +6,7 @@ Related documents:
 
 - [project_graph_application_architecture.md](./project_graph_application_architecture.md)
 - [realtime_port_storage_planning.md](./realtime_port_storage_planning.md)
-- [compiled_dsp_nodes.md](./compiled_dsp_nodes.md)
+- [indexed_dsp_nodes.md](./indexed_dsp_nodes.md)
 - [builder_lowering_pipeline_design.md](./builder_lowering_pipeline_design.md)
 - [intravenous-llvm-hot-reload-and-whole-graph-design.md](./intravenous-llvm-hot-reload-and-whole-graph-design.md)
 - [event_flows/README.md](./event_flows/README.md)
@@ -107,10 +107,10 @@ connection access direction, derives sequential tick dependencies, computes
 deterministic SCC/region ordering, records per-edge history/latency/conversion/
 boundary/feedback facts, groups fanout by producer, derives the requirement
 records consumed by the existing sample/event physical-storage choosers, and
-emits semantic transient/persistent/external storage and liveness requests. A
-compiled output never becomes a tick dependency merely because a realtime
-consumer needs it: that edge remains classified for the later compiled-access
-materialization phase. Realtime-to-realtime groups alone enter the realtime
+emits semantic transient/persistent/external storage and liveness requests. An
+indexed output never becomes a tick dependency merely because a realtime
+consumer needs it: that edge remains classified for the later indexed-access
+preparation phase. Realtime-to-realtime groups alone enter the realtime
 storage chooser. Block-slice mismatches conservatively require materialization
 until a later scheduler proves a shared subdivision. At the point this refactor
 landed, the lowering capability gate still rejected ports/connections; the sample-
@@ -174,8 +174,8 @@ telemetry.
 
 The physical planner consumes the storage decision already made by
 `choose_sample_connection_storage_plan()`; it does not choose policy again.
-Only realtime branches receive realtime representation handles here; compiled
-access branches remain unresolved for the later compiled-access executor. Whole-
+Only realtime branches receive realtime representation handles here; indexed
+access branches remain unresolved for the later indexed component executor. Whole-
 port conversion is channel-granular: layout-only conversion and mono-to-stereo
 duplication bind existing producer channels directly, while arithmetic conversion
 materializes only its computed result channels. Semantic channel projection and
@@ -239,8 +239,8 @@ carries the finalized `NodeLayout` plus the generated root `tick_block`, while
 lifecycle remains entirely in ordinary `NodeStorage`. Primitive `skip_block`
 callbacks are internal scheduling tools, not root operations. Whole-project
 lowering must not reintroduce a second node-storage
-layout, a second lifecycle system, or a synthetic project-wide `access_block()`
-merely to expose compiled outputs.
+layout, a second lifecycle system, or a synthetic project-wide indexed/tock ABI
+merely to expose indexed outputs.
 
 ### Current connection capability audit
 
@@ -252,7 +252,7 @@ The current internal realtime connection surface is intentionally asymmetric:
   compensation, compact carry/persistent rings, and `detach()` SCC feedback. A
   sample producer inside an SCC may also fan out to downstream acyclic identity or
   converted/history-bearing consumers. What remains is not another ordinary sample
-  transport mode: realtime/compiled mixed or compiled-only access still belongs
+  transport mode: realtime/indexed mixed or indexed-only access still belongs
   to point 15. Root I/O is not a boundary-connection mode; it is expressed by
   concrete system/communication node types.
 - **Events, feed-forward:** internal realtime direct/transient sequences, block
@@ -270,7 +270,7 @@ The current internal realtime connection surface is intentionally asymmetric:
 - **Both kinds:** the root graph is required to have zero public/boundary ports.
   Device I/O and communication with other application modules enter through
   concrete node types, so there is no future root-boundary transport ABI to add.
-  Compiled-access directions remain a separate lowering capability.
+  Indexed-access directions remain a separate lowering capability.
 
 #### Realtime sample capability matrix
 
@@ -287,7 +287,7 @@ The current internal realtime connection surface is intentionally asymmetric:
 | Detached feedback within one SCC | Implemented for internal realtime samples | A fixed-capacity delayed timeline uses the same transient/carry/full-storage alternatives. Producer-home and branch-local writers support history, latency, conversion, permutation, composition, and nonzero `loop_extra_latency`. |
 | Cyclic producer with ordinary downstream fanout | Implemented | The SCC timeline is updated slice by slice; downstream identity or converted/history-bearing branches are realized at the scope where the completed SCC result becomes available. |
 | Acyclic ingress or an edge between execution regions | Implemented | Explicit before/after materialization placement carries the resolved channel representation across the schedule; persistent storage is used only when the semantic history/latency lifetime crosses root calls. |
-| Mixed realtime/compiled or compiled-only sample access | Capability-gated separately | This belongs to the compiled-access executor rather than another realtime sample-buffer representation. |
+| Mixed realtime/indexed or indexed-only sample access | Capability-gated separately | This belongs to indexed component evaluation rather than another realtime sample-buffer representation. |
 | Unconnected realtime sample port | Implemented | An unconnected input binds to compiler-emitted constant sample data filled with its declared `default_value`. An unconnected output receives an ordinary writable buffer sized from its declared history/latency; retained samples use the same stack-plus-`NodeStorage` or full-`NodeStorage` choice as connected outputs. |
 
 #### Realtime event SCC capability matrix
@@ -305,7 +305,7 @@ The current internal realtime connection surface is intentionally asymmetric:
 | Edge spanning distinct cyclic regions | Implemented | The source aggregate remains live across regions. Conversion runs at source-region exit and the downstream region reads its absolute-time slices. |
 | Multi-producer fan-in touching a cyclic region | Implemented | Acyclic producers merge once after their completed invocation; each cyclic-region stage merges bounded producer-local streams after that region's final producer on every slice. A compiler-private source-ordinal sidecar on the canonical aggregate preserves semantic equal-time ordering even when execution-region order differs from source order. Compact carry and persistent rings retain the ordinals with their events. |
 | One derived materialization consumed both inside the source SCC and downstream | Implemented | Representation sharing is keyed by conversion and execution scope. The in-SCC and SCC-exit branches receive distinct scope-correct derived representations. |
-| Mixed realtime/compiled or compiled-only event access | Capability-gated separately | This belongs to the compiled-access executor rather than another realtime storage kind. |
+| Mixed realtime/indexed or indexed-only event access | Capability-gated separately | This belongs to indexed component evaluation rather than another realtime storage kind. |
 | Unconnected primitive event port | Implemented for realtime ports | Inputs receive a reset zero-capacity sequence. Outputs receive a bounded sink sized from `max_events_per_index`, history, latency, and root block size, with normal overflow telemetry. |
 
 #### Remaining event-connection work
@@ -316,8 +316,8 @@ for one universal event buffer.
 
 Remaining semantic capability work:
 
-1. Implement mixed realtime/compiled and compiled-only event access through the
-   compiled-access plan.
+1. Implement mixed realtime/indexed and indexed-only event access through the
+   indexed component plan.
 
 Efficiency and observability work that does not change event semantics:
 
@@ -461,7 +461,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    producer-group/connection temporal facts, sample/event chooser requirements,
    and semantic liveness/storage requests before any package LLVM is consumed.
    Realtime policy selection remains in `choose_*_connection_implementation()`;
-   compiled and mixed-access directions are classified separately. Configured
+   indexed and mixed-access directions are classified separately. Configured
    virtual-node records are metadata only: execution planning follows concrete
    bundles and configured connections directly and never lowers legacy/internal
    virtual/runtime helper nodes.
@@ -578,7 +578,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     generation migration, and ordinary identity/converted/history fanout from an
     SCC producer into downstream acyclic regions. For internal realtime sample
     connections this closes the normal transport surface; the remaining sample
-    connection gates are compiled-access directions; root I/O is represented by
+    connection gates are indexed-access directions; root I/O is represented by
     ordinary concrete system/communication nodes rather than boundary ports.
     Event feedback accepts realtime exact or non-expanding converted streams,
     including source/target history, source latency, and same-SCC fan-in. The
@@ -604,13 +604,17 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     declaration-owned auxiliary/shared-array regions, activity/TTL, deferred
     detach, and generalized skip semantics through existing plans rather than side
     paths.
-15. **Compiled DSP access.** Add internal endpoint metadata, compiled-access
-    component plans/executors, batching, and bounded workspaces after realtime
-    connection storage is stable.
-16. **GraphExecutor integration.** Add active/pending generations, canonical
-    `NodeStorage` construction/migration, safe-point activation, root execution,
-    and compiled-access dispatch. `CompiledGraph` remains
-    independently testable before this point.
+15. **Indexed DSP access.** Add internal endpoint metadata, indexed-component
+    plans/executors, exact coverage/forward-change propagation, page-granular
+    validity/version tracking, reverse demand with invalid-page promotion,
+    batching, and bounded planning workspaces after realtime connection storage
+    is stable.
+16. **GraphExecutor integration.** Add active/pending executable generations,
+    canonical `NodeStorage` construction/migration, dynamic indexed sidecars and
+    transaction workspaces, semantic-versioned candidate/published indexed
+    snapshots, whole-live-block publication, root execution, and indexed-
+    component dispatch. `CompiledGraph` remains independently testable before
+    this point.
 17. **Optimization refinements.** Verify generated hot-path assembly and then improve
     liveness reuse, storage cost choices, fusion/SSA direct forwarding, vectorization,
     and target-specific optimization only after the semantic compiler surface is
@@ -672,7 +676,7 @@ ConfiguredGraph
 whole-project lowering and explicit graph analyses
         |
         v
-specialized root-node LLVM + compiled-access executors
+specialized root-node LLVM + indexed-component executors
         |
         v
 GraphJit ORC
@@ -809,29 +813,29 @@ invoking initialization, move/migration, release, and destruction in the order
 described by that layout. Do not replace that orchestration with monolithic
 generated project initialize/move/release functions.
 
-The root node has no compiled output ports, therefore it has no
-`access_block[_batch]()` operation. Compiled outputs inside the project remain
+The root node has no indexed output ports, therefore it has no project-wide
+`tock_region_batch()` operation. Indexed outputs inside the project remain
 addressable through immutable `CompiledGraph` metadata described below; they are
 not exposed by pretending that the zero-port project root has synthetic outputs.
 
-## One canonical persistent `NodeLayout` and `NodeStorage`
+## One canonical fixed-layout `NodeLayout` and `NodeStorage`
 
-There is exactly one persistent storage allocation model for an executable graph
-generation: the existing `NodeLayout`/`NodeStorage` machinery. This does not put
-invocation-local buffers in persistent storage; those occupy the generated
-root's fixed stack frame.
+There is exactly one **fixed-layout** persistent storage model for an executable
+graph generation: the existing `NodeLayout`/`NodeStorage` machinery. This does
+not mean every request-sized or dynamically growing runtime object belongs in
+`NodeStorage`.
 
 `GraphJit` must not introduce `CompiledGraphNodeStorageLayout`,
-`GraphKernelStorage`, or another parallel state arena. Lowering populates one
-`NodeLayoutBuilder` and finalizes it before emitting final storage accesses into
-LLVM. The completed `NodeLayout` becomes part of `CompiledGraph`, and
+`GraphKernelStorage`, or another parallel fixed state arena. Lowering populates
+one `NodeLayoutBuilder` and finalizes it before emitting final storage accesses
+into LLVM. The completed `NodeLayout` becomes part of `CompiledGraph`, and
 `GraphExecutor` creates and owns the corresponding `NodeStorage`.
 
-The canonical storage covers `CompiledState` as well as normal `State`. The
-ordinary declaration/lifecycle machinery represents both state domains and makes
-the same `CompiledState` object available to `tick_block()` and compiled-access
-callbacks. `initialize()`, `move()`, and `release()` semantics apply to both where
-the node defines them.
+The canonical fixed layout covers indexed-domain state (currently named
+`CompiledState`) as well as normal `State`. The ordinary declaration/lifecycle
+machinery represents both state domains and makes the same indexed state object
+available to `tick_block()` and indexed callbacks. `initialize()`, `move()`, and
+`release()` semantics apply to both where the node defines them.
 
 Source introspection publishes symmetric metadata for `State` and
 `CompiledState`: a Clang nominal type identity (USR), a definition fingerprint,
@@ -841,24 +845,32 @@ same-process type token remains sufficient when both generations use the exact
 same loaded C++ type, but equal RTTI names or equal byte size alone are not a
 safe hot-reload migration contract.
 
-All project-owned memory whose contents must cross an execution call should be
-allocated through the same `NodeLayout` and stored in the same `NodeStorage`,
-including for example:
+Fixed-size project-owned memory whose contents must cross an execution call
+should use the same `NodeLayout` / `NodeStorage`, including for example:
 
-- node `State` and `CompiledState`;
+- node `State` and `CompiledState` / future `IndexedState`;
 - history/latency/feedback carry;
-- full persistent sample/event buffers;
+- full fixed persistent sample/event buffers;
 - root/compiler-owned activity state;
-- bounded reusable compiled-access workspaces;
+- bounded reusable indexed-evaluation workspaces; and
 - other fixed-size compiler-selected project regions.
 
-Invocation-local sample/event buffers instead occupy compile-time byte ranges in
+Dynamically growing indexed output caches are an explicit exception because
+their page count and payload size depend on future coverage/access patterns.
+They live in a generation-local `GraphExecutor` sidecar whose immutable/static
+indexing metadata comes from `CompiledGraph`. This is not a second state-layout
+system: node persistent state still has one canonical `NodeStorage`, while
+request/cache storage is dynamic executor state. Request-sized transaction
+arenas likewise remain outside `NodeStorage` unless a useful fixed bound is known
+at compile time.
+
+Invocation-local realtime sample/event buffers occupy compile-time byte ranges in
 the generated root stack. Sample and event ranges are lifetime-packed within
 their payload class, then placed as two aligned subranges of one root allocation.
 If the resulting byte count exceeds the configured limit, lowering re-runs
 storage selection so eligible buffers use full `NodeStorage`; if the remaining
 conversion/merge buffers still do not fit, compilation fails. Execution never
-allocates a replacement dynamically.
+allocates a replacement dynamically on the realtime path.
 
 This gives the whole-project compiler control over physical declaration order.
 The current layout builder packs regions in declaration order while solving
@@ -903,82 +915,138 @@ workspace has a known maximum size or is intentionally reusable across queries,
 the compiler should prefer a root-owned `NodeLayout` region rather than a
 separate project scratch allocation.
 
-## Compiled access is internal to the generated project
+## Indexed evaluation is internal to the generated project
 
-A node with at least one compiled **output** must remain requestable through its
-normalized compiled-access operation. The project root itself is not such a
-node, so compiled access is represented separately from the root-node interface.
+A node with at least one indexed **output** remains requestable through the
+indexed component executor. The generated project root itself remains a
+zero-input/zero-output realtime root and does not gain synthetic indexed output
+ports or a project-wide tock operation.
 
-`CompiledGraph` should carry an immutable index from requestable internal
-compiled output ports to compiler-generated access executors. Conceptually:
+`CompiledGraph` should carry an immutable index from requestable internal indexed
+output ports to compiler-generated indexed component executors. Conceptually:
 
 ```text
-(node bundle, compiled output port)
+(node bundle, indexed output port)
         |
         v
-compiled-access component + sink ordinal
+indexed connected component + sink ordinal
         |
         v
 specialized generated component executor
 ```
 
-The exact host ABI is implementation work, but it should expose internal
-compiled outputs without inventing project-root output ports.
+The exact host ABI is implementation work, but it should expose internal indexed
+outputs without inventing project-root output ports.
 
 ### Static topology planning belongs in lowering
 
-Most compiled-access graph structure is static and should be specialized by the
-lowerer rather than rediscovered for every query. At minimum lowering can
+Most indexed graph structure is static and should be specialized by the lowerer
+rather than rediscovered for every mutation or access. At minimum lowering can
 precompute:
 
-- which nodes/ports participate in compiled access;
-- connected components/subgraphs formed by compiled-port edges;
-- the mapping from requestable compiled outputs to their component/sink ordinal;
+- which nodes/ports participate in indexed access;
+- indexed connected components (maximal weakly connected components of the
+  indexed subgraph);
+- the mapping from requestable indexed outputs to component/sink ordinals;
 - reverse dependency order for demand propagation;
-- forward topological evaluation order;
+- forward order for change propagation and tock evaluation;
 - fanout/convergence structure;
 - constant port/node/state offsets and callback targets;
-- which nodes have trivial/no-op propagation;
-- fixed-capacity request-set/workspace storage where useful.
+- which forward/reverse propagation operations are trivial; and
+- bounded reusable planning workspace where useful.
 
-The dynamic part of a query is primarily the requested sample grids/event
-intervals and the resulting request-set contents, not discovery of graph
-adjacency.
+The dynamic information is primarily per-output exact `IndexedCoverage`, exact
+changed/demanded regions, page directories, page-validity semantic versions,
+cache policy/residency, candidate/published indexed snapshots, and optional
+retained page payloads—not discovery of graph adjacency.
 
-### One query batches all requested sinks before execution
+### Forward change and indexed access are separate transactions
 
-A caller may request compiled outputs from any number of internal nodes in one
-logical operation; there is no small fixed node-count limit. Requests should be
-grouped by their precomputed compiled-access component. Disconnected components
-may execute independently because they cannot share upstream compiled work.
+Arbitrary node-local mutations may schedule forward processing even when no
+indexed input region changed. `propagate_forward_region_batch()` updates each
+output's canonical `IndexedCoverage` and reports exact changed output regions;
+the executor derives added/removed coverage from the previous value and treats
+those regions as semantic changes too. Exact changed regions propagate through
+the indexed component without forcing `tock_region_batch()` evaluation.
+Forward propagation continues through an intermediate even when that
+intermediate has no resident cached page, because farther downstream retained
+results may still derive from an older semantic version.
 
-Within one component the semantic order is fixed:
+Retained cache validity is page-granular while dependency propagation remains
+exact. For one canonical cache page:
 
 ```text
-seed all requested sink outputs for this query
+page_domain = page_interval & output_coverage
+```
+
+A page is either wholly valid or wholly invalid for that exact page domain and
+indexed semantic version. Invalidating a page does **not** widen the exact changed
+region propagated downstream.
+
+Later, one logical access may request indexed outputs from any number of internal
+nodes. Sparse caller demand first selects touched pages. Valid touched pages are
+cache hits. Each invalid touched page promotes the work to its complete covered
+`page_domain`; that promoted materialization request is what enters reverse
+planning through that producer. Within one indexed component the semantic order
+is:
+
+```text
+seed requested sink positions/regions
         |
         v
+intersect exact sink `IndexedCoverage`
+        |
+        v
+map demand to touched sink pages
+        |
+        +-- valid pages -> satisfied
+        |
+        `-- invalid pages -> full `page_interval & coverage` domains
+                                |
+                                v
 reverse planning in precomputed reverse order
-        |
-        | union/coalesce requests at converging ports
+        |   union/coalesce requirements at convergence points
+        |   clip requirements to exact indexed-input coverage
+        |   valid upstream pages terminate traversal
+        |   invalid upstream pages promote to their full page domains
         v
-complete component demand
+complete missing dependency plan
         |
         v
-forward evaluation in precomputed topological order
+forward evaluation in dependency order
+        |
+        v
+tock_region_batch() only for selected covered page domains
+        |
+        v
+commit each selected page atomically valid for the target semantic version
+        |
+        v
+retain/discard payload according to cache policy
         |
         v
 return requested sink results
 ```
 
-A node receives the complete accumulated request sets for all of its requested
-compiled outputs when its propagation/access callback runs. Whenever topology
-permits, each implicated node participates once in reverse planning and once in
-forward execution for the complete component query, rather than once per sink
-or downstream path.
+Coverage is never rounded to page boundaries. If a 1024-sample physical page
+intersects output coverage only at `[10,1002)`, then a demand for any missing
+sample in that page causes the node to observe exactly `[10,1002)`, never
+`[0,1024)`. If several disjoint coverage regions occupy one page, touching that
+invalid page materializes all of those covered regions together.
 
-The lowerer may inline and specialize these propagation/access callbacks so the
-runtime executor manipulates request sets, not generic graph data structures.
+Sparse UI fetches therefore do not imply sparse per-sample tock processing.
+Zoomed-in views naturally touch consecutive pages; extremely zoomed-out views
+touch sparse pages; approximately one requested display sample per page is the
+intended bounded worst case.
+
+A node receives complete accumulated region sets for the transaction whenever
+its forward/reverse propagation or tock callback runs. Whenever topology permits,
+each implicated node participates once per relevant phase for the complete
+component transaction rather than once per sink or downstream path.
+
+The lowerer may inline and specialize these callbacks so the runtime executor
+manipulates exact region sets and page/version state rather than generic graph
+data structures.
 
 ## Lowering boundary
 
@@ -992,7 +1060,7 @@ Its inputs include conceptually:
 ConfiguredGraph
 kernel specialization
 exact retained package modules
-resolved primitive tick/skip/access/propagation LLVM callbacks
+resolved primitive tick/tock/forward-region/reverse-region LLVM callbacks
 exact accepted declaration/lifecycle metadata/callbacks
 resolved configuration-pointer relocations
 ```
@@ -1005,7 +1073,7 @@ The lowerer produces:
 ```text
 canonical finalized NodeLayout
 specialized project-root node LLVM
-compiled-access component executor LLVM
+indexed-component executor LLVM
 immutable LLVM globals/tables needed by those programs
 host metadata naming the generated root/component symbols and internal endpoints
 ```
@@ -1032,15 +1100,14 @@ project/rebuild + definition-generation provenance
 exact participating PackageRevision pins
 specialized zero-input/zero-output root node operations
 canonical NodeLayout
-compiled-access endpoint index
-specialized compiled-access component entrypoints/metadata
+indexed endpoint index
+specialized indexed-component entrypoints/metadata
 ORC code/resource lifetime handle
 debug/execution-plan metadata
 ```
 
 It does not own mutable `NodeStorage` and does not define a second state-layout
-representation. It also does not need a synthetic project-wide
-`access_block()`; compiled-output requests are routed through the internal
+representation. It also does not need a synthetic project-wide indexed/tock interface; indexed-output requests are routed through the internal
 endpoint/component index.
 
 `CompiledGraph` owns code, layout, and immutable planning metadata.
@@ -1052,18 +1119,73 @@ endpoint/component index.
 It owns:
 
 - active and pending executable generations;
-- one live `NodeStorage` per retained executable generation;
+- one canonical `NodeStorage` per retained executable generation;
 - state/`CompiledState` initialization, migration/move, release, and destruction
   through the canonical layout/lifecycle machinery;
-- pass-scoped execution state/resources;
+- generation-local dynamic indexed sidecars containing output coverage, sorted
+  page directories, cache policy/residency, page payload handles, and validity
+  versions;
+- reusable indexed transaction workspaces/arenas for request-sized planning and
+  `cache = never` materialization;
+- indexed semantic versions plus candidate/published indexed snapshots;
+- forward mutation/change transactions and reverse-demand/tock transactions;
 - sequential root-node execution requests;
-- compiled sample/event requests routed to the active generation's internal
-  compiled-access components;
-- safe-point activation.
+- indexed sample/event requests routed to the active generation's internal
+  indexed components;
+- live-required indexed readiness;
+- whole-live-graph-block indexed snapshot publication/reclamation; and
+- safe executable-generation activation.
 
-Receiving a new generation does not mutate an in-progress audio pass. Expensive
-work that is safe outside the pass boundary may be prepared immediately, but the
-active generation changes only after the current pass completes.
+Dynamic indexed cache pages do not migrate between executable generations in the
+initial implementation. Compatible node `State` / indexed persistent state may
+migrate through ordinary `NodeStorage` lifecycle rules; retained cache migration
+is a later optimization requiring a proof of stable output identity and
+equivalent indexed semantics.
+
+### Indexed mutation/version entry
+
+Any mutation that changes indexed semantics enters through an executor-controlled
+boundary. A UI/state edit may create a new desired indexed semantic version and
+run forward propagation even with zero changed indexed inputs. Realtime recorder/
+source code must not traverse dynamic indexed structures on the audio path; it
+records bounded changed-output/coverage notifications in preallocated pass-local
+storage, which `GraphExecutor` consumes after the whole live graph block.
+
+Tock work is tagged with the semantic version against which it was planned. A
+result computed for an obsolete version cannot commit as valid for a newer one.
+Superseded work may be cancelled or discarded; cross-version page reuse is an
+optimization only when equivalence is proven.
+
+### Initial coverage and indexed snapshots
+
+After node state initialization/migration, the generation runs an initial forward
+transaction to establish output coverage. This does not imply eager tocking.
+UI-only indexed outputs may remain unmaterialized indefinitely.
+
+Realtime processing observes one immutable **published indexed snapshot** for an
+entire live graph block. If an edit changes indexed data required by live DSP,
+the current live graph continues using the previous complete snapshot while a
+new candidate is evaluated off the realtime path. The candidate becomes
+publishable only when every indexed page the live graph may read is complete for
+that candidate version. Publication occurs atomically before or after processing
+the entire live graph block, never between node ticks.
+
+Unchanged pages/direct representations may be structurally shared between
+snapshots. Published live-visible payload is immutable while any live pass can
+observe it, and old snapshots are reclaimed only after such passes have finished.
+This deliberately chooses temporary semantic latency after an edit over a
+realtime underrun.
+
+The exact authored mechanism that describes which indexed regions live DSP may
+read can evolve. A conservative first implementation may require every covered
+page of an indexed input readable by `tick_block()`; later traits may narrow that
+standing live requirement. The audio thread itself never triggers
+`tock_region_batch()`.
+
+Receiving a new executable generation likewise does not mutate an in-progress
+audio pass. Expensive preparation may happen immediately off the hot path, but
+both executable-generation activation and indexed-snapshot publication occur
+only at legal whole-pass boundaries.
 
 This keeps the useful replacement invariant from the old task-runner mechanism
 without retaining the old task graph.
@@ -1100,7 +1222,7 @@ logical whole-graph lowering
     v
 dependency / schedule / SCC / region analysis
     |
-    +--> compiled-port component + reverse/forward order analysis
+    +--> indexed component + forward-invalidation/reverse-demand order analysis
     |
     v
 history / latency / event-window analysis
@@ -1116,7 +1238,7 @@ canonical declaration/layout planning
     +--> finalized NodeLayout + constant offsets
     |
     v
-specialized project-root + compiled-access LLVM generation
+specialized project-root + indexed-component LLVM generation
     |
     v
 graph-specific optimization / -O3 / target optimization
@@ -1141,5 +1263,6 @@ allocation model.
 
 See [realtime_port_storage_planning.md](./realtime_port_storage_planning.md) for
 the rule that logical connections do not imply buffers, and
-[compiled_dsp_nodes.md](./compiled_dsp_nodes.md) for the globally batched
-compiled-access semantics that lowering specializes.
+[indexed_dsp_nodes.md](./indexed_dsp_nodes.md) for exact coverage/change
+propagation, whole-page covered-domain validity/versioning, reverse demand, and
+batched tock semantics that lowering specializes.

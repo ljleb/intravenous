@@ -60,7 +60,7 @@ graph-specific optimization
 native realtime kernel
 ```
 
-Lane/DSP control-plane convergence is independent of the whole-project kernel rewrite. A canonical project graph may replace `Timeline`/`LaneGraph` before the generated kernel exists, or kernel work may proceed underneath compatibility execution; neither path should require another project-identity migration. See [unified_graph_direction.md](./unified_graph_direction.md). Compiled DSP-port semantics are specified separately in [compiled_dsp_nodes.md](./compiled_dsp_nodes.md) and must not be inferred from the legacy compiled-lane runtime.
+Lane/DSP control-plane convergence is independent of the whole-project kernel rewrite. A canonical project graph may replace `Timeline`/`LaneGraph` before the generated kernel exists, or kernel work may proceed underneath compatibility execution; neither path should require another project-identity migration. See [unified_graph_direction.md](./unified_graph_direction.md). Indexed DSP-port semantics are specified separately in [indexed_dsp_nodes.md](./indexed_dsp_nodes.md) and must not be inferred from the legacy compiled-lane runtime.
 
 ---
 
@@ -88,10 +88,10 @@ The preferred words are:
 - **execution plan**: the finalizer's derived schedule/state/storage description before or alongside LLVM generation;
 - **finalizer**: the internal whole-project compiler stage owned by `GraphJit`; it has the complete configured root graph and emits the finalized native artifact/kernel;
 - **cache**: persisted reusable results whose invalidation is explicit;
-- **compiled port**: an ordinary DSP sample or event port with kind-appropriate
-  arbitrary access, as specified by [compiled_dsp_nodes.md](./compiled_dsp_nodes.md);
-  compiled samples are addressable at global sample positions, compiled events by
-  global event ranges, and `compiled` is a capability rather than a storage class.
+- **indexed port**: an ordinary DSP sample or event port with kind-appropriate
+  arbitrary global access, persistent region validity, and incremental evaluation,
+  as specified by [indexed_dsp_nodes.md](./indexed_dsp_nodes.md); `indexed` is an
+  access/evaluation capability rather than a storage class.
 
 A useful invariant is:
 
@@ -162,13 +162,16 @@ struct NodeCompilerRecord {
 
 `NodeCodeKey` is deliberately build-local. It is a compiler join between a configured node instance and LLVM functions in that build, not a persistent server identity.
 
-The compiled-access entries are normalized compiler anchors rather than
-compatibility-executor callbacks. `access_block_batched` is present exactly for
-statically declared compiled-output nodes. The propagation anchor is present
-only when the node has both compiled outputs and compiled inputs; output-only
-sources and compiled-input-only sequential consumers have no backward demand to
-propagate. These anchors also force the provider build to retain the relevant
-LLVM implementations for later whole-project import/inlining.
+The current `access_block_batched` / `propagate_block_access_batched` names are
+legacy indexed-domain compiler anchors. The intended contract is
+`tock_region_batch`, `propagate_forward_region_batch`, and
+`propagate_reverse_region_batch`; the compiler record will need corresponding
+anchors as the API migrates. An indexed-output node needs a tock implementation.
+Reverse propagation is needed only where indexed output demand can reach indexed
+inputs. Forward propagation maps changed indexed inputs to changed indexed
+outputs, while arbitrary node-local mutations may seed changed output regions
+directly. These anchors also force provider builds to retain the relevant LLVM
+implementations for whole-project import/inlining.
 
 Concrete nodes realized through a registered `IV_NODE` also retain explicit
 `RegisteredNodeTypeIdentity` provenance: the canonical stable node ID and the
@@ -681,7 +684,7 @@ stable id
 state layout / state metadata
 lifecycle implementation
 LLVM tick/skip/declare implementation
-LLVM compiled-access / demand-propagation implementation when applicable
+LLVM indexed tock / forward-region / reverse-region implementation when applicable
 source/type metadata
 configuration construction entry
 ```
@@ -1333,8 +1336,8 @@ schedule/storage/LLVM generation
 
 Changing `B` recompiles the project kernel, not the node implementations or iv-module C++ sources.
 
-`B` is a sequential realtime execution parameter. It does not constrain compiled
-random-access queries: an `AccessRequest` may ask for a dense or sparse set of
+`B` is a sequential realtime execution parameter. It does not constrain indexed
+random-access requests: a region request may ask for a dense or sparse set of
 global sample positions over an arbitrary interval, independently of the current
 realtime block size.
 
@@ -1467,53 +1470,87 @@ Multiple instances of one registered node type share one implementation function
 
 State should lower to direct typed state storage known by the graph compiler rather than repeatedly treating state as an untyped byte span in the hot path.
 
-Compiled-capable nodes may additionally declare `CompiledState`. Sequential
-`State` and `CompiledState` have distinct storage identities, but the same mutable
-`CompiledState` object is intentionally visible to both realtime `tick_block()`
-and arbitrary `access_block()` evaluation. This is what permits explicit recorder
-nodes to append realtime input into wide state during tick execution and expose it
-later through compiled outputs. `access_block()` must not depend on sequential
-`State` or request order. Node lifecycle/storage planning must support both state
-objects without requiring heap allocation or a particular physical layout.
+Indexed-capable nodes may additionally declare indexed-domain persistent state
+(currently named `CompiledState`). Sequential `State` and indexed state have
+distinct storage identities, but the same mutable indexed state object is
+intentionally visible to both realtime `tick_block()` and indexed
+`tock_region_batch()` evaluation. This permits explicit recorder/source nodes to
+append realtime input into authoritative indexed state during tick execution,
+report changed indexed output regions, and let downstream derived validity become
+stale without forcing immediate evaluation. `tock_region_batch()` must not depend
+on sequential `State` or request order. Node lifecycle/storage planning must
+support both state objects without requiring heap allocation or a particular
+physical layout.
 
 This gives LLVM ordinary field-addressing and alias information after inlining.
 
-### 16.6 Compiled DSP access is planned, not recursively pulled
+### 16.6 Indexed DSP evaluation uses coverage, page validity, forward change, and reverse demand
 
-The normative compiled-port design is
-[compiled_dsp_nodes.md](./compiled_dsp_nodes.md). The whole-project compiler and
+The normative indexed-port design is
+[indexed_dsp_nodes.md](./indexed_dsp_nodes.md). The whole-project compiler and
 runtime must preserve these integration rules:
 
-- sample/event kind and realtime/compiled access are orthogonal declaration
-  axes; realtime declarations carry finite `RealtimeInputConfig` /
-  `RealtimeOutputConfig` timing while compiled declarations carry the empty
-  `CompiledPortConfig`;
-- compiled **input** access remains additive at the typed `tick()` / `tick_block()`
-  accessor surface; compiled outputs are absent from that write surface and are
-  produced only by `access_block*`;
-- `tick_block()` is sequential realtime execution over realtime/compiled inputs,
-  realtime outputs, `State`, and mutable `CompiledState`; `access_block()` is a
-  separate arbitrary compiled evaluation over compiled ports and that same mutable
-  `CompiledState`; neither callback is synthesized from the other;
-- compiled sample queries may request sparse deterministic integer sample
-  positions as well as dense ranges, while compiled event queries request event
-  intervals and preserve all events in those intervals;
-- the caller submits one global batch of sink-output requests;
-- requirements propagate in reverse topological order and are unioned/coalesced
-  per compiled port before an upstream node is visited;
-- only after the complete demand graph is known does evaluation run forward; and
-- temporary/intermediate representation is selected after planning from actual
-  consumers and request sets.
+- sample/event kind and realtime/indexed access are orthogonal declaration axes;
+- every indexed output publishes canonical finite `IndexedCoverage`; there is no
+  separate indexed extent/bounding-hull abstraction, and node callbacks never
+  request indexed values outside input coverage;
+- indexed inputs expose the union of connected/mapped output coverages to both
+  realtime tick and indexed tock code;
+- canonically aligned cache pages are a physical materialization unit only: one
+  page's semantic domain is exactly `page_interval & output_coverage`, and
+  coverage is never widened to page boundaries;
+- retained page validity is all-or-nothing for that exact page domain and indexed
+  semantic version; per-sample validity is not required;
+- sparse logical/UI sample requests select touched pages. A valid touched page is
+  reused; an invalid touched page promotes work to its complete covered page
+  domain before reverse propagation through that producer;
+- exact forward changed regions are **not** widened to page boundaries merely
+  because they invalidate a retained page;
+- arbitrary node-local mutations may schedule forward processing with zero
+  changed indexed inputs, update output coverage, and/or report exact changed
+  regions;
+- added/removed coverage and changed regions propagate forward through
+  `propagate_forward_region_batch()` without invoking tock evaluation;
+- reverse requirements are unioned/coalesced at converging paths and clipped to
+  exact input coverage; valid upstream pages terminate traversal, while invalid
+  upstream pages promote the request to their complete covered page domains;
+- after reverse planning, `tock_region_batch()` executes in forward dependency
+  order and receives exactly the selected covered page domains, never uncovered
+  page portions, already-valid pages, or blind sparse caller positions;
+- forward and reverse propagation are opposite graph-direction dependency
+  queries, not mathematical inverses;
+- physical retention remains a compiler/runtime choice governed by an
+  `automatic` / `always` / `never` cache policy; transaction-local sharing is
+  still permitted for `never` outputs;
+- sample page payload may be dense or coverage-packed, while event pages keep
+  packed ordered events with capacity based on
+  `max_events_per_index * measure(page_domain)`; and
+- indexed event reads that span pages use a segmented ordered iterator/range.
 
-The first implementation deliberately does not persistently cache deterministic
-computed compiled outputs. This does not prevent per-query coalescing, temporary
-materialization, or node-owned `CompiledState`. It also has no implicit
-realtime-to-compiled edge: a graph that needs recording must use an explicit
-node with a realtime input and compiled output.
+Fixed node/indexed persistent state belongs to canonical `NodeStorage`;
+dynamically growing indexed page directories/payloads belong to a generation-
+local `GraphExecutor` sidecar, with request-sized transaction workspaces outside
+`NodeStorage` unless a useful fixed bound is known.
 
-The planner should expose enough information to the later whole-graph compiler to
-fuse, forward directly, allocate dense or sparse temporaries, or otherwise avoid
-materialization when random access is declared but not actually demanded.
+Indexed mutations/results are semantic-versioned. UI/state edits may create a
+new candidate indexed version while realtime continues using the previous
+immutable published indexed snapshot. Realtime recorder/source code reports
+bounded changed-output information for executor-side propagation rather than
+traversing dynamic indexed structures on the audio path. Tock work computed for
+an obsolete version may not commit as valid for a newer one.
+
+Any indexed data readable by realtime execution must be complete in the
+candidate snapshot before that snapshot becomes visible to the live graph. The
+audio thread never triggers `tock_region_batch()` and never waits for indexed
+recomputation. A completed candidate publishes atomically only before or after
+processing the **entire** live graph block, so one live pass observes one coherent
+indexed snapshot. Temporary semantic latency after an edit is preferred over a
+realtime underrun.
+
+Lowering specializes indexed connected components, forward-change order, reverse
+demand order, and callback targets ahead of time. `GraphExecutor` owns dynamic
+coverage/page/version/materialization state, candidate/published indexed
+snapshots, and their safe-boundary publication/reclamation.
 
 ---
 
@@ -1577,10 +1614,13 @@ A connection/sample stream is a logical time-indexed value sequence.
 
 This section primarily describes sequential realtime streams, history/latency,
 and feedback storage. Do not treat those mechanisms as the physical definition of
-a compiled port. Compiled random-access queries follow
-[compiled_dsp_nodes.md](./compiled_dsp_nodes.md): their request sets are planned
-first, and any dense/sparse temporary representation is chosen afterward for that
-query.
+an indexed port. Indexed random access follows
+[indexed_dsp_nodes.md](./indexed_dsp_nodes.md): exact changed regions are updated
+by forward propagation, retained pages are invalidated as whole covered page
+domains, and sparse logical access selects invalid pages whose exact
+`page_interval & coverage` domains are then propagated in reverse and materialized
+by tock. Physical dense/coverage-packed payload representation is chosen by the
+executor.
 
 Do not begin by assuming either:
 
@@ -2333,9 +2373,10 @@ The design is intentionally staged so the existing 443-test runtime can remain t
 
 ### Phase D — canonical project graph and lane-runtime removal
 
-1. Implement the ordinary DSP-node compiled-port semantics in
-   [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). Do not carry forward the
-   legacy timeline-owned compiled cache/invalidation architecture.
+1. Implement the ordinary DSP-node indexed-port semantics in
+   [indexed_dsp_nodes.md](./indexed_dsp_nodes.md). Do not carry forward the
+   legacy timeline-owned cache implementation; use the indexed model's explicit
+   region validity, forward invalidation, and lazy reverse-demand evaluation.
 2. Complete the separately designed generalized iv-module capability sufficiently
    that custom/composite user-facing objects no longer require lane types merely
    to own a subgraph or custom UI.
@@ -2471,11 +2512,12 @@ Important coverage includes:
 - virtual/tiled-node connections;
 - cross-module project connections;
 - module reload with stable virtual identities;
-- dense and sparse compiled `AccessRequest`s;
-- converging compiled-demand paths coalesced before producer execution;
-- multi-output/global compiled query batching;
-- compiled-access request-order independence; and
-- explicit realtime-to-compiled recording nodes followed by random access.
+- dense and sparse indexed region requests;
+- converging reverse-demand paths coalesced before producer execution;
+- forward invalidation caused by both input changes and node-local state changes;
+- multi-output/global indexed access batching;
+- indexed tock request-order independence; and
+- explicit realtime-to-indexed recorder/source nodes followed by random access.
 
 The existing test suite is a behavioral specification. The new kernel does not need to preserve obsolete runtime structures, but it must preserve relevant product semantics.
 
@@ -2516,42 +2558,51 @@ The following are treated as strong architectural decisions unless implementatio
 26. **Built-ins are an ordinary shipped IV package.** Public non-template
     basic node types are registered there; template families stay internal
     until a concrete specialization receives an explicit stable ID.
-27. **Compiled is a DSP-port access model, not a storage class or parallel graph.**
-    Sample/event kind is orthogonal to realtime/compiled access. A port
-    declaration chooses finite realtime timing or compiled random access; it does
-    not carry both timing configs. The typed `tick()` / `tick_block()` wrapper for
-    a compiled port nevertheless retains the corresponding ordinary current-block
-    operations. Compiled sample outputs are queryable at arbitrary global sample
-    positions and compiled event outputs over arbitrary global event intervals.
-28. **Compiled queries are globally demand-planned.** Reverse requirement
-    propagation/union precedes forward evaluation; upstream work is not greedily
-    executed once per downstream path.
-29. **`access_block()` is order-independent arbitrary access.** It sees only
-    compiled ports and `CompiledState`, never realtime-only ports or sequential
-    `State`. `tick_block()` may use compiled inputs and may be synthesized from
-    access where the static port contract makes that valid, never vice versa.
-30. **Compiled capability does not imply materialization or persistent computed
-    caching.** The initial implementation chooses temporary representations after
-    planning and discards computed results after the query.
-31. **Realtime-to-compiled is explicit.** The initial graph has no implicit
-    recording edge. A node with a realtime input and compiled output owns any
-    recording/source-data semantics; this remains distinct from a
-    deterministic-output cache.
-32. **One executable generation has one canonical `NodeStorage`.** Node `State`,
-    `CompiledState`, history/feedback/event carry, root-owned persistent state,
-    and fixed-capacity reusable compiler regions are declared into one
-    `NodeLayout`. Generated code may use low-level raw aligned layout regions and
-    constant offsets when that is more efficient than authored `std::span`
-    fields; this does not create a second storage system.
-33. **The compiled project root has no synthetic compiled-access interface.** It
-    remains a zero-input/zero-output node and therefore has no project-wide
-    `access_block()`. `CompiledGraph` indexes requestable internal compiled output
-    ports into statically planned compiled-access components/executors.
-34. **Compiled-access topology is specialized ahead of time.** Lowering may
-    partition compiled-port connected components and precompute reverse demand
-    and forward evaluation order. A runtime query may target any number of
-    internal compiled-output nodes; all sinks in one component are seeded before
-    reverse propagation so shared upstream demand is coalesced before execution.
+27. **Indexed is a DSP-port access/evaluation model, not a storage class or parallel graph.**
+    Sample/event kind is orthogonal to realtime/indexed access. Indexed samples
+    are globally position-addressable and indexed events are globally
+    interval-addressable inside exact `IndexedCoverage`.
+28. **Coverage is exact; cache validity is page-granular.** A canonical cache
+    page has one validity/version state for exactly
+    `page_interval & output_coverage`. Page boundaries never widen coverage.
+29. **Sparse logical demand selects pages rather than forcing sparse per-sample tocking.**
+    Touching an invalid page promotes work to its complete covered page domain;
+    touching a valid page is a cache hit.
+30. **Forward invalidation is independent of demand and remains exact.** Indexed
+    input changes and arbitrary node-local mutations may seed changed output
+    regions at any time; those exact regions propagate forward without forcing
+    immediate recomputation or being widened to page boundaries.
+31. **Reverse demand and forward invalidation are dual directional dependency queries.**
+    `propagate_reverse_region_batch()` maps selected output page domains to
+    required inputs; `propagate_forward_region_batch()` maps exact changed
+    inputs/state to possibly changed outputs. They are not inverses.
+32. **`tock_region_batch()` is order-independent indexed evaluation.** It sees
+    exactly selected covered page domains that need computation, never uncovered
+    physical-page portions, already-valid pages, or blind sparse caller points,
+    and must not depend on sequential `State` or request order.
+33. **Realtime-to-indexed mutation is explicit.** Recorder/source nodes may mutate
+    authoritative indexed state and report bounded changed indexed output
+    regions for later executor-side propagation; this does not turn indexed
+    evaluation into an audio-rate scheduler.
+34. **One executable generation has one canonical fixed `NodeStorage`.** Node
+    `State`, indexed-domain state (currently `CompiledState`), history/feedback/
+    event carry, root-owned fixed persistent state, and bounded compiler regions
+    are declared into one `NodeLayout`. Dynamically growing indexed page caches
+    and request-sized transaction arenas are executor-owned sidecars, not a
+    second node-state layout.
+35. **Indexed results are semantic-versioned and realtime observes immutable published snapshots.**
+    New edits build candidate indexed versions off the realtime path; stale work
+    cannot commit into newer versions. A candidate used by live DSP publishes
+    atomically only at a whole-live-graph block boundary after all live-required
+    indexed pages are complete. The previous snapshot remains active meanwhile.
+36. **The JIT-compiled project root has no synthetic indexed interface.** It
+    remains a zero-input/zero-output node. `CompiledGraph` indexes requestable
+    internal indexed output ports into statically planned indexed component
+    executors and metadata.
+37. **Indexed topology is specialized ahead of time.** Lowering partitions the
+    indexed subgraph into indexed connected components and precomputes forward
+    change, reverse demand, and evaluation order. Runtime transactions manipulate
+    exact region sets plus page/version state rather than rediscovering topology.
 
 ---
 
@@ -2613,7 +2664,7 @@ old lane runtime before treating the new DSP kernel as the immediate target.
 The current sequence is:
 
 ```text
-1. implement compiled DSP ports/access planning from compiled_dsp_nodes.md
+1. implement indexed DSP ports/coverage/page-validity/region planning from indexed_dsp_nodes.md
 2. design and implement generalized iv modules not inherently backed by C++ packages
 3. establish canonical project-owned instances/connections/endpoints/state
 4. delete Timeline/LaneGraph/TimelineExecution and lane proxy/execution machinery
@@ -2623,11 +2674,17 @@ The current sequence is:
 ```
 
 Items 1 and 2 should define semantic/API boundaries, not preserve lane classes.
-After those plans are precise, low-level compiled-port decisions intentionally
-left open by `compiled_dsp_nodes.md`—request ABI details, request-set data
-structures, planner representation, temporary allocation strategy, recording
-storage, and trait/context implementation—can be investigated without confusing
-them with the obsolete timeline execution model.
+After those plans are precise, remaining low-level indexed-port decisions—exact
+region ABI layout, page width, dense-versus-coverage-packed sample payload
+thresholds, flat page directory/arena details, automatic-cache heuristics,
+event-payload reservation strategy, planner workspace representation,
+recorder/source backing choices, live-read-requirement traits, and concrete
+mutation/notification ABI—can be investigated without confusing them with the
+obsolete timeline execution model. The semantic choices in
+[indexed_dsp_nodes.md](./indexed_dsp_nodes.md)—canonical sparse coverage, exact
+forward change propagation, whole-page covered-domain validity, invalid-page
+reverse promotion, semantic versions, and whole-live-block snapshot
+publication—are no longer intentionally open.
 
 ---
 
@@ -2721,6 +2778,6 @@ them with the obsolete timeline execution model.
 
 The key architectural split is now short enough to state directly:
 
-> **Packages provide versioned node definitions and retained implementation LLVM. `NodeInstances` caches configured node instances by definition generation + argument values. `ProjectGraph` composes one complete root `ConfiguredGraph`; `GraphConnections` resolves stable project port matchers before compilation. `GraphJit` lowers that project to a specialized zero-port root node plus internal compiled-access executors, builds one canonical `NodeLayout`, optimizes/materializes the LLVM generation, and returns immutable execution metadata. `GraphExecutor` owns the corresponding `NodeStorage`, ordinary lifecycle/migration, request execution, and safe-boundary activation.**
+> **Packages provide versioned node definitions and retained implementation LLVM. `NodeInstances` caches configured node instances by definition generation + argument values. `ProjectGraph` composes one complete root `ConfiguredGraph`; `GraphConnections` resolves stable project port matchers before compilation. `GraphJit` lowers that project to a specialized zero-port root node plus internal indexed-component executors, builds one canonical `NodeLayout`, optimizes/materializes the LLVM generation, and returns immutable execution metadata. `GraphExecutor` owns the corresponding `NodeStorage`, ordinary lifecycle/migration, request execution, and safe-boundary activation.**
 
 That is the foundation for both fast whole-project graph reload and the later unified project graph.

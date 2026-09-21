@@ -34,8 +34,8 @@ registered construction, greedy iv-module expansion, retained lossless
 `ConfiguredGraph`s, and explicit registered primitive provenance), but those
 changes make the project-graph convergence simpler rather than invalidating it.
 
-Compiled DSP-port semantics are specified separately and normatively in
-[compiled_dsp_nodes.md](./compiled_dsp_nodes.md). This document describes how
+Indexed DSP-port semantics are specified separately and normatively in
+[indexed_dsp_nodes.md](./indexed_dsp_nodes.md). This document describes how
 that capability fits the unified project graph; it should not restate or replace
 the node API, request-planning, or storage rules from that document.
 
@@ -320,49 +320,60 @@ extra graph nodes merely for presentation.
 
 ## Execution and runtime state
 
-Compiled and realtime are capabilities of ordinary DSP ports in the same graph,
+Indexed and realtime are capabilities of ordinary DSP ports in the same graph,
 not indicators of different node families or graph executors. The normative
-contract is in [compiled_dsp_nodes.md](./compiled_dsp_nodes.md). In summary:
+contract is in [indexed_dsp_nodes.md](./indexed_dsp_nodes.md). In summary:
 
-- sample/event kind and realtime/compiled access are orthogonal declaration axes;
-- a declaration chooses either bounded realtime timing (`RealtimeInputConfig` /
-  `RealtimeOutputConfig`) or compiled random access (`CompiledPortConfig`);
-- compiled **inputs** still expose the ordinary current-block typed wrapper during
-  `tick()` / `tick_block()` and add arbitrary reads there; compiled outputs are
-  not writable from tick execution and are produced only by `access_block*`;
-- a compiled sample output can be requested at arbitrary global sample positions,
-  while a compiled event output can be queried over arbitrary global intervals;
-- a compiled input extends the corresponding ordinary realtime sample/event
-  access rather than replacing it with a separate resource API;
-- compiled sample requests may use sparse sampled grids, while compiled event
-  requests preserve every event in the requested interval;
-- compiled access does not imply persistent materialization, buffering, or
-  caching;
-- sequential `tick_block()` and arbitrary `access_block()` are distinct execution
-  modes that are not synthesized from one another; `tick_block()` reads realtime/
-  compiled inputs, writes realtime outputs, and may mutate `State` plus
-  `CompiledState`, while `access_block()` sees only compiled ports plus the same
-  mutable `CompiledState`;
-- a compiled query is planned globally: demands propagate in reverse topological
-  order, request sets are unioned/coalesced, and evaluation then runs forward;
-- temporary representation/materialization is chosen only after planning; and
-- the initial graph has no implicit realtime-to-compiled edge; any recording is
-  an explicit node with a realtime input and compiled output, rather than a
-  general computed-output cache policy.
+- sample/event kind and realtime/indexed access are orthogonal declaration axes;
+- every indexed output publishes finite `IndexedCoverage`, a canonical union of
+  disjoint half-open regions; there is no separate indexed extent abstraction;
+- indexed sample/event access is legal only inside coverage, and an indexed
+  input exposes the union of the mapped coverages of its connected outputs to
+  both `tick_block()` and `tock_region_batch()`;
+- canonically aligned cache pages are a physical materialization unit only: a
+  page is wholly valid/invalid for exactly `page_interval & coverage`, so page
+  boundaries never force node code to process outside actual coverage;
+- sparse UI/logical demand selects touched pages. Valid pages are reused; an
+  invalid touched page is promoted to its complete covered page domain before
+  reverse dependency propagation/tock processing;
+- arbitrary mutations may schedule forward processing even with zero changed
+  indexed inputs, may update output coverage, and may report exact changed
+  output regions without forcing evaluation;
+- added/removed coverage and exact changed regions propagate forward through the
+  indexed subgraph; cache invalidation may be page-granular locally but does not
+  widen the semantic change sent downstream;
+- reverse requirements are clipped to coverage; valid upstream pages terminate
+  traversal, while invalid upstream pages expand to their full covered page
+  domains before reverse propagation continues;
+- `tock_region_batch()` receives only the selected covered page domains, never
+  uncovered physical-page portions, already-valid pages, or blind sparse caller
+  positions;
+- forward and reverse region propagation are opposite directional dependency
+  queries, not inverse mappings;
+- fixed node/indexed persistent state remains in canonical `NodeStorage`, while
+  dynamically growing indexed caches and request-sized transaction storage are
+  executor-owned generation sidecars;
+- indexed results are semantic-versioned. Realtime continues using one immutable
+  previously published indexed snapshot while edits/tocks build a newer
+  candidate off the hot path; and
+- a live-required candidate publishes atomically only at a whole-live-graph block
+  boundary after every indexed page the live graph may read is ready. The audio
+  thread never waits for or triggers indexed tock processing.
 
-The initial compiled-data implementation deliberately has no persistent cache of
-deterministic computed outputs. `CompiledState` is node-managed arbitrary-access
-state and is distinct from any future framework cache. Old `TimelineExecution`
-compiled caches, invalidation spans, explicit recording-lane requirements, and
-prepared-resource input APIs are therefore migration history, not replacement
-architecture.
+The graph has no implicit realtime-to-indexed edge. Recorder/source nodes own any
+transition from realtime mutation to changed indexed output regions and report
+bounded change notifications for executor-side propagation after the live pass.
+
+Legacy `compiled` port/callback/state identifiers may remain temporarily in the
+implementation while this terminology migrates. `CompiledGraph` keeps its name
+because it is the actual GraphJit artifact, not an indexed-data object.
 
 Realtime sample/event connections follow the same storage-independent principle.
 `ConfiguredGraph` records logical connection semantics only. The whole-project
 compiler derives history/latency/event-window correctness requirements, chooses
 physical connection implementations with a pure testable planner, performs
 transient liveness/scratch reuse, and only then emits LLVM. Realtime event
-outputs must have finite compiler-known production windows; compiled event access
+outputs must have finite compiler-known production windows; indexed event access
 remains arbitrary-range. See
 [realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
 
@@ -398,14 +409,15 @@ general iv modules, focused services, or project/UI state as appropriate.
 The capabilities that must be designed independently of the old lane
 implementation are:
 
-1. **Compiled DSP ports.** Implement the semantics in
-   [compiled_dsp_nodes.md](./compiled_dsp_nodes.md): compiled access is
-   orthogonal to sample/event kind, so both compiled sample and compiled event
-   ports remain first-class. Use global batched demand planning, cacheless
-   computed access initially, kind-appropriate sample/event request semantics,
-   and explicit realtime-to-compiled recording nodes where a graph needs that
-   transition. Do not migrate `TimelineExecution` compiled caches or invalidation
-   machinery into this model.
+1. **Indexed DSP ports.** Implement the semantics in
+   [indexed_dsp_nodes.md](./indexed_dsp_nodes.md): indexed access is orthogonal
+   to sample/event kind; exact changed regions propagate forward without eager
+   evaluation; retained cache validity is whole-page for exact covered page
+   domains; sparse logical demand selects invalid pages whose covered domains
+   propagate in reverse and execute through `tock_region_batch()`; and realtime
+   observes only complete published indexed snapshots. Realtime-to-indexed
+   transitions remain explicit recorder/source semantics rather than implicit
+   graph edges.
 2. **General iv modules.** Complete the separately planned abstraction by which an
    iv module need not be backed by a C++ IV package, may own/manage a project
    subgraph, and may provide a custom UI. The exact API remains follow-up design
@@ -453,7 +465,7 @@ Preserve or reinterpret:
 Replace:
 
 - `Timeline` as the canonical graph owner;
-- lane execution scheduling and compiled/realtime executor partitioning;
+- lane execution scheduling and legacy indexed/realtime executor partitioning;
 - separate lane and DSP runtime graphs;
 - graph input/output proxy lanes; and
 - eventually, per-module DSP execution partitions.
@@ -474,10 +486,11 @@ The following are intentionally unresolved:
 - reification provenance and subsumption correspondence APIs;
 - interactions between user-created and iv-module-managed hierarchy;
 - C++ expression support in ordinary webviews;
-- low-level compiled-port API/ABI choices intentionally left open by
-  `compiled_dsp_nodes.md` (including exact sample-request endpoint/index mapping,
-  compiled-event range APIs and ordering, request-set representation/coalescing,
-  and concrete planner/runtime data structures);
+- low-level indexed-port API/ABI/tuning choices intentionally left open by
+  `indexed_dsp_nodes.md` (including exact request endpoint/index ABI, concrete
+  segmented-event iterator types, cache page width, payload/arena layout,
+  automatic-cache heuristics, live-read-requirement traits, and concrete
+  mutation/notification data structures);
 - kernel invalidation, caching, inlining, and state layout; and
 - the most useful generic and specialized graph-editing surfaces.
 
@@ -509,12 +522,19 @@ this direction.
     require user disambiguation.
 12. Runtime-state migration remains essential, while the old lane scheduler and
     module execution partitions do not.
-13. Compiled data is an ordinary DSP-port capability, not a parallel lane/node
+13. Indexed data is an ordinary DSP-port capability, not a parallel lane/node
     graph or a storage class.
-14. Compiled capability does not imply persistent materialization or caching;
-    storage is chosen from actual query/consumer demand.
-15. Arbitrary compiled access is globally demand-planned before execution, with
-    reverse requirement propagation followed by forward evaluation.
-16. The initial framework does not persistently cache deterministic compiled
-    outputs. Explicit realtime-to-compiled nodes may own retained source data;
-    that is a separate concept from such a cache.
+14. Indexed outputs publish canonical sparse coverage; node code never requests
+    indexed values outside that coverage.
+15. Indexed cache validity is page-granular without widening semantic coverage:
+    one canonical page is valid/invalid for exactly `page_interval & coverage`;
+    cache retention is a separate `automatic` / `always` / `never` policy.
+16. Exact changed indexed regions and coverage changes propagate forward without
+    eager evaluation. Later access selects touched pages, reuses valid pages,
+    promotes invalid pages to their exact covered page domains, propagates those
+    domains in reverse, and evaluates them with `tock_region_batch()`.
+17. Explicit realtime-to-indexed recorder/source nodes may mutate authoritative
+    indexed source data and seed changed output regions/coverage without forcing
+    downstream recomputation. Live DSP continues using the prior immutable
+    published indexed snapshot until a complete candidate publishes at a
+    whole-live-graph block boundary.

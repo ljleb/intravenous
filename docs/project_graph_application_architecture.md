@@ -148,9 +148,9 @@ to be collapsed onto the existing node runtime model: the generated project is a
 zero-input/zero-output root node; lowering finalizes the canonical `NodeLayout`
 *before* final LLVM generation by executing the exact accepted declaration
 callbacks and declaring compiler-owned raw regions; `GraphExecutor` owns the
-corresponding `NodeStorage`; and internal compiled outputs are reached through
-specialized compiled-access metadata rather than a synthetic project-root
-`access_block()`. Final layout offsets are therefore compile-time constants in
+corresponding `NodeStorage`; and internal indexed outputs are reached through
+specialized indexed-component metadata rather than a synthetic project-root
+`tock_region_batch()`. Final layout offsets are therefore compile-time constants in
 the generated LLVM. `GraphExecutor` remains
 unimplemented. Structured connection persistence/JSON-RPC adapters are also still
 pending; the typed project command surface and canonical connection owner now
@@ -480,7 +480,7 @@ they may share low-level LLVM helper code.
 
 Compilation is intentionally synchronous inside the `ProjectGraph` root-build
 transaction. The compiler is expected to perform graph-specific scheduling,
-connection, temporal, storage, and compiled-access topology analysis before
+connection, temporal, storage, and indexed-topology analysis before
 generating LLVM so the final LLVM program is already small/specialized enough
 for a fast final optimization/codegen pass. Do not introduce an asynchronous
 graph-JIT generation boundary merely to hide avoidable compiler work.
@@ -493,19 +493,22 @@ low-level raw aligned-region declaration when generated code can address storage
 more efficiently by constant offset than through an authored `std::span` field.
 There is no parallel graph-kernel storage arena.
 
-The root has no compiled outputs and therefore no project-wide
-`access_block()`. Whole-project lowering instead partitions internal
-compiled-port topology into static components, precomputes reverse-demand and
-forward-evaluation order, and emits specialized access executors plus immutable
-endpoint metadata. One logical request may target compiled outputs on any number
-of internal nodes; all sinks in a component are seeded before reverse propagation
-so converging demand can be unioned before producers execute.
+The root has no indexed outputs and therefore no project-wide
+`tock_region_batch()`. Whole-project lowering instead partitions the indexed
+subgraph into indexed connected components, precomputes forward-change,
+reverse-demand, and forward-evaluation order, and emits specialized component
+executors plus immutable endpoint metadata. Exact changed indexed regions may
+propagate forward at arbitrary times without forcing evaluation. Later logical
+access requests may target indexed outputs on any number of internal nodes;
+sparse requests select cache pages, valid pages are reused, and invalid pages are
+promoted to their exact `page_interval & coverage` domains before reverse
+propagation and `tock_region_batch()` evaluation.
 
 Logical sample/event connections do not imply buffers. Connection implementation
 selection is an explicit pure compiler-planning phase before LLVM generation;
 see [realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
-Compiled-access semantics and static planning are described in
-[compiled_dsp_nodes.md](./compiled_dsp_nodes.md).
+Indexed-access semantics and static planning are described in
+[indexed_dsp_nodes.md](./indexed_dsp_nodes.md).
 
 See [graph_jit_direction.md](./graph_jit_direction.md) for the complete root-node,
 `NodeLayout`/`NodeStorage`, ORC-lifetime, and lowering-boundary model.
@@ -522,16 +525,38 @@ project generation. It does not own ORC compilation.
 - one live canonical `NodeStorage` for each retained executable generation,
   created from that generation's `NodeLayout`;
 - ordinary `NodeStorage` initialization/move/release migration state needed to
-  activate a successor, including `CompiledState`;
-- pass-scoped execution state/resources;
-- sequential execution through the generated zero-port root node; and
-- compiled sample/event requests routed through the active generation's internal
-  compiled-access endpoint/component metadata.
+  activate a successor, including indexed-domain persistent state currently
+  named `CompiledState`;
+- generation-local dynamic indexed sidecars containing exact output coverage,
+  sorted page directories, whole-page validity/version state, cache policy,
+  residency, and stable page payload handles;
+- reusable indexed transaction workspace for reverse/forward planning and
+  request-sized `cache = never` materialization;
+- indexed semantic versions plus candidate/published indexed snapshots;
+- sequential execution through the generated zero-port root node;
+- indexed sample/event requests routed through the active generation's internal
+  indexed endpoint/component metadata;
+- executor-controlled UI/state mutation entry, realtime-to-indexed change
+  notification handoff, forward-change transactions, and reverse-demand/tock
+  transactions; and
+- whole-live-graph-block publication/reclamation of complete indexed snapshots.
 
-Receiving a new `CompiledGraph` does not mutate an in-progress audio pass. Work
-that is safe before the boundary may be prepared immediately, but replacement
-or modification of active execution occurs only after a complete pass has
-finished.
+Dynamic indexed caches are deliberately not part of fixed `NodeStorage`; cache
+page count and payload size depend on future coverage/access patterns. Fixed
+node/indexed state and bounded compiler-owned persistent regions continue to use
+one canonical `NodeLayout` / `NodeStorage`.
+
+Receiving a new `CompiledGraph` does not mutate an in-progress audio pass. The
+same rule applies to indexed edits: live execution keeps using one immutable
+published indexed snapshot while newer candidate versions are prepared off the
+hot path. A candidate that live DSP may read becomes visible only when its
+required indexed pages are complete, and publication occurs atomically before or
+after execution of the entire live graph block, never between node ticks.
+
+Realtime recorder/source code reports bounded indexed changes for executor-side
+processing after the pass rather than traversing dynamic indexed cache structures
+on the audio thread. Indexed work computed against an obsolete semantic version
+may not commit as valid for a newer one.
 
 The mechanism intentionally preserves the useful part of the deleted
 `TasksRunner` update model without preserving task-graph or lane semantics.
@@ -660,7 +685,7 @@ The implementation checkpoints now stand as follows:
 7. **Next lowering checkpoint:** extend canonical `NodeLayout`/`NodeStorage`
    for `CompiledState` and compiler-owned raw aligned regions, then introduce pure
    connection/history/latency/event-window storage planning and static
-   compiled-access component/order analysis inside the isolated whole-graph
+   indexed component/order analysis inside the isolated whole-graph
    lowering pipeline;
 8. **Landed (compiler shell + storage/lifecycle ABI cleanup):** `GraphJit`
    synchronously captures exact package LLVM/provenance, resolves compiler
@@ -670,7 +695,7 @@ The implementation checkpoints now stand as follows:
    root `tick_block`; primitive `skip_block` callbacks remain internal scheduler
    operations and are not exposed as a root ABI;
 9. introduce `GraphExecutor` ownership of `NodeStorage`, sequential root-node
-   execution, internal compiled-access requests, state migration, and
+   execution, internal indexed requests, state migration, and
    safe-boundary activation;
 10. integrate stable logical `SystemAudioDevices` bindings with ordinary system
     audio leaf node definitions;

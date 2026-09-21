@@ -6,7 +6,7 @@ Related documents:
 
 - [graph_jit_direction.md](./graph_jit_direction.md)
 - [builder_lowering_pipeline_design.md](./builder_lowering_pipeline_design.md)
-- [compiled_dsp_nodes.md](./compiled_dsp_nodes.md)
+- [indexed_dsp_nodes.md](./indexed_dsp_nodes.md)
 - [intravenous-llvm-hot-reload-and-whole-graph-design.md](./intravenous-llvm-hot-reload-and-whole-graph-design.md)
 
 ## Core rule: a connection is not a buffer
@@ -73,7 +73,7 @@ temporaries belong to the generated root's fixed stack frame.
 
 Any project-owned data that must survive from one execution call to another
 belongs in that layout. This includes history/latency carry, full persistent
-port buffers, feedback state, `State`, `CompiledState`, and activity state.
+port buffers, feedback state, `State`, indexed-domain state (currently named `CompiledState`), and activity state.
 Invocation-local port temporaries do not acquire persistent ownership merely
 because their maximum size is known: the generated root should reserve them in
 its fixed stack frame, subject to a compile-time stack budget, or choose a full
@@ -497,22 +497,25 @@ struct RealtimeOutputConfig {
     std::size_t latency = 0;
 };
 
-struct CompiledPortConfig {};
+struct IndexedPortConfig {};
 
 using InputAccessConfig =
-    std::variant<RealtimeInputConfig, CompiledPortConfig>;
+    std::variant<RealtimeInputConfig, IndexedPortConfig>;
 using OutputAccessConfig =
-    std::variant<RealtimeOutputConfig, CompiledPortConfig>;
+    std::variant<RealtimeOutputConfig, IndexedPortConfig>;
 ```
+
+`IndexedPortConfig` is the intended terminology. The implementation may still
+use the legacy identifier `CompiledPortConfig` while the API rename is staged.
 
 `InputConfig` / `OutputConfig` separately carry the sample/event payload variant
 and this access variant. `SampleInputProperties`, `SampleOutputProperties`,
 `EventInputProperties`, and `EventOutputProperties` do not carry history or
 latency. The same distinction is preserved in `ConfiguredGraph`; it must not be
-flattened back into a `compiled` boolean plus timing fields that are meaningless
-for compiled declarations.
+flattened back into an access-mode boolean plus timing fields that are meaningless
+for indexed declarations.
 
-This makes invalid combinations unrepresentable: a compiled port cannot
+This makes invalid combinations unrepresentable: an indexed port cannot
 accidentally acquire a finite realtime history or latency.
 
 `EventOutputProperties` additionally carries a static event-buffer sizing rate:
@@ -549,23 +552,44 @@ This sizing rate belongs to the event **output payload properties**, not to
 while `max_events_per_index` lets GraphJIT determine how much static event
 storage to reserve for the selected temporal representation.
 
-## Compiled ports remain random-access
+## Indexed ports use explicit sparse coverage
 
-Do not apply the realtime bounded-window rule to compiled access.
+Do not apply the realtime bounded-window rule to indexed access.
 
-Compiled sample ports support arbitrary global sample requests and compiled
-event ports support arbitrary global event intervals according to
-[compiled_dsp_nodes.md](./compiled_dsp_nodes.md). Their materialization is
-request-driven and cannot generally benefit from one static realtime
-history/latency retention window.
+Indexed sample/event outputs publish finite `IndexedCoverage`: a canonical union
+of disjoint half-open global-index regions. Coverage is the indexed semantic
+domain boundary; there is no separate bounding extent. Node callbacks never
+request indexed values outside input coverage, so long uncovered timeline gaps
+require no storage or computation.
 
-A compiled declaration therefore carries the empty `CompiledPortConfig`, not a
-realtime timing config. The additive rule applies instead to the statically typed
-`tick()` / `tick_block()` accessor: a compiled port's current-block wrapper still
-exposes the corresponding ordinary sequential operations, while compiled random
-access adds the more precise arbitrary-position/range operations.
+Within coverage, exact semantic changed/demand regions are persistent graph
+metadata rather than one realtime retention window. Retained cache validity is
+coarser: canonically aligned indexed pages are wholly valid or wholly invalid for
+exactly `page_interval & coverage` and one indexed semantic version. A small
+change may invalidate a whole retained page locally, but forward propagation
+keeps the exact changed region; a later sparse request touching an invalid page
+materializes that page's entire covered domain. See
+[indexed_dsp_nodes.md](./indexed_dsp_nodes.md).
 
-Compiled access remains an execution capability, not a storage class.
+An indexed declaration therefore carries indexed access/cache policy rather than
+a realtime timing config. The additive rule applies instead to the statically
+typed `tick()` / `tick_block()` accessor: an indexed input's current-block
+wrapper still exposes ordinary sequential operations while also exposing its
+exact coverage and covered arbitrary-position/range reads.
+
+Indexed access remains an execution capability, not a storage class. Coverage,
+page validity/version, residency, and payload are distinct. Persistent cache
+pages do not belong in the fixed `NodeStorage` merely because they survive a
+query: dynamically growing page directories/payloads are generation-local
+`GraphExecutor` sidecars, while fixed node/indexed state and bounded compiler
+regions remain in canonical `NodeStorage`.
+
+GraphJit/GraphExecutor may use direct authoritative source views, dense or
+coverage-packed sample pages, packed event pages, and transaction-local
+materialization while preserving the same indexed contract. Event-page semantic
+capacity may reuse `max_events_per_index` over the page's covered sample count;
+unlike realtime storage, indexed payload allocation may be committed lazily
+because it is not performed under the audio-thread no-allocation constraint.
 
 ## Event storage planning mirrors sample storage planning where possible
 
@@ -780,7 +804,7 @@ At minimum cover:
 - feedback capacity is derived from delayed live span rather than multiplying
   one invocation capacity by a callback count;
 - realtime event identity fanout can share an immutable event representation;
-- compiled event/sample access remains independent from realtime storage
+- indexed event/sample access remains independent from realtime storage
   planning.
 
 ## Compiler pipeline placement
