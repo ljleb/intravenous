@@ -108,10 +108,13 @@ deterministic SCC/region ordering, records per-edge history/latency/conversion/
 boundary/feedback facts, groups fanout by producer, derives the requirement
 records consumed by the existing sample/event physical-storage choosers, and
 emits semantic transient/persistent/external storage and liveness requests. An
-indexed output never becomes a tick dependency merely because a realtime
-consumer needs it: that edge remains classified for the later indexed-access
-preparation phase. Realtime-to-realtime groups alone enter the realtime
-storage chooser. Block-slice mismatches conservatively require materialization
+indexed output never becomes an ordinary tick dependency merely because a
+realtime consumer needs it, but indexed-to-realtime lowering now splits by the
+output's boolean cache contract: `cache = false` may become an inline live pull
+`tock_coverage()` path, while `cache = true` remains a prepared materialization
+boundary. Realtime-to-realtime groups and uncached indexed live pulls can therefore
+share direct/transient storage-planning machinery without conflating their callback
+semantics. Block-slice mismatches conservatively require materialization
 until a later scheduler proves a shared subdivision. At the point this refactor
 landed, the lowering capability gate still rejected ports/connections; the sample-
 edge slice below was the first consumer of this analysis.
@@ -814,7 +817,7 @@ described by that layout. Do not replace that orchestration with monolithic
 generated project initialize/move/release functions.
 
 The root node has no indexed output ports, therefore it has no project-wide
-`tock_region_batch()` operation. Indexed outputs inside the project remain
+`tock_coverage()` operation. Indexed outputs inside the project remain
 addressable through immutable `CompiledGraph` metadata described below; they are
 not exposed by pretending that the zero-port project root has synthetic outputs.
 
@@ -959,23 +962,36 @@ precompute:
 
 The dynamic information is primarily per-output exact `IndexedCoverage`, exact
 changed/demanded regions, page directories, page-validity semantic versions,
-cache policy/residency, candidate/published indexed snapshots, and optional
-retained page payloads—not discovery of graph adjacency.
+boolean cache contracts/residency, candidate/published indexed semantic states, and
+optional retained page payloads—not discovery of graph adjacency.
 
 ### Forward change and indexed access are separate transactions
 
 Arbitrary node-local mutations may schedule forward processing even when no
-indexed input region changed. `propagate_forward_region_batch()` updates each
+indexed input region changed. `propagate_forward_coverage()` updates each
 output's canonical `IndexedCoverage` and reports exact changed output regions;
 the executor derives added/removed coverage from the previous value and treats
 those regions as semantic changes too. Exact changed regions propagate through
-the indexed component without forcing `tock_region_batch()` evaluation.
-Forward propagation continues through an intermediate even when that
-intermediate has no resident cached page, because farther downstream retained
-results may still derive from an older semantic version.
+the indexed component without forcing `tock_coverage()` evaluation. Forward
+propagation continues through an intermediate even when that intermediate has no
+resident cache page—or is declared `cache = false` and has no page representation
+at all—because farther downstream retained results may still derive from an older
+semantic version.
 
-Retained cache validity is page-granular while dependency propagation remains
-exact. For one canonical cache page:
+The indexed output's boolean `cache` declaration determines where page
+granularity enters access planning:
+
+- `cache = false` means the output has no persistent indexed pages. Demand remains
+  exact through that output and its tock result is written directly into caller,
+  transaction, transient, or consumer storage. When such an output lies on a
+  realtime pull path, its tock/reverse work is realtime-compatible by contract.
+- `cache = true` means the output is a retained materialization boundary. Sparse
+  demand selects canonical pages. A valid/resident touched page satisfies demand;
+  a missing/invalid page promotes the requirement to its complete
+  `page_interval & output_coverage` domain before reverse propagation through the
+  producer.
+
+For one cached canonical page:
 
 ```text
 page_domain = page_interval & output_coverage
@@ -985,12 +1001,8 @@ A page is either wholly valid or wholly invalid for that exact page domain and
 indexed semantic version. Invalidating a page does **not** widen the exact changed
 region propagated downstream.
 
-Later, one logical access may request indexed outputs from any number of internal
-nodes. Sparse caller demand first selects touched pages. Valid touched pages are
-cache hits. Each invalid touched page promotes the work to its complete covered
-`page_domain`; that promoted materialization request is what enters reverse
-planning through that producer. Within one indexed component the semantic order
-is:
+One logical access may request indexed outputs from any number of internal nodes.
+Within one indexed component the semantic order is:
 
 ```text
 seed requested sink positions/regions
@@ -999,56 +1011,56 @@ seed requested sink positions/regions
 intersect exact sink `IndexedCoverage`
         |
         v
-map demand to touched sink pages
+inspect each output's `cache` contract
         |
-        +-- valid pages -> satisfied
-        |
-        `-- invalid pages -> full `page_interval & coverage` domains
-                                |
-                                v
+        +-- cache=false -> exact covered demand --------------------+
+        |                                                           |
+        `-- cache=true -> touched pages                             |
+                |                                                   |
+                +-- valid/resident pages -> satisfied               |
+                |                                                   |
+                `-- missing/invalid pages -> full covered domains --+
+                                                                    |
+                                                                    v
 reverse planning in precomputed reverse order
         |   union/coalesce requirements at convergence points
         |   clip requirements to exact indexed-input coverage
-        |   valid upstream pages terminate traversal
-        |   invalid upstream pages promote to their full page domains
+        |   apply the same cached/uncached rule at upstream outputs
         v
-complete missing dependency plan
+complete dependency/materialization plan
         |
         v
 forward evaluation in dependency order
+        |   uncached outputs -> direct/transaction/transient storage
+        |   cached outputs   -> retained page payloads
+        v
+tock_coverage() for each implicated node's required coverage
         |
         v
-tock_region_batch() only for selected covered page domains
-        |
-        v
-commit each selected page atomically valid for the target semantic version
-        |
-        v
-retain/discard payload according to cache policy
-        |
-        v
-return requested sink results
+commit cached pages / forward or return uncached materializations
 ```
 
-Coverage is never rounded to page boundaries. If a 1024-sample physical page
-intersects output coverage only at `[10,1002)`, then a demand for any missing
+Coverage is never rounded to page boundaries. If a 1024-sample physical cached
+page intersects output coverage only at `[10,1002)`, then demand for any missing
 sample in that page causes the node to observe exactly `[10,1002)`, never
 `[0,1024)`. If several disjoint coverage regions occupy one page, touching that
-invalid page materializes all of those covered regions together.
+invalid cached page materializes all of those covered regions together. An
+uncached output has no such page expansion.
 
-Sparse UI fetches therefore do not imply sparse per-sample tock processing.
-Zoomed-in views naturally touch consecutive pages; extremely zoomed-out views
-touch sparse pages; approximately one requested display sample per page is the
-intended bounded worst case.
+Sparse UI fetches therefore do not imply sparse per-sample tock processing at
+cached outputs. Zoomed-in views naturally touch consecutive pages; extremely
+zoomed-out views touch sparse pages; approximately one requested display sample
+per cached page is the intended bounded worst case. Cheap uncached outputs may
+instead compute the exact sparse requested coverage directly.
 
-A node receives complete accumulated region sets for the transaction whenever
-its forward/reverse propagation or tock callback runs. Whenever topology permits,
-each implicated node participates once per relevant phase for the complete
-component transaction rather than once per sink or downstream path.
+A node receives complete accumulated coverage sets whenever its forward/reverse
+propagation or tock callback runs. These are one-node callbacks despite possibly
+containing many disjoint regions. Future names such as `tock_coverage_batch()` or
+`propagate_*_coverage_batch()` are reserved for genuine multi-node batching.
 
 The lowerer may inline and specialize these callbacks so the runtime executor
-manipulates exact region sets and page/version state rather than generic graph
-data structures.
+manipulates exact coverage sets and cached page/version state rather than generic
+graph data structures.
 
 ## Lowering boundary
 
@@ -1062,7 +1074,7 @@ Its inputs include conceptually:
 ConfiguredGraph
 kernel specialization
 exact retained package modules
-resolved primitive tick/tock/forward-region/reverse-region LLVM callbacks
+resolved primitive tick/tock/forward-coverage/reverse-coverage LLVM callbacks
 exact accepted declaration/lifecycle metadata/callbacks
 resolved configuration-pointer relocations
 ```
@@ -1127,12 +1139,12 @@ It owns:
 - state/`CompiledState` initialization, migration/move, release, and destruction
   through the canonical layout/lifecycle machinery;
 - an executor-owned stable indexed-cache store keyed by stable project indexed-
-  output identity, plus per-generation bindings from local indexed endpoints to
-  those cache entries;
-- generation-local indexed cache state only for concrete outputs that have no
-  stable project identity;
+  output identity for `cache = true` outputs, plus per-generation bindings from
+  local indexed endpoints to those cache entries;
+- generation-local indexed cache state only for cached concrete outputs that have
+  no stable project identity;
 - reusable indexed transaction workspaces/arenas for request-sized planning and
-  `cache = never` materialization;
+  `cache = false` non-realtime materialization;
 - indexed semantic versions plus candidate/published indexed snapshots;
 - forward mutation/change transactions and reverse-demand/tock transactions;
 - sequential root-node execution requests;
@@ -1183,25 +1195,38 @@ publishes is also a semantic change propagated downstream. None of these forward
 operations implies eager tocking; UI-only indexed outputs may remain
 unmaterialized indefinitely.
 
-Realtime processing observes one immutable **published indexed snapshot** for an
-entire live graph block. If an edit changes indexed data required by live DSP,
-the current live graph continues using the previous complete snapshot while a
-new candidate is evaluated off the realtime path. The candidate becomes
-publishable only when every indexed page the live graph may read is complete for
-that candidate version. Publication occurs atomically before or after processing
-the entire live graph block, never between node ticks.
+Realtime processing observes one immutable **published indexed semantic state**
+for an entire live graph block, but indexed-to-realtime lowering depends on each
+producer's boolean cache contract. A `cache = false` indexed chain may run
+`tock_coverage()` inline on the audio thread; a `cache = true` output is a prepared
+materialization boundary and its tock is never used as an audio-thread fallback.
 
-Unchanged pages/direct representations may be structurally shared between
-snapshots. Published live-visible payload is immutable while any live pass can
-observe it, and old snapshots are reclaimed only after such passes have finished.
-This deliberately chooses temporary semantic latency after an edit over a
-realtime underrun.
+GraphJit should lower live pull paths backward from realtime inputs through zero or
+more uncached indexed outputs until cached/direct boundaries are reached. Uncached
+materialization should use the ordinary realtime storage planner: write directly
+into a single compatible no-history consumer when possible, otherwise use bounded
+compiler-owned transient/pass-local storage with normal fanout/liveness reuse. No
+indexed page allocation is permitted for `cache = false` outputs.
 
-The exact authored mechanism that describes which indexed regions live DSP may
-read can evolve. A conservative first implementation may require every covered
-page of an indexed input readable by `tick_block()`; later traits may narrow that
-standing live requirement. The audio thread itself never triggers
-`tock_region_batch()`.
+Outside published indexed coverage, a realtime input yields its declared
+`neutral_value`/no events without allocating indexed storage. Inside coverage, a
+missing required `cache = true` page is an indexed-readiness underrun; it is not
+neutral data and does not authorize synchronous cached tock execution.
+
+If an edit changes live semantics, the current graph may continue using the
+previous published semantic version while the candidate prepares only the cached
+boundaries required by imminent live use. Uncached paths need no page preparation.
+Publication occurs atomically before or after processing the entire live graph
+block, never between node ticks. Unchanged pages/direct representations may be
+structurally shared, and old views are reclaimed only after no live pass can
+observe them.
+
+The initial cached-readiness policy should stay simple: a fixed pre-roll/lookahead
+window at playback start/seek, then advance a ready frontier ahead of the playhead
+and evict only unpinned pages under a simple memory policy. Later adaptive
+lookahead, measured-cost scheduling, transport/loop prediction, timeline-click
+speculation, and smarter eviction are implementation optimizations. They do not
+change the node-facing cache contract.
 
 A new `CompiledGraph` is reconciled before activation as retained stable nodes,
 created/removed nodes, indexed input connection-set changes, and semantic/schema

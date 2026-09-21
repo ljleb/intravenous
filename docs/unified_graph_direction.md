@@ -327,48 +327,44 @@ contract is in [indexed_dsp_nodes.md](./indexed_dsp_nodes.md). In summary:
 - sample/event kind and realtime/indexed access are orthogonal declaration axes;
 - every indexed output publishes finite `IndexedCoverage`, a canonical union of
   disjoint half-open regions; there is no separate indexed extent abstraction;
-- indexed sample/event access is legal only inside coverage, and an indexed
-  input exposes the union of the mapped coverages of its connected outputs to
-  both `tick_block()` and `tock_region_batch()`;
-- canonically aligned cache pages are a physical materialization unit only: a
-  page is wholly valid/invalid for exactly `page_interval & coverage`, so page
-  boundaries never force node code to process outside actual coverage;
-- sparse UI/logical demand selects touched pages. Valid pages are reused; an
-  invalid touched page is promoted to its complete covered page domain before
-  reverse dependency propagation/tock processing;
-- arbitrary mutations may schedule forward processing even with zero changed
-  indexed inputs, may update output coverage, and may report exact changed
-  output regions without forcing evaluation; newly created semantic nodes use
-  this same forward path to establish their initial output coverage;
-- added/removed coverage and exact changed regions propagate forward through the
-  indexed subgraph; cache invalidation may be page-granular locally but does not
-  widen the semantic change sent downstream;
-- reverse requirements are clipped to coverage; valid upstream pages terminate
-  traversal, while invalid upstream pages expand to their full covered page
-  domains before reverse propagation continues;
-- changing the connection set of an indexed input conservatively marks that whole
-  logical input changed over `old_input_coverage | new_input_coverage`, after
-  which normal forward propagation determines downstream consequences;
-- `tock_region_batch()` receives only the selected covered page domains, never
-  uncovered physical-page portions, already-valid pages, or blind sparse caller
-  positions;
-- forward and reverse region propagation are opposite directional dependency
-  queries, not inverse mappings;
-- fixed node/indexed persistent state remains in canonical `NodeStorage`, while
-  dynamically growing indexed caches live in an executor-owned stable cache
-  store with per-generation endpoint bindings; outputs without stable project
-  identity may use generation-local cache state, and request-sized transaction
-  storage remains executor-owned;
-- indexed results are semantic-versioned. Realtime continues using one immutable
-  previously published indexed snapshot while edits/tocks build a newer
-  candidate off the hot path; and
-- a live-required candidate publishes atomically only at a whole-live-graph block
-  boundary after every indexed page the live graph may read is ready. The audio
-  thread never waits for or triggers indexed tock processing; and
-- JIT generation replacement alone is not an indexed invalidation event: stable
+- indexed sample/event access is legal only inside coverage, and an indexed input
+  exposes the union of mapped connected-output coverage to both tick and tock
+  code;
+- `tock_coverage`, `propagate_forward_coverage`, and
+  `propagate_reverse_coverage` are one-node callbacks; future
+  `*_coverage_batch` names are reserved for actual multi-node batching;
+- each indexed output has a boolean `cache` contract, defaulting to `true`;
+- `cache = false` outputs own no indexed pages and promise realtime-compatible
+  inline tock/reverse work when used by a live pull path. UI results write directly
+  into result/transaction storage, while GraphJit can place live results directly
+  into compatible no-history consumers or bounded transient storage;
+- `cache = true` outputs are retained materialization boundaries. Canonically
+  aligned pages are physical only: one page is wholly valid/invalid for exactly
+  `page_interval & coverage`, and page boundaries never widen coverage;
+- sparse UI demand at cached outputs selects pages. Valid pages are reused; an
+  invalid touched page promotes work to its complete covered page domain. Demand
+  through uncached outputs stays exact;
+- exact changed regions propagate forward without page widening or eager tock;
+  reverse propagation stays exact until it reaches a cached boundary requiring
+  page promotion;
+- changing an indexed input connection set conservatively marks that whole input
+  changed over `old_input_coverage | new_input_coverage`, after which ordinary
+  forward propagation determines downstream consequences;
+- indexed node creation publishes output coverage before demand may target it;
+- cached pages may be evicted when unpinned; `cache = true` does not mean eagerly
+  compute or retain all coverage forever;
+- indexed-to-realtime lowering pulls backward through `cache = false` outputs and
+  stops at prepared `cache = true`/direct boundaries. Outside indexed coverage a
+  live input yields its neutral value/no events; a missing cached page inside
+  coverage is a readiness failure, not neutral data and not permission to run the
+  cached tock on the audio thread;
+- the initial realtime-readiness policy can use a simple fixed pre-roll/lookahead
+  plus straightforward eviction. Smarter prediction/adaptive prefetch is optional
+  executor policy; and
+- semantic versions publish only at whole-live-graph block boundaries. Stable
   virtual-node/member output identities rebind new executable generations to the
-  same executor-owned cache entries without copying page payloads, while only
-  actual state/connection/coverage/semantic changes invalidate candidate data.
+  same executor-owned cached storage without copying page payloads; only actual
+  state/connection/coverage/semantic changes affect candidate validity.
 
 The graph has no implicit realtime-to-indexed edge. Recorder/source nodes own any
 transition from realtime mutation to changed indexed output regions and report
@@ -424,7 +420,7 @@ implementation are:
    to sample/event kind; exact changed regions propagate forward without eager
    evaluation; retained cache validity is whole-page for exact covered page
    domains; sparse logical demand selects invalid pages whose covered domains
-   propagate in reverse and execute through `tock_region_batch()`; and realtime
+   propagate in reverse and execute through `tock_coverage()`; and realtime
    observes only complete published indexed snapshots. Realtime-to-indexed
    transitions remain explicit recorder/source semantics rather than implicit
    graph edges.
@@ -538,13 +534,18 @@ this direction.
     indexed values outside that coverage.
 15. Indexed cache validity is page-granular without widening semantic coverage:
     one canonical page is valid/invalid for exactly `page_interval & coverage`;
-    cache retention is a separate `automatic` / `always` / `never` policy.
+    `cache` is a boolean materialization/realtime-scheduling contract: cached outputs
+    use pages; uncached outputs own no pages and may execute inline in realtime.
 16. Exact changed indexed regions and coverage changes propagate forward without
-    eager evaluation. Later access selects touched pages, reuses valid pages,
-    promotes invalid pages to their exact covered page domains, propagates those
-    domains in reverse, and evaluates them with `tock_region_batch()`.
-17. Explicit realtime-to-indexed recorder/source nodes may mutate authoritative
-    indexed source data and seed changed output regions/coverage without forcing
-    downstream recomputation. Live DSP continues using the prior immutable
-    published indexed snapshot until a complete candidate publishes at a
-    whole-live-graph block boundary.
+    eager evaluation. Later access preserves exact demand through `cache = false`
+    outputs; at `cache = true` boundaries it reuses valid pages and promotes
+    missing/invalid pages to their exact covered page domains before reverse
+    propagation and `tock_coverage()`.
+17. Indexed-to-realtime lowering may execute only `cache = false` tocks inline,
+    using direct/transient live storage; cached boundaries must be prepared ahead
+    of consumption. Realtime-to-indexed recorder/source nodes remain explicit and
+    report authoritative changes for later executor-side forward propagation.
+18. One live graph block observes one published indexed semantic version. Outside
+    indexed coverage a realtime input gets neutral/no events; a missing cached
+    page inside coverage is a readiness failure, not neutral data or permission for
+    a cached audio-thread tock.

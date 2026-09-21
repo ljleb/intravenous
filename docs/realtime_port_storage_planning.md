@@ -571,25 +571,31 @@ keeps the exact changed region; a later sparse request touching an invalid page
 materializes that page's entire covered domain. See
 [indexed_dsp_nodes.md](./indexed_dsp_nodes.md).
 
-An indexed declaration therefore carries indexed access/cache policy rather than
-a realtime timing config. The additive rule applies instead to the statically
+An indexed output declaration therefore carries a boolean `cache`
+materialization/realtime-scheduling contract rather than a realtime timing config. The additive rule applies instead to the statically
 typed `tick()` / `tick_block()` accessor: an indexed input's current-block
 wrapper still exposes ordinary sequential operations while also exposing its
 exact coverage and covered arbitrary-position/range reads.
 
 Indexed access remains an execution capability, not a storage class. Coverage,
 page validity/version, residency, and payload are distinct. Persistent cache
-pages do not belong in the fixed `NodeStorage` merely because they survive a
-query: dynamically growing page directories/payloads are generation-local
-`GraphExecutor` sidecars, while fixed node/indexed state and bounded compiler
-regions remain in canonical `NodeStorage`.
+pages do not belong in fixed `NodeStorage` merely because they survive a query:
+dynamically growing `cache = true` page directories/payloads live in the
+executor-owned stable cache store (with per-generation endpoint bindings) when the
+output has stable project identity. Fixed node/indexed state and bounded compiler
+regions remain in canonical `NodeStorage`; `cache = false` outputs own no indexed
+page store.
 
-GraphJit/GraphExecutor may use direct authoritative source views, dense or
-coverage-packed sample pages, packed event pages, and transaction-local
-materialization while preserving the same indexed contract. Event-page semantic
-capacity may reuse `max_events_per_index` over the page's covered sample count;
-unlike realtime storage, indexed payload allocation may be committed lazily
-because it is not performed under the audio-thread no-allocation constraint.
+For `cache = true`, GraphJit/GraphExecutor may use direct authoritative source
+views, dense or coverage-packed sample pages, and packed event pages. For
+`cache = false`, no indexed page exists: non-realtime access uses caller/transaction
+storage, while realtime lowering should use direct consumer placement or bounded
+compiler-owned transient storage whenever possible. This avoids dynamic page
+roundtrips on the audio path while preserving the same indexed semantics. Cached event-page semantic capacity may reuse `max_events_per_index` over the
+page's covered sample count, and cached payload allocation may be committed lazily
+off the audio thread. An uncached event output participating in realtime instead
+uses compiler-bounded live event storage; it may not allocate dynamically merely
+because its port is indexed.
 
 ## Event storage planning mirrors sample storage planning where possible
 

@@ -150,7 +150,7 @@ zero-input/zero-output root node; lowering finalizes the canonical `NodeLayout`
 callbacks and declaring compiler-owned raw regions; `GraphExecutor` owns the
 corresponding `NodeStorage`; and internal indexed outputs are reached through
 specialized indexed-component metadata rather than a synthetic project-root
-`tock_region_batch()`. Final layout offsets are therefore compile-time constants in
+`tock_coverage()`. Final layout offsets are therefore compile-time constants in
 the generated LLVM. `GraphExecutor` remains
 unimplemented. Structured connection persistence/JSON-RPC adapters are also still
 pending; the typed project command surface and canonical connection owner now
@@ -494,7 +494,7 @@ more efficiently by constant offset than through an authored `std::span` field.
 There is no parallel graph-kernel storage arena.
 
 The root has no indexed outputs and therefore no project-wide
-`tock_region_batch()`. Whole-project lowering instead partitions the indexed
+`tock_coverage()`. Whole-project lowering instead partitions the indexed
 subgraph into indexed connected components, precomputes forward-change,
 reverse-demand, and forward-evaluation order, and emits specialized component
 executors plus immutable endpoint metadata. Exact changed indexed regions may
@@ -502,7 +502,10 @@ propagate forward at arbitrary times without forcing evaluation. Later logical
 access requests may target indexed outputs on any number of internal nodes;
 sparse requests select cache pages, valid pages are reused, and invalid pages are
 promoted to their exact `page_interval & coverage` domains before reverse
-propagation and `tock_region_batch()` evaluation.
+propagation and `tock_coverage()` evaluation. This page behavior applies only to
+indexed outputs declared `cache = true`. `cache = false` outputs own no indexed
+pages: demand remains exact and GraphJit may lower their tock directly into
+transaction storage or realtime direct/transient consumer storage.
 
 Logical sample/event connections do not imply buffers. Connection implementation
 selection is an explicit pure compiler-planning phase before LLVM generation;
@@ -527,18 +530,19 @@ project generation. It does not own ORC compilation.
 - ordinary `NodeStorage` initialization/move/release migration state needed to
   activate a successor, including indexed-domain persistent state currently
   named `CompiledState`;
-- an executor-owned stable indexed-cache store for identifiable outputs, plus
-  per-generation bindings from local indexed endpoints to stable cache entries
-  and generation-local cache state only for anonymous outputs;
+- an executor-owned stable indexed-cache store for identifiable `cache = true`
+  outputs, plus per-generation bindings from local indexed endpoints to stable
+  cache entries and generation-local cache state only for anonymous cached
+  outputs;
 - reusable indexed transaction workspace for reverse/forward planning and
-  request-sized `cache = never` materialization;
+  request-sized non-realtime `cache = false` materialization;
 - indexed semantic versions plus candidate/published indexed snapshots;
 - sequential execution through the generated zero-port root node;
 - indexed sample/event requests routed through the active generation's internal
   indexed endpoint/component metadata;
 - executor-controlled UI/state mutation entry, realtime-to-indexed change
-  notification handoff, forward-change transactions, and reverse-demand/tock
-  transactions; and
+  notification handoff, forward-change transactions, reverse-demand/tock transactions, and cached
+  realtime-readiness preparation; and
 - whole-live-graph-block publication/reclamation of complete indexed snapshots.
 
 Dynamic indexed caches are deliberately not part of fixed `NodeStorage`; cache
@@ -562,11 +566,20 @@ forward propagation then determines downstream effects. JIT compilation alone is
 not an indexed invalidation event.
 
 Receiving a new `CompiledGraph` does not mutate an in-progress audio pass. The
-same rule applies to indexed edits: live execution keeps using one immutable
-published indexed snapshot while newer candidate versions are prepared off the
-hot path. A candidate that live DSP may read becomes visible only when its
-required indexed pages are complete, and publication occurs atomically before or
-after execution of the entire live graph block, never between node ticks.
+same rule applies to indexed semantic edits: one live block observes one published
+indexed semantic version. `cache = false` indexed outputs may execute
+`tock_coverage()` inline through the generated live pull plan and require no page
+preparation; `cache = true` boundaries must have the pages required by imminent
+live use prepared beforehand. Candidate semantic versions publish atomically
+before or after execution of the entire live graph block, never between node
+ticks.
+
+For indexed-to-realtime connections, GraphJit should direct-write uncached output
+into a compatible single no-history realtime input where possible and otherwise
+use bounded transient live storage. Outside indexed coverage the realtime input
+gets its neutral value/no events. A missing cached page inside coverage is a
+readiness failure rather than neutral data or permission to execute that cached
+tock on the audio thread.
 
 Realtime recorder/source code reports bounded indexed changes for executor-side
 processing after the pass rather than traversing dynamic indexed cache structures
