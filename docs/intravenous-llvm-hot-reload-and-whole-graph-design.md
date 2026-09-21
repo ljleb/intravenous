@@ -1524,16 +1524,37 @@ runtime must preserve these integration rules:
   still permitted for `never` outputs;
 - sample page payload may be dense or coverage-packed, while event pages keep
   packed ordered events with capacity based on
-  `max_events_per_index * measure(page_domain)`; and
-- indexed event reads that span pages use a segmented ordered iterator/range.
+  `max_events_per_index * measure(page_domain)`;
+- indexed event reads that span pages use a segmented ordered iterator/range;
+- semantic node creation establishes output coverage before demand can target the
+  new node; and
+- indexed connection-set addition/removal/replacement conservatively marks the
+  whole logical input changed over `old_input_coverage | new_input_coverage`.
 
-Fixed node/indexed persistent state belongs to canonical `NodeStorage`;
-dynamically growing indexed page directories/payloads belong to a generation-
-local `GraphExecutor` sidecar, with request-sized transaction workspaces outside
+Fixed node/indexed persistent state belongs to canonical `NodeStorage`.
+Dynamically growing indexed page directories/payloads belong to an executor-owned
+stable cache store when the producing concrete node/output has stable project
+identity; each executable generation binds its local indexed endpoint ordinals to
+those cache entries. Outputs without stable project identity may use generation-
+local cache state. Request-sized transaction workspaces remain outside
 `NodeStorage` unless a useful fixed bound is known.
 
-Indexed mutations/results are semantic-versioned. UI/state edits may create a
-new candidate indexed version while realtime continues using the previous
+Indexed mutations/results are semantic-versioned. Node creation is itself a
+forward-side lifecycle cause: a newly introduced semantic concrete node
+establishes its indexed output coverage after state initialization and after
+upstream coverage is available; project startup is merely the case where every
+node is new. A stable retained node does not republish all coverage merely because
+a new executable generation was JIT-compiled.
+
+An indexed input connection-set change conservatively marks that whole logical
+input changed over `old_input_coverage | new_input_coverage`; the node sees the
+new coverage and ordinary forward propagation determines exact downstream
+coverage/value consequences. JIT compilation alone is not an indexed invalidation
+event. Stable indexed outputs rebind new generations to the same cache storage
+without copying retained page payloads; actual state, connection, coverage,
+implementation, or schema changes determine candidate validity.
+
+UI/state edits may create a new candidate indexed version while realtime continues using the previous
 immutable published indexed snapshot. Realtime recorder/source code reports
 bounded changed-output information for executor-side propagation rather than
 traversing dynamic indexed structures on the audio path. Tock work computed for
@@ -1548,9 +1569,10 @@ indexed snapshot. Temporary semantic latency after an edit is preferred over a
 realtime underrun.
 
 Lowering specializes indexed connected components, forward-change order, reverse
-demand order, and callback targets ahead of time. `GraphExecutor` owns dynamic
-coverage/page/version/materialization state, candidate/published indexed
-snapshots, and their safe-boundary publication/reclamation.
+demand order, callback targets, and generation-local endpoint metadata ahead of
+time. `GraphExecutor` owns stable cache identity/bindings, dynamic coverage/page/
+version/materialization state, candidate/published indexed snapshots, and their
+safe-boundary publication/reclamation.
 
 ---
 
@@ -2589,17 +2611,27 @@ The following are treated as strong architectural decisions unless implementatio
     event carry, root-owned fixed persistent state, and bounded compiler regions
     are declared into one `NodeLayout`. Dynamically growing indexed page caches
     and request-sized transaction arenas are executor-owned sidecars, not a
-    second node-state layout.
-35. **Indexed results are semantic-versioned and realtime observes immutable published snapshots.**
+    second node-state layout. Stable indexed-output caches are owned independently
+    of JIT generations and rebound through stable virtual-node/member output
+    identity; anonymous outputs remain generation-local.
+35. **Node creation establishes coverage; JIT replacement does not.** A genuinely
+    new semantic concrete node publishes indexed output coverage through forward
+    processing before demand can target it. A retained stable node keeps prior
+    coverage/cache state unless an actual forward cause changes it.
+36. **Indexed connection-set changes invalidate the whole logical input.** For a
+    changed indexed input, seed `old_input_coverage | new_input_coverage` as the
+    changed region and let ordinary forward propagation determine downstream
+    consequences.
+37. **Indexed results are semantic-versioned and realtime observes immutable published snapshots.**
     New edits build candidate indexed versions off the realtime path; stale work
     cannot commit into newer versions. A candidate used by live DSP publishes
     atomically only at a whole-live-graph block boundary after all live-required
     indexed pages are complete. The previous snapshot remains active meanwhile.
-36. **The JIT-compiled project root has no synthetic indexed interface.** It
+38. **The JIT-compiled project root has no synthetic indexed interface.** It
     remains a zero-input/zero-output node. `CompiledGraph` indexes requestable
     internal indexed output ports into statically planned indexed component
     executors and metadata.
-37. **Indexed topology is specialized ahead of time.** Lowering partitions the
+39. **Indexed topology is specialized ahead of time.** Lowering partitions the
     indexed subgraph into indexed connected components and precomputes forward
     change, reverse demand, and evaluation order. Runtime transactions manipulate
     exact region sets plus page/version state rather than rediscovering topology.

@@ -857,12 +857,14 @@ should use the same `NodeLayout` / `NodeStorage`, including for example:
 
 Dynamically growing indexed output caches are an explicit exception because
 their page count and payload size depend on future coverage/access patterns.
-They live in a generation-local `GraphExecutor` sidecar whose immutable/static
-indexing metadata comes from `CompiledGraph`. This is not a second state-layout
-system: node persistent state still has one canonical `NodeStorage`, while
-request/cache storage is dynamic executor state. Request-sized transaction
-arenas likewise remain outside `NodeStorage` unless a useful fixed bound is known
-at compile time.
+Stable indexed outputs live in an executor-owned cache store independent of one
+JIT generation; each `CompiledGraph` supplies immutable/static indexing metadata
+and bindings from generation-local endpoints to stable cache identities. Outputs
+without stable project identity may use generation-local dynamic cache state.
+This is not a second state-layout system: node persistent state still has one
+canonical `NodeStorage`, while request/cache storage is dynamic executor state.
+Request-sized transaction arenas likewise remain outside `NodeStorage` unless a
+useful fixed bound is known at compile time.
 
 Invocation-local realtime sample/event buffers occupy compile-time byte ranges in
 the generated root stack. Sample and event ranges are lifetime-packed within
@@ -1101,6 +1103,8 @@ exact participating PackageRevision pins
 specialized zero-input/zero-output root node operations
 canonical NodeLayout
 indexed endpoint index
+stable concrete-node/indexed-output reconciliation identity where available
+indexed input connection-set endpoint identity/schema metadata
 specialized indexed-component entrypoints/metadata
 ORC code/resource lifetime handle
 debug/execution-plan metadata
@@ -1122,9 +1126,11 @@ It owns:
 - one canonical `NodeStorage` per retained executable generation;
 - state/`CompiledState` initialization, migration/move, release, and destruction
   through the canonical layout/lifecycle machinery;
-- generation-local dynamic indexed sidecars containing output coverage, sorted
-  page directories, cache policy/residency, page payload handles, and validity
-  versions;
+- an executor-owned stable indexed-cache store keyed by stable project indexed-
+  output identity, plus per-generation bindings from local indexed endpoints to
+  those cache entries;
+- generation-local indexed cache state only for concrete outputs that have no
+  stable project identity;
 - reusable indexed transaction workspaces/arenas for request-sized planning and
   `cache = never` materialization;
 - indexed semantic versions plus candidate/published indexed snapshots;
@@ -1136,11 +1142,13 @@ It owns:
 - whole-live-graph-block indexed snapshot publication/reclamation; and
 - safe executable-generation activation.
 
-Dynamic indexed cache pages do not migrate between executable generations in the
-initial implementation. Compatible node `State` / indexed persistent state may
-migrate through ordinary `NodeStorage` lifecycle rules; retained cache migration
-is a later optimization requiring a proof of stable output identity and
-equivalent indexed semantics.
+Executable-generation replacement does not by itself invalidate or copy stable
+indexed caches. A concrete indexed output with stable virtual-node/member project
+identity rebinds the new generation's local endpoint to the same executor-owned
+cache entry. Cache identity and cache validity are separate: actual state,
+connection-set, coverage, implementation, or schema changes determine what must
+be invalidated for the candidate semantic version. Outputs without stable project
+identity remain generation-local.
 
 ### Indexed mutation/version entry
 
@@ -1153,14 +1161,27 @@ storage, which `GraphExecutor` consumes after the whole live graph block.
 
 Tock work is tagged with the semantic version against which it was planned. A
 result computed for an obsolete version cannot commit as valid for a newer one.
-Superseded work may be cancelled or discarded; cross-version page reuse is an
-optimization only when equivalence is proven.
+Superseded work may be cancelled or discarded. Pages that were never invalidated
+may be structurally shared across semantic versions; reusing results from already
+superseded in-flight work requires a separate equivalence proof.
 
-### Initial coverage and indexed snapshots
+### Node creation, connection reconciliation, and indexed snapshots
 
-After node state initialization/migration, the generation runs an initial forward
-transaction to establish output coverage. This does not imply eager tocking.
-UI-only indexed outputs may remain unmaterialized indefinitely.
+Coverage establishment is a semantic node-creation rule, not an executable-
+generation-startup rule. Whenever a concrete node has no retained stable
+counterpart, its state is initialized and forward processing establishes its
+indexed output coverage before indexed demand may target it. Project startup is
+merely the case where every node is created. A stable retained node reuses its
+existing coverage/cache state unless an actual forward cause changes it.
+
+During executable-generation reconciliation, a changed indexed input connection
+set conservatively marks that whole logical input changed over
+`old_input_coverage | new_input_coverage`. The forward callback sees the new input
+coverage and maps that finite whole-input change to exact output changes/coverage.
+A newly created node starts from empty output coverage, so all coverage it first
+publishes is also a semantic change propagated downstream. None of these forward
+operations implies eager tocking; UI-only indexed outputs may remain
+unmaterialized indefinitely.
 
 Realtime processing observes one immutable **published indexed snapshot** for an
 entire live graph block. If an edit changes indexed data required by live DSP,
@@ -1181,6 +1202,13 @@ read can evolve. A conservative first implementation may require every covered
 page of an indexed input readable by `tick_block()`; later traits may narrow that
 standing live requirement. The audio thread itself never triggers
 `tock_region_batch()`.
+
+A new `CompiledGraph` is reconciled before activation as retained stable nodes,
+created/removed nodes, indexed input connection-set changes, and semantic/schema
+changes. Stable indexed outputs bind to existing executor cache entries; JIT
+compilation alone is not an indexed mutation and an unrelated graph edit causes
+no indexed recomputation in unaffected components. Page payloads are not copied
+merely because executable code changed.
 
 Receiving a new executable generation likewise does not mutate an in-progress
 audio pass. Expensive preparation may happen immediately off the hot path, but

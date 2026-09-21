@@ -527,9 +527,9 @@ project generation. It does not own ORC compilation.
 - ordinary `NodeStorage` initialization/move/release migration state needed to
   activate a successor, including indexed-domain persistent state currently
   named `CompiledState`;
-- generation-local dynamic indexed sidecars containing exact output coverage,
-  sorted page directories, whole-page validity/version state, cache policy,
-  residency, and stable page payload handles;
+- an executor-owned stable indexed-cache store for identifiable outputs, plus
+  per-generation bindings from local indexed endpoints to stable cache entries
+  and generation-local cache state only for anonymous outputs;
 - reusable indexed transaction workspace for reverse/forward planning and
   request-sized `cache = never` materialization;
 - indexed semantic versions plus candidate/published indexed snapshots;
@@ -544,7 +544,22 @@ project generation. It does not own ORC compilation.
 Dynamic indexed caches are deliberately not part of fixed `NodeStorage`; cache
 page count and payload size depend on future coverage/access patterns. Fixed
 node/indexed state and bounded compiler-owned persistent regions continue to use
-one canonical `NodeLayout` / `NodeStorage`.
+one canonical `NodeLayout` / `NodeStorage`. Stable indexed caches are not owned by
+one JIT generation merely because its endpoint ordinals are generation-local:
+new generations rebind stable virtual-node/member output identities to the same
+cache storage without copying page payloads.
+
+Executable-generation reconciliation treats genuinely new semantic nodes as node
+creation events. After state initialization and upstream coverage availability, a
+new node publishes indexed output coverage through forward processing; project
+startup is simply the case where every node is created. A retained stable node
+reuses prior coverage/cache state unless an actual state, connection, coverage,
+implementation, or schema change requires forward processing.
+
+Changing the connection set of an indexed input conservatively marks that whole
+logical input changed over `old_input_coverage | new_input_coverage`; ordinary
+forward propagation then determines downstream effects. JIT compilation alone is
+not an indexed invalidation event.
 
 Receiving a new `CompiledGraph` does not mutate an in-progress audio pass. The
 same rule applies to indexed edits: live execution keeps using one immutable

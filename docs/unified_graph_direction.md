@@ -338,27 +338,37 @@ contract is in [indexed_dsp_nodes.md](./indexed_dsp_nodes.md). In summary:
   reverse dependency propagation/tock processing;
 - arbitrary mutations may schedule forward processing even with zero changed
   indexed inputs, may update output coverage, and may report exact changed
-  output regions without forcing evaluation;
+  output regions without forcing evaluation; newly created semantic nodes use
+  this same forward path to establish their initial output coverage;
 - added/removed coverage and exact changed regions propagate forward through the
   indexed subgraph; cache invalidation may be page-granular locally but does not
   widen the semantic change sent downstream;
 - reverse requirements are clipped to coverage; valid upstream pages terminate
   traversal, while invalid upstream pages expand to their full covered page
   domains before reverse propagation continues;
+- changing the connection set of an indexed input conservatively marks that whole
+  logical input changed over `old_input_coverage | new_input_coverage`, after
+  which normal forward propagation determines downstream consequences;
 - `tock_region_batch()` receives only the selected covered page domains, never
   uncovered physical-page portions, already-valid pages, or blind sparse caller
   positions;
 - forward and reverse region propagation are opposite directional dependency
   queries, not inverse mappings;
 - fixed node/indexed persistent state remains in canonical `NodeStorage`, while
-  dynamically growing indexed caches and request-sized transaction storage are
-  executor-owned generation sidecars;
+  dynamically growing indexed caches live in an executor-owned stable cache
+  store with per-generation endpoint bindings; outputs without stable project
+  identity may use generation-local cache state, and request-sized transaction
+  storage remains executor-owned;
 - indexed results are semantic-versioned. Realtime continues using one immutable
   previously published indexed snapshot while edits/tocks build a newer
   candidate off the hot path; and
 - a live-required candidate publishes atomically only at a whole-live-graph block
   boundary after every indexed page the live graph may read is ready. The audio
-  thread never waits for or triggers indexed tock processing.
+  thread never waits for or triggers indexed tock processing; and
+- JIT generation replacement alone is not an indexed invalidation event: stable
+  virtual-node/member output identities rebind new executable generations to the
+  same executor-owned cache entries without copying page payloads, while only
+  actual state/connection/coverage/semantic changes invalidate candidate data.
 
 The graph has no implicit realtime-to-indexed edge. Recorder/source nodes own any
 transition from realtime mutation to changed indexed output regions and report
