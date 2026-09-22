@@ -1,6 +1,6 @@
 CompileFlags:
   Add: [-std=c++23]
-  CompilationDatabase: "/home/ljleb/src/intravenous/build-release"
+  CompilationDatabase: "@CMAKE_BINARY_DIR@"
 Diagnostics:
   Suppress:
     - unused-comparison

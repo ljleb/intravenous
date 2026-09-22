@@ -146,8 +146,9 @@ struct NodeCompilerOperations {
     std::size_t (*declare_node)(...);
     void (*tick_block)(...);
     void (*skip_block)(...);
-    void (*access_block_batched)(...);
-    void (*propagate_block_access_batched)(...);
+    void (*tock_coverage)(...);
+    void (*propagate_forward_coverage)(...);
+    void (*propagate_reverse_coverage)(...);
 };
 
 struct NodeCompilerRecord {
@@ -157,16 +158,18 @@ struct NodeCompilerRecord {
     std::size_t type_name_size = 0;
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
+    std::size_t indexed_state_size = 0;
+    std::size_t indexed_state_alignment = 1;
 };
 ```
 
 `NodeCodeKey` is deliberately build-local. It is a compiler join between a configured node instance and LLVM functions in that build, not a persistent server identity.
 
-The current `access_block_batched` / `propagate_block_access_batched` names are
-legacy indexed-domain compiler anchors. The intended contract is
-`tock_coverage`, `propagate_forward_coverage`, and
-`propagate_reverse_coverage`; the compiler record will need corresponding
-anchors as the API migrates. An indexed-output node needs a tock implementation.
+The indexed compiler anchors are `tock_coverage`,
+`propagate_forward_coverage`, and `propagate_reverse_coverage`. These are
+one-node operations even when their coverage contains many disjoint regions;
+future multi-node batching uses a separate ABI. An indexed-output node needs a
+tock implementation.
 Reverse propagation is needed only where indexed output demand can reach indexed
 inputs. Forward propagation maps changed indexed inputs to changed indexed
 outputs, while arbitrary node-local mutations may seed changed output regions
@@ -1470,8 +1473,8 @@ Multiple instances of one registered node type share one implementation function
 
 State should lower to direct typed state storage known by the graph compiler rather than repeatedly treating state as an untyped byte span in the hot path.
 
-Indexed-capable nodes may additionally declare indexed-domain persistent state
-(currently named `CompiledState`). Sequential `State` and indexed state have
+Indexed-capable nodes may additionally declare indexed-domain persistent
+`IndexedState`. Sequential `State` and indexed state have
 distinct storage identities, but the same mutable indexed state object is
 intentionally visible to both realtime `tick_block()` and indexed
 `tock_coverage()` evaluation. This permits explicit recorder/source nodes to
@@ -2578,7 +2581,7 @@ The following are treated as strong architectural decisions unless implementatio
 19. **Consecutive sample-wise tick nodes should share graph-level outer loops when legal.**
 20. **TTL/activity should be compiled from graph knowledge rather than rediscovered by scanning every internal audio block.**
 21. **Global-pointer configuration relocation remains supported.**
-22. **The finalizer generates the canonical node declaration/layout contract; lowering finalizes layout before LLVM emission; the live host executes lifecycle/state migration.** The optimized project masquerades as a zero-input/zero-output root node. During lowering, the exact accepted native `declare_node` callbacks and compiler-owned raw-region declarations build one canonical `NodeLayout`; final offsets are then constants in generated LLVM. `GraphExecutor` owns the corresponding `NodeStorage` and uses the ordinary initialize/move/release machinery for both `State` and `CompiledState`. Source introspection supplies symmetric nominal-definition identity and structural metadata for both state domains so cross-generation typed migration never relies on RTTI names or byte size alone.
+22. **The finalizer generates the canonical node declaration/layout contract; lowering finalizes layout before LLVM emission; the live host executes lifecycle/state migration.** The optimized project masquerades as a zero-input/zero-output root node. During lowering, the exact accepted native `declare_node` callbacks and compiler-owned raw-region declarations build one canonical `NodeLayout`; final offsets are then constants in generated LLVM. `GraphExecutor` owns the corresponding `NodeStorage` and uses the ordinary initialize/move/release machinery for both `State` and `IndexedState`. Source introspection supplies symmetric nominal-definition identity and structural metadata for both state domains so cross-generation typed migration never relies on RTTI names or byte size alone.
 23. **Profiling and LLVM visibility are first-class.** Every important whole-graph compiler stage should be dumpable and timed.
 24. **Lane control-plane deletion is orthogonal to the kernel rewrite.** Once the replacement project ownership and required DSP/module capabilities exist, `Timeline`/`LaneGraph` may be removed before the whole-project kernel. A compatibility execution adapter is optional migration scaffolding, not a prerequisite. The same project graph and connection semantics must later feed the generated kernel without another identity migration.
 25. **Registered constructors/functions are provider-owned.** `IV_NODE` and
@@ -2621,7 +2624,7 @@ The following are treated as strong architectural decisions unless implementatio
     for later executor-side propagation; this does not imply downstream cached
     recomputation at audio rate.
 35. **One executable generation has one canonical fixed `NodeStorage`.** Node
-    `State`, indexed-domain state (currently `CompiledState`), history/feedback/
+    `State`, indexed-domain `IndexedState`, history/feedback/
     event carry, root-owned fixed persistent state, and bounded compiler regions
     are declared into one `NodeLayout`. Dynamically growing cached indexed pages
     and non-realtime request-sized transaction arenas are executor-owned sidecars.

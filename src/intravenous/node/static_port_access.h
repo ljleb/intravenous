@@ -138,29 +138,29 @@ namespace iv::details {
     }
 
     template<typename Node, fixed_string Name>
-    consteval bool static_input_port_is_compiled()
+    consteval bool static_input_port_is_indexed()
     {
         InputConfig const config = static_input_config<Node, Name>();
         if (!is_sample(config)) throw "static input port is not a sample port";
-        return is_compiled(config);
+        return is_indexed(config);
     }
 
-    // Access contexts contain only compiled ports. Convert a declaration's
-    // physical sample-port ordinal to its compact compiled-port ordinal so
+    // Indexed callback contexts contain only indexed ports. Convert a declaration's
+    // physical sample-port ordinal to its compact indexed-port ordinal so
     // access callbacks never receive fake realtime placeholders.
     template<typename Node, fixed_string Name>
-    consteval size_t static_compiled_input_port_index()
+    consteval size_t static_indexed_input_port_index()
     {
         static constexpr auto configs = Node::inputs();
         constexpr size_t port_index = static_input_port_index<Node, Name>();
-        static_assert(static_input_port_is_compiled<Node, Name>(),
-            "requested static input is not declared compiled");
-        size_t compiled_index = 0;
+        static_assert(static_input_port_is_indexed<Node, Name>(),
+            "requested static input is not declared indexed");
+        size_t indexed_index = 0;
         size_t sample_index = 0;
         for (InputConfig const& config : configs) {
             if (!is_sample(config)) continue;
-            if (sample_index == port_index) return compiled_index;
-            if (is_compiled(config)) ++compiled_index;
+            if (sample_index == port_index) return indexed_index;
+            if (is_indexed(config)) ++indexed_index;
             ++sample_index;
         }
         throw "unknown static sample input port name";
@@ -173,26 +173,26 @@ namespace iv::details {
     }
 
     template<typename Node, fixed_string Name>
-    consteval bool static_output_port_is_compiled()
+    consteval bool static_output_port_is_indexed()
     {
         OutputConfig const config = static_output_config<Node, Name>();
         if (!is_sample(config)) throw "static output port is not a sample port";
-        return is_compiled(config);
+        return is_indexed(config);
     }
 
     template<typename Node, fixed_string Name>
-    consteval size_t static_compiled_output_port_index()
+    consteval size_t static_indexed_output_port_index()
     {
         static constexpr auto configs = Node::outputs();
         constexpr size_t port_index = static_output_port_index<Node, Name>();
-        static_assert(static_output_port_is_compiled<Node, Name>(),
-            "requested static output is not declared compiled");
-        size_t compiled_index = 0;
+        static_assert(static_output_port_is_indexed<Node, Name>(),
+            "requested static output is not declared indexed");
+        size_t indexed_index = 0;
         size_t sample_index = 0;
         for (OutputConfig const& config : configs) {
             if (!is_sample(config)) continue;
-            if (sample_index == port_index) return compiled_index;
-            if (is_compiled(config)) ++compiled_index;
+            if (sample_index == port_index) return indexed_index;
+            if (is_indexed(config)) ++indexed_index;
             ++sample_index;
         }
         throw "unknown static sample output port name";
@@ -243,52 +243,52 @@ namespace iv::details {
     }
 
     template<typename Node, fixed_string Name>
-    consteval bool static_event_input_port_is_compiled()
+    consteval bool static_event_input_port_is_indexed()
     {
         InputConfig const config = static_input_config<Node, Name>();
         if (is_sample(config)) throw "static input port is not an event port";
-        return is_compiled(config);
+        return is_indexed(config);
     }
 
     template<typename Node, fixed_string Name>
-    consteval bool static_event_output_port_is_compiled()
+    consteval bool static_event_output_port_is_indexed()
     {
         OutputConfig const config = static_output_config<Node, Name>();
         if (is_sample(config)) throw "static output port is not an event port";
-        return is_compiled(config);
+        return is_indexed(config);
     }
 
     template<typename Node, fixed_string Name>
-    consteval size_t static_compiled_event_input_port_index()
+    consteval size_t static_indexed_event_input_port_index()
     {
         static constexpr auto configs = Node::inputs();
         constexpr size_t port_index = static_event_input_port_index<Node, Name>();
-        static_assert(static_event_input_port_is_compiled<Node, Name>(),
-            "requested static event input is not declared compiled");
-        size_t compiled_index = 0;
+        static_assert(static_event_input_port_is_indexed<Node, Name>(),
+            "requested static event input is not declared indexed");
+        size_t indexed_index = 0;
         size_t event_index = 0;
         for (InputConfig const& config : configs) {
             if (is_sample(config)) continue;
-            if (event_index == port_index) return compiled_index;
-            if (is_compiled(config)) ++compiled_index;
+            if (event_index == port_index) return indexed_index;
+            if (is_indexed(config)) ++indexed_index;
             ++event_index;
         }
         throw "unknown static event input port name";
     }
 
     template<typename Node, fixed_string Name>
-    consteval size_t static_compiled_event_output_port_index()
+    consteval size_t static_indexed_event_output_port_index()
     {
         static constexpr auto configs = Node::outputs();
         constexpr size_t port_index = static_event_output_port_index<Node, Name>();
-        static_assert(static_event_output_port_is_compiled<Node, Name>(),
-            "requested static event output is not declared compiled");
-        size_t compiled_index = 0;
+        static_assert(static_event_output_port_is_indexed<Node, Name>(),
+            "requested static event output is not declared indexed");
+        size_t indexed_index = 0;
         size_t event_index = 0;
         for (OutputConfig const& config : configs) {
             if (is_sample(config)) continue;
-            if (event_index == port_index) return compiled_index;
-            if (is_compiled(config)) ++compiled_index;
+            if (event_index == port_index) return indexed_index;
+            if (is_indexed(config)) ++indexed_index;
             ++event_index;
         }
         throw "unknown static event output port name";

@@ -282,8 +282,8 @@ struct IrNodeRecord {
     std::string type_name{};
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
-    std::size_t compiled_state_size = 0;
-    std::size_t compiled_state_alignment = 1;
+    std::size_t indexed_state_size = 0;
+    std::size_t indexed_state_alignment = 1;
     Constant* initializer = nullptr;
 };
 
@@ -313,6 +313,10 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
         if (!record || record->getNumOperands() != 8) fail("malformed iv_node_types record");
         auto* key = dyn_cast<ConstantStruct>(record->getOperand(0));
         if (!key || key->getNumOperands() != 2) fail("malformed iv_node_types key");
+        auto* operations = dyn_cast<ConstantStruct>(record->getOperand(1));
+        if (!operations || operations->getNumOperands() != 6) {
+            fail("malformed iv_node_types operations ABI");
+        }
         StringRef name;
         if (!getConstantStringInfo(record->getOperand(2), name, false))
             fail("node compiler record does not contain a constant type name");
@@ -326,10 +330,10 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
             .type_name = name.substr(0, name_size).str(),
             .state_size = constant_size(record->getOperand(4), "state size"),
             .state_alignment = constant_size(record->getOperand(5), "state alignment"),
-            .compiled_state_size = constant_size(
-                record->getOperand(6), "compiled state size"),
-            .compiled_state_alignment = constant_size(
-                record->getOperand(7), "compiled state alignment"),
+            .indexed_state_size = constant_size(
+                record->getOperand(6), "indexed state size"),
+            .indexed_state_alignment = constant_size(
+                record->getOperand(7), "indexed state alignment"),
             .initializer = record,
         });
     }
@@ -400,7 +404,7 @@ struct PackageDefinitionMetadata {
 
 struct CompilerMetadata {
     std::vector<StateMetadata> states;
-    std::vector<StateMetadata> compiled_states;
+    std::vector<StateMetadata> indexed_states;
     std::vector<ConfigPointerMetadata> config_pointers;
     std::vector<ConfigurationTypeMetadata> configuration_types;
     std::vector<PackageDefinitionMetadata> package_definitions;
@@ -424,16 +428,16 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         auto* object = parsed->getAsObject();
         if (!object) fail("metadata root is not an object in '" + entry.path().string() + "'");
         auto version = object->getInteger("version");
-        if (!version || *version != 0) {
+        if (!version || *version != 1) {
             fail("unsupported compiler metadata version in '" + entry.path().string() + "'");
         }
         auto* states = object->getArray("states");
         if (!states) {
             fail("metadata has no state array in '" + entry.path().string() + "'");
         }
-        auto* compiled_states = object->getArray("compiled_states");
-        if (!compiled_states) {
-            fail("metadata has no compiled-state array in '" + entry.path().string() + "'");
+        auto* indexed_states = object->getArray("indexed_states");
+        if (!indexed_states) {
+            fail("metadata has no indexed-state array in '" + entry.path().string() + "'");
         }
         auto* config_pointers = object->getArray("config_pointers");
         if (!config_pointers) {
@@ -638,7 +642,7 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         };
         append_state_metadata(*states, result.states, "state");
         append_state_metadata(
-            *compiled_states, result.compiled_states, "compiled-state");
+            *indexed_states, result.indexed_states, "indexed-state");
         for (auto const& field_value : *config_pointers) {
             auto* field = field_value.getAsObject();
             if (!field) fail("config-pointer metadata entry is not an object in '" + entry.path().string() + "'");
@@ -751,7 +755,7 @@ void reject_node_runtime_mutable_globals(std::span<IrNodeRecord const> records)
                 "node type '" + record.type_name
                 + "' runtime/compiler operations reference mutable package global '"
                 + global->getName().str()
-                + "'; persistent mutable runtime data must be Node::State or Node::CompiledState");
+                + "'; persistent mutable runtime data must be Node::State or Node::IndexedState");
         }
     }
 }
@@ -945,19 +949,19 @@ std::vector<RetainedGlobal> collect_retained_globals(
 std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> bind_state_metadata(
     std::span<IrNodeRecord const> records,
     std::span<StateMetadata const> metadata,
-    bool compiled_state)
+    bool indexed_state)
 {
     std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> result;
-    auto const label = compiled_state ? "Node::CompiledState" : "Node::State";
+    auto const label = indexed_state ? "Node::IndexedState" : "Node::State";
     for (auto const& record : records) {
         auto const state = std::find_if(metadata.begin(), metadata.end(), [&](auto const& item) {
             return item.key == record.key;
         });
-        auto const state_size = compiled_state
-            ? record.compiled_state_size
+        auto const state_size = indexed_state
+            ? record.indexed_state_size
             : record.state_size;
-        auto const state_alignment = compiled_state
-            ? record.compiled_state_alignment
+        auto const state_alignment = indexed_state
+            ? record.indexed_state_alignment
             : record.state_alignment;
         if (state_size == 0) {
             if (state != metadata.end()) {
@@ -1205,7 +1209,7 @@ void inject_package_configuration_metadata(
     Module& module,
     CompilerMetadata const& metadata,
     std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> state_structures,
-    std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> compiled_state_structures,
+    std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> indexed_state_structures,
     std::span<RetainedGlobal const> retained_globals)
 {
     auto& context = module.getContext();
@@ -1392,10 +1396,10 @@ void inject_package_configuration_metadata(
         "iv.package_state",
         state_structures);
     emit_state_structures(
-        "iv_package_node_compiled_state_structures",
-        "iv.package_node_compiled_state_structures",
-        "iv.package_compiled_state",
-        compiled_state_structures);
+        "iv_package_node_indexed_state_structures",
+        "iv.package_node_indexed_state_structures",
+        "iv.package_indexed_state",
+        indexed_state_structures);
 
 }
 
@@ -1407,7 +1411,7 @@ void preserve_package_code(Module& module)
         "iv_package_node_config_pointer_fields",
         "iv_package_retained_globals",
         "iv_package_node_state_structures",
-        "iv_package_node_compiled_state_structures",
+        "iv_package_node_indexed_state_structures",
     };
     SmallPtrSet<GlobalValue const*, 32> reachable;
     for (auto const name : entry_points) {
@@ -1512,8 +1516,8 @@ int finalize(Options options)
     reject_node_runtime_mutable_globals(node_records);
     auto state_structures = bind_state_metadata(
         node_records, metadata.states, false);
-    auto compiled_state_structures = bind_state_metadata(
-        node_records, metadata.compiled_states, true);
+    auto indexed_state_structures = bind_state_metadata(
+        node_records, metadata.indexed_states, true);
     require_node_config_metadata(node_records, metadata);
     auto definitions = package_definition_globals(package);
     validate_package_definitions(definitions, metadata);
@@ -1528,7 +1532,7 @@ int finalize(Options options)
         package,
         metadata,
         state_structures,
-        compiled_state_structures,
+        indexed_state_structures,
         retained_globals);
     preserve_package_code(package);
     verify_finalized_package(package);

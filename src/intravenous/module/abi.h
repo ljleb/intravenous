@@ -63,5 +63,5 @@ using iv_package_definitions_fn = iv::ModuleDataView (*)();
 using iv_package_node_config_pointer_fields_fn = iv::ModuleDataView (*)();
 using iv_package_retained_globals_fn = iv::ModuleDataView (*)();
 using iv_package_node_state_structures_fn = iv::ModuleDataView (*)();
-using iv_package_node_compiled_state_structures_fn = iv::ModuleDataView (*)();
+using iv_package_node_indexed_state_structures_fn = iv::ModuleDataView (*)();
 }

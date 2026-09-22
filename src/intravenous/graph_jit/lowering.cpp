@@ -41,8 +41,8 @@ struct ReflectedContextByteOffsets {
     std::size_t event_input_bindings_size = 0;
     std::size_t event_output_bindings_data = 0;
     std::size_t event_output_bindings_size = 0;
-    std::size_t compiled_state_data = 0;
-    std::size_t compiled_state_size = 0;
+    std::size_t indexed_state_data = 0;
+    std::size_t indexed_state_size = 0;
     std::size_t state_data = 0;
     std::size_t state_size = 0;
 };
@@ -110,11 +110,11 @@ constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
         .event_output_bindings_size =
             offsetof(ReflectedNodeTickContext, event_output_bindings)
             + offsetof(ReflectedSpan<ReflectedEventOutputPortBinding const>, extent),
-        .compiled_state_data =
-            offsetof(ReflectedNodeTickContext, compiled_state)
+        .indexed_state_data =
+            offsetof(ReflectedNodeTickContext, indexed_state)
             + offsetof(ReflectedSpan<std::byte>, pointer),
-        .compiled_state_size =
-            offsetof(ReflectedNodeTickContext, compiled_state)
+        .indexed_state_size =
+            offsetof(ReflectedNodeTickContext, indexed_state)
             + offsetof(ReflectedSpan<std::byte>, extent),
         .state_data = offsetof(ReflectedNodeTickContext, state)
             + offsetof(ReflectedSpan<std::byte>, pointer),
@@ -1004,15 +1004,15 @@ void emit_primitive_call(
             event_ports.output_bindings,
             event_ports.output_count);
     }
-    if (storage.has_compiled_state) {
+    if (storage.has_indexed_state) {
         store_context_span(
             builder,
             context_storage,
-            offsets.compiled_state_data,
-            offsets.compiled_state_size,
+            offsets.indexed_state_data,
+            offsets.indexed_state_size,
             storage_base,
-            storage.compiled_state_offset,
-            storage.compiled_state_size);
+            storage.indexed_state_offset,
+            storage.indexed_state_size);
     }
     if (storage.has_state) {
         store_context_span(

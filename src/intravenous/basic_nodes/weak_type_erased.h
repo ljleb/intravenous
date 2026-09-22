@@ -34,7 +34,7 @@ namespace iv {
     public:
         struct State {
             std::span<std::span<std::byte>> nested_node_states;
-            std::span<std::span<std::byte>> nested_node_compiled_states;
+            std::span<std::span<std::byte>> nested_node_indexed_states;
         };
 
         WeakTypeErasedNode() = default;
@@ -80,8 +80,8 @@ namespace iv {
                 auto const& state = ctx.state();
                 do_declare(*static_cast<Node const*>(node_ptr), ctx);
                 ctx.nested_node_states(state.nested_node_states);
-                ctx.nested_node_compiled_states(
-                    state.nested_node_compiled_states);
+                ctx.nested_node_indexed_states(
+                    state.nested_node_indexed_states);
             };
             _tick_fn = [](void const* node_ptr, TickSampleContext<WeakTypeErasedNode> const& ctx) {
                 auto& state = ctx.state();
@@ -91,10 +91,10 @@ namespace iv {
                         .outputs = ctx.outputs,
                         .event_inputs = ctx.event_inputs,
                         .event_outputs = ctx.event_outputs,
-                        .compiled_inputs = ctx.compiled_inputs,
-                        .compiled_event_inputs = ctx.compiled_event_inputs,
-                        .compiled_state_storage =
-                            state.nested_node_compiled_states[0],
+                        .indexed_inputs = ctx.indexed_inputs,
+                        .indexed_event_inputs = ctx.indexed_event_inputs,
+                        .indexed_state_storage =
+                            state.nested_node_indexed_states[0],
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
                         .buffer = state.nested_node_states[0]
@@ -110,10 +110,10 @@ namespace iv {
                         .outputs = ctx.outputs,
                         .event_inputs = ctx.event_inputs,
                         .event_outputs = ctx.event_outputs,
-                        .compiled_inputs = ctx.compiled_inputs,
-                        .compiled_event_inputs = ctx.compiled_event_inputs,
-                        .compiled_state_storage =
-                            state.nested_node_compiled_states[0],
+                        .indexed_inputs = ctx.indexed_inputs,
+                        .indexed_event_inputs = ctx.indexed_event_inputs,
+                        .indexed_state_storage =
+                            state.nested_node_indexed_states[0],
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
                         .buffer = state.nested_node_states[0]
@@ -130,10 +130,10 @@ namespace iv {
                         .outputs = ctx.outputs,
                         .event_inputs = ctx.event_inputs,
                         .event_outputs = ctx.event_outputs,
-                        .compiled_inputs = ctx.compiled_inputs,
-                        .compiled_event_inputs = ctx.compiled_event_inputs,
-                        .compiled_state_storage =
-                            state.nested_node_compiled_states[0],
+                        .indexed_inputs = ctx.indexed_inputs,
+                        .indexed_event_inputs = ctx.indexed_event_inputs,
+                        .indexed_state_storage =
+                            state.nested_node_indexed_states[0],
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
                         .buffer = state.nested_node_states[0]

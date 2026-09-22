@@ -373,7 +373,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
          ++region_index) {
         auto const& region = node_layout.regions[region_index];
         if (region.kind == NodeLayout::Region::Kind::state
-            || region.kind == NodeLayout::Region::Kind::compiled_state) {
+            || region.kind == NodeLayout::Region::Kind::indexed_state) {
             continue;
         }
         auto const event_physical_owns_region = std::ranges::any_of(
@@ -489,20 +489,20 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         auto const& node_record = plan.node_layout.nodes[i];
         if (node_record.state_size != implementation.state_size
             || node_record.state_alignment != implementation.state_alignment
-            || node_record.compiled_state_size != implementation.compiled_state_size
-            || node_record.compiled_state_alignment
-                != implementation.compiled_state_alignment) {
+            || node_record.indexed_state_size != implementation.indexed_state_size
+            || node_record.indexed_state_alignment
+                != implementation.indexed_state_alignment) {
             return std::unexpected(
-                "declared primitive State/CompiledState layout disagrees with finalized compiler metadata");
+                "declared primitive State/IndexedState layout disagrees with finalized compiler metadata");
         }
         if (node_record.state_size != 0 && node_record.state_offset < 0) {
             return std::unexpected(
                 "declared primitive State has no canonical NodeLayout storage offset");
         }
-        if (node_record.compiled_state_size != 0
-            && node_record.compiled_state_offset < 0) {
+        if (node_record.indexed_state_size != 0
+            && node_record.indexed_state_offset < 0) {
             return std::unexpected(
-                "declared primitive CompiledState has no canonical NodeLayout storage offset");
+                "declared primitive IndexedState has no canonical NodeLayout storage offset");
         }
 
         PrimitiveStoragePlan storage;
@@ -517,17 +517,17 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             }
             storage.state_size = node_record.state_size;
         }
-        if (node_record.compiled_state_size != 0) {
-            storage.has_compiled_state = true;
-            storage.compiled_state_offset =
-                static_cast<std::size_t>(node_record.compiled_state_offset);
-            if (storage.compiled_state_offset > plan.node_layout.storage_size
-                || node_record.compiled_state_size
-                    > plan.node_layout.storage_size - storage.compiled_state_offset) {
+        if (node_record.indexed_state_size != 0) {
+            storage.has_indexed_state = true;
+            storage.indexed_state_offset =
+                static_cast<std::size_t>(node_record.indexed_state_offset);
+            if (storage.indexed_state_offset > plan.node_layout.storage_size
+                || node_record.indexed_state_size
+                    > plan.node_layout.storage_size - storage.indexed_state_offset) {
                 return std::unexpected(
-                    "declared primitive CompiledState lies outside canonical NodeStorage");
+                    "declared primitive IndexedState lies outside canonical NodeStorage");
             }
-            storage.compiled_state_size = node_record.compiled_state_size;
+            storage.indexed_state_size = node_record.indexed_state_size;
         }
         plan.primitive_storage.push_back(storage);
     }
@@ -878,11 +878,11 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     for (auto const& group : connections.sample_producer_groups) {
         if (!group.has_realtime_connections) {
             return std::unexpected(
-                "GraphJit sample-edge slice does not yet support compiled-only sample connections");
+                "GraphJit sample-edge slice does not yet support indexed-only sample connections");
         }
-        if (group.has_compiled_connections) {
+        if (group.has_indexed_connections) {
             return std::unexpected(
-                "GraphJit sample-edge slice does not yet support mixed realtime/compiled sample fanout");
+                "GraphJit sample-edge slice does not yet support mixed realtime/indexed sample fanout");
         }
         if (!group.storage_plan) {
             return std::unexpected(
@@ -1200,7 +1200,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 NodeBundlePortId{bundle, PortKind::sample, port}).config;
             if (!is_realtime(config.access)) {
                 return std::unexpected(
-                    "GraphJit disconnected compiled sample input is not supported");
+                    "GraphJit disconnected indexed sample input is not supported");
             }
             disconnected_inputs.push_back(DisconnectedSampleInput{
                 .primitive = primitive_index,
@@ -1228,7 +1228,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 NodeBundlePortId{bundle, PortKind::sample, port}).config;
             if (!is_realtime(config.access)) {
                 return std::unexpected(
-                    "GraphJit disconnected compiled sample output is not supported");
+                    "GraphJit disconnected indexed sample output is not supported");
             }
             disconnected_outputs.push_back(DisconnectedSampleOutput{
                 .primitive = primitive_index,
@@ -1766,11 +1766,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         auto const& group = connections.event_producer_groups[group_index];
         if (!group.has_realtime_connections) {
             return std::unexpected(
-                "GraphJit event flow does not yet support compiled-only event connections");
+                "GraphJit event flow does not yet support indexed-only event connections");
         }
-        if (group.has_compiled_connections) {
+        if (group.has_indexed_connections) {
             return std::unexpected(
-                "GraphJit event flow does not yet support mixed realtime/compiled event fanout");
+                "GraphJit event flow does not yet support mixed realtime/indexed event fanout");
         }
         if (!group.storage_plan) {
             return std::unexpected(
@@ -3960,7 +3960,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 .resolve_event_input(port_id).config;
             if (!is_realtime(config.access)) {
                 return std::unexpected(
-                    "GraphJit disconnected compiled event inputs are not yet supported");
+                    "GraphJit disconnected indexed event inputs are not yet supported");
             }
             auto empty = append_representation(
                 connections.event_producer_groups.size(), config.type, 0);
@@ -3982,7 +3982,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 .resolve_event_output(port_id).config;
             if (!is_realtime(config.access)) {
                 return std::unexpected(
-                    "GraphJit disconnected compiled event outputs are not yet supported");
+                    "GraphJit disconnected indexed event outputs are not yet supported");
             }
             auto window_samples = input.specialization.block_size;
             auto const history = realtime_history(config);

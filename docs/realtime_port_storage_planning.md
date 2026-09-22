@@ -73,7 +73,7 @@ temporaries belong to the generated root's fixed stack frame.
 
 Any project-owned data that must survive from one execution call to another
 belongs in that layout. This includes history/latency carry, full persistent
-port buffers, feedback state, `State`, indexed-domain state (currently named `CompiledState`), and activity state.
+port buffers, feedback state, `State`, indexed-domain `IndexedState`, and activity state.
 Invocation-local port temporaries do not acquire persistent ownership merely
 because their maximum size is known: the generated root should reserve them in
 its fixed stack frame, subject to a compile-time stack budget, or choose a full
@@ -497,16 +497,18 @@ struct RealtimeOutputConfig {
     std::size_t latency = 0;
 };
 
-struct IndexedPortConfig {};
+struct IndexedInputConfig {};
+struct IndexedOutputConfig { bool cache = true; };
 
 using InputAccessConfig =
-    std::variant<RealtimeInputConfig, IndexedPortConfig>;
+    std::variant<RealtimeInputConfig, IndexedInputConfig>;
 using OutputAccessConfig =
-    std::variant<RealtimeOutputConfig, IndexedPortConfig>;
+    std::variant<RealtimeOutputConfig, IndexedOutputConfig>;
 ```
 
-`IndexedPortConfig` is the intended terminology. The implementation may still
-use the legacy identifier `CompiledPortConfig` while the API rename is staged.
+The distinct indexed alternatives are intentional: only outputs declare the
+`cache` materialization contract. Indexed inputs inherit the behavior of their
+connected producers and therefore carry no cache preference of their own.
 
 `InputConfig` / `OutputConfig` separately carry the sample/event payload variant
 and this access variant. `SampleInputProperties`, `SampleOutputProperties`,

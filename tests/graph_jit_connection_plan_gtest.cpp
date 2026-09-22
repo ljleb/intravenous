@@ -136,7 +136,7 @@ struct StereoSink {
     void tick_block(iv::TickBlockContext<StereoSink> const&) const {}
 };
 
-struct CompiledSource {
+struct IndexedSource {
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 0>{};
@@ -144,17 +144,17 @@ struct CompiledSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::compiled_sample_output("out")};
+        return std::array{iv::indexed_sample_output("out")};
     }
 
-    void tick_block(iv::TickBlockContext<CompiledSource> const&) const {}
-    void access_block_batch(iv::AccessBlockBatchContext<CompiledSource>&) const {}
+    void tick_block(iv::TickBlockContext<IndexedSource> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<IndexedSource>&) const {}
 };
 
-struct CompiledSink {
+struct IndexedSink {
     static constexpr auto inputs()
     {
-        return std::array{iv::compiled_sample_input("in")};
+        return std::array{iv::indexed_sample_input("in")};
     }
 
     static constexpr auto outputs()
@@ -162,7 +162,7 @@ struct CompiledSink {
         return std::array<iv::OutputConfig, 0>{};
     }
 
-    void tick_block(iv::TickBlockContext<CompiledSink> const&) const {}
+    void tick_block(iv::TickBlockContext<IndexedSink> const&) const {}
 };
 
 struct RealtimeSink {
@@ -900,12 +900,12 @@ TEST(GraphJitConnectionPlan, BlockSliceMismatchRequiresMaterialization)
         RealtimeBufferStorageKind::transient_stack);
 }
 
-TEST(GraphJitConnectionPlan, CompiledConnectionsDoNotUseRealtimeStoragePolicy)
+TEST(GraphJitConnectionPlan, IndexedConnectionsDoNotUseRealtimeStoragePolicy)
 {
     using namespace iv;
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<CompiledSource>(graph);
-    auto sink = details::configure_concrete_node<CompiledSink>(graph);
+    auto source = details::configure_concrete_node<IndexedSource>(graph);
+    auto sink = details::configure_concrete_node<IndexedSink>(graph);
     sink(source);
     graph.outputs();
 
@@ -916,85 +916,85 @@ TEST(GraphJitConnectionPlan, CompiledConnectionsDoNotUseRealtimeStoragePolicy)
     ASSERT_EQ(plan->sample_connections.size(), 1u);
     EXPECT_EQ(
         plan->sample_connections[0].access,
-        graph_jit::detail::PlannedConnectionAccess::compiled_to_compiled);
+        graph_jit::detail::PlannedConnectionAccess::indexed_to_indexed);
     ASSERT_EQ(plan->dependencies.size(), 1u);
     EXPECT_FALSE(plan->dependencies[0].sequential_tick_dependency);
     ASSERT_EQ(plan->sample_producer_groups.size(), 1u);
     EXPECT_FALSE(plan->sample_producer_groups[0].has_realtime_connections);
-    EXPECT_TRUE(plan->sample_producer_groups[0].has_compiled_connections);
+    EXPECT_TRUE(plan->sample_producer_groups[0].has_indexed_connections);
     EXPECT_FALSE(plan->sample_producer_groups[0].storage_plan.has_value());
     EXPECT_TRUE(plan->storage.regions.empty());
 }
 
-TEST(GraphJitConnectionPlan, PreservesCompiledRealtimeAccessDirection)
+TEST(GraphJitConnectionPlan, PreservesIndexedRealtimeAccessDirection)
 {
     using namespace iv;
 
-    GraphBuilder compiled_to_realtime;
-    auto compiled_source =
-        details::configure_concrete_node<CompiledSource>(compiled_to_realtime);
+    GraphBuilder indexed_to_realtime;
+    auto indexed_source =
+        details::configure_concrete_node<IndexedSource>(indexed_to_realtime);
     auto realtime_sink =
-        details::configure_concrete_node<RealtimeSink>(compiled_to_realtime);
-    realtime_sink(compiled_source);
-    compiled_to_realtime.outputs();
+        details::configure_concrete_node<RealtimeSink>(indexed_to_realtime);
+    realtime_sink(indexed_source);
+    indexed_to_realtime.outputs();
 
-    auto compiled_to_realtime_graph = std::move(compiled_to_realtime).finish();
-    auto compiled_to_realtime_plan =
+    auto indexed_to_realtime_graph = std::move(indexed_to_realtime).finish();
+    auto indexed_to_realtime_plan =
         graph_jit::detail::build_connection_analysis_plan(
-            compiled_to_realtime_graph, 64);
-    ASSERT_TRUE(compiled_to_realtime_plan.has_value())
-        << (compiled_to_realtime_plan
+            indexed_to_realtime_graph, 64);
+    ASSERT_TRUE(indexed_to_realtime_plan.has_value())
+        << (indexed_to_realtime_plan
                 ? std::string{}
-                : compiled_to_realtime_plan.error());
-    ASSERT_EQ(compiled_to_realtime_plan->sample_connections.size(), 1u);
+                : indexed_to_realtime_plan.error());
+    ASSERT_EQ(indexed_to_realtime_plan->sample_connections.size(), 1u);
     EXPECT_EQ(
-        compiled_to_realtime_plan->sample_connections[0].access,
-        graph_jit::detail::PlannedConnectionAccess::compiled_to_realtime);
-    ASSERT_EQ(compiled_to_realtime_plan->dependencies.size(), 1u);
+        indexed_to_realtime_plan->sample_connections[0].access,
+        graph_jit::detail::PlannedConnectionAccess::indexed_to_realtime);
+    ASSERT_EQ(indexed_to_realtime_plan->dependencies.size(), 1u);
     EXPECT_FALSE(
-        compiled_to_realtime_plan->dependencies[0].sequential_tick_dependency);
-    ASSERT_EQ(compiled_to_realtime_plan->sample_producer_groups.size(), 1u);
+        indexed_to_realtime_plan->dependencies[0].sequential_tick_dependency);
+    ASSERT_EQ(indexed_to_realtime_plan->sample_producer_groups.size(), 1u);
     EXPECT_FALSE(
-        compiled_to_realtime_plan->sample_producer_groups[0]
+        indexed_to_realtime_plan->sample_producer_groups[0]
             .has_realtime_connections);
     EXPECT_TRUE(
-        compiled_to_realtime_plan->sample_producer_groups[0]
-            .has_compiled_connections);
+        indexed_to_realtime_plan->sample_producer_groups[0]
+            .has_indexed_connections);
     EXPECT_FALSE(
-        compiled_to_realtime_plan->sample_producer_groups[0]
+        indexed_to_realtime_plan->sample_producer_groups[0]
             .storage_plan.has_value());
 
-    GraphBuilder realtime_to_compiled;
+    GraphBuilder realtime_to_indexed;
     auto realtime_source =
-        details::configure_concrete_node<MonoSource>(realtime_to_compiled);
-    auto compiled_sink =
-        details::configure_concrete_node<CompiledSink>(realtime_to_compiled);
-    compiled_sink(realtime_source);
-    realtime_to_compiled.outputs();
+        details::configure_concrete_node<MonoSource>(realtime_to_indexed);
+    auto indexed_sink =
+        details::configure_concrete_node<IndexedSink>(realtime_to_indexed);
+    indexed_sink(realtime_source);
+    realtime_to_indexed.outputs();
 
-    auto realtime_to_compiled_graph = std::move(realtime_to_compiled).finish();
-    auto realtime_to_compiled_plan =
+    auto realtime_to_indexed_graph = std::move(realtime_to_indexed).finish();
+    auto realtime_to_indexed_plan =
         graph_jit::detail::build_connection_analysis_plan(
-            realtime_to_compiled_graph, 64);
-    ASSERT_TRUE(realtime_to_compiled_plan.has_value())
-        << (realtime_to_compiled_plan
+            realtime_to_indexed_graph, 64);
+    ASSERT_TRUE(realtime_to_indexed_plan.has_value())
+        << (realtime_to_indexed_plan
                 ? std::string{}
-                : realtime_to_compiled_plan.error());
-    ASSERT_EQ(realtime_to_compiled_plan->sample_connections.size(), 1u);
+                : realtime_to_indexed_plan.error());
+    ASSERT_EQ(realtime_to_indexed_plan->sample_connections.size(), 1u);
     EXPECT_EQ(
-        realtime_to_compiled_plan->sample_connections[0].access,
-        graph_jit::detail::PlannedConnectionAccess::realtime_to_compiled);
-    ASSERT_EQ(realtime_to_compiled_plan->dependencies.size(), 1u);
+        realtime_to_indexed_plan->sample_connections[0].access,
+        graph_jit::detail::PlannedConnectionAccess::realtime_to_indexed);
+    ASSERT_EQ(realtime_to_indexed_plan->dependencies.size(), 1u);
     EXPECT_TRUE(
-        realtime_to_compiled_plan->dependencies[0].sequential_tick_dependency);
-    ASSERT_EQ(realtime_to_compiled_plan->sample_producer_groups.size(), 1u);
+        realtime_to_indexed_plan->dependencies[0].sequential_tick_dependency);
+    ASSERT_EQ(realtime_to_indexed_plan->sample_producer_groups.size(), 1u);
     EXPECT_FALSE(
-        realtime_to_compiled_plan->sample_producer_groups[0]
+        realtime_to_indexed_plan->sample_producer_groups[0]
             .has_realtime_connections);
     EXPECT_TRUE(
-        realtime_to_compiled_plan->sample_producer_groups[0]
-            .has_compiled_connections);
+        realtime_to_indexed_plan->sample_producer_groups[0]
+            .has_indexed_connections);
     EXPECT_FALSE(
-        realtime_to_compiled_plan->sample_producer_groups[0]
+        realtime_to_indexed_plan->sample_producer_groups[0]
             .storage_plan.has_value());
 }

@@ -65,7 +65,7 @@ immutable retained globals are deduplicated as package import roots, and final
 node configuration globals contain LLVM-relocatable pointers plus byte addends
 (or explicit null pointers). Each primitive invokes its exact accepted
 native `declare_node` callback into the one canonical `NodeLayoutBuilder`.
-`State` and `CompiledState` are ordinary canonical `NodeStorage` regions:
+`State` and `IndexedState` are ordinary canonical `NodeStorage` regions:
 generated root operations materialize each reflected callback context from final
 layout offsets and dispatch the selected package LLVM against those live bytes.
 Root execution now uses the connection-aware deterministic SCC/region schedule;
@@ -607,21 +607,27 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     declaration-owned auxiliary/shared-array regions, activity/TTL, deferred
     detach, and generalized skip semantics through existing plans rather than side
     paths.
-15. **Indexed DSP access.** Add internal endpoint metadata, indexed-component
-    plans/executors, exact coverage/forward-change propagation, page-granular
-    validity/version tracking, reverse demand with invalid-page promotion,
-    batching, and bounded planning workspaces after realtime connection storage
-    is stable.
-16. **GraphExecutor integration.** Add active/pending executable generations,
+15. **Indexed DSP foundation.** First replace the legacy compiled-port API with
+    `IndexedCoverage`, distinct indexed input/output declarations, `IndexedState`,
+    and the one-node tock/forward/reverse coverage callbacks. Then carry those
+    exact callbacks and state metadata through compiler records, package
+    validation, resolved implementations, and GraphJit. Next add stable internal
+    endpoint identity and immutable indexed-component plans before allocating any
+    retained cache storage. The detailed dependency order is normative in
+    [indexed_dsp_nodes.md](./indexed_dsp_nodes.md#32-implementation-landing-order).
+16. **GraphExecutor integration and mixed access.** Add active/pending executable generations,
     canonical `NodeStorage` construction/migration, dynamic indexed sidecars and
     transaction workspaces, semantic-versioned candidate/published indexed
     snapshots, whole-live-block publication, root execution, and indexed-
-    component dispatch. `CompiledGraph` remains independently testable before
+    component dispatch. Complete non-realtime sample/event access before live
+    indexed pulls, then add indexed-to-realtime lowering and explicit recorder
+    notification draining. `CompiledGraph` remains independently testable before
     this point.
 17. **Optimization refinements.** Verify generated hot-path assembly and then improve
-    liveness reuse, storage cost choices, fusion/SSA direct forwarding, vectorization,
-    and target-specific optimization only after the semantic compiler surface is
-    complete. Add `tick_block_batch` here as a schedule optimization: group concrete
+    liveness reuse, the existing realtime and new indexed storage cost models,
+    SIMD-aware storage/layout/conversion choices, fusion/SSA direct forwarding,
+    vectorization, and target-specific optimization only after the semantic
+    compiler surface is complete. Add `tick_block_batch` here as a schedule optimization: group concrete
     nodes sharing one implementation/type when topology permits, without changing
     dependency order, SCC slice boundaries, port windows, or per-instance state.
     Batch formation belongs after semantic scheduling and physical port planning are
@@ -834,14 +840,14 @@ one `NodeLayoutBuilder` and finalizes it before emitting final storage accesses
 into LLVM. The completed `NodeLayout` becomes part of `CompiledGraph`, and
 `GraphExecutor` creates and owns the corresponding `NodeStorage`.
 
-The canonical fixed layout covers indexed-domain state (currently named
-`CompiledState`) as well as normal `State`. The ordinary declaration/lifecycle
+The canonical fixed layout covers indexed-domain `IndexedState` as well as
+normal `State`. The ordinary declaration/lifecycle
 machinery represents both state domains and makes the same indexed state object
 available to `tick_block()` and indexed callbacks. `initialize()`, `move()`, and
 `release()` semantics apply to both where the node defines them.
 
 Source introspection publishes symmetric metadata for `State` and
-`CompiledState`: a Clang nominal type identity (USR), a definition fingerprint,
+`IndexedState`: a Clang nominal type identity (USR), a definition fingerprint,
 size/alignment, and reflected field layout. That exact definition identity is the
 cross-package-generation compatibility boundary for typed state migration. A
 same-process type token remains sufficient when both generations use the exact
@@ -851,7 +857,7 @@ safe hot-reload migration contract.
 Fixed-size project-owned memory whose contents must cross an execution call
 should use the same `NodeLayout` / `NodeStorage`, including for example:
 
-- node `State` and `CompiledState` / future `IndexedState`;
+- node `State` and `IndexedState`;
 - history/latency/feedback carry;
 - full fixed persistent sample/event buffers;
 - root/compiler-owned activity state;
@@ -1136,7 +1142,7 @@ It owns:
 
 - active and pending executable generations;
 - one canonical `NodeStorage` per retained executable generation;
-- state/`CompiledState` initialization, migration/move, release, and destruction
+- state/`IndexedState` initialization, migration/move, release, and destruction
   through the canonical layout/lifecycle machinery;
 - an executor-owned stable indexed-cache store keyed by stable project indexed-
   output identity for `cache = true` outputs, plus per-generation bindings from

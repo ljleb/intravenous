@@ -20,9 +20,9 @@ struct PrimitiveStoragePlan {
     bool has_state = false;
     std::size_t state_offset = 0;
     std::size_t state_size = 0;
-    bool has_compiled_state = false;
-    std::size_t compiled_state_offset = 0;
-    std::size_t compiled_state_size = 0;
+    bool has_indexed_state = false;
+    std::size_t indexed_state_offset = 0;
+    std::size_t indexed_state_size = 0;
 };
 
 struct DeclarationPlan {

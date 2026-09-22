@@ -1613,14 +1613,14 @@ namespace iv {
 
     // The sample/event distinction is one axis of a logical port declaration.
     // Its temporal access model is a separate axis: realtime ports have a
-    // finite history/latency contract, while compiled ports are random-access
+    // finite history/latency contract, while indexed ports are random-access
     // and therefore do not carry realtime timing requirements.
     struct SampleInputProperties {
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        // The total-read value for an unavailable or out-of-range compiled
+        // The total-read value for an unavailable or out-of-range indexed
         // input. This is deliberately separate from default_value, which is
         // the value used for an ordinary disconnected sequential input.
         Sample neutral_value = 0.0;
@@ -1671,23 +1671,36 @@ namespace iv {
         constexpr bool operator==(RealtimeOutputConfig const&) const = default;
     };
 
-    struct CompiledPortConfig {
-        constexpr bool operator==(CompiledPortConfig const&) const = default;
+    struct IndexedInputConfig {
+        constexpr bool operator==(IndexedInputConfig const&) const = default;
     };
 
-    using InputAccessConfig = std::variant<RealtimeInputConfig, CompiledPortConfig>;
-    using OutputAccessConfig = std::variant<RealtimeOutputConfig, CompiledPortConfig>;
+    struct IndexedOutputConfig {
+        bool cache = true;
 
-    inline constexpr CompiledPortConfig compiled_port {};
+        constexpr bool operator==(IndexedOutputConfig const&) const = default;
+    };
 
-    [[nodiscard]] constexpr bool is_compiled(InputAccessConfig const& config)
+    inline constexpr IndexedInputConfig indexed_input {};
+    inline constexpr IndexedOutputConfig indexed_output {};
+
+    using InputAccessConfig = std::variant<RealtimeInputConfig, IndexedInputConfig>;
+    using OutputAccessConfig = std::variant<RealtimeOutputConfig, IndexedOutputConfig>;
+
+    [[nodiscard]] constexpr bool is_indexed(InputAccessConfig const& config)
     {
-        return std::holds_alternative<CompiledPortConfig>(config);
+        return std::holds_alternative<IndexedInputConfig>(config);
     }
 
-    [[nodiscard]] constexpr bool is_compiled(OutputAccessConfig const& config)
+    [[nodiscard]] constexpr bool is_indexed(OutputAccessConfig const& config)
     {
-        return std::holds_alternative<CompiledPortConfig>(config);
+        return std::holds_alternative<IndexedOutputConfig>(config);
+    }
+
+    [[nodiscard]] constexpr bool indexed_output_cache(
+        OutputAccessConfig const& config)
+    {
+        return std::get<IndexedOutputConfig>(config).cache;
     }
 
     [[nodiscard]] constexpr bool is_realtime(InputAccessConfig const& config)
@@ -1748,7 +1761,7 @@ namespace iv {
         if (auto const* realtime = std::get_if<RealtimeOutputConfig>(&config)) {
             return RealtimeInputConfig{.history = realtime->history};
         }
-        return CompiledPortConfig{};
+        return IndexedInputConfig{};
     }
 
     [[nodiscard]] constexpr OutputAccessConfig inward_output_access(
@@ -1757,11 +1770,11 @@ namespace iv {
         if (auto const* realtime = std::get_if<RealtimeInputConfig>(&config)) {
             return RealtimeOutputConfig{.history = realtime->history};
         }
-        return CompiledPortConfig{};
+        return IndexedOutputConfig{};
     }
 
     // Authored declarations keep payload kind and temporal/access semantics
-    // orthogonal. Compiled ports still expose their ordinary current-block
+    // orthogonal. Indexed inputs still expose their ordinary current-block
     // typed wrappers in tick()/tick_block(); the additive capability lives in
     // that accessor surface rather than in a realtime timing declaration.
     struct InputConfig {
@@ -1869,39 +1882,44 @@ namespace iv {
             std::move(name), std::move(properties), std::move(access)};
     }
 
-    [[nodiscard]] constexpr InputConfig compiled_sample_input(
+    [[nodiscard]] constexpr InputConfig indexed_sample_input(
         std::string name = {},
         SampleInputProperties properties = {})
     {
-        return sample_input(std::move(name), std::move(properties), compiled_port);
+        return sample_input(std::move(name), std::move(properties), indexed_input);
     }
 
-    [[nodiscard]] constexpr OutputConfig compiled_sample_output(
+    [[nodiscard]] constexpr OutputConfig indexed_sample_output(
         std::string name = {},
-        SampleOutputProperties properties = {})
+        SampleOutputProperties properties = {},
+        IndexedOutputConfig access = {})
     {
-        return sample_output(std::move(name), std::move(properties), compiled_port);
+        return sample_output(
+            std::move(name), std::move(properties), std::move(access));
     }
 
-    [[nodiscard]] constexpr InputConfig compiled_event_input(
-        std::string name = {},
-        EventTypeId type = {})
-    {
-        return event_input(std::move(name), type, compiled_port);
-    }
-
-    [[nodiscard]] constexpr OutputConfig compiled_event_output(
+    [[nodiscard]] constexpr InputConfig indexed_event_input(
         std::string name = {},
         EventTypeId type = {})
     {
-        return event_output(std::move(name), type, compiled_port);
+        return event_input(std::move(name), type, indexed_input);
     }
 
-    [[nodiscard]] constexpr OutputConfig compiled_event_output(
+    [[nodiscard]] constexpr OutputConfig indexed_event_output(
+        std::string name = {},
+        EventTypeId type = {},
+        IndexedOutputConfig access = {})
+    {
+        return event_output(std::move(name), type, std::move(access));
+    }
+
+    [[nodiscard]] constexpr OutputConfig indexed_event_output(
         std::string name,
-        EventOutputProperties properties)
+        EventOutputProperties properties,
+        IndexedOutputConfig access = {})
     {
-        return event_output(std::move(name), std::move(properties), compiled_port);
+        return event_output(
+            std::move(name), std::move(properties), std::move(access));
     }
 
     [[nodiscard]] constexpr InputConfig realtime_sample_input(
@@ -1947,7 +1965,7 @@ namespace iv {
 
     // The configured graph keeps physical sample/event lists because lowering
     // uses separate sample and event collections. It preserves the same access
-    // variant instead of flattening compiled ports back into meaningless
+    // variant instead of flattening indexed ports back into meaningless
     // realtime history/latency fields.
     struct EventInputConfig {
         std::string name {};
@@ -1994,34 +2012,34 @@ namespace iv {
         return config.channel_layout;
     }
 
-    [[nodiscard]] constexpr bool is_compiled(InputConfig const& config)
+    [[nodiscard]] constexpr bool is_indexed(InputConfig const& config)
     {
-        return is_compiled(config.access);
+        return is_indexed(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_compiled(OutputConfig const& config)
+    [[nodiscard]] constexpr bool is_indexed(OutputConfig const& config)
     {
-        return is_compiled(config.access);
+        return is_indexed(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_compiled(SampleInputConfig const& config)
+    [[nodiscard]] constexpr bool is_indexed(SampleInputConfig const& config)
     {
-        return is_compiled(config.access);
+        return is_indexed(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_compiled(SampleOutputConfig const& config)
+    [[nodiscard]] constexpr bool is_indexed(SampleOutputConfig const& config)
     {
-        return is_compiled(config.access);
+        return is_indexed(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_compiled(EventInputConfig const& config)
+    [[nodiscard]] constexpr bool is_indexed(EventInputConfig const& config)
     {
-        return is_compiled(config.access);
+        return is_indexed(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_compiled(EventOutputConfig const& config)
+    [[nodiscard]] constexpr bool is_indexed(EventOutputConfig const& config)
     {
-        return is_compiled(config.access);
+        return is_indexed(config.access);
     }
 
     [[nodiscard]] constexpr size_t realtime_history(InputConfig const& config)

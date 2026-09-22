@@ -41,7 +41,7 @@ namespace {
 constexpr char graph_jit_state_package_id[] = "iv.test.graph_jit.state_context.package";
 constexpr char graph_jit_stateful_module_id[] = "iv.test.graph_jit.state_context.stateful_module";
 constexpr char graph_jit_state_only_module_id[] = "iv.test.graph_jit.state_context.state_only_module";
-constexpr char graph_jit_compiled_only_module_id[] = "iv.test.graph_jit.state_context.compiled_only_module";
+constexpr char graph_jit_indexed_only_module_id[] = "iv.test.graph_jit.state_context.indexed_only_module";
 constexpr char graph_jit_stateless_module_id[] = "iv.test.graph_jit.state_context.stateless_module";
 constexpr char graph_jit_configured_module_id[] = "iv.test.graph_jit.state_context.configured_module";
 constexpr char graph_jit_pointer_configured_module_id[] = "iv.test.graph_jit.state_context.pointer_configured_module";
@@ -100,22 +100,22 @@ struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t last_block_size = 0;
     std::uint64_t sample_rate = 0;
     std::uint64_t observed_state_extent = 0;
-    std::uint64_t observed_compiled_extent = 0;
+    std::uint64_t observed_indexed_extent = 0;
 };
 
-struct alignas(128) StatefulProbeCompiledStateMirror {
+struct alignas(128) StatefulProbeIndexedStateMirror {
     std::uint64_t tick_calls = 0;
     std::uint64_t skip_calls = 0;
     std::uint64_t last_index = 0;
     std::uint64_t last_block_size = 0;
     std::uint64_t observed_state_extent = 0;
-    std::uint64_t observed_compiled_extent = 0;
+    std::uint64_t observed_indexed_extent = 0;
 };
 
 struct SingleSpanProbeMirror {
     std::uint64_t calls = 0;
     std::uint64_t observed_state_extent = 0;
-    std::uint64_t observed_compiled_extent = 0;
+    std::uint64_t observed_indexed_extent = 0;
 };
 
 struct ConfiguredProbeStateMirror {
@@ -520,15 +520,15 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_graph(
 void expect_single_node_canonical_regions(
     iv::NodeLayout const& layout,
     std::size_t state_size,
-    std::size_t compiled_state_size)
+    std::size_t indexed_state_size)
 {
     ASSERT_EQ(layout.nodes.size(), 1u);
     auto const& node = layout.nodes.front();
     EXPECT_EQ(node.state_size, state_size);
-    EXPECT_EQ(node.compiled_state_size, compiled_state_size);
+    EXPECT_EQ(node.indexed_state_size, indexed_state_size);
     EXPECT_TRUE(layout.imported_arrays.empty());
     EXPECT_TRUE(layout.exported_arrays.empty());
-    EXPECT_EQ(layout.regions.size(), compiled_state_size == 0 ? 1u : 2u);
+    EXPECT_EQ(layout.regions.size(), indexed_state_size == 0 ? 1u : 2u);
 
     auto const state_region = std::ranges::find_if(
         layout.regions,
@@ -545,28 +545,28 @@ void expect_single_node_canonical_regions(
             static_cast<std::size_t>(node.state_offset));
     }
 
-    if (compiled_state_size == 0) {
-        EXPECT_EQ(node.compiled_state_offset, -1);
+    if (indexed_state_size == 0) {
+        EXPECT_EQ(node.indexed_state_offset, -1);
         EXPECT_EQ(std::ranges::count_if(
             layout.regions,
             [](iv::NodeLayout::Region const& region) {
-                return region.kind == iv::NodeLayout::Region::Kind::compiled_state;
+                return region.kind == iv::NodeLayout::Region::Kind::indexed_state;
             }), 0u);
         return;
     }
 
-    auto const compiled_region = std::ranges::find_if(
+    auto const indexed_region = std::ranges::find_if(
         layout.regions,
         [](iv::NodeLayout::Region const& region) {
-            return region.kind == iv::NodeLayout::Region::Kind::compiled_state;
+            return region.kind == iv::NodeLayout::Region::Kind::indexed_state;
         });
-    ASSERT_NE(compiled_region, layout.regions.end());
-    EXPECT_EQ(compiled_region->owner_node, 0u);
-    EXPECT_EQ(compiled_region->size, compiled_state_size);
-    ASSERT_GE(node.compiled_state_offset, 0);
+    ASSERT_NE(indexed_region, layout.regions.end());
+    EXPECT_EQ(indexed_region->owner_node, 0u);
+    EXPECT_EQ(indexed_region->size, indexed_state_size);
+    ASSERT_GE(node.indexed_state_offset, 0);
     EXPECT_EQ(
-        compiled_region->storage_offset,
-        static_cast<std::size_t>(node.compiled_state_offset));
+        indexed_region->storage_offset,
+        static_cast<std::size_t>(node.indexed_state_offset));
 }
 } // namespace
 
@@ -1119,7 +1119,7 @@ TEST(GraphJitSamplePhysicalPlan, PacksExactTransientByteRangesAcrossLifetimes)
     EXPECT_TRUE(layout.regions.empty());
 }
 
-TEST(GraphJitSamplePhysicalPlan, LeavesCompiledAccessBranchesUnresolved)
+TEST(GraphJitSamplePhysicalPlan, LeavesIndexedAccessBranchesUnresolved)
 {
     using namespace iv::graph_jit::detail;
 
@@ -1131,9 +1131,9 @@ TEST(GraphJitSamplePhysicalPlan, LeavesCompiledAccessBranchesUnresolved)
         .sample_layout = iv::SampleStreamLayout::planar,
     };
     connections.sample_connections.push_back(std::move(realtime));
-    SampleConnectionPlan compiled;
-    compiled.access = PlannedConnectionAccess::realtime_to_compiled;
-    connections.sample_connections.push_back(std::move(compiled));
+    SampleConnectionPlan indexed;
+    indexed.access = PlannedConnectionAccess::realtime_to_indexed;
+    connections.sample_connections.push_back(std::move(indexed));
 
     SampleProducerGroupPlan group;
     group.canonical_source_layout = iv::ChannelLayout{
@@ -1142,7 +1142,7 @@ TEST(GraphJitSamplePhysicalPlan, LeavesCompiledAccessBranchesUnresolved)
     };
     group.connection_indices = {0, 1};
     group.has_realtime_connections = true;
-    group.has_compiled_connections = true;
+    group.has_indexed_connections = true;
     group.storage_plan = iv::SampleConnectionStoragePlan{
         iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
@@ -2481,16 +2481,16 @@ struct StatefulProbe {
         std::uint64_t last_block_size = 0;
         std::uint64_t sample_rate = 0;
         std::uint64_t observed_state_extent = 0;
-        std::uint64_t observed_compiled_extent = 0;
+        std::uint64_t observed_indexed_extent = 0;
     };
 
-    struct alignas(128) CompiledState {
+    struct alignas(128) IndexedState {
         std::uint64_t tick_calls = 0;
         std::uint64_t skip_calls = 0;
         std::uint64_t last_index = 0;
         std::uint64_t last_block_size = 0;
         std::uint64_t observed_state_extent = 0;
-        std::uint64_t observed_compiled_extent = 0;
+        std::uint64_t observed_indexed_extent = 0;
     };
 
     static constexpr auto inputs()
@@ -2508,35 +2508,35 @@ struct StatefulProbe {
     void tick_block(iv::TickBlockContext<StatefulProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto& compiled = ctx.compiled_state();
+        auto& indexed = ctx.indexed_state();
         ++state.tick_calls;
         state.last_index = ctx.index;
         state.last_block_size = ctx.block_size;
         state.sample_rate = ctx.sample_rate;
         state.observed_state_extent = ctx.buffer.size();
-        state.observed_compiled_extent = ctx.compiled_state_storage.size();
-        ++compiled.tick_calls;
-        compiled.last_index = ctx.index;
-        compiled.last_block_size = ctx.block_size;
-        compiled.observed_state_extent = ctx.buffer.size();
-        compiled.observed_compiled_extent = ctx.compiled_state_storage.size();
+        state.observed_indexed_extent = ctx.indexed_state_storage.size();
+        ++indexed.tick_calls;
+        indexed.last_index = ctx.index;
+        indexed.last_block_size = ctx.block_size;
+        indexed.observed_state_extent = ctx.buffer.size();
+        indexed.observed_indexed_extent = ctx.indexed_state_storage.size();
     }
 
     void skip_block(iv::SkipBlockContext<StatefulProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto& compiled = ctx.compiled_state();
+        auto& indexed = ctx.indexed_state();
         ++state.skip_calls;
         state.last_index = ctx.index;
         state.last_block_size = ctx.block_size;
         state.sample_rate = ctx.sample_rate;
         state.observed_state_extent = ctx.buffer.size();
-        state.observed_compiled_extent = ctx.compiled_state_storage.size();
-        ++compiled.skip_calls;
-        compiled.last_index = ctx.index;
-        compiled.last_block_size = ctx.block_size;
-        compiled.observed_state_extent = ctx.buffer.size();
-        compiled.observed_compiled_extent = ctx.compiled_state_storage.size();
+        state.observed_indexed_extent = ctx.indexed_state_storage.size();
+        ++indexed.skip_calls;
+        indexed.last_index = ctx.index;
+        indexed.last_block_size = ctx.block_size;
+        indexed.observed_state_extent = ctx.buffer.size();
+        indexed.observed_indexed_extent = ctx.indexed_state_storage.size();
     }
 };
 
@@ -2544,7 +2544,7 @@ struct StateOnlyProbe {
     struct State {
         std::uint64_t calls = 0;
         std::uint64_t observed_state_extent = 0;
-        std::uint64_t observed_compiled_extent = 0;
+        std::uint64_t observed_indexed_extent = 0;
     };
 
     static constexpr auto inputs()
@@ -2562,15 +2562,15 @@ struct StateOnlyProbe {
         auto& state = ctx.state();
         ++state.calls;
         state.observed_state_extent = ctx.buffer.size();
-        state.observed_compiled_extent = ctx.compiled_state_storage.size();
+        state.observed_indexed_extent = ctx.indexed_state_storage.size();
     }
 };
 
-struct CompiledOnlyProbe {
-    struct CompiledState {
+struct IndexedOnlyProbe {
+    struct IndexedState {
         std::uint64_t calls = 0;
         std::uint64_t observed_state_extent = 0;
-        std::uint64_t observed_compiled_extent = 0;
+        std::uint64_t observed_indexed_extent = 0;
     };
 
     static constexpr auto inputs()
@@ -2583,12 +2583,12 @@ struct CompiledOnlyProbe {
         return std::array<iv::OutputConfig, 0>{};
     }
 
-    void tick_block(iv::TickBlockContext<CompiledOnlyProbe> const& ctx) const
+    void tick_block(iv::TickBlockContext<IndexedOnlyProbe> const& ctx) const
     {
-        auto& compiled = ctx.compiled_state();
-        ++compiled.calls;
-        compiled.observed_state_extent = ctx.buffer.size();
-        compiled.observed_compiled_extent = ctx.compiled_state_storage.size();
+        auto& indexed = ctx.indexed_state();
+        ++indexed.calls;
+        indexed.observed_state_extent = ctx.buffer.size();
+        indexed.observed_indexed_extent = ctx.indexed_state_storage.size();
     }
 };
 
@@ -4799,9 +4799,9 @@ void state_only_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
-void compiled_only_module(iv::GraphBuilder& graph)
+void indexed_only_module(iv::GraphBuilder& graph)
 {
-    (void)graph.node<"iv.test.graph_jit.state_context.compiled_only">();
+    (void)graph.node<"iv.test.graph_jit.state_context.indexed_only">();
     graph.outputs();
 }
 
@@ -5081,7 +5081,7 @@ void ported_module(iv::GraphBuilder& graph)
 
 IV_NODE("iv.test.graph_jit.state_context.stateful", StatefulProbe);
 IV_NODE("iv.test.graph_jit.state_context.state_only", StateOnlyProbe);
-IV_NODE("iv.test.graph_jit.state_context.compiled_only", CompiledOnlyProbe);
+IV_NODE("iv.test.graph_jit.state_context.indexed_only", IndexedOnlyProbe);
 IV_NODE("iv.test.graph_jit.state_context.stateless", StatelessProbe);
 IV_NODE("iv.test.graph_jit.state_context.configured", ConfiguredProbe);
 IV_NODE("iv.test.graph_jit.state_context.pointer_configured", PointerConfiguredProbe);
@@ -5140,7 +5140,7 @@ IV_NODE("iv.test.graph_jit.state_context.retained_midi_event_consumer", Retained
 IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
-IV_MODULE("iv.test.graph_jit.state_context.compiled_only_module", compiled_only_module);
+IV_MODULE("iv.test.graph_jit.state_context.indexed_only_module", indexed_only_module);
 IV_MODULE("iv.test.graph_jit.state_context.stateless_module", stateless_module);
 IV_MODULE("iv.test.graph_jit.state_context.configured_module", configured_module);
 IV_MODULE("iv.test.graph_jit.state_context.pointer_configured_module", pointer_configured_module);
@@ -6367,7 +6367,7 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     EXPECT_TRUE(has_module_definition(graph_jit_retained_converted_event_fanout_module_id));
 }
 
-TEST_F(GraphJitRuntimeFixture, StateAndCompiledStateContexts)
+TEST_F(GraphJitRuntimeFixture, StateAndIndexedStateContexts)
 {
     auto stateful = compile(graph_jit_stateful_module_id, 100);
     ASSERT_TRUE(stateful.succeeded())
@@ -6376,36 +6376,36 @@ TEST_F(GraphJitRuntimeFixture, StateAndCompiledStateContexts)
     expect_single_node_canonical_regions(
         stateful.compiled_graph->node_layout,
         sizeof(StatefulProbeStateMirror),
-        sizeof(StatefulProbeCompiledStateMirror));
+        sizeof(StatefulProbeIndexedStateMirror));
     ASSERT_EQ(stateful.compiled_graph->node_layout.nodes.size(), 1u);
 
     auto stateful_storage = stateful.compiled_graph->node_layout.create_storage(resources);
     stateful_storage.initialize();
     auto* state = static_cast<StatefulProbeStateMirror*>(stateful_storage.state_ptr(0));
-    auto* compiled = static_cast<StatefulProbeCompiledStateMirror*>(
-        stateful_storage.compiled_state_ptr(0));
+    auto* indexed = static_cast<StatefulProbeIndexedStateMirror*>(
+        stateful_storage.indexed_state_ptr(0));
     ASSERT_NE(state, nullptr);
-    ASSERT_NE(compiled, nullptr);
+    ASSERT_NE(indexed, nullptr);
     auto const& stateful_node = stateful.compiled_graph->node_layout.nodes.front();
     EXPECT_EQ(stateful_node.state_alignment, alignof(StatefulProbeStateMirror));
     EXPECT_EQ(
-        stateful_node.compiled_state_alignment,
-        alignof(StatefulProbeCompiledStateMirror));
+        stateful_node.indexed_state_alignment,
+        alignof(StatefulProbeIndexedStateMirror));
     EXPECT_EQ(
         reinterpret_cast<std::uintptr_t>(state) % alignof(StatefulProbeStateMirror),
         0u);
     EXPECT_EQ(
-        reinterpret_cast<std::uintptr_t>(compiled)
-            % alignof(StatefulProbeCompiledStateMirror),
+        reinterpret_cast<std::uintptr_t>(indexed)
+            % alignof(StatefulProbeIndexedStateMirror),
         0u);
     EXPECT_EQ(
         static_cast<std::byte*>(static_cast<void*>(state)),
         stateful_storage.buffer().data()
             + stateful_node.state_offset);
     EXPECT_EQ(
-        static_cast<std::byte*>(static_cast<void*>(compiled)),
+        static_cast<std::byte*>(static_cast<void*>(indexed)),
         stateful_storage.buffer().data()
-            + stateful_node.compiled_state_offset);
+            + stateful_node.indexed_state_offset);
 
     stateful.compiled_graph->root_operations.tick_block(
         stateful_storage.buffer().data(), 17, 32);
@@ -6416,16 +6416,16 @@ TEST_F(GraphJitRuntimeFixture, StateAndCompiledStateContexts)
     EXPECT_EQ(state->sample_rate, 88200u);
     EXPECT_EQ(state->observed_state_extent, sizeof(StatefulProbeStateMirror));
     EXPECT_EQ(
-        state->observed_compiled_extent,
-        sizeof(StatefulProbeCompiledStateMirror));
-    EXPECT_EQ(compiled->tick_calls, 1u);
-    EXPECT_EQ(compiled->skip_calls, 0u);
-    EXPECT_EQ(compiled->last_index, 17u);
-    EXPECT_EQ(compiled->last_block_size, 32u);
-    EXPECT_EQ(compiled->observed_state_extent, sizeof(StatefulProbeStateMirror));
+        state->observed_indexed_extent,
+        sizeof(StatefulProbeIndexedStateMirror));
+    EXPECT_EQ(indexed->tick_calls, 1u);
+    EXPECT_EQ(indexed->skip_calls, 0u);
+    EXPECT_EQ(indexed->last_index, 17u);
+    EXPECT_EQ(indexed->last_block_size, 32u);
+    EXPECT_EQ(indexed->observed_state_extent, sizeof(StatefulProbeStateMirror));
     EXPECT_EQ(
-        compiled->observed_compiled_extent,
-        sizeof(StatefulProbeCompiledStateMirror));
+        indexed->observed_indexed_extent,
+        sizeof(StatefulProbeIndexedStateMirror));
 
     stateful.compiled_graph->root_operations.tick_block(
         stateful_storage.buffer().data(), 73, 64);
@@ -6433,10 +6433,10 @@ TEST_F(GraphJitRuntimeFixture, StateAndCompiledStateContexts)
     EXPECT_EQ(state->skip_calls, 0u);
     EXPECT_EQ(state->last_index, 73u);
     EXPECT_EQ(state->last_block_size, 64u);
-    EXPECT_EQ(compiled->tick_calls, 2u);
-    EXPECT_EQ(compiled->skip_calls, 0u);
-    EXPECT_EQ(compiled->last_index, 73u);
-    EXPECT_EQ(compiled->last_block_size, 64u);
+    EXPECT_EQ(indexed->tick_calls, 2u);
+    EXPECT_EQ(indexed->skip_calls, 0u);
+    EXPECT_EQ(indexed->last_index, 73u);
+    EXPECT_EQ(indexed->last_block_size, 64u);
 
     auto state_only = compile(graph_jit_state_only_module_id, 101);
     ASSERT_TRUE(state_only.succeeded())
@@ -6455,27 +6455,27 @@ TEST_F(GraphJitRuntimeFixture, StateAndCompiledStateContexts)
     ASSERT_NE(state_only_value, nullptr);
     EXPECT_EQ(state_only_value->calls, 1u);
     EXPECT_EQ(state_only_value->observed_state_extent, sizeof(SingleSpanProbeMirror));
-    EXPECT_EQ(state_only_value->observed_compiled_extent, 0u);
+    EXPECT_EQ(state_only_value->observed_indexed_extent, 0u);
 
-    auto compiled_only = compile(graph_jit_compiled_only_module_id, 102);
-    ASSERT_TRUE(compiled_only.succeeded())
-        << (compiled_only.diagnostics.empty() ? "" : compiled_only.diagnostics.front().message);
+    auto indexed_only = compile(graph_jit_indexed_only_module_id, 102);
+    ASSERT_TRUE(indexed_only.succeeded())
+        << (indexed_only.diagnostics.empty() ? "" : indexed_only.diagnostics.front().message);
     expect_single_node_canonical_regions(
-        compiled_only.compiled_graph->node_layout,
+        indexed_only.compiled_graph->node_layout,
         0,
         sizeof(SingleSpanProbeMirror));
-    ASSERT_EQ(compiled_only.compiled_graph->node_layout.nodes.size(), 1u);
-    auto compiled_only_storage = compiled_only.compiled_graph->node_layout.create_storage(resources);
-    compiled_only_storage.initialize();
-    auto* compiled_only_value = static_cast<SingleSpanProbeMirror*>(
-        compiled_only_storage.compiled_state_ptr(0));
-    compiled_only.compiled_graph->root_operations.tick_block(
-        compiled_only_storage.buffer().data(), 5, 16);
-    ASSERT_NE(compiled_only_value, nullptr);
-    EXPECT_EQ(compiled_only_value->calls, 1u);
-    EXPECT_EQ(compiled_only_value->observed_state_extent, 0u);
+    ASSERT_EQ(indexed_only.compiled_graph->node_layout.nodes.size(), 1u);
+    auto indexed_only_storage = indexed_only.compiled_graph->node_layout.create_storage(resources);
+    indexed_only_storage.initialize();
+    auto* indexed_only_value = static_cast<SingleSpanProbeMirror*>(
+        indexed_only_storage.indexed_state_ptr(0));
+    indexed_only.compiled_graph->root_operations.tick_block(
+        indexed_only_storage.buffer().data(), 5, 16);
+    ASSERT_NE(indexed_only_value, nullptr);
+    EXPECT_EQ(indexed_only_value->calls, 1u);
+    EXPECT_EQ(indexed_only_value->observed_state_extent, 0u);
     EXPECT_EQ(
-        compiled_only_value->observed_compiled_extent,
+        indexed_only_value->observed_indexed_extent,
         sizeof(SingleSpanProbeMirror));
 
     auto stateless = compile(graph_jit_stateless_module_id, 103);
@@ -6573,8 +6573,8 @@ TEST_F(GraphJitRuntimeFixture, MultipleNodesAndBlockSlicing)
         multiple.compiled_graph->node_layout.nodes[0].state_size,
         sizeof(StatefulProbeStateMirror));
     EXPECT_EQ(
-        multiple.compiled_graph->node_layout.nodes[0].compiled_state_size,
-        sizeof(StatefulProbeCompiledStateMirror));
+        multiple.compiled_graph->node_layout.nodes[0].indexed_state_size,
+        sizeof(StatefulProbeIndexedStateMirror));
     EXPECT_EQ(
         multiple.compiled_graph->node_layout.nodes[1].state_size,
         sizeof(ConfiguredProbeStateMirror));
@@ -12377,10 +12377,10 @@ TEST_F(GraphJitRuntimeFixture, CompiledGraphsRetainPackageAndOrcOwnership)
     auto stateful_storage = stateful_survivor->node_layout.create_storage(resources);
     stateful_storage.initialize();
     auto* state = static_cast<StatefulProbeStateMirror*>(stateful_storage.state_ptr(0));
-    auto* compiled = static_cast<StatefulProbeCompiledStateMirror*>(
-        stateful_storage.compiled_state_ptr(0));
+    auto* indexed = static_cast<StatefulProbeIndexedStateMirror*>(
+        stateful_storage.indexed_state_ptr(0));
     ASSERT_NE(state, nullptr);
-    ASSERT_NE(compiled, nullptr);
+    ASSERT_NE(indexed, nullptr);
     stateful_survivor->root_operations.tick_block(
         stateful_storage.buffer().data(), 17, 32);
     stateful_survivor->root_operations.tick_block(
@@ -12411,10 +12411,10 @@ TEST_F(GraphJitRuntimeFixture, CompiledGraphsRetainPackageAndOrcOwnership)
     EXPECT_EQ(state->skip_calls, 0u);
     EXPECT_EQ(state->last_index, 137u);
     EXPECT_EQ(state->last_block_size, 32u);
-    EXPECT_EQ(compiled->tick_calls, 3u);
-    EXPECT_EQ(compiled->skip_calls, 0u);
-    EXPECT_EQ(compiled->last_index, 137u);
-    EXPECT_EQ(compiled->last_block_size, 32u);
+    EXPECT_EQ(indexed->tick_calls, 3u);
+    EXPECT_EQ(indexed->skip_calls, 0u);
+    EXPECT_EQ(indexed->last_index, 137u);
+    EXPECT_EQ(indexed->last_block_size, 32u);
 
     auto pointer_survivor_storage =
         pointer_survivor->node_layout.create_storage(resources);

@@ -370,9 +370,11 @@ The graph has no implicit realtime-to-indexed edge. Recorder/source nodes own an
 transition from realtime mutation to changed indexed output regions and report
 bounded change notifications for executor-side propagation after the live pass.
 
-Legacy `compiled` port/callback/state identifiers may remain temporarily in the
-implementation while this terminology migrates. `CompiledGraph` keeps its name
-because it is the actual GraphJit artifact, not an indexed-data object.
+DSP port/callback/state identifiers use `indexed` directly; the former
+`compiled` DSP-port API is not retained. `CompiledGraph` keeps its name because
+it is the actual GraphJit artifact, not an indexed-data object. The separate
+legacy compiled-lane runtime is not a second indexed API: delete it once indexed
+executor/query/visualization integration replaces its remaining consumers.
 
 Realtime sample/event connections follow the same storage-independent principle.
 `ConfiguredGraph` records logical connection semantics only. The whole-project

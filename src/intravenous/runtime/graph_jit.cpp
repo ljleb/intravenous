@@ -130,12 +130,13 @@ struct NodeCodeKeyHash {
 struct IrNodeRecord {
     llvm::Function* tick_block = nullptr;
     llvm::Function* skip_block = nullptr;
-    llvm::Function* access_block_batched = nullptr;
-    llvm::Function* propagate_block_access_batched = nullptr;
+    llvm::Function* tock_coverage = nullptr;
+    llvm::Function* propagate_forward_coverage = nullptr;
+    llvm::Function* propagate_reverse_coverage = nullptr;
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
-    std::size_t compiled_state_size = 0;
-    std::size_t compiled_state_alignment = 1;
+    std::size_t indexed_state_size = 0;
+    std::size_t indexed_state_alignment = 1;
 };
 
 std::uint64_t constant_u64(llvm::Value const* value, std::string_view field)
@@ -202,7 +203,7 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
         auto* key = llvm::dyn_cast<llvm::ConstantStruct>(record->getOperand(0));
         auto* operations = llvm::dyn_cast<llvm::ConstantStruct>(record->getOperand(1));
         if (!key || key->getNumOperands() != 2 || !operations
-            || operations->getNumOperands() != 5) {
+            || operations->getNumOperands() != 6) {
             fail(GraphJitDiagnosticStage::package_llvm, "malformed iv_node_types record ABI");
         }
         NodeCodeKey code_key{
@@ -215,16 +216,18 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
         IrNodeRecord parsed{
             .tick_block = compiler_callback(operations->getOperand(1), "tick_block", true),
             .skip_block = compiler_callback(operations->getOperand(2), "skip_block", true),
-            .access_block_batched = compiler_callback(
-                operations->getOperand(3), "access_block_batched", false),
-            .propagate_block_access_batched = compiler_callback(
-                operations->getOperand(4), "propagate_block_access_batched", false),
+            .tock_coverage = compiler_callback(
+                operations->getOperand(3), "tock_coverage", false),
+            .propagate_forward_coverage = compiler_callback(
+                operations->getOperand(4), "propagate_forward_coverage", false),
+            .propagate_reverse_coverage = compiler_callback(
+                operations->getOperand(5), "propagate_reverse_coverage", false),
             .state_size = constant_size(record->getOperand(4), "state size"),
             .state_alignment = constant_size(record->getOperand(5), "state alignment"),
-            .compiled_state_size = constant_size(
-                record->getOperand(6), "compiled state size"),
-            .compiled_state_alignment = constant_size(
-                record->getOperand(7), "compiled state alignment"),
+            .indexed_state_size = constant_size(
+                record->getOperand(6), "indexed state size"),
+            .indexed_state_alignment = constant_size(
+                record->getOperand(7), "indexed state alignment"),
         };
         if (!result.emplace(code_key, parsed).second) {
             fail(GraphJitDiagnosticStage::package_llvm, "duplicate NodeCodeKey in iv_node_types");
@@ -530,7 +533,7 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
                             if (!state_structures_match) {
                                 result.diagnostics.push_back(diagnostic(
                                     GraphJitDiagnosticStage::input_capture,
-                                    "configured node State/CompiledState metadata disagrees "
+                                    "configured node State/IndexedState metadata disagrees "
                                     "with pinned package revision",
                                     current_bundle,
                                     identity.node_type_id,
@@ -637,20 +640,22 @@ void verify_compiler_record(
     }
     if (accepted.state_size != ir_record.state_size
         || accepted.state_alignment != ir_record.state_alignment
-        || accepted.compiled_state_size != ir_record.compiled_state_size
-        || accepted.compiled_state_alignment != ir_record.compiled_state_alignment) {
+        || accepted.indexed_state_size != ir_record.indexed_state_size
+        || accepted.indexed_state_alignment != ir_record.indexed_state_alignment) {
         fail(
             GraphJitDiagnosticStage::package_llvm,
             "NodeCompilerRecord state ABI disagrees with retained package LLVM for node '"
                 + captured.identity.node_type_id + "'");
     }
-    if (static_cast<bool>(accepted.operations.access_block_batched)
-            != static_cast<bool>(ir_record.access_block_batched)
-        || static_cast<bool>(accepted.operations.propagate_block_access_batched)
-            != static_cast<bool>(ir_record.propagate_block_access_batched)) {
+    if (static_cast<bool>(accepted.operations.tock_coverage)
+            != static_cast<bool>(ir_record.tock_coverage)
+        || static_cast<bool>(accepted.operations.propagate_forward_coverage)
+            != static_cast<bool>(ir_record.propagate_forward_coverage)
+        || static_cast<bool>(accepted.operations.propagate_reverse_coverage)
+            != static_cast<bool>(ir_record.propagate_reverse_coverage)) {
         fail(
             GraphJitDiagnosticStage::package_llvm,
-            "NodeCompilerRecord compiled-access ABI disagrees with retained package LLVM for node '"
+            "NodeCompilerRecord indexed-callback ABI disagrees with retained package LLVM for node '"
                 + captured.identity.node_type_id + "'");
     }
 }
@@ -1038,16 +1043,18 @@ public:
                     .package_module = package_modules[parsed_index->second].module.get(),
                     .state_size = record->second.state_size,
                     .state_alignment = record->second.state_alignment,
-                    .compiled_state_size = record->second.compiled_state_size,
-                    .compiled_state_alignment = record->second.compiled_state_alignment,
+                    .indexed_state_size = record->second.indexed_state_size,
+                    .indexed_state_alignment = record->second.indexed_state_alignment,
                     .node_data = captured_node.node_data,
                     .state_structures = captured_node.state_structures,
                     .declare_node = captured_node.declare_node,
                     .tick_block = record->second.tick_block,
                     .skip_block = record->second.skip_block,
-                    .access_block_batched = record->second.access_block_batched,
-                    .propagate_block_access_batched =
-                        record->second.propagate_block_access_batched,
+                    .tock_coverage = record->second.tock_coverage,
+                    .propagate_forward_coverage =
+                        record->second.propagate_forward_coverage,
+                    .propagate_reverse_coverage =
+                        record->second.propagate_reverse_coverage,
                 });
             }
         } catch (GraphJitCompileError const& error) {

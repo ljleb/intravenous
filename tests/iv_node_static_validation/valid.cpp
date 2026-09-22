@@ -2,68 +2,67 @@
 
 #include <array>
 
-struct ValidCompiledNode {
+struct ValidIndexedNode {
     static constexpr auto inputs()
     {
-        return std::array {iv::compiled_sample_input("input")};
+        return std::array {iv::indexed_sample_input("input")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {iv::compiled_sample_output("output")};
+        return std::array {iv::indexed_sample_output("output")};
     }
 
     static constexpr std::size_t num_inputs() { return inputs().size(); }
     static constexpr std::size_t num_outputs() { return outputs().size(); }
 
-    void tick_block(iv::TickBlockContext<ValidCompiledNode> const& ctx) const
+    void tick_block(iv::TickBlockContext<ValidIndexedNode> const& ctx) const
     {
         (void)ctx.template input<"input">();
     }
-    void access_block_batch(iv::AccessBlockBatchContext<ValidCompiledNode>&) const {}
+    void tock_coverage(iv::TockCoverageContext<ValidIndexedNode>&) const {}
 };
 
-IV_NODE("iv.test.valid_compiled_node", ValidCompiledNode);
+IV_NODE("iv.test.valid_indexed_node", ValidIndexedNode);
 
-struct ValidCompiledEventNode {
+struct ValidIndexedEventNode {
     static constexpr auto inputs()
     {
         return std::array {
-            iv::compiled_event_input("input", iv::EventTypeId::trigger),
+            iv::indexed_event_input("input", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array {
-            iv::compiled_event_output("output", iv::EventTypeId::trigger),
+            iv::indexed_event_output("output", iv::EventTypeId::trigger),
         };
     }
 
-    void tick_block(iv::TickBlockContext<ValidCompiledEventNode> const&) const {}
-    void access_block_batch(
-        iv::AccessBlockBatchContext<ValidCompiledEventNode>&) const {}
+    void tick_block(iv::TickBlockContext<ValidIndexedEventNode> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<ValidIndexedEventNode>&) const {}
 };
 
-IV_NODE("iv.test.valid_compiled_event_node", ValidCompiledEventNode);
+IV_NODE("iv.test.valid_indexed_event_node", ValidIndexedEventNode);
 
-struct ValidCompiledInputOnlyNode {
+struct ValidIndexedInputOnlyNode {
     static constexpr auto inputs()
     {
         return std::array {
-            iv::compiled_sample_input("samples"),
-            iv::compiled_event_input("events", iv::EventTypeId::trigger),
+            iv::indexed_sample_input("samples"),
+            iv::indexed_event_input("events", iv::EventTypeId::trigger),
         };
     }
 
-    void tick_block(iv::TickBlockContext<ValidCompiledInputOnlyNode> const&) const {}
+    void tick_block(iv::TickBlockContext<ValidIndexedInputOnlyNode> const&) const {}
 };
 
-IV_NODE("iv.test.valid_compiled_input_only_node", ValidCompiledInputOnlyNode);
+IV_NODE("iv.test.valid_indexed_input_only_node", ValidIndexedInputOnlyNode);
 
 
 struct ValidRecorderNode {
-    struct CompiledState {
+    struct IndexedState {
         int write_count = 0;
     };
 
@@ -74,18 +73,18 @@ struct ValidRecorderNode {
 
     static constexpr auto outputs()
     {
-        return std::array {iv::compiled_sample_output("recording")};
+        return std::array {iv::indexed_sample_output("recording")};
     }
 
     void tick_block(iv::TickBlockContext<ValidRecorderNode> const& ctx) const
     {
         (void)ctx.template input<"input">();
-        ++ctx.compiled_state().write_count;
+        ++ctx.indexed_state().write_count;
     }
 
-    void access_block(iv::AccessBlockContext<ValidRecorderNode>& ctx) const
+    void tock_coverage(iv::TockCoverageContext<ValidRecorderNode>& ctx) const
     {
-        ++ctx.compiled_state().write_count;
+        ++ctx.indexed_state().write_count;
         (void)ctx.template output<"recording">();
     }
 };

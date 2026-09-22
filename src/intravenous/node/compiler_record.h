@@ -26,14 +26,13 @@ struct NodeCompilerOperations {
     void (*skip_block)(
         void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
 
-    // Compiler-facing arbitrary-access anchors. The opaque context pointer is
-    // an AccessBlockBatchContext<Node> / PropagateBlockAccessBatchContext<Node>
-    // for the concrete node type selected by this record. These wrappers are
-    // retained primarily so the whole-project compiler has stable LLVM entry
-    // points to import and inline; the compatibility realtime executor does
-    // not call them.
-    void (*access_block_batched)(void const*, void*) = nullptr;
-    void (*propagate_block_access_batched)(void const*, void*) = nullptr;
+    // Compiler-facing one-node indexed callback anchors. The opaque context
+    // points to the corresponding Node-specialized public context. Whole-
+    // project lowering imports and specializes these stable LLVM entry points;
+    // future multi-node batching uses a separate ABI.
+    void (*tock_coverage)(void const*, void*) = nullptr;
+    void (*propagate_forward_coverage)(void const*, void*) = nullptr;
+    void (*propagate_reverse_coverage)(void const*, void*) = nullptr;
 
     constexpr bool valid() const
     {
@@ -51,10 +50,10 @@ struct NodeCompilerRecord {
     // received from Clang before publishing it to the graph compiler.
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
-    // CompiledState is persistent mutable state shared by tick[_block] and
-    // access_block[_batch]. It is allocated independently from State.
-    std::size_t compiled_state_size = 0;
-    std::size_t compiled_state_alignment = 1;
+    // IndexedState is persistent mutable state shared by tick[_block] and the
+    // indexed callbacks. It is allocated independently from State.
+    std::size_t indexed_state_size = 0;
+    std::size_t indexed_state_alignment = 1;
 };
 
 } // namespace details

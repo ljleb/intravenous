@@ -15,28 +15,24 @@
 
 namespace iv {
     template<typename Node>
-    struct AccessBlockContext;
+    struct TockCoverageContext;
 
     template<typename Node>
-    struct AccessBlockBatchContext;
+    struct PropagateForwardCoverageContext;
 
     template<typename Node>
-    struct PropagateBlockAccessContext;
+    struct PropagateReverseCoverageContext;
 
     template<typename Node>
-    struct PropagateBlockAccessBatchContext;
+    void do_tock_coverage(Node const&, TockCoverageContext<Node>&);
 
     template<typename Node>
-    using PropagateBlockAccessBatchedOperation = void (*) (
-        Node const&, PropagateBlockAccessBatchContext<Node>&);
+    void do_propagate_forward_coverage(
+        Node const&, PropagateForwardCoverageContext<Node>&);
 
     template<typename Node>
-    void do_access_block_batched(
-        Node const&, AccessBlockBatchContext<Node>&);
-
-    template<typename Node>
-    constexpr PropagateBlockAccessBatchedOperation<Node>
-    do_propagate_block_access_batched();
+    void do_propagate_reverse_coverage(
+        Node const&, PropagateReverseCoverageContext<Node>&);
 
     template<typename Node>
     struct NodeState {
@@ -56,50 +52,43 @@ namespace iv {
         using Type = typename Node::State;
     };
 
-    // CompiledState is persistent state shared by sequential tick execution and
-    // arbitrary compiled-port access. Its lifetime/storage remain intentionally
+    // IndexedState is persistent state shared by sequential tick execution and
+    // order-independent indexed access. Its lifetime/storage remain intentionally
     // distinct from Node::State so GraphJit can bind the same object into both
-    // callback domains without making compiled outputs sequential.
+    // callback domains without making indexed outputs sequential.
     template<typename Node>
-    struct NodeCompiledState {
+    struct NodeIndexedState {
         using Type = void;
     };
 
     namespace details {
         template<typename Node>
-        concept has_CompiledState = requires {
-            typename Node::CompiledState;
+        concept has_IndexedState = requires {
+            typename Node::IndexedState;
         };
     }
 
     template<typename Node>
-    requires(details::has_CompiledState<Node>)
-    struct NodeCompiledState<Node> {
-        using Type = typename Node::CompiledState;
+    requires(details::has_IndexedState<Node>)
+    struct NodeIndexedState<Node> {
+        using Type = typename Node::IndexedState;
     };
 
     namespace details {
         template<typename Node>
-        inline constexpr bool compiled_state_type_is_valid_v = [] {
-            using CompiledState = typename NodeCompiledState<Node>::Type;
-            if constexpr (std::is_void_v<CompiledState>) {
+        inline constexpr bool indexed_state_type_is_valid_v = [] {
+            using IndexedState = typename NodeIndexedState<Node>::Type;
+            if constexpr (std::is_void_v<IndexedState>) {
                 return true;
             } else {
-                return std::is_object_v<CompiledState>
-                    && !std::is_const_v<CompiledState>
-                    && !std::is_volatile_v<CompiledState>
-                    && std::is_default_constructible_v<CompiledState>
-                    && std::is_destructible_v<CompiledState>;
+                return std::is_object_v<IndexedState>
+                    && !std::is_const_v<IndexedState>
+                    && !std::is_volatile_v<IndexedState>
+                    && std::is_default_constructible_v<IndexedState>
+                    && std::is_destructible_v<IndexedState>;
             }
         }();
     }
-
-    enum class CompiledPortCallbackKind {
-        none,
-        unbatched,
-        batch,
-        conflicting,
-    };
 
     template<typename A>
     struct NoCopy : public A
@@ -177,210 +166,151 @@ namespace iv {
             };
 
         template<typename Node>
-        consteval bool declares_compiled_inputs()
+        consteval bool declares_indexed_inputs()
         {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::inputs()) {
-                    if (is_compiled(config)) return true;
+                    if (is_indexed(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        consteval bool declares_compiled_outputs()
+        consteval bool declares_indexed_outputs()
         {
             if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::outputs()) {
-                    if (is_compiled(config)) return true;
+                    if (is_indexed(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        consteval bool declares_compiled_sample_inputs()
+        consteval bool declares_indexed_sample_inputs()
         {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::inputs()) {
-                    if (is_sample(config) && is_compiled(config)) return true;
+                    if (is_sample(config) && is_indexed(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        consteval bool declares_compiled_sample_outputs()
+        consteval bool declares_indexed_sample_outputs()
         {
             if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::outputs()) {
-                    if (is_sample(config) && is_compiled(config)) return true;
+                    if (is_sample(config) && is_indexed(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        consteval bool declares_compiled_event_inputs()
+        consteval bool declares_indexed_event_inputs()
         {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::inputs()) {
-                    if (!is_sample(config) && is_compiled(config)) return true;
+                    if (!is_sample(config) && is_indexed(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        consteval bool declares_compiled_event_outputs()
+        consteval bool declares_indexed_event_outputs()
         {
             if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::outputs()) {
-                    if (!is_sample(config) && is_compiled(config)) return true;
+                    if (!is_sample(config) && is_indexed(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        inline constexpr bool declares_compiled_inputs_v =
-            declares_compiled_inputs<Node>();
+        inline constexpr bool declares_indexed_inputs_v =
+            declares_indexed_inputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_compiled_outputs_v =
-            declares_compiled_outputs<Node>();
+        inline constexpr bool declares_indexed_outputs_v =
+            declares_indexed_outputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_compiled_sample_inputs_v =
-            declares_compiled_sample_inputs<Node>();
+        inline constexpr bool declares_indexed_sample_inputs_v =
+            declares_indexed_sample_inputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_compiled_sample_outputs_v =
-            declares_compiled_sample_outputs<Node>();
+        inline constexpr bool declares_indexed_sample_outputs_v =
+            declares_indexed_sample_outputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_compiled_event_inputs_v =
-            declares_compiled_event_inputs<Node>();
+        inline constexpr bool declares_indexed_event_inputs_v =
+            declares_indexed_event_inputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_compiled_event_outputs_v =
-            declares_compiled_event_outputs<Node>();
+        inline constexpr bool declares_indexed_event_outputs_v =
+            declares_indexed_event_outputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_compiled_sample_ports_v =
-            declares_compiled_sample_inputs_v<Node>
-            || declares_compiled_sample_outputs_v<Node>;
+        inline constexpr bool declares_indexed_sample_ports_v =
+            declares_indexed_sample_inputs_v<Node>
+            || declares_indexed_sample_outputs_v<Node>;
 
         template<typename Node>
-        inline constexpr bool declares_compiled_event_ports_v =
-            declares_compiled_event_inputs_v<Node>
-            || declares_compiled_event_outputs_v<Node>;
+        inline constexpr bool declares_indexed_event_ports_v =
+            declares_indexed_event_inputs_v<Node>
+            || declares_indexed_event_outputs_v<Node>;
 
         template<typename Node>
-        concept has_access_block = requires(Node const& node) {
-            { node.access_block(std::declval<AccessBlockContext<Node>&>()) }
+        concept has_tock_coverage = requires(Node const& node) {
+            { node.tock_coverage(std::declval<TockCoverageContext<Node>&>()) }
                 -> std::same_as<void>;
         };
 
         template<typename Node>
-        concept has_access_block_batch = requires(Node const& node) {
-            { node.access_block_batch(std::declval<AccessBlockBatchContext<Node>&>()) }
+        concept has_propagate_forward_coverage = requires(Node const& node) {
+            { node.propagate_forward_coverage(
+                std::declval<PropagateForwardCoverageContext<Node>&>()) }
                 -> std::same_as<void>;
         };
 
         template<typename Node>
-        concept has_propagate_block_access = requires(Node const& node) {
-            { node.propagate_block_access(
-                std::declval<PropagateBlockAccessContext<Node>&>()) }
+        concept has_propagate_reverse_coverage = requires(Node const& node) {
+            { node.propagate_reverse_coverage(
+                std::declval<PropagateReverseCoverageContext<Node>&>()) }
                 -> std::same_as<void>;
         };
 
         template<typename Node>
-        concept has_propagate_block_access_batch = requires(Node const& node) {
-            { node.propagate_block_access_batch(
-                std::declval<PropagateBlockAccessBatchContext<Node>&>()) }
-                -> std::same_as<void>;
-        };
-
-        template<typename Node>
-        consteval CompiledPortCallbackKind access_block_callback_kind()
-        {
-            if constexpr (has_access_block<Node> && has_access_block_batch<Node>) {
-                return CompiledPortCallbackKind::conflicting;
-            } else if constexpr (has_access_block<Node>) {
-                return CompiledPortCallbackKind::unbatched;
-            } else if constexpr (has_access_block_batch<Node>) {
-                return CompiledPortCallbackKind::batch;
-            } else {
-                return CompiledPortCallbackKind::none;
-            }
-        }
-
-        template<typename Node>
-        consteval CompiledPortCallbackKind propagate_block_access_callback_kind()
-        {
-            if constexpr (has_propagate_block_access<Node>
-                && has_propagate_block_access_batch<Node>) {
-                return CompiledPortCallbackKind::conflicting;
-            } else if constexpr (has_propagate_block_access<Node>) {
-                return CompiledPortCallbackKind::unbatched;
-            } else if constexpr (has_propagate_block_access_batch<Node>) {
-                return CompiledPortCallbackKind::batch;
-            } else {
-                return CompiledPortCallbackKind::none;
-            }
-        }
-
-        template<typename Node>
-        inline constexpr CompiledPortCallbackKind access_block_callback_kind_v =
-            access_block_callback_kind<Node>();
-
-        template<typename Node>
-        inline constexpr CompiledPortCallbackKind propagate_block_access_callback_kind_v =
-            propagate_block_access_callback_kind<Node>();
-
-        template<typename Node>
-        inline constexpr bool has_valid_access_block_callback_v =
-            access_block_callback_kind_v<Node> == CompiledPortCallbackKind::unbatched
-            || access_block_callback_kind_v<Node> == CompiledPortCallbackKind::batch;
-
-        template<typename Node>
-        inline constexpr bool has_valid_propagate_block_access_callback_v =
-            propagate_block_access_callback_kind_v<Node>
-                == CompiledPortCallbackKind::unbatched
-            || propagate_block_access_callback_kind_v<Node>
-                == CompiledPortCallbackKind::batch;
-
-        template<typename Node>
-        inline constexpr bool compiled_dsp_node_declaration_is_valid_v =
-            compiled_state_type_is_valid_v<Node>
+        inline constexpr bool indexed_dsp_node_declaration_is_valid_v =
+            indexed_state_type_is_valid_v<Node>
             && (!has_constexpr_port_configs<Node>
                 || (
-                    access_block_callback_kind_v<Node>
-                        != CompiledPortCallbackKind::conflicting
-                    && (!declares_compiled_outputs_v<Node>
-                        || has_valid_access_block_callback_v<Node>)
-                    && (access_block_callback_kind_v<Node>
-                            == CompiledPortCallbackKind::none
-                        || declares_compiled_outputs_v<Node>)
-                    && propagate_block_access_callback_kind_v<Node>
-                        != CompiledPortCallbackKind::conflicting
-                    && (propagate_block_access_callback_kind_v<Node>
-                            == CompiledPortCallbackKind::none
-                        || (declares_compiled_outputs_v<Node>
-                            && declares_compiled_inputs_v<Node>))));
+                    (!declares_indexed_outputs_v<Node>
+                        || has_tock_coverage<Node>)
+                    && (!has_tock_coverage<Node>
+                        || declares_indexed_outputs_v<Node>)
+                    && (!has_propagate_forward_coverage<Node>
+                        || declares_indexed_outputs_v<Node>)
+                    && (!has_propagate_reverse_coverage<Node>
+                        || (declares_indexed_outputs_v<Node>
+                            && declares_indexed_inputs_v<Node>))));
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)

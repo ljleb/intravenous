@@ -191,7 +191,7 @@ namespace {
             int marker = 17;
         };
 
-        struct CompiledState {
+        struct IndexedState {
             int marker = 23;
         };
     };
@@ -300,7 +300,7 @@ namespace {
     struct NestedParent {
         struct State {
             std::span<std::span<std::byte>> nested;
-            std::span<std::span<std::byte>> nested_compiled;
+            std::span<std::span<std::byte>> nested_indexed;
         };
 
         void declare(iv::DeclarationContext<NestedParent> const& ctx) const
@@ -311,14 +311,14 @@ namespace {
             do_declare(a, ctx);
             do_declare(b, ctx);
             ctx.nested_node_states(state.nested);
-            ctx.nested_node_compiled_states(state.nested_compiled);
+            ctx.nested_node_indexed_states(state.nested_indexed);
         }
     };
 
-    struct CompiledLifecycleNode {
+    struct IndexedLifecycleNode {
         std::string id;
 
-        struct CompiledState {
+        struct IndexedState {
             static inline int live_instances = 0;
 
             int initialized = 0;
@@ -326,12 +326,12 @@ namespace {
             int released = 0;
             int value = 0;
 
-            CompiledState()
+            IndexedState()
             {
                 ++live_instances;
             }
 
-            ~CompiledState()
+            ~IndexedState()
             {
                 --live_instances;
             }
@@ -343,17 +343,17 @@ namespace {
         }
 
         void initialize(
-            iv::InitializationContext<CompiledLifecycleNode> const& ctx) const
+            iv::InitializationContext<IndexedLifecycleNode> const& ctx) const
         {
-            auto& state = ctx.compiled_state();
+            auto& state = ctx.indexed_state();
             ++state.initialized;
             state.value = 17;
         }
 
-        void move(iv::MoveContext<CompiledLifecycleNode> const& ctx) const
+        void move(iv::MoveContext<IndexedLifecycleNode> const& ctx) const
         {
-            auto& state = ctx.compiled_state();
-            auto const& previous = ctx.previous_compiled_state();
+            auto& state = ctx.indexed_state();
+            auto const& previous = ctx.previous_indexed_state();
             state.initialized = previous.initialized;
             state.moved = previous.moved + 1;
             state.released = previous.released;
@@ -361,9 +361,9 @@ namespace {
         }
 
         void release(
-            iv::ReleaseContext<CompiledLifecycleNode> const& ctx) const
+            iv::ReleaseContext<IndexedLifecycleNode> const& ctx) const
         {
-            ++ctx.compiled_state().released;
+            ++ctx.indexed_state().released;
         }
     };
 
@@ -373,7 +373,7 @@ namespace {
             int ticked = 0;
         };
 
-        struct CompiledState {
+        struct IndexedState {
             int initialized = 0;
             int ticked = 0;
         };
@@ -381,54 +381,54 @@ namespace {
         void initialize(iv::InitializationContext<StatefulTickingNode> const& ctx) const
         {
             ctx.state().initialized += 1;
-            ctx.compiled_state().initialized += 1;
+            ctx.indexed_state().initialized += 1;
         }
 
         void tick_block(iv::TickBlockContext<StatefulTickingNode> const& ctx) const
         {
             ctx.state().ticked += static_cast<int>(ctx.block_size);
-            ctx.compiled_state().ticked += static_cast<int>(ctx.block_size);
+            ctx.indexed_state().ticked += static_cast<int>(ctx.block_size);
         }
     };
 
-    struct CompiledStorageProducer {
-        struct CompiledState {
+    struct IndexedStorageProducer {
+        struct IndexedState {
             std::span<int> values;
         };
 
-        void declare(iv::DeclarationContext<CompiledStorageProducer> const& ctx) const
+        void declare(iv::DeclarationContext<IndexedStorageProducer> const& ctx) const
         {
-            auto const& state = ctx.compiled_state();
+            auto const& state = ctx.indexed_state();
             ctx.local_array(state.values, 3);
-            ctx.export_array("compiled-values", state.values);
+            ctx.export_array("indexed-values", state.values);
         }
 
         void initialize(
-            iv::InitializationContext<CompiledStorageProducer> const& ctx) const
+            iv::InitializationContext<IndexedStorageProducer> const& ctx) const
         {
-            auto& state = ctx.compiled_state();
+            auto& state = ctx.indexed_state();
             state.values[0] = 5;
             state.values[1] = 7;
             state.values[2] = 11;
         }
     };
 
-    struct CompiledStorageConsumer {
-        struct CompiledState {
+    struct IndexedStorageConsumer {
+        struct IndexedState {
             std::span<int> imported;
             int observed_sum = 0;
         };
 
-        void declare(iv::DeclarationContext<CompiledStorageConsumer> const& ctx) const
+        void declare(iv::DeclarationContext<IndexedStorageConsumer> const& ctx) const
         {
-            auto const& state = ctx.compiled_state();
-            ctx.import_array("compiled-values", state.imported);
+            auto const& state = ctx.indexed_state();
+            ctx.import_array("indexed-values", state.imported);
         }
 
         void initialize(
-            iv::InitializationContext<CompiledStorageConsumer> const& ctx) const
+            iv::InitializationContext<IndexedStorageConsumer> const& ctx) const
         {
-            auto& state = ctx.compiled_state();
+            auto& state = ctx.indexed_state();
             for (auto const value : state.imported) {
                 state.observed_sum += value;
             }
@@ -799,8 +799,8 @@ int main()
 
     {
         iv::NodeLayoutBuilder builder(8);
-        CompiledStorageProducer producer;
-        CompiledStorageConsumer consumer;
+        IndexedStorageProducer producer;
+        IndexedStorageConsumer consumer;
         iv::do_declare(producer, builder);
         iv::do_declare(consumer, builder);
 
@@ -809,24 +809,24 @@ int main()
         auto storage = layout.create_storage(resources);
         storage.initialize();
 
-        auto& producer_state = *static_cast<CompiledStorageProducer::CompiledState*>(
-            storage.compiled_state_ptr(0));
-        auto& consumer_state = *static_cast<CompiledStorageConsumer::CompiledState*>(
-            storage.compiled_state_ptr(1));
+        auto& producer_state = *static_cast<IndexedStorageProducer::IndexedState*>(
+            storage.indexed_state_ptr(0));
+        auto& consumer_state = *static_cast<IndexedStorageConsumer::IndexedState*>(
+            storage.indexed_state_ptr(1));
         iv::test::require(
             producer_state.values.size() == 3,
-            "local_array declared from CompiledState should be patched");
+            "local_array declared from IndexedState should be patched");
         iv::test::require(
             consumer_state.imported.data() == producer_state.values.data(),
-            "CompiledState import/export bindings should resolve through CompiledState");
+            "IndexedState import/export bindings should resolve through IndexedState");
         auto const exported =
-            storage.resolve_exported_array_storage<int>("compiled-values");
+            storage.resolve_exported_array_storage<int>("indexed-values");
         iv::test::require(
             exported.data() == producer_state.values.data() && exported.size() == 3,
-            "host export resolution should read CompiledState span fields");
+            "host export resolution should read IndexedState span fields");
         iv::test::require(
             consumer_state.observed_sum == 23,
-            "CompiledState imports should be available during initialize");
+            "IndexedState imports should be available during initialize");
     }
 
     {
@@ -884,86 +884,86 @@ int main()
 
     {
         iv::test::require(
-            CompiledLifecycleNode::CompiledState::live_instances == 0,
-            "compiled-state lifecycle test should start without live objects");
+            IndexedLifecycleNode::IndexedState::live_instances == 0,
+            "indexed-state lifecycle test should start without live objects");
 
         iv::NodeLayoutBuilder builder(4);
-        CompiledLifecycleNode node { .id = "compiled-state" };
+        IndexedLifecycleNode node { .id = "indexed-state" };
         iv::do_declare(node, builder);
         iv::NodeLayout layout = std::move(builder).build();
         iv::test::require(
-            layout.nodes.front().compiled_state_structure.has_value(),
-            "compiled-state layout should carry ABI metadata");
-        layout.nodes.front().compiled_state_structure->type_identity = {
-            .nominal_id = "test.CompiledLifecycleNode.CompiledState",
+            layout.nodes.front().indexed_state_structure.has_value(),
+            "indexed-state layout should carry ABI metadata");
+        layout.nodes.front().indexed_state_structure->type_identity = {
+            .nominal_id = "test.IndexedLifecycleNode.IndexedState",
             .definition_fingerprint = "v1",
-            .display_name = "CompiledLifecycleNode::CompiledState",
+            .display_name = "IndexedLifecycleNode::IndexedState",
         };
         iv::NodeLayout reloaded_layout = layout;
         static int reloaded_node_type_token = 0;
         reloaded_layout.nodes.front().node_type = &reloaded_node_type_token;
 
-        iv::test::require(layout.nodes.size() == 1, "compiled-state layout should contain its node");
+        iv::test::require(layout.nodes.size() == 1, "indexed-state layout should contain its node");
         auto const& record = layout.nodes.front();
         iv::test::require(record.state_size == 0, "test node should have no sequential State");
         iv::test::require(
-            record.compiled_state_size == sizeof(CompiledLifecycleNode::CompiledState),
-            "layout should record CompiledState size");
+            record.indexed_state_size == sizeof(IndexedLifecycleNode::IndexedState),
+            "layout should record IndexedState size");
         iv::test::require(
-            record.compiled_state_alignment == alignof(CompiledLifecycleNode::CompiledState),
-            "layout should record CompiledState alignment");
+            record.indexed_state_alignment == alignof(IndexedLifecycleNode::IndexedState),
+            "layout should record IndexedState alignment");
         iv::test::require(
-            record.compiled_state_offset >= 0,
-            "layout should assign CompiledState storage");
+            record.indexed_state_offset >= 0,
+            "layout should assign IndexedState storage");
         iv::test::require(
-            static_cast<size_t>(record.compiled_state_offset) %
-                    alignof(CompiledLifecycleNode::CompiledState) ==
+            static_cast<size_t>(record.indexed_state_offset) %
+                    alignof(IndexedLifecycleNode::IndexedState) ==
                 0,
-            "CompiledState offset should satisfy its alignment");
+            "IndexedState offset should satisfy its alignment");
 
         auto resources = make_resources();
         {
             iv::NodeStorage original = layout.create_storage(resources);
             original.initialize();
-            auto& original_compiled =
-                *static_cast<CompiledLifecycleNode::CompiledState*>(
-                    original.compiled_state_ptr(0));
+            auto& original_indexed =
+                *static_cast<IndexedLifecycleNode::IndexedState*>(
+                    original.indexed_state_ptr(0));
             iv::test::require(
-                original_compiled.initialized == 1,
-                "initialize should receive the default-constructed CompiledState");
-            original_compiled.value = 91;
+                original_indexed.initialized == 1,
+                "initialize should receive the default-constructed IndexedState");
+            original_indexed.value = 91;
 
             iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
             iv::test::require(
                 reloaded.can_move_from(original, 0, 0),
-                "same reflected CompiledState definition should remain movable across package generations");
+                "same reflected IndexedState definition should remain movable across package generations");
             auto migration = reloaded.prepare_migration_from(original);
             migration.commit();
-            auto& reloaded_compiled =
-                *static_cast<CompiledLifecycleNode::CompiledState*>(
-                    reloaded.compiled_state_ptr(0));
+            auto& reloaded_indexed =
+                *static_cast<IndexedLifecycleNode::IndexedState*>(
+                    reloaded.indexed_state_ptr(0));
             iv::test::require(
-                reloaded_compiled.initialized == 1,
-                "move should preserve CompiledState initialization data");
+                reloaded_indexed.initialized == 1,
+                "move should preserve IndexedState initialization data");
             iv::test::require(
-                reloaded_compiled.moved == 1,
-                "move should receive current and previous CompiledState objects");
+                reloaded_indexed.moved == 1,
+                "move should receive current and previous IndexedState objects");
             iv::test::require(
-                reloaded_compiled.value == 91,
-                "move should be able to transfer CompiledState contents");
+                reloaded_indexed.value == 91,
+                "move should be able to transfer IndexedState contents");
             iv::test::require(
                 original.initialized_nodes.empty(),
-                "successful compiled-state migration should transfer release ownership");
+                "successful indexed-state migration should transfer release ownership");
 
             reloaded.release();
             iv::test::require(
-                reloaded_compiled.released == 1,
-                "release should receive the same mutable CompiledState object");
+                reloaded_indexed.released == 1,
+                "release should receive the same mutable IndexedState object");
         }
 
         iv::test::require(
-            CompiledLifecycleNode::CompiledState::live_instances == 0,
-            "NodeStorage destruction should destroy every constructed CompiledState");
+            IndexedLifecycleNode::IndexedState::live_instances == 0,
+            "NodeStorage destruction should destroy every constructed IndexedState");
     }
 
     {
@@ -978,19 +978,19 @@ int main()
 
         auto& state = *static_cast<NestedParent::State*>(storage.state_ptr(0));
         iv::test::require(state.nested.size() == 2, "nested_node_states should record directly declared child nodes");
-        iv::test::require(state.nested_compiled.size() == 2, "nested_node_compiled_states should record the same directly declared child nodes");
+        iv::test::require(state.nested_indexed.size() == 2, "nested_node_indexed_states should record the same directly declared child nodes");
         iv::test::require(state.nested[0].data() != nullptr, "first nested node state pointer should be patched");
         iv::test::require(state.nested[1].data() != nullptr, "second nested node state pointer should be patched");
-        iv::test::require(state.nested_compiled[0].size() == sizeof(NestedLeaf::CompiledState), "first nested compiled-state span should have the exact CompiledState size");
-        iv::test::require(state.nested_compiled[1].size() == sizeof(NestedLeaf::CompiledState), "second nested compiled-state span should have the exact CompiledState size");
+        iv::test::require(state.nested_indexed[0].size() == sizeof(NestedLeaf::IndexedState), "first nested indexed-state span should have the exact IndexedState size");
+        iv::test::require(state.nested_indexed[1].size() == sizeof(NestedLeaf::IndexedState), "second nested indexed-state span should have the exact IndexedState size");
         auto& first = *reinterpret_cast<NestedLeaf::State*>(state.nested[0].data());
         auto& second = *reinterpret_cast<NestedLeaf::State*>(state.nested[1].data());
-        auto& first_compiled = *reinterpret_cast<NestedLeaf::CompiledState*>(state.nested_compiled[0].data());
-        auto& second_compiled = *reinterpret_cast<NestedLeaf::CompiledState*>(state.nested_compiled[1].data());
+        auto& first_indexed = *reinterpret_cast<NestedLeaf::IndexedState*>(state.nested_indexed[0].data());
+        auto& second_indexed = *reinterpret_cast<NestedLeaf::IndexedState*>(state.nested_indexed[1].data());
         iv::test::require(first.marker == 17, "first nested node state should be addressable");
         iv::test::require(second.marker == 17, "second nested node state should be addressable");
-        iv::test::require(first_compiled.marker == 23, "first nested CompiledState should be addressable");
-        iv::test::require(second_compiled.marker == 23, "second nested CompiledState should be addressable");
+        iv::test::require(first_indexed.marker == 23, "first nested IndexedState should be addressable");
+        iv::test::require(second_indexed.marker == 23, "second nested IndexedState should be addressable");
     }
 
     {
@@ -1005,9 +1005,9 @@ int main()
 
         auto& erased_state = *static_cast<iv::TypeErasedNode::State*>(storage.state_ptr(0));
         iv::test::require(erased_state.nested_node_states.size() == 1, "type-erased node should record exactly one nested child");
-        iv::test::require(erased_state.nested_node_compiled_states.size() == 1, "type-erased node should record exactly one nested compiled child state");
+        iv::test::require(erased_state.nested_node_indexed_states.size() == 1, "type-erased node should record exactly one nested indexed child state");
         iv::test::require(erased_state.nested_node_states[0].data() != nullptr, "type-erased nested child state pointer should be patched");
-        iv::test::require(erased_state.nested_node_compiled_states[0].size() == sizeof(StatefulTickingNode::CompiledState), "type-erased nested CompiledState should be patched");
+        iv::test::require(erased_state.nested_node_indexed_states[0].size() == sizeof(StatefulTickingNode::IndexedState), "type-erased nested IndexedState should be patched");
 
         node.tick_block({
             iv::TickContext<iv::TypeErasedNode> {
@@ -1022,11 +1022,11 @@ int main()
         });
 
         auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(erased_state.nested_node_states[0].data());
-        auto& nested_compiled_state = *reinterpret_cast<StatefulTickingNode::CompiledState*>(erased_state.nested_node_compiled_states[0].data());
+        auto& nested_indexed_state = *reinterpret_cast<StatefulTickingNode::IndexedState*>(erased_state.nested_node_indexed_states[0].data());
         iv::test::require(nested_state.initialized == 1, "type-erased nested child should initialize once");
         iv::test::require(nested_state.ticked == 8, "type-erased nested child should tick through nested state");
-        iv::test::require(nested_compiled_state.initialized == 1, "type-erased nested child CompiledState should initialize once");
-        iv::test::require(nested_compiled_state.ticked == 8, "type-erased nested child should tick through nested CompiledState");
+        iv::test::require(nested_indexed_state.initialized == 1, "type-erased nested child IndexedState should initialize once");
+        iv::test::require(nested_indexed_state.ticked == 8, "type-erased nested child should tick through nested IndexedState");
     }
 
     {
@@ -1046,8 +1046,8 @@ int main()
             erased_state.nested_node_states.size() == 1,
             "weak type-erased node should record exactly one nested child");
         iv::test::require(
-            erased_state.nested_node_compiled_states.size() == 1,
-            "weak type-erased node should record exactly one nested compiled child state");
+            erased_state.nested_node_indexed_states.size() == 1,
+            "weak type-erased node should record exactly one nested indexed child state");
 
         node.tick_block({
             iv::TickContext<iv::WeakTypeErasedNode> {
@@ -1059,15 +1059,15 @@ int main()
 
         auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(
             erased_state.nested_node_states[0].data());
-        auto& nested_compiled_state =
-            *reinterpret_cast<StatefulTickingNode::CompiledState*>(
-                erased_state.nested_node_compiled_states[0].data());
+        auto& nested_indexed_state =
+            *reinterpret_cast<StatefulTickingNode::IndexedState*>(
+                erased_state.nested_node_indexed_states[0].data());
         iv::test::require(
             nested_state.ticked == 8,
             "weak type-erased child should tick through nested State");
         iv::test::require(
-            nested_compiled_state.ticked == 8,
-            "weak type-erased child should tick through nested CompiledState");
+            nested_indexed_state.ticked == 8,
+            "weak type-erased child should tick through nested IndexedState");
     }
 
     {
@@ -1087,9 +1087,9 @@ int main()
 
         auto& wrapper_state = *static_cast<iv::GraphNodeWrapper::State*>(storage.state_ptr(0));
         iv::test::require(wrapper_state.nested_node_states.size() == 1, "standalone wrapper without inputs should expose one nested executable child");
-        iv::test::require(wrapper_state.nested_node_compiled_states.size() == 1, "standalone wrapper should expose one nested executable child CompiledState");
+        iv::test::require(wrapper_state.nested_node_indexed_states.size() == 1, "standalone wrapper should expose one nested executable child IndexedState");
         iv::test::require(wrapper_state.nested_node_states[0].data() != nullptr, "standalone wrapper nested executable child state should be patched");
-        iv::test::require(wrapper_state.nested_node_compiled_states[0].size() == sizeof(StatefulTickingNode::CompiledState), "standalone wrapper nested executable child CompiledState should be patched");
+        iv::test::require(wrapper_state.nested_node_indexed_states[0].size() == sizeof(StatefulTickingNode::IndexedState), "standalone wrapper nested executable child IndexedState should be patched");
 
         wrapper.tick({
             iv::TickContext<iv::GraphNodeWrapper> {
@@ -1101,11 +1101,11 @@ int main()
 
         auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(
             wrapper_state.nested_node_states[0].data());
-        auto& nested_compiled_state =
-            *reinterpret_cast<StatefulTickingNode::CompiledState*>(
-                wrapper_state.nested_node_compiled_states[0].data());
+        auto& nested_indexed_state =
+            *reinterpret_cast<StatefulTickingNode::IndexedState*>(
+                wrapper_state.nested_node_indexed_states[0].data());
         iv::test::require(nested_state.ticked == 8, "graph wrapper should tick nested State");
-        iv::test::require(nested_compiled_state.ticked == 8, "graph wrapper should tick nested CompiledState");
+        iv::test::require(nested_indexed_state.ticked == 8, "graph wrapper should tick nested IndexedState");
     }
 
     return 0;

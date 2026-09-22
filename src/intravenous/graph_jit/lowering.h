@@ -32,12 +32,12 @@ struct NodeImplementation {
 
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
-    std::size_t compiled_state_size = 0;
-    std::size_t compiled_state_alignment = 1;
+    std::size_t indexed_state_size = 0;
+    std::size_t indexed_state_alignment = 1;
 
     // Host declaration data is part of lowering because the canonical
     // NodeLayout must be finalized before final LLVM is emitted. That lets
-    // generated code embed State/CompiledState/raw-region offsets as constants
+    // generated code embed State/IndexedState/raw-region offsets as constants
     // and gives O3 the opportunity to optimize through those addresses.
     void const* node_data = nullptr;
     NodeStateStructures const* state_structures = nullptr;
@@ -47,8 +47,9 @@ struct NodeImplementation {
     // Runtime/compiler LLVM anchors imported into the whole-project module.
     llvm::Function* tick_block = nullptr;
     llvm::Function* skip_block = nullptr;
-    llvm::Function* access_block_batched = nullptr;
-    llvm::Function* propagate_block_access_batched = nullptr;
+    llvm::Function* tock_coverage = nullptr;
+    llvm::Function* propagate_forward_coverage = nullptr;
+    llvm::Function* propagate_reverse_coverage = nullptr;
 };
 
 struct ConfigRelocation {
@@ -89,7 +90,7 @@ struct LoweredGraphRootSymbols {
 // The lowerer owns graph analysis and canonical storage planning as well as
 // selected primitive-LLVM import/inlining and construction of the complete
 // project module. It must finish node_layout before emitting final storage
-// accesses into output_module. State, CompiledState, graph-persistent arrays,
+// accesses into output_module. State, IndexedState, graph-persistent arrays,
 // and bounded compiler workspaces therefore share one NodeStorage allocation,
 // and generated accesses may use final NodeLayout offsets as constants.
 // Immutable lowering-shared tables should be emitted as LLVM globals so their

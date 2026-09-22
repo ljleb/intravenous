@@ -1148,7 +1148,7 @@ std::optional<QualType> node_nested_type(
 {
     if (!node || !visited.insert(node).second) return std::nullopt;
     if (auto type = direct_node_nested_type(context, node, name)) return type;
-    // `typename Node::State` / `typename Node::CompiledState` use normal
+    // `typename Node::State` / `typename Node::IndexedState` use normal
     // base-class lookup too. Follow that lookup so inherited aliases and
     // nested records are keyed by the derived node that actually uses them.
     for (auto const& base : node->bases()) {
@@ -1186,7 +1186,7 @@ public:
         auto const node_type_name = type_string(context_, node_type);
         // The canonical declaration of every specialization is the primary
         // class template. Deduplicate by concrete spelling so each NodeCodeKey
-        // receives exactly one pair of State/CompiledState records.
+        // receives exactly one pair of State/IndexedState records.
         if (!seen_node_types_.insert(node_type_name).second) return;
 
         auto const node_type_usr = declaration_usr(context_, node);
@@ -1195,13 +1195,13 @@ public:
             "State", states_);
         record_state(
             node, node_type, node_type_name, node_type_usr,
-            "CompiledState", compiled_states_);
+            "IndexedState", indexed_states_);
     }
 
     llvm::json::Array take_states() { return std::move(states_); }
-    llvm::json::Array take_compiled_states()
+    llvm::json::Array take_indexed_states()
     {
-        return std::move(compiled_states_);
+        return std::move(indexed_states_);
     }
 
 private:
@@ -1266,7 +1266,7 @@ private:
 
     ASTContext& context_;
     llvm::json::Array states_;
-    llvm::json::Array compiled_states_;
+    llvm::json::Array indexed_states_;
     std::set<std::string> seen_node_types_;
 };
 
@@ -1780,9 +1780,9 @@ void write_state_metadata(
     }
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
-            {"version", 0},
+            {"version", 1},
             {"states", state_collector.take_states()},
-            {"compiled_states", state_collector.take_compiled_states()},
+            {"indexed_states", state_collector.take_indexed_states()},
             {"config_pointers", std::move(node_config_collector).take_fields()},
             {"configuration_types", std::move(configuration_type_collector).take_identities()},
             {"package_definitions", std::move(package_definition_collector).take_definitions()},

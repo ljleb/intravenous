@@ -204,22 +204,22 @@ namespace {
         }
     };
 
-    struct CompiledStatePayload {
+    struct IndexedStatePayload {
         std::uint64_t epoch = 3;
         float gain = 0.25f;
     };
 
-    struct CompiledStateNode {
-        using CompiledState = CompiledStatePayload;
+    struct IndexedStateNode {
+        using IndexedState = IndexedStatePayload;
 
         static constexpr auto outputs()
         {
             return std::array<iv::OutputConfig, 1>{};
         }
 
-        void tick(iv::TickSampleContext<CompiledStateNode> const& ctx) const
+        void tick(iv::TickSampleContext<IndexedStateNode> const& ctx) const
         {
-            auto& state = ctx.compiled_state();
+            auto& state = ctx.indexed_state();
             ctx.outputs[0].push(state.gain);
             ++state.epoch;
         }
@@ -231,12 +231,12 @@ namespace {
         auto const direct = details::configure_concrete_node<AliasedStateNode>(g);
         auto const inherited = details::configure_concrete_node<InheritedStateNode>(g);
         auto const scalar = details::configure_concrete_node<ScalarStateNode>(g);
-        auto const compiled = details::configure_concrete_node<CompiledStateNode>(g);
+        auto const indexed = details::configure_concrete_node<IndexedStateNode>(g);
         g.outputs(
             "direct"_P = direct,
             "inherited"_P = inherited,
             "scalar"_P = scalar,
-            "compiled"_P = compiled);
+            "indexed"_P = indexed);
     }
 }
 )");
@@ -277,22 +277,22 @@ namespace {
     }
     EXPECT_EQ(scalar_state_nodes, 1u);
 
-    auto compiled_state_nodes = 0u;
+    auto indexed_state_nodes = 0u;
     for (auto const& record : executor.layout().nodes) {
-        if (!record.compiled_state_structure) continue;
+        if (!record.indexed_state_structure) continue;
         auto const has_epoch = std::ranges::any_of(
-            record.compiled_state_structure->fields,
+            record.indexed_state_structure->fields,
             [](iv::NodeStateFieldStructure const& field) {
                 return field.name == "epoch";
             });
         if (!has_epoch) continue;
-        ++compiled_state_nodes;
-        EXPECT_TRUE(record.compiled_state_structure->type_identity.valid());
+        ++indexed_state_nodes;
+        EXPECT_TRUE(record.indexed_state_structure->type_identity.valid());
         EXPECT_FALSE(
-            record.compiled_state_structure->type_identity.display_name.empty());
-        ASSERT_EQ(record.compiled_state_structure->fields.size(), 2u);
+            record.indexed_state_structure->type_identity.display_name.empty());
+        ASSERT_EQ(record.indexed_state_structure->fields.size(), 2u);
     }
-    EXPECT_EQ(compiled_state_nodes, 1u);
+    EXPECT_EQ(indexed_state_nodes, 1u);
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)

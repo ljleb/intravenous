@@ -190,27 +190,27 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
         .neutral_value = -0.125f,
         .default_value = 0.25f,
     };
-    iv::SampleInputConfig const compiled_input {
-        .name = "compiled-input",
-        .access = iv::CompiledPortConfig{},
+    iv::SampleInputConfig const indexed_input {
+        .name = "indexed-input",
+        .access = iv::IndexedInputConfig{},
     };
     iv::SampleOutputConfig const realtime_output {
         .name = "realtime-output",
         .access = iv::RealtimeOutputConfig{.history = 11, .latency = 3},
     };
-    iv::SampleOutputConfig const compiled_output {
-        .name = "compiled-output",
-        .access = iv::CompiledPortConfig{},
+    iv::SampleOutputConfig const indexed_output {
+        .name = "indexed-output",
+        .access = iv::IndexedOutputConfig{.cache = false},
     };
     iv::EventInputConfig const realtime_event_input {
         .name = "realtime-event-input",
         .type = iv::EventTypeId::trigger,
         .access = iv::RealtimeInputConfig{.history = 5},
     };
-    iv::EventInputConfig const compiled_event_input {
-        .name = "compiled-event-input",
+    iv::EventInputConfig const indexed_event_input {
+        .name = "indexed-event-input",
         .type = iv::EventTypeId::trigger,
-        .access = iv::CompiledPortConfig{},
+        .access = iv::IndexedInputConfig{},
     };
     iv::EventOutputConfig const realtime_event_output {
         .name = "realtime-event-output",
@@ -218,59 +218,61 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
         .max_events_per_index = 0.24,
         .access = iv::RealtimeOutputConfig{.history = 13, .latency = 2},
     };
-    iv::EventOutputConfig const compiled_event_output {
-        .name = "compiled-event-output",
+    iv::EventOutputConfig const indexed_event_output {
+        .name = "indexed-event-output",
         .type = iv::EventTypeId::midi,
-        .access = iv::CompiledPortConfig{},
+        .access = iv::IndexedOutputConfig{.cache = true},
     };
 
     iv::binary_wire_details::Writer writer;
     iv::binary_wire_details::write_input(writer, realtime_input);
-    iv::binary_wire_details::write_input(writer, compiled_input);
+    iv::binary_wire_details::write_input(writer, indexed_input);
     iv::binary_wire_details::write_output(writer, realtime_output);
-    iv::binary_wire_details::write_output(writer, compiled_output);
+    iv::binary_wire_details::write_output(writer, indexed_output);
     iv::binary_wire_details::write_event_input(writer, realtime_event_input);
-    iv::binary_wire_details::write_event_input(writer, compiled_event_input);
+    iv::binary_wire_details::write_event_input(writer, indexed_event_input);
     iv::binary_wire_details::write_event_output(writer, realtime_event_output);
-    iv::binary_wire_details::write_event_output(writer, compiled_event_output);
+    iv::binary_wire_details::write_event_output(writer, indexed_event_output);
     auto const bytes = std::move(writer).take();
 
     iv::binary_wire_details::Reader reader(bytes);
     auto const decoded_realtime_input = iv::binary_wire_details::read_input(reader);
-    auto const decoded_compiled_input = iv::binary_wire_details::read_input(reader);
+    auto const decoded_indexed_input = iv::binary_wire_details::read_input(reader);
     auto const decoded_realtime_output = iv::binary_wire_details::read_output(reader);
-    auto const decoded_compiled_output = iv::binary_wire_details::read_output(reader);
+    auto const decoded_indexed_output = iv::binary_wire_details::read_output(reader);
     auto const decoded_realtime_event_input = iv::binary_wire_details::read_event_input(reader);
-    auto const decoded_compiled_event_input = iv::binary_wire_details::read_event_input(reader);
+    auto const decoded_indexed_event_input = iv::binary_wire_details::read_event_input(reader);
     auto const decoded_realtime_event_output = iv::binary_wire_details::read_event_output(reader);
-    auto const decoded_compiled_event_output = iv::binary_wire_details::read_event_output(reader);
+    auto const decoded_indexed_event_output = iv::binary_wire_details::read_event_output(reader);
     reader.finish();
 
     EXPECT_EQ(decoded_realtime_input.name, realtime_input.name);
     EXPECT_EQ(decoded_realtime_input.channel_layout, realtime_input.channel_layout);
-    EXPECT_FALSE(iv::is_compiled(decoded_realtime_input));
+    EXPECT_FALSE(iv::is_indexed(decoded_realtime_input));
     EXPECT_EQ(iv::realtime_history(decoded_realtime_input), 7u);
     EXPECT_FLOAT_EQ(static_cast<float>(decoded_realtime_input.neutral_value), -0.125f);
     EXPECT_FLOAT_EQ(static_cast<float>(decoded_realtime_input.default_value), 0.25f);
-    EXPECT_TRUE(iv::is_compiled(decoded_compiled_input));
-    EXPECT_FALSE(iv::is_realtime(decoded_compiled_input.access));
+    EXPECT_TRUE(iv::is_indexed(decoded_indexed_input));
+    EXPECT_FALSE(iv::is_realtime(decoded_indexed_input.access));
 
     EXPECT_EQ(decoded_realtime_output.name, realtime_output.name);
-    EXPECT_FALSE(iv::is_compiled(decoded_realtime_output));
+    EXPECT_FALSE(iv::is_indexed(decoded_realtime_output));
     EXPECT_EQ(iv::realtime_history(decoded_realtime_output), 11u);
     EXPECT_EQ(iv::realtime_latency(decoded_realtime_output), 3u);
-    EXPECT_TRUE(iv::is_compiled(decoded_compiled_output));
-    EXPECT_FALSE(iv::is_realtime(decoded_compiled_output.access));
+    EXPECT_TRUE(iv::is_indexed(decoded_indexed_output));
+    EXPECT_FALSE(iv::is_realtime(decoded_indexed_output.access));
+    EXPECT_FALSE(iv::indexed_output_cache(decoded_indexed_output.access));
 
     EXPECT_EQ(decoded_realtime_event_input.type, realtime_event_input.type);
     EXPECT_EQ(iv::realtime_history(decoded_realtime_event_input), 5u);
-    EXPECT_TRUE(iv::is_compiled(decoded_compiled_event_input));
+    EXPECT_TRUE(iv::is_indexed(decoded_indexed_event_input));
 
     EXPECT_EQ(decoded_realtime_event_output.type, realtime_event_output.type);
     EXPECT_DOUBLE_EQ(decoded_realtime_event_output.max_events_per_index, 0.24);
     EXPECT_EQ(iv::realtime_history(decoded_realtime_event_output), 13u);
     EXPECT_EQ(iv::realtime_latency(decoded_realtime_event_output), 2u);
-    EXPECT_TRUE(iv::is_compiled(decoded_compiled_event_output));
+    EXPECT_TRUE(iv::is_indexed(decoded_indexed_event_output));
+    EXPECT_TRUE(iv::indexed_output_cache(decoded_indexed_event_output.access));
 }
 
 } // namespace

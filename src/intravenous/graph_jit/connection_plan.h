@@ -19,9 +19,9 @@ enum class PlannedConnectionPayload {
 
 enum class PlannedConnectionAccess {
     realtime_to_realtime,
-    compiled_to_compiled,
-    compiled_to_realtime,
-    realtime_to_compiled,
+    indexed_to_indexed,
+    indexed_to_realtime,
+    realtime_to_indexed,
 };
 
 struct PlannedGraphNode {
@@ -41,8 +41,8 @@ struct DependencyEdgePlan {
     PlannedConnectionAccess access = PlannedConnectionAccess::realtime_to_realtime;
     std::size_t configured_connection_index = 0;
 
-    // Only sequential producers impose ordinary tick ordering. A compiled
-    // output is materialized by the compiled-access executor and must not be
+    // Only sequential producers impose ordinary tick ordering. An indexed
+    // output is materialized by the indexed executor and must not be
     // ordered by pretending its producer tick creates that output.
     bool sequential_tick_dependency = true;
 };
@@ -175,7 +175,7 @@ struct SampleProducerGroupPlan {
     std::optional<ChannelLayout> canonical_source_layout{};
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
-    bool has_compiled_connections = false;
+    bool has_indexed_connections = false;
     SampleConnectionStorageRequirements storage_requirements{};
     std::optional<SampleConnectionStoragePlan> storage_plan{};
     ConnectionLiveIntervalPlan live_interval{};
@@ -187,7 +187,7 @@ struct EventProducerGroupPlan {
     double max_events_per_index = 0.0;
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
-    bool has_compiled_connections = false;
+    bool has_indexed_connections = false;
     // Cyclic or block-adapted producers append into one invocation-wide
     // sequence. This is an execution/materialization fact, not a storage kind.
     bool requires_invocation_aggregate = false;

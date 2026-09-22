@@ -6,7 +6,7 @@
 // widening that record.
 
 #include <intravenous/node/compiler_record.h>
-#include <intravenous/node/compiled_port_context.h>
+#include <intravenous/node/indexed_port_context.h>
 #include <intravenous/ports.h>
 
 #include <array>
@@ -179,9 +179,9 @@ struct ReflectedNodeTickContext {
     ReflectedSpan<ReflectedEventOutputPortBinding const> event_output_bindings {};
     ReflectedSpan<EventInputPort> event_inputs {};
     ReflectedSpan<EventOutputPort> event_outputs {};
-    ReflectedSpan<CompiledInputPort const> compiled_inputs {};
-    ReflectedSpan<CompiledEventInputPort const> compiled_event_inputs {};
-    ReflectedSpan<std::byte> compiled_state {};
+    ReflectedSpan<IndexedSampleInputPort const> indexed_inputs {};
+    ReflectedSpan<IndexedEventInputPort const> indexed_event_inputs {};
+    ReflectedSpan<std::byte> indexed_state {};
     std::size_t sample_rate = 48000;
     std::size_t scc_feedback_latency = 0;
     ReflectedSpan<std::byte> state {};

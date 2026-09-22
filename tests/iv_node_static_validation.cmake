@@ -42,19 +42,19 @@ expect_valid(valid.cpp)
 expect_invalid(
     invalid.cpp
     "IV_NODE requires inputs() and outputs()"
-    "declares a compiled output port"
-    "must define only one compiled-access callback")
+    "declares an indexed output port; define tock_coverage")
 
 expect_invalid(
-    invalid_compiled_tick_output.cpp
-    "tick/tick_block cannot write a compiled sample output"
-    "tick/tick_block cannot write a compiled event output")
+    invalid_indexed_tick_output.cpp
+    "tick/tick_block cannot write an indexed sample output"
+    "tick/tick_block cannot write an indexed event output")
 
 expect_invalid(
-    invalid_compiled_callback_shape.cpp
-    "defines access_block/access_block_batch but declares no compiled output port"
-    "defines compiled block-access propagation but does not declare both compiled input and compiled output ports")
+    invalid_indexed_callback_shape.cpp
+    "defines tock_coverage but declares no indexed output port"
+    "defines propagate_forward_coverage but declares no indexed output port"
+    "defines propagate_reverse_coverage but does not declare both indexed input and indexed output ports")
 
 expect_invalid(
-    invalid_compiled_state.cpp
-    "Node::CompiledState must be a mutable, non-volatile, default-constructible object type")
+    invalid_indexed_state.cpp
+    "Node::IndexedState must be a mutable, non-volatile, default-constructible object type")

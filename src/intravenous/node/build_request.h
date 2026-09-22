@@ -8,7 +8,7 @@
 
 #include <intravenous/basic_nodes/constant.h>
 #include <intravenous/graph/reflected_node_operations.h>
-#include <intravenous/node/compiled_port_context.h>
+#include <intravenous/node/indexed_port_context.h>
 #include <intravenous/node/compiler_record.h>
 #include <intravenous/node/lifecycle.h>
 
@@ -430,9 +430,9 @@ IV_FORCEINLINE void tick_node_block(
                             .outputs = outputs,
                             .event_inputs = event_inputs,
                             .event_outputs = event_outputs,
-                            .compiled_inputs = ctx.compiled_inputs,
-                            .compiled_event_inputs = ctx.compiled_event_inputs,
-                            .compiled_state_storage = ctx.compiled_state,
+                            .indexed_inputs = ctx.indexed_inputs,
+                            .indexed_event_inputs = ctx.indexed_event_inputs,
+                            .indexed_state_storage = ctx.indexed_state,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = ctx.state,
@@ -468,9 +468,9 @@ IV_FORCEINLINE void skip_node_block(
                             .outputs = outputs,
                             .event_inputs = event_inputs,
                             .event_outputs = event_outputs,
-                            .compiled_inputs = ctx.compiled_inputs,
-                            .compiled_event_inputs = ctx.compiled_event_inputs,
-                            .compiled_state_storage = ctx.compiled_state,
+                            .indexed_inputs = ctx.indexed_inputs,
+                            .indexed_event_inputs = ctx.indexed_event_inputs,
+                            .indexed_state_storage = ctx.indexed_state,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = ctx.state,
@@ -483,42 +483,62 @@ IV_FORCEINLINE void skip_node_block(
 }
 
 template<class Node>
-IV_FORCEINLINE void access_node_block_batched(
+IV_FORCEINLINE void tock_node_coverage(
     void const* node_data, void* opaque_context)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    auto& context = *static_cast<AccessBlockBatchContext<Node>*>(opaque_context);
-    do_access_block_batched(node, context);
+    auto& context = *static_cast<TockCoverageContext<Node>*>(opaque_context);
+    do_tock_coverage(node, context);
 }
 
 template<class Node>
-IV_FORCEINLINE void propagate_node_block_access_batched(
+IV_FORCEINLINE void propagate_node_forward_coverage(
     void const* node_data, void* opaque_context)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    auto& context =
-        *static_cast<PropagateBlockAccessBatchContext<Node>*>(opaque_context);
-    do_propagate_block_access_batched<Node>()(node, context);
+    auto& context = *static_cast<PropagateForwardCoverageContext<Node>*>(
+        opaque_context);
+    do_propagate_forward_coverage(node, context);
 }
 
 template<class Node>
-consteval auto node_access_block_batched_operation()
+IV_FORCEINLINE void propagate_node_reverse_coverage(
+    void const* node_data, void* opaque_context)
 {
-    if constexpr (details::declares_compiled_outputs_v<Node>) {
-        static_assert(details::has_valid_access_block_callback_v<Node>,
-            "compiled-output node has no valid access_block/access_block_batch implementation");
-        return &access_node_block_batched<Node>;
+    auto const& node = *static_cast<Node const*>(node_data);
+    auto& context = *static_cast<PropagateReverseCoverageContext<Node>*>(
+        opaque_context);
+    do_propagate_reverse_coverage(node, context);
+}
+
+template<class Node>
+consteval auto node_tock_coverage_operation()
+{
+    if constexpr (details::declares_indexed_outputs_v<Node>) {
+        static_assert(details::has_tock_coverage<Node>,
+            "indexed-output node has no valid tock_coverage implementation");
+        return &tock_node_coverage<Node>;
     } else {
         return static_cast<void (*)(void const*, void*)>(nullptr);
     }
 }
 
 template<class Node>
-consteval auto node_propagate_block_access_batched_operation()
+consteval auto node_propagate_forward_coverage_operation()
 {
-    if constexpr (details::declares_compiled_outputs_v<Node>
-        && details::declares_compiled_inputs_v<Node>) {
-        return &propagate_node_block_access_batched<Node>;
+    if constexpr (details::declares_indexed_outputs_v<Node>) {
+        return &propagate_node_forward_coverage<Node>;
+    } else {
+        return static_cast<void (*)(void const*, void*)>(nullptr);
+    }
+}
+
+template<class Node>
+consteval auto node_propagate_reverse_coverage_operation()
+{
+    if constexpr (details::declares_indexed_outputs_v<Node>
+        && details::declares_indexed_inputs_v<Node>) {
+        return &propagate_node_reverse_coverage<Node>;
     } else {
         return static_cast<void (*)(void const*, void*)>(nullptr);
     }
@@ -531,9 +551,11 @@ constexpr NodeCompilerOperations node_compiler_operations()
         .declare_node = &declare_node<Node>,
         .tick_block = &tick_node_block<Node>,
         .skip_block = &skip_node_block<Node>,
-        .access_block_batched = node_access_block_batched_operation<Node>(),
-        .propagate_block_access_batched =
-            node_propagate_block_access_batched_operation<Node>(),
+        .tock_coverage = node_tock_coverage_operation<Node>(),
+        .propagate_forward_coverage =
+            node_propagate_forward_coverage_operation<Node>(),
+        .propagate_reverse_coverage =
+            node_propagate_reverse_coverage_operation<Node>(),
     };
 }
 
@@ -560,24 +582,24 @@ consteval std::size_t node_state_alignment()
 }
 
 template<class Node>
-consteval std::size_t node_compiled_state_size()
+consteval std::size_t node_indexed_state_size()
 {
-    using CompiledState = typename NodeCompiledState<Node>::Type;
-    if constexpr (std::is_void_v<CompiledState>) {
+    using IndexedState = typename NodeIndexedState<Node>::Type;
+    if constexpr (std::is_void_v<IndexedState>) {
         return 0;
     } else {
-        return sizeof(CompiledState);
+        return sizeof(IndexedState);
     }
 }
 
 template<class Node>
-consteval std::size_t node_compiled_state_alignment()
+consteval std::size_t node_indexed_state_alignment()
 {
-    using CompiledState = typename NodeCompiledState<Node>::Type;
-    if constexpr (std::is_void_v<CompiledState>) {
+    using IndexedState = typename NodeIndexedState<Node>::Type;
+    if constexpr (std::is_void_v<IndexedState>) {
         return 1;
     } else {
-        return alignof(CompiledState);
+        return alignof(IndexedState);
     }
 }
 
@@ -598,8 +620,8 @@ IV_NODE_COMPILER_RECORD_ATTR inline const NodeCompilerRecord
         .type_name_size = clang_type_name<Node>().size(),
         .state_size = node_state_size<Node>(),
         .state_alignment = node_state_alignment<Node>(),
-        .compiled_state_size = node_compiled_state_size<Node>(),
-        .compiled_state_alignment = node_compiled_state_alignment<Node>(),
+        .indexed_state_size = node_indexed_state_size<Node>(),
+        .indexed_state_alignment = node_indexed_state_alignment<Node>(),
     };
 
 #undef IV_NODE_COMPILER_RECORD_ATTR

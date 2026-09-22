@@ -34,42 +34,43 @@ struct DynamicPortCountNode {
     void tick_block(iv::TickBlockContext<DynamicPortCountNode> const&) const {}
 };
 
-struct MissingCompiledAccessNode {
+struct MissingIndexedTockNode {
     static constexpr auto outputs()
     {
-        return std::array {iv::compiled_sample_output("output")};
+        return std::array {iv::indexed_sample_output("output")};
     }
 
-    void tick_block(iv::TickBlockContext<MissingCompiledAccessNode> const&) const {}
+    void tick_block(iv::TickBlockContext<MissingIndexedTockNode> const&) const {}
 };
 
-struct MissingCompiledEventAccessNode {
+struct MissingIndexedEventTockNode {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::compiled_event_output("events", iv::EventTypeId::trigger),
+            iv::indexed_event_output("events", iv::EventTypeId::trigger),
         };
     }
 
-    void tick_block(iv::TickBlockContext<MissingCompiledEventAccessNode> const&) const {}
+    void tick_block(iv::TickBlockContext<MissingIndexedEventTockNode> const&) const {}
 };
 
-struct ConflictingCompiledAccessNode {
+struct InvalidIndexedTockSignatureNode {
     static constexpr auto outputs()
     {
-        return std::array {iv::compiled_sample_output("output")};
+        return std::array {iv::indexed_sample_output("output")};
     }
 
-    void tick_block(iv::TickBlockContext<ConflictingCompiledAccessNode> const&) const {}
-    void access_block(iv::AccessBlockContext<ConflictingCompiledAccessNode>&) const {}
-    void access_block_batch(
-        iv::AccessBlockBatchContext<ConflictingCompiledAccessNode>&) const {}
+    void tick_block(iv::TickBlockContext<InvalidIndexedTockSignatureNode> const&) const {}
+    int tock_coverage(iv::TockCoverageContext<InvalidIndexedTockSignatureNode>&) const
+    {
+        return 0;
+    }
 };
 
 IV_NODE("iv.test.dynamic_sample_port_node", DynamicSamplePortNode);
 IV_NODE("iv.test.dynamic_event_port_node", DynamicEventPortNode);
 IV_NODE("iv.test.non_constexpr_port_node", NonConstexprPortNode);
 IV_NODE("iv.test.dynamic_port_count_node", DynamicPortCountNode);
-IV_NODE("iv.test.missing_compiled_access", MissingCompiledAccessNode);
-IV_NODE("iv.test.missing_compiled_event_access", MissingCompiledEventAccessNode);
-IV_NODE("iv.test.conflicting_compiled_access", ConflictingCompiledAccessNode);
+IV_NODE("iv.test.missing_indexed_tock", MissingIndexedTockNode);
+IV_NODE("iv.test.missing_indexed_event_tock", MissingIndexedEventTockNode);
+IV_NODE("iv.test.invalid_indexed_tock_signature", InvalidIndexedTockSignatureNode);

@@ -7,10 +7,10 @@ processing.
 
 `indexed` replaces the older `compiled` DSP-port terminology. `compiled` is now
 reserved for actual program/JIT compilation (`GraphJit`, `CompiledGraph`, LLVM
-modules, generated code, and similar concepts). Some implementation identifiers
-may temporarily retain legacy names such as `CompiledPortConfig`,
-`CompiledState`, `access_block[_batch]`, or `propagate_block_access[_batch]`
-while the code migrates. Those names do not change the semantics described here.
+modules, generated code, and similar concepts). The public port declarations,
+callback contexts, node traits, persistent indexed state, compiler records, and
+GraphJit implementation metadata use indexed terminology directly; the former
+compiled-port API is not retained as a compatibility layer.
 
 The intended callback vocabulary is:
 
@@ -526,7 +526,9 @@ For `cache = true`, successful evaluation commits each selected page atomically
 valid for the target semantic version. There is no partially valid retained page.
 For event outputs, rematerializing a page domain replaces the old cached event
 contents for that page domain; stale events must not survive when a new evaluation
-emits fewer events.
+emits fewer events. Within one output invocation, node code emits events in
+nondecreasing global timestamp order; lowering/storage must not add a mandatory
+release-time sorting pass to repair unordered producer output.
 
 For `cache = false`, no indexed cache page is allocated or committed. The callback
 writes into storage owned by the current consumer/evaluation plan: for example a
@@ -846,8 +848,7 @@ indexed output has stable project identity.
 built, including:
 
 - sequential `State`;
-- indexed-domain persistent node state (`IndexedState`, currently
-  `CompiledState`);
+- indexed-domain persistent node state (`IndexedState`);
 - compiler-owned bounded persistent regions;
 - bounded reusable workspaces where useful; and
 - realtime carry/history/feedback storage selected for persistent placement.
@@ -1490,7 +1491,69 @@ boundary. At minimum:
 Diagnostics should name the node type, offending callback/port, and expected
 alternative whenever practical.
 
-## 32. Summary invariants
+## 32. Implementation landing order
+
+The indexed-port implementation should land in the following dependency order.
+Each landing establishes the contract consumed by the next one; later phases
+must not introduce compatibility paths back to the former compiled-port API.
+Steps 1 and 2 are implemented; step 3 is the next capability landing.
+
+1. **Indexed API and callback contract.** Introduce `IndexedRegion` and canonical
+   owning `IndexedCoverage`; replace compiled-port declarations with distinct
+   `IndexedInputConfig` and `IndexedOutputConfig { cache = true; }`; use
+   `IndexedState` for the shared persistent indexed domain; and expose indexed sample/event access,
+   `tock_coverage`, `propagate_forward_coverage`, and
+   `propagate_reverse_coverage`. Remove the former extent/request-set and
+   one-node `*_batch` interfaces rather than adapting them.
+2. **Compiler-record and GraphJit wiring.** Carry the three one-node indexed
+   callbacks and indexed-state layout through node traits, compiler records,
+   package scanning/validation, resolved `NodeImplementation` metadata, and the
+   lowering boundary. `CompiledGraph` retains its name because it denotes the
+   JIT product rather than a port access model.
+3. **Stable identity and static indexed planning.** Thread stable project
+   instance/virtual-node/member/output identities into GraphJit, classify indexed
+   connection directions, reject implicit realtime-to-indexed transport, and
+   precompute indexed components, endpoint ordinals, forward/reverse/evaluation
+   orders, convergence/conversion facts, cache contracts, and connection-set
+   fingerprints. No mutable pages or semantic versions belong to this phase.
+4. **Non-realtime `GraphExecutor` capability.** Add active/pending generations,
+   canonical `NodeStorage`, the stable executor-owned cache store and
+   per-generation bindings, transaction workspaces, semantic versions, creation
+   coverage, connection reconciliation, forward invalidation, reverse demand,
+   tock evaluation, stale-work rejection, and versioned external results. The
+   transaction engine must support both dense sample pages and bounded packed,
+   segmented event pages from its first complete form.
+5. **Indexed-to-realtime live pull.** Publish one immutable indexed view per
+   whole live block; bind prepared `cache = true` boundaries; lower inline
+   realtime-compatible pulls through `cache = false` chains; reuse the existing
+   direct/transient realtime sample and event planners; apply neutral/no-event
+   behavior only outside coverage; and report missing cached data inside coverage
+   as a readiness failure. Begin with fixed lookahead/pre-roll.
+6. **Realtime recorder propagation and outward integration.** Let explicit
+   recorder/source nodes mutate bounded authoritative indexed state and append
+   bounded change notifications during `tick_block`; drain those notifications
+   after the live block into ordinary versioned forward transactions; then expose
+   coalesced versioned completion/change notifications to UI consumers. Once
+   these indexed executor/query/visualization paths replace the legacy compiled-
+   lane consumers, delete the compiled-lane execution, storage, RPC, and UI
+   model outright; do not rename or adapt it into a second indexed system.
+7. **Optimization only after capability is complete.** Add genuine multi-node
+   `*_coverage_batch` operations and topology-permitted `tick_block_batch`
+   grouping, improve page prediction/eviction and workspace liveness, and tune
+   both the new indexed decisions and the existing GraphJit sample/event storage
+   cost models. SIMD-aware layout/copy/conversion decisions, vectorization,
+   fusion/direct forwarding, target-specific lowering, and generated hot-path
+   assembly verification belong to this same final pass so cost weights are not
+   tuned twice against an unfinished execution model.
+
+Stable endpoint identity must exist before retained cache storage is allocated;
+otherwise cache ownership becomes accidentally generation-local. Likewise,
+indexed-to-realtime lowering follows the non-realtime executor because its
+`cache = true` boundaries and published semantic snapshots are prerequisites,
+while realtime-to-indexed flow remains an explicit recorder/source-node
+capability rather than a fifth connection transport mode.
+
+## 33. Summary invariants
 
 1. `indexed` describes globally addressed, order-independent sample/event data;
    it does not mean JIT compilation or a storage class.

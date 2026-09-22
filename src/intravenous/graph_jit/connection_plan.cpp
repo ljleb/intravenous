@@ -62,11 +62,11 @@ PlannedConnectionAccess connection_access(
         return PlannedConnectionAccess::realtime_to_realtime;
     }
     if (!source_realtime && !target_realtime) {
-        return PlannedConnectionAccess::compiled_to_compiled;
+        return PlannedConnectionAccess::indexed_to_indexed;
     }
     return source_realtime
-        ? PlannedConnectionAccess::realtime_to_compiled
-        : PlannedConnectionAccess::compiled_to_realtime;
+        ? PlannedConnectionAccess::realtime_to_indexed
+        : PlannedConnectionAccess::indexed_to_realtime;
 }
 
 bool uses_realtime_storage(PlannedConnectionAccess access) noexcept
@@ -77,7 +77,7 @@ bool uses_realtime_storage(PlannedConnectionAccess access) noexcept
 bool has_sequential_source(PlannedConnectionAccess access) noexcept
 {
     return access == PlannedConnectionAccess::realtime_to_realtime
-        || access == PlannedConnectionAccess::realtime_to_compiled;
+        || access == PlannedConnectionAccess::realtime_to_indexed;
 }
 
 std::expected<void, std::string> inventory_nodes(
@@ -242,7 +242,7 @@ std::expected<void, std::string> inventory_sample_connections(
                 auto const this_source_realtime = is_realtime(source.access);
                 if (source_realtime && *source_realtime != this_source_realtime) {
                     return std::unexpected(
-                        "sample connection sources mix realtime and compiled access");
+                        "sample connection sources mix realtime and indexed access");
                 }
                 source_realtime = this_source_realtime;
                 if (connection_plan.canonical_source_port
@@ -540,7 +540,7 @@ std::expected<void, std::string> inventory_event_connections(
                 auto const this_source_realtime = is_realtime(source.access);
                 if (source_realtime && *source_realtime != this_source_realtime) {
                     return std::unexpected(
-                        "event connection sources mix realtime and compiled access");
+                        "event connection sources mix realtime and indexed access");
                 }
                 source_realtime = this_source_realtime;
             }
@@ -555,7 +555,7 @@ std::expected<void, std::string> inventory_event_connections(
                 auto const this_target_realtime = is_realtime(target.access);
                 if (target_realtime && *target_realtime != this_target_realtime) {
                     return std::unexpected(
-                        "event connection targets mix realtime and compiled access");
+                        "event connection targets mix realtime and indexed access");
                 }
                 target_realtime = this_target_realtime;
             }
@@ -758,7 +758,7 @@ std::expected<void, std::string> validate_detached_connections(
             }
             if (!closes_sequential_cycle) {
                 return std::unexpected(
-                    "GraphJit detach cycle crosses compiled-access dependencies, which SCC execution does not yet support");
+                    "GraphJit detach cycle crosses indexed-access dependencies, which SCC execution does not yet support");
             }
         }
         return {};
@@ -1087,7 +1087,7 @@ std::expected<void, std::string> plan_sample_latency_compensation(
     };
 
     // Keep authored output latency as the default for connections not covered
-    // by this feed-forward realtime pass (compiled access, boundaries, and
+    // by this feed-forward realtime pass (indexed access, boundaries, and
     // cyclic regions whose feedback latency belongs to point 12).
     for (auto& connection : plan.sample_connections) {
         connection.read_latency = connection.source_latency;
@@ -1405,7 +1405,7 @@ void plan_sample_groups(
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = plan.sample_connections[connection_index];
             if (!uses_realtime_storage(connection.access)) {
-                group.has_compiled_connections = true;
+                group.has_indexed_connections = true;
                 continue;
             }
             group.has_realtime_connections = true;
@@ -1584,7 +1584,7 @@ std::expected<void, std::string> plan_event_groups(
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = plan.event_connections[connection_index];
             if (!uses_realtime_storage(connection.access)) {
-                group.has_compiled_connections = true;
+                group.has_indexed_connections = true;
                 continue;
             }
             group.has_realtime_connections = true;

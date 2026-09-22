@@ -31,16 +31,16 @@ auto state_node(
         });
 }
 
-auto compiled_state_node(
+auto indexed_state_node(
     iv::BlockNodeExecutor const& executor,
     std::string const& field_name)
 {
     return std::ranges::find_if(
         executor.layout().nodes,
         [&](iv::NodeLayout::NodeRecord const& record) {
-            return record.compiled_state_structure
+            return record.indexed_state_structure
                 && std::ranges::any_of(
-                    record.compiled_state_structure->fields,
+                    record.indexed_state_structure->fields,
                     [&](iv::NodeStateFieldStructure const& field) {
                         return field.name == field_name;
                     });
@@ -147,10 +147,10 @@ IV_NODE("iv.test.state_reload.probe", ReloadProbe);
     EXPECT_FLOAT_EQ(*static_cast<float*>(executor.storage().state_ptr(new_index)), 4.5f);
 }
 
-TEST(ModuleStateReload, SameSizeCompiledStateDefinitionChangeInitializesInsteadOfMigrating)
+TEST(ModuleStateReload, SameSizeIndexedStateDefinitionChangeInitializesInsteadOfMigrating)
 {
     auto const workspace = iv::test_support::make_inline_module_workspace(
-        "module_compiled_state_reload_same_size_type",
+        "module_indexed_state_reload_same_size_type",
         R"(#include <intravenous/dsl.h>
 
 #include <array>
@@ -159,7 +159,7 @@ TEST(ModuleStateReload, SameSizeCompiledStateDefinitionChangeInitializesInsteadO
 
 namespace {
     struct ReloadProbe {
-        struct CompiledState {
+        struct IndexedState {
             std::int32_t value = 0;
         };
 
@@ -170,36 +170,36 @@ namespace {
 
         std::string identity() const
         {
-            return "stable-compiled-reload-probe";
+            return "stable-indexed-reload-probe";
         }
 
         void initialize(iv::InitializationContext<ReloadProbe> const& ctx) const
         {
-            ctx.compiled_state().value = 123;
+            ctx.indexed_state().value = 123;
         }
 
         void move(iv::MoveContext<ReloadProbe> const& ctx) const
         {
-            ctx.compiled_state().value =
-                ctx.previous_compiled_state().value + 1;
+            ctx.indexed_state().value =
+                ctx.previous_indexed_state().value + 1;
         }
 
         void tick(iv::TickSampleContext<ReloadProbe> const& ctx) const
         {
             ctx.outputs[0].push(
-                static_cast<float>(ctx.compiled_state().value));
+                static_cast<float>(ctx.indexed_state().value));
         }
     };
 
-    void compiled_state_reload_module(iv::GraphBuilder& g)
+    void indexed_state_reload_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const probe = g.node<"iv.test.compiled_state_reload.probe">();
+        auto const probe = g.node<"iv.test.indexed_state_reload.probe">();
         g.outputs("main"_P = probe);
     }
 }
 
-IV_NODE("iv.test.compiled_state_reload.probe", ReloadProbe);
+IV_NODE("iv.test.indexed_state_reload.probe", ReloadProbe);
 )");
 
     auto loader = iv::test::make_loader();
@@ -209,24 +209,24 @@ IV_NODE("iv.test.compiled_state_reload.probe", ReloadProbe);
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(first.root), 8);
 
-    auto old_node = compiled_state_node(executor, "value");
+    auto old_node = indexed_state_node(executor, "value");
     ASSERT_NE(old_node, executor.layout().nodes.end());
-    ASSERT_TRUE(old_node->compiled_state_structure.has_value());
-    EXPECT_TRUE(old_node->compiled_state_structure->type_identity.valid());
+    ASSERT_TRUE(old_node->indexed_state_structure.has_value());
+    EXPECT_TRUE(old_node->indexed_state_structure->type_identity.valid());
     auto const old_fingerprint =
-        old_node->compiled_state_structure->type_identity.definition_fingerprint;
+        old_node->indexed_state_structure->type_identity.definition_fingerprint;
     auto const old_index = static_cast<std::size_t>(
         std::distance(executor.layout().nodes.begin(), old_node));
     EXPECT_EQ(
         *static_cast<std::int32_t*>(
-            executor.storage().compiled_state_ptr(old_index)),
+            executor.storage().indexed_state_ptr(old_index)),
         123);
 
     auto source = iv::test::read_text(workspace / "module.cpp");
     auto const original_initialization =
-        std::string("ctx.compiled_state().value = 123;");
+        std::string("ctx.indexed_state().value = 123;");
     auto const changed_initialization =
-        std::string("ctx.compiled_state().value = 999;");
+        std::string("ctx.indexed_state().value = 999;");
     ASSERT_NE(source.find(original_initialization), std::string::npos);
     source.replace(
         source.find(original_initialization),
@@ -237,17 +237,17 @@ IV_NODE("iv.test.compiled_state_reload.probe", ReloadProbe);
     second.emplace(loader.load_package_definitions(workspace).front());
     executor.reload(iv::TypeErasedNode(second->root));
 
-    auto moved_node = compiled_state_node(executor, "value");
+    auto moved_node = indexed_state_node(executor, "value");
     ASSERT_NE(moved_node, executor.layout().nodes.end());
-    ASSERT_TRUE(moved_node->compiled_state_structure.has_value());
+    ASSERT_TRUE(moved_node->indexed_state_structure.has_value());
     EXPECT_EQ(
-        moved_node->compiled_state_structure->type_identity.definition_fingerprint,
+        moved_node->indexed_state_structure->type_identity.definition_fingerprint,
         old_fingerprint);
     auto const moved_index = static_cast<std::size_t>(
         std::distance(executor.layout().nodes.begin(), moved_node));
     EXPECT_EQ(
         *static_cast<std::int32_t*>(
-            executor.storage().compiled_state_ptr(moved_index)),
+            executor.storage().indexed_state_ptr(moved_index)),
         124);
 
     source = iv::test::read_text(workspace / "module.cpp");
@@ -255,7 +255,7 @@ IV_NODE("iv.test.compiled_state_reload.probe", ReloadProbe);
     auto const new_state = std::string("float value = 0.0f;");
     auto const old_initialization = changed_initialization;
     auto const new_initialization =
-        std::string("ctx.compiled_state().value = 4.5f;");
+        std::string("ctx.indexed_state().value = 4.5f;");
     ASSERT_NE(source.find(old_state), std::string::npos);
     ASSERT_NE(source.find(old_initialization), std::string::npos);
     source.replace(source.find(old_state), old_state.size(), new_state);
@@ -268,17 +268,17 @@ IV_NODE("iv.test.compiled_state_reload.probe", ReloadProbe);
     third.emplace(loader.load_package_definitions(workspace).front());
     executor.reload(iv::TypeErasedNode(third->root));
 
-    auto new_node = compiled_state_node(executor, "value");
+    auto new_node = indexed_state_node(executor, "value");
     ASSERT_NE(new_node, executor.layout().nodes.end());
-    ASSERT_TRUE(new_node->compiled_state_structure.has_value());
-    EXPECT_TRUE(new_node->compiled_state_structure->type_identity.valid());
+    ASSERT_TRUE(new_node->indexed_state_structure.has_value());
+    EXPECT_TRUE(new_node->indexed_state_structure->type_identity.valid());
     EXPECT_NE(
-        new_node->compiled_state_structure->type_identity.definition_fingerprint,
+        new_node->indexed_state_structure->type_identity.definition_fingerprint,
         old_fingerprint);
     auto const new_index = static_cast<std::size_t>(
         std::distance(executor.layout().nodes.begin(), new_node));
     EXPECT_FLOAT_EQ(
-        *static_cast<float*>(executor.storage().compiled_state_ptr(new_index)),
+        *static_cast<float*>(executor.storage().indexed_state_ptr(new_index)),
         4.5f);
 }
 

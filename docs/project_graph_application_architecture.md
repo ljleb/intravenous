@@ -487,7 +487,7 @@ graph-JIT generation boundary merely to hide avoidable compiler work.
 
 The executable project itself masquerades as an ordinary zero-input/zero-output
 root node. Its generated declaration operation populates one `NodeLayoutBuilder`;
-the resulting canonical `NodeLayout` covers normal `State`, `CompiledState`, and
+the resulting canonical `NodeLayout` covers normal `State`, `IndexedState`, and
 root/compiler-owned persistent or bounded reusable regions. The latter may use a
 low-level raw aligned-region declaration when generated code can address storage
 more efficiently by constant offset than through an authored `std::span` field.
@@ -528,8 +528,7 @@ project generation. It does not own ORC compilation.
 - one live canonical `NodeStorage` for each retained executable generation,
   created from that generation's `NodeLayout`;
 - ordinary `NodeStorage` initialization/move/release migration state needed to
-  activate a successor, including indexed-domain persistent state currently
-  named `CompiledState`;
+  activate a successor, including indexed-domain persistent `IndexedState`;
 - an executor-owned stable indexed-cache store for identifiable `cache = true`
   outputs, plus per-generation bindings from local indexed endpoints to stable
   cache entries and generation-local cache state only for anonymous cached
@@ -719,8 +718,8 @@ The implementation checkpoints now stand as follows:
    `ProjectNodePortMatcher`s against the complete placement map, applies
    sample/event connections, and preserves dangling matchers with diagnostics.
    Structured persistence and JSON-RPC adapters remain follow-up transport work.
-7. **Next lowering checkpoint:** extend canonical `NodeLayout`/`NodeStorage`
-   for `CompiledState` and compiler-owned raw aligned regions, then introduce pure
+7. **Landed (fixed state foundation):** canonical `NodeLayout`/`NodeStorage`
+   covers `IndexedState` and compiler-owned raw aligned regions. Next introduce pure
    connection/history/latency/event-window storage planning and static
    indexed component/order analysis inside the isolated whole-graph
    lowering pipeline;

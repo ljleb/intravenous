@@ -6,6 +6,7 @@ build-release/
 /.direnv
 /.codex
 /.claude
+/.clangd
 .intravenous-tooling/
 compile_commands.json
 intravenious

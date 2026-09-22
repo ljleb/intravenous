@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 4;
+inline constexpr std::uint32_t archive_version = 5;
 
 class Writer {
 public:
@@ -219,7 +219,7 @@ inline ChannelLayout read_layout(Reader& r)
 
 inline void write_input_access(Writer& w, InputAccessConfig const& value)
 {
-    w.flag(is_compiled(value));
+    w.flag(is_indexed(value));
     if (auto const* realtime = std::get_if<RealtimeInputConfig>(&value)) {
         w.size(realtime->history);
     }
@@ -227,22 +227,24 @@ inline void write_input_access(Writer& w, InputAccessConfig const& value)
 
 inline InputAccessConfig read_input_access(Reader& r)
 {
-    if (r.flag()) return CompiledPortConfig{};
+    if (r.flag()) return IndexedInputConfig{};
     return RealtimeInputConfig{.history = r.size()};
 }
 
 inline void write_output_access(Writer& w, OutputAccessConfig const& value)
 {
-    w.flag(is_compiled(value));
+    w.flag(is_indexed(value));
     if (auto const* realtime = std::get_if<RealtimeOutputConfig>(&value)) {
         w.size(realtime->history);
         w.size(realtime->latency);
+    } else {
+        w.flag(std::get<IndexedOutputConfig>(value).cache);
     }
 }
 
 inline OutputAccessConfig read_output_access(Reader& r)
 {
-    if (r.flag()) return CompiledPortConfig{};
+    if (r.flag()) return IndexedOutputConfig{.cache = r.flag()};
     return RealtimeOutputConfig{
         .history = r.size(),
         .latency = r.size(),
@@ -560,9 +562,9 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
                 auto const& structures = **view.state_structures_storage;
                 bundles.flag(structures.state.has_value());
                 if (structures.state) write_state(bundles, *structures.state);
-                bundles.flag(structures.compiled_state.has_value());
-                if (structures.compiled_state) {
-                    write_state(bundles, *structures.compiled_state);
+                bundles.flag(structures.indexed_state.has_value());
+                if (structures.indexed_state) {
+                    write_state(bundles, *structures.indexed_state);
                 }
             }
 
@@ -741,7 +743,7 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             if (reader.flag()) {
                 NodeStateStructures structures;
                 if (reader.flag()) structures.state = read_state(reader);
-                if (reader.flag()) structures.compiled_state = read_state(reader);
+                if (reader.flag()) structures.indexed_state = read_state(reader);
                 record.state_structures_storage =
                     std::make_shared<NodeStateStructures const>(std::move(structures));
                 record.operations.runtime.state_structures =

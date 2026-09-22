@@ -627,7 +627,7 @@ void collect_compatibility_runtime_code(
         if (!record || record->getNumOperands() != 8) continue;
         auto const* operations = llvm::dyn_cast<llvm::ConstantStruct>(
             record->getOperand(1));
-        if (!operations || operations->getNumOperands() != 5) continue;
+        if (!operations || operations->getNumOperands() != 6) continue;
 
         // declare_node participates in graph construction and is intentionally
         // left at package O0.  Package/provider configuration is allowed to
@@ -1201,9 +1201,9 @@ public:
             auto const node_state_structures_fn =
                 symbol.template operator()<iv_package_node_state_structures_fn>(
                     "iv_package_node_state_structures");
-            auto const node_compiled_state_structures_fn =
-                symbol.template operator()<iv_package_node_compiled_state_structures_fn>(
-                    "iv_package_node_compiled_state_structures");
+            auto const node_indexed_state_structures_fn =
+                symbol.template operator()<iv_package_node_indexed_state_structures_fn>(
+                    "iv_package_node_indexed_state_structures");
 
             auto copy_table = [&](auto view, auto* type_tag, std::string_view name) {
                 using T = std::remove_pointer_t<decltype(type_tag)>;
@@ -1235,10 +1235,10 @@ public:
                 node_state_structures_fn(),
                 static_cast<NodeStateStructureData*>(nullptr),
                 "node-state structure");
-            auto const compiled_state_structures = copy_table(
-                node_compiled_state_structures_fn(),
+            auto const indexed_state_structures = copy_table(
+                node_indexed_state_structures_fn(),
                 static_cast<NodeStateStructureData*>(nullptr),
-                "node-compiled-state structure");
+                "node-indexed-state structure");
 
             auto copy_text = [](ModuleDataView view, std::string_view what) {
                 if (!view.data && view.size != 0) {
@@ -1299,7 +1299,7 @@ public:
             };
 
             package->node_state_structures.reserve(
-                state_structures.size() + compiled_state_structures.size());
+                state_structures.size() + indexed_state_structures.size());
             auto find_or_append = [&](NodeCodeKey key) -> details::BuilderNodeStateStructures& {
                 auto found = std::ranges::find(
                     package->node_state_structures,
@@ -1320,14 +1320,14 @@ public:
                 destination.structures.state =
                     copy_state_structure(state, "node-state structure");
             }
-            for (auto const& state : compiled_state_structures) {
+            for (auto const& state : indexed_state_structures) {
                 auto& destination = find_or_append(state.code_key);
-                if (destination.structures.compiled_state) {
+                if (destination.structures.indexed_state) {
                     throw std::runtime_error(
-                        "IV package has duplicate Node::CompiledState structure record");
+                        "IV package has duplicate Node::IndexedState structure record");
                 }
-                destination.structures.compiled_state =
-                    copy_state_structure(state, "node-compiled-state structure");
+                destination.structures.indexed_state =
+                    copy_state_structure(state, "node-indexed-state structure");
             }
 
 

@@ -1,5 +1,5 @@
 #include <intravenous/graph/reflected_node_description.h>
-#include <intravenous/node/compiled_port_context.h>
+#include <intravenous/node/indexed_port_context.h>
 #include <intravenous/node/tick.h>
 
 #include <gtest/gtest.h>
@@ -11,6 +11,7 @@
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace {
 
@@ -19,56 +20,35 @@ struct RequestNode {
     char const* output_name = "output";
     std::size_t latency = 0;
 
-    auto inputs() const
-    {
-        return std::array{iv::realtime_sample_input(input_name)};
-    }
-
-    auto outputs() const
-    {
-        return std::array{iv::realtime_sample_output(output_name)};
-    }
-
-    std::size_t internal_latency() const
-    {
-        return latency;
-    }
-
-    std::optional<std::size_t> ttl_samples() const
-    {
-        return 64;
-    }
-
-    bool can_skip_block() const
-    {
-        return true;
-    }
-
+    auto inputs() const { return std::array{iv::realtime_sample_input(input_name)}; }
+    auto outputs() const { return std::array{iv::realtime_sample_output(output_name)}; }
+    std::size_t internal_latency() const { return latency; }
+    std::optional<std::size_t> ttl_samples() const { return 64; }
+    bool can_skip_block() const { return true; }
     void tick_block(auto const&) const {}
 };
 
 template<class Config>
-concept HasSampleRange = requires(Config const& config) {
-    config.min;
-    config.max;
-};
-
+concept HasSampleRange = requires(Config const& config) { config.min; config.max; };
 template<class Config>
-concept HasHistory = requires(Config const& config) {
-    config.history;
-};
-
+concept HasHistory = requires(Config const& config) { config.history; };
 template<class Config>
-concept HasLatency = requires(Config const& config) {
-    config.latency;
-};
+concept HasLatency = requires(Config const& config) { config.latency; };
+template<class Config>
+concept HasCache = requires(Config const& config) { config.cache; };
 
 static_assert(std::same_as<decltype(iv::realtime_sample_input()), iv::InputConfig>);
+static_assert(std::same_as<decltype(iv::indexed_sample_input()), iv::InputConfig>);
 static_assert(std::same_as<
     decltype(iv::realtime_event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
+static_assert(std::same_as<
+    decltype(iv::indexed_event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
 static_assert(std::same_as<decltype(iv::realtime_sample_output()), iv::OutputConfig>);
+static_assert(std::same_as<decltype(iv::indexed_sample_output()), iv::OutputConfig>);
 static_assert(std::same_as<
     decltype(iv::realtime_event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
+static_assert(std::same_as<
+    decltype(iv::indexed_event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
 static_assert(HasSampleRange<iv::SampleInputProperties>);
 static_assert(!HasSampleRange<iv::EventInputProperties>);
 static_assert(!HasHistory<iv::SampleInputProperties>);
@@ -80,20 +60,29 @@ static_assert(!HasLatency<iv::EventOutputProperties>);
 static_assert(HasHistory<iv::RealtimeInputConfig>);
 static_assert(HasHistory<iv::RealtimeOutputConfig>);
 static_assert(HasLatency<iv::RealtimeOutputConfig>);
-static_assert(!HasHistory<iv::CompiledPortConfig>);
-static_assert(!HasLatency<iv::CompiledPortConfig>);
+static_assert(!HasHistory<iv::IndexedInputConfig>);
+static_assert(!HasLatency<iv::IndexedOutputConfig>);
+static_assert(!HasCache<iv::IndexedInputConfig>);
+static_assert(HasCache<iv::IndexedOutputConfig>);
 static_assert(iv::sample_properties(iv::InputConfig {}).neutral_value.value == 0.0f);
 static_assert(iv::realtime_history(
     iv::realtime_sample_input("history", {}, {.history = 7})) == 7);
 static_assert(iv::realtime_history(
-    iv::realtime_event_input("history", iv::EventTypeId::trigger, {.history = 5})) == 5);
+    iv::realtime_event_input(
+        "history", iv::EventTypeId::trigger, {.history = 5})) == 5);
 static_assert(iv::realtime_history(
-    iv::realtime_sample_output("timing", {}, {.history = 11, .latency = 3})) == 11);
+    iv::realtime_sample_output(
+        "timing", {}, {.history = 11, .latency = 3})) == 11);
 static_assert(iv::realtime_latency(
-    iv::realtime_sample_output("timing", {}, {.history = 11, .latency = 3})) == 3);
-static_assert(iv::is_compiled(iv::compiled_sample_input("compiled")));
-static_assert(iv::is_compiled(iv::compiled_event_output(
-    "compiled", iv::EventTypeId::trigger)));
+    iv::realtime_sample_output(
+        "timing", {}, {.history = 11, .latency = 3})) == 3);
+static_assert(iv::is_indexed(iv::indexed_sample_input("indexed")));
+static_assert(iv::is_indexed(iv::indexed_event_output(
+    "indexed", iv::EventTypeId::trigger)));
+static_assert(iv::indexed_output_cache(
+    iv::indexed_sample_output("cached").access));
+static_assert(!iv::indexed_output_cache(
+    iv::indexed_sample_output("uncached", {}, {.cache = false}).access));
 
 TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
 {
@@ -109,9 +98,7 @@ TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
         request, std::move(storage));
 
     ASSERT_NE(description.node_storage.get(), nullptr);
-    EXPECT_NE(
-        description.node_storage.get(),
-        static_cast<void const*>(std::addressof(source)));
+    EXPECT_NE(description.node_storage.get(), static_cast<void const*>(std::addressof(source)));
     EXPECT_EQ(description.operations.runtime.node_data, description.node_storage.get());
     EXPECT_EQ(description.code_key, iv::details::node_code_key_v<RequestNode>);
     EXPECT_EQ(description.type_name, iv::details::clang_type_name<RequestNode>());
@@ -125,470 +112,223 @@ TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
     EXPECT_TRUE(description.can_skip_block());
 }
 
-struct CompiledSource {
-    struct CompiledState {
-        int calls = 0;
-    };
+TEST(IndexedCoverage, CanonicalizesAndCoalescesRegions)
+{
+    iv::IndexedCoverage coverage {{
+        {40, 50}, {10, 20}, {18, 30}, {30, 35}, {70, 70},
+    }};
+
+    ASSERT_EQ(coverage.size(), 2u);
+    EXPECT_EQ(coverage.regions()[0], (iv::IndexedRegion{10, 35}));
+    EXPECT_EQ(coverage.regions()[1], (iv::IndexedRegion{40, 50}));
+    EXPECT_TRUE(coverage.contains(12));
+    EXPECT_FALSE(coverage.contains(35));
+    EXPECT_TRUE(coverage.contains({12, 34}));
+    EXPECT_FALSE(coverage.contains({25, 45}));
+}
+
+TEST(IndexedCoverage, IncludeExcludeIntersectionAndDifferenceStayCanonical)
+{
+    iv::IndexedCoverage coverage {{{10, 20}, {30, 40}}};
+    coverage.include({20, 30});
+    ASSERT_EQ(coverage.size(), 1u);
+    EXPECT_EQ(coverage.regions()[0], (iv::IndexedRegion{10, 40}));
+
+    coverage.exclude({15, 35});
+    ASSERT_EQ(coverage.size(), 2u);
+    EXPECT_EQ(coverage.regions()[0], (iv::IndexedRegion{10, 15}));
+    EXPECT_EQ(coverage.regions()[1], (iv::IndexedRegion{35, 40}));
+
+    iv::IndexedCoverage const other {{{12, 38}, {50, 60}}};
+    EXPECT_EQ(coverage.intersection(other),
+        (iv::IndexedCoverage{{{12, 15}, {35, 38}}}));
+    EXPECT_EQ(other.difference(coverage),
+        (iv::IndexedCoverage{{{15, 35}, {50, 60}}}));
+}
+
+struct IndexedSource {
+    struct IndexedState { int calls = 0; };
 
     static constexpr auto outputs()
     {
-        return std::array {iv::compiled_sample_output("signal")};
+        return std::array {iv::indexed_sample_output("signal")};
     }
 
-    void tick_block(iv::TickBlockContext<CompiledSource> const&) const {}
-    void access_block(iv::AccessBlockContext<CompiledSource>&) const {}
-};
-
-
-struct TickCompiledStateRecorder {
-    struct CompiledState {
-        int writes = 0;
-    };
-
-    static constexpr auto inputs()
+    void tick_block(iv::TickBlockContext<IndexedSource> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<IndexedSource>& ctx) const
     {
-        return std::array<iv::InputConfig, 0> {};
+        ++ctx.indexed_state().calls;
     }
-
-    static constexpr auto outputs()
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<IndexedSource>& ctx) const
     {
-        return std::array<iv::OutputConfig, 0> {};
-    }
-
-    void tick_block(iv::TickBlockContext<TickCompiledStateRecorder> const& ctx) const
-    {
-        ++ctx.compiled_state().writes;
+        ctx.output<"signal">().publish_coverage({{10, 20}});
     }
 };
 
-struct CompiledTransform {
-    static constexpr auto inputs()
-    {
-        return std::array {iv::compiled_sample_input("input")};
-    }
-
-    static constexpr auto outputs()
-    {
-        return std::array {iv::compiled_sample_output("output")};
-    }
-
-    void tick_block(iv::TickBlockContext<CompiledTransform> const&) const {}
-    void access_block_batch(iv::AccessBlockBatchContext<CompiledTransform>&) const {}
-    void propagate_block_access_batch(
-        iv::PropagateBlockAccessBatchContext<CompiledTransform>&) const {}
-};
-
-
-struct CompiledEvents {
-    static constexpr auto inputs()
-    {
-        return std::array {iv::compiled_event_input("events-in", iv::EventTypeId::trigger)};
-    }
-
-    static constexpr auto outputs()
-    {
-        return std::array {iv::compiled_event_output("events-out", iv::EventTypeId::trigger)};
-    }
-
-    void tick_block(iv::TickBlockContext<CompiledEvents> const&) const {}
-    void access_block(iv::AccessBlockContext<CompiledEvents>&) const {}
-    void propagate_block_access(
-        iv::PropagateBlockAccessContext<CompiledEvents>& ctx) const
-    {
-        ctx.input<"events-in">(ctx.output<"events-out">());
-    }
-};
-
-struct CompiledInputOnly {
+struct IndexedTransform {
     static constexpr auto inputs()
     {
         return std::array {
-            iv::compiled_sample_input("samples"),
-            iv::compiled_event_input("events", iv::EventTypeId::trigger),
-        };
-    }
-
-    void tick_block(iv::TickBlockContext<CompiledInputOnly> const&) const {}
-};
-
-struct MissingEventBlockAccessPropagation {
-    static constexpr auto inputs()
-    {
-        return std::array {
-            iv::compiled_event_input("events-in", iv::EventTypeId::trigger),
+            iv::indexed_sample_input("samples"),
+            iv::indexed_event_input("events", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array {
-            iv::compiled_event_output("events-out", iv::EventTypeId::trigger),
+            iv::indexed_sample_output("samples-out", {}, {.cache = false}),
+            iv::indexed_event_output(
+                "events-out", iv::EventTypeId::trigger, {.cache = true}),
         };
     }
 
-    void access_block(
-        iv::AccessBlockContext<MissingEventBlockAccessPropagation>&) const {}
-};
-
-struct CompiledEventSource {
-    static constexpr auto outputs()
+    void tick_block(iv::TickBlockContext<IndexedTransform> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<IndexedTransform>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<IndexedTransform>& ctx) const
     {
-        return std::array {
-            iv::compiled_event_output("events", iv::EventTypeId::trigger),
-        };
+        ctx.output<"samples-out">().publish_coverage(
+            ctx.input<"samples">().coverage());
+        ctx.output<"samples-out">().change(ctx.input<"samples">().changed());
+        ctx.output<"events-out">().publish_coverage(
+            ctx.input<"events">().coverage());
+        ctx.output<"events-out">().change(ctx.input<"events">().changed());
     }
-
-    void access_block(iv::AccessBlockContext<CompiledEventSource>&) const {}
-};
-
-struct MissingCompiledAccess {
-    static constexpr auto outputs()
+    void propagate_reverse_coverage(
+        iv::PropagateReverseCoverageContext<IndexedTransform>& ctx) const
     {
-        return std::array {iv::compiled_sample_output("output")};
+        ctx.input<"samples">().require(ctx.output<"samples-out">().required());
+        ctx.input<"events">().require(ctx.output<"events-out">().required());
     }
 };
 
-struct ConflictingCompiledAccess {
-    static constexpr auto outputs()
-    {
-        return std::array {iv::compiled_sample_output("output")};
-    }
-
-    void access_block(iv::AccessBlockContext<ConflictingCompiledAccess>&) const {}
-    void access_block_batch(
-        iv::AccessBlockBatchContext<ConflictingCompiledAccess>&) const {}
-};
-
-struct MissingBlockAccessPropagation {
-    static constexpr auto inputs()
-    {
-        return std::array {iv::compiled_sample_input("input")};
-    }
-
-    static constexpr auto outputs()
-    {
-        return std::array {iv::compiled_sample_output("output")};
-    }
-
-    void access_block(iv::AccessBlockContext<MissingBlockAccessPropagation>&) const {}
-};
-
-struct MixedCompiledPorts {
+struct IndexedInputOnly {
     static constexpr auto inputs()
     {
         return std::array {
-            iv::realtime_sample_input("realtime"),
-            iv::compiled_sample_input("compiled"),
+            iv::indexed_sample_input("samples"),
+            iv::indexed_event_input("events", iv::EventTypeId::trigger),
         };
     }
-
-    static constexpr auto outputs()
-    {
-        return std::array {
-            iv::realtime_sample_output("realtime"),
-            iv::compiled_sample_output("compiled"),
-        };
-    }
-
-    void access_block(iv::AccessBlockContext<MixedCompiledPorts>&) const {}
-    void propagate_block_access(
-        iv::PropagateBlockAccessContext<MixedCompiledPorts>&) const {}
+    void tick_block(iv::TickBlockContext<IndexedInputOnly> const&) const {}
 };
 
-struct MixedCompiledKinds {
-    static constexpr auto inputs()
-    {
-        return std::array {
-            iv::compiled_sample_input("samples"),
-            iv::compiled_event_input("events", iv::EventTypeId::trigger),
-        };
-    }
-
+struct MissingIndexedTock {
     static constexpr auto outputs()
     {
-        return std::array {
-            iv::compiled_sample_output("samples-out"),
-            iv::compiled_event_output("events-out", iv::EventTypeId::trigger),
-        };
-    }
-
-    void access_block(iv::AccessBlockContext<MixedCompiledKinds>&) const {}
-};
-
-struct UnbatchedAccessNode {
-    int* calls = nullptr;
-
-    static constexpr auto outputs()
-    {
-        return std::array {iv::compiled_sample_output("output")};
-    }
-
-    void access_block(iv::AccessBlockContext<UnbatchedAccessNode>&) const
-    {
-        ++*calls;
+        return std::array {iv::indexed_sample_output("output")};
     }
 };
 
-struct UnbatchedBlockAccessPropagationNode {
-    int* calls = nullptr;
-
-    static constexpr auto inputs()
-    {
-        return std::array {iv::compiled_sample_input("input")};
-    }
-
-    static constexpr auto outputs()
-    {
-        return std::array {iv::compiled_sample_output("output")};
-    }
-
-    void access_block(
-        iv::AccessBlockContext<UnbatchedBlockAccessPropagationNode>&) const {}
-
-    void propagate_block_access(
-        iv::PropagateBlockAccessContext<UnbatchedBlockAccessPropagationNode>&) const
-    {
-        ++*calls;
-    }
+struct StrayTock {
+    void tock_coverage(iv::TockCoverageContext<StrayTock>&) const {}
 };
 
-struct BatchedCallbacksNode {
-    int* access_calls = nullptr;
-    int* propagation_calls = nullptr;
-
-    static constexpr auto inputs()
-    {
-        return std::array {iv::compiled_sample_input("input")};
-    }
-
-    static constexpr auto outputs()
-    {
-        return std::array {iv::compiled_sample_output("output")};
-    }
-
-    void tick_block(iv::TickBlockContext<BatchedCallbacksNode> const&) const {}
-
-    void access_block_batch(iv::AccessBlockBatchContext<BatchedCallbacksNode>&) const
-    {
-        ++*access_calls;
-    }
-
-    void propagate_block_access_batch(
-        iv::PropagateBlockAccessBatchContext<BatchedCallbacksNode>&) const
-    {
-        ++*propagation_calls;
-    }
+struct StrayForward {
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<StrayForward>&) const {}
 };
 
+struct StrayReverse {
+    static constexpr auto outputs()
+    {
+        return std::array {iv::indexed_sample_output("output")};
+    }
+    void tock_coverage(iv::TockCoverageContext<StrayReverse>&) const {}
+    void propagate_reverse_coverage(
+        iv::PropagateReverseCoverageContext<StrayReverse>&) const {}
+};
+
+static_assert(std::same_as<iv::NodeIndexedState<IndexedSource>::Type,
+    IndexedSource::IndexedState>);
+static_assert(iv::details::node_indexed_state_size<IndexedSource>()
+    == sizeof(IndexedSource::IndexedState));
+static_assert(iv::details::node_indexed_state_alignment<IndexedSource>()
+    == alignof(IndexedSource::IndexedState));
 static_assert(std::same_as<
-    iv::NodeCompiledState<CompiledSource>::Type,
-    CompiledSource::CompiledState>);
-static_assert(
-    iv::details::node_compiled_state_size<CompiledSource>()
-    == sizeof(CompiledSource::CompiledState));
-static_assert(
-    iv::details::node_compiled_state_alignment<CompiledSource>()
-    == alignof(CompiledSource::CompiledState));
-static_assert(std::same_as<
-    decltype(iv::TickBlockContext<CompiledSource>::index),
+    decltype(iv::TickBlockContext<IndexedSource>::index),
     iv::SampleIndex>);
-static_assert(iv::details::declares_compiled_sample_outputs_v<CompiledSource>);
-static_assert(!iv::details::declares_compiled_sample_inputs_v<CompiledSource>);
-static_assert(iv::details::declares_compiled_inputs_v<CompiledEvents>);
-static_assert(iv::details::declares_compiled_outputs_v<CompiledEvents>);
-static_assert(!iv::details::declares_compiled_sample_inputs_v<CompiledEvents>);
-static_assert(!iv::details::declares_compiled_sample_outputs_v<CompiledEvents>);
-static_assert(iv::details::declares_compiled_event_inputs_v<CompiledEvents>);
-static_assert(iv::details::declares_compiled_event_outputs_v<CompiledEvents>);
-static_assert(iv::details::compiled_dsp_node_declaration_is_valid_v<CompiledEvents>);
-static_assert(iv::details::declares_compiled_inputs_v<CompiledInputOnly>);
-static_assert(!iv::details::declares_compiled_outputs_v<CompiledInputOnly>);
-static_assert(iv::details::compiled_dsp_node_declaration_is_valid_v<CompiledInputOnly>);
-static_assert(iv::details::compiled_dsp_node_declaration_is_valid_v<CompiledEventSource>);
-static_assert(iv::details::access_block_callback_kind_v<CompiledSource>
-    == iv::CompiledPortCallbackKind::unbatched);
-static_assert(iv::details::compiled_dsp_node_declaration_is_valid_v<CompiledSource>);
-static_assert(iv::details::access_block_callback_kind_v<CompiledTransform>
-    == iv::CompiledPortCallbackKind::batch);
-static_assert(iv::details::propagate_block_access_callback_kind_v<CompiledTransform>
-    == iv::CompiledPortCallbackKind::batch);
-static_assert(iv::details::compiled_dsp_node_declaration_is_valid_v<CompiledTransform>);
-static_assert(!iv::details::compiled_dsp_node_declaration_is_valid_v<MissingCompiledAccess>);
-static_assert(iv::details::access_block_callback_kind_v<ConflictingCompiledAccess>
-    == iv::CompiledPortCallbackKind::conflicting);
-static_assert(!iv::details::compiled_dsp_node_declaration_is_valid_v<ConflictingCompiledAccess>);
-static_assert(iv::details::propagate_block_access_callback_kind_v<MissingBlockAccessPropagation>
-    == iv::CompiledPortCallbackKind::none);
-static_assert(iv::details::compiled_dsp_node_declaration_is_valid_v<MissingBlockAccessPropagation>);
-static_assert(iv::details::static_compiled_input_port_index<MixedCompiledPorts, "compiled">() == 0);
-static_assert(iv::details::static_compiled_output_port_index<MixedCompiledPorts, "compiled">() == 0);
-static_assert(iv::details::compiled_dsp_node_declaration_is_valid_v<MixedCompiledPorts>);
-static_assert(iv::details::static_compiled_input_port_index<MixedCompiledKinds, "samples">() == 0);
-static_assert(iv::details::static_compiled_event_input_port_index<MixedCompiledKinds, "events">() == 0);
-static_assert(iv::details::static_compiled_output_port_index<MixedCompiledKinds, "samples-out">() == 0);
-static_assert(iv::details::static_compiled_event_output_port_index<MixedCompiledKinds, "events-out">() == 0);
-static_assert(std::same_as<
-    decltype(iv::do_propagate_block_access_batched<UnbatchedBlockAccessPropagationNode>()),
-    iv::PropagateBlockAccessBatchedOperation<UnbatchedBlockAccessPropagationNode>>);
-static_assert(iv::details::node_compiler_operations<CompiledSource>()
-    .access_block_batched != nullptr);
-static_assert(iv::details::node_compiler_operations<CompiledSource>()
-    .propagate_block_access_batched == nullptr);
-static_assert(iv::details::node_compiler_operations<CompiledTransform>()
-    .access_block_batched != nullptr);
-static_assert(iv::details::node_compiler_operations<CompiledTransform>()
-    .propagate_block_access_batched != nullptr);
-static_assert(iv::details::node_compiler_operations<CompiledEvents>()
-    .access_block_batched != nullptr);
-static_assert(iv::details::node_compiler_operations<CompiledEvents>()
-    .propagate_block_access_batched != nullptr);
-static_assert(iv::details::node_compiler_operations<CompiledInputOnly>()
-    .access_block_batched == nullptr);
-static_assert(iv::details::node_compiler_operations<CompiledInputOnly>()
-    .propagate_block_access_batched == nullptr);
+static_assert(iv::details::declares_indexed_sample_outputs_v<IndexedSource>);
+static_assert(!iv::details::declares_indexed_inputs_v<IndexedSource>);
+static_assert(iv::details::declares_indexed_inputs_v<IndexedTransform>);
+static_assert(iv::details::declares_indexed_outputs_v<IndexedTransform>);
+static_assert(iv::details::declares_indexed_sample_inputs_v<IndexedTransform>);
+static_assert(iv::details::declares_indexed_event_inputs_v<IndexedTransform>);
+static_assert(iv::details::declares_indexed_sample_outputs_v<IndexedTransform>);
+static_assert(iv::details::declares_indexed_event_outputs_v<IndexedTransform>);
+static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedSource>);
+static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedTransform>);
+static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedInputOnly>);
+static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<MissingIndexedTock>);
+static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<StrayTock>);
+static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<StrayForward>);
+static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<StrayReverse>);
+static_assert(iv::details::static_indexed_input_port_index<
+    IndexedTransform, "samples">() == 0);
+static_assert(iv::details::static_indexed_event_input_port_index<
+    IndexedTransform, "events">() == 0);
+static_assert(iv::details::static_indexed_output_port_index<
+    IndexedTransform, "samples-out">() == 0);
+static_assert(iv::details::static_indexed_event_output_port_index<
+    IndexedTransform, "events-out">() == 0);
+static_assert(iv::details::node_compiler_operations<IndexedSource>()
+    .tock_coverage != nullptr);
+static_assert(iv::details::node_compiler_operations<IndexedSource>()
+    .propagate_forward_coverage != nullptr);
+static_assert(iv::details::node_compiler_operations<IndexedSource>()
+    .propagate_reverse_coverage == nullptr);
+static_assert(iv::details::node_compiler_operations<IndexedTransform>()
+    .propagate_reverse_coverage != nullptr);
+static_assert(iv::details::node_compiler_operations<IndexedInputOnly>()
+    .tock_coverage == nullptr);
 
-struct InputData {
-    std::array<iv::Sample, 4> samples {1.0f, 2.0f, 3.0f, 4.0f};
+struct SampleData {
+    std::array<iv::Sample, 8> values {
+        0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f,
+    };
 };
 
-iv::CompiledSampleExtent input_extent(void const*)
+iv::Sample read_sample(void const* data, iv::SampleIndex index, std::size_t)
 {
-    return {.begin = 0, .end = 4};
+    return static_cast<SampleData const*>(data)->values[index];
 }
 
-iv::Sample input_sample(void const* data, iv::SampleIndex index, std::size_t)
+struct SampleWrites { std::array<iv::Sample, 8> values {}; };
+void write_sample(void* data, iv::SampleIndex index, std::size_t, iv::Sample value)
 {
-    return static_cast<InputData const*>(data)->samples[index];
+    static_cast<SampleWrites*>(data)->values[index] = value;
 }
 
-struct OutputData {
-    std::array<iv::Sample, 4> samples {};
-};
-
-void write_output_sample(
-    void* data, iv::SampleIndex index, std::size_t, iv::Sample value)
-{
-    static_cast<OutputData*>(data)->samples[index] = value;
-}
-
-struct EventInputData {
+struct EventData {
     std::array<iv::TimedEvent, 4> events {{
-        {.time = 3, .value = iv::TriggerEvent {}},
-        {.time = 11, .value = iv::TriggerEvent {}},
-        {.time = 17, .value = iv::TriggerEvent {}},
-        {.time = 31, .value = iv::TriggerEvent {}},
+        {.time = 2, .value = iv::TriggerEvent{}},
+        {.time = 3, .value = iv::TriggerEvent{}},
+        {.time = 10, .value = iv::TriggerEvent{}},
+        {.time = 12, .value = iv::TriggerEvent{}},
     }};
 };
 
-iv::CompiledEventExtent event_input_extent(void const*)
+void for_each_event(
+    void const* data,
+    iv::SampleIndex begin,
+    iv::SampleIndex end,
+    void* visitor_data,
+    iv::IndexedEventInputPort::VisitEvent visitor)
 {
-    return {.begin = 0, .end = 40};
-}
-
-std::span<iv::TimedEvent const> read_input_events(
-    void const* data, iv::SampleIndex begin, iv::SampleIndex end)
-{
-    auto const& events = static_cast<EventInputData const*>(data)->events;
-    auto first = std::ranges::find_if(events, [begin](iv::TimedEvent const& event) {
-        return event.time >= begin;
-    });
-    auto last = std::ranges::find_if(first, events.end(), [end](iv::TimedEvent const& event) {
-        return event.time >= end;
-    });
-    return std::span<iv::TimedEvent const>(first, last);
-}
-
-struct EventOutputData {
-    std::array<iv::TimedEvent, 4> events {};
-    std::size_t count = 0;
-};
-
-void write_output_event(void* data, iv::TimedEvent const& event)
-{
-    auto& output = *static_cast<EventOutputData*>(data);
-    IV_ASSERT(output.count < output.events.size(),
-        "compiled event test output exceeded its fixed capture buffer");
-    output.events[output.count++] = event;
-}
-
-struct PropagatedAccessCapture {
-    std::size_t input_index = 0;
-    iv::AccessRequestSet requests {};
-};
-
-struct PropagatedEventAccessCapture {
-    std::size_t input_index = 0;
-    iv::EventAccessRequestSet requests {};
-};
-
-void capture_propagated_access(
-    void* data, std::size_t input_index, iv::AccessRequestSet const& requests)
-{
-    auto& capture = *static_cast<PropagatedAccessCapture*>(data);
-    capture.input_index = input_index;
-    capture.requests = requests;
-}
-
-void capture_propagated_event_access(
-    void* data, std::size_t input_index, iv::EventAccessRequestSet const& requests)
-{
-    auto& capture = *static_cast<PropagatedEventAccessCapture*>(data);
-    capture.input_index = input_index;
-    capture.requests = requests;
-}
-
-struct DefaultPropagationCapture {
-    std::size_t calls = 0;
-    std::size_t input_index = 0;
-    iv::AccessRequest request {};
-};
-
-struct DefaultEventPropagationCapture {
-    std::size_t calls = 0;
-    std::size_t input_index = 0;
-    iv::EventAccessRequest request {};
-};
-
-struct NoPropagationCapture {
-    std::size_t sample_calls = 0;
-    std::size_t event_calls = 0;
-};
-
-void capture_default_propagated_access(
-    void* data, std::size_t input_index, iv::AccessRequestSet const& requests)
-{
-    auto& capture = *static_cast<DefaultPropagationCapture*>(data);
-    ++capture.calls;
-    capture.input_index = input_index;
-    if (!requests.requests().empty()) {
-        capture.request = requests.requests().front();
+    for (auto const& event : static_cast<EventData const*>(data)->events) {
+        if (begin <= event.time && event.time < end) visitor(visitor_data, event);
     }
 }
 
-void capture_default_propagated_event_access(
-    void* data, std::size_t input_index, iv::EventAccessRequestSet const& requests)
+struct EventWrites { std::vector<iv::TimedEvent> events; };
+void write_event(void* data, iv::TimedEvent const& event)
 {
-    auto& capture = *static_cast<DefaultEventPropagationCapture*>(data);
-    ++capture.calls;
-    capture.input_index = input_index;
-    if (!requests.requests().empty()) {
-        capture.request = requests.requests().front();
-    }
+    static_cast<EventWrites*>(data)->events.push_back(event);
 }
 
-void capture_unexpected_sample_propagation(
-    void* data, std::size_t, iv::AccessRequestSet const&)
-{
-    ++static_cast<NoPropagationCapture*>(data)->sample_calls;
-}
-
-void capture_unexpected_event_propagation(
-    void* data, std::size_t, iv::EventAccessRequestSet const&)
-{
-    ++static_cast<NoPropagationCapture*>(data)->event_calls;
-}
-
-TEST(CompiledDspPorts, CompiledInputsAreArbitrarilyAccessibleFromTickBlockWithoutAccessCallback)
+TEST(IndexedDspPorts, IndexedInputsRemainAvailableFromTickBlock)
 {
     std::array<iv::Sample, 8> realtime_samples {
         10.0f, 11.0f, 12.0f, 13.0f, 14.0f, 15.0f, 16.0f, 17.0f,
@@ -600,9 +340,7 @@ TEST(CompiledDspPorts, CompiledInputsAreArbitrarilyAccessibleFromTickBlockWithou
          .sample_layout = iv::SampleStreamLayout::planar},
         8,
     };
-    std::array<iv::InputPort, 1> realtime_inputs {{
-        iv::InputPort(sample_shared, 7),
-    }};
+    std::array realtime_inputs {iv::InputPort(sample_shared, 7)};
 
     std::array<iv::TimedEvent, 8> realtime_event_storage {};
     realtime_event_storage[0] = {.time = 8, .value = iv::TriggerEvent {}};
@@ -613,486 +351,287 @@ TEST(CompiledDspPorts, CompiledInputsAreArbitrarilyAccessibleFromTickBlockWithou
         2,
         iv::EventTypeId::trigger,
     };
-    std::array<iv::EventInputPort, 1> realtime_event_inputs {{
-        iv::EventInputPort(event_shared),
+    std::array realtime_event_inputs {iv::EventInputPort(event_shared)};
+
+    iv::IndexedCoverage const sample_coverage {{{0, 8}}};
+    iv::IndexedCoverage const event_coverage {{{0, 4}, {10, 14}}};
+    SampleData sample_data;
+    EventData event_data;
+    std::array indexed_inputs {iv::IndexedSampleInputPort{
+        .data = &sample_data,
+        .coverage_value = &sample_coverage,
+        .read_sample = &read_sample,
+    }};
+    std::array indexed_event_inputs {iv::IndexedEventInputPort{
+        .data = &event_data,
+        .coverage_value = &event_coverage,
+        .for_each_event = &for_each_event,
     }};
 
-    InputData sample_input_data;
-    EventInputData event_input_data;
-    std::array<iv::CompiledInputPort, 1> compiled_inputs {{
-        {.data = &sample_input_data,
-         .extent_fn = &input_extent,
-         .read_sample_fn = &input_sample},
-    }};
-    std::array<iv::CompiledEventInputPort, 1> compiled_event_inputs {{
-        {.data = &event_input_data,
-         .extent_fn = &event_input_extent,
-         .read_events_fn = &read_input_events},
-    }};
-
-    iv::TickBlockContext<CompiledInputOnly> context {
-        iv::TickContext<CompiledInputOnly> {
+    iv::TickBlockContext<IndexedInputOnly> context {
+        iv::TickContext<IndexedInputOnly> {
             .inputs = realtime_inputs,
             .event_inputs = realtime_event_inputs,
-            .compiled_inputs = compiled_inputs,
-            .compiled_event_inputs = compiled_event_inputs,
+            .indexed_inputs = indexed_inputs,
+            .indexed_event_inputs = indexed_event_inputs,
         },
         8,
         8,
     };
 
     auto samples = context.input<"samples">();
-    EXPECT_FLOAT_EQ(samples[0], 10.0f);
-    EXPECT_EQ(samples.extent().begin, 0u);
-    EXPECT_EQ(samples.extent().end, 4u);
-    EXPECT_FLOAT_EQ(static_cast<float>(samples.at(2)), 3.0f);
+    EXPECT_FLOAT_EQ(static_cast<float>(samples[0]), 10.0f);
+    EXPECT_EQ(samples.coverage(), sample_coverage);
+    EXPECT_FLOAT_EQ(static_cast<float>(samples.at(2)), 2.0f);
 
     auto events = context.input<"events">();
-    auto current_block = events.events();
+    auto const current_block = events.events();
     ASSERT_EQ(current_block.size(), 2u);
     EXPECT_EQ(current_block[0].time, 8u);
     EXPECT_EQ(current_block[1].time, 13u);
 
-    auto arbitrary = events.events(10, 20);
-    ASSERT_EQ(arbitrary.size(), 2u);
-    EXPECT_EQ(arbitrary[0].time, 11u);
-    EXPECT_EQ(arbitrary[1].time, 17u);
+    std::vector<iv::SampleIndex> arbitrary;
+    events.for_each(10, 14, [&](iv::TimedEvent const& event) {
+        arbitrary.push_back(event.time);
+    });
+    EXPECT_EQ(arbitrary, (std::vector<iv::SampleIndex>{10, 12}));
 }
 
-TEST(CompiledDspPorts, AccessContextExposesOnlyDeclaredCompiledPorts)
+TEST(IndexedDspPorts, TockContextExposesCoverageAndSampleEventBindings)
 {
-    std::array<iv::AccessRequest, 1> requests {{
-        {.begin = 4, .end = 20, .sample_count = 8},
-    }};
-    InputData input_data;
-    OutputData output_data;
-    std::array<iv::CompiledInputPort, 1> inputs {{
-        {.data = &input_data,
-         .extent_fn = &input_extent,
-         .read_sample_fn = &input_sample,
-         .neutral_value = -0.25f},
-    }};
-    std::array<iv::CompiledOutputPort, 1> outputs {{
-        {.request_set = iv::AccessRequestSet {requests},
-         .data = &output_data,
-         .write_sample_fn = &write_output_sample},
-    }};
+    iv::IndexedCoverage const input_coverage {{{0, 8}}};
+    iv::IndexedCoverage const event_coverage {{{0, 4}, {10, 14}}};
+    iv::IndexedCoverage const sample_request {{{2, 5}}};
+    iv::IndexedCoverage const event_request {{{10, 14}}};
+    SampleData sample_data;
+    SampleWrites sample_writes;
+    EventData event_data;
+    EventWrites event_writes;
 
-    iv::AccessBlockContext<CompiledTransform> context {
-        .inputs = inputs,
-        .outputs = outputs,
-    };
-
-    auto input = context.input<"input">();
-    EXPECT_EQ(input.size(), 4u);
-    EXPECT_FLOAT_EQ(static_cast<float>(input.at(2)), 3.0f);
-    EXPECT_FLOAT_EQ(static_cast<float>(input.at(8)), -0.25f);
-
-    auto output = context.output<"output">();
-    ASSERT_EQ(output.requests().requests().size(), 1u);
-    EXPECT_EQ(output.requests().requests().front().begin, 4u);
-    output.write(2, 0.75f);
-    EXPECT_FLOAT_EQ(static_cast<float>(output_data.samples[2]), 0.75f);
-}
-
-TEST(CompiledDspPorts, AccessContextExposesLosslessCompiledEventIntervals)
-{
-    EventInputData input_data;
-    EventOutputData output_data;
-    std::array<iv::EventAccessRequest, 2> requested {{
-        {.begin = 8, .end = 20},
-        {.begin = 28, .end = 35},
+    std::array sample_inputs {iv::IndexedSampleInputPort{
+        .data = &sample_data,
+        .coverage_value = &input_coverage,
+        .read_sample = &read_sample,
     }};
-    std::array<iv::CompiledEventInputPort, 1> inputs {{
-        {.data = &input_data,
-         .extent_fn = &event_input_extent,
-         .read_events_fn = &read_input_events},
+    std::array sample_outputs {iv::IndexedSampleOutputPort{
+        .data = &sample_writes,
+        .requested_coverage_value = &sample_request,
+        .write_sample = &write_sample,
     }};
-    std::array<iv::CompiledEventOutputPort, 1> outputs {{
-        {.request_set = iv::EventAccessRequestSet {requested},
-         .data = &output_data,
-         .write_event_fn = &write_output_event},
+    std::array event_inputs {iv::IndexedEventInputPort{
+        .data = &event_data,
+        .coverage_value = &event_coverage,
+        .for_each_event = &for_each_event,
     }};
-
-    iv::AccessBlockContext<CompiledEvents> context {
-        .event_inputs = inputs,
-        .event_outputs = outputs,
-    };
-
-    auto input = context.input<"events-in">();
-    auto events = input.events(8, 20);
-    ASSERT_EQ(events.size(), 2u);
-    EXPECT_EQ(events[0].time, 11u);
-    EXPECT_EQ(events[1].time, 17u);
-    EXPECT_TRUE(input.events(35, 45).empty());
-
-    auto output = context.output<"events-out">();
-    ASSERT_EQ(output.requests().requests().size(), 2u);
-    EXPECT_EQ(output.requests().requests()[1].begin, 28u);
-    output.write({.time = 31, .value = iv::TriggerEvent {}});
-    ASSERT_EQ(output_data.count, 1u);
-    EXPECT_EQ(output_data.events[0].time, 31u);
-}
-
-TEST(CompiledDspPorts, OneAccessContextCanUseCompiledSampleAndEventPortsTogether)
-{
-    InputData sample_input_data;
-    OutputData sample_output_data;
-    EventInputData event_input_data;
-    EventOutputData event_output_data;
-    std::array<iv::CompiledInputPort, 1> sample_inputs {{
-        {.data = &sample_input_data,
-         .extent_fn = &input_extent,
-         .read_sample_fn = &input_sample},
+    std::array event_outputs {iv::IndexedEventOutputPort{
+        .data = &event_writes,
+        .requested_coverage_value = &event_request,
+        .write_event = &write_event,
     }};
-    std::array<iv::CompiledOutputPort, 1> sample_outputs {{
-        {.data = &sample_output_data,
-         .write_sample_fn = &write_output_sample},
-    }};
-    std::array<iv::CompiledEventInputPort, 1> event_inputs {{
-        {.data = &event_input_data,
-         .extent_fn = &event_input_extent,
-         .read_events_fn = &read_input_events},
-    }};
-    std::array<iv::CompiledEventOutputPort, 1> event_outputs {{
-        {.data = &event_output_data,
-         .write_event_fn = &write_output_event},
-    }};
-
-    iv::AccessBlockContext<MixedCompiledKinds> context {
+    iv::TockCoverageContext<IndexedTransform> context {
         .inputs = sample_inputs,
         .outputs = sample_outputs,
         .event_inputs = event_inputs,
         .event_outputs = event_outputs,
     };
 
-    EXPECT_FLOAT_EQ(
-        static_cast<float>(context.input<"samples">().at(1)), 2.0f);
-    context.output<"samples-out">().write(2, 0.625f);
-    EXPECT_FLOAT_EQ(
-        static_cast<float>(sample_output_data.samples[2]), 0.625f);
+    EXPECT_EQ(context.input<"samples">().coverage(), input_coverage);
+    EXPECT_FLOAT_EQ(static_cast<float>(context.input<"samples">().at(3)), 3.0f);
+    context.output<"samples-out">().write(3, 0.75f);
+    EXPECT_FLOAT_EQ(static_cast<float>(sample_writes.values[3]), 0.75f);
 
-    auto events = context.input<"events">().events(10, 20);
-    ASSERT_EQ(events.size(), 2u);
-    context.output<"events-out">().write(events.front());
-    ASSERT_EQ(event_output_data.count, 1u);
-    EXPECT_EQ(event_output_data.events[0].time, 11u);
+    std::vector<iv::SampleIndex> visited;
+    context.input<"events">().for_each(10, 14, [&](iv::TimedEvent const& event) {
+        visited.push_back(event.time);
+    });
+    EXPECT_EQ(visited, (std::vector<iv::SampleIndex>{10, 12}));
+    context.output<"events-out">().write(
+        {.time = 12, .value = iv::TriggerEvent{}});
+    ASSERT_EQ(event_writes.events.size(), 1u);
+    EXPECT_EQ(event_writes.events.front().time, 12u);
 }
 
-TEST(CompiledDspPorts, PropagateBlockAccessContextForwardsRequestSetDirectlyToCompiledInput)
+struct PublishedCoverage {
+    iv::IndexedCoverage coverage;
+    iv::IndexedCoverage changed;
+};
+void publish_coverage(void* data, iv::IndexedCoverage const& coverage)
 {
-    std::array<iv::AccessRequest, 1> requested {{
-        {.begin = 100, .end = 200, .sample_count = 20},
+    static_cast<PublishedCoverage*>(data)->coverage = coverage;
+}
+void publish_changed(void* data, iv::IndexedCoverage const& changed)
+{
+    static_cast<PublishedCoverage*>(data)->changed.include(changed);
+}
+
+struct RequiredCoverage { iv::IndexedCoverage required; };
+void publish_required(void* data, iv::IndexedCoverage const& required)
+{
+    static_cast<RequiredCoverage*>(data)->required.include(required);
+}
+
+TEST(IndexedDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
+{
+    iv::IndexedCoverage const sample_coverage {{{10, 20}, {40, 50}}};
+    iv::IndexedCoverage const sample_changed {{{12, 14}, {45, 47}}};
+    iv::IndexedCoverage const event_coverage {{{100, 120}}};
+    iv::IndexedCoverage const event_changed {{{108, 109}}};
+    PublishedCoverage sample_output;
+    PublishedCoverage event_output;
+    std::array input_changes {iv::IndexedInputChange{
+        .coverage_value = &sample_coverage, .changed_value = &sample_changed,
     }};
-    std::array<iv::AccessRequestSet, 1> output_requests {{
-        iv::AccessRequestSet {requested},
+    std::array event_input_changes {iv::IndexedInputChange{
+        .coverage_value = &event_coverage, .changed_value = &event_changed,
     }};
-    PropagatedAccessCapture capture;
-    iv::PropagateBlockAccessContext<CompiledTransform> context {
-        .output_requests = output_requests,
-        .user_data = &capture,
-        .propagate_input_access = &capture_propagated_access,
+    std::array output_changes {iv::IndexedOutputChange{
+        .data = &sample_output,
+        .publish_coverage_value = &publish_coverage,
+        .publish_changed_value = &publish_changed,
+    }};
+    std::array event_output_changes {iv::IndexedOutputChange{
+        .data = &event_output,
+        .publish_coverage_value = &publish_coverage,
+        .publish_changed_value = &publish_changed,
+    }};
+    IndexedTransform node;
+    iv::PropagateForwardCoverageContext<IndexedTransform> forward {
+        .inputs = input_changes,
+        .outputs = output_changes,
+        .event_inputs = event_input_changes,
+        .event_outputs = event_output_changes,
     };
+    iv::do_propagate_forward_coverage(node, forward);
 
-    context.input<"input">(context.output<"output">());
+    EXPECT_EQ(sample_output.coverage, sample_coverage);
+    EXPECT_EQ(sample_output.changed, sample_changed);
+    EXPECT_EQ(event_output.coverage, event_coverage);
+    EXPECT_EQ(event_output.changed, event_changed);
 
-    EXPECT_EQ(capture.input_index, 0u);
-    ASSERT_EQ(capture.requests.requests().size(), 1u);
-    EXPECT_EQ(capture.requests.requests().front().begin, 100u);
-    EXPECT_EQ(capture.requests.requests().front().end, 200u);
-    EXPECT_EQ(capture.requests.requests().front().sample_count, 20u);
-}
-
-TEST(CompiledDspPorts, PropagateBlockAccessContextKeepsEventIntervalsDistinctFromSampleRequests)
-{
-    std::array<iv::EventAccessRequest, 2> requested {{
-        {.begin = 100, .end = 140},
-        {.begin = 200, .end = 220},
+    iv::IndexedCoverage const sample_demand {{{13, 15}, {42, 44}}};
+    iv::IndexedCoverage const event_demand {{{110, 112}}};
+    RequiredCoverage sample_input;
+    RequiredCoverage event_input;
+    std::array input_requirements {iv::IndexedInputRequirement{
+        .data = &sample_input,
+        .coverage_value = &sample_coverage,
+        .publish_required_value = &publish_required,
     }};
-    std::array<iv::EventAccessRequestSet, 1> output_requests {{
-        iv::EventAccessRequestSet {requested},
+    std::array event_input_requirements {iv::IndexedInputRequirement{
+        .data = &event_input,
+        .coverage_value = &event_coverage,
+        .publish_required_value = &publish_required,
     }};
-    PropagatedEventAccessCapture capture;
-    iv::PropagateBlockAccessContext<CompiledEvents> context {
-        .event_output_requests = output_requests,
-        .user_data = &capture,
-        .propagate_event_input_access = &capture_propagated_event_access,
+    std::array output_requirements {iv::IndexedOutputRequirement{
+        .required_value = &sample_demand,
+    }};
+    std::array event_output_requirements {iv::IndexedOutputRequirement{
+        .required_value = &event_demand,
+    }};
+    iv::PropagateReverseCoverageContext<IndexedTransform> reverse {
+        .inputs = input_requirements,
+        .outputs = output_requirements,
+        .event_inputs = event_input_requirements,
+        .event_outputs = event_output_requirements,
     };
+    iv::do_propagate_reverse_coverage(node, reverse);
 
-    context.input<"events-in">(context.output<"events-out">());
-
-    EXPECT_EQ(capture.input_index, 0u);
-    ASSERT_EQ(capture.requests.requests().size(), 2u);
-    EXPECT_EQ(capture.requests.requests()[0].begin, 100u);
-    EXPECT_EQ(capture.requests.requests()[0].end, 140u);
-    EXPECT_EQ(capture.requests.requests()[1].begin, 200u);
-    EXPECT_EQ(capture.requests.requests()[1].end, 220u);
+    EXPECT_EQ(sample_input.required, sample_demand);
+    EXPECT_EQ(event_input.required, event_demand);
 }
 
-TEST(CompiledDspPorts, MixedNodesUseCompactCompiledPortOrdinals)
+struct DefaultPropagationNode {
+    static constexpr auto inputs()
+    {
+        return std::array {iv::indexed_sample_input("input")};
+    }
+    static constexpr auto outputs()
+    {
+        return std::array {iv::indexed_sample_output("output")};
+    }
+    void tock_coverage(iv::TockCoverageContext<DefaultPropagationNode>&) const {}
+};
+
+TEST(IndexedDspPorts, DefaultForwardPropagationRetainsCoverageAndInvalidatesIt)
 {
-    InputData input_data;
-    OutputData output_data;
-    std::array<iv::CompiledInputPort, 1> inputs {{
-        {.data = &input_data, .extent_fn = &input_extent, .read_sample_fn = &input_sample},
+    iv::IndexedCoverage const input_coverage {{{10, 20}, {50, 60}}};
+    iv::IndexedCoverage const input_changed {{{12, 13}}};
+    iv::IndexedCoverage const previous_output {{{100, 120}, {200, 220}}};
+    PublishedCoverage captured;
+    std::array inputs {iv::IndexedInputChange{
+        .coverage_value = &input_coverage,
+        .changed_value = &input_changed,
     }};
-    std::array<iv::CompiledOutputPort, 1> outputs {{
-        {.data = &output_data, .write_sample_fn = &write_output_sample},
+    std::array outputs {iv::IndexedOutputChange{
+        .data = &captured,
+        .previous_coverage_value = &previous_output,
+        .publish_coverage_value = &publish_coverage,
+        .publish_changed_value = &publish_changed,
     }};
-    iv::AccessBlockContext<MixedCompiledPorts> access_context {
+    DefaultPropagationNode node;
+    iv::PropagateForwardCoverageContext<DefaultPropagationNode> context {
         .inputs = inputs,
         .outputs = outputs,
     };
 
-    EXPECT_FLOAT_EQ(
-        static_cast<float>(access_context.input<"compiled">().at(3)), 4.0f);
-    access_context.output<"compiled">().write(1, 0.5f);
-    EXPECT_FLOAT_EQ(static_cast<float>(output_data.samples[1]), 0.5f);
+    iv::do_propagate_forward_coverage(node, context);
 
-    std::array<iv::AccessRequest, 1> requested {{
-        {.begin = 50, .end = 70, .sample_count = 4},
+    EXPECT_EQ(captured.coverage, previous_output);
+    EXPECT_EQ(captured.changed, previous_output);
+}
+
+TEST(IndexedDspPorts, DefaultReversePropagationRequiresWholeInputCoverage)
+{
+    iv::IndexedCoverage const input_coverage {{{10, 20}, {50, 60}}};
+    iv::IndexedCoverage const output_demand {{{100, 101}}};
+    RequiredCoverage captured;
+    std::array inputs {iv::IndexedInputRequirement{
+        .data = &captured,
+        .coverage_value = &input_coverage,
+        .publish_required_value = &publish_required,
     }};
-    std::array<iv::AccessRequestSet, 1> output_requests {{
-        iv::AccessRequestSet {requested},
+    std::array outputs {iv::IndexedOutputRequirement{
+        .required_value = &output_demand,
     }};
-    PropagatedAccessCapture capture;
-    iv::PropagateBlockAccessContext<MixedCompiledPorts> propagation_context {
-        .output_requests = output_requests,
-        .user_data = &capture,
-        .propagate_input_access = &capture_propagated_access,
+    DefaultPropagationNode node;
+    iv::PropagateReverseCoverageContext<DefaultPropagationNode> context {
+        .inputs = inputs, .outputs = outputs,
     };
-    propagation_context.input<"compiled">(
-        propagation_context.output<"compiled">());
 
-    EXPECT_EQ(capture.input_index, 0u);
-    ASSERT_EQ(capture.requests.requests().size(), 1u);
-    EXPECT_EQ(capture.requests.requests().front().begin, 50u);
+    iv::do_propagate_reverse_coverage(node, context);
+
+    EXPECT_EQ(captured.required, input_coverage);
 }
 
-TEST(CompiledDspPorts, CompiledStateHasASeparateExplicitAccessor)
+TEST(IndexedDspPorts, TickAndTockShareIndexedState)
 {
-    alignas(CompiledSource::CompiledState)
-        std::array<std::byte, sizeof(CompiledSource::CompiledState)> storage {};
+    alignas(IndexedSource::IndexedState)
+        std::array<std::byte, sizeof(IndexedSource::IndexedState)> storage {};
     auto* state = std::construct_at(
-        reinterpret_cast<CompiledSource::CompiledState*>(storage.data()),
-        CompiledSource::CompiledState {.calls = 3});
-    iv::AccessBlockContext<CompiledSource> context {
-        .compiled_state_storage = storage,
-    };
+        reinterpret_cast<IndexedSource::IndexedState*>(storage.data()));
+    IndexedSource node;
+    auto const operations = iv::details::node_compiler_operations<IndexedSource>();
 
-    EXPECT_EQ(context.compiled_state().calls, 3);
-    std::destroy_at(state);
-}
-
-
-TEST(CompiledDspPorts, TickAndAccessContextsShareWritableCompiledState)
-{
-    alignas(CompiledSource::CompiledState)
-        std::array<std::byte, sizeof(CompiledSource::CompiledState)> storage {};
-    auto* state = std::construct_at(
-        reinterpret_cast<CompiledSource::CompiledState*>(storage.data()),
-        CompiledSource::CompiledState {.calls = 1});
-
-    iv::TickBlockContext<CompiledSource> tick {
-        iv::TickContext<CompiledSource> {.compiled_state_storage = storage},
-        0,
-        16,
-    };
-    ++tick.compiled_state().calls;
-
-    iv::AccessBlockContext<CompiledSource> access {
-        .compiled_state_storage = storage,
-    };
-    access.compiled_state().calls += 3;
-
-    EXPECT_EQ(state->calls, 5);
-    std::destroy_at(state);
-}
-
-TEST(CompiledDspPorts, CompilerTickOperationReceivesCompiledStateStorage)
-{
-    alignas(TickCompiledStateRecorder::CompiledState)
-        std::array<std::byte, sizeof(TickCompiledStateRecorder::CompiledState)> storage {};
-    auto* state = std::construct_at(
-        reinterpret_cast<TickCompiledStateRecorder::CompiledState*>(storage.data()));
-
-    auto const& record = iv::details::node_compiler_record<TickCompiledStateRecorder>;
-    EXPECT_EQ(record.compiled_state_size, sizeof(TickCompiledStateRecorder::CompiledState));
-    EXPECT_EQ(record.compiled_state_alignment, alignof(TickCompiledStateRecorder::CompiledState));
-
-    TickCompiledStateRecorder node;
-    record.operations.tick_block(
+    operations.tick_block(
         &node,
-        iv::ReflectedNodeTickContext {.compiled_state = storage},
+        iv::ReflectedNodeTickContext {.indexed_state = storage},
         0,
         16);
+    iv::TockCoverageContext<IndexedSource> tock {
+        .indexed_state_storage = storage,
+    };
+    operations.tock_coverage(&node, &tock);
 
-    EXPECT_EQ(state->writes, 1);
+    EXPECT_EQ(state->calls, 1);
     std::destroy_at(state);
 }
 
-TEST(CompiledDspPorts, BatchedAccessNormalizesAnUnbatchedCallbackPerRequest)
+TEST(IndexedDspPorts, CompilerRecordAnchorsAllIndexedOperations)
 {
-    int calls = 0;
-    UnbatchedAccessNode node {.calls = &calls};
-    std::array<iv::AccessBlockContext<UnbatchedAccessNode>, 3> requests {};
-    iv::AccessBlockBatchContext<UnbatchedAccessNode> batch {
-        .unbatched_accesses = requests,
-    };
-
-    iv::do_access_block_batched(node, batch);
-
-    EXPECT_EQ(calls, 3);
-}
-
-TEST(CompiledDspPorts, BatchedPropagationNormalizesAnUnbatchedCallbackPerRequest)
-{
-    int calls = 0;
-    UnbatchedBlockAccessPropagationNode node {.calls = &calls};
-    std::array<iv::PropagateBlockAccessContext<UnbatchedBlockAccessPropagationNode>, 2>
-        propagations {};
-    iv::PropagateBlockAccessBatchContext<UnbatchedBlockAccessPropagationNode> batch {
-        .unbatched_propagations = propagations,
-    };
-
-    iv::do_propagate_block_access_batched<UnbatchedBlockAccessPropagationNode>()(node, batch);
-
-    EXPECT_EQ(calls, 2);
-}
-
-TEST(CompiledDspPorts, MissingPropagationCallbackRequestsEntireCompiledInputExtent)
-{
-    MissingBlockAccessPropagation node;
-    std::array<iv::CompiledSampleExtent, 1> input_extents {{
-        {.begin = 25, .end = 89},
-    }};
-    DefaultPropagationCapture capture;
-    iv::PropagateBlockAccessBatchContext<MissingBlockAccessPropagation> batch {
-        .batch = {
-            .input_extents = input_extents,
-            .user_data = &capture,
-            .propagate_input_access = &capture_default_propagated_access,
-        },
-    };
-
-    iv::do_propagate_block_access_batched<MissingBlockAccessPropagation>()(
-        node, batch);
-
-    EXPECT_EQ(capture.calls, 1u);
-    EXPECT_EQ(capture.input_index, 0u);
-    EXPECT_EQ(capture.request.begin, 25u);
-    EXPECT_EQ(capture.request.end, 89u);
-    EXPECT_EQ(capture.request.sample_count, 64u);
-}
-
-TEST(CompiledDspPorts, MissingPropagationCallbackRequestsEntireCompiledEventInputExtent)
-{
-    MissingEventBlockAccessPropagation node;
-    std::array<iv::CompiledEventExtent, 1> input_extents {{
-        {.begin = 25, .end = 89},
-    }};
-    DefaultEventPropagationCapture capture;
-    iv::PropagateBlockAccessBatchContext<MissingEventBlockAccessPropagation> batch {
-        .batch = {
-            .event_input_extents = input_extents,
-            .user_data = &capture,
-            .propagate_event_input_access = &capture_default_propagated_event_access,
-        },
-    };
-
-    iv::do_propagate_block_access_batched<MissingEventBlockAccessPropagation>()(
-        node, batch);
-
-    EXPECT_EQ(capture.calls, 1u);
-    EXPECT_EQ(capture.input_index, 0u);
-    EXPECT_EQ(capture.request.begin, 25u);
-    EXPECT_EQ(capture.request.end, 89u);
-}
-
-TEST(CompiledDspPorts, CompiledOutputWithNoCompiledInputsHasTrivialPropagation)
-{
-    CompiledEventSource node;
-    iv::PropagateBlockAccessBatchContext<CompiledEventSource> batch {};
-
-    EXPECT_NO_THROW(
-        iv::do_propagate_block_access_batched<CompiledEventSource>()(node, batch));
-}
-
-TEST(CompiledDspPorts, CompiledInputsWithoutCompiledOutputsDoNotPropagateDemand)
-{
-    CompiledInputOnly node;
-    std::array<iv::CompiledSampleExtent, 1> sample_input_extents {{
-        {.begin = 0, .end = 64},
-    }};
-    std::array<iv::CompiledEventExtent, 1> event_input_extents {{
-        {.begin = 0, .end = 64},
-    }};
-    NoPropagationCapture capture;
-    iv::PropagateBlockAccessBatchContext<CompiledInputOnly> batch {
-        .batch = {
-            .input_extents = sample_input_extents,
-            .event_input_extents = event_input_extents,
-            .user_data = &capture,
-            .propagate_input_access = &capture_unexpected_sample_propagation,
-            .propagate_event_input_access = &capture_unexpected_event_propagation,
-        },
-    };
-
-    iv::do_propagate_block_access_batched<CompiledInputOnly>()(node, batch);
-
-    EXPECT_EQ(capture.sample_calls, 0u);
-    EXPECT_EQ(capture.event_calls, 0u);
-}
-
-TEST(CompiledDspPorts, BatchedCallbacksReceiveOneWholeQueryContext)
-{
-    int access_calls = 0;
-    int propagation_calls = 0;
-    BatchedCallbacksNode node {
-        .access_calls = &access_calls,
-        .propagation_calls = &propagation_calls,
-    };
-
-    std::array<iv::AccessBlockContext<BatchedCallbacksNode>, 3> access_requests {};
-    iv::AccessBlockBatchContext<BatchedCallbacksNode> access_context {
-        .unbatched_accesses = access_requests,
-    };
-    iv::do_access_block_batched(node, access_context);
-
-    std::array<iv::PropagateBlockAccessContext<BatchedCallbacksNode>, 2>
-        propagations {};
-    iv::PropagateBlockAccessBatchContext<BatchedCallbacksNode> propagation_context {
-        .unbatched_propagations = propagations,
-    };
-    iv::do_propagate_block_access_batched<BatchedCallbacksNode>()(
-        node, propagation_context);
-
-    EXPECT_EQ(access_calls, 1);
-    EXPECT_EQ(propagation_calls, 1);
-}
-
-TEST(CompiledDspPorts, CompilerRecordAnchorsNormalizedCompiledOperations)
-{
-    int access_calls = 0;
-    int propagation_calls = 0;
-    BatchedCallbacksNode node {
-        .access_calls = &access_calls,
-        .propagation_calls = &propagation_calls,
-    };
-    auto const operations =
-        iv::details::node_compiler_operations<BatchedCallbacksNode>();
-    ASSERT_NE(operations.access_block_batched, nullptr);
-    ASSERT_NE(operations.propagate_block_access_batched, nullptr);
-
-    iv::AccessBlockBatchContext<BatchedCallbacksNode> access_context {};
-    operations.access_block_batched(&node, &access_context);
-
-    iv::PropagateBlockAccessBatchContext<BatchedCallbacksNode>
-        propagation_context {};
-    operations.propagate_block_access_batched(&node, &propagation_context);
-
-    EXPECT_EQ(access_calls, 1);
-    EXPECT_EQ(propagation_calls, 1);
+    auto const operations = iv::details::node_compiler_operations<IndexedTransform>();
+    ASSERT_NE(operations.tock_coverage, nullptr);
+    ASSERT_NE(operations.propagate_forward_coverage, nullptr);
+    ASSERT_NE(operations.propagate_reverse_coverage, nullptr);
 }
 
 } // namespace
