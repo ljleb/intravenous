@@ -4760,12 +4760,20 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         RootStackBufferPlan root_stack{};
     };
 
+    std::optional<IndexedPlan> retained_indexed_plan;
+
     auto plan_realtime_ports = [&](RealtimeStorageCostModel const& cost_model)
         -> std::expected<RealtimePortPlans, std::string> {
         auto connections = build_connection_analysis_plan(
-            input.graph, input.specialization.block_size, cost_model);
+            input.graph,
+            input.specialization.block_size,
+            cost_model,
+            retained_indexed_plan ? &*retained_indexed_plan : nullptr);
         if (!connections) {
             return std::unexpected(std::move(connections.error()));
+        }
+        if (!retained_indexed_plan) {
+            retained_indexed_plan = connections->indexed;
         }
         if (connections->boundary_bundle < input.graph.node_bundles.size()) {
             auto const& boundary = input.graph.node_bundles.bundle(

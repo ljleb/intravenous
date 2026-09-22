@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/realtime_port_planning.h>
+#include <intravenous/graph_jit/indexed_plan.h>
 #include <intravenous/node/layout.h>
 #include <intravenous/runtime/node_definition_types.h>
 
@@ -76,6 +77,7 @@ struct CompiledGraph {
     std::shared_ptr<ConfiguredGraph const> configured_graph{};
     std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
     NodeLayout node_layout{};
+    graph_jit::IndexedPlan indexed_plan{};
     CompiledGraphRootOperations root_operations{};
     std::shared_ptr<void const> code_lifetime{};
 };

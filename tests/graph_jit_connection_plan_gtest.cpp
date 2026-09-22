@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -222,6 +223,25 @@ struct IndexedEventPass {
     }
 };
 
+struct IndexedMidiSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::indexed_event_output("out", iv::EventTypeId::midi),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<IndexedMidiSource> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<IndexedMidiSource>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<IndexedMidiSource>&) const {}
+};
+
 struct IndexedSink {
     static constexpr auto inputs()
     {
@@ -234,6 +254,63 @@ struct IndexedSink {
     }
 
     void tick_block(iv::TickBlockContext<IndexedSink> const&) const {}
+};
+
+struct IndexedTwoInputPass {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::indexed_sample_input("a"),
+            iv::indexed_sample_input("b"),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::indexed_sample_output("out")};
+    }
+
+    void tick_block(iv::TickBlockContext<IndexedTwoInputPass> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<IndexedTwoInputPass>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<IndexedTwoInputPass>&) const {}
+};
+
+struct IndexedProducerModes {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::indexed_sample_output(
+                "recorded_sample",
+                {},
+                {.producer = iv::IndexedProducer::tick_record}),
+            iv::indexed_sample_output(
+                "live_sample",
+                {},
+                {.producer = iv::IndexedProducer::tock_realtime}),
+            iv::indexed_sample_output(
+                "stored_sample",
+                {},
+                {.producer = iv::IndexedProducer::tock_stored}),
+            iv::indexed_event_output(
+                "recorded_events",
+                iv::EventOutputProperties{
+                    .type = iv::EventTypeId::trigger,
+                    .max_events_per_index = 0.25,
+                },
+                {.producer = iv::IndexedProducer::tick_record}),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<IndexedProducerModes> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<IndexedProducerModes>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<IndexedProducerModes>&) const {}
 };
 
 struct RealtimeSink {
@@ -792,6 +869,9 @@ TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportIndexedData)
     auto first = details::configure_concrete_node<RealtimeRecorderPass>(graph);
     auto second = details::configure_concrete_node<PlainSamplePass>(graph);
     auto indexed_sink = details::configure_concrete_node<IndexedSink>(graph);
+    auto const first_handle = first.node_bundle_handle();
+    auto const second_handle = second.node_bundle_handle();
+    auto const indexed_sink_handle = indexed_sink.node_bundle_handle();
     first(second);
     second(first["realtime"].detach(5));
     indexed_sink(first["recorded"]);
@@ -806,6 +886,26 @@ TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportIndexedData)
             return connection.access
                 == graph_jit::detail::PlannedConnectionAccess::indexed_to_indexed;
         }));
+    ASSERT_TRUE(plan->indexed.bundle_to_semantic_node[first_handle]);
+    ASSERT_TRUE(plan->indexed.bundle_to_semantic_node[second_handle]);
+    ASSERT_TRUE(plan->indexed.bundle_to_semantic_node[indexed_sink_handle]);
+    auto const first_semantic =
+        *plan->indexed.bundle_to_semantic_node[first_handle];
+    auto const second_semantic =
+        *plan->indexed.bundle_to_semantic_node[second_handle];
+    auto const sink_semantic =
+        *plan->indexed.bundle_to_semantic_node[indexed_sink_handle];
+    EXPECT_EQ(
+        plan->indexed.semantic_nodes[first_semantic].scc,
+        plan->indexed.semantic_nodes[second_semantic].scc);
+    EXPECT_NE(
+        plan->indexed.semantic_nodes[first_semantic].scc,
+        plan->indexed.semantic_nodes[sink_semantic].scc);
+    EXPECT_LT(
+        plan->indexed.semantic_nodes[first_semantic].scc,
+        plan->indexed.semantic_nodes[sink_semantic].scc);
+    EXPECT_TRUE(plan->indexed.semantic_sccs[
+        plan->indexed.semantic_nodes[first_semantic].scc].cyclic);
 }
 
 TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)
@@ -1072,6 +1172,152 @@ TEST(GraphJitConnectionPlan, IndexedConnectionsDoNotUseRealtimeStoragePolicy)
     EXPECT_TRUE(plan->sample_producer_groups[0].has_indexed_connections);
     EXPECT_FALSE(plan->sample_producer_groups[0].storage_plan.has_value());
     EXPECT_TRUE(plan->storage.regions.empty());
+    ASSERT_EQ(plan->indexed.requestable_outputs.size(), 1u);
+    EXPECT_FALSE(plan->indexed.endpoints[
+        plan->indexed.requestable_outputs.front()].stable_identity);
+}
+
+TEST(GraphJitConnectionPlan, RetainsCompleteIndexedTopologyAndFixedLayouts)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<IndexedProducerModes>(graph);
+    auto left = details::configure_concrete_node<IndexedSamplePass>(graph);
+    auto right = details::configure_concrete_node<IndexedSamplePass>(graph);
+    auto join = details::configure_concrete_node<IndexedTwoInputPass>(graph);
+    auto realtime_sink = details::configure_concrete_node<RealtimeSink>(graph);
+    _annotate_node_source_info(source.node_ref(), "source");
+    _annotate_node_source_info(left.node_ref(), "left");
+    _annotate_node_source_info(right.node_ref(), "right");
+    _annotate_node_source_info(join.node_ref(), "join");
+
+    left(source["recorded_sample"]);
+    right(source["recorded_sample"]);
+    join("a"_P = left, "b"_P = right);
+    realtime_sink(join);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto built = graph_jit::detail::build_connection_analysis_plan(
+        configured, 64);
+    ASSERT_TRUE(built.has_value()) << (built ? std::string{} : built.error());
+    auto const& plan = built->indexed;
+
+    ASSERT_EQ(plan.nodes.size(), 4u);
+    ASSERT_EQ(plan.connections.size(), 5u);
+    ASSERT_EQ(plan.components.size(), 1u);
+    EXPECT_EQ(plan.component_order, (std::vector<std::size_t>{0}));
+    auto const& component = plan.components.front();
+    ASSERT_EQ(component.forward_order.size(), 4u);
+    EXPECT_EQ(component.tock_order, component.forward_order);
+    auto expected_reverse = component.forward_order;
+    std::ranges::reverse(expected_reverse);
+    EXPECT_EQ(component.reverse_order, expected_reverse);
+    EXPECT_EQ(component.connections.size(), 5u);
+
+    EXPECT_EQ(plan.accumulators.input_change_count, 4u);
+    EXPECT_EQ(plan.accumulators.input_requirement_count, 4u);
+    EXPECT_EQ(plan.accumulators.output_change_count, 7u);
+    EXPECT_EQ(plan.accumulators.output_requirement_count, 7u);
+    EXPECT_EQ(plan.requestable_outputs.size(), 7u);
+
+    auto endpoint_named = [&](std::string_view name)
+        -> graph_jit::IndexedEndpointPlan const* {
+        auto const found = std::ranges::find_if(
+            plan.endpoints,
+            [&](graph_jit::IndexedEndpointPlan const& endpoint) {
+                return endpoint.name == name;
+            });
+        return found == plan.endpoints.end() ? nullptr : &*found;
+    };
+    auto const* recorded_sample = endpoint_named("recorded_sample");
+    auto const* live_sample = endpoint_named("live_sample");
+    auto const* stored_sample = endpoint_named("stored_sample");
+    auto const* recorded_events = endpoint_named("recorded_events");
+    ASSERT_NE(recorded_sample, nullptr);
+    ASSERT_NE(live_sample, nullptr);
+    ASSERT_NE(stored_sample, nullptr);
+    ASSERT_NE(recorded_events, nullptr);
+    EXPECT_EQ(recorded_sample->producer, IndexedProducer::tick_record);
+    EXPECT_EQ(live_sample->producer, IndexedProducer::tock_realtime);
+    EXPECT_EQ(stored_sample->producer, IndexedProducer::tock_stored);
+    EXPECT_EQ(recorded_events->producer, IndexedProducer::tick_record);
+    ASSERT_TRUE(recorded_sample->stable_identity);
+    EXPECT_EQ(recorded_sample->stable_identity->node.graph, "root");
+    EXPECT_TRUE(recorded_sample->stable_identity->node.virtual_node
+        .starts_with("source#type:"));
+    EXPECT_EQ(recorded_sample->stable_identity->port_name, "recorded_sample");
+    EXPECT_EQ(recorded_sample->outgoing_connections.size(), 2u);
+
+    ASSERT_EQ(plan.recorder_staging.outputs.size(), 2u);
+    EXPECT_EQ(plan.recorder_staging.root_block_size, 64u);
+    auto staging_for = [&](graph_jit::IndexedEndpointPlan const* endpoint)
+        -> graph_jit::TickRecordStagingOutputPlan const* {
+        auto const ordinal = static_cast<std::size_t>(
+            endpoint - plan.endpoints.data());
+        auto const found = std::ranges::find_if(
+            plan.recorder_staging.outputs,
+            [&](graph_jit::TickRecordStagingOutputPlan const& staging) {
+                return staging.endpoint == ordinal;
+            });
+        return found == plan.recorder_staging.outputs.end()
+            ? nullptr : &*found;
+    };
+    auto const* sample_staging = staging_for(recorded_sample);
+    auto const* event_staging = staging_for(recorded_events);
+    ASSERT_NE(sample_staging, nullptr);
+    ASSERT_NE(event_staging, nullptr);
+    EXPECT_EQ(sample_staging->value_capacity, 64u);
+    EXPECT_EQ(sample_staging->payload_size, 64u * sizeof(Sample));
+    EXPECT_FALSE(sample_staging->event_count_offset);
+    EXPECT_EQ(event_staging->value_capacity, 16u);
+    EXPECT_EQ(
+        event_staging->payload_size,
+        16u * sizeof(TimedEvent));
+    EXPECT_TRUE(event_staging->event_count_offset.has_value());
+    EXPECT_GE(
+        plan.recorder_staging.size_bytes,
+        event_staging->payload_offset + event_staging->payload_size);
+
+    EXPECT_EQ(
+        plan.connections.back().target_access,
+        graph_jit::IndexedConnectionTargetAccess::realtime);
+    EXPECT_EQ(plan.connections.back().target_endpoints.size(), 0u);
+}
+
+TEST(GraphJitConnectionPlan, RetainsIndexedEventConversion)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<IndexedMidiSource>(graph);
+    auto target = details::configure_concrete_node<IndexedEventPass>(graph);
+    target.connect_event_input(0, source.event_port());
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto built = graph_jit::detail::build_connection_analysis_plan(
+        configured, 64);
+    ASSERT_TRUE(built.has_value()) << (built ? std::string{} : built.error());
+    ASSERT_EQ(built->indexed.connections.size(), 1u);
+    auto const& connection = built->indexed.connections.front();
+    EXPECT_EQ(connection.kind, PortKind::event);
+    EXPECT_EQ(
+        connection.target_access,
+        graph_jit::IndexedConnectionTargetAccess::indexed);
+    EXPECT_EQ(connection.event_source_type, EventTypeId::midi);
+    EXPECT_EQ(connection.event_target_type, EventTypeId::trigger);
+    EXPECT_TRUE(connection.requires_conversion);
+    EXPECT_GT(connection.event_conversion.size(), 0u);
+    ASSERT_EQ(connection.source_endpoints.size(), 1u);
+    ASSERT_EQ(connection.target_endpoints.size(), 1u);
+    EXPECT_EQ(
+        built->indexed.endpoints[connection.source_endpoints.front()]
+            .outgoing_connections,
+        (std::vector<graph_jit::IndexedConnectionOrdinal>{0}));
+    EXPECT_EQ(
+        built->indexed.endpoints[connection.target_endpoints.front()]
+            .incoming_connections,
+        (std::vector<graph_jit::IndexedConnectionOrdinal>{0}));
 }
 
 TEST(GraphJitConnectionPlan, PreservesIndexedToRealtimeAccessDirection)

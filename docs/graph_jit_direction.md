@@ -616,16 +616,19 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     realtime-produced indexed data is represented only by an explicit
     `tick_record` indexed output. Keep recorder dependencies into the producing node
     as ordinary realtime connections.
-15. **Retained indexed plan, batch ABI, and callback imports.** The v3 node API,
-    producer modes, exact-forward requirement, tock-only `IndexedState`, and
-    whole-semantic-SCC indexed-edge rejection have landed. Replace validation-only
-    products with stable internal endpoint identity plus one immutable `IndexedPlan`
-    containing dense ordinals, producer modes, indexed components/orders,
-    conversions/convergence, stable persistent identities, fixed recorder layout,
-    and per-node/per-port F/R/T accumulator offsets. Define reusable host-owned
-    batch frames and explicit reflected indexed callback contexts with pointer/count
-    records rather than native `std::span` layout. Extend package import planning to
-    select `tock_coverage`, forward, and reverse callbacks with their proper ABI.
+15. **Retained indexed plan landed; batch ABI and callback imports remain.** The v3
+    node API, producer modes, exact-forward requirement, tock-only `IndexedState`,
+    whole-semantic-SCC indexed-edge rejection, and immutable retained `IndexedPlan`
+    have landed. The plan contains dense node/endpoint ordinals, producer modes,
+    indexed components and F/R/T orders, conversions/convergence, stable
+    virtual-node/direct-member output identities where available, fixed recorder
+    layout, and per-node/per-port accumulator offsets. It is retained by
+    `CompiledGraph`; schedule formation reuses its semantic SCC partition and
+    realtime storage-policy retries do not rerun indexed analysis. Next define
+    reusable host-owned batch frames and explicit reflected indexed callback
+    contexts with pointer/count records rather than native `std::span` layout, then
+    extend package import planning to select `tock_coverage`, forward, and reverse
+    callbacks with their proper ABI.
     The detailed dependency order is normative in
     [indexed_dsp_nodes.md](./indexed_dsp_nodes.md#32-implementation-landing-order).
 16. **Generated batched indexed F/R/T programs.** Emit static component entrypoints

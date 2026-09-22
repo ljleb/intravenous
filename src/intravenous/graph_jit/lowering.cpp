@@ -3765,6 +3765,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
 
     return LoweringOutput{
         .node_layout = std::move(plan.declarations.node_layout),
+        .indexed_plan = std::move(plan.connections.indexed),
         .root_symbols = {
             .tick_block = std::string(root_tick_block_symbol),
         },

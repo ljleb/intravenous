@@ -1802,16 +1802,19 @@ final lowering simpler.
    its realtime dependencies remain ordinary realtime connections into the
    recorder-producing node. Retain only realtime-to-realtime,
    indexed-to-indexed, and indexed-to-realtime access classes.
-4. **Build one retained `IndexedPlan`.** Replace validation-only indexed/SCC facts
-   with reusable dense indexed-node/endpoint ordinals, endpoint kind and producer
-   mode, indexed connections/conversions, semantic SCC identity, indexed weak
-   components/condensation order, forward F order, reverse R order, forward T
-   order, fan-in/fan-out convergence, requestable outputs, recorder staging
-   requirements, and stable persistent endpoint identities. The same plan owns
-   the fixed per-node/per-port accumulator layout for input changes, output
-   changes/coverage, output requirements, and input requirements. Reuse the
-   complete semantic SCC decomposition rather than rebuilding equivalent graph
-   views in later phases.
+4. **Landed: one retained `IndexedPlan`.** Connection analysis now retains reusable
+   dense indexed-node/endpoint ordinals, endpoint kind and exact producer mode,
+   indexed connections/conversions, complete semantic SCC identity and
+   condensation facts, indexed weak components, forward F/reverse R/forward T
+   order, explicit fan-in/fan-out connection lists, requestable outputs, a fixed
+   recorder staging layout/capacity plan, and stable virtual-node/direct-member
+   output identities where the configured graph supplies them. Anonymous concrete
+   outputs deliberately remain generation-local. The plan owns fixed
+   per-node/per-port accumulator offsets for input changes, output
+   changes/coverage, output requirements, and input requirements; GraphJit retains
+   it in `CompiledGraph`. Realtime stack-pressure retries reuse the first indexed
+   analysis, and schedule formation reuses its semantic SCC partition rather than
+   running another SCC decomposition.
 5. **Define the indexed batch frame and stable reflected callback ABI.** Introduce
    the host-owned reusable batch/workspace representation described by the plan:
    F/R/T coverage accumulators, candidate-version/page-validity view, transient

@@ -10,11 +10,14 @@
 #include <exception>
 #include <limits>
 #include <iterator>
+#include <map>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -723,32 +726,36 @@ std::vector<NodeBundleHandle> unique_source_bundles(
     return bundles;
 }
 
-std::expected<void, std::string>
-validate_indexed_connections_outside_semantic_scc(
+std::expected<IndexedPlan, std::string> build_semantic_indexed_plan(
     ConfiguredGraph const& graph,
-    ConnectionAnalysisPlan const& plan)
+    ConnectionAnalysisPlan const& plan,
+    std::size_t kernel_block_size)
 {
-    if (plan.nodes.empty()) return {};
-
-    std::vector<std::optional<std::size_t>> bundle_to_node(
-        graph.node_bundles.size());
+    IndexedPlan result;
+    result.recorder_staging.root_block_size = kernel_block_size;
+    result.bundle_to_semantic_node.resize(graph.node_bundles.size());
+    result.bundle_to_indexed_node.resize(graph.node_bundles.size());
+    result.semantic_nodes.reserve(plan.nodes.size());
     for (std::size_t i = 0; i < plan.nodes.size(); ++i) {
-        bundle_to_node[plan.nodes[i].bundle] = i;
+        auto const bundle = plan.nodes[i].bundle;
+        result.bundle_to_semantic_node[bundle] = i;
+        result.semantic_nodes.push_back(SemanticNodePlan{.bundle = bundle});
     }
+    if (plan.nodes.empty()) return result;
 
     // Semantic cycle membership restores every authored detach edge. Detach
     // changes same-slice execution, not the logical data dependency.
     auto outgoing = dependency_adjacency(graph, plan, false);
     auto append_edge = [&](NodeBundleHandle source_bundle,
                            NodeBundleHandle target_bundle) {
-        if (source_bundle >= bundle_to_node.size()
-            || target_bundle >= bundle_to_node.size()
-            || !bundle_to_node[source_bundle]
-            || !bundle_to_node[target_bundle]) {
+        if (source_bundle >= result.bundle_to_semantic_node.size()
+            || target_bundle >= result.bundle_to_semantic_node.size()
+            || !result.bundle_to_semantic_node[source_bundle]
+            || !result.bundle_to_semantic_node[target_bundle]) {
             return;
         }
-        outgoing[*bundle_to_node[source_bundle]].push_back(
-            *bundle_to_node[target_bundle]);
+        outgoing[*result.bundle_to_semantic_node[source_bundle]].push_back(
+            *result.bundle_to_semantic_node[target_bundle]);
     };
     for (auto const& connection : plan.sample_connections) {
         if (!connection.detach) continue;
@@ -810,26 +817,111 @@ validate_indexed_connections_outside_semantic_scc(
         if (index[node] == unvisited) strongconnect(strongconnect, node);
     }
 
+    // Tarjan discovery order is an implementation detail. Retain SCCs in one
+    // deterministic condensation-topological order so later scheduling,
+    // indexed planning, and optimization can all reuse the same identities.
+    std::vector<std::vector<std::size_t>> component_outgoing(components.size());
+    std::vector<std::size_t> component_indegree(components.size(), 0);
+    for (std::size_t source = 0; source < outgoing.size(); ++source) {
+        auto const source_component = component_of[source];
+        for (auto const target : outgoing[source]) {
+            auto const target_component = component_of[target];
+            if (source_component == target_component) continue;
+            component_outgoing[source_component].push_back(target_component);
+        }
+    }
+    for (auto& targets : component_outgoing) {
+        std::ranges::sort(targets);
+        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+        for (auto const target : targets) ++component_indegree[target];
+    }
+    std::vector<std::size_t> minimum_node(components.size(), unvisited);
+    for (std::size_t component = 0; component < components.size(); ++component) {
+        std::ranges::sort(components[component]);
+        minimum_node[component] = components[component].front();
+    }
+    std::vector<std::size_t> ready;
+    auto insert_ready = [&](std::size_t component) {
+        auto const position = std::ranges::lower_bound(
+            ready,
+            minimum_node[component],
+            {},
+            [&](std::size_t candidate) { return minimum_node[candidate]; });
+        ready.insert(position, component);
+    };
+    for (std::size_t component = 0; component < components.size(); ++component) {
+        if (component_indegree[component] == 0) insert_ready(component);
+    }
+    std::vector<std::size_t> old_components_in_order;
+    old_components_in_order.reserve(components.size());
+    while (!ready.empty()) {
+        auto const component = ready.front();
+        ready.erase(ready.begin());
+        old_components_in_order.push_back(component);
+        for (auto const target : component_outgoing[component]) {
+            if (--component_indegree[target] == 0) insert_ready(target);
+        }
+    }
+    if (old_components_in_order.size() != components.size()) {
+        return std::unexpected(
+            "GraphJit internal semantic SCC condensation is cyclic");
+    }
+
+    std::vector<std::size_t> new_component_of_old(components.size());
+    result.semantic_sccs.resize(components.size());
+    result.semantic_condensation_order.resize(components.size());
+    std::iota(
+        result.semantic_condensation_order.begin(),
+        result.semantic_condensation_order.end(),
+        std::size_t{0});
+    for (std::size_t component = 0;
+         component < old_components_in_order.size(); ++component) {
+        new_component_of_old[old_components_in_order[component]] = component;
+    }
+    for (std::size_t component = 0;
+         component < old_components_in_order.size(); ++component) {
+        auto const old_component = old_components_in_order[component];
+        auto& retained = result.semantic_sccs[component];
+        retained.nodes = components[old_component];
+        retained.cyclic = retained.nodes.size() > 1;
+        for (auto const node : retained.nodes) {
+            result.semantic_nodes[node].scc = component;
+            retained.cyclic = retained.cyclic
+                || std::ranges::contains(outgoing[node], node);
+        }
+        for (auto const old_target : component_outgoing[old_component]) {
+            retained.outgoing.push_back(new_component_of_old[old_target]);
+        }
+        std::ranges::sort(retained.outgoing);
+    }
+    for (std::size_t source = 0;
+         source < result.semantic_sccs.size(); ++source) {
+        for (auto const target : result.semantic_sccs[source].outgoing) {
+            result.semantic_sccs[target].incoming.push_back(source);
+        }
+    }
+
     auto validate_edge = [&](NodeBundleHandle source_bundle,
                              NodeBundleHandle target_bundle,
                              std::string_view payload,
                              std::size_t connection_index)
         -> std::expected<void, std::string> {
-        if (source_bundle >= bundle_to_node.size()
-            || target_bundle >= bundle_to_node.size()
-            || !bundle_to_node[source_bundle]
-            || !bundle_to_node[target_bundle]) {
+        if (source_bundle >= result.bundle_to_semantic_node.size()
+            || target_bundle >= result.bundle_to_semantic_node.size()
+            || !result.bundle_to_semantic_node[source_bundle]
+            || !result.bundle_to_semantic_node[target_bundle]) {
             return {};
         }
-        auto const source = *bundle_to_node[source_bundle];
-        auto const target = *bundle_to_node[target_bundle];
-        if (component_of[source] != component_of[target]) return {};
+        auto const source = *result.bundle_to_semantic_node[source_bundle];
+        auto const target = *result.bundle_to_semantic_node[target_bundle];
+        auto const source_scc = result.semantic_nodes[source].scc;
+        if (source_scc != result.semantic_nodes[target].scc) return {};
 
-        auto const& component = components[component_of[source]];
+        auto const& component = result.semantic_sccs[source_scc].nodes;
         std::string participants;
         for (auto const member : component) {
             if (!participants.empty()) participants += ", ";
-            participants += std::to_string(plan.nodes[member].bundle);
+            participants += std::to_string(result.semantic_nodes[member].bundle);
         }
         return std::unexpected(
             "GraphJit indexed " + std::string(payload) + " connection "
@@ -852,7 +944,7 @@ validate_indexed_connections_outside_semantic_scc(
                     "sample",
                     connection.configured_connection_index);
                 !valid) {
-                return valid;
+                return std::unexpected(std::move(valid.error()));
             }
         }
     }
@@ -869,11 +961,519 @@ validate_indexed_connections_outside_semantic_scc(
                         "event",
                         connection.configured_connection_index);
                     !valid) {
-                    return valid;
+                    return std::unexpected(std::move(valid.error()));
                 }
             }
         }
     }
+    return result;
+}
+
+std::expected<void, std::string> populate_indexed_topology(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan const& connections,
+    std::size_t kernel_block_size,
+    IndexedPlan& plan)
+{
+    auto stable_node_identity = [&](NodeBundleHandle bundle)
+        -> std::optional<StableConcreteNodeId> {
+        auto const& configured_bundle = graph.node_bundles.bundle(bundle);
+        std::optional<StableConcreteNodeId> selected;
+        for (auto const handle : configured_bundle.virtual_node_handles()) {
+            auto const& record = graph.virtual_nodes.record(handle);
+            // Port-only virtual records describe aggregates, not concrete
+            // members whose runtime state can be rebound.
+            if (record.type_identity != configured_bundle.type_identity()) continue;
+            auto const member = std::ranges::find(
+                record.node_bundle_handles, bundle);
+            if (member == record.node_bundle_handles.end()) continue;
+            StableConcreteNodeId candidate{
+                .graph = graph.identity.value,
+                .virtual_node = record.id,
+                .direct_member = static_cast<std::size_t>(
+                    member - record.node_bundle_handles.begin()),
+            };
+            if (!selected
+                || std::tie(candidate.virtual_node, candidate.direct_member)
+                    < std::tie(
+                        selected->virtual_node, selected->direct_member)) {
+                selected = std::move(candidate);
+            }
+        }
+        return selected;
+    };
+
+    auto has_indexed_port = [&](PlannedGraphNode const& node) {
+        auto const bundle = node.bundle;
+        for (std::size_t port = 0; port < node.sample_input_count; ++port) {
+            if (is_indexed(graph.node_bundles.resolve_sample_input(
+                    {bundle, PortKind::sample, port}).config)) return true;
+        }
+        for (std::size_t port = 0; port < node.sample_output_count; ++port) {
+            if (is_indexed(graph.node_bundles.resolve_sample_output(
+                    {bundle, PortKind::sample, port}).config)) return true;
+        }
+        for (std::size_t port = 0; port < node.event_input_count; ++port) {
+            if (is_indexed(graph.node_bundles.resolve_event_input(
+                    {bundle, PortKind::event, port}).config)) return true;
+        }
+        for (std::size_t port = 0; port < node.event_output_count; ++port) {
+            if (is_indexed(graph.node_bundles.resolve_event_output(
+                    {bundle, PortKind::event, port}).config)) return true;
+        }
+        return false;
+    };
+
+    for (std::size_t semantic_node = 0;
+         semantic_node < connections.nodes.size(); ++semantic_node) {
+        auto const& node = connections.nodes[semantic_node];
+        if (!has_indexed_port(node)) continue;
+        auto const indexed_node = plan.nodes.size();
+        plan.bundle_to_indexed_node[node.bundle] = indexed_node;
+        plan.semantic_nodes[semantic_node].indexed_node = indexed_node;
+        plan.nodes.push_back(IndexedNodePlan{
+            .bundle = node.bundle,
+            .semantic_node = semantic_node,
+            .semantic_scc = plan.semantic_nodes[semantic_node].scc,
+            .stable_identity = stable_node_identity(node.bundle),
+        });
+    }
+
+    std::map<NodeBundlePortId, IndexedEndpointOrdinal, NodeBundlePortIdLess>
+        endpoint_by_port;
+    auto append_endpoint = [&](IndexedNodeOrdinal node,
+                               NodeBundlePortId port,
+                               IndexedEndpointDirection direction,
+                               std::string name,
+                               std::optional<IndexedProducer> producer,
+                               ChannelLayout sample_layout,
+                               EventTypeId event_type,
+                               double max_events_per_index) {
+        auto& node_plan = plan.nodes[node];
+        auto const endpoint = plan.endpoints.size();
+        auto& node_accumulators = node_plan.accumulators;
+        IndexedAccumulatorSlotPlan slots;
+        if (direction == IndexedEndpointDirection::input) {
+            if (node_accumulators.input_change_count == 0) {
+                node_accumulators.input_change_begin =
+                    plan.accumulators.input_change_count;
+                node_accumulators.input_requirement_begin =
+                    plan.accumulators.input_requirement_count;
+            }
+            slots.input_change = plan.accumulators.input_change_count++;
+            slots.input_requirement =
+                plan.accumulators.input_requirement_count++;
+            ++node_accumulators.input_change_count;
+            ++node_accumulators.input_requirement_count;
+            node_plan.inputs.push_back(endpoint);
+        } else {
+            if (node_accumulators.output_change_count == 0) {
+                node_accumulators.output_change_begin =
+                    plan.accumulators.output_change_count;
+                node_accumulators.output_requirement_begin =
+                    plan.accumulators.output_requirement_count;
+            }
+            slots.output_change = plan.accumulators.output_change_count++;
+            slots.output_requirement =
+                plan.accumulators.output_requirement_count++;
+            ++node_accumulators.output_change_count;
+            ++node_accumulators.output_requirement_count;
+            node_plan.outputs.push_back(endpoint);
+            plan.requestable_outputs.push_back(endpoint);
+        }
+        std::optional<StableIndexedOutputId> stable_output;
+        if (direction == IndexedEndpointDirection::output
+            && node_plan.stable_identity) {
+            stable_output = StableIndexedOutputId{
+                .node = *node_plan.stable_identity,
+                .kind = port.port_kind,
+                .port_name = name,
+                .port_ordinal = port.port_ordinal,
+            };
+        }
+        plan.endpoints.push_back(IndexedEndpointPlan{
+            .node = node,
+            .configured_port = port,
+            .kind = port.port_kind,
+            .direction = direction,
+            .name = std::move(name),
+            .producer = producer,
+            .stable_identity = std::move(stable_output),
+            .sample_layout = sample_layout,
+            .event_type = event_type,
+            .max_events_per_index = max_events_per_index,
+            .accumulators = slots,
+        });
+        endpoint_by_port.emplace(port, endpoint);
+    };
+
+    for (IndexedNodeOrdinal indexed_node = 0;
+         indexed_node < plan.nodes.size(); ++indexed_node) {
+        auto const semantic_node = plan.nodes[indexed_node].semantic_node;
+        auto const& node = connections.nodes[semantic_node];
+        auto const bundle = node.bundle;
+        for (std::size_t port = 0; port < node.sample_input_count; ++port) {
+            NodeBundlePortId const id{bundle, PortKind::sample, port};
+            auto const config = graph.node_bundles.resolve_sample_input(id).config;
+            if (!is_indexed(config)) continue;
+            append_endpoint(
+                indexed_node, id, IndexedEndpointDirection::input,
+                config.name, std::nullopt, config.channel_layout,
+                EventTypeId::empty, 0.0);
+        }
+        for (std::size_t port = 0; port < node.event_input_count; ++port) {
+            NodeBundlePortId const id{bundle, PortKind::event, port};
+            auto const config = graph.node_bundles.resolve_event_input(id).config;
+            if (!is_indexed(config)) continue;
+            append_endpoint(
+                indexed_node, id, IndexedEndpointDirection::input,
+                config.name, std::nullopt, {}, config.type, 0.0);
+        }
+        for (std::size_t port = 0; port < node.sample_output_count; ++port) {
+            NodeBundlePortId const id{bundle, PortKind::sample, port};
+            auto const config = graph.node_bundles.resolve_sample_output(id).config;
+            if (!is_indexed(config)) continue;
+            append_endpoint(
+                indexed_node, id, IndexedEndpointDirection::output,
+                config.name, indexed_producer(config.access),
+                config.channel_layout, EventTypeId::empty, 0.0);
+        }
+        for (std::size_t port = 0; port < node.event_output_count; ++port) {
+            NodeBundlePortId const id{bundle, PortKind::event, port};
+            auto const config = graph.node_bundles.resolve_event_output(id).config;
+            if (!is_indexed(config)) continue;
+            append_endpoint(
+                indexed_node, id, IndexedEndpointDirection::output,
+                config.name, indexed_producer(config.access),
+                {}, config.type, config.max_events_per_index);
+        }
+    }
+
+    auto endpoint_for = [&](NodeBundlePortId port)
+        -> std::expected<IndexedEndpointOrdinal, std::string> {
+        auto const found = endpoint_by_port.find(port);
+        if (found == endpoint_by_port.end()) {
+            return std::unexpected(
+                "GraphJit indexed connection references a non-indexed endpoint");
+        }
+        return found->second;
+    };
+    auto append_unique_port = [](std::vector<NodeBundlePortId>& ports,
+                                 NodeBundlePortId port) {
+        if (!std::ranges::contains(ports, port)) ports.push_back(port);
+    };
+    auto append_connection = [&](IndexedConnectionPlan connection) {
+        auto const ordinal = plan.connections.size();
+        for (auto const endpoint : connection.source_endpoints) {
+            auto& outgoing_connections =
+                plan.endpoints[endpoint].outgoing_connections;
+            if (!std::ranges::contains(outgoing_connections, ordinal)) {
+                outgoing_connections.push_back(ordinal);
+            }
+        }
+        for (auto const endpoint : connection.target_endpoints) {
+            auto& incoming_connections =
+                plan.endpoints[endpoint].incoming_connections;
+            if (!std::ranges::contains(incoming_connections, ordinal)) {
+                incoming_connections.push_back(ordinal);
+            }
+        }
+        plan.connections.push_back(std::move(connection));
+    };
+
+    for (auto const& connection : connections.sample_connections) {
+        if (connection.access
+            == PlannedConnectionAccess::realtime_to_realtime) continue;
+        IndexedConnectionPlan indexed{
+            .configured_connection_index = connection.configured_connection_index,
+            .kind = PortKind::sample,
+            .target_access = connection.access
+                    == PlannedConnectionAccess::indexed_to_indexed
+                ? IndexedConnectionTargetAccess::indexed
+                : IndexedConnectionTargetAccess::realtime,
+            .sample_source_type = connection.source_type,
+            .sample_target_type = connection.target_type,
+            .sample_source_channels = connection.source_channels,
+            .sample_target_channels = connection.target_channels,
+            .requires_conversion = connection.requires_conversion,
+        };
+        for (auto const channel : connection.source_channels) {
+            NodeBundlePortId const port{
+                channel.bundle, PortKind::sample, channel.port};
+            if (std::ranges::contains(indexed.source_ports, port)) continue;
+            indexed.source_ports.push_back(port);
+            auto endpoint = endpoint_for(port);
+            if (!endpoint) return std::unexpected(std::move(endpoint.error()));
+            indexed.source_endpoints.push_back(*endpoint);
+        }
+        indexed.target_ports.push_back(connection.target_port);
+        if (indexed.target_access == IndexedConnectionTargetAccess::indexed) {
+            auto endpoint = endpoint_for(connection.target_port);
+            if (!endpoint) return std::unexpected(std::move(endpoint.error()));
+            indexed.target_endpoints.push_back(*endpoint);
+        }
+        for (auto const& projection : connection.projection_contributions) {
+            indexed.sample_projections.push_back(IndexedSampleProjectionPlan{
+                .source_type = projection.source_type,
+                .source_channel_indices = projection.source_channel_indices,
+                .target_type = projection.target_type,
+                .target_channels = projection.target_channels,
+            });
+        }
+        append_connection(std::move(indexed));
+    }
+    for (auto const& connection : connections.event_connections) {
+        if (connection.access
+            == PlannedConnectionAccess::realtime_to_realtime) continue;
+        IndexedConnectionPlan indexed{
+            .configured_connection_index = connection.configured_connection_index,
+            .kind = PortKind::event,
+            .target_access = connection.access
+                    == PlannedConnectionAccess::indexed_to_indexed
+                ? IndexedConnectionTargetAccess::indexed
+                : IndexedConnectionTargetAccess::realtime,
+            .event_source_type = connection.source_type,
+            .event_target_type = connection.target_type,
+            .event_conversion = connection.conversion,
+            .requires_conversion = connection.requires_conversion,
+        };
+        for (auto const source : connection.sources) {
+            append_unique_port(indexed.source_ports, {
+                source.bundle, PortKind::event, source.port});
+        }
+        for (auto const port : indexed.source_ports) {
+            auto endpoint = endpoint_for(port);
+            if (!endpoint) return std::unexpected(std::move(endpoint.error()));
+            indexed.source_endpoints.push_back(*endpoint);
+        }
+        for (auto const target : connection.targets) {
+            append_unique_port(indexed.target_ports, {
+                target.bundle, PortKind::event, target.port});
+        }
+        if (indexed.target_access == IndexedConnectionTargetAccess::indexed) {
+            for (auto const port : indexed.target_ports) {
+                auto endpoint = endpoint_for(port);
+                if (!endpoint) {
+                    return std::unexpected(std::move(endpoint.error()));
+                }
+                indexed.target_endpoints.push_back(*endpoint);
+            }
+        }
+        append_connection(std::move(indexed));
+    }
+
+    std::vector<std::vector<IndexedNodeOrdinal>> indexed_outgoing(
+        plan.nodes.size());
+    std::vector<IndexedNodeOrdinal> parent(plan.nodes.size());
+    std::iota(parent.begin(), parent.end(), IndexedNodeOrdinal{0});
+    auto find_root = [&](auto&& self, IndexedNodeOrdinal node)
+        -> IndexedNodeOrdinal {
+        if (parent[node] == node) return node;
+        parent[node] = self(self, parent[node]);
+        return parent[node];
+    };
+    auto join = [&](IndexedNodeOrdinal lhs, IndexedNodeOrdinal rhs) {
+        lhs = find_root(find_root, lhs);
+        rhs = find_root(find_root, rhs);
+        if (lhs == rhs) return;
+        if (rhs < lhs) std::swap(lhs, rhs);
+        parent[rhs] = lhs;
+    };
+    for (auto const& connection : plan.connections) {
+        std::vector<IndexedNodeOrdinal> participating_nodes;
+        for (auto const endpoint : connection.source_endpoints) {
+            auto const node = plan.endpoints[endpoint].node;
+            if (!std::ranges::contains(participating_nodes, node)) {
+                participating_nodes.push_back(node);
+            }
+        }
+        for (auto const endpoint : connection.target_endpoints) {
+            auto const node = plan.endpoints[endpoint].node;
+            if (!std::ranges::contains(participating_nodes, node)) {
+                participating_nodes.push_back(node);
+            }
+        }
+        for (std::size_t i = 1; i < participating_nodes.size(); ++i) {
+            join(participating_nodes.front(), participating_nodes[i]);
+        }
+        if (connection.target_access
+            == IndexedConnectionTargetAccess::realtime) continue;
+        for (auto const source_endpoint : connection.source_endpoints) {
+            auto const source = plan.endpoints[source_endpoint].node;
+            for (auto const target_endpoint : connection.target_endpoints) {
+                auto const target = plan.endpoints[target_endpoint].node;
+                indexed_outgoing[source].push_back(target);
+            }
+        }
+    }
+
+    std::vector<std::size_t> indegree(plan.nodes.size(), 0);
+    for (auto& targets : indexed_outgoing) {
+        std::ranges::sort(targets);
+        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+        for (auto const target : targets) ++indegree[target];
+    }
+    std::vector<IndexedNodeOrdinal> ready_nodes;
+    auto insert_ready_node = [&](IndexedNodeOrdinal node) {
+        ready_nodes.insert(std::ranges::lower_bound(ready_nodes, node), node);
+    };
+    for (IndexedNodeOrdinal node = 0; node < plan.nodes.size(); ++node) {
+        if (indegree[node] == 0) insert_ready_node(node);
+    }
+    std::vector<IndexedNodeOrdinal> indexed_order;
+    indexed_order.reserve(plan.nodes.size());
+    while (!ready_nodes.empty()) {
+        auto const node = ready_nodes.front();
+        ready_nodes.erase(ready_nodes.begin());
+        indexed_order.push_back(node);
+        for (auto const target : indexed_outgoing[node]) {
+            if (--indegree[target] == 0) insert_ready_node(target);
+        }
+    }
+    if (indexed_order.size() != plan.nodes.size()) {
+        return std::unexpected(
+            "GraphJit indexed dependency graph is cyclic after semantic SCC validation");
+    }
+
+    std::map<IndexedNodeOrdinal, std::size_t> component_by_root;
+    for (auto const node : indexed_order) {
+        auto const root = find_root(find_root, node);
+        auto [entry, inserted] = component_by_root.emplace(
+            root, plan.components.size());
+        if (inserted) {
+            plan.component_order.push_back(entry->second);
+            plan.components.emplace_back();
+        }
+        auto& component = plan.components[entry->second];
+        component.nodes.push_back(node);
+        component.forward_order.push_back(node);
+        component.tock_order.push_back(node);
+        auto const scc = plan.nodes[node].semantic_scc;
+        if (!std::ranges::contains(component.semantic_scc_order, scc)) {
+            component.semantic_scc_order.push_back(scc);
+        }
+    }
+    for (auto& component : plan.components) {
+        component.reverse_order = component.forward_order;
+        std::ranges::reverse(component.reverse_order);
+    }
+    for (IndexedConnectionOrdinal connection = 0;
+         connection < plan.connections.size(); ++connection) {
+        auto const& planned = plan.connections[connection];
+        if (planned.source_endpoints.empty()) continue;
+        auto const node = plan.endpoints[planned.source_endpoints.front()].node;
+        auto const root = find_root(find_root, node);
+        plan.components[component_by_root.at(root)]
+            .connections.push_back(connection);
+    }
+
+    auto checked_add = [](std::size_t lhs, std::size_t rhs)
+        -> std::optional<std::size_t> {
+        if (rhs > std::numeric_limits<std::size_t>::max() - lhs) {
+            return std::nullopt;
+        }
+        return lhs + rhs;
+    };
+    auto checked_multiply = [](std::size_t lhs, std::size_t rhs)
+        -> std::optional<std::size_t> {
+        if (lhs != 0 && rhs > std::numeric_limits<std::size_t>::max() / lhs) {
+            return std::nullopt;
+        }
+        return lhs * rhs;
+    };
+    auto align_up = [&](std::size_t value, std::size_t alignment)
+        -> std::optional<std::size_t> {
+        auto const mask = alignment - 1;
+        auto sum = checked_add(value, mask);
+        if (!sum) return std::nullopt;
+        return *sum & ~mask;
+    };
+    std::size_t staging_size = 0;
+    for (auto const endpoint_ordinal : plan.requestable_outputs) {
+        auto const& endpoint = plan.endpoints[endpoint_ordinal];
+        if (endpoint.producer != IndexedProducer::tick_record) continue;
+        TickRecordStagingOutputPlan staging{
+            .endpoint = endpoint_ordinal,
+            .written_flag_offset = staging_size,
+        };
+        auto after_written = checked_add(staging_size, sizeof(std::uint8_t));
+        if (!after_written) {
+            return std::unexpected(
+                "GraphJit tick_record staging layout overflows size_t");
+        }
+        staging_size = *after_written;
+        if (endpoint.kind == PortKind::sample) {
+            auto capacity = checked_multiply(
+                kernel_block_size, channel_count(endpoint.sample_layout));
+            if (!capacity) {
+                return std::unexpected(
+                    "GraphJit sample tick_record capacity overflows size_t");
+            }
+            auto payload_size = checked_multiply(*capacity, sizeof(Sample));
+            auto payload_offset = align_up(staging_size, alignof(Sample));
+            if (!payload_size || !payload_offset) {
+                return std::unexpected(
+                    "GraphJit sample tick_record layout overflows size_t");
+            }
+            staging.value_capacity = *capacity;
+            staging.payload_offset = *payload_offset;
+            staging.payload_size = *payload_size;
+            staging.payload_alignment = alignof(Sample);
+            auto end = checked_add(*payload_offset, *payload_size);
+            if (!end) {
+                return std::unexpected(
+                    "GraphJit sample tick_record layout overflows size_t");
+            }
+            staging_size = *end;
+        } else {
+            auto capacity = event_count_for_sample_span(
+                endpoint.max_events_per_index, kernel_block_size);
+            if (!capacity) {
+                return std::unexpected(
+                    "GraphJit event tick_record capacity is not representable");
+            }
+            auto count_offset = align_up(staging_size, alignof(std::size_t));
+            if (!count_offset) {
+                return std::unexpected(
+                    "GraphJit event tick_record layout overflows size_t");
+            }
+            auto after_count = checked_add(*count_offset, sizeof(std::size_t));
+            if (!after_count) {
+                return std::unexpected(
+                    "GraphJit event tick_record layout overflows size_t");
+            }
+            auto payload_offset = align_up(*after_count, alignof(TimedEvent));
+            auto payload_size = checked_multiply(*capacity, sizeof(TimedEvent));
+            if (!payload_offset || !payload_size) {
+                return std::unexpected(
+                    "GraphJit event tick_record layout overflows size_t");
+            }
+            staging.event_count_offset = *count_offset;
+            staging.value_capacity = *capacity;
+            staging.payload_offset = *payload_offset;
+            staging.payload_size = *payload_size;
+            staging.payload_alignment = alignof(TimedEvent);
+            auto end = checked_add(*payload_offset, *payload_size);
+            if (!end) {
+                return std::unexpected(
+                    "GraphJit event tick_record layout overflows size_t");
+            }
+            staging_size = *end;
+        }
+        auto const staging_alignment = endpoint.kind == PortKind::event
+            ? std::max(staging.payload_alignment, alignof(std::size_t))
+            : staging.payload_alignment;
+        plan.recorder_staging.alignment = std::max(
+            plan.recorder_staging.alignment, staging_alignment);
+        plan.recorder_staging.outputs.push_back(std::move(staging));
+    }
+    auto final_size = align_up(
+        staging_size, plan.recorder_staging.alignment);
+    if (!final_size) {
+        return std::unexpected(
+            "GraphJit tick_record frame alignment overflows size_t");
+    }
+    plan.recorder_staging.size_bytes = *final_size;
     return {};
 }
 
@@ -963,100 +1563,20 @@ std::expected<SchedulePlan, std::string> build_schedule(
     schedule.bundle_execution_position.resize(graph.node_bundles.size());
     if (plan.nodes.empty()) return schedule;
 
-    std::vector<std::optional<std::size_t>> bundle_to_node(
-        graph.node_bundles.size());
-    for (std::size_t i = 0; i < plan.nodes.size(); ++i) {
-        bundle_to_node[plan.nodes[i].bundle] = i;
-    }
-
-    // Ordinary tick dependencies remain acyclic. Restore detached semantic
-    // source->consumer edges only for SCC formation. They are temporal/storage
-    // dependencies, not same-slice tick dependencies.
+    // Ordinary tick dependencies remain acyclic. Semantic SCC membership and
+    // condensation order were already computed with every authored detach
+    // restored while building IndexedPlan; schedule formation reuses those
+    // facts and only derives the within-SCC same-slice order here.
     auto const explicit_outgoing = dependency_adjacency(graph, plan, true);
-    auto augmented_outgoing = explicit_outgoing;
-    std::vector<bool> self_loop(plan.nodes.size(), false);
-    auto append_detach_dependency = [&](NodeBundleHandle source_bundle,
-                                        NodeBundleHandle target_bundle)
-        -> std::expected<void, std::string> {
-        if (source_bundle >= bundle_to_node.size()
-            || target_bundle >= bundle_to_node.size()
-            || !bundle_to_node[source_bundle]
-            || !bundle_to_node[target_bundle]) {
-            return std::unexpected(
-                "GraphJit detach scheduling refers to a non-concrete bundle");
-        }
-        auto const source = *bundle_to_node[source_bundle];
-        auto const target = *bundle_to_node[target_bundle];
-        if (source == target) self_loop[source] = true;
-        augmented_outgoing[source].push_back(target);
-        return {};
-    };
-    for (auto const& connection : plan.sample_connections) {
-        if (!connection.detach) continue;
-        for (auto const source : unique_source_bundles(connection.source_channels)) {
-            if (auto added = append_detach_dependency(
-                    source, connection.target_port.node_bundle_handle);
-                !added) return std::unexpected(std::move(added.error()));
-        }
+    if (plan.indexed.semantic_nodes.size() != plan.nodes.size()
+        || plan.indexed.semantic_sccs.empty()) {
+        return std::unexpected(
+            "GraphJit schedule is missing retained semantic SCC facts");
     }
-    for (auto const& connection : plan.event_connections) {
-        if (!connection.detach) continue;
-        for (auto const source : unique_source_bundles(connection.sources)) {
-            for (auto const target : connection.targets) {
-                if (auto added = append_detach_dependency(source, target.bundle);
-                    !added) return std::unexpected(std::move(added.error()));
-            }
-        }
-    }
-    for (auto& targets : augmented_outgoing) {
-        std::ranges::sort(targets);
-        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
-    }
-
-    auto const unvisited = std::numeric_limits<std::size_t>::max();
-    std::vector<std::size_t> index(plan.nodes.size(), unvisited);
-    std::vector<std::size_t> lowlink(plan.nodes.size(), 0);
-    std::vector<bool> on_stack(plan.nodes.size(), false);
-    std::vector<std::size_t> stack;
-    std::size_t next_index = 0;
-    std::vector<std::vector<std::size_t>> components;
-
-    auto strongconnect = [&](auto&& self, std::size_t v) -> void {
-        index[v] = next_index;
-        lowlink[v] = next_index;
-        ++next_index;
-        stack.push_back(v);
-        on_stack[v] = true;
-        for (auto const w : augmented_outgoing[v]) {
-            if (index[w] == unvisited) {
-                self(self, w);
-                lowlink[v] = std::min(lowlink[v], lowlink[w]);
-            } else if (on_stack[w]) {
-                lowlink[v] = std::min(lowlink[v], index[w]);
-            }
-        }
-        if (lowlink[v] != index[v]) return;
-
-        auto& component = components.emplace_back();
-        while (true) {
-            auto const w = stack.back();
-            stack.pop_back();
-            on_stack[w] = false;
-            component.push_back(w);
-            if (w == v) break;
-        }
-    };
-
-    for (std::size_t node = 0; node < plan.nodes.size(); ++node) {
-        if (index[node] == unvisited) strongconnect(strongconnect, node);
-    }
-
-    schedule.regions.reserve(components.size());
+    schedule.regions.reserve(plan.indexed.semantic_sccs.size());
     std::vector<std::size_t> node_to_region(plan.nodes.size(), 0);
-    for (auto& component : components) {
-        std::ranges::sort(component, [&](std::size_t a, std::size_t b) {
-            return plan.nodes[a].bundle < plan.nodes[b].bundle;
-        });
+    for (auto const& semantic_scc : plan.indexed.semantic_sccs) {
+        auto const& component = semantic_scc.nodes;
         auto const region_index = schedule.regions.size();
         SccRegionPlan region;
         region.maximum_block_size = std::numeric_limits<std::size_t>::max();
@@ -1067,8 +1587,7 @@ std::expected<SchedulePlan, std::string> build_schedule(
                 region.maximum_block_size,
                 plan.nodes[node].maximum_block_size);
         }
-        region.cyclic = component.size() > 1
-            || (component.size() == 1 && self_loop[component.front()]);
+        region.cyclic = semantic_scc.cyclic;
 
         // A detached dependency is a storage/temporal dependency, not a
         // same-slice tick dependency. Topologically order each region using
@@ -1113,10 +1632,15 @@ std::expected<SchedulePlan, std::string> build_schedule(
         schedule.bundle_to_region[plan.nodes[node].bundle] = node_to_region[node];
     }
 
-    std::vector<std::vector<std::size_t>> region_outgoing(schedule.regions.size());
-    std::vector<std::size_t> indegree(schedule.regions.size(), 0);
-    for (std::size_t source = 0; source < augmented_outgoing.size(); ++source) {
-        for (auto const target : augmented_outgoing[source]) {
+    // Schedule condensation is a semantically distinct adjacency: indexed
+    // dependencies must not pretend that tick_block produces their values.
+    // Reuse the retained SCC partition, then order those SCCs using only
+    // ordinary sequential tick dependencies.
+    std::vector<std::vector<std::size_t>> region_outgoing(
+        schedule.regions.size());
+    std::vector<std::size_t> region_indegree(schedule.regions.size(), 0);
+    for (std::size_t source = 0; source < explicit_outgoing.size(); ++source) {
+        for (auto const target : explicit_outgoing[source]) {
             auto const source_region = node_to_region[source];
             auto const target_region = node_to_region[target];
             if (source_region == target_region) continue;
@@ -1126,34 +1650,34 @@ std::expected<SchedulePlan, std::string> build_schedule(
     for (auto& targets : region_outgoing) {
         std::ranges::sort(targets);
         targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
-        for (auto const target : targets) ++indegree[target];
+        for (auto const target : targets) ++region_indegree[target];
     }
-
     auto region_key = [&](std::size_t region) {
         return schedule.regions[region].nodes.front();
     };
-    std::vector<std::size_t> ready;
+    std::vector<std::size_t> ready_regions;
     for (std::size_t region = 0; region < schedule.regions.size(); ++region) {
-        if (indegree[region] == 0) ready.push_back(region);
+        if (region_indegree[region] == 0) ready_regions.push_back(region);
     }
-    std::ranges::sort(ready, {}, region_key);
-    while (!ready.empty()) {
-        auto const region = ready.front();
-        ready.erase(ready.begin());
+    std::ranges::sort(ready_regions, {}, region_key);
+    while (!ready_regions.empty()) {
+        auto const region = ready_regions.front();
+        ready_regions.erase(ready_regions.begin());
         schedule.region_order.push_back(region);
         for (auto const target : region_outgoing[region]) {
-            if (--indegree[target] == 0) {
+            if (--region_indegree[target] == 0) {
                 auto const insertion = std::lower_bound(
-                    ready.begin(), ready.end(), target,
+                    ready_regions.begin(), ready_regions.end(), target,
                     [&](std::size_t lhs, std::size_t rhs) {
                         return region_key(lhs) < region_key(rhs);
                     });
-                ready.insert(insertion, target);
+                ready_regions.insert(insertion, target);
             }
         }
     }
     if (schedule.region_order.size() != schedule.regions.size()) {
-        return std::unexpected("connection SCC condensation graph is cyclic");
+        return std::unexpected(
+            "GraphJit sequential SCC condensation graph is cyclic");
     }
 
     std::size_t execution_position = 0;
@@ -1840,7 +2364,8 @@ std::expected<void, std::string> plan_event_groups(
 std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
     ConfiguredGraph const& graph,
     std::size_t kernel_block_size,
-    RealtimeStorageCostModel const& cost_model)
+    RealtimeStorageCostModel const& cost_model,
+    IndexedPlan const* retained_indexed_plan)
 {
     if (kernel_block_size == 0) {
         return std::unexpected(
@@ -1860,10 +2385,34 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto events = inventory_event_connections(graph, plan); !events) {
         return std::unexpected(std::move(events.error()));
     }
-    if (auto indexed_cycles =
-            validate_indexed_connections_outside_semantic_scc(graph, plan);
-        !indexed_cycles) {
-        return std::unexpected(std::move(indexed_cycles.error()));
+    if (retained_indexed_plan) {
+        if (retained_indexed_plan->recorder_staging.root_block_size
+                != kernel_block_size
+            || retained_indexed_plan->semantic_nodes.size()
+                != plan.nodes.size()
+            || retained_indexed_plan->bundle_to_semantic_node.size()
+                != graph.node_bundles.size()) {
+            return std::unexpected(
+                "GraphJit retained indexed plan does not match this graph specialization");
+        }
+        for (std::size_t node = 0; node < plan.nodes.size(); ++node) {
+            if (retained_indexed_plan->semantic_nodes[node].bundle
+                != plan.nodes[node].bundle) {
+                return std::unexpected(
+                    "GraphJit retained indexed plan does not match configured node identity");
+            }
+        }
+        plan.indexed = *retained_indexed_plan;
+    } else {
+        auto indexed = build_semantic_indexed_plan(
+            graph, plan, kernel_block_size);
+        if (!indexed) return std::unexpected(std::move(indexed.error()));
+        if (auto populated = populate_indexed_topology(
+                graph, plan, kernel_block_size, *indexed);
+            !populated) {
+            return std::unexpected(std::move(populated.error()));
+        }
+        plan.indexed = std::move(*indexed);
     }
     if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic) {
         return std::unexpected(std::move(acyclic.error()));

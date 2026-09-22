@@ -97,6 +97,7 @@ struct LoweredGraphRootSymbols {
 // lifetime is exactly the materialized ORC generation.
 struct LoweringOutput {
     NodeLayout node_layout{};
+    IndexedPlan indexed_plan{};
     LoweredGraphRootSymbols root_symbols{};
 };
 

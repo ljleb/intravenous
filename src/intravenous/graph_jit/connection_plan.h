@@ -3,6 +3,7 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/realtime_port_planning.h>
+#include <intravenous/graph_jit/indexed_plan.h>
 
 #include <cstddef>
 #include <expected>
@@ -229,6 +230,10 @@ struct ConnectionAnalysisPlan {
     std::vector<SampleProducerGroupPlan> sample_producer_groups{};
     std::vector<EventProducerGroupPlan> event_producer_groups{};
     ConnectionStoragePlan storage{};
+    // The indexed plan owns the complete semantic SCC decomposition as well as
+    // the indexed-only topology. Later lowering/runtime stages retain and reuse
+    // it instead of rediscovering either graph view.
+    IndexedPlan indexed{};
 };
 
 // Pure host-side topology/temporal/storage-requirement analysis. It does not
@@ -238,6 +243,10 @@ struct ConnectionAnalysisPlan {
 std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
     ConfiguredGraph const& graph,
     std::size_t kernel_block_size,
-    RealtimeStorageCostModel const& cost_model = {});
+    RealtimeStorageCostModel const& cost_model = {},
+    // Stack-pressure retries change only realtime physical policy. Supplying
+    // the immutable plan retained from the first analysis avoids repeating
+    // semantic SCC/indexed topology work for the same graph specialization.
+    IndexedPlan const* retained_indexed_plan = nullptr);
 
 } // namespace iv::graph_jit::detail

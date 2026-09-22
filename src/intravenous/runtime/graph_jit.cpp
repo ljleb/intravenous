@@ -1156,6 +1156,7 @@ public:
                 .configured_graph = request.graph,
                 .package_revisions = std::move(package_revisions),
                 .node_layout = std::move(lowering->node_layout),
+                .indexed_plan = std::move(lowering->indexed_plan),
                 .root_operations = materialized.root_operations,
                 .code_lifetime = std::move(materialized.lifetime),
             });
