@@ -72,8 +72,9 @@ root/compiler-owned persistent regions into one `NodeLayoutBuilder`.
 temporaries belong to the generated root's fixed stack frame.
 
 Any project-owned data that must survive from one execution call to another
-belongs in that layout. This includes history/latency carry, full persistent
-port buffers, feedback state, `State`, indexed-domain `IndexedState`, and activity state.
+belongs in that layout. This includes history/latency carry, full fixed persistent port buffers,
+feedback state, `State`, optional tock-only non-semantic `IndexedState`, and
+activity state.
 Invocation-local port temporaries do not acquire persistent ownership merely
 because their maximum size is known: the generated root should reserve them in
 its fixed stack frame, subject to a compile-time stack budget, or choose a full
@@ -498,7 +499,16 @@ struct RealtimeOutputConfig {
 };
 
 struct IndexedInputConfig {};
-struct IndexedOutputConfig { bool cache = true; };
+
+enum class IndexedProducer {
+    tick_record,
+    tock_realtime,
+    tock_stored,
+};
+
+struct IndexedOutputConfig {
+    IndexedProducer producer = IndexedProducer::tock_stored;
+};
 
 using InputAccessConfig =
     std::variant<RealtimeInputConfig, IndexedInputConfig>;
@@ -506,9 +516,21 @@ using OutputAccessConfig =
     std::variant<RealtimeOutputConfig, IndexedOutputConfig>;
 ```
 
-The distinct indexed alternatives are intentional: only outputs declare the
-`cache` materialization contract. Indexed inputs inherit the behavior of their
-connected producers and therefore carry no cache preference of their own.
+The distinct indexed alternatives are intentional. Indexed outputs declare their
+producer/execution authority; indexed inputs inherit the semantics of connected
+producers and carry no producer preference of their own.
+
+The three output modes are:
+
+- `tock_realtime`: demand-driven `tock_coverage()` output with no persistent result
+  and a positive guarantee that requested live computation is realtime-compatible;
+- `tock_stored`: `tock_coverage()` output whose complete exact coverage is
+  persistently materialized before publication; and
+- `tick_record`: authoritative retained indexed data updated by `tick_block()` in
+  whole-current-block-or-no-write transactions.
+
+This replaces the older boolean `cache` split and makes invalid combinations such
+as a tick-written uncached output unrepresentable.
 
 `InputConfig` / `OutputConfig` separately carry the sample/event payload variant
 and this access variant. `SampleInputProperties`, `SampleOutputProperties`,
@@ -564,40 +586,59 @@ domain boundary; there is no separate bounding extent. Node callbacks never
 request indexed values outside input coverage, so long uncovered timeline gaps
 require no storage or computation.
 
-Within coverage, exact semantic changed/demand regions are persistent graph
-metadata rather than one realtime retention window. Retained cache validity is
-coarser: canonically aligned indexed pages are wholly valid or wholly invalid for
-exactly `page_interval & coverage` and one indexed semantic version. A small
-change may invalidate a whole retained page locally, but forward propagation
-keeps the exact changed region; a later sparse request touching an invalid page
-materializes that page's entire covered domain. See
-[indexed_dsp_nodes.md](./indexed_dsp_nodes.md).
+Exact semantic changed/demand regions remain independent of physical storage
+pages. For a persistent stored output, canonically aligned pages may be wholly
+valid or invalid for exactly `page_interval & coverage` while a **candidate**
+version is being rebuilt. Forward changed regions are not widened to page
+boundaries. A published `tock_stored` output has every covered page domain valid;
+sparse requests merely read from that complete representation.
 
-An indexed output declaration therefore carries a boolean `cache`
-materialization/realtime-scheduling contract rather than a realtime timing config. The additive rule applies instead to the statically
-typed `tick()` / `tick_block()` accessor: an indexed input's current-block
-wrapper still exposes ordinary sequential operations while also exposing its
-exact coverage and covered arbitrary-position/range reads.
+`tock_realtime` owns no persistent output pages. Non-realtime access uses
+caller/transaction storage, while realtime lowering should use direct consumer
+placement or bounded compiler-owned transient storage whenever possible.
 
-Indexed access remains an execution capability, not a storage class. Coverage,
-page validity/version, residency, and payload are distinct. Persistent cache
-pages do not belong in fixed `NodeStorage` merely because they survive a query:
-dynamically growing `cache = true` page directories/payloads live in the
-executor-owned stable cache store (with per-generation endpoint bindings) when the
-output has stable project identity. Fixed node/indexed state and bounded compiler
-regions remain in canonical `NodeStorage`; `cache = false` outputs own no indexed
-page store.
+Persistent `tock_stored` and authoritative `tick_record` data live in
+executor-owned stable indexed storage with per-generation endpoint bindings when
+the output has stable project identity. Their stored-page width is exactly the
+fixed whole-graph root block size for the active layout generation, on the same
+absolute-sample-zero-aligned grid. A complete `tick_record` replacement therefore
+maps 1:1 to one stored page interval. Fixed `State`, tock-only non-semantic
+`IndexedState`, and bounded compiler regions remain in canonical `NodeStorage`.
 
-For `cache = true`, GraphJit/GraphExecutor may use direct authoritative source
-views, dense or coverage-packed sample pages, and packed event pages. For
-`cache = false`, no indexed page exists: non-realtime access uses caller/transaction
-storage, while realtime lowering should use direct consumer placement or bounded
-compiler-owned transient storage whenever possible. This avoids dynamic page
-roundtrips on the audio path while preserving the same indexed semantics. Cached event-page semantic capacity may reuse `max_events_per_index` over the
-page's covered sample count, and cached payload allocation may be committed lazily
-off the audio thread. An uncached event output participating in realtime instead
-uses compiler-bounded live event storage; it may not allocate dynamically merely
-because its port is indexed.
+Changing the root block size is a quiescent physical-layout transition, not an
+indexed semantic invalidation. Persistent `tock_stored`/`tick_record` values and
+coverage are losslessly repartitioned onto the new canonical grid, a replacement
+GraphJit generation receives newly sized staging/layout, and publication switches
+to the new layout only after migration completes. Semantic versioning and physical
+layout generation are distinct so old immutable snapshots may retain the old page
+partition until their readers release them.
+
+`tick_record` additionally has compiler-owned **realtime staging**, which is not
+the persistent indexed store. For a fixed compiled graph, GraphJit knows all
+`tick_record` ports, the root block size, sample channel/layout facts, and event
+capacity bounds, so it can compute one fixed whole-graph staging-frame layout and
+preallocate two frames. The audio thread writes one frame while the publisher
+consumes the other, swapping frame ownership at whole-root-block boundaries.
+
+Each `tick_record` output either writes its entire current root-block interval or
+does nothing. No write preserves pre-existing indexed values/coverage. A complete
+sample write initializes all channels/samples; a complete event write supplies the
+entire event sequence for the block, including the valid case of zero events.
+
+A completed recorder block may be wired directly into causally downstream live
+consumers during the same graph invocation while also being handed off for
+persistent publication. UI/background sparse requests never read mutable staging;
+they remain on immutable published indexed snapshots. Since indexed edges are
+forbidden from SCC cycles, live recorder forwarding has a fixed causal order.
+
+Persistent stored sample payloads may be dense or coverage-packed. Stored event
+payloads are packed ordered events; event fan-in order is deterministic by
+absolute sample index, stable source/connection ordinal, then producer-local
+order. Combined live event-buffer capacities must account for all incoming
+`max_events_per_index` bounds.
+
+See [indexed_dsp_nodes.md](./indexed_dsp_nodes.md) for the normative indexed
+execution/publication semantics.
 
 ## Event storage planning mirrors sample storage planning where possible
 

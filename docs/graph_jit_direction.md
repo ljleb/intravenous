@@ -110,12 +110,18 @@ groups fanout by producer, derives the requirement
 records consumed by the existing sample/event physical-storage choosers, and
 emits semantic transient/persistent/external storage and liveness requests. An
 indexed output never becomes an ordinary tick dependency merely because a
-realtime consumer needs it, but indexed-to-realtime lowering now splits by the
-output's boolean cache contract: `cache = false` may become an inline live pull
-`tock_coverage()` path, while `cache = true` remains a prepared materialization
-boundary. Realtime-to-realtime groups and uncached indexed live pulls can therefore
-share direct/transient storage-planning machinery without conflating their callback
-semantics. Block-slice mismatches conservatively require materialization
+realtime consumer needs it. The current implementation still carries the
+provisional boolean cache bit, but the target lowering contract is the three-state
+indexed producer model: `tock_realtime` may become an inline live pull;
+`tock_stored` is a complete persistent boundary; and `tick_record` uses fixed
+compiler-owned whole-block staging plus authoritative publication. Persistent
+stored pages use the exact same power-of-two quantum and absolute-sample alignment
+as the fixed root block, so one `tick_record` replacement maps 1:1 to one stored
+page interval. A root-block-size change requires a quiescent lossless repaging of
+persistent stored indexed content plus newly sized recorder staging; it changes a
+physical layout generation rather than indexed semantic meaning. Realtime-to-
+realtime groups and `tock_realtime` live pulls can share direct/transient storage-
+planning machinery without conflating their callback semantics. Block-slice mismatches conservatively require materialization
 until a later scheduler proves a shared subdivision. At the point this refactor
 landed, the lowering capability gate still rejected ports/connections; the sample-
 edge slice below was the first consumer of this analysis.
@@ -608,17 +614,17 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     declaration-owned auxiliary/shared-array regions, activity/TTL, deferred
     detach, and generalized skip semantics through existing plans rather than side
     paths.
-15. **Indexed DSP foundation.** First replace the legacy compiled-port API with
-    `IndexedCoverage`, distinct indexed input/output declarations, `IndexedState`,
-    and the one-node tock/forward/reverse coverage callbacks. Then carry those
-    exact callbacks and state metadata through compiler records, package
-    validation, resolved implementations, and GraphJit. Next add stable internal
-    endpoint identity and immutable indexed-component plans before allocating any
-    retained cache storage. Static planning also validates the cached-output SCC
-    rule: every `cache = true` indexed output must strictly leave the semantic SCC
-    of its owning node, although that node itself may participate in an SCC. The
-    semantic SCC relation includes indexed dependencies and explicit feedback for
-    cycle membership; it is not merely the same-slice realtime schedule. The
+15. **Indexed DSP foundation.** Replace the legacy compiled-port API with
+    `IndexedCoverage`, distinct indexed input/output declarations, the one-node
+    tock/forward/reverse callbacks, and the three-state indexed producer contract.
+    `IndexedState` remains only non-semantic tock acceleration state. Carry those
+    exact callbacks/configuration records through package validation, resolved
+    implementations, and GraphJit. Add stable internal endpoint identity and
+    immutable indexed-component plans before allocating persistent indexed output
+    storage. Static planning validates the unconditional SCC rule: every indexed
+    connection must leave its source node's semantic SCC. The semantic SCC relation
+    includes indexed dependencies and explicit feedback for cycle membership; it is
+    not merely the same-slice realtime schedule. The
     detailed dependency order is normative in
     [indexed_dsp_nodes.md](./indexed_dsp_nodes.md#32-implementation-landing-order).
 16. **GraphExecutor integration and mixed access.** Add active/pending executable generations,
@@ -626,9 +632,9 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     transaction workspaces, semantic-versioned candidate/published indexed
     snapshots, whole-live-block publication, root execution, and indexed-
     component dispatch. Complete non-realtime sample/event access before live
-    indexed pulls, then add indexed-to-realtime lowering and explicit recorder
-    notification draining. `CompiledGraph` remains independently testable before
-    this point.
+    indexed pulls, then add indexed-to-realtime lowering and fixed-layout
+    `tick_record` staging/publication. `CompiledGraph` remains independently
+    testable before this point.
 17. **Optimization refinements.** Verify generated hot-path assembly and then improve
     liveness reuse, the existing realtime and new indexed storage cost models,
     SIMD-aware storage/layout/conversion choices, fusion/SSA direct forwarding,
@@ -638,8 +644,8 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     build each semantically distinct adjacency relation once, run the complete
     semantic SCC decomposition once, and retain node-to-SCC/condensation/topology
     facts for schedule formation and later liveness/storage/batching/fusion passes.
-    In particular, cached-indexed-output SCC validation is an SCC-ID comparison
-    during one connection scan, not a DFS/BFS from every cached port. Keep graph
+    In particular, indexed-cycle validation is an SCC-ID comparison during one
+    indexed-connection scan, not a DFS/BFS from every indexed port. Keep graph
     relations that answer different questions separate—detach legality may still
     require pre-feedback reachability—but share ordinals, storage, traversal
     scratch, and valid analysis results wherever their edge relation is identical.
@@ -858,11 +864,14 @@ one `NodeLayoutBuilder` and finalizes it before emitting final storage accesses
 into LLVM. The completed `NodeLayout` becomes part of `CompiledGraph`, and
 `GraphExecutor` creates and owns the corresponding `NodeStorage`.
 
-The canonical fixed layout covers indexed-domain `IndexedState` as well as
-normal `State`. The ordinary declaration/lifecycle
-machinery represents both state domains and makes the same indexed state object
-available to `tick_block()` and indexed callbacks. `initialize()`, `move()`, and
-`release()` semantics apply to both where the node defines them.
+The canonical fixed layout may cover indexed-domain `IndexedState` as well as
+normal `State`, but their semantics differ. `State` participates in sequential
+node behavior. `IndexedState` is optional non-semantic acceleration storage exposed
+only to `tock_coverage()`; tick and propagation callbacks do not receive it.
+Ordinary declaration/lifecycle machinery still owns its construction/migration/
+destruction as fixed node storage, and the executor may reset or duplicate it when
+that does not violate storage-lifecycle constraints because observable indexed
+results cannot depend on its contents.
 
 Source introspection publishes symmetric metadata for `State` and
 `IndexedState`: a Clang nominal type identity (USR), a definition fingerprint,
@@ -882,16 +891,17 @@ should use the same `NodeLayout` / `NodeStorage`, including for example:
 - bounded reusable indexed-evaluation workspaces; and
 - other fixed-size compiler-selected project regions.
 
-Dynamically growing indexed output caches are an explicit exception because
-their page count and payload size depend on future coverage/access patterns.
-Stable indexed outputs live in an executor-owned cache store independent of one
-JIT generation; each `CompiledGraph` supplies immutable/static indexing metadata
-and bindings from generation-local endpoints to stable cache identities. Outputs
-without stable project identity may use generation-local dynamic cache state.
-This is not a second state-layout system: node persistent state still has one
-canonical `NodeStorage`, while request/cache storage is dynamic executor state.
-Request-sized transaction arenas likewise remain outside `NodeStorage` unless a
-useful fixed bound is known at compile time.
+Dynamically sized persistent indexed output storage is an explicit exception
+because its page/payload size follows actual coverage and retained authoritative
+content rather than one fixed `NodeLayout`. Stable `tock_stored` and `tick_record`
+outputs live in an executor-owned indexed store independent of one JIT generation;
+each `CompiledGraph` supplies immutable endpoint bindings and representation facts.
+`tock_realtime` outputs own no persistent result. Outputs without stable project
+identity may use generation-local persistent indexed state where needed. This is
+not a second node-state layout system: fixed `State`, optional tock-only
+`IndexedState`, and compiler-known bounded regions still have one canonical
+`NodeStorage`, while persistent output payloads and request-sized transaction
+storage are executor sidecars.
 
 Invocation-local realtime sample/event buffers occupy compile-time byte ranges in
 the generated root stack. Sample and event ranges are lifetime-packed within
@@ -946,326 +956,239 @@ separate project scratch allocation.
 
 ## Indexed evaluation is internal to the generated project
 
-A node with at least one indexed **output** remains requestable through the
-indexed component executor. The generated project root itself remains a
-zero-input/zero-output realtime root and does not gain synthetic indexed output
-ports or a project-wide tock operation.
+Indexed DSP is an internal capability of the generated project, not a set of
+synthetic project-root ports. External callers address stable internal indexed
+outputs through `CompiledGraph`/`GraphExecutor` metadata and generated component
+entrypoints. The normative semantics are in
+[indexed_dsp_nodes.md](./indexed_dsp_nodes.md).
 
-`CompiledGraph` should carry an immutable index from requestable internal indexed
-output ports to compiler-generated indexed component executors. Conceptually:
+Indexed outputs declare one producer mode:
 
-```text
-(node bundle, indexed output port)
-        |
-        v
-indexed connected component + sink ordinal
-        |
-        v
-specialized generated component executor
+```cpp
+enum class IndexedProducer {
+    tick_record,
+    tock_realtime,
+    tock_stored,
+};
 ```
 
-The exact host ABI is implementation work, but it should expose internal indexed
-outputs without inventing project-root output ports.
+The old boolean cache declaration is provisional and should be replaced by this
+three-state producer contract:
+
+- `tock_realtime`: produced by `tock_coverage()`, no persistent result, and safe
+  for inline realtime evaluation;
+- `tock_stored`: produced by `tock_coverage()`, persistently materialized over its
+  entire coverage before publication; and
+- `tick_record`: authoritative retained indexed data updated by `tick_block()` in
+  whole-current-block-or-no-write transactions.
+
+`IndexedState` is optional non-semantic acceleration state for `tock_coverage()`
+only. Tick execution and forward/reverse coverage propagation must not depend on
+it. Concurrent tock executions must not force a `tock_realtime` live path to wait
+on shared memoization state; GraphExecutor may reserve, duplicate, or reset
+acceleration state to provide exclusive realtime-safe access.
 
 ### Static topology planning belongs in lowering
 
 Most indexed graph structure is static and should be specialized by the lowerer
-rather than rediscovered for every mutation or access. At minimum lowering can
-precompute:
+rather than rediscovered for every mutation, access, or realtime block. At minimum
+lowering can precompute:
 
-- which nodes/ports participate in indexed access;
-- indexed connected components (maximal weakly connected components of the
-  indexed subgraph);
-- the mapping from requestable indexed outputs to component/sink ordinals;
-- reverse dependency order for demand propagation;
-- forward order for change propagation and tock evaluation;
-- fanout/convergence structure;
-- constant port/node/state offsets and callback targets;
-- which forward/reverse propagation operations are trivial; and
-- bounded reusable planning workspace where useful.
+- indexed participating nodes/ports and producer modes;
+- indexed weakly connected components and requestable output ordinals;
+- reverse dependency order and forward coverage/evaluation order;
+- fanout/convergence/conversion structure;
+- constant node/port/storage offsets and callback targets;
+- stable project-output bindings;
+- which propagation operations are trivial;
+- whole-graph semantic SCC membership; and
+- the fixed layout of every `tick_record` staging frame.
 
-The dynamic information is primarily per-output exact `IndexedCoverage`, exact
-changed/demanded regions, page directories, page-validity semantic versions,
-boolean cache contracts/residency, candidate/published indexed semantic states, and
-optional retained page payloads—not discovery of graph adjacency.
+The complete semantic dependency graph includes realtime, indexed, and restored
+explicit feedback dependencies for cycle membership. **Every indexed connection
+must leave its source node's semantic SCC.** Thus no indexed edge participates in
+a directed cycle, regardless of producer mode. A node may remain in a realtime
+SCC and export indexed data to nodes outside that SCC.
 
-### Forward change and indexed access are separate transactions
+This check needs no per-port reachability traversal. One linear SCC decomposition
+plus one indexed-edge scan is sufficient:
 
-Arbitrary node-local mutations may schedule forward processing even when no
-indexed input region changed. `propagate_forward_coverage()` updates each
-output's canonical `IndexedCoverage` and reports exact changed output regions;
-the executor derives added/removed coverage from the previous value and treats
-those regions as semantic changes too. Exact changed regions propagate through
-the indexed component without forcing `tock_coverage()` evaluation. Forward
-propagation continues through an intermediate even when that intermediate has no
-resident cache page—or is declared `cache = false` and has no page representation
-at all—because farther downstream retained results may still derive from an older
-semantic version.
+```text
+for each indexed source -> target:
+    reject iff semantic_scc(source) == semantic_scc(target)
+```
 
-The indexed output's boolean `cache` declaration determines where page
-granularity enters access planning:
+Reuse SCC IDs, dense node ordinals, condensation/topological facts, adjacency
+storage, and traversal scratch in later scheduling, storage, liveness, batching,
+fusion, and vectorization passes whenever the underlying edge relation matches.
+Do not collapse semantically different relations merely to save a traversal;
+detach legality, for example, may require pre-feedback reachability. Recompute SCCs
+from scratch per compilation initially rather than adding dynamic SCC maintenance.
 
-- `cache = false` means the output has no persistent indexed pages. Demand remains
-  exact through that output and its tock result is written directly into caller,
-  transaction, transient, or consumer storage. When such an output lies on a
-  realtime pull path, its tock/reverse work is realtime-compatible by contract.
-- `cache = true` means the output is a retained materialization boundary. Sparse
-  demand selects canonical pages. A valid/resident touched page satisfies demand;
-  a missing/invalid page promotes the requirement to its complete
-  `page_interval & output_coverage` domain before reverse propagation through the
-  producer.
+### Forward change and indexed access are separate operations
 
-For one cached canonical page:
+Exact `propagate_forward_coverage()` is mandatory for nodes with computed indexed
+outputs (`tock_realtime` or `tock_stored`) unless some future declaration mechanism
+provides the same exact coverage semantics mechanically. Coverage cannot be safely
+invented by a conservative generic fallback.
+
+Forward propagation carries exact changed regions and exact output coverage.
+Stored-page invalidation does not widen changed regions downstream. A
+`tock_stored` candidate may invalidate complete physical page domains locally, but
+all of its covered pages must be valid before that candidate is published.
+
+`propagate_reverse_coverage()` is value-blind. It can depend on coverage,
+configuration, sample rate, and other deterministic structural metadata, but not
+on indexed input payload values. Data-dependent addressing uses a conservative
+superset requirement in the initial model.
+
+Demand through `tock_realtime` stays exact and may materialize directly into caller,
+transaction, or compiler-planned live storage. A request for a published
+`tock_stored` or `tick_record` output reads from already-complete persistent data.
+
+### `tock_coverage()` contract
+
+`tock_coverage()` produces only `tock_realtime` and `tock_stored` outputs. It sees
+project sample rate, exact requested coverage per computed output, indexed inputs,
+and optional `IndexedState` acceleration state.
+
+For every `tock_realtime` output, requesting that output without unrelated outputs
+must always be realtime-compatible. The shared node-wide callback may skip
+unrequested expensive siblings and may share work when several outputs are
+requested together. If one output cannot be computed quickly without an expensive
+sibling, it is not legitimately `tock_realtime`.
+
+Successful sample evaluation completely initializes all requested sample/channels.
+Successful event evaluation produces the complete ordered event set for the
+requested coverage. Failed, cancelled, or superseded work commits no partial
+validity.
+
+### Persistent pages are candidate recomputation units, not lazy published holes
+
+`tock_stored` output pages are canonically aligned physical storage/recomputation
+units with semantic domain:
 
 ```text
 page_domain = page_interval & output_coverage
 ```
 
-A page is either wholly valid or wholly invalid for that exact page domain and
-indexed semantic version. Invalidating a page does **not** widen the exact changed
-region propagated downstream.
+A candidate page is wholly valid or invalid for that exact domain. Forward
+invalidation may make touched candidate pages invalid; candidate completion
+reverse-propagates and tocks their full covered page domains. **Every nonempty page
+domain is valid in the published stored version.** Sparse UI/live requests do not
+trigger partial materialization of a published stored output.
 
-One logical access may request indexed outputs from any number of internal nodes.
-Within one indexed component the semantic order is:
+Complete storage may later be heap-, arena-, mmap-, file-, compressed-, or
+copy-on-write-backed. Physical backing must still satisfy realtime access where a
+live path consumes it; physical RAM residency is not an indexed semantic state.
+
+### `tick_record` is compiled whole-block staging plus authoritative publication
+
+A `tick_record` output is written by `tick_block()`, never by `tock_coverage()`.
+For each root graph block it either replaces the entire current interval or performs
+no write. No write preserves existing values/coverage. A sample write initializes
+every sample/channel; an event write supplies the complete event set, where an
+empty sequence is distinct from no write.
+
+For a fixed compiled graph, GraphJit knows the complete set of `tick_record`
+outputs, fixed root block size, sample channel/layout facts, and bounded event
+capacities. It therefore computes one fixed-layout whole-graph staging frame and
+preallocates (initially) two frames. The audio thread writes one while non-realtime
+publication consumes the other; root-block boundaries swap frame pointers. No
+recorder staging allocation is needed during or between root ticks. Primitive
+maximum-block slicing must preserve the same root-level whole-block-or-no-write
+transaction rather than publishing slice-local partial recorder updates.
+
+A completed recorded block has two logical destinations:
 
 ```text
-seed requested sink positions/regions
-        |
-        v
-intersect exact sink `IndexedCoverage`
-        |
-        v
-inspect each output's `cache` contract
-        |
-        +-- cache=false -> exact covered demand --------------------+
-        |                                                           |
-        `-- cache=true -> touched pages                             |
-                |                                                   |
-                +-- valid/resident pages -> satisfied               |
-                |                                                   |
-                `-- missing/invalid pages -> full covered domains --+
-                                                                    |
-                                                                    v
-reverse planning in precomputed reverse order
-        |   union/coalesce requirements at convergence points
-        |   clip requirements to exact indexed-input coverage
-        |   apply the same cached/uncached rule at upstream outputs
-        v
-complete dependency/materialization plan
-        |
-        v
-forward evaluation in dependency order
-        |   uncached outputs -> direct/transaction/transient storage
-        |   cached outputs   -> retained page payloads
-        v
-tock_coverage() for each implicated node's required coverage
-        |
-        v
-commit cached pages / forward or return uncached materializations
+                         +--> same-pass private live representation
+recorded current block --+
+                         `--> next authoritative stored snapshot
 ```
 
-Coverage is never rounded to page boundaries. If a 1024-sample physical cached
-page intersects output coverage only at `[10,1002)`, then demand for any missing
-sample in that page causes the node to observe exactly `[10,1002)`, never
-`[0,1024)`. If several disjoint coverage regions occupy one page, touching that
-invalid cached page materializes all of those covered regions together. An
-uncached output has no such page expansion.
+GraphJit may wire the private complete block directly into causally downstream live
+consumers in the same graph invocation. This does not expose mutable staging to UI
+or background indexed transactions: they continue to read immutable published
+snapshots. Because indexed edges are acyclic, a live indexed consumer has a fixed
+producer-before-consumer order.
 
-Sparse UI fetches therefore do not imply sparse per-sample tock processing at
-cached outputs. Zoomed-in views naturally touch consecutive pages; extremely
-zoomed-out views touch sparse pages; approximately one requested display sample
-per cached page is the intended bounded worst case. Cheap uncached outputs may
-instead compute the exact sparse requested coverage directly.
+The non-realtime publisher incorporates the completed frame into persistent
+`tick_record` storage, computes exact change/coverage metadata, and prepares an
+immutable next snapshot/root. Publication occurs only at a whole-root-block
+boundary. File backing such as a WAV update is downstream persistence and never
+blocks indexed/live visibility.
 
-A node receives complete accumulated coverage sets whenever its forward/reverse
-propagation or tock callback runs. These are one-node callbacks despite possibly
-containing many disjoint regions. Future names such as `tock_coverage_batch()` or
-`propagate_*_coverage_batch()` are reserved for genuine multi-node batching.
-
-The lowerer may inline and specialize these callbacks so the runtime executor
-manipulates exact coverage sets and cached page/version state rather than generic
-graph data structures.
+Double buffering gives the publisher one whole root-block period before the same
+frame must be reused. Missing that bounded deadline is a recorder-publication
+overrun; the audio thread must not allocate or block to repair it. Triple buffering
+is a later implementation option if measured scheduler jitter warrants it.
 
 ## Lowering boundary
 
-The hard compiler seam remains one operation that receives the complete
-configured graph plus exact resolved primitive implementation information and
-populates one caller-owned LLVM module.
+The lowering result should carry immutable metadata sufficient for runtime work
+without rediscovering project topology. In addition to ordinary realtime schedule
+metadata it needs, as applicable:
 
-Its inputs include conceptually:
+- stable indexed endpoint identities and generation-local ordinals;
+- producer mode per indexed output;
+- generated forward/reverse/tock entrypoints and constant context-layout facts;
+- indexed component/order information;
+- semantic SCC IDs/validation products;
+- persistent stored-output bindings;
+- direct/transient live pull plans for `tock_realtime`;
+- complete stored/direct bindings for `tock_stored` and published `tick_record`;
+- fixed `tick_record` staging frame size/alignment/port offsets and written-bit
+  metadata; and
+- event fan-in ordering/capacity facts.
 
-```text
-ConfiguredGraph
-kernel specialization
-exact retained package modules
-resolved primitive tick/tock/forward-coverage/reverse-coverage LLVM callbacks
-exact accepted declaration/lifecycle metadata/callbacks
-resolved configuration-pointer relocations
-```
-
-It must not query `PackageJit`, `ModuleLoader`, live `NodeDefinitions`, or any
-current registry state.
-
-The lowerer produces:
-
-```text
-canonical finalized NodeLayout
-specialized project-root node LLVM
-indexed-component executor LLVM
-immutable LLVM globals/tables needed by those programs
-host metadata naming the generated root/component symbols and internal endpoints
-```
-
-It does **not** return a parallel storage plan. Canonical declaration is an early
-phase *inside* lowering: accepted native declaration callbacks and compiler raw
-regions are committed to `NodeLayoutBuilder`, `build()` fixes every offset, and
-only then does final LLVM generation encode those offsets. ORC materialization
-therefore consumes LLVM whose storage addresses already agree exactly with the
-`NodeLayout` returned alongside it.
-
-Source package LLVM modules and temporary `llvm::Function*`/`GlobalVariable*`
-anchors are valid only during lowering. Anything needed after lowering must have
-become generated/imported LLVM, immutable host metadata, or canonical
-`NodeLayout` information.
+Project sample rate is part of computed indexed semantics and must be supplied to
+`tock_coverage()` and propagation where mappings depend on it.
 
 ## `CompiledGraph`
 
-The result of `GraphJit` is one immutable executable generation. Conceptually it
-contains:
+`CompiledGraph` remains the immutable JIT artifact: generated machine code plus
+compiler metadata. The name describes compilation, not indexed port access.
 
-```text
-project/rebuild + definition-generation provenance
-exact participating PackageRevision pins
-specialized zero-input/zero-output root node operations
-canonical NodeLayout
-indexed endpoint index
-stable concrete-node/indexed-output reconciliation identity where available
-indexed input connection-set endpoint identity/schema metadata
-specialized indexed-component entrypoints/metadata
-ORC code/resource lifetime handle
-debug/execution-plan metadata
-```
-
-It does not own mutable `NodeStorage` and does not define a second state-layout
-representation. It also does not need a synthetic project-wide indexed/tock interface; indexed-output requests are routed through the internal
-endpoint/component index.
-
-`CompiledGraph` owns code, layout, and immutable planning metadata.
-`GraphExecutor` owns mutable storage and active execution state.
+It owns no mutable dynamic indexed payloads. It describes how a generation binds
+to executor-owned persistent indexed storage and transaction/staging resources.
+Stable stored-output identity is derived from stable project node/member/output
+identity, not generation-local primitive IDs.
 
 ## `GraphExecutor` boundary
 
-`GraphExecutor` receives the complete `CompiledGraph` after `GraphJit` returns.
-It owns:
+`GraphExecutor` owns the mutable runtime side of indexed execution:
 
-- active and pending executable generations;
-- one canonical `NodeStorage` per retained executable generation;
-- state/`IndexedState` initialization, migration/move, release, and destruction
-  through the canonical layout/lifecycle machinery;
-- an executor-owned stable indexed-cache store keyed by stable project indexed-
-  output identity for `cache = true` outputs, plus per-generation bindings from
-  local indexed endpoints to those cache entries;
-- generation-local indexed cache state only for cached concrete outputs that have
-  no stable project identity;
-- reusable indexed transaction workspaces/arenas for request-sized planning and
-  `cache = false` non-realtime materialization;
-- indexed semantic versions plus candidate/published indexed snapshots;
-- forward mutation/change transactions and reverse-demand/tock transactions;
-- sequential root-node execution requests;
-- indexed sample/event requests routed to the active generation's internal
-  indexed components;
-- live-required indexed readiness;
-- whole-live-graph-block indexed snapshot publication/reclamation; and
-- safe executable-generation activation.
+- active/pending executable generations and canonical `NodeStorage`;
+- optional tock-only `IndexedState` lifecycle/storage;
+- stable persistent stores/immutable roots for `tock_stored` and `tick_record`;
+- candidate/published indexed semantic versions;
+- reusable indexed transaction workspaces;
+- exact forward invalidation and reverse-demand/tock transactions;
+- complete `tock_stored` candidate materialization;
+- double/triple-buffered `tick_record` publication state and deferred reclamation;
+- external indexed request/result/change-notification lifetimes; and
+- safe whole-root-block executable/snapshot publication.
 
-Executable-generation replacement does not by itself invalidate or copy stable
-indexed caches. A concrete indexed output with stable virtual-node/member project
-identity rebinds the new generation's local endpoint to the same executor-owned
-cache entry. Cache identity and cache validity are separate: actual state,
-connection-set, coverage, implementation, or schema changes determine what must
-be invalidated for the candidate semantic version. Outputs without stable project
-identity remain generation-local.
+A semantic edit may build a complete candidate while realtime continues against an
+older immutable published base. A live root pass captures that base once.
+Causally downstream generated code may additionally observe complete current-pass
+`tick_record` overlays; UI/background requests never do.
 
-### Indexed mutation/version entry
+Stable executable replacement is rebinding rather than automatic indexed
+invalidation. Unchanged `tock_stored` payloads and authoritative `tick_record`
+content survive compatible JIT rebuilds. `tock_realtime` owns no persistent output
+data to rebind.
 
-Any mutation that changes indexed semantics enters through an executor-controlled
-boundary. A UI/state edit may create a new desired indexed semantic version and
-run forward propagation even with zero changed indexed inputs. Realtime recorder/
-source code must not traverse dynamic indexed structures on the audio path; it
-records bounded changed-output/coverage notifications in preallocated pass-local
-storage, which `GraphExecutor` consumes after the whole live graph block.
+Changing project sample rate invalidates/repropagates computed indexed semantics.
+`tock_stored` candidates are recomputed before publication; `tock_realtime`
+naturally evaluates under the new rate. Existing authoritative `tick_record`
+samples are not automatically resampled or reindexed: if preserving their
+original timing matters, an explicit sampler/resampler node performs that DSP.
 
-Tock work is tagged with the semantic version against which it was planned. A
-result computed for an obsolete version cannot commit as valid for a newer one.
-Superseded work may be cancelled or discarded. Pages that were never invalidated
-may be structurally shared across semantic versions; reusing results from already
-superseded in-flight work requires a separate equivalence proof.
-
-### Node creation, connection reconciliation, and indexed snapshots
-
-Coverage establishment is a semantic node-creation rule, not an executable-
-generation-startup rule. Whenever a concrete node has no retained stable
-counterpart, its state is initialized and forward processing establishes its
-indexed output coverage before indexed demand may target it. Project startup is
-merely the case where every node is created. A stable retained node reuses its
-existing coverage/cache state unless an actual forward cause changes it.
-
-During executable-generation reconciliation, a changed indexed input connection
-set conservatively marks that whole logical input changed over
-`old_input_coverage | new_input_coverage`. The forward callback sees the new input
-coverage and maps that finite whole-input change to exact output changes/coverage.
-A newly created node starts from empty output coverage, so all coverage it first
-publishes is also a semantic change propagated downstream. None of these forward
-operations implies eager tocking; UI-only indexed outputs may remain
-unmaterialized indefinitely.
-
-Realtime processing observes one immutable **published indexed semantic state**
-for an entire live graph block, but indexed-to-realtime lowering depends on each
-producer's boolean cache contract. A `cache = false` indexed chain may run
-`tock_coverage()` inline on the audio thread; a `cache = true` output is a prepared
-materialization boundary and its tock is never used as an audio-thread fallback.
-
-GraphJit should lower live pull paths backward from realtime inputs through zero or
-more uncached indexed outputs until cached/direct boundaries are reached. Uncached
-materialization should use the ordinary realtime storage planner: write directly
-into a single compatible no-history consumer when possible, otherwise use bounded
-compiler-owned transient/pass-local storage with normal fanout/liveness reuse. No
-indexed page allocation is permitted for `cache = false` outputs.
-
-Outside published indexed coverage, a realtime input yields its declared
-`neutral_value`/no events without allocating indexed storage. Inside coverage, a
-missing required `cache = true` page is an indexed-readiness underrun; it is not
-neutral data and does not authorize synchronous cached tock execution.
-
-If an edit changes live semantics, the current graph may continue using the
-previous published semantic version while the candidate prepares only the cached
-boundaries required by imminent live use. Uncached paths need no page preparation.
-Publication occurs atomically before or after processing the entire live graph
-block, never between node ticks. Unchanged pages/direct representations may be
-structurally shared, and old views are reclaimed only after no live pass can
-observe them.
-
-The initial cached-readiness policy should stay simple: a fixed pre-roll/lookahead
-window at playback start/seek, then advance a ready frontier ahead of the playhead
-and evict only unpinned pages under a simple memory policy. Later adaptive
-lookahead, measured-cost scheduling, transport/loop prediction, timeline-click
-speculation, and smarter eviction are implementation optimizations. They do not
-change the node-facing cache contract.
-
-A new `CompiledGraph` is reconciled before activation as retained stable nodes,
-created/removed nodes, indexed input connection-set changes, and semantic/schema
-changes. Stable indexed outputs bind to existing executor cache entries; JIT
-compilation alone is not an indexed mutation and an unrelated graph edit causes
-no indexed recomputation in unaffected components. Page payloads are not copied
-merely because executable code changed.
-
-Receiving a new executable generation likewise does not mutate an in-progress
-audio pass. Expensive preparation may happen immediately off the hot path, but
-both executable-generation activation and indexed-snapshot publication occur
-only at legal whole-pass boundaries.
-
-This keeps the useful replacement invariant from the old task-runner mechanism
-without retaining the old task graph.
+Receiving a new executable generation likewise does not mutate an in-progress live
+pass. Expensive preparation happens off the hot path; executable activation and
+persistent indexed snapshot publication occur only at legal whole-pass boundaries.
 
 ## Failure semantics
 
