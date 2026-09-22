@@ -507,6 +507,14 @@ indexed outputs declared `cache = true`. `cache = false` outputs own no indexed
 pages: demand remains exact and GraphJit may lower their tock directly into
 transaction storage or realtime direct/transient consumer storage.
 
+Static whole-project validation also separates cached indexed materialization from
+feedback. Semantic SCC detection includes indexed dependencies and explicit
+detached feedback for cycle membership. A `cache = true` indexed output may be
+owned by a node inside an SCC, but every consumer of that output must be outside
+the owning node's semantic SCC. `cache = false` indexed outputs may remain inside
+an otherwise-valid explicit realtime SCC because their inline tock path is
+realtime-compatible and owns no retained page validity.
+
 Logical sample/event connections do not imply buffers. Connection implementation
 selection is an explicit pure compiler-planning phase before LLVM generation;
 see [realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
@@ -720,9 +728,9 @@ The implementation checkpoints now stand as follows:
    Structured persistence and JSON-RPC adapters remain follow-up transport work.
 7. **Landed (fixed state foundation):** canonical `NodeLayout`/`NodeStorage`
    covers `IndexedState` and compiler-owned raw aligned regions. Next introduce pure
-   connection/history/latency/event-window storage planning and static
-   indexed component/order analysis inside the isolated whole-graph
-   lowering pipeline;
+   connection/history/latency/event-window storage planning, whole-project
+   semantic SCC validation for cached indexed outputs, and static indexed
+   component/order analysis inside the isolated whole-graph lowering pipeline;
 8. **Landed (compiler shell + storage/lifecycle ABI cleanup):** `GraphJit`
    synchronously captures exact package LLVM/provenance, resolves compiler
    anchors/config relocations, verifies and O3 optimizes generated project LLVM,

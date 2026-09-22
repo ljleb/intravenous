@@ -60,6 +60,12 @@ The central rules are:
 > Semantic-version publication still occurs only at whole-live-graph block
 > boundaries so one live pass sees one coherent indexed state.
 
+> Cached indexed outputs must not close a semantic dependency cycle back into
+> their own node. After whole-project semantic SCC detection, every connection
+> sourced from a `cache = true` indexed output must strictly leave the semantic
+> SCC containing that output's node. The node itself may participate in an SCC;
+> only its cached indexed outputs are forbidden from feeding that SCC.
+
 This is an incremental, demand-driven evaluation model, not a second realtime
 scheduler and not a storage class.
 
@@ -747,6 +753,14 @@ unpinned pages where needed. More advanced policies (adaptive lookahead, LRU/clo
 transport/seek prediction, timeline-click speculation, measured tock cost) are
 optional later optimizations.
 
+The scheduling promise also constrains feedback topology. A cached indexed output
+may be produced by a node that participates in realtime feedback, but that output
+must not feed any dependency path that returns to an input of the same node. Such
+a path would let the realtime SCC consume cached data and then invalidate the same
+cached producer through the cycle, forcing the cached value to advance at realtime
+pace even though `cache = true` explicitly declines that guarantee. Section 18
+defines the whole-project SCC validation precisely.
+
 ## 14. Sample cache pages
 
 Retained indexed sample outputs use canonically aligned fixed-width pages rather
@@ -956,11 +970,89 @@ Lowering may precompute per component:
 - bounded reusable planning workspace where useful.
 
 Separate indexed components cannot share indexed dependency work and may be
-processed independently.
+processed independently. "Indexed connected component" is still not a synonym
+for SCC: it is a weak-connectivity partition used to share indexed planning work.
 
-If indexed cycles are eventually legal, strongly connected components are a
-separate scheduling concept inside an indexed connected component; "component"
-in this document does not mean SCC.
+### Semantic SCC constraint for cached indexed outputs
+
+Feedback validation uses a separate **whole-project semantic dependency graph**.
+Its vertices are concrete nodes. Its directed edges represent logical data
+dependencies of every access direction that can carry causality between nodes,
+including realtime and indexed connections. A detached/feedback connection is
+restored for semantic cycle membership even though detach removes its same-slice
+tick dependency. This semantic graph is intentionally broader than the graph used
+to topologically order one realtime slice.
+
+Let `N` be a concrete node and `O` one of `N`'s indexed output ports with
+`cache = true`. The required invariant is:
+
+> No directed dependency path beginning with a connection sourced from `O` may
+> eventually reach any input of `N`.
+
+Because current node metadata does not describe input-to-output dependency at
+finer granularity, validation conservatively treats the concrete node as the
+dependency unit. After computing SCCs of the semantic dependency graph, the rule
+has a simple equivalent form:
+
+> Every direct consumer of a `cache = true` indexed output must belong to a
+> different semantic SCC from the output's owning node.
+
+If a cached output fans out, **every** branch must satisfy the rule. One branch
+remaining inside the owner's SCC makes the graph invalid even when other branches
+leave it. A direct cached indexed self-loop is therefore invalid as well.
+
+The node itself is not forbidden from SCC membership. This is legal:
+
+```text
+          realtime feedback
+        +-------------------+
+        |                   |
+        v                   |
+       A -----------------> B
+       |
+       `-- indexed cache=true --> C
+```
+
+provided the cached output from `A` only reaches nodes outside `A`'s semantic SCC.
+This lets a cyclic realtime node publish cached analysis/UI data downstream
+without making that cache part of the feedback loop.
+
+This is invalid:
+
+```text
+       A -- indexed cache=true --> B
+       ^                           |
+       |                           |
+       `-------- dependency -------'
+```
+
+because the cached output can eventually affect an input of `A`. The SCC can
+consume a cached value and then invalidate the producer on which that value
+depends. Servicing the loop would therefore require cached indexed computation to
+advance in lockstep with realtime execution, contradicting the `cache = true`
+contract that its `tock_coverage()` need not be realtime-compatible. Ahead-of-time
+prefetch cannot in general solve this because the state needed for a future
+iteration may be created by the preceding iteration of the same cycle.
+
+`cache = false` indexed outputs do not have this cached-self-dependency problem:
+they own no retained page validity and promise realtime-compatible inline
+materialization. They may therefore participate in an SCC when the surrounding
+cycle is otherwise legal. This rule does **not** create a new indexed fixed-point
+or feedback model, however. Cycles are still legalized only by the existing
+explicit realtime feedback/detach semantics; `cache = false` is necessary for an
+indexed output retained inside such an SCC, not sufficient to make an arbitrary
+cycle valid.
+
+GraphJit should perform this check after the complete project graph is assembled
+and semantic SCC membership is known. Using only the same-slice/realtime execution
+SCCs is insufficient because an indexed edge can itself be the edge that closes a
+mixed realtime/indexed semantic cycle.
+
+Until inline `cache = false` indexed work is actually supported inside live SCC
+lowering, an implementation may conservatively reject a broader class such as all
+SCCs crossed by indexed dependencies. That is a temporary capability gate, not
+the final graph semantic constraint; it should eventually relax to the cached-
+output rule above.
 
 ## 19. Node creation and coverage publication
 
@@ -1488,6 +1580,13 @@ boundary. At minimum:
 - node-facing indexed reads can be validated against input coverage/live snapshot
   availability in appropriate builds.
 
+Whole-project GraphJit validation additionally runs after all project connections
+and explicit detach/feedback semantics are known. It must compute semantic SCC
+membership over the complete logical dependency relation and reject any
+`cache = true` indexed output with a consumer in the same semantic SCC as the
+output's owning node. Diagnostics should identify the cached output, its owning
+node, and at least one in-SCC consumer/path witness where practical.
+
 Diagnostics should name the node type, offending callback/port, and expected
 alternative whenever practical.
 
@@ -1512,10 +1611,12 @@ Steps 1 and 2 are implemented; step 3 is the next capability landing.
    JIT product rather than a port access model.
 3. **Stable identity and static indexed planning.** Thread stable project
    instance/virtual-node/member/output identities into GraphJit, classify indexed
-   connection directions, reject implicit realtime-to-indexed transport, and
-   precompute indexed components, endpoint ordinals, forward/reverse/evaluation
-   orders, convergence/conversion facts, cache contracts, and connection-set
-   fingerprints. No mutable pages or semantic versions belong to this phase.
+   connection directions, reject implicit realtime-to-indexed transport, compute
+   whole-project semantic SCC membership, reject any `cache = true` indexed
+   output whose consumer remains in the owning node's semantic SCC, and precompute
+   indexed components, endpoint ordinals, forward/reverse/evaluation orders,
+   convergence/conversion facts, cache contracts, and connection-set fingerprints.
+   No mutable pages or semantic versions belong to this phase.
 4. **Non-realtime `GraphExecutor` capability.** Add active/pending generations,
    canonical `NodeStorage`, the stable executor-owned cache store and
    per-generation bindings, transaction workspaces, semantic versions, creation
@@ -1643,3 +1744,10 @@ capability rather than a fifth connection transport mode.
     `old_input_coverage | new_input_coverage`.
 35. External incomplete candidate data is pending/not-ready, never fabricated as
     empty/default. Completed external results identify their semantic version.
+36. Cached indexed outputs cannot participate in their own semantic feedback.
+    After whole-project semantic SCC detection, every connection sourced from a
+    `cache = true` indexed output must target a node outside the owning node's
+    semantic SCC. Nodes with cached indexed outputs may themselves be in SCCs;
+    those cached outputs must strictly leave the SCC. `cache = false` indexed
+    outputs may remain inside an otherwise-valid explicit realtime SCC because
+    they own no pages and promise realtime-compatible inline materialization.

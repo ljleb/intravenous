@@ -104,8 +104,9 @@ The second major landing-site refactor has now landed. Pure host-side connection
 analysis lives in `graph_jit/connection_plan.{h,cpp}` and is intentionally usable
 before LLVM/package realization. It inventories concrete nodes, classifies
 connection access direction, derives sequential tick dependencies, computes
-deterministic SCC/region ordering, records per-edge history/latency/conversion/
-boundary/feedback facts, groups fanout by producer, derives the requirement
+deterministic realtime SCC/region ordering plus whole-project semantic cycle
+reachability, records per-edge history/latency/conversion/boundary/feedback facts,
+groups fanout by producer, derives the requirement
 records consumed by the existing sample/event physical-storage choosers, and
 emits semantic transient/persistent/external storage and liveness requests. An
 indexed output never becomes an ordinary tick dependency merely because a
@@ -613,7 +614,12 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     exact callbacks and state metadata through compiler records, package
     validation, resolved implementations, and GraphJit. Next add stable internal
     endpoint identity and immutable indexed-component plans before allocating any
-    retained cache storage. The detailed dependency order is normative in
+    retained cache storage. Static planning also validates the cached-output SCC
+    rule: every `cache = true` indexed output must strictly leave the semantic SCC
+    of its owning node, although that node itself may participate in an SCC. The
+    semantic SCC relation includes indexed dependencies and explicit feedback for
+    cycle membership; it is not merely the same-slice realtime schedule. The
+    detailed dependency order is normative in
     [indexed_dsp_nodes.md](./indexed_dsp_nodes.md#32-implementation-landing-order).
 16. **GraphExecutor integration and mixed access.** Add active/pending executable generations,
     canonical `NodeStorage` construction/migration, dynamic indexed sidecars and

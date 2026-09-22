@@ -1770,6 +1770,29 @@ SCCs cannot be cached as an iv-module-local execution fact because cross-module 
 
 Therefore SCC detection runs only after all module instances and project connections have been combined.
 
+Indexed caching adds a second reason this must be whole-project analysis. For
+**semantic cycle membership**, the dependency relation includes indexed
+connections as well as realtime connections, and explicit detached/feedback
+connections are restored as semantic edges even though they are not same-slice
+tick dependencies. This semantic SCC partition may therefore be broader than the
+SCC/region relation used to order one realtime slice.
+
+For every indexed output declared `cache = true`, all of its consumers must be in
+a different semantic SCC from the output's owning node. Equivalently, no dependency
+path beginning at a cached indexed output may return to any input of its own node.
+The owning node itself may participate in feedback and may export cached indexed
+data out of that SCC. `cache = false` indexed outputs may remain inside an
+otherwise-valid explicit realtime SCC because they own no retained cache pages and
+are authored as realtime-compatible inline computations. This cached-output rule
+is necessary but does not itself legalize cycles; detach/realtime feedback remains
+the mechanism that gives a cycle causal execution semantics.
+
+The rationale is that an in-SCC cached indexed dependency could be consumed and
+then invalidated again by execution of the same cycle. It would therefore have to
+advance at realtime pace, which contradicts `cache = true`: that declaration
+exists specifically because `tock_coverage()` is not guaranteed to meet an audio
+deadline and must be prepared ahead of use.
+
 ### 19.2 Feedback determines real temporal storage
 
 Feedback and history are cases where persistent storage is semantically real rather than an artifact of the generic runtime.

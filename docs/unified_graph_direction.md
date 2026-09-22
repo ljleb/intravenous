@@ -341,6 +341,12 @@ contract is in [indexed_dsp_nodes.md](./indexed_dsp_nodes.md). In summary:
 - `cache = true` outputs are retained materialization boundaries. Canonically
   aligned pages are physical only: one page is wholly valid/invalid for exactly
   `page_interval & coverage`, and page boundaries never widen coverage;
+- a `cache = true` indexed output may originate on a node that participates in
+  feedback, but every consumer of that cached output must strictly leave the
+  owning node's whole-project semantic SCC. Otherwise the feedback loop could
+  consume and then invalidate its own cached dependency, forcing a supposedly
+  ahead-of-time boundary to advance at realtime pace. `cache = false` indexed
+  outputs may remain inside an otherwise-valid explicit realtime SCC;
 - sparse UI demand at cached outputs selects pages. Valid pages are reused; an
   invalid touched page promotes work to its complete covered page domain. Demand
   through uncached outputs stays exact;
@@ -551,3 +557,7 @@ this direction.
     indexed coverage a realtime input gets neutral/no events; a missing cached
     page inside coverage is a readiness failure, not neutral data or permission for
     a cached audio-thread tock.
+19. Whole-project semantic SCC validation includes indexed dependencies and
+    explicit feedback edges for cycle membership. Every connection sourced from a
+    `cache = true` indexed output must leave the owning node's semantic SCC; the
+    node itself may remain in the SCC and export the cached output downstream.
