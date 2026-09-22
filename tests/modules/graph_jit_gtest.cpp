@@ -1132,24 +1132,28 @@ TEST(GraphJitSamplePhysicalPlan, LeavesIndexedAccessBranchesUnresolved)
     };
     connections.sample_connections.push_back(std::move(realtime));
     SampleConnectionPlan indexed;
-    indexed.access = PlannedConnectionAccess::realtime_to_indexed;
+    indexed.access = PlannedConnectionAccess::indexed_to_indexed;
     connections.sample_connections.push_back(std::move(indexed));
 
-    SampleProducerGroupPlan group;
-    group.canonical_source_layout = iv::ChannelLayout{
+    SampleProducerGroupPlan realtime_group;
+    realtime_group.canonical_source_layout = iv::ChannelLayout{
         .channel_type = iv::ChannelTypeId::mono,
         .sample_layout = iv::SampleStreamLayout::planar,
     };
-    group.connection_indices = {0, 1};
-    group.has_realtime_connections = true;
-    group.has_indexed_connections = true;
-    group.storage_plan = iv::SampleConnectionStoragePlan{
+    realtime_group.connection_indices = {0};
+    realtime_group.has_realtime_connections = true;
+    realtime_group.storage_plan = iv::SampleConnectionStoragePlan{
         iv::RealtimeBufferStorageKind::transient_stack};
-    group.live_interval = ConnectionLiveIntervalPlan{
+    realtime_group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
     };
-    connections.sample_producer_groups.push_back(std::move(group));
+    connections.sample_producer_groups.push_back(std::move(realtime_group));
+
+    SampleProducerGroupPlan indexed_group;
+    indexed_group.connection_indices = {1};
+    indexed_group.has_indexed_connections = true;
+    connections.sample_producer_groups.push_back(std::move(indexed_group));
 
     auto physical = build_sample_physical_plan(connections, 64);
     ASSERT_TRUE(physical.has_value())
@@ -1157,8 +1161,9 @@ TEST(GraphJitSamplePhysicalPlan, LeavesIndexedAccessBranchesUnresolved)
     ASSERT_EQ(physical->connection_representations.size(), 2u);
     ASSERT_TRUE(physical->connection_representations[0].has_value());
     EXPECT_FALSE(physical->connection_representations[1].has_value());
-    ASSERT_EQ(physical->producer_groups.size(), 1u);
+    ASSERT_EQ(physical->producer_groups.size(), 2u);
     ASSERT_TRUE(physical->producer_groups[0].has_value());
+    EXPECT_FALSE(physical->producer_groups[1].has_value());
     EXPECT_EQ(
         *physical->connection_representations[0],
         physical->producer_groups[0]->canonical_representation);

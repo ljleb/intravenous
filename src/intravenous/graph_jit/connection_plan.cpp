@@ -54,9 +54,11 @@ bool is_internal_bundle(
     return bundle != boundary;
 }
 
-PlannedConnectionAccess connection_access(
+std::expected<PlannedConnectionAccess, std::string> connection_access(
     bool source_realtime,
-    bool target_realtime) noexcept
+    bool target_realtime,
+    std::string_view payload,
+    std::size_t connection_index)
 {
     if (source_realtime && target_realtime) {
         return PlannedConnectionAccess::realtime_to_realtime;
@@ -64,9 +66,14 @@ PlannedConnectionAccess connection_access(
     if (!source_realtime && !target_realtime) {
         return PlannedConnectionAccess::indexed_to_indexed;
     }
-    return source_realtime
-        ? PlannedConnectionAccess::realtime_to_indexed
-        : PlannedConnectionAccess::indexed_to_realtime;
+    if (!source_realtime) {
+        return PlannedConnectionAccess::indexed_to_realtime;
+    }
+    return std::unexpected(
+        "GraphJit " + std::string(payload) + " connection "
+        + std::to_string(connection_index)
+        + " connects a realtime output to an indexed input; "
+          "realtime-produced indexed data requires an explicit tick_record indexed output");
 }
 
 bool uses_realtime_storage(PlannedConnectionAccess access) noexcept
@@ -76,8 +83,7 @@ bool uses_realtime_storage(PlannedConnectionAccess access) noexcept
 
 bool has_sequential_source(PlannedConnectionAccess access) noexcept
 {
-    return access == PlannedConnectionAccess::realtime_to_realtime
-        || access == PlannedConnectionAccess::realtime_to_indexed;
+    return access == PlannedConnectionAccess::realtime_to_realtime;
 }
 
 std::expected<void, std::string> inventory_nodes(
@@ -252,8 +258,10 @@ std::expected<void, std::string> inventory_sample_connections(
             }
             connection_plan.canonical_source_layout = canonical_source_layout;
             connection_plan.read_latency = connection_plan.source_latency;
-            connection_plan.access = connection_access(
-                source_realtime.value_or(true), target_realtime);
+            auto access = connection_access(
+                source_realtime.value_or(true), target_realtime, "sample", i);
+            if (!access) return std::unexpected(std::move(access.error()));
+            connection_plan.access = *access;
             if (!connection.detach) {
                 for (auto const source_channel : connection.source_channels) {
                     append_dependency(
@@ -559,8 +567,13 @@ std::expected<void, std::string> inventory_event_connections(
                 }
                 target_realtime = this_target_realtime;
             }
-            connection_plan.access = connection_access(
-                source_realtime.value_or(true), target_realtime.value_or(true));
+            auto access = connection_access(
+                source_realtime.value_or(true),
+                target_realtime.value_or(true),
+                "event",
+                i);
+            if (!access) return std::unexpected(std::move(access.error()));
+            connection_plan.access = *access;
             if (connection.detach) {
                 if (connection.detach->loop_extra_latency == 0)
                     return std::unexpected(

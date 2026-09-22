@@ -21,7 +21,6 @@ enum class PlannedConnectionAccess {
     realtime_to_realtime,
     indexed_to_indexed,
     indexed_to_realtime,
-    realtime_to_indexed,
 };
 
 struct PlannedGraphNode {

@@ -1794,10 +1794,10 @@ not a requirement that every individual edit or numbered point leave an
 independently releasable intermediate tree. Combine adjacent work when that makes
 final lowering simpler.
 
-3. **Normalize indexed connection semantics before adding execution modes.** An
-   ordinary realtime output may not directly satisfy an indexed input. Remove
-   `realtime_to_indexed` as an executable connection category and reject such a
-   connection during graph construction/validation. Realtime-produced indexed data
+3. **Landed: normalized indexed connection semantics.** An
+   ordinary realtime output may not directly satisfy an indexed input. The
+   `realtime_to_indexed` executable connection category has been removed and that
+   graph shape is rejected during connection analysis. Realtime-produced indexed data
    enters the indexed graph only through an explicit `tick_record` indexed output;
    its realtime dependencies remain ordinary realtime connections into the
    recorder-producing node. Retain only realtime-to-realtime,

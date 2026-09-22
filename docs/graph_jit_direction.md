@@ -609,9 +609,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     zero-output. Device I/O and communication with other application modules are
     ordinary concrete node definitions that own the relevant external resource or
     application-module bridge; GraphJit must not add a root boundary-binding ABI.
-14. **Indexed connection-model cleanup.** Preserve the node API invariant that
-    ordinary realtime outputs never directly satisfy indexed inputs. Remove any
-    executable `realtime_to_indexed` lowering category and reject that graph shape;
+14. **Landed: indexed connection-model cleanup.** Preserve the node API invariant that
+    ordinary realtime outputs never directly satisfy indexed inputs. The executable
+    `realtime_to_indexed` lowering category is removed and that graph shape is
+    rejected during connection analysis;
     realtime-produced indexed data is represented only by an explicit
     `tick_record` indexed output. Keep recorder dependencies into the producing node
     as ordinary realtime connections.

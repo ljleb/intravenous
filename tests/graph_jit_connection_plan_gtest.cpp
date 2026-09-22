@@ -47,6 +47,26 @@ struct PlainSamplePass {
     void tick_block(iv::TickBlockContext<PlainSamplePass> const&) const {}
 };
 
+struct RealtimeRecorderPass {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input("in")};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::realtime_sample_output("realtime"),
+            iv::indexed_sample_output(
+                "recorded",
+                {},
+                {.producer = iv::IndexedProducer::tick_record}),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<RealtimeRecorderPass> const&) const {}
+};
+
 struct NeutralSamplePass {
     static constexpr auto inputs()
     {
@@ -769,12 +789,12 @@ TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportIndexedData)
 {
     using namespace iv;
     GraphBuilder graph;
-    auto first = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto first = details::configure_concrete_node<RealtimeRecorderPass>(graph);
     auto second = details::configure_concrete_node<PlainSamplePass>(graph);
     auto indexed_sink = details::configure_concrete_node<IndexedSink>(graph);
     first(second);
-    second(static_cast<SamplePortRef>(first).detach(5));
-    indexed_sink(first);
+    second(first["realtime"].detach(5));
+    indexed_sink(first["recorded"]);
     graph.outputs();
 
     auto configured = std::move(graph).finish();
@@ -784,7 +804,7 @@ TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportIndexedData)
         plan->sample_connections,
         [](graph_jit::detail::SampleConnectionPlan const& connection) {
             return connection.access
-                == graph_jit::detail::PlannedConnectionAccess::realtime_to_indexed;
+                == graph_jit::detail::PlannedConnectionAccess::indexed_to_indexed;
         }));
 }
 
@@ -1054,7 +1074,7 @@ TEST(GraphJitConnectionPlan, IndexedConnectionsDoNotUseRealtimeStoragePolicy)
     EXPECT_TRUE(plan->storage.regions.empty());
 }
 
-TEST(GraphJitConnectionPlan, PreservesIndexedRealtimeAccessDirection)
+TEST(GraphJitConnectionPlan, PreservesIndexedToRealtimeAccessDirection)
 {
     using namespace iv;
 
@@ -1091,38 +1111,54 @@ TEST(GraphJitConnectionPlan, PreservesIndexedRealtimeAccessDirection)
     EXPECT_FALSE(
         indexed_to_realtime_plan->sample_producer_groups[0]
             .storage_plan.has_value());
+}
 
-    GraphBuilder realtime_to_indexed;
+TEST(GraphJitConnectionPlan, RejectsRealtimeToIndexedConnections)
+{
+    using namespace iv;
+
+    GraphBuilder realtime_to_indexed_sample;
     auto realtime_source =
-        details::configure_concrete_node<MonoSource>(realtime_to_indexed);
+        details::configure_concrete_node<MonoSource>(realtime_to_indexed_sample);
     auto indexed_sink =
-        details::configure_concrete_node<IndexedSink>(realtime_to_indexed);
+        details::configure_concrete_node<IndexedSink>(realtime_to_indexed_sample);
     indexed_sink(realtime_source);
-    realtime_to_indexed.outputs();
+    realtime_to_indexed_sample.outputs();
 
-    auto realtime_to_indexed_graph = std::move(realtime_to_indexed).finish();
-    auto realtime_to_indexed_plan =
+    auto realtime_to_indexed_sample_graph =
+        std::move(realtime_to_indexed_sample).finish();
+    auto realtime_to_indexed_sample_plan =
         graph_jit::detail::build_connection_analysis_plan(
-            realtime_to_indexed_graph, 64);
-    ASSERT_TRUE(realtime_to_indexed_plan.has_value())
-        << (realtime_to_indexed_plan
-                ? std::string{}
-                : realtime_to_indexed_plan.error());
-    ASSERT_EQ(realtime_to_indexed_plan->sample_connections.size(), 1u);
-    EXPECT_EQ(
-        realtime_to_indexed_plan->sample_connections[0].access,
-        graph_jit::detail::PlannedConnectionAccess::realtime_to_indexed);
-    ASSERT_EQ(realtime_to_indexed_plan->dependencies.size(), 1u);
-    EXPECT_TRUE(
-        realtime_to_indexed_plan->dependencies[0].sequential_tick_dependency);
-    ASSERT_EQ(realtime_to_indexed_plan->sample_producer_groups.size(), 1u);
-    EXPECT_FALSE(
-        realtime_to_indexed_plan->sample_producer_groups[0]
-            .has_realtime_connections);
-    EXPECT_TRUE(
-        realtime_to_indexed_plan->sample_producer_groups[0]
-            .has_indexed_connections);
-    EXPECT_FALSE(
-        realtime_to_indexed_plan->sample_producer_groups[0]
-            .storage_plan.has_value());
+            realtime_to_indexed_sample_graph, 64);
+    ASSERT_FALSE(realtime_to_indexed_sample_plan.has_value());
+    EXPECT_NE(realtime_to_indexed_sample_plan.error().find("sample connection 0"),
+        std::string::npos);
+    EXPECT_NE(realtime_to_indexed_sample_plan.error().find(
+        "realtime output to an indexed input"), std::string::npos);
+    EXPECT_NE(realtime_to_indexed_sample_plan.error().find("tick_record"),
+        std::string::npos);
+
+    GraphBuilder realtime_to_indexed_event;
+    auto realtime_event_source =
+        details::configure_concrete_node<PlainEventPass>(
+            realtime_to_indexed_event);
+    auto indexed_event_sink =
+        details::configure_concrete_node<IndexedEventPass>(
+            realtime_to_indexed_event);
+    indexed_event_sink.connect_event_input(
+        0, realtime_event_source.event_port());
+    realtime_to_indexed_event.outputs();
+
+    auto realtime_to_indexed_event_graph =
+        std::move(realtime_to_indexed_event).finish();
+    auto realtime_to_indexed_event_plan =
+        graph_jit::detail::build_connection_analysis_plan(
+            realtime_to_indexed_event_graph, 64);
+    ASSERT_FALSE(realtime_to_indexed_event_plan.has_value());
+    EXPECT_NE(realtime_to_indexed_event_plan.error().find("event connection 0"),
+        std::string::npos);
+    EXPECT_NE(realtime_to_indexed_event_plan.error().find(
+        "realtime output to an indexed input"), std::string::npos);
+    EXPECT_NE(realtime_to_indexed_event_plan.error().find("tick_record"),
+        std::string::npos);
 }
