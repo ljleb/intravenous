@@ -633,7 +633,19 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     liveness reuse, the existing realtime and new indexed storage cost models,
     SIMD-aware storage/layout/conversion choices, fusion/SSA direct forwarding,
     vectorization, and target-specific optimization only after the semantic
-    compiler surface is complete. Add `tick_block_batch` here as a schedule optimization: group concrete
+    compiler surface is complete. Before adding specialized graph algorithms,
+    consolidate reusable host-side topology analysis: assign dense node ordinals,
+    build each semantically distinct adjacency relation once, run the complete
+    semantic SCC decomposition once, and retain node-to-SCC/condensation/topology
+    facts for schedule formation and later liveness/storage/batching/fusion passes.
+    In particular, cached-indexed-output SCC validation is an SCC-ID comparison
+    during one connection scan, not a DFS/BFS from every cached port. Keep graph
+    relations that answer different questions separate—detach legality may still
+    require pre-feedback reachability—but share ordinals, storage, traversal
+    scratch, and valid analysis results wherever their edge relation is identical.
+    Prefer a fresh linear SCC pass per graph compilation over incremental SCC
+    maintenance until profiling demonstrates that graph analysis, rather than LLVM
+    work, is material. Add `tick_block_batch` here as a schedule optimization: group concrete
     nodes sharing one implementation/type when topology permits, without changing
     dependency order, SCC slice boundaries, port windows, or per-instance state.
     Batch formation belongs after semantic scheduling and physical port planning are

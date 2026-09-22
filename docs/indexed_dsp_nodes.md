@@ -1516,6 +1516,60 @@ transactions manipulate exact coverage/change/demand sets, page-validity/version
 state, dynamic page directories, and generated component entrypoints rather than
 rebuilding graph adjacency or topological orders for each request.
 
+### Reuse whole-graph analysis products during lowering
+
+The cached-output SCC constraint is intentionally cheap to validate and should not
+be implemented as a reachability traversal from every cached indexed output.
+Whole-project lowering already needs dependency/SCC/order information for
+scheduling and later optimization, so it should compute that information once and
+reuse it across compiler phases.
+
+After connection/dependency classification, lowering should prefer one shared
+analysis product containing dense node ordinals plus the adjacency, SCC, and
+condensation/topology facts required by later phases. In particular, one
+linear-time SCC decomposition of the complete semantic dependency graph can record
+at least a node-to-SCC mapping and SCC membership. The cached-output rule then
+reduces to a linear scan of cached indexed connections:
+
+```text
+for every connection sourced from a cache=true indexed output O of node N:
+    reject iff semantic_scc(source_node(N)) == semantic_scc(target_node)
+```
+
+Checking every direct consumer is sufficient. If a consumer is in the same SCC as
+the output's owning node, that consumer has a path back to the owner by definition;
+if it is in another SCC, no such return path exists. Fanout therefore needs no
+per-branch DFS beyond the ordinary connection scan. The intended complexity is
+`O(V + E)` for SCC construction plus `O(E_cached)` for validation, not one
+`O(V + E)` reachability search per cached output or connection.
+
+The resulting SCC IDs, SCC member ranges, condensation-DAG edges/topological
+order, node ordinals, and reusable adjacency storage should be carried forward as
+compiler-analysis facts wherever useful. Indexed component planning, live-region
+scheduling, liveness/storage planning, cache-boundary placement, and later
+batching/fusion/vectorization passes should consume those facts instead of
+reconstructing equivalent graph views or repeatedly topologically sorting the same
+dependency relation.
+
+This is an efficiency rule, not a semantic requirement to collapse distinct graph
+relations into one. Explicit-DAG validation, detach legality, same-slice realtime
+dependencies, and the complete semantic dependency relation answer different
+questions. For example, validating one detached edge may need to ask whether a
+path existed **before** that feedback edge is restored; final semantic SCC IDs do
+not in general replace that query. Implementations should still share node
+ordinals, adjacency storage, traversal scratch, and already-valid topological facts
+when the underlying edge relation is the same. If profiling ever shows numerous
+detach reachability checks to be material, they can be batched by traversal root,
+use epoch-marked visitation storage, or exploit DAG-specific reachability
+acceleration without changing graph semantics.
+
+Likewise, the initial compiler should recompute SCCs from scratch for each graph
+compilation rather than introduce incremental/dynamic SCC maintenance. A complete
+Tarjan/Kosaraju-style pass is linear, simple, deterministic, and expected to be
+small beside LLVM lowering/optimization. Dynamic SCC maintenance or more elaborate
+reachability indexes are later compiler-performance options only if profiling
+shows whole-graph analysis itself to be significant.
+
 `GraphExecutor` owns:
 
 - canonical fixed-layout `NodeStorage` for each retained executable generation;
