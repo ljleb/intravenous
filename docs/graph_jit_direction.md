@@ -620,17 +620,19 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     `IndexedCoverage`, distinct indexed input/output declarations, the one-node
     tock/forward/reverse callbacks, and the three-state indexed producer contract
     throughout execution. Add stable internal endpoint identity and
-    immutable indexed-component plans before allocating persistent indexed output
-    storage. Retain and reuse the semantic SCC/component/order analysis rather than
-    recomputing the validation-only result now used to enforce the unconditional
-    cycle rule. The
+    immutable indexed-component plans, including batched F/R/T traversal order and
+    per-node coverage/requirement accumulator layout, before allocating persistent
+    indexed output storage. Retain and reuse the semantic SCC/component/order
+    analysis rather than recomputing the validation-only result now used to enforce
+    the unconditional cycle rule. The
     detailed dependency order is normative in
     [indexed_dsp_nodes.md](./indexed_dsp_nodes.md#32-implementation-landing-order).
 16. **GraphExecutor integration and mixed access.** Add active/pending executable generations,
     canonical `NodeStorage` construction/migration, dynamic indexed sidecars and
-    transaction workspaces, semantic-versioned candidate/published indexed
-    snapshots, whole-live-block publication, root execution, and indexed-
-    component dispatch. Complete non-realtime sample/event access before live
+    batched transaction workspaces, semantic-versioned candidate/published indexed
+    snapshots, closed invalidation/demand root normalization, whole-live-block
+    publication, root execution, and indexed-component dispatch. Complete
+    non-realtime sample/event access before live
     indexed pulls, then add indexed-to-realtime lowering and fixed-layout
     `tick_record` staging/publication. `CompiledGraph` remains independently
     testable before this point.
@@ -996,8 +998,11 @@ lowering can precompute:
 - indexed participating nodes/ports and producer modes;
 - indexed weakly connected components and requestable output ordinals;
 - reverse dependency order and forward coverage/evaluation order;
+- per-node/per-port forward-change, reverse-requirement, and tock-request
+  accumulator layout for one logical indexed batch;
 - fanout/convergence/conversion structure;
 - constant node/port/storage offsets and callback targets;
+- persistent reverse-cut locations and producer-mode rules;
 - stable project-output bindings;
 - which propagation operations are trivial;
 - whole-graph semantic SCC membership; and
@@ -1024,22 +1029,51 @@ Do not collapse semantically different relations merely to save a traversal;
 detach legality, for example, may require pre-feedback reachability. Recompute SCCs
 from scratch per compilation initially rather than adding dynamic SCC maintenance.
 
-### Forward change and indexed access are separate operations
+### Batched forward invalidation and indexed demand are separate operations
 
 Exact `propagate_forward_coverage()` is mandatory for nodes with computed indexed
 outputs (`tock_realtime` or `tock_stored`) unless some future declaration mechanism
 provides the same exact coverage semantics mechanically. Coverage cannot be safely
 invented by a conservative generic fallback.
 
+Persistent indexed invalidation enters through a closed set of executor roots:
+node-local semantic mutation, authoritative `tick_record` commit, graph semantic
+configuration/topology/implementation change, and project sample-rate change.
+An indexed input becoming changed because an upstream output changed is ordinary
+forward propagation inside that batch, not another root class.
+
 Forward propagation carries exact changed regions and exact output coverage.
 Stored-page invalidation does not widen changed regions downstream. A
 `tock_stored` candidate may invalidate complete physical page domains locally, but
 all of its covered pages must be valid before that candidate is published.
 
+All invalidation roots belonging to one logical indexed batch are installed before
+the generated forward traversal begins. Convergent changes are unioned into
+per-node/per-input accumulators, so every implicated node calls
+`propagate_forward_coverage()` at most once for that batch. Forward invalidation
+continues through `tock_stored` outputs; persistent storage is not a semantic
+invalidation cut.
+
 `propagate_reverse_coverage()` is value-blind. It can depend on coverage,
 configuration, sample rate, and other deterministic structural metadata, but not
 on indexed input payload values. Data-dependent addressing uses a conservative
 superset requirement in the initial model.
+
+Indexed demand likewise has a small closed set of external roots: application/UI
+indexed fetches and indexed reads required by a live root `tick_block()` execution.
+Invalid `tock_stored` candidate pages are internal materialization roots. Before
+reverse traversal, their full covered page domains are unioned with any other
+demand in the batch. Convergent output requirements are accumulated before a node
+is visited, so every implicated node calls `propagate_reverse_coverage()` at most
+once for that batch.
+
+Reverse propagation stops per region at persistent data that is valid for the
+semantic version selected by the batch. Authoritative `tick_record` data is always
+a producer boundary. A valid `tock_stored` page/domain is a cut; an invalid or
+nonexistent candidate page is not, even if an older physical page remains retained.
+Such a page is promoted to its full covered page domain and its producer is
+traversed. `tock_realtime` owns no persistent result and therefore forms no
+persistent reverse cut.
 
 Demand through `tock_realtime` stays exact and may materialize directly into caller,
 transaction, or compiler-planned live storage. A request for a published
@@ -1050,6 +1084,13 @@ transaction, or compiler-planned live storage. A request for a published
 `tock_coverage()` produces only `tock_realtime` and `tock_stored` outputs. It sees
 project sample rate, exact requested coverage per computed output, indexed inputs,
 and optional `IndexedState` acceleration state.
+
+The generated reverse pass finishes accumulating each node's complete per-output
+requirements for the indexed batch before evaluation reaches that node. The
+forward tock pass therefore invokes `tock_coverage()` at most once per implicated
+node for the whole batch, even when several sinks, several disjoint regions, or
+several outputs of that node are requested. This is executor-level batching of
+one-node callbacks, not the future multi-node `*_coverage_batch` ABI.
 
 For every `tock_realtime` output, requesting that output without unrelated outputs
 must always be realtime-compatible. The shared node-wide callback may skip
@@ -1112,6 +1153,16 @@ or background indexed transactions: they continue to read immutable published
 snapshots. Because indexed edges are acyclic, a live indexed consumer has a fixed
 producer-before-consumer order.
 
+If same-pass recorder overlays change coverage or values consumed through a
+`tock_realtime` chain, GraphJit may emit a batched ephemeral live forward-coverage
+pass before the corresponding live reverse/tock pull. Recorder changes known at
+that scheduling point are unioned before each implicated node's forward callback.
+This live coverage propagation may cross `tock_realtime` outputs but stops at
+`tock_stored`: stored computed outputs remain bound to the captured published base
+until a non-realtime candidate is completed and published. The later authoritative
+recorder publication is a normal persistent invalidation root and its forward pass
+does continue through `tock_stored` outputs.
+
 The non-realtime publisher incorporates the completed frame into persistent
 `tick_record` storage, computes exact change/coverage metadata, and prepares an
 immutable next snapshot/root. Publication occurs only at a whole-root-block
@@ -1131,10 +1182,13 @@ metadata it needs, as applicable:
 
 - stable indexed endpoint identities and generation-local ordinals;
 - producer mode per indexed output;
-- generated forward/reverse/tock entrypoints and constant context-layout facts;
+- generated batched forward/reverse/tock traversal entrypoints and constant
+  context-layout facts;
 - indexed component/order information;
+- per-node/per-port indexed-batch accumulator offsets/layout;
 - semantic SCC IDs/validation products;
 - persistent stored-output bindings;
+- persistent reverse-cut/page-validity binding facts;
 - direct/transient live pull plans for `tock_realtime`;
 - complete stored/direct bindings for `tock_stored` and published `tick_record`;
 - fixed `tick_record` staging frame size/alignment/port offsets and written-bit
@@ -1162,8 +1216,10 @@ identity, not generation-local primitive IDs.
 - optional tock-only `IndexedState` lifecycle/storage;
 - stable persistent stores/immutable roots for `tock_stored` and `tick_record`;
 - candidate/published indexed semantic versions;
-- reusable indexed transaction workspaces;
-- exact forward invalidation and reverse-demand/tock transactions;
+- reusable indexed batch workspaces/accumulators;
+- closed invalidation-root and demand-root normalization;
+- exact batched forward invalidation and reverse-demand/tock transactions, with
+  each node callback invoked at most once per applicable phase of a batch;
 - complete `tock_stored` candidate materialization;
 - double/triple-buffered `tick_record` publication state and deferred reclamation;
 - external indexed request/result/change-notification lifetimes; and

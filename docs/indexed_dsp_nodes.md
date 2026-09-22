@@ -55,6 +55,13 @@ The central rules are:
 > candidate pages are a recomputation granularity only; page boundaries never widen
 > semantic coverage or forward changed regions.
 
+> Indexed invalidation and demand are processed as **batched transactions**. All
+> roots for one batch are accumulated before traversal. Fan-in/fan-out coverage is
+> unioned in transaction workspace so each implicated node runs
+> `propagate_forward_coverage()`, `propagate_reverse_coverage()`, and
+> `tock_coverage()` at most once each for that batch. The current callbacks remain
+> one-node callbacks; transaction batching does not imply a multi-node callback ABI.
+
 > `IndexedState` is non-semantic acceleration state visible only to
 > `tock_coverage()`. It may affect execution pace but may not affect values,
 > coverage, dependency requirements, or any observable result.
@@ -361,14 +368,29 @@ This is the deliberate asymmetry:
 Forward propagation is independent of indexed access and is not limited to
 incoming indexed-edge changes.
 
-Any event that changes a node's indexed meaning may schedule a forward update,
-including:
+The executor has a closed set of **external invalidation roots**. Every persistent
+indexed semantic invalidation originates from one of these classes:
 
-- editing a control point or other semantic node configuration;
-- replacing/importing a resource;
-- changing configuration whose effect is region-local or global;
-- a published `tick_record` whole-block replacement; or
-- another executor-mediated semantic mutation.
+1. **node-local semantic mutation**: an application/UI operation changes node
+   state, configuration, or a resource according to that node type's own semantic
+   rules;
+2. **authoritative `tick_record` commit**: a complete recorder block replacement
+   changes retained indexed data and/or coverage;
+3. **graph semantic configuration change**: node creation/removal/replacement,
+   indexed connection-set changes, or another graph/configuration change that
+   changes indexed dependencies or implementation semantics; or
+4. **project sample-rate change**: computed indexed semantics are reevaluated
+   under a new sample rate.
+
+An indexed input changing because an upstream output changed is **not** another
+root class. It is the ordinary continuation of the same forward batch through an
+indexed connection. Likewise, creation of a new computed node is handled as a
+graph semantic configuration change whose old output coverage is empty.
+
+Executable regeneration by itself is not an invalidation root. A compatible new
+`CompiledGraph` generation rebinds stable stored indexed state; only a semantic
+change exposed while reconciling the generation enters one of the root classes
+above.
 
 A node may therefore run its forward-coverage logic with **zero changed indexed
 input regions** because local semantic configuration changed. The callback/context
@@ -395,9 +417,11 @@ page domain, or another representation-invalidating change becomes invalid in th
 candidate. The exact `changed` set continues downstream unchanged by page
 boundaries.
 
-Forward processing does not synchronously call `tock_coverage()`. It may schedule
-candidate completion for affected `tock_stored` outputs, but actual evaluation is
-a separate operation and may run asynchronously.
+The forward phase does not recursively call `tock_coverage()`. It produces the
+batch's exact semantic changes and invalid stored-page set. The same logical batch
+may then use those invalid page domains as materialization roots for a later
+reverse/evaluation phase before publication; the phases remain distinct even when
+the executor runs them back-to-back.
 
 ## 8. `propagate_forward_coverage()`
 
@@ -416,8 +440,10 @@ F(node): input coverage + changed input regions + semantic configuration + sampl
 ```
 
 It runs in forward graph direction. Incoming changed regions from all indexed
-inputs are accumulated/unioned before the node is visited, so a node should
-normally participate once per forward transaction.
+inputs and all invalidation roots belonging to the batch are accumulated/unioned
+before the node is visited. **Each implicated node is visited at most once by the
+forward phase of one indexed batch.** A node may still have many disjoint changed
+regions and multiple changed inputs in that one callback invocation.
 
 For every node that declares at least one `tock_realtime` or `tock_stored` indexed
 output, an explicit forward-coverage implementation (or a future equivalent
@@ -463,12 +489,32 @@ R(node): requested output coverage + semantic configuration + sample rate
 ```
 
 It runs in reverse graph direction. Requirements reaching a node through multiple
-downstream paths are accumulated/unioned before the node is visited.
+downstream paths and demand roots are accumulated/unioned before the node is
+visited. **Each implicated node is visited at most once by the reverse phase of
+one indexed batch.**
 
 For `tock_realtime`, the output requirement is the exact covered demand. For
 `tock_stored`, candidate completion first selects the complete covered domains of
 invalid stored pages, and those selected domains become the requirements supplied
 to reverse planning.
+
+Persistent data is a reverse-propagation boundary only when it is valid for the
+semantic version selected by the batch:
+
+- an authoritative `tick_record` region is always a producer boundary; it is not
+  reproducible by `tock_coverage()`;
+- a valid `tock_stored` page/domain for the selected target/base version satisfies
+  that requirement and stops reverse propagation through that region;
+- an invalid or nonexistent `tock_stored` candidate page does **not** stop reverse
+  propagation merely because an older physical page still exists. Its complete
+  covered page domain becomes a materialization requirement and reverse planning
+  continues through its producer; and
+- `tock_realtime` owns no persistent result and therefore never forms a persistent
+  reverse cut.
+
+Thus page retention and page semantic validity are deliberately distinct. Never
+dropping old immutable page payloads does not make those payloads current for a
+new semantic version.
 
 After the callback reports input requirements, every requirement is clipped to the
 input's exact coverage.
@@ -501,6 +547,12 @@ memoization history.
 producer mode is `tock_realtime` or `tock_stored`. Its context carries requested
 `IndexedCoverage` per computed indexed output; one invocation may therefore
 compute many disjoint regions and several outputs of the same node.
+
+Within one indexed batch, reverse planning first finishes accumulating the final
+requested coverage for every implicated output. Forward evaluation then calls
+`tock_coverage()` **at most once per implicated node for the whole batch**. Requests
+for several outputs, several disjoint regions, and several downstream consumers
+are therefore coalesced before the callback runs.
 
 The callback receives only work that needs computation for the target operation:
 
@@ -557,104 +609,161 @@ requested path must also satisfy the realtime contract. If an output cannot meet
 that promise without computing an expensive sibling, it should be `tock_stored` or
 the functionality should be split into separate nodes.
 
-The name deliberately does not contain `batch`: this is still one node. A future
-`tock_coverage_batch()` may evaluate multiple nodes simultaneously, with separate
-coverage and optional acceleration state for each node.
+The name deliberately does not contain `batch`: this callback still evaluates one
+node. The executor-level transaction is already batched across roots and coalesces
+all work for that node into one invocation. A future `tock_coverage_batch()` would
+be a different ABI optimization that evaluates **multiple nodes** simultaneously,
+with separate coverage and optional acceleration state for each node.
 
-## 11. Indexed access and stored-candidate completion
+## 11. Batched indexed demand and stored-candidate completion
 
-There are two related but distinct executor operations: demand-driven indexed
-access and completion of persistent candidate state.
+Indexed evaluation is organized around **batched demand**, not one traversal per
+read or invalid page. A batch first collects all demand roots that are allowed to
+participate in that transaction, unions convergent requirements, then runs one
+reverse phase and one forward evaluation phase.
+
+One logical indexed batch is evaluated against one coherent semantic environment:
+one target/base indexed semantic version, one sample rate/configuration view, and
+one set of immutable persistent bindings plus any explicitly permitted live
+recorder overlays. Pure stored reads may need neither R nor T; a pure invalidation
+batch may defer R/T; and a mutation-plus-fetch operation may run F then R/T before
+returning results. The batching invariant constrains how work is coalesced when a
+phase is present, not which phases every caller must execute.
+
+There are two closed classes of **external demand roots**:
+
+1. **application/UI indexed fetches**, such as JSON-RPC requests for one or more
+   indexed outputs/regions; and
+2. **live root execution demand** originating from `CompiledGraph::tick_block()`
+   when realtime production needs indexed values for the current root invocation.
+
+The host protocol need not expose these as one-request/one-batch operations. One
+application request may contain multiple fetches, and an update request may also
+ask for results after the update. The executor normalizes the request into batched
+mutation and demand roots.
+
+There is also one important **internal materialization root**: every invalid
+`tock_stored` candidate page domain that must be completed before the target
+semantic version can publish. Internal page-completion roots use the same reverse
+and tock machinery as explicit reads.
 
 ### Demand-driven access
 
-For a requested `tock_realtime` sink output:
+For requested `tock_realtime` sink outputs, the batch:
 
-1. intersect the request with exact output coverage;
-2. keep that covered demand exact;
-3. reverse-propagate required input coverage through `tock_realtime` producers
-   until reaching persistent stored sources/boundaries or another exact source;
-4. evaluate implicated nodes in dependency order; and
-5. return/forward the requested materialization from caller, transaction, direct
+1. intersects every explicit request with exact output coverage;
+2. unions all covered requirements for each output;
+3. reverse-propagates the coalesced requirements through `tock_realtime` producers
+   until reaching valid persistent boundaries or source nodes;
+4. evaluates implicated nodes in forward dependency order, at most once per node;
+   and
+5. returns/forwards the requested materialization from caller, transaction, direct
    consumer, or bounded live-transient storage.
 
 A request for a published `tock_stored` or `tick_record` output does not trigger
 partial reconstruction of that output. It reads the requested subset directly
-from the complete published stored representation.
+from the complete persistent representation selected for the batch. Such reads do
+not need `propagate_reverse_coverage()` or `tock_coverage()` unless some other
+request in the same batch independently demands computed transient work.
 
 ### `tock_stored` candidate completion
 
 Forward invalidation may create a candidate version with invalid stored page
-domains. To make the candidate publishable, the executor:
+domains. Before reverse planning, the executor promotes every invalid stored page
+to its complete covered page domain:
 
-1. gathers every invalid/nonexistent page domain required by the candidate's exact
-   output coverage;
-2. reverse-propagates those complete covered page domains;
-3. recursively ensures upstream `tock_stored` candidates are complete for the same
-   target semantic version;
-4. evaluates necessary `tock_realtime` intermediates into transaction-local
-   storage and `tock_stored` producers into candidate persistent storage; and
-5. commits page results transactionally until the entire stored coverage is valid.
+```text
+materialization_requirement(page) = page_interval & candidate_output.coverage
+```
+
+Those complete page domains are then unioned with all other materialization demands
+for the same indexed batch. To make the candidate publishable, the executor:
+
+1. gathers all invalid/nonexistent `tock_stored` page domains that the candidate
+   requires;
+2. unions those internal roots with any explicit demand roots allowed in the same
+   transaction;
+3. runs one reverse-order pass, coalescing downstream requirements before each
+   node and stopping per-region at persistent data valid for the selected semantic
+   version;
+4. runs one forward-order tock pass, evaluating every implicated node at most once
+   for its complete consolidated output requirements; and
+5. commits computed stored pages transactionally. A semantic candidate may publish
+   only after every covered `tock_stored` page/domain it owns is valid.
 
 Conceptually:
 
 ```text
-semantic mutation / recorder publication
+all invalidation roots for batch
         |
         v
-exact forward propagation
+one exact forward pass (F)
         |
         v
-candidate tock_stored pages invalidated
+exact changed regions + invalid tock_stored pages
         |
         v
-select every invalid covered page domain
+promote invalid pages to complete covered page domains
         |
-        v
-reverse dependency planning
-        |
-        +-- tock_realtime -> exact transaction/live materialization
-        |
-        `-- tock_stored   -> candidate stored page domain
-        v
-forward tock evaluation
-        |
-        v
-all stored coverage complete
-        |
-        v
-candidate may publish at a legal whole-graph boundary
+        +-------------------------------+
+        |                               |
+        |                    explicit UI/live demand roots
+        |                               |
+        +---------------+---------------+
+                        |
+                        v
+              union all demand roots
+                        |
+                        v
+one reverse dependency pass (R)
+  each implicated node <= 1 reverse callback
+                        |
+                        v
+one forward evaluation pass (T)
+  each implicated node <= 1 tock callback
+                        |
+                        v
+complete candidate stored pages / transient results
+                        |
+                        v
+publish coherent candidate when all required stored state is complete
 ```
 
-Whenever topology permits, each implicated node should participate once in reverse
-planning and once in forward evaluation for the complete coalesced operation.
-Complete stored publication does **not** require all transient intermediates or all
-invalid pages to coexist in memory at once: GraphExecutor may complete a candidate
-page/chunk at a time and reuse bounded transaction workspace. The semantic
-requirement is that every covered `tock_stored` page/domain is valid before the
-candidate becomes published, not that the entire computation is one monolithic
-allocation or callback.
+A valid `tock_stored` page or authoritative `tick_record` region may satisfy an
+upstream requirement without further traversal. An invalid candidate stored page
+cannot: its older retained payload is only data for an older semantic version, so
+its full covered page domain remains in the batch and its producer is traversed.
 
-## 12. Forward invalidation transaction
+Complete stored publication does **not** require every transient intermediate or
+all invalid pages to coexist in memory at once. GraphExecutor may reuse bounded
+transaction storage while honoring the semantic batch. Such chunking must not
+split a node into multiple `tock_coverage()` invocations for the same logical batch;
+if physical workspace cannot hold the node's consolidated requirements, the
+executor/lowering must provide a representation or bounded streaming contract that
+still preserves the one-callback-per-node batch semantics.
 
-A forward change transaction is independent of external access. It may begin from
-changed indexed output regions, changed indexed input regions, a semantic
-configuration mutation, a coverage update, or publication of a `tick_record`
-block.
+## 12. Batched forward invalidation phase
+
+A forward invalidation phase begins from the closed invalidation-root set in
+section 7. All roots assigned to one logical indexed batch are installed before
+forward traversal starts.
 
 The evaluator conceptually performs:
 
 ```text
-semantic mutation / changed upstream output
+all node-state / recorder / graph / sample-rate invalidation roots
         |
         v
-schedule affected nodes in forward order
+seed affected nodes/endpoints
         |
         v
-accumulate exact changed input regions + current input coverage
+walk nodes once in forward dependency order
         |
         v
-propagate_forward_coverage()
+union exact changed input regions + current input coverage
+        |
+        v
+propagate_forward_coverage() at most once for this node
         |
         +--> publish exact new computed-output coverage
         |       |
@@ -662,20 +771,27 @@ propagate_forward_coverage()
         |
         `--> publish exact changed output regions
                 |
-                v
-invalidate affected tock_stored candidate pages
+                +--> invalidate intersecting tock_stored candidate pages locally
                 |
-                v
-forward exact semantic changed regions again
+                `--> union exact semantic changes into downstream accumulators
 ```
 
-Forward propagation continues through `tock_realtime` intermediates even though
-they own no persistent output pages, because farther downstream stored outputs may
-have been derived from an older semantic version.
+Fan-in never causes repeated callbacks within the batch. Every upstream path that
+can reach a node in forward order has contributed to that node's per-input change
+accumulator before its callback runs. Fan-out distributes the callback's consolidated
+output changes into downstream accumulators.
 
-The transaction does not synchronously force tock evaluation. Candidate stored
-completion is scheduled separately, but every `tock_stored` output required by a
-publishable candidate must eventually be complete over its full coverage.
+Forward propagation continues **through** `tock_stored` computed outputs. A stored
+output is not an invalidation cut: keeping an older page payload alive does not
+make downstream semantics current for a new candidate version. Page boundaries
+only decide which local candidate pages become invalid; the exact semantic changed
+regions continue downstream without widening.
+
+The forward phase itself does not recursively evaluate nodes. After it finishes,
+all invalid stored page domains are known and can be promoted to complete covered
+page-domain demand roots for the batch's R/T phase. The executor may defer that
+materialization, but a candidate containing `tock_stored` outputs cannot become a
+published semantic version until all of its covered stored page domains are valid.
 
 ## 13. Indexed output producer modes
 
@@ -968,15 +1084,21 @@ Indexed planning/evaluation needs request-sized temporary storage that is not
 necessarily bounded at graph compile time. `GraphExecutor` should own/reuse a
 transaction workspace or arena containing things such as:
 
+- per-node/per-port forward-change accumulators;
+- per-node/per-port reverse-requirement accumulators;
+- computed-output request sets used by the one-call-per-node tock pass;
 - forward/reverse region-set work buffers;
 - selected stored-page completion plans;
 - non-realtime `tock_realtime` result/intermediate sample/event values;
 - temporary event payloads and segmented views; and
 - temporary references to immutable stored snapshots/pages.
 
-Transaction-local values remain shareable across all consumers in the same
-logical transaction. Once their last consumer is complete, storage may be reused;
-future liveness packing is an implementation optimization.
+The workspace is initialized once per logical indexed batch. All invalidation or
+demand roots assigned to that batch contribute into the same accumulators before
+the corresponding traversal reaches a node. Transaction-local values remain
+shareable across all consumers in the same batch. Once their last consumer is
+complete, storage may be reused; future liveness packing is an implementation
+optimization.
 
 Bounded live storage, including `tick_record` staging and live `tock_realtime`
 materialization, is planned by GraphJit and must not depend on request-sized dynamic
@@ -1083,6 +1205,18 @@ Any mutation that affects published indexed semantics enters through an
 executor-controlled boundary. Code outside `GraphExecutor` must not mutate active
 persistent indexed roots/pages behind the executor's versioning rules.
 
+The architectural invalidation-root set is deliberately closed:
+
+- node-local semantic state/resource mutation;
+- authoritative `tick_record` commit;
+- graph semantic configuration/topology/implementation change; and
+- project sample-rate change.
+
+Node-type-specific rules determine the exact initial changed regions for a
+node-local mutation. Graph/runtime rules determine seeds for the other classes.
+Once seeded, an indexed-input change at a downstream node is merely propagation
+inside the same batch, not a new executor entry point.
+
 Conceptually, an ordinary UI/configuration mutation is:
 
 ```text
@@ -1105,7 +1239,9 @@ complete affected tock_stored outputs
 ```
 
 The mutation may have zero changed indexed inputs and still change output coverage
-or values.
+or values. Several application mutations may be applied to one candidate and
+seeded together before the batch's forward pass; intermediate semantic versions
+need not be externally observable.
 
 An indexed **connection-set change** is another executor-controlled forward cause.
 Addition, removal, replacement, or another semantic change to the set of
@@ -1122,6 +1258,13 @@ overinvalidate unaffected fan-in portions but is finite, simple, and correct.
 Realtime-originated `tick_record` mutation uses the bounded staging/publication
 handoff in section 24. The audio path does not traverse dynamic persistent indexed
 structures or perform candidate graph propagation itself.
+
+External reads have a correspondingly closed entry-point set: application/UI
+indexed fetches and indexed reads required by a live `CompiledGraph::tick_block()`
+invocation. Invalid `tock_stored` page domains are internal materialization roots,
+not a third external caller. The external protocol may combine updates and fetches
+in one request; `GraphExecutor` normalizes that shape into mutation seeds, demand
+seeds, and one or more legal indexed batches.
 
 ## 21. Indexed semantic versions and stale-work rejection
 
@@ -1218,6 +1361,25 @@ published/candidate snapshot according to the executor transaction.
 Because no indexed edge may participate in an SCC, same-pass indexed forwarding
 always has an acyclic causal producer-before-consumer order. A signal that needs
 ordinary realtime cyclic semantics uses realtime ports instead.
+
+When a current-pass recorder replacement changes coverage or values needed by a
+downstream `tock_realtime` chain, the generated live path may need an **ephemeral
+live forward-coverage pass** before its reverse/tock pull. All recorder overlays
+known at that scheduling point are batched and their changes are unioned before a
+downstream node's forward callback runs. This live pass differs from persistent
+candidate invalidation:
+
+- it may propagate through `tock_realtime` outputs whose live coverage depends on
+  the recorder overlay;
+- it stops at `tock_stored`, because a stored computed output remains the complete
+  published value selected by the captured base snapshot until a separately
+  completed candidate is published; and
+- it never marks persistent stored pages valid/invalid or publishes a semantic
+  version from the audio thread.
+
+Persistent recorder publication later enters the ordinary invalidation-root path
+from section 7. That persistent forward batch **does** continue through
+`tock_stored` outputs so downstream stored candidates are invalidated correctly.
 
 ### Publication boundaries
 
@@ -1633,22 +1795,26 @@ few times as practical:
 3. **One retained static indexed-analysis plan.** Replace the validation-only SCC
    result with reusable dense node/endpoint identities and retained semantic-SCC,
    indexed-component, condensation/order, producer-mode, convergence/conversion,
-   connection-fingerprint, and stable project-output identity facts. Extend
-   `CompiledGraph` metadata at the same time and compute the fixed whole-graph
-   `tick_record` staging layout, including bounded event capacities. This is the
-   single topology/planning pass consumed by every later phase.
+   connection-fingerprint, persistent-boundary, and stable project-output identity
+   facts. Retain the static forward/reverse/tock traversal order plus the
+   per-node/per-port accumulator layout needed to union a whole indexed batch
+   before each callback. Extend `CompiledGraph` metadata at the same time and
+   compute the fixed whole-graph `tick_record` staging layout, including bounded
+   event capacities. This is the single topology/planning pass consumed by every
+   later phase.
 4. **Persistent indexed store and generation reconciliation.** Introduce the
    stable output store, immutable published roots, active/pending generation
    bindings, canonical `NodeStorage` ownership, semantic versions, compatible
    rebind/migration, node/connection reconciliation, and transaction workspace
    ownership. Establish complete sample/event representations before evaluation
    or live lowering depends on them.
-5. **Complete non-realtime indexed transactions.** On the retained plan and store,
-   implement node creation/local-change propagation, exact forward invalidation,
-   reverse demand, tock evaluation, full-coverage `tock_stored` candidate
-   completion, stale-work rejection, atomic publication, versioned external
-   queries, and change notifications. This closes indexed semantics independently
-   of the audio thread first.
+5. **Complete non-realtime batched indexed transactions.** On the retained plan
+   and store, implement the closed invalidation-root and external-demand entry
+   points, batch-root collection, exact one-pass forward invalidation, page-domain
+   promotion, one-pass reverse demand, one-call-per-node tock evaluation,
+   full-coverage `tock_stored` candidate completion, stale-work rejection, atomic
+   publication, versioned external queries, and change notifications. This closes
+   indexed semantics independently of the audio thread first.
 6. **One live GraphJit port-lowering pass.** In the same sample/event physical-port
    pass, bind published `tock_stored`/`tick_record` bases, lower bounded inline
    `tock_realtime` pulls, allocate and bind fixed `tick_record` staging, expose
@@ -1750,3 +1916,17 @@ producer mode rather than an implicit connection transport.
     queries, not mathematical inverses.
 30. Future `*_coverage_batch` names are reserved for genuine multi-node indexed
     batching; the current `_coverage` callbacks remain one-node operations.
+31. Indexed invalidation has a closed external root set: node-local semantic
+    mutation, authoritative recorder commit, graph semantic configuration change,
+    and sample-rate change. Downstream indexed-input changes are propagation, not
+    new roots.
+32. Indexed demand has two external root classes: application/UI fetches and live
+    `CompiledGraph::tick_block()` reads. Invalid stored page domains are internal
+    materialization roots for the same reverse/tock machinery.
+33. One logical indexed batch unions all convergent coverage/requirements before
+    visiting a node, so each applicable forward, reverse, and tock callback runs at
+    most once per node for that batch.
+34. A persistent region stops reverse propagation only when it is authoritative
+    `tick_record` data or valid `tock_stored` data for the semantic version selected
+    by the batch. Merely retaining an older physical page does not satisfy a newer
+    requirement.
