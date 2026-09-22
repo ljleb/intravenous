@@ -262,8 +262,8 @@ The current internal realtime connection surface is intentionally asymmetric:
   sample producer inside an SCC may also fan out to downstream acyclic identity or
   converted/history-bearing consumers. What remains is not another ordinary sample
   transport mode: realtime/indexed mixed or indexed-only access still belongs
-  to point 15. Root I/O is not a boundary-connection mode; it is expressed by
-  concrete system/communication node types.
+  to indexed DSP points 14-19 below. Root I/O is not a boundary-connection
+  mode; it is expressed by concrete system/communication node types.
 - **Events, feed-forward:** internal realtime direct/transient sequences, block
   adaptation, non-expanding conversion, fanout, stable multi-producer fan-in,
   compact retained carry, persistent rings, and retained converted fanout are
@@ -609,54 +609,83 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     zero-output. Device I/O and communication with other application modules are
     ordinary concrete node definitions that own the relevant external resource or
     application-module bridge; GraphJit must not add a root boundary-binding ABI.
-14. **Remaining declaration/runtime semantics.** Add nested declarations,
-    declaration-owned auxiliary/shared-array regions, activity/TTL, deferred
-    detach, and generalized skip semantics through existing plans rather than side
-    paths.
-15. **Indexed DSP foundation.** The v3 node API, producer modes, callback
-    authority, exact-forward requirement, tock-only `IndexedState`, and whole-
-    semantic-SCC indexed-edge rejection have landed. Continue replacing the
-    legacy compiled-port API with
-    `IndexedCoverage`, distinct indexed input/output declarations, the one-node
-    tock/forward/reverse callbacks, and the three-state indexed producer contract
-    throughout execution. Add stable internal endpoint identity and
-    immutable indexed-component plans, including batched F/R/T traversal order and
-    per-node coverage/requirement accumulator layout, before allocating persistent
-    indexed output storage. Retain and reuse the semantic SCC/component/order
-    analysis rather than recomputing the validation-only result now used to enforce
-    the unconditional cycle rule. The
-    detailed dependency order is normative in
+14. **Indexed connection-model cleanup.** Preserve the node API invariant that
+    ordinary realtime outputs never directly satisfy indexed inputs. Remove any
+    executable `realtime_to_indexed` lowering category and reject that graph shape;
+    realtime-produced indexed data is represented only by an explicit
+    `tick_record` indexed output. Keep recorder dependencies into the producing node
+    as ordinary realtime connections.
+15. **Retained indexed plan, batch ABI, and callback imports.** The v3 node API,
+    producer modes, exact-forward requirement, tock-only `IndexedState`, and
+    whole-semantic-SCC indexed-edge rejection have landed. Replace validation-only
+    products with stable internal endpoint identity plus one immutable `IndexedPlan`
+    containing dense ordinals, producer modes, indexed components/orders,
+    conversions/convergence, stable persistent identities, fixed recorder layout,
+    and per-node/per-port F/R/T accumulator offsets. Define reusable host-owned
+    batch frames and explicit reflected indexed callback contexts with pointer/count
+    records rather than native `std::span` layout. Extend package import planning to
+    select `tock_coverage`, forward, and reverse callbacks with their proper ABI.
+    The detailed dependency order is normative in
     [indexed_dsp_nodes.md](./indexed_dsp_nodes.md#32-implementation-landing-order).
-16. **GraphExecutor integration and mixed access.** Add active/pending executable generations,
-    canonical `NodeStorage` construction/migration, dynamic indexed sidecars and
-    batched transaction workspaces, semantic-versioned candidate/published indexed
-    snapshots, closed invalidation/demand root normalization, whole-live-block
-    publication, root execution, and indexed-component dispatch. Complete
-    non-realtime sample/event access before live
-    indexed pulls, then add indexed-to-realtime lowering and fixed-layout
-    `tick_record` staging/publication. `CompiledGraph` remains independently
-    testable before this point.
-17. **Optimization refinements.** Verify generated hot-path assembly and then improve
-    liveness reuse, the existing realtime and new indexed storage cost models,
+16. **Generated batched indexed F/R/T programs.** Emit static component entrypoints
+    from the retained plan. All roots for one logical batch are installed first;
+    fan-in/fan-out regions are unioned into accumulator slots; F executes in forward
+    order, R in reverse order with persistent cuts, and T in forward dependency
+    order. Each applicable indexed callback runs at most once per node per batch.
+    Dynamic coverage algebra may initially use runtime helpers, but traversal and
+    callback selection belong to generated LLVM rather than a host interpreter.
+17. **GraphExecutor, persistent stores, and non-realtime transactions.** Add
+    active/pending executable generations, canonical `NodeStorage`, stable
+    endpoint-to-store binding, semantic-versioned candidate/published snapshots,
+    reusable indexed batch workspaces, closed invalidation/demand root
+    normalization, exact F invalidation, page-domain promotion, batched R/T,
+    complete `tock_stored` candidate materialization, stale-work rejection, and
+    atomic publication. Complete application/UI sample/event indexed access on this
+    path before realtime depends on it. `CompiledGraph` remains immutable and
+    independently testable.
+18. **External normalization and immutable indexed bases in realtime lowering.**
+    Route JSON-RPC/application edits and fetches into the same mutation/demand batch
+    model rather than protocol-specific traversal. Extend the ordinary sample/event
+    physical-port pass to bind published `tock_stored`/`tick_record` bases into
+    realtime indexed-input facades and remove the corresponding mixed/indexed
+    capability gates. This stage requires no live tock execution yet.
+19. **Live `tock_realtime`, recorder staging, and publication.** Add bounded,
+    allocation-free live R/T workspaces; lower realtime `tock_realtime` pulls
+    against one captured immutable base; allocate and bind fixed `tick_record`
+    staging; preserve whole-root-block commit semantics across primitive slicing;
+    and batch same-pass recorder overlays before causally downstream live indexed
+    work. Ephemeral live forward propagation may cross `tock_realtime` but stops at
+    `tock_stored`; persistent recorder invalidation after handoff crosses stored
+    nodes normally. Publish authoritative recorder roots off the audio thread with
+    safe-boundary frame swaps and deferred reclamation.
+20. **Generation reconciliation and remaining authored node semantics.** Rebind
+    persistent indexed stores by stable endpoint identity across compatible JIT
+    replacement; recompilation without semantic change must not itself invalidate
+    indexed data. Then remove remaining GraphJit node-type capability gates through
+    the existing plans: nested declarations, declaration-owned auxiliary/shared-
+    array regions, correct declaration/layout ownership, activity/TTL, deferred
+    detach where still gated, and generalized skip semantics. Skip must never
+    synthesize a recorder commit.
+21. **Optimization refinements.** Verify generated hot-path assembly and then improve
+    liveness reuse, the existing realtime and indexed storage cost models,
     SIMD-aware storage/layout/conversion choices, fusion/SSA direct forwarding,
-    vectorization, and target-specific optimization only after the semantic
-    compiler surface is complete. Before adding specialized graph algorithms,
-    consolidate reusable host-side topology analysis: assign dense node ordinals,
-    build each semantically distinct adjacency relation once, run the complete
-    semantic SCC decomposition once, and retain node-to-SCC/condensation/topology
-    facts for schedule formation and later liveness/storage/batching/fusion passes.
-    In particular, indexed-cycle validation is an SCC-ID comparison during one
-    indexed-connection scan, not a DFS/BFS from every indexed port. Keep graph
+    consecutive-loop merging, vectorization, and target-specific optimization only
+    after the semantic compiler surface is complete. Before adding specialized
+    graph algorithms, consolidate reusable host-side topology analysis: assign
+    dense node ordinals, build each semantically distinct adjacency relation once,
+    run the complete semantic SCC decomposition once, and retain node-to-SCC/
+    condensation/topology facts for schedule formation and later liveness/storage/
+    batching/fusion passes. Indexed-cycle validation is an SCC-ID comparison during
+    one indexed-connection scan, not a DFS/BFS from every indexed port. Keep graph
     relations that answer different questions separate—detach legality may still
     require pre-feedback reachability—but share ordinals, storage, traversal
     scratch, and valid analysis results wherever their edge relation is identical.
     Prefer a fresh linear SCC pass per graph compilation over incremental SCC
     maintenance until profiling demonstrates that graph analysis, rather than LLVM
-    work, is material. Add `tick_block_batch` here as a schedule optimization: group concrete
-    nodes sharing one implementation/type when topology permits, without changing
-    dependency order, SCC slice boundaries, port windows, or per-instance state.
-    Batch formation belongs after semantic scheduling and physical port planning are
-    stable; it consumes those facts rather than introducing a second execution model.
+    work, is material. Genuine multi-node `*_coverage_batch` callbacks and
+    topology-permitted `tick_block_batch` grouping belong here as schedule/codegen
+    optimizations; they consume the established semantic schedule and physical
+    plan rather than introducing a second execution model.
 
 The root-build transaction remains:
 

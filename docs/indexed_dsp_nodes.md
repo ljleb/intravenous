@@ -1789,61 +1789,141 @@ The v3 API and static contract are now established without compatibility aliases
    sample/event edge whose endpoints share an SCC, including self-loops. The SCC
    relation restores detach edges rather than reusing the same-slice schedule.
 
-The remaining work should land in this order so each major subsystem is opened as
-few times as practical:
+The remaining sequence is a dependency order toward the complete implementation,
+not a requirement that every individual edit or numbered point leave an
+independently releasable intermediate tree. Combine adjacent work when that makes
+final lowering simpler.
 
-3. **One retained static indexed-analysis plan.** Replace the validation-only SCC
-   result with reusable dense node/endpoint identities and retained semantic-SCC,
-   indexed-component, condensation/order, producer-mode, convergence/conversion,
-   connection-fingerprint, persistent-boundary, and stable project-output identity
-   facts. Retain the static forward/reverse/tock traversal order plus the
-   per-node/per-port accumulator layout needed to union a whole indexed batch
-   before each callback. Extend `CompiledGraph` metadata at the same time and
-   compute the fixed whole-graph `tick_record` staging layout, including bounded
-   event capacities. This is the single topology/planning pass consumed by every
-   later phase.
-4. **Persistent indexed store and generation reconciliation.** Introduce the
-   stable output store, immutable published roots, active/pending generation
-   bindings, canonical `NodeStorage` ownership, semantic versions, compatible
-   rebind/migration, node/connection reconciliation, and transaction workspace
-   ownership. Establish complete sample/event representations before evaluation
-   or live lowering depends on them.
-5. **Complete non-realtime batched indexed transactions.** On the retained plan
-   and store, implement the closed invalidation-root and external-demand entry
-   points, batch-root collection, exact one-pass forward invalidation, page-domain
-   promotion, one-pass reverse demand, one-call-per-node tock evaluation,
-   full-coverage `tock_stored` candidate completion, stale-work rejection, atomic
-   publication, versioned external queries, and change notifications. This closes
-   indexed semantics independently of the audio thread first.
-6. **One live GraphJit port-lowering pass.** In the same sample/event physical-port
-   pass, bind published `tock_stored`/`tick_record` bases, lower bounded inline
-   `tock_realtime` pulls, allocate and bind fixed `tick_record` staging, expose
-   complete current-pass recorder overlays to causally downstream consumers, and
-   apply neutral/no-event projection only outside exact coverage. Reuse existing
-   direct/transient/persistent storage machinery rather than create indexed-only
-   buffer classes.
-7. **Recorder handoff and authoritative publication.** Connect the generated
-   staging frame to `GraphExecutor`: whole-root-block commit/no-commit bits,
-   safe-boundary frame swaps, off-audio-thread authoritative updates, immutable
-   next-version roots, overrun diagnostics, and deferred reclamation. Exercise
-   sample/event empty replacement, fanout, generation replacement, and block-size
-   repaging end to end.
-8. **External migration and deletion.** Move query/visualization/RPC consumers to
-   the indexed executor and delete compiled-lane execution, storage, transport,
-   and UI concepts. Compiled lanes are obsolete, not a compatibility layer to
-   maintain beside indexed ports.
-9. **Optimization only after capability.** Add genuine multi-node
-   `*_coverage_batch` operations, topology-permitted `tick_block_batch` grouping,
-   persistent-backing choices, workspace liveness, SIMD-aware cost models and
-   layout/copy/conversion, vectorization, fusion/direct forwarding,
-   target-specific lowering, and generated hot-path assembly verification.
+3. **Normalize indexed connection semantics before adding execution modes.** An
+   ordinary realtime output may not directly satisfy an indexed input. Remove
+   `realtime_to_indexed` as an executable connection category and reject such a
+   connection during graph construction/validation. Realtime-produced indexed data
+   enters the indexed graph only through an explicit `tick_record` indexed output;
+   its realtime dependencies remain ordinary realtime connections into the
+   recorder-producing node. Retain only realtime-to-realtime,
+   indexed-to-indexed, and indexed-to-realtime access classes.
+4. **Build one retained `IndexedPlan`.** Replace validation-only indexed/SCC facts
+   with reusable dense indexed-node/endpoint ordinals, endpoint kind and producer
+   mode, indexed connections/conversions, semantic SCC identity, indexed weak
+   components/condensation order, forward F order, reverse R order, forward T
+   order, fan-in/fan-out convergence, requestable outputs, recorder staging
+   requirements, and stable persistent endpoint identities. The same plan owns
+   the fixed per-node/per-port accumulator layout for input changes, output
+   changes/coverage, output requirements, and input requirements. Reuse the
+   complete semantic SCC decomposition rather than rebuilding equivalent graph
+   views in later phases.
+5. **Define the indexed batch frame and stable reflected callback ABI.** Introduce
+   the host-owned reusable batch/workspace representation described by the plan:
+   F/R/T coverage accumulators, candidate-version/page-validity view, transient
+   result bindings, and region-set scratch. Generated code sees only stable
+   pointer/count/offset records into that frame. Define explicit standard-layout
+   reflected contexts for `tock_coverage()`, `propagate_forward_coverage()`, and
+   `propagate_reverse_coverage()` rather than passing native node-specialized
+   contexts or relying on `std::span` object layout across the generated/package
+   LLVM boundary. Package wrappers reconstruct the public typed node contexts from
+   those reflected records.
+6. **Import indexed callbacks and generate one-call-per-node F/R/T programs.** Extend
+   package callback planning/import to select the three indexed callbacks with
+   their correct LLVM ABI kind. Emit generated indexed component entrypoints which
+   walk the static orders from `IndexedPlan`: F unions all convergent input/local
+   invalidations before calling a node's forward callback at most once; R applies
+   persistent cuts and unions all output demands before calling reverse at most
+   once; T walks forward and calls `tock_coverage()` at most once with the final
+   consolidated output requirements. Coverage algebra may initially use ordinary
+   runtime helper functions; do not introduce callback-driven graph recursion or a
+   host-side indexed interpreter.
+7. **Add the mutable persistent indexed data plane and `GraphExecutor`.** Keep
+   `CompiledGraph` immutable. `GraphExecutor` owns canonical `NodeStorage`,
+   active/pending executable generations, stable endpoint-to-store binding,
+   semantic versions, immutable published roots, candidate roots, sample/event
+   pages, reusable batch workspaces, and stale-work rejection. A stored page has
+   distinct physical-retention and target-semantic-version validity state. Old
+   bytes remaining resident never make an obsolete page a reverse cut. `tick_record`
+   uses the same stable endpoint identity but remains authoritative data rather
+   than T-regenerated data.
+8. **Close complete non-realtime batched transactions first.** Normalize all
+   allowed invalidation roots (node-semantic mutation, recorder publication,
+   graph-semantic change, sample-rate change), install the whole logical batch,
+   execute one F pass, promote invalid `tock_stored` intersections to complete page
+   domains, union those internal materialization roots with all explicit fetch
+   demands, then execute one R pass and one T pass. Finish every affected stored
+   candidate before atomically publishing one coherent semantic version. Reads of
+   already-published `tock_stored`/`tick_record` data are direct; fetched
+   `tock_realtime` outputs enter the same batched R/T machinery. Tests must include
+   multiple roots and multiple sinks converging on the same node and prove one
+   callback invocation per applicable phase.
+9. **Normalize application/JSON-RPC operations into those batches.** Protocol code
+   supplies semantic mutations and/or fetch demands; it does not implement graph
+   traversal. Several edits in one logical request apply to one candidate state and
+   seed one F pass, exposing no intermediate semantic version. A mutation-plus-fetch
+   transaction naturally executes `mutations -> F -> dirty-page demands union
+   explicit demands -> R/T -> publish -> result`. Keep UI/RPC concepts out of the
+   generated indexed ABI.
+10. **Lower immutable indexed bases into realtime port access.** Extend the existing
+    sample/event physical-port lowering to bind the selected immutable published
+    `tock_stored`/`tick_record` snapshot into realtime indexed-input facades and to
+    support indexed-to-realtime projection/arbitrary reads without live tock work.
+    Remove the corresponding mixed/indexed capability gates as each case becomes
+    representable. Disconnected indexed inputs expose empty coverage and neutral/no-
+    event current-block projection. Ordinary realtime outputs still cannot become
+    indexed producers implicitly.
+11. **Add bounded live `tock_realtime` R/T execution.** A live root pass seeds the
+    preplanned realtime batch workspace, executes generated reverse traversal, cuts
+    at usable published stored/recorded data, and executes T for implicated
+    transient producers. The possible traversal is static; only region sets and
+    cut validity are dynamic. Before this path is considered realtime-safe, replace
+    or wrap growable `IndexedCoverage` storage with bounded/preallocated live
+    accumulators so union/mapping cannot allocate, block, or fault in unexpected
+    backing on the audio thread. Background transactions may retain growable
+    workspace.
+12. **Implement explicit `tick_record` staging and same-pass live visibility.** Use
+    the fixed recorder layout from `IndexedPlan` to bind sample/event recorder
+    writers into `tick_block()`, collect whole-root-block commit/no-commit state,
+    and aggregate primitive slices into one root transaction when
+    `maximum_block_size` causes slicing. Before causally downstream live indexed
+    consumers execute, batch all recorder commits known at that scheduling point;
+    an ephemeral live F pass may propagate their new coverage through
+    `tock_realtime` chains but stops at `tock_stored`. After the root pass, completed
+    recorder frames cross to `GraphExecutor`; persistent recorder invalidation is a
+    normal F root and therefore does cross `tock_stored` while marking downstream
+    candidates obsolete.
+13. **Finish recorder publication and generation reconciliation.** Publish completed
+    recorder frames into immutable authoritative roots off the audio thread, run
+    the resulting batched downstream invalidation/materialization work, and defer
+    old-root reclamation until readers finish. Rebind persistent stores by stable
+    endpoint identity across compatible `CompiledGraph` replacement rather than
+    generation-local bundle IDs. A recompilation with unchanged indexed semantics
+    is rebinding, not automatic invalidation; block-size changes may still require
+    quiescent physical repaging without changing indexed semantic meaning.
+14. **Remove the remaining GraphJit node-API capability gates.** Once indexed
+    execution is complete, finish declaration/runtime features that are orthogonal
+    to indexed transport: nested declarations, declaration-owned local/auxiliary/
+    shared-array regions, correct actual `NodeLayout` ownership/offsets, activity/
+    TTL, deferred detach where still gated, and generalized skip scheduling. Keep
+    skip incapable of synthesizing recorder commits. Structural tiled/subgraph
+    flattening may remain a separate GraphBuilder concern, but authored primitive
+    node-type semantics should no longer be rejected by GraphJit.
+15. **Optimize only after the semantic compiler surface is complete.** Then add
+    genuine multi-node `*_coverage_batch` callbacks, topology-permitted
+    `tick_block_batch` grouping, persistent-backing alternatives, workspace
+    liveness packing, SIMD-aware storage/layout/conversion, vectorization,
+    consecutive-loop merging/fusion, direct forwarding, target-specific lowering,
+    and generated hot-path assembly verification. These consume the retained plan
+    and batched execution model rather than introducing another executor.
 
-Stable endpoint identity must exist before persistent stored output ownership is
-bound across generations. Non-realtime transaction semantics and complete
-published bases must exist before live lowering relies on them. Static recorder
-layout belongs in the retained plan, but recorder publication follows live staging
-because it consumes completed generated frames. `tick_record` remains an explicit
-producer mode rather than an implicit connection transport.
+The first useful end-to-end indexed milestone is through point 8: generated F/R/T
+programs plus a `GraphExecutor` able to accept a batched non-realtime mutation/fetch
+transaction, invalidate and rebuild `tock_stored` pages, evaluate
+`tock_realtime`, and atomically publish a coherent version. Realtime integration
+then becomes another source/sink of the same batch machinery rather than a second
+indexed execution system.
+
+Stable endpoint identity and the accumulator ABI must exist before persistent
+storage is bound. Generated one-call-per-node F/R/T traversal should exist before
+storage policy begins driving execution. Complete non-realtime publication should
+exist before realtime code depends on indexed bases. `tick_record` remains an
+explicit producer mode throughout; it is never an implicit realtime-to-indexed
+connection transport.
 
 ## 33. Summary invariants
 
