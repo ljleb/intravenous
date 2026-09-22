@@ -150,6 +150,99 @@ struct IndexedEventOutputPort {
     }
 };
 
+// A tick_record binding is private staging for exactly one complete root block.
+// Writes have no semantic effect unless commit() is called; committing declares
+// that every sample/channel (or the complete ordered event sequence, including
+// an empty sequence) for block() has been supplied.
+struct TickRecordSampleOutputPort {
+    void* data = nullptr;
+    SampleIndex block_begin = 0;
+    std::size_t block_size_value = 0;
+    std::size_t channel_count_value = 0;
+    void (*write_sample)(void*, std::size_t, std::size_t, Sample) = nullptr;
+    void (*commit_block)(void*) = nullptr;
+
+    [[nodiscard]] IndexedRegion block() const noexcept
+    {
+        return {block_begin, block_begin + block_size_value};
+    }
+
+    [[nodiscard]] std::size_t block_size() const noexcept
+    {
+        return block_size_value;
+    }
+
+    [[nodiscard]] std::size_t channel_count() const noexcept
+    {
+        return channel_count_value;
+    }
+
+    void write(
+        std::size_t sample_offset,
+        std::size_t channel,
+        Sample value) const noexcept
+    {
+        IV_ASSERT(sample_offset < block_size_value,
+            "tick_record sample write lies outside the current root block");
+        IV_ASSERT(channel < channel_count_value,
+            "tick_record sample write uses an invalid channel");
+        IV_ASSERT(write_sample != nullptr,
+            "tick_record sample output has no staging binding");
+        write_sample(data, sample_offset, channel, value);
+    }
+
+    void commit() const noexcept
+    {
+        IV_ASSERT(commit_block != nullptr,
+            "tick_record sample output has no commit binding");
+        commit_block(data);
+    }
+};
+
+struct TickRecordEventOutputPort {
+    void* data = nullptr;
+    SampleIndex block_begin = 0;
+    std::size_t block_size_value = 0;
+    void (*write_event)(void*, TimedEvent const&) = nullptr;
+    void (*commit_block)(void*) = nullptr;
+
+    [[nodiscard]] IndexedRegion block() const noexcept
+    {
+        return {block_begin, block_begin + block_size_value};
+    }
+
+    [[nodiscard]] std::size_t block_size() const noexcept
+    {
+        return block_size_value;
+    }
+
+    void write(TimedEvent const& event) const noexcept
+    {
+        IV_ASSERT(block().contains(event.time),
+            "tick_record event lies outside the current root block");
+        IV_ASSERT(write_event != nullptr,
+            "tick_record event output has no staging binding");
+        write_event(data, event);
+    }
+
+    void write(Event event, std::size_t sample_offset) const noexcept
+    {
+        IV_ASSERT(sample_offset < block_size_value,
+            "tick_record event lies outside the current root block");
+        write(TimedEvent{
+            .time = block_begin + sample_offset,
+            .value = std::move(event),
+        });
+    }
+
+    void commit() const noexcept
+    {
+        IV_ASSERT(commit_block != nullptr,
+            "tick_record event output has no commit binding");
+        commit_block(data);
+    }
+};
+
 struct IndexedInputChange {
     IndexedCoverage const* coverage_value = nullptr;
     IndexedCoverage const* changed_value = nullptr;
@@ -345,16 +438,6 @@ constexpr std::size_t indexed_input_ordinal()
     }
 }
 
-template<typename Node, fixed_string Name>
-constexpr std::size_t indexed_output_ordinal()
-{
-    if constexpr (static_output_port_kind<Node, Name>() == PortKind::sample) {
-        return static_indexed_output_port_index<Node, Name>();
-    } else {
-        return static_indexed_event_output_port_index<Node, Name>();
-    }
-}
-
 } // namespace details
 
 template<typename Node>
@@ -364,6 +447,7 @@ struct TockCoverageContext {
     std::span<IndexedEventInputPort const> event_inputs {};
     std::span<IndexedEventOutputPort> event_outputs {};
     std::span<std::byte> indexed_state_storage {};
+    std::size_t sample_rate = 48000;
 
     using IndexedState = typename NodeIndexedState<Node>::Type;
 
@@ -395,20 +479,21 @@ struct TockCoverageContext {
     [[nodiscard]] auto output() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(is_indexed(details::static_output_config<Node, Name>()),
-            "TockCoverageContext can only access outputs declared indexed");
+        static_assert(
+            details::static_output_port_is_tock_produced<Node, Name>(),
+            "TockCoverageContext can only write tock-produced indexed outputs");
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
             constexpr auto layout = details::static_output_port_layout<Node, Name>();
             constexpr auto port_index =
-                details::static_indexed_output_port_index<Node, Name>();
+                details::static_tock_output_port_index<Node, Name>();
             IV_ASSERT(port_index < outputs.size(),
                 "indexed sample output is absent from tock context");
             return details::StaticIndexedSampleOutputAccess<layout.channel_type>(
                 outputs[port_index]);
         } else {
             constexpr auto port_index =
-                details::static_indexed_event_output_port_index<Node, Name>();
+                details::static_tock_event_output_port_index<Node, Name>();
             IV_ASSERT(port_index < event_outputs.size(),
                 "indexed event output is absent from tock context");
             return details::StaticIndexedEventOutputAccess(event_outputs[port_index]);
@@ -429,9 +514,7 @@ struct PropagateForwardCoverageContext {
     std::span<IndexedInputChange const> event_inputs {};
     std::span<IndexedOutputChange> event_outputs {};
     bool local_state_changed = false;
-    std::span<std::byte> indexed_state_storage {};
-
-    using IndexedState = typename NodeIndexedState<Node>::Type;
+    std::size_t sample_rate = 48000;
 
     template<fixed_string Name>
     [[nodiscard]] IndexedInputChange const& input() const
@@ -458,28 +541,24 @@ struct PropagateForwardCoverageContext {
     [[nodiscard]] IndexedOutputChange const& output() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(is_indexed(details::static_output_config<Node, Name>()),
-            "forward coverage can only publish indexed outputs");
+        static_assert(
+            details::static_output_port_is_tock_produced<Node, Name>(),
+            "forward coverage can only publish computed indexed outputs");
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
-            constexpr auto index = details::static_indexed_output_port_index<Node, Name>();
+            constexpr auto index = details::static_tock_output_port_index<Node, Name>();
             IV_ASSERT(index < outputs.size(),
                 "indexed sample output is absent from forward context");
             return outputs[index];
         } else {
             constexpr auto index =
-                details::static_indexed_event_output_port_index<Node, Name>();
+                details::static_tock_event_output_port_index<Node, Name>();
             IV_ASSERT(index < event_outputs.size(),
                 "indexed event output is absent from forward context");
             return event_outputs[index];
         }
     }
 
-    [[nodiscard]] std::add_lvalue_reference_t<IndexedState> indexed_state() const
-    requires (!std::is_void_v<IndexedState>)
-    {
-        return indexed_port_details::state_from<IndexedState>(indexed_state_storage);
-    }
 };
 
 template<typename Node>
@@ -488,25 +567,24 @@ struct PropagateReverseCoverageContext {
     std::span<IndexedOutputRequirement const> outputs {};
     std::span<IndexedInputRequirement> event_inputs {};
     std::span<IndexedOutputRequirement const> event_outputs {};
-    std::span<std::byte> indexed_state_storage {};
-
-    using IndexedState = typename NodeIndexedState<Node>::Type;
+    std::size_t sample_rate = 48000;
 
     template<fixed_string Name>
     [[nodiscard]] IndexedOutputRequirement const& output() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(is_indexed(details::static_output_config<Node, Name>()),
-            "reverse coverage can only inspect indexed outputs");
+        static_assert(
+            details::static_output_port_is_tock_produced<Node, Name>(),
+            "reverse coverage can only inspect computed indexed outputs");
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
-            constexpr auto index = details::static_indexed_output_port_index<Node, Name>();
+            constexpr auto index = details::static_tock_output_port_index<Node, Name>();
             IV_ASSERT(index < outputs.size(),
                 "indexed sample output is absent from reverse context");
             return outputs[index];
         } else {
             constexpr auto index =
-                details::static_indexed_event_output_port_index<Node, Name>();
+                details::static_tock_event_output_port_index<Node, Name>();
             IV_ASSERT(index < event_outputs.size(),
                 "indexed event output is absent from reverse context");
             return event_outputs[index];
@@ -534,11 +612,6 @@ struct PropagateReverseCoverageContext {
         }
     }
 
-    [[nodiscard]] std::add_lvalue_reference_t<IndexedState> indexed_state() const
-    requires (!std::is_void_v<IndexedState>)
-    {
-        return indexed_port_details::state_from<IndexedState>(indexed_state_storage);
-    }
 };
 
 template<typename Node>
@@ -551,25 +624,7 @@ template<typename Node>
 void do_propagate_forward_coverage(
     Node const& node, PropagateForwardCoverageContext<Node>& context)
 {
-    if constexpr (details::has_propagate_forward_coverage<Node>) {
-        node.propagate_forward_coverage(context);
-    } else {
-        bool changed = context.local_state_changed;
-        for (auto const& input : context.inputs) {
-            changed = changed || !input.changed().empty();
-        }
-        for (auto const& input : context.event_inputs) {
-            changed = changed || !input.changed().empty();
-        }
-        for (auto const& output : context.outputs) {
-            output.publish_coverage(output.previous_coverage());
-            if (changed) output.change(output.previous_coverage());
-        }
-        for (auto const& output : context.event_outputs) {
-            output.publish_coverage(output.previous_coverage());
-            if (changed) output.change(output.previous_coverage());
-        }
-    }
+    node.propagate_forward_coverage(context);
 }
 
 template<typename Node>

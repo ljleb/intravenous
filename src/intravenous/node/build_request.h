@@ -432,13 +432,14 @@ IV_FORCEINLINE void tick_node_block(
                             .event_outputs = event_outputs,
                             .indexed_inputs = ctx.indexed_inputs,
                             .indexed_event_inputs = ctx.indexed_event_inputs,
-                            .indexed_state_storage = ctx.indexed_state,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = ctx.state,
                         },
                         static_cast<SampleIndex>(index),
                         block_size,
+                        ctx.tick_record_outputs,
+                        ctx.tick_record_event_outputs,
                     });
                 });
         });
@@ -470,7 +471,6 @@ IV_FORCEINLINE void skip_node_block(
                             .event_outputs = event_outputs,
                             .indexed_inputs = ctx.indexed_inputs,
                             .indexed_event_inputs = ctx.indexed_event_inputs,
-                            .indexed_state_storage = ctx.indexed_state,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = ctx.state,
@@ -514,9 +514,9 @@ IV_FORCEINLINE void propagate_node_reverse_coverage(
 template<class Node>
 consteval auto node_tock_coverage_operation()
 {
-    if constexpr (details::declares_indexed_outputs_v<Node>) {
+    if constexpr (details::declares_tock_outputs_v<Node>) {
         static_assert(details::has_tock_coverage<Node>,
-            "indexed-output node has no valid tock_coverage implementation");
+            "computed indexed-output node has no valid tock_coverage implementation");
         return &tock_node_coverage<Node>;
     } else {
         return static_cast<void (*)(void const*, void*)>(nullptr);
@@ -526,7 +526,9 @@ consteval auto node_tock_coverage_operation()
 template<class Node>
 consteval auto node_propagate_forward_coverage_operation()
 {
-    if constexpr (details::declares_indexed_outputs_v<Node>) {
+    if constexpr (details::declares_tock_outputs_v<Node>) {
+        static_assert(details::has_propagate_forward_coverage<Node>,
+            "computed indexed-output node has no exact propagate_forward_coverage implementation");
         return &propagate_node_forward_coverage<Node>;
     } else {
         return static_cast<void (*)(void const*, void*)>(nullptr);
@@ -536,7 +538,7 @@ consteval auto node_propagate_forward_coverage_operation()
 template<class Node>
 consteval auto node_propagate_reverse_coverage_operation()
 {
-    if constexpr (details::declares_indexed_outputs_v<Node>
+    if constexpr (details::declares_tock_outputs_v<Node>
         && details::declares_indexed_inputs_v<Node>) {
         return &propagate_node_reverse_coverage<Node>;
     } else {

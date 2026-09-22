@@ -1504,7 +1504,7 @@ runtime preserve these integration rules:
 - every indexed output publishes canonical finite `IndexedCoverage`; explicit
   indexed reads never request outside coverage;
 - indexed outputs declare one producer mode: `tock_realtime`, `tock_stored`, or
-  `tick_record`, replacing the provisional boolean cache contract;
+  `tick_record`; this has replaced the provisional boolean cache contract;
 - `tock_realtime` owns no persistent result and promises requested tock/reverse
   work is realtime-compatible;
 - `tock_stored` is produced by `tock_coverage()` and persistently materialized over

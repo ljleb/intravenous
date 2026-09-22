@@ -110,9 +110,8 @@ groups fanout by producer, derives the requirement
 records consumed by the existing sample/event physical-storage choosers, and
 emits semantic transient/persistent/external storage and liveness requests. An
 indexed output never becomes an ordinary tick dependency merely because a
-realtime consumer needs it. The current implementation still carries the
-provisional boolean cache bit, but the target lowering contract is the three-state
-indexed producer model: `tock_realtime` may become an inline live pull;
+realtime consumer needs it. The three-state indexed producer declaration and its
+callback/write-authority validation have landed: `tock_realtime` may become an inline live pull;
 `tock_stored` is a complete persistent boundary; and `tick_record` uses fixed
 compiler-owned whole-block staging plus authoritative publication. Persistent
 stored pages use the exact same power-of-two quantum and absolute-sample alignment
@@ -614,17 +613,17 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     declaration-owned auxiliary/shared-array regions, activity/TTL, deferred
     detach, and generalized skip semantics through existing plans rather than side
     paths.
-15. **Indexed DSP foundation.** Replace the legacy compiled-port API with
+15. **Indexed DSP foundation.** The v3 node API, producer modes, callback
+    authority, exact-forward requirement, tock-only `IndexedState`, and whole-
+    semantic-SCC indexed-edge rejection have landed. Continue replacing the
+    legacy compiled-port API with
     `IndexedCoverage`, distinct indexed input/output declarations, the one-node
-    tock/forward/reverse callbacks, and the three-state indexed producer contract.
-    `IndexedState` remains only non-semantic tock acceleration state. Carry those
-    exact callbacks/configuration records through package validation, resolved
-    implementations, and GraphJit. Add stable internal endpoint identity and
+    tock/forward/reverse callbacks, and the three-state indexed producer contract
+    throughout execution. Add stable internal endpoint identity and
     immutable indexed-component plans before allocating persistent indexed output
-    storage. Static planning validates the unconditional SCC rule: every indexed
-    connection must leave its source node's semantic SCC. The semantic SCC relation
-    includes indexed dependencies and explicit feedback for cycle membership; it is
-    not merely the same-slice realtime schedule. The
+    storage. Retain and reuse the semantic SCC/component/order analysis rather than
+    recomputing the validation-only result now used to enforce the unconditional
+    cycle rule. The
     detailed dependency order is normative in
     [indexed_dsp_nodes.md](./indexed_dsp_nodes.md#32-implementation-landing-order).
 16. **GraphExecutor integration and mixed access.** Add active/pending executable generations,
@@ -972,8 +971,8 @@ enum class IndexedProducer {
 };
 ```
 
-The old boolean cache declaration is provisional and should be replaced by this
-three-state producer contract:
+The old boolean cache declaration has been replaced by this three-state producer
+contract:
 
 - `tock_realtime`: produced by `tock_coverage()`, no persistent result, and safe
   for inline realtime evaluation;

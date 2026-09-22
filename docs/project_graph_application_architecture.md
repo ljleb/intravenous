@@ -737,13 +737,13 @@ The implementation checkpoints now stand as follows:
    `ProjectNodePortMatcher`s against the complete placement map, applies
    sample/event connections, and preserves dangling matchers with diagnostics.
    Structured persistence and JSON-RPC adapters remain follow-up transport work.
-7. **Landed (fixed state foundation):** canonical `NodeLayout`/`NodeStorage`
-   covers `IndexedState` and compiler-owned raw aligned regions. The indexed API now
-   needs its producer-mode correction: make `IndexedState` tock-only/non-semantic,
-   replace the provisional boolean cache field with `tick_record` /
-   `tock_realtime` / `tock_stored`, require exact computed-output coverage, reject
-   every indexed edge inside a semantic SCC, and add static indexed component/order
-   plus fixed recorder-staging analysis inside whole-graph lowering;
+7. **Landed (fixed state + indexed v3 API foundation):** canonical
+   `NodeLayout`/`NodeStorage` covers tock-only non-semantic `IndexedState` and
+   compiler-owned raw aligned regions. The three producer modes, exact computed-
+   output forward coverage, callback/write authority, sample-rate context, and
+   whole-semantic-SCC indexed-edge rejection are wired through package records and
+   GraphJit analysis. Stable indexed component/order metadata and fixed recorder-
+   staging analysis remain to be added inside whole-graph lowering;
 8. **Landed (compiler shell + storage/lifecycle ABI cleanup):** `GraphJit`
    synchronously captures exact package LLVM/provenance, resolves compiler
    anchors/config relocations, verifies and O3 optimizes generated project LLVM,

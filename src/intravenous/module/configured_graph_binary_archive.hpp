@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 5;
+inline constexpr std::uint32_t archive_version = 6;
 
 class Writer {
 public:
@@ -238,13 +238,21 @@ inline void write_output_access(Writer& w, OutputAccessConfig const& value)
         w.size(realtime->history);
         w.size(realtime->latency);
     } else {
-        w.flag(std::get<IndexedOutputConfig>(value).cache);
+        write_enum(w, std::get<IndexedOutputConfig>(value).producer);
     }
 }
 
 inline OutputAccessConfig read_output_access(Reader& r)
 {
-    if (r.flag()) return IndexedOutputConfig{.cache = r.flag()};
+    if (r.flag()) {
+        auto const producer = read_enum<IndexedProducer>(r);
+        if (producer < IndexedProducer::tick_record
+            || producer > IndexedProducer::tock_stored) {
+            throw std::runtime_error(
+                "configured graph archive has invalid indexed producer mode");
+        }
+        return IndexedOutputConfig{.producer = producer};
+    }
     return RealtimeOutputConfig{
         .history = r.size(),
         .latency = r.size(),

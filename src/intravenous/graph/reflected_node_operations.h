@@ -181,7 +181,8 @@ struct ReflectedNodeTickContext {
     ReflectedSpan<EventOutputPort> event_outputs {};
     ReflectedSpan<IndexedSampleInputPort const> indexed_inputs {};
     ReflectedSpan<IndexedEventInputPort const> indexed_event_inputs {};
-    ReflectedSpan<std::byte> indexed_state {};
+    ReflectedSpan<TickRecordSampleOutputPort> tick_record_outputs {};
+    ReflectedSpan<TickRecordEventOutputPort> tick_record_event_outputs {};
     std::size_t sample_rate = 48000;
     std::size_t scc_feedback_latency = 0;
     ReflectedSpan<std::byte> state {};

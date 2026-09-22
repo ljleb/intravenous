@@ -710,12 +710,165 @@ std::vector<NodeBundleHandle> unique_source_bundles(
     return bundles;
 }
 
+std::expected<void, std::string>
+validate_indexed_connections_outside_semantic_scc(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan const& plan)
+{
+    if (plan.nodes.empty()) return {};
+
+    std::vector<std::optional<std::size_t>> bundle_to_node(
+        graph.node_bundles.size());
+    for (std::size_t i = 0; i < plan.nodes.size(); ++i) {
+        bundle_to_node[plan.nodes[i].bundle] = i;
+    }
+
+    // Semantic cycle membership restores every authored detach edge. Detach
+    // changes same-slice execution, not the logical data dependency.
+    auto outgoing = dependency_adjacency(graph, plan, false);
+    auto append_edge = [&](NodeBundleHandle source_bundle,
+                           NodeBundleHandle target_bundle) {
+        if (source_bundle >= bundle_to_node.size()
+            || target_bundle >= bundle_to_node.size()
+            || !bundle_to_node[source_bundle]
+            || !bundle_to_node[target_bundle]) {
+            return;
+        }
+        outgoing[*bundle_to_node[source_bundle]].push_back(
+            *bundle_to_node[target_bundle]);
+    };
+    for (auto const& connection : plan.sample_connections) {
+        if (!connection.detach) continue;
+        for (auto const source : unique_source_bundles(
+                 connection.source_channels)) {
+            append_edge(source, connection.target_port.node_bundle_handle);
+        }
+    }
+    for (auto const& connection : plan.event_connections) {
+        if (!connection.detach) continue;
+        for (auto const source : unique_source_bundles(connection.sources)) {
+            for (auto const target : connection.targets) {
+                append_edge(source, target.bundle);
+            }
+        }
+    }
+    for (auto& targets : outgoing) {
+        std::ranges::sort(targets);
+        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+    }
+
+    auto const unvisited = std::numeric_limits<std::size_t>::max();
+    std::vector<std::size_t> index(plan.nodes.size(), unvisited);
+    std::vector<std::size_t> lowlink(plan.nodes.size());
+    std::vector<std::size_t> component_of(plan.nodes.size(), unvisited);
+    std::vector<bool> on_stack(plan.nodes.size(), false);
+    std::vector<std::size_t> stack;
+    std::vector<std::vector<std::size_t>> components;
+    std::size_t next_index = 0;
+
+    auto strongconnect = [&](auto&& self, std::size_t node) -> void {
+        index[node] = next_index;
+        lowlink[node] = next_index;
+        ++next_index;
+        stack.push_back(node);
+        on_stack[node] = true;
+        for (auto const target : outgoing[node]) {
+            if (index[target] == unvisited) {
+                self(self, target);
+                lowlink[node] = std::min(lowlink[node], lowlink[target]);
+            } else if (on_stack[target]) {
+                lowlink[node] = std::min(lowlink[node], index[target]);
+            }
+        }
+        if (lowlink[node] != index[node]) return;
+
+        auto const component_index = components.size();
+        auto& component = components.emplace_back();
+        while (true) {
+            auto const member = stack.back();
+            stack.pop_back();
+            on_stack[member] = false;
+            component_of[member] = component_index;
+            component.push_back(member);
+            if (member == node) break;
+        }
+    };
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node) {
+        if (index[node] == unvisited) strongconnect(strongconnect, node);
+    }
+
+    auto validate_edge = [&](NodeBundleHandle source_bundle,
+                             NodeBundleHandle target_bundle,
+                             std::string_view payload,
+                             std::size_t connection_index)
+        -> std::expected<void, std::string> {
+        if (source_bundle >= bundle_to_node.size()
+            || target_bundle >= bundle_to_node.size()
+            || !bundle_to_node[source_bundle]
+            || !bundle_to_node[target_bundle]) {
+            return {};
+        }
+        auto const source = *bundle_to_node[source_bundle];
+        auto const target = *bundle_to_node[target_bundle];
+        if (component_of[source] != component_of[target]) return {};
+
+        auto const& component = components[component_of[source]];
+        std::string participants;
+        for (auto const member : component) {
+            if (!participants.empty()) participants += ", ";
+            participants += std::to_string(plan.nodes[member].bundle);
+        }
+        return std::unexpected(
+            "GraphJit indexed " + std::string(payload) + " connection "
+            + std::to_string(connection_index) + " from bundle "
+            + std::to_string(source_bundle) + " to bundle "
+            + std::to_string(target_bundle)
+            + " participates in semantic SCC [" + participants + "]");
+    };
+
+    for (auto const& connection : plan.sample_connections) {
+        if (connection.access
+            == PlannedConnectionAccess::realtime_to_realtime) {
+            continue;
+        }
+        for (auto const source : unique_source_bundles(
+                 connection.source_channels)) {
+            if (auto valid = validate_edge(
+                    source,
+                    connection.target_port.node_bundle_handle,
+                    "sample",
+                    connection.configured_connection_index);
+                !valid) {
+                return valid;
+            }
+        }
+    }
+    for (auto const& connection : plan.event_connections) {
+        if (connection.access
+            == PlannedConnectionAccess::realtime_to_realtime) {
+            continue;
+        }
+        for (auto const source : unique_source_bundles(connection.sources)) {
+            for (auto const target : connection.targets) {
+                if (auto valid = validate_edge(
+                        source,
+                        target.bundle,
+                        "event",
+                        connection.configured_connection_index);
+                    !valid) {
+                    return valid;
+                }
+            }
+        }
+    }
+    return {};
+}
+
 std::expected<void, std::string> validate_detached_connections(
     ConfiguredGraph const& graph,
     ConnectionAnalysisPlan const& plan)
 {
     auto const semantic_outgoing = dependency_adjacency(graph, plan, false);
-    auto const sequential_outgoing = dependency_adjacency(graph, plan, true);
     std::vector<std::optional<std::size_t>> bundle_to_node(
         graph.node_bundles.size());
     for (std::size_t i = 0; i < plan.nodes.size(); ++i)
@@ -735,7 +888,6 @@ std::expected<void, std::string> validate_detached_connections(
                 return std::unexpected(
                     "GraphJit detached connection must target a concrete graph node");
             bool closes_semantic_cycle = false;
-            bool closes_sequential_cycle = false;
             for (auto const source : sources) {
                 if (source >= bundle_to_node.size() || !bundle_to_node[source])
                     continue;
@@ -744,21 +896,12 @@ std::expected<void, std::string> validate_detached_connections(
                         semantic_outgoing,
                         *bundle_to_node[target],
                         *bundle_to_node[source]);
-                closes_sequential_cycle = closes_sequential_cycle
-                    || has_path(
-                        sequential_outgoing,
-                        *bundle_to_node[target],
-                        *bundle_to_node[source]);
             }
             if (!closes_semantic_cycle) {
                 return std::unexpected(
                     "GraphJit " + std::string(kind) + " detach on connection "
                     + std::to_string(configured_connection_index)
                     + " breaks an acyclic dependency");
-            }
-            if (!closes_sequential_cycle) {
-                return std::unexpected(
-                    "GraphJit detach cycle crosses indexed-access dependencies, which SCC execution does not yet support");
             }
         }
         return {};
@@ -1703,6 +1846,11 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     }
     if (auto events = inventory_event_connections(graph, plan); !events) {
         return std::unexpected(std::move(events.error()));
+    }
+    if (auto indexed_cycles =
+            validate_indexed_connections_outside_semantic_scc(graph, plan);
+        !indexed_cycles) {
+        return std::unexpected(std::move(indexed_cycles.error()));
     }
     if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic) {
         return std::unexpected(std::move(acyclic.error()));

@@ -50,8 +50,8 @@ struct NodeCompilerRecord {
     // received from Clang before publishing it to the graph compiler.
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
-    // IndexedState is persistent mutable state shared by tick[_block] and the
-    // indexed callbacks. It is allocated independently from State.
+    // IndexedState is non-semantic acceleration state available only to
+    // tock_coverage(). It is allocated independently from sequential State.
     std::size_t indexed_state_size = 0;
     std::size_t indexed_state_alignment = 1;
 };

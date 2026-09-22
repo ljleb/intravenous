@@ -186,8 +186,7 @@ namespace {
 
         void tick(iv::TickSampleContext<ReloadProbe> const& ctx) const
         {
-            ctx.outputs[0].push(
-                static_cast<float>(ctx.indexed_state().value));
+            ctx.outputs[0].push(0.0f);
         }
     };
 

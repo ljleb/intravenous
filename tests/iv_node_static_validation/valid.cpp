@@ -21,6 +21,12 @@ struct ValidIndexedNode {
         (void)ctx.template input<"input">();
     }
     void tock_coverage(iv::TockCoverageContext<ValidIndexedNode>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<ValidIndexedNode>& context) const
+    {
+        context.template output<"output">().publish_coverage(
+            context.template input<"input">().coverage());
+    }
 };
 
 IV_NODE("iv.test.valid_indexed_node", ValidIndexedNode);
@@ -42,6 +48,12 @@ struct ValidIndexedEventNode {
 
     void tick_block(iv::TickBlockContext<ValidIndexedEventNode> const&) const {}
     void tock_coverage(iv::TockCoverageContext<ValidIndexedEventNode>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<ValidIndexedEventNode>& context) const
+    {
+        context.template output<"output">().publish_coverage(
+            context.template input<"input">().coverage());
+    }
 };
 
 IV_NODE("iv.test.valid_indexed_event_node", ValidIndexedEventNode);
@@ -73,19 +85,19 @@ struct ValidRecorderNode {
 
     static constexpr auto outputs()
     {
-        return std::array {iv::indexed_sample_output("recording")};
+        return std::array {iv::indexed_sample_output(
+            "recording", {},
+            {.producer = iv::IndexedProducer::tick_record})};
     }
 
     void tick_block(iv::TickBlockContext<ValidRecorderNode> const& ctx) const
     {
         (void)ctx.template input<"input">();
-        ++ctx.indexed_state().write_count;
-    }
-
-    void tock_coverage(iv::TockCoverageContext<ValidRecorderNode>& ctx) const
-    {
-        ++ctx.indexed_state().write_count;
-        (void)ctx.template output<"recording">();
+        auto output = ctx.template output<"recording">();
+        for (std::size_t i = 0; i < output.block_size(); ++i) {
+            output.write(i, 0.0f);
+        }
+        output.commit();
     }
 };
 

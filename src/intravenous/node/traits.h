@@ -24,6 +24,15 @@ namespace iv {
     struct PropagateReverseCoverageContext;
 
     template<typename Node>
+    struct TickSampleContext;
+
+    template<typename Node>
+    struct TickBlockContext;
+
+    template<typename Node>
+    struct SkipBlockContext;
+
+    template<typename Node>
     void do_tock_coverage(Node const&, TockCoverageContext<Node>&);
 
     template<typename Node>
@@ -52,10 +61,9 @@ namespace iv {
         using Type = typename Node::State;
     };
 
-    // IndexedState is persistent state shared by sequential tick execution and
-    // order-independent indexed access. Its lifetime/storage remain intentionally
-    // distinct from Node::State so GraphJit can bind the same object into both
-    // callback domains without making indexed outputs sequential.
+    // IndexedState is optional non-semantic acceleration state visible only to
+    // tock_coverage(). It is deliberately separate from sequential Node::State
+    // and from authoritative indexed-output storage.
     template<typename Node>
     struct NodeIndexedState {
         using Type = void;
@@ -192,6 +200,32 @@ namespace iv {
         }
 
         template<typename Node>
+        consteval bool declares_tock_outputs()
+        {
+            if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
+                return false;
+            } else {
+                for (auto const& config : Node::outputs()) {
+                    if (is_tock_produced(config.access)) return true;
+                }
+                return false;
+            }
+        }
+
+        template<typename Node>
+        consteval bool declares_tick_record_outputs()
+        {
+            if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
+                return false;
+            } else {
+                for (auto const& config : Node::outputs()) {
+                    if (is_tick_record(config.access)) return true;
+                }
+                return false;
+            }
+        }
+
+        template<typename Node>
         consteval bool declares_indexed_sample_inputs()
         {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
@@ -252,6 +286,14 @@ namespace iv {
             declares_indexed_outputs<Node>();
 
         template<typename Node>
+        inline constexpr bool declares_tock_outputs_v =
+            declares_tock_outputs<Node>();
+
+        template<typename Node>
+        inline constexpr bool declares_tick_record_outputs_v =
+            declares_tick_record_outputs<Node>();
+
+        template<typename Node>
         inline constexpr bool declares_indexed_sample_inputs_v =
             declares_indexed_sample_inputs<Node>();
 
@@ -298,19 +340,41 @@ namespace iv {
         };
 
         template<typename Node>
+        concept has_tick = requires(
+            Node const& node, TickSampleContext<Node> const& context) {
+            { node.tick(context) } -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        concept has_tick_block = requires(
+            Node const& node, TickBlockContext<Node> const& context) {
+            { node.tick_block(context) } -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        concept has_skip_block = requires(
+            Node const& node, SkipBlockContext<Node> const& context) {
+            { node.skip_block(context) } -> std::same_as<void>;
+        };
+
+        template<typename Node>
         inline constexpr bool indexed_dsp_node_declaration_is_valid_v =
             indexed_state_type_is_valid_v<Node>
             && (!has_constexpr_port_configs<Node>
                 || (
-                    (!declares_indexed_outputs_v<Node>
+                    (!declares_tock_outputs_v<Node>
                         || has_tock_coverage<Node>)
                     && (!has_tock_coverage<Node>
-                        || declares_indexed_outputs_v<Node>)
+                        || declares_tock_outputs_v<Node>)
+                    && (!declares_tock_outputs_v<Node>
+                        || has_propagate_forward_coverage<Node>)
                     && (!has_propagate_forward_coverage<Node>
-                        || declares_indexed_outputs_v<Node>)
+                        || declares_tock_outputs_v<Node>)
                     && (!has_propagate_reverse_coverage<Node>
-                        || (declares_indexed_outputs_v<Node>
-                            && declares_indexed_inputs_v<Node>))));
+                        || (declares_tock_outputs_v<Node>
+                            && declares_indexed_inputs_v<Node>))
+                    && (!declares_tick_record_outputs_v<Node>
+                        || has_tick_block<Node>)));
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)

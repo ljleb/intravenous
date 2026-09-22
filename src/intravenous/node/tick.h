@@ -21,10 +21,6 @@ namespace iv {
         // port spans above.
         std::span<IndexedSampleInputPort const> indexed_inputs = {};
         std::span<IndexedEventInputPort const> indexed_event_inputs = {};
-        // Shared persistent state for indexed-side machinery. tick[_block]
-        // may mutate it (for example, a recorder appending realtime input) and
-        // indexed callbacks observe the same object later.
-        std::span<std::byte> indexed_state_storage = {};
         size_t sample_rate = 48000;
         size_t scc_feedback_latency = 0;
         std::span<std::byte> buffer = {};
@@ -35,13 +31,9 @@ namespace iv {
         }
 
         using State = typename NodeState<Node>::Type;
-        using IndexedState = typename NodeIndexedState<Node>::Type;
 
         std::add_lvalue_reference_t<State> state() const
         requires(!std::is_void_v<State>);
-
-        std::add_lvalue_reference_t<IndexedState> indexed_state() const
-        requires(!std::is_void_v<IndexedState>);
     };
 
     namespace details {
@@ -224,6 +216,46 @@ namespace iv {
 
             operator EventOutputPort&() const { return _port; }
         };
+
+        template<ChannelTypeId Type>
+        class StaticTickRecordSampleOutputAccess {
+            TickRecordSampleOutputPort& _port;
+
+        public:
+            explicit constexpr StaticTickRecordSampleOutputAccess(
+                TickRecordSampleOutputPort& port)
+                : _port(port)
+            {}
+
+            [[nodiscard]] IndexedRegion block() const noexcept
+            {
+                return _port.block();
+            }
+
+            [[nodiscard]] std::size_t block_size() const noexcept
+            {
+                return _port.block_size();
+            }
+
+            void write(std::size_t sample_offset, Sample value) const noexcept
+            requires (Type == ChannelTypeId::mono)
+            {
+                _port.write(sample_offset, 0, value);
+            }
+
+            template<class Channel>
+            void write(
+                Channel, std::size_t sample_offset, Sample value) const noexcept
+            requires (Type != ChannelTypeId::mono)
+            {
+                _port.write(
+                    sample_offset,
+                    static_channel_ordinal<Type, Channel>(),
+                    value);
+            }
+
+            void commit() const noexcept { _port.commit(); }
+        };
     }
 
     template<typename Node>
@@ -284,7 +316,7 @@ namespace iv {
             constexpr auto port_kind = details::static_output_port_kind<Node, Name>();
             if constexpr (port_kind == PortKind::sample) {
                 static_assert(!details::static_output_port_is_indexed<Node, Name>(),
-                    "tick/tick_block cannot write an indexed sample output; produce it from tock_coverage");
+                    "tick() cannot write an indexed sample output; tick_record outputs require tick_block()");
                 constexpr auto layout = details::static_output_port_layout<Node, Name>();
                 constexpr auto port_index = details::static_output_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->outputs.size(), "static output port is absent from execution context");
@@ -292,7 +324,7 @@ namespace iv {
                 return details::StaticOutputSamplePortAccess<layout.channel_type>(this->outputs[port_index]);
             } else {
                 static_assert(!details::static_event_output_port_is_indexed<Node, Name>(),
-                    "tick/tick_block cannot write an indexed event output; produce it from tock_coverage");
+                    "tick() cannot write an indexed event output; tick_record outputs require tick_block()");
                 constexpr auto port_index =
                     details::static_event_output_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->event_outputs.size(),
@@ -307,11 +339,17 @@ namespace iv {
     struct TickBlockContext : public TickContext<Node> {
         SampleIndex index;
         size_t block_size;
+        // Private compiler-owned staging for transactional tick_record writes.
+        // Sequential tick() contexts never contain these bindings.
+        std::span<TickRecordSampleOutputPort> tick_record_outputs = {};
+        std::span<TickRecordEventOutputPort> tick_record_event_outputs = {};
 
         TickBlockContext(
             TickContext<Node> base,
             SampleIndex index,
-            size_t block_size
+            size_t block_size,
+            std::span<TickRecordSampleOutputPort> tick_record_outputs = {},
+            std::span<TickRecordEventOutputPort> tick_record_event_outputs = {}
         );
 
         template<fixed_string Name>
@@ -372,54 +410,86 @@ namespace iv {
         {
             constexpr auto port_kind = details::static_output_port_kind<Node, Name>();
             if constexpr (port_kind == PortKind::sample) {
-                static_assert(!details::static_output_port_is_indexed<Node, Name>(),
-                    "tick/tick_block cannot write an indexed sample output; produce it from tock_coverage");
                 constexpr auto layout = details::static_output_port_layout<Node, Name>();
-                constexpr auto port_index = details::static_output_port_index<Node, Name>();
-                IV_ASSERT(port_index < this->outputs.size(), "static output port is absent from execution context");
-                IV_ASSERT(this->outputs[port_index].channel_layout() == layout, "static output port layout does not match execution context");
-                return details::StaticOutputBlockPortAccess<
-                    layout.channel_type, layout.sample_layout>(
-                        this->outputs[port_index], this->block_size);
+                if constexpr (
+                    details::static_output_port_is_indexed<Node, Name>()) {
+                    static_assert(
+                        details::static_output_port_is_tick_record<Node, Name>(),
+                        "tick_block() cannot write a computed indexed sample output; produce it from tock_coverage()");
+                    constexpr auto port_index =
+                        details::static_tick_record_output_port_index<Node, Name>();
+                    IV_ASSERT(port_index < this->tick_record_outputs.size(),
+                        "tick_record sample output is absent from execution context");
+                    IV_ASSERT(
+                        this->tick_record_outputs[port_index].channel_count()
+                            == channel_count(layout.channel_type),
+                        "tick_record sample output layout does not match execution context");
+                    return details::StaticTickRecordSampleOutputAccess<
+                        layout.channel_type>(this->tick_record_outputs[port_index]);
+                } else {
+                    constexpr auto port_index =
+                        details::static_output_port_index<Node, Name>();
+                    IV_ASSERT(port_index < this->outputs.size(),
+                        "static output port is absent from execution context");
+                    IV_ASSERT(this->outputs[port_index].channel_layout() == layout,
+                        "static output port layout does not match execution context");
+                    return details::StaticOutputBlockPortAccess<
+                        layout.channel_type, layout.sample_layout>(
+                            this->outputs[port_index], this->block_size);
+                }
             } else {
-                static_assert(!details::static_event_output_port_is_indexed<Node, Name>(),
-                    "tick/tick_block cannot write an indexed event output; produce it from tock_coverage");
-                constexpr auto port_index =
-                    details::static_event_output_port_index<Node, Name>();
-                IV_ASSERT(port_index < this->event_outputs.size(),
-                    "static event output port is absent from execution context");
-                return details::StaticEventOutputBlockTickAccess(
-                    this->event_outputs[port_index],
-                    this->index,
-                    this->block_size);
+                if constexpr (
+                    details::static_event_output_port_is_indexed<Node, Name>()) {
+                    static_assert(
+                        details::static_output_port_is_tick_record<Node, Name>(),
+                        "tick_block() cannot write a computed indexed event output; produce it from tock_coverage()");
+                    constexpr auto port_index =
+                        details::static_tick_record_event_output_port_index<
+                            Node, Name>();
+                    IV_ASSERT(port_index < this->tick_record_event_outputs.size(),
+                        "tick_record event output is absent from execution context");
+                    return this->tick_record_event_outputs[port_index];
+                } else {
+                    constexpr auto port_index =
+                        details::static_event_output_port_index<Node, Name>();
+                    IV_ASSERT(port_index < this->event_outputs.size(),
+                        "static event output port is absent from execution context");
+                    return details::StaticEventOutputBlockTickAccess(
+                        this->event_outputs[port_index],
+                        this->index,
+                        this->block_size);
+                }
             }
         }
     };
 
     template<typename Node>
     struct SkipBlockContext : public TickBlockContext<Node> {
-        using TickBlockContext<Node>::TickBlockContext;
+        SkipBlockContext(
+            TickContext<Node> base,
+            SampleIndex index,
+            size_t block_size)
+            : TickBlockContext<Node>(base, index, block_size)
+        {}
+
+        template<fixed_string Name>
+        auto output() const
+        requires details::has_constexpr_port_configs<Node>
+        {
+            constexpr auto port_kind =
+                details::static_output_port_kind<Node, Name>();
+            if constexpr (port_kind == PortKind::sample) {
+                static_assert(
+                    !details::static_output_port_is_indexed<Node, Name>(),
+                    "skip_block() cannot write an indexed output; tick_record outputs require tick_block()");
+            } else {
+                static_assert(
+                    !details::static_event_output_port_is_indexed<Node, Name>(),
+                    "skip_block() cannot write an indexed output; tick_record outputs require tick_block()");
+            }
+            return TickBlockContext<Node>::template output<Name>();
+        }
     };
-
-    namespace details {
-        template <typename Node>
-        concept has_tick = requires(Node node, TickSampleContext<Node> state)
-        {
-            node.tick(state);
-        };
-
-        template <typename Node>
-        concept has_tick_block = requires(Node node, TickBlockContext<Node> state)
-        {
-            node.tick_block(state);
-        };
-
-        template <typename Node>
-        concept has_skip_block = requires(Node node, SkipBlockContext<Node> state)
-        {
-            node.skip_block(state);
-        };
-    }
 
     template<typename Node>
     IV_FORCEINLINE std::add_lvalue_reference_t<typename TickContext<Node>::State> TickContext<Node>::state() const
@@ -428,20 +498,6 @@ namespace iv {
         void* ptr = buffer.data();
         size_t space = buffer.size();
         return *reinterpret_cast<State*>(std::align(alignof(State), sizeof(State), ptr, space));
-    }
-
-    template<typename Node>
-    IV_FORCEINLINE std::add_lvalue_reference_t<typename TickContext<Node>::IndexedState>
-    TickContext<Node>::indexed_state() const
-    requires(!std::is_void_v<IndexedState>)
-    {
-        void* pointer = indexed_state_storage.data();
-        std::size_t space = indexed_state_storage.size();
-        void* const aligned = std::align(
-            alignof(IndexedState), sizeof(IndexedState), pointer, space);
-        IV_ASSERT(aligned != nullptr,
-            "indexed state storage does not contain the node IndexedState");
-        return *static_cast<IndexedState*>(aligned);
     }
 
     template<typename Node>
@@ -454,11 +510,15 @@ namespace iv {
     IV_FORCEINLINE TickBlockContext<Node>::TickBlockContext(
         TickContext<Node> base,
         SampleIndex index,
-        size_t block_size
+        size_t block_size,
+        std::span<TickRecordSampleOutputPort> tick_record_outputs,
+        std::span<TickRecordEventOutputPort> tick_record_event_outputs
     )
     : TickContext<Node>(base)
     , index(index)
     , block_size(block_size)
+    , tick_record_outputs(tick_record_outputs)
+    , tick_record_event_outputs(tick_record_event_outputs)
     {}
 
     template<typename Node>

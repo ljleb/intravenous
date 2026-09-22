@@ -1675,8 +1675,14 @@ namespace iv {
         constexpr bool operator==(IndexedInputConfig const&) const = default;
     };
 
+    enum class IndexedProducer : std::uint8_t {
+        tick_record,
+        tock_realtime,
+        tock_stored,
+    };
+
     struct IndexedOutputConfig {
-        bool cache = true;
+        IndexedProducer producer = IndexedProducer::tock_stored;
 
         constexpr bool operator==(IndexedOutputConfig const&) const = default;
     };
@@ -1697,10 +1703,23 @@ namespace iv {
         return std::holds_alternative<IndexedOutputConfig>(config);
     }
 
-    [[nodiscard]] constexpr bool indexed_output_cache(
+    [[nodiscard]] constexpr IndexedProducer indexed_producer(
         OutputAccessConfig const& config)
     {
-        return std::get<IndexedOutputConfig>(config).cache;
+        return std::get<IndexedOutputConfig>(config).producer;
+    }
+
+    [[nodiscard]] constexpr bool is_tick_record(
+        OutputAccessConfig const& config)
+    {
+        return is_indexed(config)
+            && indexed_producer(config) == IndexedProducer::tick_record;
+    }
+
+    [[nodiscard]] constexpr bool is_tock_produced(
+        OutputAccessConfig const& config)
+    {
+        return is_indexed(config) && !is_tick_record(config);
     }
 
     [[nodiscard]] constexpr bool is_realtime(InputAccessConfig const& config)

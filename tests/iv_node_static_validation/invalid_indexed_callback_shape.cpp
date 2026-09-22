@@ -39,6 +39,9 @@ struct InvalidOutputOnlyPropagationCallback {
     void tick_block(iv::TickBlockContext<InvalidOutputOnlyPropagationCallback> const&) const {}
     void tock_coverage(
         iv::TockCoverageContext<InvalidOutputOnlyPropagationCallback>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<
+            InvalidOutputOnlyPropagationCallback>&) const {}
     void propagate_reverse_coverage(
         iv::PropagateReverseCoverageContext<InvalidOutputOnlyPropagationCallback>&) const {}
 };

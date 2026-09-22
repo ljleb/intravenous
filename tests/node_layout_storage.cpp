@@ -387,7 +387,6 @@ namespace {
         void tick_block(iv::TickBlockContext<StatefulTickingNode> const& ctx) const
         {
             ctx.state().ticked += static_cast<int>(ctx.block_size);
-            ctx.indexed_state().ticked += static_cast<int>(ctx.block_size);
         }
     };
 
@@ -1026,7 +1025,7 @@ int main()
         iv::test::require(nested_state.initialized == 1, "type-erased nested child should initialize once");
         iv::test::require(nested_state.ticked == 8, "type-erased nested child should tick through nested state");
         iv::test::require(nested_indexed_state.initialized == 1, "type-erased nested child IndexedState should initialize once");
-        iv::test::require(nested_indexed_state.ticked == 8, "type-erased nested child should tick through nested IndexedState");
+        iv::test::require(nested_indexed_state.ticked == 0, "type-erased realtime tick must not mutate nested IndexedState");
     }
 
     {
@@ -1066,8 +1065,8 @@ int main()
             nested_state.ticked == 8,
             "weak type-erased child should tick through nested State");
         iv::test::require(
-            nested_indexed_state.ticked == 8,
-            "weak type-erased child should tick through nested IndexedState");
+            nested_indexed_state.ticked == 0,
+            "weak type-erased realtime tick must not mutate nested IndexedState");
     }
 
     {
@@ -1105,7 +1104,7 @@ int main()
             *reinterpret_cast<StatefulTickingNode::IndexedState*>(
                 wrapper_state.nested_node_indexed_states[0].data());
         iv::test::require(nested_state.ticked == 8, "graph wrapper should tick nested State");
-        iv::test::require(nested_indexed_state.ticked == 8, "graph wrapper should tick nested IndexedState");
+        iv::test::require(nested_indexed_state.ticked == 0, "graph wrapper realtime tick must not mutate nested IndexedState");
     }
 
     return 0;

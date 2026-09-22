@@ -149,6 +149,57 @@ struct IndexedSource {
 
     void tick_block(iv::TickBlockContext<IndexedSource> const&) const {}
     void tock_coverage(iv::TockCoverageContext<IndexedSource>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<IndexedSource>& context) const
+    {
+        context.template output<"out">().publish_coverage({});
+    }
+};
+
+struct IndexedSamplePass {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::indexed_sample_input("in")};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::indexed_sample_output("out")};
+    }
+
+    void tick_block(iv::TickBlockContext<IndexedSamplePass> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<IndexedSamplePass>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<IndexedSamplePass>& context) const
+    {
+        context.template output<"out">().publish_coverage(
+            context.template input<"in">().coverage());
+    }
+};
+
+struct IndexedEventPass {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::indexed_event_input("in", iv::EventTypeId::trigger),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::indexed_event_output("out", iv::EventTypeId::trigger),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<IndexedEventPass> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<IndexedEventPass>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<IndexedEventPass>& context) const
+    {
+        context.template output<"out">().publish_coverage(
+            context.template input<"in">().coverage());
+    }
 };
 
 struct IndexedSink {
@@ -658,6 +709,83 @@ TEST(GraphJitConnectionPlan, RejectsDetachThatDoesNotBreakCycle)
     EXPECT_NE(
         event_plan.error().find("breaks an acyclic dependency"),
         std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan, RejectsIndexedEdgesInWholeSemanticScc)
+{
+    using namespace iv;
+    GraphBuilder sample_graph;
+    auto sample_first =
+        details::configure_concrete_node<IndexedSamplePass>(sample_graph);
+    auto sample_second =
+        details::configure_concrete_node<IndexedSamplePass>(sample_graph);
+    sample_first(sample_second);
+    sample_second(static_cast<SamplePortRef>(sample_first).detach(5));
+    sample_graph.outputs();
+
+    auto sample_configured = std::move(sample_graph).finish();
+    auto sample_plan = graph_jit::detail::build_connection_analysis_plan(
+        sample_configured, 64);
+    ASSERT_FALSE(sample_plan.has_value());
+    EXPECT_NE(sample_plan.error().find("indexed sample connection"),
+        std::string::npos);
+    EXPECT_NE(sample_plan.error().find("semantic SCC"), std::string::npos);
+
+    GraphBuilder event_graph;
+    auto event_first =
+        details::configure_concrete_node<IndexedEventPass>(event_graph);
+    auto event_second =
+        details::configure_concrete_node<IndexedEventPass>(event_graph);
+    event_first.connect_event_input(0, event_second.event_port());
+    event_second.connect_event_input(0, event_first.event_port().detach(7));
+    event_graph.outputs();
+
+    auto event_configured = std::move(event_graph).finish();
+    auto event_plan = graph_jit::detail::build_connection_analysis_plan(
+        event_configured, 64);
+    ASSERT_FALSE(event_plan.has_value());
+    EXPECT_NE(event_plan.error().find("indexed event connection"),
+        std::string::npos);
+    EXPECT_NE(event_plan.error().find("semantic SCC"), std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan, RejectsIndexedSemanticSelfLoop)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto node = details::configure_concrete_node<IndexedSamplePass>(graph);
+    node(static_cast<SamplePortRef>(node).detach(3));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_FALSE(plan.has_value());
+    EXPECT_NE(plan.error().find("indexed sample connection"),
+        std::string::npos);
+    EXPECT_NE(plan.error().find("semantic SCC"), std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportIndexedData)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto first = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto second = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto indexed_sink = details::configure_concrete_node<IndexedSink>(graph);
+    first(second);
+    second(static_cast<SamplePortRef>(first).detach(5));
+    indexed_sink(first);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    EXPECT_TRUE(std::ranges::any_of(
+        plan->sample_connections,
+        [](graph_jit::detail::SampleConnectionPlan const& connection) {
+            return connection.access
+                == graph_jit::detail::PlannedConnectionAccess::realtime_to_indexed;
+        }));
 }
 
 TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)

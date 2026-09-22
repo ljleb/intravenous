@@ -93,8 +93,6 @@ namespace iv {
                         .event_outputs = ctx.event_outputs,
                         .indexed_inputs = ctx.indexed_inputs,
                         .indexed_event_inputs = ctx.indexed_event_inputs,
-                        .indexed_state_storage =
-                            state.nested_node_indexed_states[0],
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
                         .buffer = state.nested_node_states[0]
@@ -112,14 +110,14 @@ namespace iv {
                         .event_outputs = ctx.event_outputs,
                         .indexed_inputs = ctx.indexed_inputs,
                         .indexed_event_inputs = ctx.indexed_event_inputs,
-                        .indexed_state_storage =
-                            state.nested_node_indexed_states[0],
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
                         .buffer = state.nested_node_states[0]
                     },
                     ctx.index,
                     ctx.block_size,
+                    ctx.tick_record_outputs,
+                    ctx.tick_record_event_outputs,
                 });
             };
             _skip_block_fn = [](void const* node_ptr, SkipBlockContext<WeakTypeErasedNode> const& ctx) {
@@ -132,8 +130,6 @@ namespace iv {
                         .event_outputs = ctx.event_outputs,
                         .indexed_inputs = ctx.indexed_inputs,
                         .indexed_event_inputs = ctx.indexed_event_inputs,
-                        .indexed_state_storage =
-                            state.nested_node_indexed_states[0],
                         .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
                         .buffer = state.nested_node_states[0]

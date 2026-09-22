@@ -2508,35 +2508,23 @@ struct StatefulProbe {
     void tick_block(iv::TickBlockContext<StatefulProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto& indexed = ctx.indexed_state();
         ++state.tick_calls;
         state.last_index = ctx.index;
         state.last_block_size = ctx.block_size;
         state.sample_rate = ctx.sample_rate;
         state.observed_state_extent = ctx.buffer.size();
-        state.observed_indexed_extent = ctx.indexed_state_storage.size();
-        ++indexed.tick_calls;
-        indexed.last_index = ctx.index;
-        indexed.last_block_size = ctx.block_size;
-        indexed.observed_state_extent = ctx.buffer.size();
-        indexed.observed_indexed_extent = ctx.indexed_state_storage.size();
+        state.observed_indexed_extent = 0;
     }
 
     void skip_block(iv::SkipBlockContext<StatefulProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto& indexed = ctx.indexed_state();
         ++state.skip_calls;
         state.last_index = ctx.index;
         state.last_block_size = ctx.block_size;
         state.sample_rate = ctx.sample_rate;
         state.observed_state_extent = ctx.buffer.size();
-        state.observed_indexed_extent = ctx.indexed_state_storage.size();
-        ++indexed.skip_calls;
-        indexed.last_index = ctx.index;
-        indexed.last_block_size = ctx.block_size;
-        indexed.observed_state_extent = ctx.buffer.size();
-        indexed.observed_indexed_extent = ctx.indexed_state_storage.size();
+        state.observed_indexed_extent = 0;
     }
 };
 
@@ -2562,7 +2550,7 @@ struct StateOnlyProbe {
         auto& state = ctx.state();
         ++state.calls;
         state.observed_state_extent = ctx.buffer.size();
-        state.observed_indexed_extent = ctx.indexed_state_storage.size();
+        state.observed_indexed_extent = 0;
     }
 };
 
@@ -2583,13 +2571,7 @@ struct IndexedOnlyProbe {
         return std::array<iv::OutputConfig, 0>{};
     }
 
-    void tick_block(iv::TickBlockContext<IndexedOnlyProbe> const& ctx) const
-    {
-        auto& indexed = ctx.indexed_state();
-        ++indexed.calls;
-        indexed.observed_state_extent = ctx.buffer.size();
-        indexed.observed_indexed_extent = ctx.indexed_state_storage.size();
-    }
+    void tick_block(iv::TickBlockContext<IndexedOnlyProbe> const&) const {}
 };
 
 struct StatelessProbe {
@@ -6415,17 +6397,13 @@ TEST_F(GraphJitRuntimeFixture, StateAndIndexedStateContexts)
     EXPECT_EQ(state->last_block_size, 32u);
     EXPECT_EQ(state->sample_rate, 88200u);
     EXPECT_EQ(state->observed_state_extent, sizeof(StatefulProbeStateMirror));
-    EXPECT_EQ(
-        state->observed_indexed_extent,
-        sizeof(StatefulProbeIndexedStateMirror));
-    EXPECT_EQ(indexed->tick_calls, 1u);
+    EXPECT_EQ(state->observed_indexed_extent, 0u);
+    EXPECT_EQ(indexed->tick_calls, 0u);
     EXPECT_EQ(indexed->skip_calls, 0u);
-    EXPECT_EQ(indexed->last_index, 17u);
-    EXPECT_EQ(indexed->last_block_size, 32u);
-    EXPECT_EQ(indexed->observed_state_extent, sizeof(StatefulProbeStateMirror));
-    EXPECT_EQ(
-        indexed->observed_indexed_extent,
-        sizeof(StatefulProbeIndexedStateMirror));
+    EXPECT_EQ(indexed->last_index, 0u);
+    EXPECT_EQ(indexed->last_block_size, 0u);
+    EXPECT_EQ(indexed->observed_state_extent, 0u);
+    EXPECT_EQ(indexed->observed_indexed_extent, 0u);
 
     stateful.compiled_graph->root_operations.tick_block(
         stateful_storage.buffer().data(), 73, 64);
@@ -6433,10 +6411,10 @@ TEST_F(GraphJitRuntimeFixture, StateAndIndexedStateContexts)
     EXPECT_EQ(state->skip_calls, 0u);
     EXPECT_EQ(state->last_index, 73u);
     EXPECT_EQ(state->last_block_size, 64u);
-    EXPECT_EQ(indexed->tick_calls, 2u);
+    EXPECT_EQ(indexed->tick_calls, 0u);
     EXPECT_EQ(indexed->skip_calls, 0u);
-    EXPECT_EQ(indexed->last_index, 73u);
-    EXPECT_EQ(indexed->last_block_size, 64u);
+    EXPECT_EQ(indexed->last_index, 0u);
+    EXPECT_EQ(indexed->last_block_size, 0u);
 
     auto state_only = compile(graph_jit_state_only_module_id, 101);
     ASSERT_TRUE(state_only.succeeded())
@@ -6472,11 +6450,9 @@ TEST_F(GraphJitRuntimeFixture, StateAndIndexedStateContexts)
     indexed_only.compiled_graph->root_operations.tick_block(
         indexed_only_storage.buffer().data(), 5, 16);
     ASSERT_NE(indexed_only_value, nullptr);
-    EXPECT_EQ(indexed_only_value->calls, 1u);
+    EXPECT_EQ(indexed_only_value->calls, 0u);
     EXPECT_EQ(indexed_only_value->observed_state_extent, 0u);
-    EXPECT_EQ(
-        indexed_only_value->observed_indexed_extent,
-        sizeof(SingleSpanProbeMirror));
+    EXPECT_EQ(indexed_only_value->observed_indexed_extent, 0u);
 
     auto stateless = compile(graph_jit_stateless_module_id, 103);
     ASSERT_TRUE(stateless.succeeded())
@@ -12411,10 +12387,10 @@ TEST_F(GraphJitRuntimeFixture, CompiledGraphsRetainPackageAndOrcOwnership)
     EXPECT_EQ(state->skip_calls, 0u);
     EXPECT_EQ(state->last_index, 137u);
     EXPECT_EQ(state->last_block_size, 32u);
-    EXPECT_EQ(indexed->tick_calls, 3u);
+    EXPECT_EQ(indexed->tick_calls, 0u);
     EXPECT_EQ(indexed->skip_calls, 0u);
-    EXPECT_EQ(indexed->last_index, 137u);
-    EXPECT_EQ(indexed->last_block_size, 32u);
+    EXPECT_EQ(indexed->last_index, 0u);
+    EXPECT_EQ(indexed->last_block_size, 0u);
 
     auto pointer_survivor_storage =
         pointer_survivor->node_layout.create_storage(resources);

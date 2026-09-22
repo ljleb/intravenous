@@ -219,9 +219,7 @@ namespace {
 
         void tick(iv::TickSampleContext<IndexedStateNode> const& ctx) const
         {
-            auto& state = ctx.indexed_state();
-            ctx.outputs[0].push(state.gain);
-            ++state.epoch;
+            ctx.outputs[0].push(0.0f);
         }
     };
 

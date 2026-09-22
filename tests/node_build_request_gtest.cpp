@@ -35,7 +35,7 @@ concept HasHistory = requires(Config const& config) { config.history; };
 template<class Config>
 concept HasLatency = requires(Config const& config) { config.latency; };
 template<class Config>
-concept HasCache = requires(Config const& config) { config.cache; };
+concept HasProducer = requires(Config const& config) { config.producer; };
 
 static_assert(std::same_as<decltype(iv::realtime_sample_input()), iv::InputConfig>);
 static_assert(std::same_as<decltype(iv::indexed_sample_input()), iv::InputConfig>);
@@ -62,8 +62,8 @@ static_assert(HasHistory<iv::RealtimeOutputConfig>);
 static_assert(HasLatency<iv::RealtimeOutputConfig>);
 static_assert(!HasHistory<iv::IndexedInputConfig>);
 static_assert(!HasLatency<iv::IndexedOutputConfig>);
-static_assert(!HasCache<iv::IndexedInputConfig>);
-static_assert(HasCache<iv::IndexedOutputConfig>);
+static_assert(!HasProducer<iv::IndexedInputConfig>);
+static_assert(HasProducer<iv::IndexedOutputConfig>);
 static_assert(iv::sample_properties(iv::InputConfig {}).neutral_value.value == 0.0f);
 static_assert(iv::realtime_history(
     iv::realtime_sample_input("history", {}, {.history = 7})) == 7);
@@ -79,10 +79,14 @@ static_assert(iv::realtime_latency(
 static_assert(iv::is_indexed(iv::indexed_sample_input("indexed")));
 static_assert(iv::is_indexed(iv::indexed_event_output(
     "indexed", iv::EventTypeId::trigger)));
-static_assert(iv::indexed_output_cache(
-    iv::indexed_sample_output("cached").access));
-static_assert(!iv::indexed_output_cache(
-    iv::indexed_sample_output("uncached", {}, {.cache = false}).access));
+static_assert(iv::indexed_producer(
+    iv::indexed_sample_output("stored").access)
+    == iv::IndexedProducer::tock_stored);
+static_assert(iv::indexed_producer(iv::indexed_sample_output(
+    "realtime", {}, {.producer = iv::IndexedProducer::tock_realtime}).access)
+    == iv::IndexedProducer::tock_realtime);
+static_assert(iv::is_tick_record(iv::indexed_sample_output(
+    "recorded", {}, {.producer = iv::IndexedProducer::tick_record}).access));
 
 TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
 {
@@ -147,7 +151,10 @@ TEST(IndexedCoverage, IncludeExcludeIntersectionAndDifferenceStayCanonical)
 }
 
 struct IndexedSource {
-    struct IndexedState { int calls = 0; };
+    struct IndexedState {
+        int calls = 0;
+        std::size_t sample_rate = 0;
+    };
 
     static constexpr auto outputs()
     {
@@ -158,6 +165,7 @@ struct IndexedSource {
     void tock_coverage(iv::TockCoverageContext<IndexedSource>& ctx) const
     {
         ++ctx.indexed_state().calls;
+        ctx.indexed_state().sample_rate = ctx.sample_rate;
     }
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<IndexedSource>& ctx) const
@@ -167,6 +175,10 @@ struct IndexedSource {
 };
 
 struct IndexedTransform {
+    mutable std::size_t tock_sample_rate = 0;
+    mutable std::size_t forward_sample_rate = 0;
+    mutable std::size_t reverse_sample_rate = 0;
+
     static constexpr auto inputs()
     {
         return std::array {
@@ -178,17 +190,24 @@ struct IndexedTransform {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::indexed_sample_output("samples-out", {}, {.cache = false}),
+            iv::indexed_sample_output(
+                "samples-out", {},
+                {.producer = iv::IndexedProducer::tock_realtime}),
             iv::indexed_event_output(
-                "events-out", iv::EventTypeId::trigger, {.cache = true}),
+                "events-out", iv::EventTypeId::trigger,
+                {.producer = iv::IndexedProducer::tock_stored}),
         };
     }
 
     void tick_block(iv::TickBlockContext<IndexedTransform> const&) const {}
-    void tock_coverage(iv::TockCoverageContext<IndexedTransform>&) const {}
+    void tock_coverage(iv::TockCoverageContext<IndexedTransform>& context) const
+    {
+        tock_sample_rate = context.sample_rate;
+    }
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<IndexedTransform>& ctx) const
     {
+        forward_sample_rate = ctx.sample_rate;
         ctx.output<"samples-out">().publish_coverage(
             ctx.input<"samples">().coverage());
         ctx.output<"samples-out">().change(ctx.input<"samples">().changed());
@@ -199,6 +218,7 @@ struct IndexedTransform {
     void propagate_reverse_coverage(
         iv::PropagateReverseCoverageContext<IndexedTransform>& ctx) const
     {
+        reverse_sample_rate = ctx.sample_rate;
         ctx.input<"samples">().require(ctx.output<"samples-out">().required());
         ctx.input<"events">().require(ctx.output<"events-out">().required());
     }
@@ -237,8 +257,51 @@ struct StrayReverse {
         return std::array {iv::indexed_sample_output("output")};
     }
     void tock_coverage(iv::TockCoverageContext<StrayReverse>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<StrayReverse>&) const {}
     void propagate_reverse_coverage(
         iv::PropagateReverseCoverageContext<StrayReverse>&) const {}
+};
+
+struct TickRecorder {
+    static constexpr auto outputs()
+    {
+        return std::array {
+            iv::indexed_sample_output(
+                "samples", {},
+                {.producer = iv::IndexedProducer::tick_record}),
+            iv::indexed_event_output(
+                "events", iv::EventTypeId::trigger,
+                {.producer = iv::IndexedProducer::tick_record}),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<TickRecorder> const& context) const
+    {
+        auto samples = context.output<"samples">();
+        for (std::size_t i = 0; i < samples.block_size(); ++i) {
+            samples.write(i, static_cast<float>(i));
+        }
+        samples.commit();
+
+        auto events = context.output<"events">();
+        events.write(iv::TriggerEvent{}, 2);
+        events.commit();
+    }
+};
+
+struct TickRecordWithoutBlock {
+    static constexpr auto outputs()
+    {
+        return std::array {iv::indexed_sample_output(
+            "recording", {},
+            {.producer = iv::IndexedProducer::tick_record})};
+    }
+};
+
+template<class Context>
+concept ExposesIndexedState = requires(Context const& context) {
+    context.indexed_state();
 };
 
 static_assert(std::same_as<iv::NodeIndexedState<IndexedSource>::Type,
@@ -254,6 +317,9 @@ static_assert(iv::details::declares_indexed_sample_outputs_v<IndexedSource>);
 static_assert(!iv::details::declares_indexed_inputs_v<IndexedSource>);
 static_assert(iv::details::declares_indexed_inputs_v<IndexedTransform>);
 static_assert(iv::details::declares_indexed_outputs_v<IndexedTransform>);
+static_assert(iv::details::declares_tock_outputs_v<IndexedTransform>);
+static_assert(!iv::details::declares_tick_record_outputs_v<IndexedTransform>);
+static_assert(iv::details::declares_tick_record_outputs_v<TickRecorder>);
 static_assert(iv::details::declares_indexed_sample_inputs_v<IndexedTransform>);
 static_assert(iv::details::declares_indexed_event_inputs_v<IndexedTransform>);
 static_assert(iv::details::declares_indexed_sample_outputs_v<IndexedTransform>);
@@ -261,6 +327,9 @@ static_assert(iv::details::declares_indexed_event_outputs_v<IndexedTransform>);
 static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedSource>);
 static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedTransform>);
 static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedInputOnly>);
+static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<TickRecorder>);
+static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<
+    TickRecordWithoutBlock>);
 static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<MissingIndexedTock>);
 static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<StrayTock>);
 static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<StrayForward>);
@@ -269,10 +338,28 @@ static_assert(iv::details::static_indexed_input_port_index<
     IndexedTransform, "samples">() == 0);
 static_assert(iv::details::static_indexed_event_input_port_index<
     IndexedTransform, "events">() == 0);
-static_assert(iv::details::static_indexed_output_port_index<
+static_assert(iv::details::static_tock_output_port_index<
     IndexedTransform, "samples-out">() == 0);
-static_assert(iv::details::static_indexed_event_output_port_index<
+static_assert(iv::details::static_tock_event_output_port_index<
     IndexedTransform, "events-out">() == 0);
+static_assert(iv::details::static_tick_record_output_port_index<
+    TickRecorder, "samples">() == 0);
+static_assert(iv::details::static_tick_record_event_output_port_index<
+    TickRecorder, "events">() == 0);
+static_assert(iv::details::static_output_port_is_tick_record<
+    TickRecorder, "samples">());
+static_assert(iv::details::static_output_port_is_tick_record<
+    TickRecorder, "events">());
+static_assert(iv::details::static_output_port_is_tock_produced<
+    IndexedTransform, "samples-out">());
+static_assert(iv::details::static_output_port_is_tock_produced<
+    IndexedTransform, "events-out">());
+static_assert(!ExposesIndexedState<iv::TickBlockContext<IndexedSource>>);
+static_assert(!ExposesIndexedState<
+    iv::PropagateForwardCoverageContext<IndexedSource>>);
+static_assert(!ExposesIndexedState<
+    iv::PropagateReverseCoverageContext<IndexedSource>>);
+static_assert(ExposesIndexedState<iv::TockCoverageContext<IndexedSource>>);
 static_assert(iv::details::node_compiler_operations<IndexedSource>()
     .tock_coverage != nullptr);
 static_assert(iv::details::node_compiler_operations<IndexedSource>()
@@ -283,6 +370,10 @@ static_assert(iv::details::node_compiler_operations<IndexedTransform>()
     .propagate_reverse_coverage != nullptr);
 static_assert(iv::details::node_compiler_operations<IndexedInputOnly>()
     .tock_coverage == nullptr);
+static_assert(iv::details::node_compiler_operations<TickRecorder>()
+    .tock_coverage == nullptr);
+static_assert(iv::details::node_compiler_operations<TickRecorder>()
+    .propagate_forward_coverage == nullptr);
 
 struct SampleData {
     std::array<iv::Sample, 8> values {
@@ -326,6 +417,73 @@ struct EventWrites { std::vector<iv::TimedEvent> events; };
 void write_event(void* data, iv::TimedEvent const& event)
 {
     static_cast<EventWrites*>(data)->events.push_back(event);
+}
+
+struct TickRecordWrites {
+    std::array<iv::Sample, 4> samples {};
+    std::vector<iv::TimedEvent> events {};
+    bool sample_committed = false;
+    bool event_committed = false;
+};
+
+void write_record_sample(
+    void* data, std::size_t offset, std::size_t channel, iv::Sample sample)
+{
+    EXPECT_EQ(channel, 0u);
+    static_cast<TickRecordWrites*>(data)->samples[offset] = sample;
+}
+
+void commit_record_samples(void* data)
+{
+    static_cast<TickRecordWrites*>(data)->sample_committed = true;
+}
+
+void write_record_event(void* data, iv::TimedEvent const& event)
+{
+    static_cast<TickRecordWrites*>(data)->events.push_back(event);
+}
+
+void commit_record_events(void* data)
+{
+    static_cast<TickRecordWrites*>(data)->event_committed = true;
+}
+
+TEST(IndexedDspPorts, TickBlockCommitsWholeBlockRecorderBindings)
+{
+    TickRecordWrites writes;
+    std::array sample_outputs {iv::TickRecordSampleOutputPort{
+        .data = &writes,
+        .block_begin = 128,
+        .block_size_value = 4,
+        .channel_count_value = 1,
+        .write_sample = &write_record_sample,
+        .commit_block = &commit_record_samples,
+    }};
+    std::array event_outputs {iv::TickRecordEventOutputPort{
+        .data = &writes,
+        .block_begin = 128,
+        .block_size_value = 4,
+        .write_event = &write_record_event,
+        .commit_block = &commit_record_events,
+    }};
+
+    TickRecorder recorder;
+    auto const operations = iv::details::node_compiler_operations<TickRecorder>();
+    operations.tick_block(
+        &recorder,
+        iv::ReflectedNodeTickContext{
+            .tick_record_outputs = sample_outputs,
+            .tick_record_event_outputs = event_outputs,
+        },
+        128,
+        4);
+
+    EXPECT_EQ(writes.samples,
+        (std::array<iv::Sample, 4>{0.0f, 1.0f, 2.0f, 3.0f}));
+    EXPECT_TRUE(writes.sample_committed);
+    ASSERT_EQ(writes.events.size(), 1u);
+    EXPECT_EQ(writes.events.front().time, 130u);
+    EXPECT_TRUE(writes.event_committed);
 }
 
 TEST(IndexedDspPorts, IndexedInputsRemainAvailableFromTickBlock)
@@ -433,7 +591,11 @@ TEST(IndexedDspPorts, TockContextExposesCoverageAndSampleEventBindings)
         .outputs = sample_outputs,
         .event_inputs = event_inputs,
         .event_outputs = event_outputs,
+        .sample_rate = 88200,
     };
+    IndexedTransform node;
+    iv::do_tock_coverage(node, context);
+    EXPECT_EQ(node.tock_sample_rate, 88200u);
 
     EXPECT_EQ(context.input<"samples">().coverage(), input_coverage);
     EXPECT_FLOAT_EQ(static_cast<float>(context.input<"samples">().at(3)), 3.0f);
@@ -500,6 +662,7 @@ TEST(IndexedDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
         .outputs = output_changes,
         .event_inputs = event_input_changes,
         .event_outputs = event_output_changes,
+        .sample_rate = 44100,
     };
     iv::do_propagate_forward_coverage(node, forward);
 
@@ -507,6 +670,7 @@ TEST(IndexedDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
     EXPECT_EQ(sample_output.changed, sample_changed);
     EXPECT_EQ(event_output.coverage, event_coverage);
     EXPECT_EQ(event_output.changed, event_changed);
+    EXPECT_EQ(node.forward_sample_rate, 44100u);
 
     iv::IndexedCoverage const sample_demand {{{13, 15}, {42, 44}}};
     iv::IndexedCoverage const event_demand {{{110, 112}}};
@@ -533,11 +697,13 @@ TEST(IndexedDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
         .outputs = output_requirements,
         .event_inputs = event_input_requirements,
         .event_outputs = event_output_requirements,
+        .sample_rate = 96000,
     };
     iv::do_propagate_reverse_coverage(node, reverse);
 
     EXPECT_EQ(sample_input.required, sample_demand);
     EXPECT_EQ(event_input.required, event_demand);
+    EXPECT_EQ(node.reverse_sample_rate, 96000u);
 }
 
 struct DefaultPropagationNode {
@@ -550,9 +716,19 @@ struct DefaultPropagationNode {
         return std::array {iv::indexed_sample_output("output")};
     }
     void tock_coverage(iv::TockCoverageContext<DefaultPropagationNode>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<DefaultPropagationNode>& context) const
+    {
+        auto output = context.output<"output">();
+        output.publish_coverage(output.previous_coverage());
+        if (context.local_state_changed
+            || !context.input<"input">().changed().empty()) {
+            output.change(output.previous_coverage());
+        }
+    }
 };
 
-TEST(IndexedDspPorts, DefaultForwardPropagationRetainsCoverageAndInvalidatesIt)
+TEST(IndexedDspPorts, ExactForwardPropagationRetainsCoverageAndInvalidatesIt)
 {
     iv::IndexedCoverage const input_coverage {{{10, 20}, {50, 60}}};
     iv::IndexedCoverage const input_changed {{{12, 13}}};
@@ -603,7 +779,7 @@ TEST(IndexedDspPorts, DefaultReversePropagationRequiresWholeInputCoverage)
     EXPECT_EQ(captured.required, input_coverage);
 }
 
-TEST(IndexedDspPorts, TickAndTockShareIndexedState)
+TEST(IndexedDspPorts, IndexedStateAndSampleRateAreTockOnly)
 {
     alignas(IndexedSource::IndexedState)
         std::array<std::byte, sizeof(IndexedSource::IndexedState)> storage {};
@@ -612,17 +788,15 @@ TEST(IndexedDspPorts, TickAndTockShareIndexedState)
     IndexedSource node;
     auto const operations = iv::details::node_compiler_operations<IndexedSource>();
 
-    operations.tick_block(
-        &node,
-        iv::ReflectedNodeTickContext {.indexed_state = storage},
-        0,
-        16);
+    operations.tick_block(&node, iv::ReflectedNodeTickContext {}, 0, 16);
     iv::TockCoverageContext<IndexedSource> tock {
         .indexed_state_storage = storage,
+        .sample_rate = 96000,
     };
     operations.tock_coverage(&node, &tock);
 
     EXPECT_EQ(state->calls, 1);
+    EXPECT_EQ(state->sample_rate, 96000u);
     std::destroy_at(state);
 }
 

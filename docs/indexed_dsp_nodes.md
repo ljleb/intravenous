@@ -1550,8 +1550,6 @@ lowering/optimization until profiling proves otherwise.
 
 The following remain implementation choices rather than semantic ambiguity:
 
-- exact enum spelling/serialization ABI for `IndexedProducer` while the provisional
-  boolean API is replaced;
 - dense versus coverage-packed stored sample payloads;
 - physical implementation of quiescent block-size repaging and old-layout
   snapshot retention;
@@ -1615,54 +1613,71 @@ are sufficient for all declared incoming bounds.
 
 ## 32. Implementation landing order
 
-The repository currently contains the first indexed-port API/wiring with the older
-provisional boolean-cache model. The next API landing should replace that
-provisional shape directly rather than accumulate compatibility aliases around it.
+The v3 API and static contract are now established without compatibility aliases:
 
-A practical dependency order is:
+1. **Landed: producer-mode API correction.** `IndexedOutputConfig` carries the
+   three-state `producer` declaration. Indexed semantic callbacks see sample rate;
+   `IndexedState` is absent from tick/forward/reverse; computed outputs require an
+   exact forward callback; and `tick_block()` alone can obtain block-transactional
+   sample/event `tick_record` writers.
+2. **Landed: compiler-record/static validation update.** The configured-graph
+   archive serializes producer mode, compiler records select callbacks from
+   producer authority, `IndexedState` remains allocated/lifecycled but is bound
+   only to tock, and whole-project semantic SCC validation rejects every indexed
+   sample/event edge whose endpoints share an SCC, including self-loops. The SCC
+   relation restores detach edges rather than reusing the same-slice schedule.
 
-1. **Producer-mode API correction.** Replace `IndexedOutputConfig { bool cache; }`
-   with the three-state `producer` declaration; expose sample rate in indexed
-   semantic callbacks; remove `IndexedState` from tick/forward/reverse contexts;
-   require exact forward coverage for computed outputs; and add a block-transactional
-   `tick_record` output writer to `TickContext`.
-2. **Compiler-record/static validation update.** Serialize/scan producer mode,
-   enforce callback requirements and write authority, carry tock-only
-   `IndexedState`, and reject any indexed edge participating in a semantic SCC.
-3. **Stable identity and static indexed planning.** Thread stable project
-   instance/virtual-node/member/output identities into GraphJit; precompute indexed
-   components, endpoint ordinals, forward/reverse/evaluation orders,
-   convergence/conversion facts, producer modes, connection fingerprints, and
-   whole-graph fixed `tick_record` staging layout.
-4. **Non-realtime `GraphExecutor` capability.** Add active/pending generations,
-   canonical `NodeStorage`, stable persistent indexed stores, transaction
-   workspaces, semantic versions, node creation/connection reconciliation, exact
-   forward invalidation, reverse demand, tock evaluation, full `tock_stored`
-   candidate completion, stale-work rejection, and versioned external results.
-5. **Indexed-to-realtime live lowering.** Bind complete published `tock_stored` and
-   authoritative `tick_record` bases; lower inline exact pulls through
-   `tock_realtime`; reuse direct/transient sample/event storage planning; apply
-   neutral/no-event behavior only outside coverage; and expose current-pass
-   `tick_record` blocks to causally downstream live consumers.
-6. **`tick_record` publication.** Allocate double-buffered whole-graph staging
-   frames from GraphJit layout facts; swap frame ownership at root block
-   boundaries; publish authoritative recorder updates off the audio thread;
-   construct immutable next-version roots; defer reclamation off-thread; and expose
-   coalesced versioned change notifications to UI consumers.
-7. **Outward migration/cleanup.** Once indexed executor/query/visualization paths
-   replace legacy compiled-lane consumers, delete the old compiled-lane execution,
-   storage, RPC, and UI model rather than adapting it into a second indexed system.
-8. **Optimization after capability.** Add genuine multi-node `*_coverage_batch`
-   operations, topology-permitted `tick_block_batch` grouping, better persistent
-   backing choices, workspace liveness, SIMD-aware layout/copy/conversion,
-   vectorization, fusion/direct forwarding, target-specific lowering, and generated
-   hot-path assembly verification.
+The remaining work should land in this order so each major subsystem is opened as
+few times as practical:
+
+3. **One retained static indexed-analysis plan.** Replace the validation-only SCC
+   result with reusable dense node/endpoint identities and retained semantic-SCC,
+   indexed-component, condensation/order, producer-mode, convergence/conversion,
+   connection-fingerprint, and stable project-output identity facts. Extend
+   `CompiledGraph` metadata at the same time and compute the fixed whole-graph
+   `tick_record` staging layout, including bounded event capacities. This is the
+   single topology/planning pass consumed by every later phase.
+4. **Persistent indexed store and generation reconciliation.** Introduce the
+   stable output store, immutable published roots, active/pending generation
+   bindings, canonical `NodeStorage` ownership, semantic versions, compatible
+   rebind/migration, node/connection reconciliation, and transaction workspace
+   ownership. Establish complete sample/event representations before evaluation
+   or live lowering depends on them.
+5. **Complete non-realtime indexed transactions.** On the retained plan and store,
+   implement node creation/local-change propagation, exact forward invalidation,
+   reverse demand, tock evaluation, full-coverage `tock_stored` candidate
+   completion, stale-work rejection, atomic publication, versioned external
+   queries, and change notifications. This closes indexed semantics independently
+   of the audio thread first.
+6. **One live GraphJit port-lowering pass.** In the same sample/event physical-port
+   pass, bind published `tock_stored`/`tick_record` bases, lower bounded inline
+   `tock_realtime` pulls, allocate and bind fixed `tick_record` staging, expose
+   complete current-pass recorder overlays to causally downstream consumers, and
+   apply neutral/no-event projection only outside exact coverage. Reuse existing
+   direct/transient/persistent storage machinery rather than create indexed-only
+   buffer classes.
+7. **Recorder handoff and authoritative publication.** Connect the generated
+   staging frame to `GraphExecutor`: whole-root-block commit/no-commit bits,
+   safe-boundary frame swaps, off-audio-thread authoritative updates, immutable
+   next-version roots, overrun diagnostics, and deferred reclamation. Exercise
+   sample/event empty replacement, fanout, generation replacement, and block-size
+   repaging end to end.
+8. **External migration and deletion.** Move query/visualization/RPC consumers to
+   the indexed executor and delete compiled-lane execution, storage, transport,
+   and UI concepts. Compiled lanes are obsolete, not a compatibility layer to
+   maintain beside indexed ports.
+9. **Optimization only after capability.** Add genuine multi-node
+   `*_coverage_batch` operations, topology-permitted `tick_block_batch` grouping,
+   persistent-backing choices, workspace liveness, SIMD-aware cost models and
+   layout/copy/conversion, vectorization, fusion/direct forwarding,
+   target-specific lowering, and generated hot-path assembly verification.
 
 Stable endpoint identity must exist before persistent stored output ownership is
-bound across generations. `tock_stored` full materialization and immutable
-published bases must exist before arbitrary live indexed reads rely on them.
-`tick_record` remains an explicit producer mode rather than an implicit fifth
-connection transport.
+bound across generations. Non-realtime transaction semantics and complete
+published bases must exist before live lowering relies on them. Static recorder
+layout belongs in the retained plan, but recorder publication follows live staging
+because it consumes completed generated frames. `tick_record` remains an explicit
+producer mode rather than an implicit connection transport.
 
 ## 33. Summary invariants
 
