@@ -479,79 +479,66 @@ JIT may then specialize it away when the authored access is statically valid.
 Arbitrary `TimedEvent` insertion outside that window is not part of the future
 realtime port contract.
 
-## Realtime timing is an orthogonal access config
+## Sequential timing is independent of output production and retention
 
-History and latency are not sample-payload properties and should not be
-duplicated into event-payload properties. They describe the finite temporal
-contract of **realtime access**, regardless of whether the payload is samples or
-events.
-
-The port declaration therefore has two orthogonal axes:
+Input access, output production and output retention are independent; sample/event
+payload properties remain a separate axis. The **target** declaration shape is:
 
 ```cpp
-struct RealtimeInputConfig {
-    std::size_t history = 0;
-};
+struct SequentialInputConfig { std::size_t history = 0; };
+struct RandomAccessInputConfig {};
+using InputAccessConfig =
+    std::variant<SequentialInputConfig, RandomAccessInputConfig>;
 
-struct RealtimeOutputConfig {
+struct TickOutputConfig {
     std::size_t history = 0;
     std::size_t latency = 0;
 };
+struct TockOutputConfig {};
+using OutputProductionConfig =
+    std::variant<TickOutputConfig, TockOutputConfig>;
 
-struct IndexedInputConfig {};
-struct IndexedOutputConfig {};
+enum class OutputRetention { ephemeral, persisted };
 
-enum class OutputRetention {
-    ephemeral,
-    persisted,
+struct InputConfig {
+    // Name/identity and sample/event payload properties omitted.
+    InputAccessConfig access{SequentialInputConfig{}};
 };
-
-using InputAccessConfig =
-    std::variant<RealtimeInputConfig, IndexedInputConfig>;
-using OutputAccessConfig =
-    std::variant<RealtimeOutputConfig, IndexedOutputConfig>;
-
-// Conceptually part of the parent OutputConfig, alongside payload properties.
 struct OutputConfig {
-    OutputAccessConfig access{RealtimeOutputConfig{}};
+    // Name/identity and sample/event payload properties omitted.
+    OutputProductionConfig production{TickOutputConfig{}};
     OutputRetention retention = OutputRetention::ephemeral;
 };
 ```
 
-Output access and retention are independent:
+These names describe the target migration, not the current checked-in C++ API.
+`SequentialInputConfig` has the existing finite history contract; `TickOutputConfig`
+has the existing history and latency authoring contract. A random-access input
+can be consumed in either execution callback. A tick-produced output can satisfy
+random-access demand through finalized persisted data or contextually replayable
+computation; a tock-produced output can feed a sequential input if its data is
+prepared off the audio thread. Production does not select the consumer's access.
 
-| output access | retention | production semantics |
-| --- | --- | --- |
-| `RealtimeOutputConfig` | `ephemeral` | produced by `tick_block()`; no semantic retention requirement |
-| `RealtimeOutputConfig` | `persisted` | produced by `tick_block()`; finalized values are retained |
-| `IndexedOutputConfig` | `ephemeral` | produced by `tock_coverage()`; no semantic retention requirement |
-| `IndexedOutputConfig` | `persisted` | produced by `tock_coverage()`; complete exact coverage is retained |
+`ephemeral` permits transient prefetch or pages but makes no lasting retention
+promise. `persisted` retains **all generated finalized pages in coverage**: there
+is no automatic eviction for memory pressure, cache size, age, invalidation or
+lack of current readers. Logical pages may be removed only when output coverage
+ceases to include them; superseded physical versions can be reclaimed after
+readers unpin them. Memory growth is the graph author's retention choice.
 
-`RealtimeOutputConfig` always keeps its ordinary history/latency authoring
-semantics. Persistence begins only after a position is final according to that
-contract; it does not turn the first write into an immutable value and does not
-impose a separate whole-block recorder transaction.
+`InputConfig` / `OutputConfig` independently carry sample/event payload properties
+and the above access/production/retention contracts. Static concrete node types
+have constexpr port schemas. Port history and latency are not duplicated in
+sample or event payload properties. The same facts survive `ConfiguredGraph`
+reflection and serialization. Generic input/output mode-conversion helpers may
+not invent a production callback or input access from the opposite declaration.
 
-`ephemeral` means only that retaining produced values is not semantically
-required. GraphJit/GraphExecutor may still allocate bounded transient pages,
-prefetch buffers, or other caches when a connection requires materialization.
-`persisted` is a runtime retention guarantee and does not by itself imply project-
-file serialization or external-file writeback.
-
-`InputConfig` / `OutputConfig` separately carry the sample/event payload variant
-and the access variant. Output retention lives once on the parent output config,
-not inside either access alternative. `SampleInputProperties`,
-`SampleOutputProperties`, `EventInputProperties`, and `EventOutputProperties` do
-not carry history or latency. The same distinction is preserved in
-`ConfiguredGraph`.
-
-Only realtime access carries finite history/latency. Indexed declarations cannot
-accidentally acquire those fields.
-
-For scheduling/storage purposes, a node is stateful across invocations if it has a
-nested `NodeState` **or** any realtime input/output history or output latency.
-History/latency creates a statically bounded temporal dependency; `NodeState` may
-carry a dependency forward without a static bound.
+For scheduling/storage purposes, a node may have temporal dependencies if it has
+`NodeState`, sequential history, output latency or an independent internal latency.
+An explicitly replayable `tick()` node has none of those dependencies, no
+random-access input, and meets its separate deterministic/side-effect-free trait
+contract. GraphJit reuses its existing generated LLVM-imported `tick_block()`
+wrapper and proves upstream availability for every background replay path.
 
 `EventOutputProperties` additionally carries a static event-buffer sizing rate:
 
@@ -583,36 +570,36 @@ events and count them, but callers must not depend on that policy. It must never
 grow a buffer or allocate memory on the audio thread.
 
 This sizing rate belongs to the event **output payload properties**, not to
-`RealtimeOutputConfig`: history/latency define *when* an output may author data,
-while `max_events_per_index` lets GraphJIT determine how much static event
+`TickOutputConfig`: history/latency define *when* an output may author data,
+while `max_events_per_index` lets GraphJit determine how much static event
 storage to reserve for the selected temporal representation.
 
-## Indexed ports use explicit sparse coverage
+## Random-access ports use explicit sparse coverage
 
-Do not apply the realtime bounded-window rule to `IndexedOutputConfig`.
+`TockOutputConfig` publishes exact finite `IndexedCoverage`; random-access demand
+may also use finalized published `tick/persisted` data or a contextually replayable
+tick output. Outside coverage, a random-access node read is invalid. Coverage and
+exact semantic changed regions remain distinct from aligned physical page domains.
 
-Indexed sample/event outputs publish finite `IndexedCoverage`: a canonical union
-of disjoint half-open global-index regions. Coverage is the indexed semantic
-domain boundary; there is no separate bounding extent. Node callbacks never
-request indexed values outside input coverage, so long uncovered timeline gaps
-require no storage or computation.
+A persisted tock candidate page is computed for its complete covered domain before
+the candidate publishes. Invalidation never deletes the existing readable published
+page. An ephemeral tock output directly feeding a random-access input must also
+materialize addressable temporary pages, retained for the consuming transaction but
+not promised as persistent output data.
 
-Exact semantic changed/demand regions remain independent of physical storage
-pages. For an indexed/persisted output, canonically aligned pages may be wholly
-valid or invalid for exactly `page_interval & coverage` while a **candidate**
-version is being rebuilt. Forward changed regions are not widened to page
-boundaries. A published indexed/persisted output has every covered page domain
-valid; sparse requests merely read from that complete representation.
+**The only implicit-storage connection that is forbidden** is an unreproducible
+tick/ephemeral source directly feeding random-access demand, whether the input is
+used by tick or tock. It requires an authored recording node that selects its own
+retention/lifetime policy. All other source/input combinations are access-compatible,
+subject to dependency availability, coverage, and execution scheduling. A tile
+retains per-source channel capabilities and does not create a producer or recorder.
 
-An indexed/ephemeral output owns no persistent output pages. Non-realtime access
-may use caller/transaction storage, while realtime lowering may use direct
-consumer placement or bounded compiler-owned transient storage when safe.
-
-Realtime and indexed access remain distinct connection domains. A
-`RealtimeOutputConfig` does not directly satisfy an `IndexedInputConfig`, and
-GraphJit does not insert a generic realtime-to-indexed page/ring adapter. Crossing
-that boundary is an explicit node-level operation so the node can define the
-capture, overwrite, seek, and retention semantics deliberately.
+`tock_coverage()` and its propagation callbacks are **never executed on the audio
+thread**. For a sequential input consuming pages, an existing stale or invalidated
+published page is read as-is, while a genuinely missing page produces that input's
+own `neutral_value`. Even when another input shares the source page, its neutral
+value is chosen independently. Playback does not block or synchronously generate
+missing pages; published snapshot pins protect readers during replacement.
 
 A recording/capture bridge is the important case. Its realtime side consumes an
 ordinary realtime input, while its indexed side exposes an ordinary indexed output.
@@ -673,10 +660,10 @@ canonical layout, and publication switches only after migration completes.
 Semantic versioning and physical layout generation remain distinct.
 
 Persistence does not alter `tick_block()`'s legal history/latency writes: only
-finalized positions acquire the retention obligation. Nor does persistence imply
-indexed accessibility. Realtime/persisted storage remains an output-retention
-concern; an indexed consumer requires an explicit bridge node whose indexed output
-participates in the ordinary indexed transaction model above.
+finalized positions acquire the retention obligation. Those finalized published
+positions may be read by random-access inputs **directly**, without forcing a
+recording bridge or a tock implementation. An explicit recorder remains necessary
+for an unreproducible ephemeral tick source.
 
 Persistent stored sample payloads may be dense or coverage-packed. Stored event
 payloads are packed ordered events; event fan-in order is deterministic by

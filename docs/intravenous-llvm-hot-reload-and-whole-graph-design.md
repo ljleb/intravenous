@@ -1488,55 +1488,60 @@ not depend on its contents. `tick_block()`, `propagate_forward_coverage()`, and
 serialize, duplicate, reset, or independently instantiate indexed acceleration
 state without changing indexed semantics.
 
-Realtime-to-indexed transfer is handled by explicit bridge nodes rather than by
-sharing `IndexedState` or by compiler-inserting a generic cross-domain adapter.
+An unreproducible ephemeral tick stream requires an explicitly authored recording
+policy before it can satisfy random-access demand. Finalized persisted tick data
+and contextually replayable tick outputs can satisfy that demand without a recorder.
+`IndexedState` is not a recording store.
 
 This gives LLVM ordinary field-addressing and alias information after inlining.
 
-### 16.6 Indexed DSP evaluation factors access from retention
+### 16.6 Port access, output production, replayability and background evaluation
 
-The normative indexed-port design is
-[indexed_dsp_nodes.md](./indexed_dsp_nodes.md). The whole-project compiler and
-runtime preserve these integration rules:
+The normative design is [indexed_dsp_nodes.md](./indexed_dsp_nodes.md). The **target**
+port schema has `SequentialInputConfig`/`RandomAccessInputConfig` for consumer
+access, `TickOutputConfig`/`TockOutputConfig` for producer callback and separate
+`OutputRetention::{ephemeral,persisted}`. The checked-in source still contains
+`IndexedProducer`; this section describes the migration, not landed code.
 
-- sample/event kind and realtime/indexed access are orthogonal declaration axes;
-- `RealtimeOutputConfig` is produced by `tick_block()` and keeps its finite
-  history/latency contract;
-- `IndexedOutputConfig` is produced order-independently by `tock_coverage()`;
-- parent-level `OutputRetention::{ephemeral,persisted}` is independent of output
-  access and never selects the producer callback;
-- indexed/persisted output is complete over exact `IndexedCoverage` before
-  publication;
-- realtime/persisted output is retained only as positions become final under the
-  normal history/latency contract;
-- direct realtime and indexed connections stay within their respective execution
-  domains; crossing them requires an explicit bridge node;
-- a recording bridge captures produced blocks at their production point into
-  pre-provisioned slab storage tagged by capture sequence, output-port ID, and
-  global block position; a non-realtime allocator replenishes free capacity;
-- each indexed pass snapshots a fixed capture-sequence prefix and processes it
-  through the ordinary indexed propagation/reverse/tock transaction; later captures
-  wait for the next pass;
-- `IndexedState` remains non-semantic tock-only acceleration state;
-- exact forward coverage, value-blind reverse coverage, deterministic indexed
-  event ordering, and the no-indexed-cycle SCC rule remain unchanged; and
-- indexed/persisted output payloads belong behind executor-owned immutable roots
-  rather than fixed `NodeStorage`; recording capture slabs/logs are separate
-  executor/runtime transaction-input storage and are reclaimable after the indexed
-  transaction that materializes them commits.
+Every concrete GraphJit node type has a static constexpr port schema, including
+internal builder-created types; dynamic topology and instance/connection metadata
+remain valid. A separate explicit replayability node trait validates an existing
+`tick()`-only node with no native block callback, `State`, random-access inputs,
+history or latency and a fixed-version deterministic/side-effect-free contract.
+GraphJit already imports the traits-generated `tick_block()` wrapper as LLVM;
+background replay reuses that optimized implementation. Upstream availability
+establishes **contextual** replayability, which a node trait alone cannot assert.
+Pointwise tick F/R temporal mappings can be compiler-synthesized; tock's existing
+authored propagation API remains unchanged.
 
-JIT compilation alone is not indexed invalidation. Compatible executable
-generations rebind stable persisted-output identities without copying payloads.
+A sequential input can consume either producer. A random-access input can consume
+an ephemeral tock output through temporary page materialization, a persisted tock
+output through retained pages, a finalized persisted tick output directly, or a
+contextually replayable ephemeral tick output by background computation. An
+unreproducible ephemeral tick output requires an explicit recording-policy node;
+GraphJit never silently records it. Tiling preserves all member-channel contracts
+and adds no implicit output or recorder.
 
-The same whole-project JIT may later exploit immutable temporal values through
-bounded value specialization. Settled controls, piecewise-constant automation,
-small immutable tables, mode/bypass values, and other low-cardinality immutable
-buffers are candidates. Candidate buffers should be scanned in lockstep over the
-project/render domain so only actually observed tuples are compiled, not their
-Cartesian product. Specialization is globally budgeted by compile time/code size,
-and independent optimization cones may be specialized separately. All code
-variants share the same `NodeLayout`/`NodeStorage`; values that change layout,
-lifecycle, or state identity remain structural recompilation inputs.
+`tock_coverage()` and forward/reverse tock propagation never execute on the audio
+thread. For realtime sequential playback, a present published page is read as-is
+even when stale; a missing page supplies the consuming sequential input's own
+`neutral_value`. Publication is atomic and the audio thread pins its page view;
+no missing-page path synchronously invokes tock or waits for a worker.
+
+Persisted outputs retain generated pages for their entire covered lifetime,
+including while out of date. There is no cache-size, memory-pressure or age-based
+eviction. Only coverage removal can delete a logical persisted page; superseded
+physical versions remain until readers release them. The author opts into the
+potentially unbounded memory use. An explicit recorder still uses pre-provisioned
+slab capture, fixed capture-sequence snapshots, ordinary background F/R/evaluation,
+and one pages-version publication on commit; published pages never borrow the
+recyclable capture storage.
+
+`IndexedState` is still non-semantic tock-only acceleration; exact `IndexedCoverage`
+and value-blind reverse propagation remain unchanged. The background evaluation
+DAG also traverses replayable tick dependencies, stops at valid published stored
+boundaries and rejects unresolved cycles. One project root remains a zero-port
+generated tick operation, not a synthetic project-level tock node.
 
 ---
 
@@ -1577,11 +1582,15 @@ Nodes that explicitly implement block algorithms should retain their block-level
 
 The first whole-graph compiler does not need to solve arbitrary loop interchange/fusion across every possible block algorithm.
 
-### 17.3 Dynamic-port algorithms remain dynamic
+### 17.3 Dynamic selection over static concrete port schemas
 
-A node using dynamic untyped port loops has genuinely dynamic port selection. The compiler should preserve correctness rather than pretending every dynamic access can become a static named access.
-
-The typed API exists specifically to give the compiler the stronger facts when they are true.
+Every concrete node admitted to GraphJit declares static constexpr inputs and
+outputs. Remove the fallback which constructs instance-dependent schemas and the
+legacy generated nodes that relied on it. A node may still choose among its
+**statically declared** ports using a runtime index, and a module may configure an
+arbitrary number of concrete node instances. That is dynamic selection/topology,
+not dynamic concrete port metadata. Preserve correct generated code for runtime
+selection without retaining the obsolete declaration path.
 
 ---
 
@@ -1730,20 +1739,13 @@ connections are restored as semantic edges even though they are not same-slice
 tick dependencies. This semantic SCC partition may therefore be broader than the
 SCC/region relation used to order one realtime slice.
 
-The indexed rule is deliberately unconditional:
-
-> **No indexed dependency edge may participate in a directed cycle.**
-
-After semantic SCC detection, every indexed connection must have source and target
-in different SCCs; indexed self-loops are invalid. A node may participate in a
-realtime SCC and also expose `indexed/ephemeral` or `indexed/persisted` outputs to a
-consumer outside that SCC, but no indexed edge remains inside the SCC. Realtime
-feedback/detach semantics therefore remain the sole mechanism that gives cycles
-causal execution semantics.
-
-This simple invariant avoids giving indexed evaluation a second fixed-point model
-or allowing retained/captured data to become cycle-causal state. Explicit
-realtime-to-indexed bridge nodes obey the same rule on their indexed outputs.
+The conservative rule still prohibits a random-access **input** edge inside its
+source/target semantic SCC. In addition, GraphJit expands sequential input edges
+traversed by replayable tick nodes in the background demand graph and rejects
+unresolved cycles there. A finalized published persisted output may terminate that
+traversal when the requested coverage is available. This does not introduce a
+second fixed-point/feedback model; realtime sequential feedback retains its own
+scheduler and temporal-storage semantics.
 
 ### 19.2 Feedback determines real temporal storage
 
@@ -2406,10 +2408,11 @@ The design is intentionally staged so the existing 443-test runtime can remain t
    recording/capture, specialized views, etc.) as ordinary DSP nodes, general iv
    modules, project/UI state, or focused services. Their old lane implementations
    are requirements/history, not required implementation scaffolding.
-8. If useful during migration, provide a temporary compatibility adapter from the
-   canonical project graph to existing per-instance `RuntimeGraphRoot`/
-   `TasksRunner` execution. This is optional scaffolding and may retain the
-   current DAG limitation; do not distort project semantics to preserve it.
+8. Delete the legacy `GraphLowerer`/`GraphCompiler`/`RuntimeGraphRoot` generated-
+   node project executor and its `ModuleLoader` construction path. Derive source
+   introspection from `ConfiguredGraph`; delete non-constexpr concrete-port and
+   old type-erased runtime/facade paths rather than adding another compatibility
+   adapter.
 9. Extend whole-project finalization to accept many module
    instances/`ConfiguredGraph`s plus these same project connections.
 
@@ -2478,31 +2481,26 @@ Eliminate temporary gather/conversion/copy buffers where not semantically necess
 
 Bring event routing, typed event ports, event storage, lifecycle corner cases, and remaining runtime behaviors into the new whole-graph execution model using the differential test harness.
 
-### Phase K — compatibility execution retirement
+### Phase K — GraphJit executor completion
 
-The canonical project graph may already have replaced the lane control plane in
-Phase D. After the generated kernel covers the required runtime semantics, remove
-the remaining compatibility per-instance execution partitions,
-`GraphRuntimeBindings` project-edge adapter, and task-level cross-instance block
-transfer.
-
-Feed the existing canonical project connections into the same whole-project
-connection/lowering path. Do not rewrite project identity or UI/persistence
-semantics merely because the execution backend changes.
+The legacy generated-node `RuntimeGraphRoot` executor is deleted in the cleanup
+step, not kept until the end as a second implementation. Complete the new
+`GraphExecutor`'s background F/R/evaluation, persisted publication, safe pinned
+playback, explicit capture bridge and executable-generation activation. Preserve
+the configured graph's project identity and connections; do not introduce another
+runtime-root or dynamic concrete-port compatibility path.
 
 ---
 
 ## 27. Differential correctness harness
 
-Before replacing the current runtime, build a reusable harness that can execute the same configured/project graph through:
-
-```text
-existing RuntimeGraphRoot path
-        vs
-new generated whole-graph kernel
-```
-
-Feed identical inputs/events/state and compare outputs block-by-block.
+Retain relevant semantic regression coverage without requiring the deprecated
+generated-node graph executor to remain buildable. Use deterministic input/event
+fixtures, recorded reference outputs where available, direct callback/unit tests,
+and independently stated expected sample/event/coverage results against GraphJit.
+Legacy output snapshots may be captured before deletion; they are test data, not
+a permanent second executor. Compare the generated project output, published page
+versions and graph-change behavior at defined block/timeline boundaries.
 
 Important coverage includes:
 
@@ -2567,76 +2565,46 @@ The following are treated as strong architectural decisions unless implementatio
 26. **Built-ins are an ordinary shipped IV package.** Public non-template
     basic node types are registered there; template families stay internal
     until a concrete specialization receives an explicit stable ID.
-27. **Indexed is a DSP-port access/evaluation model, not a storage class or parallel graph.**
-    Sample/event kind is orthogonal to realtime/indexed access. Indexed samples
-    are globally position-addressable and indexed events are globally
-    interval-addressable inside exact `IndexedCoverage`.
-28. **Coverage is exact; stored candidate validity may be page-granular.** A
-    canonical stored page has one candidate validity/version state for exactly
-    `page_interval & output_coverage`. Page boundaries never widen coverage or
-    forward changed regions.
-29. **Output access and retention are independent.** Realtime outputs are
-    tick-produced with history/latency; indexed outputs are tock-produced; either
-    may be ephemeral or persisted.
-30. **Realtime-to-indexed crossing is explicit.** GraphJit does not synthesize a
-    generic `RealtimeOutputConfig -> IndexedInputConfig` adapter. Recording and
-    similar transfers use explicit bridge nodes whose realtime side captures data
-    and whose indexed output participates in ordinary F/R/T execution.
-31. **Forward invalidation is independent of demand and remains exact.** Computed
-    indexed outputs require exact forward-coverage semantics. Stored page
-    invalidation is local; exact changed regions continue downstream unchanged.
-32. **Reverse demand is value-blind.** `propagate_reverse_coverage()` maps requested
-    output coverage to required inputs using coverage/configuration/sample rate and
-    other deterministic metadata, conservatively over-requesting when exact
-    addressing would require reading indexed payload values.
-33. **`tock_coverage()` is one-node order-independent indexed evaluation.** It
-    produces only `indexed/ephemeral`/`indexed/persisted` outputs, receives project sample
-    rate and exact requested coverage, and may use non-semantic `IndexedState`
-    acceleration. Future `tock_coverage_batch()` means genuine multi-node work.
-34. **`IndexedState` is not indexed output state.** It is optional non-semantic
-    acceleration state visible only to tock. Tick and propagation callbacks do not
-    receive it, and observable behavior cannot depend on its contents.
-35. **Recording capture uses independent slab provisioning and fixed transaction
-    snapshots.** Capture is active while playback/recording is active. The realtime
-    path consumes only pre-provisioned capture blocks and copies each recording
-    output block at its production point. A non-realtime
-    allocator replenishes target free capacity independently of tock progress. Each
-    indexed pass fixes a capture-sequence cutoff, processes exactly that prefix, and
-    publishes one successor pages version only after the complete F/R/T transaction
-    commits.
-36. **One executable generation has one canonical fixed `NodeStorage`.** `State`,
-    optional tock-only `IndexedState`, history/feedback/event carry, root-owned
-    fixed persistent state, and bounded compiler regions use one `NodeLayout`.
-    Dynamically sized `indexed/persisted` persistent data, recording-capture slabs,
-    and non-realtime transaction arenas are executor/runtime-owned sidecars. Capture
-    blocks are immutable transaction inputs, not published indexed pages.
-37. **Node creation establishes exact indexed coverage; JIT replacement does not.**
-    New computed indexed outputs publish coverage through forward propagation.
-    Recording-bridge captures seed changed/added indexed coverage only when a fixed
-    capture snapshot enters an indexed transaction. The pages version advances at
-    that transaction's final commit, not at capture time. Compatible persisted
-    outputs survive executable rebinding.
-38. **Indexed connection-set changes invalidate the whole logical input.** Seed
-    `old_input_coverage | new_input_coverage` and let ordinary exact forward
-    propagation determine downstream consequences.
-39. **Capture and indexed publication are distinct.** Realtime capture appends
-    immutable blocks to an explicit bridge's capture log. Reverse/tock execution
-    consumes only the fixed sequence snapshot selected for its transaction plus
-    published indexed state; it never admits captures appended after the cutoff.
-40. **No indexed edge participates in an SCC.** Whole-project semantic SCC
-    validation includes indexed and explicit feedback dependencies and rejects
-    every indexed connection whose source and target share an SCC. Realtime SCCs
-    may export indexed data outward.
-41. **Indexed topology is specialized ahead of time.** Lowering partitions the
-    indexed subgraph into indexed connected components and precomputes forward
-    change, reverse demand, evaluation order, output access/retention, stable bindings,
-    SCC facts, explicit recording-bridge capture identities, and page-version bindings.
-    Runtime transactions manipulate exact region sets and one pinned
-    `(semantic_version, pages_version)` view rather than rediscovering topology.
-42. **Project sample rate is part of computed indexed semantics.** A rate change
-    invalidates/recomputes computed indexed outputs but does not automatically
-    resample realtime/persisted samples; preservation of original timing
-    is explicit DSP.
+27. **Input access, production and retention are separate port contracts.**
+    `SequentialInputConfig` and `RandomAccessInputConfig` describe consumers;
+    `TickOutputConfig` and `TockOutputConfig` describe callbacks; output retention
+    is independent and persistence never silently evicts generated covered pages.
+28. **Static concrete port schemas.** Public and internal concrete nodes have
+    constexpr port declarations; dynamic graph topology does not require dynamic
+    node declarations. Delete the legacy generated-node executor and its dynamic-
+    port fallbacks, but keep package/configuration JIT and GraphJit's LLVM imports.
+29. **Replayability is a node trait plus graph analysis.** An opted-in `tick()`-
+    only pointwise node is validated independently of ordinary tick semantics;
+    GraphJit reuses its traits-generated LLVM-imported block callback in the
+    background DAG only when its upstream data is available. Static pointwise F/R
+    propagation can be synthesized.
+30. **No implicit recording.** A tick/ephemeral source lacking contextual
+    reproducibility requires an explicit authored recording policy before random-
+    access demand. Finalized tick/persisted and both tock modes can be read
+    randomly; tock-to-random-access edges materialize pages even when ephemeral.
+31. **Background-only tock.** `tock_coverage()` and authored propagation callbacks
+    never execute on the audio thread. Sequential playback reads a stale published
+    page as-is, and supplies its own `neutral_value` for a genuinely missing page.
+32. **Strict persistence.** Retain every generated persisted page while covered,
+    without memory-pressure, age or invalidation eviction. Drop logical pages only
+    if coverage ceases to include them; free superseded versions after unpinning.
+33. **Exact coverage and value-blind reverse demand.** `IndexedCoverage` and
+    the existing tock F/R ABI remain; page boundaries do not widen semantic
+    forward changes. The background replay dependency DAG rejects unresolved cycles.
+34. **`IndexedState` is only acceleration state.** It is available only to tock,
+    and cannot determine observable semantics.
+35. **Recording capture uses independent slab provisioning and fixed snapshots.**
+    A realtime recording path consumes pre-provisioned capture blocks at its
+    production point. Background F/R/evaluation processes one fixed capture-
+    sequence prefix; only transaction commit publishes pages and advances the
+    processed frontier. Capture storage is separate from retained output pages.
+36. **One canonical fixed `NodeStorage` per executable generation.** Retained
+    output stores, temporary page arenas and capture logs are executor-owned
+    sidecars; graph-specific node layouts and package code stay immutable.
+37. **Node creation and actual semantic changes establish invalidation.**
+    Compatible JIT replacement is rebinding, not a reason to evict or invalidate
+    retained data. Sample-rate changes re-evaluate computed semantics but do not
+    silently resample finalized tick data.
 
 ---
 
@@ -2715,13 +2683,13 @@ event-payload reservation strategy, planner workspace representation, recording
 capture slab sizes/free-capacity watermarks/queue representation, and concrete
 mutation/notification ABI—can be
 investigated without confusing them with the obsolete timeline execution model.
-The semantic choices in [indexed_dsp_nodes.md](./indexed_dsp_nodes.md)—canonical
-sparse coverage, independent output access/retention, exact forward coverage/change,
-value-blind reverse planning, complete published indexed/persisted materialization,
-explicit realtime-to-indexed bridge nodes, slab-backed capture with independent
-allocation, fixed capture-sequence snapshots per indexed pass, one pages-version
-publication after complete F/R/T execution, no indexed SCC edges, and the separate
-semantic/pages version domains—are no longer intentionally open.
+The semantic choices in [indexed_dsp_nodes.md](./indexed_dsp_nodes.md)—static
+concrete ports; independent input access, output production and retention;
+node-trait/context replayability; background-only tock; exact coverage and value-
+blind reverse demand; stale-page-as-is and per-input missing-page neutrality;
+non-evicting persisted outputs; explicit recording for unreproducible ephemeral
+tick streams; fixed capture snapshots; and atomic complete publication—are not
+intentionally open. Implementation details remain independently tunable.
 
 ---
 
