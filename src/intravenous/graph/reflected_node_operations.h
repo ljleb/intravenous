@@ -171,18 +171,19 @@ struct ReflectedNodeTickContext {
     // persistent façade/cursor state and makes implementation constants visible
     // to whole-project O3 after inlining.
     ReflectedSpan<ReflectedSampleInputPortBinding const> sample_input_bindings {};
+    // Output spans are compact realtime-only ordinals. Indexed outputs are
+    // bound only by indexed callback contexts.
     ReflectedSpan<ReflectedSampleOutputPortBinding const> sample_output_bindings {};
 
     // GraphJit event bindings mirror the sample binding architecture. Legacy
     // reflected event facade spans remain for the old Graph implementation.
     ReflectedSpan<ReflectedEventInputPortBinding const> event_input_bindings {};
+    // Like sample outputs, this span contains realtime outputs only.
     ReflectedSpan<ReflectedEventOutputPortBinding const> event_output_bindings {};
     ReflectedSpan<EventInputPort> event_inputs {};
     ReflectedSpan<EventOutputPort> event_outputs {};
     ReflectedSpan<IndexedSampleInputPort const> indexed_inputs {};
     ReflectedSpan<IndexedEventInputPort const> indexed_event_inputs {};
-    ReflectedSpan<TickRecordSampleOutputPort> tick_record_outputs {};
-    ReflectedSpan<TickRecordEventOutputPort> tick_record_event_outputs {};
     std::size_t sample_rate = 48000;
     std::size_t scc_feedback_latency = 0;
     ReflectedSpan<std::byte> state {};

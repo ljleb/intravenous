@@ -258,7 +258,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             }
         }
         for (auto const& binding : primitive.outputs) {
-            if (!binding.representation) {
+            if (binding.realtime && !binding.representation) {
                 return std::unexpected(
                     "GraphJit sample runtime declaration has an unbound output port");
             }
@@ -273,7 +273,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             }
         }
         for (auto const& binding : primitive.outputs) {
-            if (!binding.representation) {
+            if (binding.realtime && !binding.representation) {
                 return std::unexpected(
                     "GraphJit event runtime declaration has an unbound output port");
             }
@@ -873,6 +873,13 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
         plan.primitives[i].inputs.resize(node->sample_input_count);
         plan.primitives[i].outputs.resize(node->sample_output_count);
+        auto const bundle = analysis.primitives[i].bundle.node_bundle;
+        for (std::size_t port = 0; port < node->sample_output_count; ++port) {
+            auto const config = input.graph.node_bundles.resolve_sample_output(
+                {bundle, PortKind::sample, port}).config;
+            plan.primitives[i].outputs[port].realtime =
+                is_realtime(config.access);
+        }
     }
 
     for (auto const& group : connections.sample_producer_groups) {
@@ -1226,10 +1233,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 
             auto const config = input.graph.node_bundles.resolve_sample_output(
                 NodeBundlePortId{bundle, PortKind::sample, port}).config;
-            if (!is_realtime(config.access)) {
-                return std::unexpected(
-                    "GraphJit disconnected indexed sample output is not supported");
-            }
+            if (!is_realtime(config.access)) continue;
             disconnected_outputs.push_back(DisconnectedSampleOutput{
                 .primitive = primitive_index,
                 .port = port,
@@ -1417,6 +1421,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
         auto& binding = plan.primitives[disconnected.primitive]
             .outputs[disconnected.port];
+        IV_ASSERT(binding.realtime,
+            "realtime sample binding disagrees with its port declaration");
         binding.representation = representation;
         binding.history = realtime_history(disconnected.config);
         binding.latency = realtime_latency(disconnected.config);
@@ -1433,7 +1439,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             || !std::ranges::all_of(
                 primitive.outputs,
                 [](auto const& binding) {
-                    return binding.representation.has_value();
+                    return !binding.realtime
+                        || binding.representation.has_value();
                 })) {
             return std::unexpected(
                 "GraphJit sample port planning left an unresolved primitive port");
@@ -1498,6 +1505,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         }
         plan.primitives[i].inputs.resize(node->event_input_count);
         plan.primitives[i].outputs.resize(node->event_output_count);
+        auto const bundle = analysis.primitives[i].bundle.node_bundle;
+        for (std::size_t port = 0; port < node->event_output_count; ++port) {
+            auto const config = input.graph.node_bundles.resolve_event_output(
+                {bundle, PortKind::event, port}).config;
+            plan.primitives[i].outputs[port].realtime =
+                is_realtime(config.access);
+        }
     }
 
     plan.producer_group_storage_plans.resize(
@@ -2254,6 +2268,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                                 "GraphJit event output belongs to more than one producer group");
                         }
                         source_binding = PrimitiveEventOutputBindingPlan{
+                            .realtime = true,
                             .representation = *local,
                             .source_type = group.source_type,
                             .history = realtime_history(source.config),
@@ -2806,6 +2821,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         "GraphJit event output belongs to more than one producer group");
                 }
                 source_binding = PrimitiveEventOutputBindingPlan{
+                    .realtime = true,
                     .representation = representation,
                     .source_type = group.source_type,
                     .history = realtime_history(source.config),
@@ -3231,6 +3247,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             }
         }
         source_binding = PrimitiveEventOutputBindingPlan{
+            .realtime = true,
             .representation = producer_representation,
             .source_type = group.source_type,
             .history = realtime_history(source),
@@ -3976,14 +3993,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         for (std::size_t port = 0;
              port < plan.primitives[primitive_index].outputs.size(); ++port) {
             auto& binding = plan.primitives[primitive_index].outputs[port];
+            if (!binding.realtime) continue;
             if (binding.representation) continue;
             NodeBundlePortId const port_id{bundle, PortKind::event, port};
             auto const config = input.graph.node_bundles
                 .resolve_event_output(port_id).config;
-            if (!is_realtime(config.access)) {
-                return std::unexpected(
-                    "GraphJit disconnected indexed event outputs are not yet supported");
-            }
+            IV_ASSERT(is_realtime(config.access),
+                "realtime event binding disagrees with its port declaration");
             auto window_samples = input.specialization.block_size;
             auto const history = realtime_history(config);
             auto const latency = realtime_latency(config);
@@ -4008,6 +4024,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 true);
             if (!sink) return std::unexpected(std::move(sink.error()));
             binding = PrimitiveEventOutputBindingPlan{
+                .realtime = true,
                 .representation = *sink,
                 .source_type = config.type,
                 .history = history,

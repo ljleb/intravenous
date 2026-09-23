@@ -23,11 +23,6 @@ enum class IndexedEndpointDirection : std::uint8_t {
     output,
 };
 
-enum class IndexedConnectionTargetAccess : std::uint8_t {
-    indexed,
-    realtime,
-};
-
 // A persistent identity exists only when the configured concrete node belongs
 // to a stable virtual node. Anonymous concrete nodes still receive dense
 // generation-local endpoint ordinals, but are deliberately not assigned a
@@ -90,8 +85,8 @@ struct IndexedEndpointPlan {
     IndexedEndpointDirection direction = IndexedEndpointDirection::input;
     std::string name{};
 
-    // Output-only. Input endpoints have no producer.
-    std::optional<IndexedProducer> producer{};
+    // Output-only. Input endpoints have no retention contract.
+    std::optional<OutputRetention> retention{};
     std::optional<StableIndexedOutputId> stable_identity{};
 
     ChannelLayout sample_layout{};
@@ -126,11 +121,6 @@ struct IndexedSampleProjectionPlan {
 struct IndexedConnectionPlan {
     std::size_t configured_connection_index = 0;
     PortKind kind = PortKind::sample;
-    // A realtime target is retained for later live/base lowering but does not
-    // add an indexed callback dependency.
-    IndexedConnectionTargetAccess target_access =
-        IndexedConnectionTargetAccess::indexed;
-
     std::vector<IndexedEndpointOrdinal> source_endpoints{};
     std::vector<IndexedEndpointOrdinal> target_endpoints{};
     std::vector<NodeBundlePortId> source_ports{};
@@ -156,25 +146,6 @@ struct IndexedComponentPlan {
     std::vector<IndexedConnectionOrdinal> connections{};
 };
 
-struct TickRecordStagingOutputPlan {
-    IndexedEndpointOrdinal endpoint = 0;
-    // One byte in the baseline frame layout. The executor may later pack
-    // flags internally without changing the reflected writer contract.
-    std::size_t written_flag_offset = 0;
-    std::size_t payload_offset = 0;
-    std::size_t payload_size = 0;
-    std::size_t payload_alignment = 1;
-    std::optional<std::size_t> event_count_offset{};
-    std::size_t value_capacity = 0;
-};
-
-struct TickRecordStagingPlan {
-    std::size_t root_block_size = 0;
-    std::size_t size_bytes = 0;
-    std::size_t alignment = 1;
-    std::vector<TickRecordStagingOutputPlan> outputs{};
-};
-
 struct IndexedAccumulatorPlan {
     std::size_t input_change_count = 0;
     std::size_t output_change_count = 0;
@@ -197,7 +168,6 @@ struct IndexedPlan {
     std::vector<IndexedComponentPlan> components{};
     std::vector<std::size_t> component_order{};
     std::vector<IndexedEndpointOrdinal> requestable_outputs{};
-    TickRecordStagingPlan recorder_staging{};
     IndexedAccumulatorPlan accumulators{};
 
     [[nodiscard]] bool empty() const noexcept

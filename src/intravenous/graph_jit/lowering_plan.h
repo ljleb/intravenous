@@ -110,15 +110,16 @@ struct PrimitiveSampleInputBindingPlan {
 };
 
 struct PrimitiveSampleOutputBindingPlan {
+    bool realtime = true;
     std::optional<std::size_t> representation{};
     std::size_t history = 0;
     std::size_t latency = 0;
 };
 
 struct PrimitiveSamplePortPlan {
-    // One immutable physical-representation binding per declared sample port
-    // ordinal. Temporal API semantics remain per-port even when fanout shares
-    // one physical producer representation.
+    // Planning remains indexed by declared physical sample-port ordinal.
+    // Lowering compacts realtime outputs into the tick ABI; indexed outputs
+    // instead receive bindings from the indexed executor.
     std::vector<PrimitiveSampleInputBindingPlan> inputs{};
     std::vector<PrimitiveSampleOutputBindingPlan> outputs{};
 };
@@ -194,6 +195,9 @@ struct PrimitiveEventInputBindingPlan {
 };
 
 struct PrimitiveEventOutputBindingPlan {
+    // Planning remains indexed by declared physical event-port ordinal. Only
+    // realtime entries are emitted into ReflectedNodeTickContext.
+    bool realtime = true;
     std::optional<std::size_t> representation{};
     EventTypeId source_type = EventTypeId::empty;
     std::size_t history = 0;

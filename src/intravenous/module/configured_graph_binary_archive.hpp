@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 6;
+inline constexpr std::uint32_t archive_version = 7;
 
 class Writer {
 public:
@@ -237,26 +237,32 @@ inline void write_output_access(Writer& w, OutputAccessConfig const& value)
     if (auto const* realtime = std::get_if<RealtimeOutputConfig>(&value)) {
         w.size(realtime->history);
         w.size(realtime->latency);
-    } else {
-        write_enum(w, std::get<IndexedOutputConfig>(value).producer);
     }
 }
 
 inline OutputAccessConfig read_output_access(Reader& r)
 {
-    if (r.flag()) {
-        auto const producer = read_enum<IndexedProducer>(r);
-        if (producer < IndexedProducer::tick_record
-            || producer > IndexedProducer::tock_stored) {
-            throw std::runtime_error(
-                "configured graph archive has invalid indexed producer mode");
-        }
-        return IndexedOutputConfig{.producer = producer};
-    }
+    if (r.flag()) return IndexedOutputConfig{};
     return RealtimeOutputConfig{
         .history = r.size(),
         .latency = r.size(),
     };
+}
+
+inline void write_output_retention(Writer& w, OutputRetention retention)
+{
+    write_enum(w, retention);
+}
+
+inline OutputRetention read_output_retention(Reader& r)
+{
+    auto const retention = read_enum<OutputRetention>(r);
+    if (retention < OutputRetention::ephemeral
+        || retention > OutputRetention::persisted) {
+        throw std::runtime_error(
+            "configured graph archive has invalid output retention");
+    }
+    return retention;
 }
 
 inline void write_input(Writer& w, SampleInputConfig const& value)
@@ -288,6 +294,7 @@ inline void write_output(Writer& w, SampleOutputConfig const& value)
     w.string(value.name);
     write_layout(w, value.channel_layout);
     write_output_access(w, value.access);
+    write_output_retention(w, value.retention);
 }
 
 inline SampleOutputConfig read_output(Reader& r)
@@ -296,6 +303,7 @@ inline SampleOutputConfig read_output(Reader& r)
         .name = r.string(),
         .channel_layout = read_layout(r),
         .access = read_output_access(r),
+        .retention = read_output_retention(r),
     };
 }
 
@@ -321,6 +329,7 @@ inline void write_event_output(Writer& w, EventOutputConfig const& value)
     write_enum(w, value.type);
     w.pod(value.max_events_per_index);
     write_output_access(w, value.access);
+    write_output_retention(w, value.retention);
 }
 
 inline EventOutputConfig read_event_output(Reader& r)
@@ -330,6 +339,7 @@ inline EventOutputConfig read_event_output(Reader& r)
         .type = read_enum<EventTypeId>(r),
         .max_events_per_index = r.pod<double>(),
         .access = read_output_access(r),
+        .retention = read_output_retention(r),
     };
 }
 

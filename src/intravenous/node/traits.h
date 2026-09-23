@@ -200,32 +200,6 @@ namespace iv {
         }
 
         template<typename Node>
-        consteval bool declares_tock_outputs()
-        {
-            if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
-                return false;
-            } else {
-                for (auto const& config : Node::outputs()) {
-                    if (is_tock_produced(config.access)) return true;
-                }
-                return false;
-            }
-        }
-
-        template<typename Node>
-        consteval bool declares_tick_record_outputs()
-        {
-            if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
-                return false;
-            } else {
-                for (auto const& config : Node::outputs()) {
-                    if (is_tick_record(config.access)) return true;
-                }
-                return false;
-            }
-        }
-
-        template<typename Node>
         consteval bool declares_indexed_sample_inputs()
         {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
@@ -284,14 +258,6 @@ namespace iv {
         template<typename Node>
         inline constexpr bool declares_indexed_outputs_v =
             declares_indexed_outputs<Node>();
-
-        template<typename Node>
-        inline constexpr bool declares_tock_outputs_v =
-            declares_tock_outputs<Node>();
-
-        template<typename Node>
-        inline constexpr bool declares_tick_record_outputs_v =
-            declares_tick_record_outputs<Node>();
 
         template<typename Node>
         inline constexpr bool declares_indexed_sample_inputs_v =
@@ -362,19 +328,17 @@ namespace iv {
             indexed_state_type_is_valid_v<Node>
             && (!has_constexpr_port_configs<Node>
                 || (
-                    (!declares_tock_outputs_v<Node>
+                    (!declares_indexed_outputs_v<Node>
                         || has_tock_coverage<Node>)
                     && (!has_tock_coverage<Node>
-                        || declares_tock_outputs_v<Node>)
-                    && (!declares_tock_outputs_v<Node>
+                        || declares_indexed_outputs_v<Node>)
+                    && (!declares_indexed_outputs_v<Node>
                         || has_propagate_forward_coverage<Node>)
                     && (!has_propagate_forward_coverage<Node>
-                        || declares_tock_outputs_v<Node>)
+                        || declares_indexed_outputs_v<Node>)
                     && (!has_propagate_reverse_coverage<Node>
-                        || (declares_tock_outputs_v<Node>
-                            && declares_indexed_inputs_v<Node>))
-                    && (!declares_tick_record_outputs_v<Node>
-                        || has_tick_block<Node>)));
+                        || (declares_indexed_outputs_v<Node>
+                            && declares_indexed_inputs_v<Node>))));
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)

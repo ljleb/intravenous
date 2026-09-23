@@ -21,7 +21,11 @@ struct RequestNode {
     std::size_t latency = 0;
 
     auto inputs() const { return std::array{iv::realtime_sample_input(input_name)}; }
-    auto outputs() const { return std::array{iv::realtime_sample_output(output_name)}; }
+    auto outputs() const
+    {
+        return std::array{iv::realtime_sample_output(
+            output_name, {}, {}, iv::OutputRetention::persisted)};
+    }
     std::size_t internal_latency() const { return latency; }
     std::optional<std::size_t> ttl_samples() const { return 64; }
     bool can_skip_block() const { return true; }
@@ -35,7 +39,7 @@ concept HasHistory = requires(Config const& config) { config.history; };
 template<class Config>
 concept HasLatency = requires(Config const& config) { config.latency; };
 template<class Config>
-concept HasProducer = requires(Config const& config) { config.producer; };
+concept HasRetention = requires(Config const& config) { config.retention; };
 
 static_assert(std::same_as<decltype(iv::realtime_sample_input()), iv::InputConfig>);
 static_assert(std::same_as<decltype(iv::indexed_sample_input()), iv::InputConfig>);
@@ -62,8 +66,9 @@ static_assert(HasHistory<iv::RealtimeOutputConfig>);
 static_assert(HasLatency<iv::RealtimeOutputConfig>);
 static_assert(!HasHistory<iv::IndexedInputConfig>);
 static_assert(!HasLatency<iv::IndexedOutputConfig>);
-static_assert(!HasProducer<iv::IndexedInputConfig>);
-static_assert(HasProducer<iv::IndexedOutputConfig>);
+static_assert(HasRetention<iv::OutputConfig>);
+static_assert(HasRetention<iv::SampleOutputConfig>);
+static_assert(HasRetention<iv::EventOutputConfig>);
 static_assert(iv::sample_properties(iv::InputConfig {}).neutral_value.value == 0.0f);
 static_assert(iv::realtime_history(
     iv::realtime_sample_input("history", {}, {.history = 7})) == 7);
@@ -79,14 +84,11 @@ static_assert(iv::realtime_latency(
 static_assert(iv::is_indexed(iv::indexed_sample_input("indexed")));
 static_assert(iv::is_indexed(iv::indexed_event_output(
     "indexed", iv::EventTypeId::trigger)));
-static_assert(iv::indexed_producer(
-    iv::indexed_sample_output("stored").access)
-    == iv::IndexedProducer::tock_stored);
-static_assert(iv::indexed_producer(iv::indexed_sample_output(
-    "realtime", {}, {.producer = iv::IndexedProducer::tock_realtime}).access)
-    == iv::IndexedProducer::tock_realtime);
-static_assert(iv::is_tick_record(iv::indexed_sample_output(
-    "recorded", {}, {.producer = iv::IndexedProducer::tick_record}).access));
+static_assert(!iv::is_persisted(iv::indexed_sample_output("ephemeral")));
+static_assert(iv::is_persisted(iv::indexed_sample_output(
+    "persisted", {}, iv::OutputRetention::persisted)));
+static_assert(iv::is_persisted(iv::realtime_sample_output(
+    "persisted", {}, {}, iv::OutputRetention::persisted)));
 
 TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
 {
@@ -110,6 +112,7 @@ TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
     EXPECT_EQ(description.inputs().front().name, "level");
     ASSERT_EQ(description.outputs().size(), 1u);
     EXPECT_EQ(description.outputs().front().name, "signal");
+    EXPECT_TRUE(iv::is_persisted(description.outputs().front()));
     EXPECT_EQ(description.internal_latency(), 17u);
     ASSERT_TRUE(description.ttl_samples().has_value());
     EXPECT_EQ(*description.ttl_samples(), 64u);
@@ -192,10 +195,10 @@ struct IndexedTransform {
         return std::array {
             iv::indexed_sample_output(
                 "samples-out", {},
-                {.producer = iv::IndexedProducer::tock_realtime}),
+                iv::OutputRetention::ephemeral),
             iv::indexed_event_output(
                 "events-out", iv::EventTypeId::trigger,
-                {.producer = iv::IndexedProducer::tock_stored}),
+                iv::OutputRetention::persisted),
         };
     }
 
@@ -263,39 +266,45 @@ struct StrayReverse {
         iv::PropagateReverseCoverageContext<StrayReverse>&) const {}
 };
 
-struct TickRecorder {
+struct PersistedRealtimeNode {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::indexed_sample_output(
-                "samples", {},
-                {.producer = iv::IndexedProducer::tick_record}),
-            iv::indexed_event_output(
-                "events", iv::EventTypeId::trigger,
-                {.producer = iv::IndexedProducer::tick_record}),
+            iv::realtime_sample_output(
+                "samples", {}, {}, iv::OutputRetention::persisted),
+            iv::realtime_event_output(
+                "events", iv::EventTypeId::trigger, {},
+                iv::OutputRetention::persisted),
         };
     }
 
-    void tick_block(iv::TickBlockContext<TickRecorder> const& context) const
+    void tick_block(
+        iv::TickBlockContext<PersistedRealtimeNode> const& context) const
     {
         auto samples = context.output<"samples">();
-        for (std::size_t i = 0; i < samples.block_size(); ++i) {
-            samples.write(i, static_cast<float>(i));
+        for (std::size_t i = 0; i < context.block_size; ++i) {
+            samples[i] = static_cast<float>(i);
         }
-        samples.commit();
-
-        auto events = context.output<"events">();
-        events.write(iv::TriggerEvent{}, 2);
-        events.commit();
+        context.output<"events">().push(iv::TriggerEvent{}, 2);
     }
 };
 
-struct TickRecordWithoutBlock {
+struct MixedAccessOrdinalNode {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
     static constexpr auto outputs()
     {
-        return std::array {iv::indexed_sample_output(
-            "recording", {},
-            {.producer = iv::IndexedProducer::tick_record})};
+        return std::array {
+            iv::indexed_sample_output("indexed-sample"),
+            iv::realtime_sample_output("realtime-sample"),
+            iv::indexed_event_output(
+                "indexed-event", iv::EventTypeId::trigger),
+            iv::realtime_event_output(
+                "realtime-event", iv::EventTypeId::trigger),
+        };
     }
 };
 
@@ -317,9 +326,6 @@ static_assert(iv::details::declares_indexed_sample_outputs_v<IndexedSource>);
 static_assert(!iv::details::declares_indexed_inputs_v<IndexedSource>);
 static_assert(iv::details::declares_indexed_inputs_v<IndexedTransform>);
 static_assert(iv::details::declares_indexed_outputs_v<IndexedTransform>);
-static_assert(iv::details::declares_tock_outputs_v<IndexedTransform>);
-static_assert(!iv::details::declares_tick_record_outputs_v<IndexedTransform>);
-static_assert(iv::details::declares_tick_record_outputs_v<TickRecorder>);
 static_assert(iv::details::declares_indexed_sample_inputs_v<IndexedTransform>);
 static_assert(iv::details::declares_indexed_event_inputs_v<IndexedTransform>);
 static_assert(iv::details::declares_indexed_sample_outputs_v<IndexedTransform>);
@@ -327,9 +333,8 @@ static_assert(iv::details::declares_indexed_event_outputs_v<IndexedTransform>);
 static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedSource>);
 static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedTransform>);
 static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedInputOnly>);
-static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<TickRecorder>);
-static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<
-    TickRecordWithoutBlock>);
+static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<
+    PersistedRealtimeNode>);
 static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<MissingIndexedTock>);
 static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<StrayTock>);
 static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<StrayForward>);
@@ -342,18 +347,20 @@ static_assert(iv::details::static_tock_output_port_index<
     IndexedTransform, "samples-out">() == 0);
 static_assert(iv::details::static_tock_event_output_port_index<
     IndexedTransform, "events-out">() == 0);
-static_assert(iv::details::static_tick_record_output_port_index<
-    TickRecorder, "samples">() == 0);
-static_assert(iv::details::static_tick_record_event_output_port_index<
-    TickRecorder, "events">() == 0);
-static_assert(iv::details::static_output_port_is_tick_record<
-    TickRecorder, "samples">());
-static_assert(iv::details::static_output_port_is_tick_record<
-    TickRecorder, "events">());
-static_assert(iv::details::static_output_port_is_tock_produced<
-    IndexedTransform, "samples-out">());
-static_assert(iv::details::static_output_port_is_tock_produced<
-    IndexedTransform, "events-out">());
+static_assert(iv::details::static_output_port_index<
+    MixedAccessOrdinalNode, "realtime-sample">() == 1);
+static_assert(iv::details::static_realtime_output_port_index<
+    MixedAccessOrdinalNode, "realtime-sample">() == 0);
+static_assert(iv::details::static_event_output_port_index<
+    MixedAccessOrdinalNode, "realtime-event">() == 1);
+static_assert(iv::details::static_realtime_event_output_port_index<
+    MixedAccessOrdinalNode, "realtime-event">() == 0);
+static_assert(iv::details::reflected_sample_output_count_v<
+    MixedAccessOrdinalNode> == 1);
+static_assert(iv::details::reflected_event_output_count_v<
+    MixedAccessOrdinalNode> == 1);
+static_assert(iv::is_persisted(PersistedRealtimeNode::outputs()[0]));
+static_assert(iv::is_persisted(PersistedRealtimeNode::outputs()[1]));
 static_assert(!ExposesIndexedState<iv::TickBlockContext<IndexedSource>>);
 static_assert(!ExposesIndexedState<
     iv::PropagateForwardCoverageContext<IndexedSource>>);
@@ -370,9 +377,9 @@ static_assert(iv::details::node_compiler_operations<IndexedTransform>()
     .propagate_reverse_coverage != nullptr);
 static_assert(iv::details::node_compiler_operations<IndexedInputOnly>()
     .tock_coverage == nullptr);
-static_assert(iv::details::node_compiler_operations<TickRecorder>()
+static_assert(iv::details::node_compiler_operations<PersistedRealtimeNode>()
     .tock_coverage == nullptr);
-static_assert(iv::details::node_compiler_operations<TickRecorder>()
+static_assert(iv::details::node_compiler_operations<PersistedRealtimeNode>()
     .propagate_forward_coverage == nullptr);
 
 struct SampleData {
@@ -419,71 +426,36 @@ void write_event(void* data, iv::TimedEvent const& event)
     static_cast<EventWrites*>(data)->events.push_back(event);
 }
 
-struct TickRecordWrites {
-    std::array<iv::Sample, 4> samples {};
-    std::vector<iv::TimedEvent> events {};
-    bool sample_committed = false;
-    bool event_committed = false;
-};
-
-void write_record_sample(
-    void* data, std::size_t offset, std::size_t channel, iv::Sample sample)
+TEST(IndexedDspPorts, PersistedRealtimeOutputsUseOrdinaryTickBindings)
 {
-    EXPECT_EQ(channel, 0u);
-    static_cast<TickRecordWrites*>(data)->samples[offset] = sample;
-}
+    std::array<iv::Sample, 256> sample_storage {};
+    iv::SharedPortData sample_shared(sample_storage, 0);
+    std::array sample_outputs {iv::OutputPort(sample_shared, 0, 128)};
+    std::array<iv::TimedEvent, 16> event_storage {};
+    iv::EventSharedPortData event_shared {
+        event_storage, 0, 0, iv::EventTypeId::trigger,
+    };
+    std::array event_outputs {iv::EventOutputPort(
+        event_shared, iv::EventTypeId::trigger)};
 
-void commit_record_samples(void* data)
-{
-    static_cast<TickRecordWrites*>(data)->sample_committed = true;
-}
+    iv::do_tick_block(
+        PersistedRealtimeNode{},
+        iv::TickBlockContext<PersistedRealtimeNode>{
+            iv::TickContext<PersistedRealtimeNode>{
+                .outputs = sample_outputs,
+                .event_outputs = event_outputs,
+            },
+            128,
+            4,
+        });
 
-void write_record_event(void* data, iv::TimedEvent const& event)
-{
-    static_cast<TickRecordWrites*>(data)->events.push_back(event);
-}
-
-void commit_record_events(void* data)
-{
-    static_cast<TickRecordWrites*>(data)->event_committed = true;
-}
-
-TEST(IndexedDspPorts, TickBlockCommitsWholeBlockRecorderBindings)
-{
-    TickRecordWrites writes;
-    std::array sample_outputs {iv::TickRecordSampleOutputPort{
-        .data = &writes,
-        .block_begin = 128,
-        .block_size_value = 4,
-        .channel_count_value = 1,
-        .write_sample = &write_record_sample,
-        .commit_block = &commit_record_samples,
-    }};
-    std::array event_outputs {iv::TickRecordEventOutputPort{
-        .data = &writes,
-        .block_begin = 128,
-        .block_size_value = 4,
-        .write_event = &write_record_event,
-        .commit_block = &commit_record_events,
-    }};
-
-    TickRecorder recorder;
-    auto const operations = iv::details::node_compiler_operations<TickRecorder>();
-    operations.tick_block(
-        &recorder,
-        iv::ReflectedNodeTickContext{
-            .tick_record_outputs = sample_outputs,
-            .tick_record_event_outputs = event_outputs,
-        },
-        128,
-        4);
-
-    EXPECT_EQ(writes.samples,
-        (std::array<iv::Sample, 4>{0.0f, 1.0f, 2.0f, 3.0f}));
-    EXPECT_TRUE(writes.sample_committed);
-    ASSERT_EQ(writes.events.size(), 1u);
-    EXPECT_EQ(writes.events.front().time, 130u);
-    EXPECT_TRUE(writes.event_committed);
+    EXPECT_FLOAT_EQ(sample_storage[128], 0.0f);
+    EXPECT_FLOAT_EQ(sample_storage[129], 1.0f);
+    EXPECT_FLOAT_EQ(sample_storage[130], 2.0f);
+    EXPECT_FLOAT_EQ(sample_storage[131], 3.0f);
+    EXPECT_EQ(sample_outputs[0].position(), 132u);
+    ASSERT_EQ(event_shared.write_index, 1u);
+    EXPECT_EQ(event_storage[0].time, 130u);
 }
 
 TEST(IndexedDspPorts, IndexedInputsRemainAvailableFromTickBlock)

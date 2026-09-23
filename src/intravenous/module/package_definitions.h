@@ -516,25 +516,22 @@ RegisteredSignature const* node_constructor_signature()
         "Dynamic-arity or configuration-dependent nodes must remain internal lowering nodes."); \
     static_assert(::iv::details::indexed_state_type_is_valid_v<Node>, \
         "IV_NODE Node::IndexedState must be a mutable, non-volatile, default-constructible object type."); \
-    static_assert(!::iv::details::declares_tock_outputs_v<Node> \
+    static_assert(!::iv::details::declares_indexed_outputs_v<Node> \
             || ::iv::details::has_tock_coverage<Node>, \
-        "IV_NODE node type declares a computed indexed output port; define tock_coverage(TockCoverageContext<Node>&)."); \
+        "IV_NODE node type declares an indexed output port; define tock_coverage(TockCoverageContext<Node>&)."); \
     static_assert(!::iv::details::has_tock_coverage<Node> \
-            || ::iv::details::declares_tock_outputs_v<Node>, \
-        "IV_NODE node type defines tock_coverage but declares no computed indexed output port."); \
-    static_assert(!::iv::details::declares_tock_outputs_v<Node> \
+            || ::iv::details::declares_indexed_outputs_v<Node>, \
+        "IV_NODE node type defines tock_coverage but declares no indexed output port."); \
+    static_assert(!::iv::details::declares_indexed_outputs_v<Node> \
             || ::iv::details::has_propagate_forward_coverage<Node>, \
-        "IV_NODE node type declares a computed indexed output port; define exact propagate_forward_coverage(PropagateForwardCoverageContext<Node>&)."); \
+        "IV_NODE node type declares an indexed output port; define exact propagate_forward_coverage(PropagateForwardCoverageContext<Node>&)."); \
     static_assert(!::iv::details::has_propagate_forward_coverage<Node> \
-            || ::iv::details::declares_tock_outputs_v<Node>, \
-        "IV_NODE node type defines propagate_forward_coverage but declares no computed indexed output port."); \
+            || ::iv::details::declares_indexed_outputs_v<Node>, \
+        "IV_NODE node type defines propagate_forward_coverage but declares no indexed output port."); \
     static_assert(!::iv::details::has_propagate_reverse_coverage<Node> \
-            || (::iv::details::declares_tock_outputs_v<Node> \
+            || (::iv::details::declares_indexed_outputs_v<Node> \
                 && ::iv::details::declares_indexed_inputs_v<Node>), \
-        "IV_NODE node type defines propagate_reverse_coverage but does not declare both indexed input and computed indexed output ports."); \
-    static_assert(!::iv::details::declares_tick_record_outputs_v<Node> \
-            || ::iv::details::has_tick_block<Node>, \
-        "IV_NODE node type declares a tick_record output port; define tick_block(TickBlockContext<Node> const&).")
+        "IV_NODE node type defines propagate_reverse_coverage but does not declare both indexed input and indexed output ports.")
 
 #define IV_NODE_IMPL(Id, Node, Unique) \
     namespace { \

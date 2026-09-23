@@ -69,14 +69,11 @@ std::expected<PlannedConnectionAccess, std::string> connection_access(
     if (!source_realtime && !target_realtime) {
         return PlannedConnectionAccess::indexed_to_indexed;
     }
-    if (!source_realtime) {
-        return PlannedConnectionAccess::indexed_to_realtime;
-    }
     return std::unexpected(
         "GraphJit " + std::string(payload) + " connection "
         + std::to_string(connection_index)
-        + " connects a realtime output to an indexed input; "
-          "realtime-produced indexed data requires an explicit tick_record indexed output");
+        + " crosses realtime and indexed access domains; "
+          "cross-domain transfer requires an explicit bridge node");
 }
 
 bool uses_realtime_storage(PlannedConnectionAccess access) noexcept
@@ -728,11 +725,9 @@ std::vector<NodeBundleHandle> unique_source_bundles(
 
 std::expected<IndexedPlan, std::string> build_semantic_indexed_plan(
     ConfiguredGraph const& graph,
-    ConnectionAnalysisPlan const& plan,
-    std::size_t kernel_block_size)
+    ConnectionAnalysisPlan const& plan)
 {
     IndexedPlan result;
-    result.recorder_staging.root_block_size = kernel_block_size;
     result.bundle_to_semantic_node.resize(graph.node_bundles.size());
     result.bundle_to_indexed_node.resize(graph.node_bundles.size());
     result.semantic_nodes.reserve(plan.nodes.size());
@@ -972,7 +967,6 @@ std::expected<IndexedPlan, std::string> build_semantic_indexed_plan(
 std::expected<void, std::string> populate_indexed_topology(
     ConfiguredGraph const& graph,
     ConnectionAnalysisPlan const& connections,
-    std::size_t kernel_block_size,
     IndexedPlan& plan)
 {
     auto stable_node_identity = [&](NodeBundleHandle bundle)
@@ -1045,7 +1039,7 @@ std::expected<void, std::string> populate_indexed_topology(
                                NodeBundlePortId port,
                                IndexedEndpointDirection direction,
                                std::string name,
-                               std::optional<IndexedProducer> producer,
+                               std::optional<OutputRetention> retention,
                                ChannelLayout sample_layout,
                                EventTypeId event_type,
                                double max_events_per_index) {
@@ -1097,7 +1091,7 @@ std::expected<void, std::string> populate_indexed_topology(
             .kind = port.port_kind,
             .direction = direction,
             .name = std::move(name),
-            .producer = producer,
+            .retention = retention,
             .stable_identity = std::move(stable_output),
             .sample_layout = sample_layout,
             .event_type = event_type,
@@ -1135,7 +1129,7 @@ std::expected<void, std::string> populate_indexed_topology(
             if (!is_indexed(config)) continue;
             append_endpoint(
                 indexed_node, id, IndexedEndpointDirection::output,
-                config.name, indexed_producer(config.access),
+                config.name, config.retention,
                 config.channel_layout, EventTypeId::empty, 0.0);
         }
         for (std::size_t port = 0; port < node.event_output_count; ++port) {
@@ -1144,7 +1138,7 @@ std::expected<void, std::string> populate_indexed_topology(
             if (!is_indexed(config)) continue;
             append_endpoint(
                 indexed_node, id, IndexedEndpointDirection::output,
-                config.name, indexed_producer(config.access),
+                config.name, config.retention,
                 {}, config.type, config.max_events_per_index);
         }
     }
@@ -1187,10 +1181,6 @@ std::expected<void, std::string> populate_indexed_topology(
         IndexedConnectionPlan indexed{
             .configured_connection_index = connection.configured_connection_index,
             .kind = PortKind::sample,
-            .target_access = connection.access
-                    == PlannedConnectionAccess::indexed_to_indexed
-                ? IndexedConnectionTargetAccess::indexed
-                : IndexedConnectionTargetAccess::realtime,
             .sample_source_type = connection.source_type,
             .sample_target_type = connection.target_type,
             .sample_source_channels = connection.source_channels,
@@ -1207,11 +1197,11 @@ std::expected<void, std::string> populate_indexed_topology(
             indexed.source_endpoints.push_back(*endpoint);
         }
         indexed.target_ports.push_back(connection.target_port);
-        if (indexed.target_access == IndexedConnectionTargetAccess::indexed) {
-            auto endpoint = endpoint_for(connection.target_port);
-            if (!endpoint) return std::unexpected(std::move(endpoint.error()));
-            indexed.target_endpoints.push_back(*endpoint);
+        auto target_endpoint = endpoint_for(connection.target_port);
+        if (!target_endpoint) {
+            return std::unexpected(std::move(target_endpoint.error()));
         }
+        indexed.target_endpoints.push_back(*target_endpoint);
         for (auto const& projection : connection.projection_contributions) {
             indexed.sample_projections.push_back(IndexedSampleProjectionPlan{
                 .source_type = projection.source_type,
@@ -1228,10 +1218,6 @@ std::expected<void, std::string> populate_indexed_topology(
         IndexedConnectionPlan indexed{
             .configured_connection_index = connection.configured_connection_index,
             .kind = PortKind::event,
-            .target_access = connection.access
-                    == PlannedConnectionAccess::indexed_to_indexed
-                ? IndexedConnectionTargetAccess::indexed
-                : IndexedConnectionTargetAccess::realtime,
             .event_source_type = connection.source_type,
             .event_target_type = connection.target_type,
             .event_conversion = connection.conversion,
@@ -1250,14 +1236,12 @@ std::expected<void, std::string> populate_indexed_topology(
             append_unique_port(indexed.target_ports, {
                 target.bundle, PortKind::event, target.port});
         }
-        if (indexed.target_access == IndexedConnectionTargetAccess::indexed) {
-            for (auto const port : indexed.target_ports) {
-                auto endpoint = endpoint_for(port);
-                if (!endpoint) {
-                    return std::unexpected(std::move(endpoint.error()));
-                }
-                indexed.target_endpoints.push_back(*endpoint);
+        for (auto const port : indexed.target_ports) {
+            auto endpoint = endpoint_for(port);
+            if (!endpoint) {
+                return std::unexpected(std::move(endpoint.error()));
             }
+            indexed.target_endpoints.push_back(*endpoint);
         }
         append_connection(std::move(indexed));
     }
@@ -1296,8 +1280,6 @@ std::expected<void, std::string> populate_indexed_topology(
         for (std::size_t i = 1; i < participating_nodes.size(); ++i) {
             join(participating_nodes.front(), participating_nodes[i]);
         }
-        if (connection.target_access
-            == IndexedConnectionTargetAccess::realtime) continue;
         for (auto const source_endpoint : connection.source_endpoints) {
             auto const source = plan.endpoints[source_endpoint].node;
             for (auto const target_endpoint : connection.target_endpoints) {
@@ -1367,113 +1349,6 @@ std::expected<void, std::string> populate_indexed_topology(
             .connections.push_back(connection);
     }
 
-    auto checked_add = [](std::size_t lhs, std::size_t rhs)
-        -> std::optional<std::size_t> {
-        if (rhs > std::numeric_limits<std::size_t>::max() - lhs) {
-            return std::nullopt;
-        }
-        return lhs + rhs;
-    };
-    auto checked_multiply = [](std::size_t lhs, std::size_t rhs)
-        -> std::optional<std::size_t> {
-        if (lhs != 0 && rhs > std::numeric_limits<std::size_t>::max() / lhs) {
-            return std::nullopt;
-        }
-        return lhs * rhs;
-    };
-    auto align_up = [&](std::size_t value, std::size_t alignment)
-        -> std::optional<std::size_t> {
-        auto const mask = alignment - 1;
-        auto sum = checked_add(value, mask);
-        if (!sum) return std::nullopt;
-        return *sum & ~mask;
-    };
-    std::size_t staging_size = 0;
-    for (auto const endpoint_ordinal : plan.requestable_outputs) {
-        auto const& endpoint = plan.endpoints[endpoint_ordinal];
-        if (endpoint.producer != IndexedProducer::tick_record) continue;
-        TickRecordStagingOutputPlan staging{
-            .endpoint = endpoint_ordinal,
-            .written_flag_offset = staging_size,
-        };
-        auto after_written = checked_add(staging_size, sizeof(std::uint8_t));
-        if (!after_written) {
-            return std::unexpected(
-                "GraphJit tick_record staging layout overflows size_t");
-        }
-        staging_size = *after_written;
-        if (endpoint.kind == PortKind::sample) {
-            auto capacity = checked_multiply(
-                kernel_block_size, channel_count(endpoint.sample_layout));
-            if (!capacity) {
-                return std::unexpected(
-                    "GraphJit sample tick_record capacity overflows size_t");
-            }
-            auto payload_size = checked_multiply(*capacity, sizeof(Sample));
-            auto payload_offset = align_up(staging_size, alignof(Sample));
-            if (!payload_size || !payload_offset) {
-                return std::unexpected(
-                    "GraphJit sample tick_record layout overflows size_t");
-            }
-            staging.value_capacity = *capacity;
-            staging.payload_offset = *payload_offset;
-            staging.payload_size = *payload_size;
-            staging.payload_alignment = alignof(Sample);
-            auto end = checked_add(*payload_offset, *payload_size);
-            if (!end) {
-                return std::unexpected(
-                    "GraphJit sample tick_record layout overflows size_t");
-            }
-            staging_size = *end;
-        } else {
-            auto capacity = event_count_for_sample_span(
-                endpoint.max_events_per_index, kernel_block_size);
-            if (!capacity) {
-                return std::unexpected(
-                    "GraphJit event tick_record capacity is not representable");
-            }
-            auto count_offset = align_up(staging_size, alignof(std::size_t));
-            if (!count_offset) {
-                return std::unexpected(
-                    "GraphJit event tick_record layout overflows size_t");
-            }
-            auto after_count = checked_add(*count_offset, sizeof(std::size_t));
-            if (!after_count) {
-                return std::unexpected(
-                    "GraphJit event tick_record layout overflows size_t");
-            }
-            auto payload_offset = align_up(*after_count, alignof(TimedEvent));
-            auto payload_size = checked_multiply(*capacity, sizeof(TimedEvent));
-            if (!payload_offset || !payload_size) {
-                return std::unexpected(
-                    "GraphJit event tick_record layout overflows size_t");
-            }
-            staging.event_count_offset = *count_offset;
-            staging.value_capacity = *capacity;
-            staging.payload_offset = *payload_offset;
-            staging.payload_size = *payload_size;
-            staging.payload_alignment = alignof(TimedEvent);
-            auto end = checked_add(*payload_offset, *payload_size);
-            if (!end) {
-                return std::unexpected(
-                    "GraphJit event tick_record layout overflows size_t");
-            }
-            staging_size = *end;
-        }
-        auto const staging_alignment = endpoint.kind == PortKind::event
-            ? std::max(staging.payload_alignment, alignof(std::size_t))
-            : staging.payload_alignment;
-        plan.recorder_staging.alignment = std::max(
-            plan.recorder_staging.alignment, staging_alignment);
-        plan.recorder_staging.outputs.push_back(std::move(staging));
-    }
-    auto final_size = align_up(
-        staging_size, plan.recorder_staging.alignment);
-    if (!final_size) {
-        return std::unexpected(
-            "GraphJit tick_record frame alignment overflows size_t");
-    }
-    plan.recorder_staging.size_bytes = *final_size;
     return {};
 }
 
@@ -2386,9 +2261,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         return std::unexpected(std::move(events.error()));
     }
     if (retained_indexed_plan) {
-        if (retained_indexed_plan->recorder_staging.root_block_size
-                != kernel_block_size
-            || retained_indexed_plan->semantic_nodes.size()
+        if (retained_indexed_plan->semantic_nodes.size()
                 != plan.nodes.size()
             || retained_indexed_plan->bundle_to_semantic_node.size()
                 != graph.node_bundles.size()) {
@@ -2404,11 +2277,9 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         }
         plan.indexed = *retained_indexed_plan;
     } else {
-        auto indexed = build_semantic_indexed_plan(
-            graph, plan, kernel_block_size);
+        auto indexed = build_semantic_indexed_plan(graph, plan);
         if (!indexed) return std::unexpected(std::move(indexed.error()));
-        if (auto populated = populate_indexed_topology(
-                graph, plan, kernel_block_size, *indexed);
+        if (auto populated = populate_indexed_topology(graph, plan, *indexed);
             !populated) {
             return std::unexpected(std::move(populated.error()));
         }

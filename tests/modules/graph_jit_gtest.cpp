@@ -718,9 +718,6 @@ TEST(GraphJit, EmptyGraphCompilesAndMaterializesRootOperation)
     EXPECT_EQ(result.compiled_graph->node_layout.max_block_size, 256u);
     EXPECT_TRUE(result.compiled_graph->node_layout.nodes.empty());
     EXPECT_TRUE(result.compiled_graph->indexed_plan.empty());
-    EXPECT_EQ(
-        result.compiled_graph->indexed_plan.recorder_staging.root_block_size,
-        256u);
     EXPECT_TRUE(result.compiled_graph->root_operations.valid());
 
     EXPECT_NO_THROW(result.compiled_graph->root_operations.tick_block(nullptr, 0, 256));

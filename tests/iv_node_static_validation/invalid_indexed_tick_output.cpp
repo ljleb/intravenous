@@ -39,23 +39,3 @@ struct InvalidIndexedEventTickOutput {
 };
 
 IV_NODE("iv.test.invalid_indexed_event_tick_output", InvalidIndexedEventTickOutput);
-
-struct InvalidTickRecordTockOutput {
-    static constexpr auto outputs()
-    {
-        return std::array {iv::indexed_sample_output(
-            "recording", {},
-            {.producer = iv::IndexedProducer::tick_record})};
-    }
-
-    void tick_block(
-        iv::TickBlockContext<InvalidTickRecordTockOutput> const&) const {}
-
-    void tock_coverage(
-        iv::TockCoverageContext<InvalidTickRecordTockOutput>& context) const
-    {
-        (void)context.template output<"recording">();
-    }
-};
-
-IV_NODE("iv.test.invalid_tick_record_tock_output", InvalidTickRecordTockOutput);

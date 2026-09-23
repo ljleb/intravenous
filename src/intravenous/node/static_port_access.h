@@ -181,17 +181,21 @@ namespace iv::details {
     }
 
     template<typename Node, fixed_string Name>
-    consteval bool static_output_port_is_tick_record()
+    consteval size_t static_realtime_output_port_index()
     {
-        OutputConfig const config = static_output_config<Node, Name>();
-        return is_tick_record(config.access);
-    }
-
-    template<typename Node, fixed_string Name>
-    consteval bool static_output_port_is_tock_produced()
-    {
-        OutputConfig const config = static_output_config<Node, Name>();
-        return is_tock_produced(config.access);
+        static constexpr auto configs = Node::outputs();
+        constexpr size_t port_index = static_output_port_index<Node, Name>();
+        static_assert(!static_output_port_is_indexed<Node, Name>(),
+            "requested static sample output is not produced by tick execution");
+        size_t realtime_index = 0;
+        size_t sample_index = 0;
+        for (OutputConfig const& config : configs) {
+            if (!is_sample(config)) continue;
+            if (sample_index == port_index) return realtime_index;
+            if (is_realtime(config.access)) ++realtime_index;
+            ++sample_index;
+        }
+        throw "unknown static sample output port name";
     }
 
     template<typename Node, fixed_string Name>
@@ -199,32 +203,14 @@ namespace iv::details {
     {
         static constexpr auto configs = Node::outputs();
         constexpr size_t port_index = static_output_port_index<Node, Name>();
-        static_assert(static_output_port_is_tock_produced<Node, Name>(),
+        static_assert(static_output_port_is_indexed<Node, Name>(),
             "requested static output is not produced by tock_coverage");
         size_t tock_index = 0;
         size_t sample_index = 0;
         for (OutputConfig const& config : configs) {
             if (!is_sample(config)) continue;
             if (sample_index == port_index) return tock_index;
-            if (is_tock_produced(config.access)) ++tock_index;
-            ++sample_index;
-        }
-        throw "unknown static sample output port name";
-    }
-
-    template<typename Node, fixed_string Name>
-    consteval size_t static_tick_record_output_port_index()
-    {
-        static constexpr auto configs = Node::outputs();
-        constexpr size_t port_index = static_output_port_index<Node, Name>();
-        static_assert(static_output_port_is_tick_record<Node, Name>(),
-            "requested static output is not produced by tick_record");
-        size_t record_index = 0;
-        size_t sample_index = 0;
-        for (OutputConfig const& config : configs) {
-            if (!is_sample(config)) continue;
-            if (sample_index == port_index) return record_index;
-            if (is_tick_record(config.access)) ++record_index;
+            if (is_indexed(config)) ++tock_index;
             ++sample_index;
         }
         throw "unknown static sample output port name";
@@ -291,6 +277,24 @@ namespace iv::details {
     }
 
     template<typename Node, fixed_string Name>
+    consteval size_t static_realtime_event_output_port_index()
+    {
+        static constexpr auto configs = Node::outputs();
+        constexpr size_t port_index = static_event_output_port_index<Node, Name>();
+        static_assert(!static_event_output_port_is_indexed<Node, Name>(),
+            "requested static event output is not produced by tick execution");
+        size_t realtime_index = 0;
+        size_t event_index = 0;
+        for (OutputConfig const& config : configs) {
+            if (is_sample(config)) continue;
+            if (event_index == port_index) return realtime_index;
+            if (is_realtime(config.access)) ++realtime_index;
+            ++event_index;
+        }
+        throw "unknown static event output port name";
+    }
+
+    template<typename Node, fixed_string Name>
     consteval size_t static_indexed_event_input_port_index()
     {
         static constexpr auto configs = Node::inputs();
@@ -313,32 +317,14 @@ namespace iv::details {
     {
         static constexpr auto configs = Node::outputs();
         constexpr size_t port_index = static_event_output_port_index<Node, Name>();
-        static_assert(static_output_port_is_tock_produced<Node, Name>(),
+        static_assert(static_event_output_port_is_indexed<Node, Name>(),
             "requested static event output is not produced by tock_coverage");
         size_t tock_index = 0;
         size_t event_index = 0;
         for (OutputConfig const& config : configs) {
             if (is_sample(config)) continue;
             if (event_index == port_index) return tock_index;
-            if (is_tock_produced(config.access)) ++tock_index;
-            ++event_index;
-        }
-        throw "unknown static event output port name";
-    }
-
-    template<typename Node, fixed_string Name>
-    consteval size_t static_tick_record_event_output_port_index()
-    {
-        static constexpr auto configs = Node::outputs();
-        constexpr size_t port_index = static_event_output_port_index<Node, Name>();
-        static_assert(static_output_port_is_tick_record<Node, Name>(),
-            "requested static event output is not produced by tick_record");
-        size_t record_index = 0;
-        size_t event_index = 0;
-        for (OutputConfig const& config : configs) {
-            if (is_sample(config)) continue;
-            if (event_index == port_index) return record_index;
-            if (is_tick_record(config.access)) ++record_index;
+            if (is_indexed(config)) ++tock_index;
             ++event_index;
         }
         throw "unknown static event output port name";

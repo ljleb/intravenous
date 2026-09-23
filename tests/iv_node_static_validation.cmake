@@ -42,20 +42,19 @@ expect_valid(valid.cpp)
 expect_invalid(
     invalid.cpp
     "IV_NODE requires inputs() and outputs()"
-    "declares a computed indexed output port; define tock_coverage"
+    "declares an indexed output port; define tock_coverage"
     "define exact propagate_forward_coverage")
 
 expect_invalid(
     invalid_indexed_tick_output.cpp
-    "tick_block() cannot write a computed indexed sample output"
-    "tick_block() cannot write a computed indexed event output"
-    "TockCoverageContext can only write tock-produced indexed outputs")
+    "tick_block() cannot write an indexed sample output"
+    "tick_block() cannot write an indexed event output")
 
 expect_invalid(
     invalid_indexed_callback_shape.cpp
-    "defines tock_coverage but declares no computed indexed output port"
-    "defines propagate_forward_coverage but declares no computed indexed output port"
-    "defines propagate_reverse_coverage but does not declare both indexed input and computed indexed output ports")
+    "defines tock_coverage but declares no indexed output port"
+    "defines propagate_forward_coverage but declares no indexed output port"
+    "defines propagate_reverse_coverage but does not declare both indexed input and indexed output ports")
 
 expect_invalid(
     invalid_indexed_state.cpp

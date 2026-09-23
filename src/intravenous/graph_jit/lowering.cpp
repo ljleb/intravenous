@@ -670,7 +670,9 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
         auto const& primitive = plan.primitives[primitive_index];
         auto& result = emitted.primitives[primitive_index];
         result.input_count = primitive.inputs.size();
-        result.output_count = primitive.outputs.size();
+        result.output_count = std::ranges::count_if(
+            primitive.outputs,
+            [](auto const& output) { return output.realtime; });
 
         if (!primitive.inputs.empty()) {
             std::vector<ReflectedSampleInputPortBinding> bindings;
@@ -716,10 +718,11 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
             }
         }
 
-        if (!primitive.outputs.empty()) {
+        if (result.output_count != 0) {
             std::vector<ReflectedSampleOutputPortBinding> bindings;
-            bindings.reserve(primitive.outputs.size());
+            bindings.reserve(result.output_count);
             for (auto const& output : primitive.outputs) {
+                if (!output.realtime) continue;
                 if (!output.representation) {
                     return std::unexpected(
                         "GraphJit sample output binding has no physical representation");
@@ -739,8 +742,10 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                 bindings.size() * sizeof(ReflectedSampleOutputPortBinding),
                 alignof(ReflectedSampleOutputPortBinding),
                 "__iv_graph_sample_outputs_" + std::to_string(primitive_index));
-            for (std::size_t i = 0; i < primitive.outputs.size(); ++i) {
-                auto const representation = *primitive.outputs[i].representation;
+            std::size_t binding_index = 0;
+            for (auto const& output : primitive.outputs) {
+                if (!output.realtime) continue;
+                auto const representation = *output.representation;
                 if (representation >= realtime_storage.sample_representations.size()) {
                     return std::unexpected(
                         "GraphJit sample output binding lost its resolved storage");
@@ -748,10 +753,11 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                 store_sample_binding_channel_pointers(
                     builder,
                     result.output_bindings,
-                    i * sizeof(ReflectedSampleOutputPortBinding)
+                    binding_index * sizeof(ReflectedSampleOutputPortBinding)
                         + offsetof(ReflectedSampleOutputPortBinding, storage),
                     plan.physical.representations[representation],
                     realtime_storage.sample_representations[representation]);
+                ++binding_index;
             }
         }
     }
@@ -792,7 +798,9 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
         auto const& primitive = plan.primitives[primitive_index];
         auto& result = emitted.primitives[primitive_index];
         result.input_count = primitive.inputs.size();
-        result.output_count = primitive.outputs.size();
+        result.output_count = std::ranges::count_if(
+            primitive.outputs,
+            [](auto const& output) { return output.realtime; });
 
         if (!primitive.inputs.empty()) {
             std::vector<ReflectedEventInputPortBinding> bindings;
@@ -830,10 +838,11 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
             }
         }
 
-        if (!primitive.outputs.empty()) {
+        if (result.output_count != 0) {
             std::vector<ReflectedEventOutputPortBinding> bindings;
-            bindings.reserve(primitive.outputs.size());
+            bindings.reserve(result.output_count);
             for (auto const& output : primitive.outputs) {
+                if (!output.realtime) continue;
                 if (!output.representation) {
                     return std::unexpected(
                         "GraphJit event output binding has no physical representation");
@@ -861,8 +870,10 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                 bindings.size() * sizeof(ReflectedEventOutputPortBinding),
                 alignof(ReflectedEventOutputPortBinding),
                 "__iv_graph_event_outputs_" + std::to_string(primitive_index));
-            for (std::size_t i = 0; i < primitive.outputs.size(); ++i) {
-                auto const representation = *primitive.outputs[i].representation;
+            std::size_t binding_index = 0;
+            for (auto const& output : primitive.outputs) {
+                if (!output.realtime) continue;
+                auto const representation = *output.representation;
                 if (representation >= realtime_storage.event_representations.size()
                     || representation
                         >= realtime_storage.event_overflow_counts.size()
@@ -874,16 +885,17 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                 store_runtime_pointer(
                     builder,
                     result.output_bindings,
-                    i * sizeof(ReflectedEventOutputPortBinding)
+                    binding_index * sizeof(ReflectedEventOutputPortBinding)
                         + offsetof(ReflectedEventOutputPortBinding, storage)
                         + offsetof(ReflectedEventPortStorageBinding, storage),
                     realtime_storage.event_representations[representation]);
                 store_runtime_pointer(
                     builder,
                     result.output_bindings,
-                    i * sizeof(ReflectedEventOutputPortBinding)
+                    binding_index * sizeof(ReflectedEventOutputPortBinding)
                         + offsetof(ReflectedEventOutputPortBinding, overflow_count),
                     realtime_storage.event_overflow_counts[representation]);
+                ++binding_index;
             }
         }
     }

@@ -73,11 +73,7 @@ struct ValidIndexedInputOnlyNode {
 IV_NODE("iv.test.valid_indexed_input_only_node", ValidIndexedInputOnlyNode);
 
 
-struct ValidRecorderNode {
-    struct IndexedState {
-        int write_count = 0;
-    };
-
+struct ValidPersistedRealtimeNode {
     static constexpr auto inputs()
     {
         return std::array {iv::realtime_sample_input("input")};
@@ -85,20 +81,19 @@ struct ValidRecorderNode {
 
     static constexpr auto outputs()
     {
-        return std::array {iv::indexed_sample_output(
-            "recording", {},
-            {.producer = iv::IndexedProducer::tick_record})};
+        return std::array {iv::realtime_sample_output(
+            "recording", {}, {}, iv::OutputRetention::persisted)};
     }
 
-    void tick_block(iv::TickBlockContext<ValidRecorderNode> const& ctx) const
+    void tick_block(
+        iv::TickBlockContext<ValidPersistedRealtimeNode> const& ctx) const
     {
         (void)ctx.template input<"input">();
         auto output = ctx.template output<"recording">();
-        for (std::size_t i = 0; i < output.block_size(); ++i) {
-            output.write(i, 0.0f);
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            output[i] = 0.0f;
         }
-        output.commit();
     }
 };
 
-IV_NODE("iv.test.valid_recorder_node", ValidRecorderNode);
+IV_NODE("iv.test.valid_persisted_realtime_node", ValidPersistedRealtimeNode);

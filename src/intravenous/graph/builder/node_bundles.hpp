@@ -996,6 +996,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
   };
   auto same_output = [](OutputConfig const& lhs, OutputConfig const& rhs) {
     if (lhs.name != rhs.name || lhs.access != rhs.access
+        || lhs.retention != rhs.retention
         || is_sample(lhs) != is_sample(rhs)) return false;
     if (is_sample(lhs)) {
       auto const& a = sample_properties(lhs);

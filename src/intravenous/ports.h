@@ -1675,16 +1675,13 @@ namespace iv {
         constexpr bool operator==(IndexedInputConfig const&) const = default;
     };
 
-    enum class IndexedProducer : std::uint8_t {
-        tick_record,
-        tock_realtime,
-        tock_stored,
+    struct IndexedOutputConfig {
+        constexpr bool operator==(IndexedOutputConfig const&) const = default;
     };
 
-    struct IndexedOutputConfig {
-        IndexedProducer producer = IndexedProducer::tock_stored;
-
-        constexpr bool operator==(IndexedOutputConfig const&) const = default;
+    enum class OutputRetention : std::uint8_t {
+        ephemeral,
+        persisted,
     };
 
     inline constexpr IndexedInputConfig indexed_input {};
@@ -1703,23 +1700,9 @@ namespace iv {
         return std::holds_alternative<IndexedOutputConfig>(config);
     }
 
-    [[nodiscard]] constexpr IndexedProducer indexed_producer(
-        OutputAccessConfig const& config)
+    [[nodiscard]] constexpr bool is_persisted(OutputRetention retention)
     {
-        return std::get<IndexedOutputConfig>(config).producer;
-    }
-
-    [[nodiscard]] constexpr bool is_tick_record(
-        OutputAccessConfig const& config)
-    {
-        return is_indexed(config)
-            && indexed_producer(config) == IndexedProducer::tick_record;
-    }
-
-    [[nodiscard]] constexpr bool is_tock_produced(
-        OutputAccessConfig const& config)
-    {
-        return is_indexed(config) && !is_tick_record(config);
+        return retention == OutputRetention::persisted;
     }
 
     [[nodiscard]] constexpr bool is_realtime(InputAccessConfig const& config)
@@ -1827,6 +1810,7 @@ namespace iv {
         std::string name {};
         std::variant<SampleOutputProperties, EventOutputProperties> kind {};
         OutputAccessConfig access {RealtimeOutputConfig{}};
+        OutputRetention retention = OutputRetention::ephemeral;
 
         constexpr OutputConfig() = default;
         constexpr explicit OutputConfig(std::string name)
@@ -1835,18 +1819,22 @@ namespace iv {
         constexpr OutputConfig(
             std::string name,
             SampleOutputProperties config,
-            OutputAccessConfig access = RealtimeOutputConfig{})
+            OutputAccessConfig access = RealtimeOutputConfig{},
+            OutputRetention retention = OutputRetention::ephemeral)
             : name(std::move(name))
             , kind(std::move(config))
             , access(std::move(access))
+            , retention(retention)
         {}
         constexpr OutputConfig(
             std::string name,
             EventOutputProperties config,
-            OutputAccessConfig access = RealtimeOutputConfig{})
+            OutputAccessConfig access = RealtimeOutputConfig{},
+            OutputRetention retention = OutputRetention::ephemeral)
             : name(std::move(name))
             , kind(std::move(config))
             , access(std::move(access))
+            , retention(retention)
         {}
     };
 
@@ -1862,12 +1850,14 @@ namespace iv {
     [[nodiscard]] constexpr OutputConfig sample_output(
         std::string name = {},
         SampleOutputProperties properties = {},
-        OutputAccessConfig access = RealtimeOutputConfig{})
+        OutputAccessConfig access = RealtimeOutputConfig{},
+        OutputRetention retention = OutputRetention::ephemeral)
     {
         return OutputConfig{
             std::move(name),
             std::move(properties),
-            std::move(access)};
+            std::move(access),
+            retention};
     }
 
     [[nodiscard]] constexpr InputConfig event_input(
@@ -1884,21 +1874,24 @@ namespace iv {
     [[nodiscard]] constexpr OutputConfig event_output(
         std::string name = {},
         EventTypeId type = {},
-        OutputAccessConfig access = RealtimeOutputConfig{})
+        OutputAccessConfig access = RealtimeOutputConfig{},
+        OutputRetention retention = OutputRetention::ephemeral)
     {
         return OutputConfig{
             std::move(name),
             EventOutputProperties{.type = type},
-            std::move(access)};
+            std::move(access),
+            retention};
     }
 
     [[nodiscard]] constexpr OutputConfig event_output(
         std::string name,
         EventOutputProperties properties,
-        OutputAccessConfig access = RealtimeOutputConfig{})
+        OutputAccessConfig access = RealtimeOutputConfig{},
+        OutputRetention retention = OutputRetention::ephemeral)
     {
         return OutputConfig{
-            std::move(name), std::move(properties), std::move(access)};
+            std::move(name), std::move(properties), std::move(access), retention};
     }
 
     [[nodiscard]] constexpr InputConfig indexed_sample_input(
@@ -1911,10 +1904,10 @@ namespace iv {
     [[nodiscard]] constexpr OutputConfig indexed_sample_output(
         std::string name = {},
         SampleOutputProperties properties = {},
-        IndexedOutputConfig access = {})
+        OutputRetention retention = OutputRetention::ephemeral)
     {
         return sample_output(
-            std::move(name), std::move(properties), std::move(access));
+            std::move(name), std::move(properties), IndexedOutputConfig{}, retention);
     }
 
     [[nodiscard]] constexpr InputConfig indexed_event_input(
@@ -1927,18 +1920,19 @@ namespace iv {
     [[nodiscard]] constexpr OutputConfig indexed_event_output(
         std::string name = {},
         EventTypeId type = {},
-        IndexedOutputConfig access = {})
+        OutputRetention retention = OutputRetention::ephemeral)
     {
-        return event_output(std::move(name), type, std::move(access));
+        return event_output(
+            std::move(name), type, IndexedOutputConfig{}, retention);
     }
 
     [[nodiscard]] constexpr OutputConfig indexed_event_output(
         std::string name,
         EventOutputProperties properties,
-        IndexedOutputConfig access = {})
+        OutputRetention retention = OutputRetention::ephemeral)
     {
         return event_output(
-            std::move(name), std::move(properties), std::move(access));
+            std::move(name), std::move(properties), IndexedOutputConfig{}, retention);
     }
 
     [[nodiscard]] constexpr InputConfig realtime_sample_input(
@@ -1952,9 +1946,11 @@ namespace iv {
     [[nodiscard]] constexpr OutputConfig realtime_sample_output(
         std::string name = {},
         SampleOutputProperties properties = {},
-        RealtimeOutputConfig access = {})
+        RealtimeOutputConfig access = {},
+        OutputRetention retention = OutputRetention::ephemeral)
     {
-        return sample_output(std::move(name), std::move(properties), std::move(access));
+        return sample_output(
+            std::move(name), std::move(properties), std::move(access), retention);
     }
 
     [[nodiscard]] constexpr InputConfig realtime_event_input(
@@ -1968,24 +1964,26 @@ namespace iv {
     [[nodiscard]] constexpr OutputConfig realtime_event_output(
         std::string name = {},
         EventTypeId type = {},
-        RealtimeOutputConfig access = {})
+        RealtimeOutputConfig access = {},
+        OutputRetention retention = OutputRetention::ephemeral)
     {
-        return event_output(std::move(name), type, std::move(access));
+        return event_output(std::move(name), type, std::move(access), retention);
     }
 
     [[nodiscard]] constexpr OutputConfig realtime_event_output(
         std::string name,
         EventOutputProperties properties,
-        RealtimeOutputConfig access = {})
+        RealtimeOutputConfig access = {},
+        OutputRetention retention = OutputRetention::ephemeral)
     {
         return event_output(
-            std::move(name), std::move(properties), std::move(access));
+            std::move(name), std::move(properties), std::move(access), retention);
     }
 
     // The configured graph keeps physical sample/event lists because lowering
-    // uses separate sample and event collections. It preserves the same access
-    // variant instead of flattening indexed ports back into meaningless
-    // realtime history/latency fields.
+    // uses separate sample and event collections. It preserves output access
+    // and retention independently instead of flattening indexed ports back
+    // into meaningless realtime history/latency fields.
     struct EventInputConfig {
         std::string name {};
         EventTypeId type {};
@@ -1997,6 +1995,7 @@ namespace iv {
         EventTypeId type {};
         double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
         OutputAccessConfig access {RealtimeOutputConfig{}};
+        OutputRetention retention = OutputRetention::ephemeral;
     };
 
     struct SampleInputConfig {
@@ -2019,6 +2018,7 @@ namespace iv {
             .sample_layout = SampleStreamLayout::planar,
         };
         OutputAccessConfig access {RealtimeOutputConfig{}};
+        OutputRetention retention = OutputRetention::ephemeral;
     };
 
     constexpr ChannelLayout effective_channel_layout(SampleInputConfig const& config)
@@ -2059,6 +2059,21 @@ namespace iv {
     [[nodiscard]] constexpr bool is_indexed(EventOutputConfig const& config)
     {
         return is_indexed(config.access);
+    }
+
+    [[nodiscard]] constexpr bool is_persisted(OutputConfig const& config)
+    {
+        return is_persisted(config.retention);
+    }
+
+    [[nodiscard]] constexpr bool is_persisted(SampleOutputConfig const& config)
+    {
+        return is_persisted(config.retention);
+    }
+
+    [[nodiscard]] constexpr bool is_persisted(EventOutputConfig const& config)
+    {
+        return is_persisted(config.retention);
     }
 
     [[nodiscard]] constexpr size_t realtime_history(InputConfig const& config)
@@ -2183,6 +2198,7 @@ namespace iv {
             .name = config.name,
             .channel_layout = properties.channel_layout,
             .access = config.access,
+            .retention = config.retention,
         };
     }
 
@@ -2205,6 +2221,7 @@ namespace iv {
             .type = properties.type,
             .max_events_per_index = properties.max_events_per_index,
             .access = config.access,
+            .retention = config.retention,
         };
     }
 
@@ -2241,6 +2258,7 @@ namespace iv {
             config.name,
             SampleOutputProperties{.channel_layout = config.channel_layout},
             config.access,
+            config.retention,
         };
     }
 
@@ -2254,6 +2272,7 @@ namespace iv {
                 .max_events_per_index = config.max_events_per_index,
             },
             config.access,
+            config.retention,
         };
     }
 

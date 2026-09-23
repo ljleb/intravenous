@@ -197,11 +197,12 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     iv::SampleOutputConfig const realtime_output {
         .name = "realtime-output",
         .access = iv::RealtimeOutputConfig{.history = 11, .latency = 3},
+        .retention = iv::OutputRetention::persisted,
     };
     iv::SampleOutputConfig const indexed_output {
         .name = "indexed-output",
-        .access = iv::IndexedOutputConfig{
-            .producer = iv::IndexedProducer::tock_realtime},
+        .access = iv::IndexedOutputConfig{},
+        .retention = iv::OutputRetention::ephemeral,
     };
     iv::EventInputConfig const realtime_event_input {
         .name = "realtime-event-input",
@@ -218,12 +219,13 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
         .type = iv::EventTypeId::midi,
         .max_events_per_index = 0.24,
         .access = iv::RealtimeOutputConfig{.history = 13, .latency = 2},
+        .retention = iv::OutputRetention::ephemeral,
     };
     iv::EventOutputConfig const indexed_event_output {
         .name = "indexed-event-output",
         .type = iv::EventTypeId::midi,
-        .access = iv::IndexedOutputConfig{
-            .producer = iv::IndexedProducer::tick_record},
+        .access = iv::IndexedOutputConfig{},
+        .retention = iv::OutputRetention::persisted,
     };
 
     iv::binary_wire_details::Writer writer;
@@ -261,10 +263,10 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     EXPECT_FALSE(iv::is_indexed(decoded_realtime_output));
     EXPECT_EQ(iv::realtime_history(decoded_realtime_output), 11u);
     EXPECT_EQ(iv::realtime_latency(decoded_realtime_output), 3u);
+    EXPECT_TRUE(iv::is_persisted(decoded_realtime_output));
     EXPECT_TRUE(iv::is_indexed(decoded_indexed_output));
     EXPECT_FALSE(iv::is_realtime(decoded_indexed_output.access));
-    EXPECT_EQ(iv::indexed_producer(decoded_indexed_output.access),
-        iv::IndexedProducer::tock_realtime);
+    EXPECT_FALSE(iv::is_persisted(decoded_indexed_output));
 
     EXPECT_EQ(decoded_realtime_event_input.type, realtime_event_input.type);
     EXPECT_EQ(iv::realtime_history(decoded_realtime_event_input), 5u);
@@ -274,31 +276,47 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     EXPECT_DOUBLE_EQ(decoded_realtime_event_output.max_events_per_index, 0.24);
     EXPECT_EQ(iv::realtime_history(decoded_realtime_event_output), 13u);
     EXPECT_EQ(iv::realtime_latency(decoded_realtime_event_output), 2u);
+    EXPECT_FALSE(iv::is_persisted(decoded_realtime_event_output));
     EXPECT_TRUE(iv::is_indexed(decoded_indexed_event_output));
-    EXPECT_EQ(iv::indexed_producer(decoded_indexed_event_output.access),
-        iv::IndexedProducer::tick_record);
+    EXPECT_TRUE(iv::is_persisted(decoded_indexed_event_output));
 }
 
-TEST(ConfiguredGraphBinaryArchive, RoundTripsEveryIndexedProducerMode)
+TEST(ConfiguredGraphBinaryArchive, RoundTripsEveryOutputAccessRetentionMode)
 {
-    constexpr std::array producers {
-        iv::IndexedProducer::tick_record,
-        iv::IndexedProducer::tock_realtime,
-        iv::IndexedProducer::tock_stored,
+    std::array const outputs {
+        iv::SampleOutputConfig{
+            .name = "realtime-ephemeral",
+            .access = iv::RealtimeOutputConfig{},
+            .retention = iv::OutputRetention::ephemeral,
+        },
+        iv::SampleOutputConfig{
+            .name = "realtime-persisted",
+            .access = iv::RealtimeOutputConfig{},
+            .retention = iv::OutputRetention::persisted,
+        },
+        iv::SampleOutputConfig{
+            .name = "indexed-ephemeral",
+            .access = iv::IndexedOutputConfig{},
+            .retention = iv::OutputRetention::ephemeral,
+        },
+        iv::SampleOutputConfig{
+            .name = "indexed-persisted",
+            .access = iv::IndexedOutputConfig{},
+            .retention = iv::OutputRetention::persisted,
+        },
     };
     iv::binary_wire_details::Writer writer;
-    for (auto const producer : producers) {
-        iv::binary_wire_details::write_output(writer, iv::SampleOutputConfig{
-            .name = "indexed",
-            .access = iv::IndexedOutputConfig{.producer = producer},
-        });
+    for (auto const& output : outputs) {
+        iv::binary_wire_details::write_output(writer, output);
     }
 
     auto const bytes = std::move(writer).take();
     iv::binary_wire_details::Reader reader(bytes);
-    for (auto const producer : producers) {
+    for (auto const& expected : outputs) {
         auto const output = iv::binary_wire_details::read_output(reader);
-        EXPECT_EQ(iv::indexed_producer(output.access), producer);
+        EXPECT_EQ(output.name, expected.name);
+        EXPECT_EQ(output.access, expected.access);
+        EXPECT_EQ(output.retention, expected.retention);
     }
     reader.finish();
 }

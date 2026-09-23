@@ -48,7 +48,7 @@ struct PlainSamplePass {
     void tick_block(iv::TickBlockContext<PlainSamplePass> const&) const {}
 };
 
-struct RealtimeRecorderPass {
+struct MixedAccessPass {
     static constexpr auto inputs()
     {
         return std::array{iv::realtime_sample_input("in")};
@@ -59,13 +59,17 @@ struct RealtimeRecorderPass {
         return std::array{
             iv::realtime_sample_output("realtime"),
             iv::indexed_sample_output(
-                "recorded",
-                {},
-                {.producer = iv::IndexedProducer::tick_record}),
+                "indexed", {}, iv::OutputRetention::persisted),
         };
     }
 
-    void tick_block(iv::TickBlockContext<RealtimeRecorderPass> const&) const {}
+    void tick_block(iv::TickBlockContext<MixedAccessPass> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<MixedAccessPass>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<MixedAccessPass>& context) const
+    {
+        context.template output<"indexed">().publish_coverage({});
+    }
 };
 
 struct NeutralSamplePass {
@@ -276,7 +280,7 @@ struct IndexedTwoInputPass {
         iv::PropagateForwardCoverageContext<IndexedTwoInputPass>&) const {}
 };
 
-struct IndexedProducerModes {
+struct OutputAccessRetentionModes {
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 0>{};
@@ -285,32 +289,34 @@ struct IndexedProducerModes {
     static constexpr auto outputs()
     {
         return std::array{
+            iv::realtime_sample_output(
+                "realtime_ephemeral", {}, {},
+                iv::OutputRetention::ephemeral),
+            iv::realtime_sample_output(
+                "realtime_persisted", {}, {},
+                iv::OutputRetention::persisted),
             iv::indexed_sample_output(
-                "recorded_sample",
-                {},
-                {.producer = iv::IndexedProducer::tick_record}),
+                "indexed_ephemeral", {},
+                iv::OutputRetention::ephemeral),
             iv::indexed_sample_output(
-                "live_sample",
-                {},
-                {.producer = iv::IndexedProducer::tock_realtime}),
-            iv::indexed_sample_output(
-                "stored_sample",
-                {},
-                {.producer = iv::IndexedProducer::tock_stored}),
+                "indexed_persisted", {},
+                iv::OutputRetention::persisted),
             iv::indexed_event_output(
-                "recorded_events",
+                "indexed_persisted_events",
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::trigger,
                     .max_events_per_index = 0.25,
                 },
-                {.producer = iv::IndexedProducer::tick_record}),
+                iv::OutputRetention::persisted),
         };
     }
 
-    void tick_block(iv::TickBlockContext<IndexedProducerModes> const&) const {}
-    void tock_coverage(iv::TockCoverageContext<IndexedProducerModes>&) const {}
+    void tick_block(
+        iv::TickBlockContext<OutputAccessRetentionModes> const&) const {}
+    void tock_coverage(
+        iv::TockCoverageContext<OutputAccessRetentionModes>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<IndexedProducerModes>&) const {}
+        iv::PropagateForwardCoverageContext<OutputAccessRetentionModes>&) const {}
 };
 
 struct RealtimeSink {
@@ -866,7 +872,7 @@ TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportIndexedData)
 {
     using namespace iv;
     GraphBuilder graph;
-    auto first = details::configure_concrete_node<RealtimeRecorderPass>(graph);
+    auto first = details::configure_concrete_node<MixedAccessPass>(graph);
     auto second = details::configure_concrete_node<PlainSamplePass>(graph);
     auto indexed_sink = details::configure_concrete_node<IndexedSink>(graph);
     auto const first_handle = first.node_bundle_handle();
@@ -874,7 +880,7 @@ TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportIndexedData)
     auto const indexed_sink_handle = indexed_sink.node_bundle_handle();
     first(second);
     second(first["realtime"].detach(5));
-    indexed_sink(first["recorded"]);
+    indexed_sink(first["indexed"]);
     graph.outputs();
 
     auto configured = std::move(graph).finish();
@@ -1177,24 +1183,23 @@ TEST(GraphJitConnectionPlan, IndexedConnectionsDoNotUseRealtimeStoragePolicy)
         plan->indexed.requestable_outputs.front()].stable_identity);
 }
 
-TEST(GraphJitConnectionPlan, RetainsCompleteIndexedTopologyAndFixedLayouts)
+TEST(GraphJitConnectionPlan, RetainsCompleteIndexedTopologyAndRetention)
 {
     using namespace iv;
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<IndexedProducerModes>(graph);
+    auto source =
+        details::configure_concrete_node<OutputAccessRetentionModes>(graph);
     auto left = details::configure_concrete_node<IndexedSamplePass>(graph);
     auto right = details::configure_concrete_node<IndexedSamplePass>(graph);
     auto join = details::configure_concrete_node<IndexedTwoInputPass>(graph);
-    auto realtime_sink = details::configure_concrete_node<RealtimeSink>(graph);
     _annotate_node_source_info(source.node_ref(), "source");
     _annotate_node_source_info(left.node_ref(), "left");
     _annotate_node_source_info(right.node_ref(), "right");
     _annotate_node_source_info(join.node_ref(), "join");
 
-    left(source["recorded_sample"]);
-    right(source["recorded_sample"]);
+    left(source["indexed_ephemeral"]);
+    right(source["indexed_ephemeral"]);
     join("a"_P = left, "b"_P = right);
-    realtime_sink(join);
     graph.outputs();
 
     auto configured = std::move(graph).finish();
@@ -1204,7 +1209,7 @@ TEST(GraphJitConnectionPlan, RetainsCompleteIndexedTopologyAndFixedLayouts)
     auto const& plan = built->indexed;
 
     ASSERT_EQ(plan.nodes.size(), 4u);
-    ASSERT_EQ(plan.connections.size(), 5u);
+    ASSERT_EQ(plan.connections.size(), 4u);
     ASSERT_EQ(plan.components.size(), 1u);
     EXPECT_EQ(plan.component_order, (std::vector<std::size_t>{0}));
     auto const& component = plan.components.front();
@@ -1213,13 +1218,20 @@ TEST(GraphJitConnectionPlan, RetainsCompleteIndexedTopologyAndFixedLayouts)
     auto expected_reverse = component.forward_order;
     std::ranges::reverse(expected_reverse);
     EXPECT_EQ(component.reverse_order, expected_reverse);
-    EXPECT_EQ(component.connections.size(), 5u);
+    EXPECT_EQ(component.connections.size(), 4u);
 
     EXPECT_EQ(plan.accumulators.input_change_count, 4u);
     EXPECT_EQ(plan.accumulators.input_requirement_count, 4u);
-    EXPECT_EQ(plan.accumulators.output_change_count, 7u);
-    EXPECT_EQ(plan.accumulators.output_requirement_count, 7u);
-    EXPECT_EQ(plan.requestable_outputs.size(), 7u);
+    EXPECT_EQ(plan.accumulators.output_change_count, 6u);
+    EXPECT_EQ(plan.accumulators.output_requirement_count, 6u);
+    EXPECT_EQ(plan.requestable_outputs.size(), 6u);
+    EXPECT_TRUE(std::ranges::all_of(
+        plan.endpoints,
+        [](graph_jit::IndexedEndpointPlan const& endpoint) {
+            return endpoint.retention.has_value()
+                == (endpoint.direction
+                    == graph_jit::IndexedEndpointDirection::output);
+        }));
 
     auto endpoint_named = [&](std::string_view name)
         -> graph_jit::IndexedEndpointPlan const* {
@@ -1230,59 +1242,31 @@ TEST(GraphJitConnectionPlan, RetainsCompleteIndexedTopologyAndFixedLayouts)
             });
         return found == plan.endpoints.end() ? nullptr : &*found;
     };
-    auto const* recorded_sample = endpoint_named("recorded_sample");
-    auto const* live_sample = endpoint_named("live_sample");
-    auto const* stored_sample = endpoint_named("stored_sample");
-    auto const* recorded_events = endpoint_named("recorded_events");
-    ASSERT_NE(recorded_sample, nullptr);
-    ASSERT_NE(live_sample, nullptr);
-    ASSERT_NE(stored_sample, nullptr);
-    ASSERT_NE(recorded_events, nullptr);
-    EXPECT_EQ(recorded_sample->producer, IndexedProducer::tick_record);
-    EXPECT_EQ(live_sample->producer, IndexedProducer::tock_realtime);
-    EXPECT_EQ(stored_sample->producer, IndexedProducer::tock_stored);
-    EXPECT_EQ(recorded_events->producer, IndexedProducer::tick_record);
-    ASSERT_TRUE(recorded_sample->stable_identity);
-    EXPECT_EQ(recorded_sample->stable_identity->node.graph, "root");
-    EXPECT_TRUE(recorded_sample->stable_identity->node.virtual_node
+    auto const* indexed_ephemeral = endpoint_named("indexed_ephemeral");
+    auto const* indexed_persisted = endpoint_named("indexed_persisted");
+    auto const* indexed_persisted_events =
+        endpoint_named("indexed_persisted_events");
+    EXPECT_EQ(endpoint_named("realtime_ephemeral"), nullptr);
+    EXPECT_EQ(endpoint_named("realtime_persisted"), nullptr);
+    ASSERT_NE(indexed_ephemeral, nullptr);
+    ASSERT_NE(indexed_persisted, nullptr);
+    ASSERT_NE(indexed_persisted_events, nullptr);
+    ASSERT_TRUE(indexed_ephemeral->retention.has_value());
+    ASSERT_TRUE(indexed_persisted->retention.has_value());
+    ASSERT_TRUE(indexed_persisted_events->retention.has_value());
+    EXPECT_EQ(
+        *indexed_ephemeral->retention, OutputRetention::ephemeral);
+    EXPECT_EQ(
+        *indexed_persisted->retention, OutputRetention::persisted);
+    EXPECT_EQ(
+        *indexed_persisted_events->retention, OutputRetention::persisted);
+    ASSERT_TRUE(indexed_ephemeral->stable_identity);
+    EXPECT_EQ(indexed_ephemeral->stable_identity->node.graph, "root");
+    EXPECT_TRUE(indexed_ephemeral->stable_identity->node.virtual_node
         .starts_with("source#type:"));
-    EXPECT_EQ(recorded_sample->stable_identity->port_name, "recorded_sample");
-    EXPECT_EQ(recorded_sample->outgoing_connections.size(), 2u);
-
-    ASSERT_EQ(plan.recorder_staging.outputs.size(), 2u);
-    EXPECT_EQ(plan.recorder_staging.root_block_size, 64u);
-    auto staging_for = [&](graph_jit::IndexedEndpointPlan const* endpoint)
-        -> graph_jit::TickRecordStagingOutputPlan const* {
-        auto const ordinal = static_cast<std::size_t>(
-            endpoint - plan.endpoints.data());
-        auto const found = std::ranges::find_if(
-            plan.recorder_staging.outputs,
-            [&](graph_jit::TickRecordStagingOutputPlan const& staging) {
-                return staging.endpoint == ordinal;
-            });
-        return found == plan.recorder_staging.outputs.end()
-            ? nullptr : &*found;
-    };
-    auto const* sample_staging = staging_for(recorded_sample);
-    auto const* event_staging = staging_for(recorded_events);
-    ASSERT_NE(sample_staging, nullptr);
-    ASSERT_NE(event_staging, nullptr);
-    EXPECT_EQ(sample_staging->value_capacity, 64u);
-    EXPECT_EQ(sample_staging->payload_size, 64u * sizeof(Sample));
-    EXPECT_FALSE(sample_staging->event_count_offset);
-    EXPECT_EQ(event_staging->value_capacity, 16u);
     EXPECT_EQ(
-        event_staging->payload_size,
-        16u * sizeof(TimedEvent));
-    EXPECT_TRUE(event_staging->event_count_offset.has_value());
-    EXPECT_GE(
-        plan.recorder_staging.size_bytes,
-        event_staging->payload_offset + event_staging->payload_size);
-
-    EXPECT_EQ(
-        plan.connections.back().target_access,
-        graph_jit::IndexedConnectionTargetAccess::realtime);
-    EXPECT_EQ(plan.connections.back().target_endpoints.size(), 0u);
+        indexed_ephemeral->stable_identity->port_name, "indexed_ephemeral");
+    EXPECT_EQ(indexed_ephemeral->outgoing_connections.size(), 2u);
 }
 
 TEST(GraphJitConnectionPlan, RetainsIndexedEventConversion)
@@ -1301,9 +1285,6 @@ TEST(GraphJitConnectionPlan, RetainsIndexedEventConversion)
     ASSERT_EQ(built->indexed.connections.size(), 1u);
     auto const& connection = built->indexed.connections.front();
     EXPECT_EQ(connection.kind, PortKind::event);
-    EXPECT_EQ(
-        connection.target_access,
-        graph_jit::IndexedConnectionTargetAccess::indexed);
     EXPECT_EQ(connection.event_source_type, EventTypeId::midi);
     EXPECT_EQ(connection.event_target_type, EventTypeId::trigger);
     EXPECT_TRUE(connection.requires_conversion);
@@ -1320,7 +1301,7 @@ TEST(GraphJitConnectionPlan, RetainsIndexedEventConversion)
         (std::vector<graph_jit::IndexedConnectionOrdinal>{0}));
 }
 
-TEST(GraphJitConnectionPlan, PreservesIndexedToRealtimeAccessDirection)
+TEST(GraphJitConnectionPlan, RejectsIndexedToRealtimeConnections)
 {
     using namespace iv;
 
@@ -1336,27 +1317,13 @@ TEST(GraphJitConnectionPlan, PreservesIndexedToRealtimeAccessDirection)
     auto indexed_to_realtime_plan =
         graph_jit::detail::build_connection_analysis_plan(
             indexed_to_realtime_graph, 64);
-    ASSERT_TRUE(indexed_to_realtime_plan.has_value())
-        << (indexed_to_realtime_plan
-                ? std::string{}
-                : indexed_to_realtime_plan.error());
-    ASSERT_EQ(indexed_to_realtime_plan->sample_connections.size(), 1u);
-    EXPECT_EQ(
-        indexed_to_realtime_plan->sample_connections[0].access,
-        graph_jit::detail::PlannedConnectionAccess::indexed_to_realtime);
-    ASSERT_EQ(indexed_to_realtime_plan->dependencies.size(), 1u);
-    EXPECT_FALSE(
-        indexed_to_realtime_plan->dependencies[0].sequential_tick_dependency);
-    ASSERT_EQ(indexed_to_realtime_plan->sample_producer_groups.size(), 1u);
-    EXPECT_FALSE(
-        indexed_to_realtime_plan->sample_producer_groups[0]
-            .has_realtime_connections);
-    EXPECT_TRUE(
-        indexed_to_realtime_plan->sample_producer_groups[0]
-            .has_indexed_connections);
-    EXPECT_FALSE(
-        indexed_to_realtime_plan->sample_producer_groups[0]
-            .storage_plan.has_value());
+    ASSERT_FALSE(indexed_to_realtime_plan.has_value());
+    EXPECT_NE(indexed_to_realtime_plan.error().find("sample connection 0"),
+        std::string::npos);
+    EXPECT_NE(indexed_to_realtime_plan.error().find(
+        "crosses realtime and indexed access domains"), std::string::npos);
+    EXPECT_NE(indexed_to_realtime_plan.error().find("explicit bridge node"),
+        std::string::npos);
 }
 
 TEST(GraphJitConnectionPlan, RejectsRealtimeToIndexedConnections)
@@ -1380,8 +1347,8 @@ TEST(GraphJitConnectionPlan, RejectsRealtimeToIndexedConnections)
     EXPECT_NE(realtime_to_indexed_sample_plan.error().find("sample connection 0"),
         std::string::npos);
     EXPECT_NE(realtime_to_indexed_sample_plan.error().find(
-        "realtime output to an indexed input"), std::string::npos);
-    EXPECT_NE(realtime_to_indexed_sample_plan.error().find("tick_record"),
+        "crosses realtime and indexed access domains"), std::string::npos);
+    EXPECT_NE(realtime_to_indexed_sample_plan.error().find("explicit bridge node"),
         std::string::npos);
 
     GraphBuilder realtime_to_indexed_event;
@@ -1404,7 +1371,7 @@ TEST(GraphJitConnectionPlan, RejectsRealtimeToIndexedConnections)
     EXPECT_NE(realtime_to_indexed_event_plan.error().find("event connection 0"),
         std::string::npos);
     EXPECT_NE(realtime_to_indexed_event_plan.error().find(
-        "realtime output to an indexed input"), std::string::npos);
-    EXPECT_NE(realtime_to_indexed_event_plan.error().find("tick_record"),
+        "crosses realtime and indexed access domains"), std::string::npos);
+    EXPECT_NE(realtime_to_indexed_event_plan.error().find("explicit bridge node"),
         std::string::npos);
 }

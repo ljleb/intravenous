@@ -150,99 +150,6 @@ struct IndexedEventOutputPort {
     }
 };
 
-// A tick_record binding is private staging for exactly one complete root block.
-// Writes have no semantic effect unless commit() is called; committing declares
-// that every sample/channel (or the complete ordered event sequence, including
-// an empty sequence) for block() has been supplied.
-struct TickRecordSampleOutputPort {
-    void* data = nullptr;
-    SampleIndex block_begin = 0;
-    std::size_t block_size_value = 0;
-    std::size_t channel_count_value = 0;
-    void (*write_sample)(void*, std::size_t, std::size_t, Sample) = nullptr;
-    void (*commit_block)(void*) = nullptr;
-
-    [[nodiscard]] IndexedRegion block() const noexcept
-    {
-        return {block_begin, block_begin + block_size_value};
-    }
-
-    [[nodiscard]] std::size_t block_size() const noexcept
-    {
-        return block_size_value;
-    }
-
-    [[nodiscard]] std::size_t channel_count() const noexcept
-    {
-        return channel_count_value;
-    }
-
-    void write(
-        std::size_t sample_offset,
-        std::size_t channel,
-        Sample value) const noexcept
-    {
-        IV_ASSERT(sample_offset < block_size_value,
-            "tick_record sample write lies outside the current root block");
-        IV_ASSERT(channel < channel_count_value,
-            "tick_record sample write uses an invalid channel");
-        IV_ASSERT(write_sample != nullptr,
-            "tick_record sample output has no staging binding");
-        write_sample(data, sample_offset, channel, value);
-    }
-
-    void commit() const noexcept
-    {
-        IV_ASSERT(commit_block != nullptr,
-            "tick_record sample output has no commit binding");
-        commit_block(data);
-    }
-};
-
-struct TickRecordEventOutputPort {
-    void* data = nullptr;
-    SampleIndex block_begin = 0;
-    std::size_t block_size_value = 0;
-    void (*write_event)(void*, TimedEvent const&) = nullptr;
-    void (*commit_block)(void*) = nullptr;
-
-    [[nodiscard]] IndexedRegion block() const noexcept
-    {
-        return {block_begin, block_begin + block_size_value};
-    }
-
-    [[nodiscard]] std::size_t block_size() const noexcept
-    {
-        return block_size_value;
-    }
-
-    void write(TimedEvent const& event) const noexcept
-    {
-        IV_ASSERT(block().contains(event.time),
-            "tick_record event lies outside the current root block");
-        IV_ASSERT(write_event != nullptr,
-            "tick_record event output has no staging binding");
-        write_event(data, event);
-    }
-
-    void write(Event event, std::size_t sample_offset) const noexcept
-    {
-        IV_ASSERT(sample_offset < block_size_value,
-            "tick_record event lies outside the current root block");
-        write(TimedEvent{
-            .time = block_begin + sample_offset,
-            .value = std::move(event),
-        });
-    }
-
-    void commit() const noexcept
-    {
-        IV_ASSERT(commit_block != nullptr,
-            "tick_record event output has no commit binding");
-        commit_block(data);
-    }
-};
-
 struct IndexedInputChange {
     IndexedCoverage const* coverage_value = nullptr;
     IndexedCoverage const* changed_value = nullptr;
@@ -480,8 +387,8 @@ struct TockCoverageContext {
     requires details::has_constexpr_port_configs<Node>
     {
         static_assert(
-            details::static_output_port_is_tock_produced<Node, Name>(),
-            "TockCoverageContext can only write tock-produced indexed outputs");
+            details::static_output_port_is_indexed<Node, Name>(),
+            "TockCoverageContext can only write indexed outputs");
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
             constexpr auto layout = details::static_output_port_layout<Node, Name>();
@@ -542,8 +449,8 @@ struct PropagateForwardCoverageContext {
     requires details::has_constexpr_port_configs<Node>
     {
         static_assert(
-            details::static_output_port_is_tock_produced<Node, Name>(),
-            "forward coverage can only publish computed indexed outputs");
+            details::static_output_port_is_indexed<Node, Name>(),
+            "forward coverage can only publish indexed outputs");
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
             constexpr auto index = details::static_tock_output_port_index<Node, Name>();
@@ -574,8 +481,8 @@ struct PropagateReverseCoverageContext {
     requires details::has_constexpr_port_configs<Node>
     {
         static_assert(
-            details::static_output_port_is_tock_produced<Node, Name>(),
-            "reverse coverage can only inspect computed indexed outputs");
+            details::static_output_port_is_indexed<Node, Name>(),
+            "reverse coverage can only inspect indexed outputs");
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
             constexpr auto index = details::static_tock_output_port_index<Node, Name>();

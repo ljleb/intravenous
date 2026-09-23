@@ -116,8 +116,6 @@ namespace iv {
                     },
                     ctx.index,
                     ctx.block_size,
-                    ctx.tick_record_outputs,
-                    ctx.tick_record_event_outputs,
                 });
             };
             _skip_block_fn = [](void const* node_ptr, SkipBlockContext<WeakTypeErasedNode> const& ctx) {
