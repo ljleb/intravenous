@@ -21,7 +21,6 @@ struct PackageModuleDefinition {
     GraphIntrospectionMetadata introspection{};
     std::vector<ModuleDependency> dependencies{};
     std::vector<ModuleRef> module_refs{};
-    WeakTypeErasedNode root{};
     std::shared_ptr<ConfiguredGraph const> configured_graph{};
 };
 

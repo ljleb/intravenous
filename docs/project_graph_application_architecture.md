@@ -501,7 +501,8 @@ The **target** node port schema separates input access
 (`TickOutputConfig`/`TockOutputConfig`), and `OutputRetention`. All concrete node
 port schemas are static constexpr, including internal builder-created nodes; the
 number and connectivity of their instances remain dynamic graph data. The checked-
-in source's older `IndexedProducer` API is not yet migrated by this documentation.
+in source has already removed `IndexedProducer` and separately represents output
+retention, but still uses the intermediate realtime/indexed port-config names.
 
 The existing node traits generate `tick_block()` from `tick()` when no native block
 callback exists. A new explicit replayability type trait validates a restricted
@@ -754,10 +755,12 @@ The implementation checkpoints now stand as follows:
    Structured persistence and JSON-RPC adapters remain follow-up transport work.
 7. **Landed (fixed state + existing indexed-plan foundation):** canonical
    `NodeLayout`/`NodeStorage` supports non-semantic tock-only `IndexedState`
-   and compiler-owned raw aligned regions; the current source retains the old
-   `IndexedProducer` and recorder-staging planning. The independent port schema,
-   replayability trait, background-only tock, generalized random-access DAG,
-   and new capture/publication execution are **target work, not landed**.
+   and compiler-owned raw aligned regions. The current source has removed
+   `IndexedProducer` and recorder-staging planning, independently represents output
+   retention, and retains stable indexed-plan topology metadata. The final
+   access/production schema names, replayability trait, background-only tock,
+   generalized random-access DAG, and new capture/publication execution are
+   **target work, not landed**.
    The detailed dependency order is normative in
    [indexed_dsp_nodes.md §32](./indexed_dsp_nodes.md#32-implementation-landing-order).
 8. **Landed (compiler shell + storage/lifecycle ABI cleanup):** `GraphJit`
@@ -767,10 +770,10 @@ The implementation checkpoints now stand as follows:
    `CompiledGraph` generations carrying the canonical `NodeLayout` plus the generated
    root `tick_block`; primitive `skip_block` callbacks remain internal scheduler
    operations and are not exposed as a root ABI;
-9. first remove the legacy `GraphLowerer`/`GraphCompiler`/`RuntimeGraphRoot`
-   execution path and non-constexpr concrete-port fallbacks; move source
-   introspection onto `ConfiguredGraph`, then migrate the port schema and
-   replayability/connection planning;
+9. **Landed:** the legacy `GraphLowerer`/`GraphCompiler`/`RuntimeGraphRoot`
+   execution path and non-constexpr concrete-port fallbacks are deleted, and
+   source introspection is derived from `ConfiguredGraph`; next migrate the port
+   schema and replayability/connection planning;
 10. build the reusable indexed batch ABI, generated F/R/background evaluation,
     and `GraphExecutor` publication before enabling transactional recording
     consumption; add stale-page playback and per-input missing-page neutrality;

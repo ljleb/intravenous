@@ -301,12 +301,9 @@ invoke the requested registered IV_MODULE builders
                    |
                    v
 fully realized ConfiguredGraph
-                   |
-                   v
-current GraphLowerer / GraphCompiler compatibility path
-                   |
-                   v
-current runtime graph
+    |                                  |
+    v                                  v
+source-introspection metadata          whole-project GraphJit input
 ```
 
 ### 4.2 One C++ frontend pass
@@ -1500,8 +1497,10 @@ This gives LLVM ordinary field-addressing and alias information after inlining.
 The normative design is [indexed_dsp_nodes.md](./indexed_dsp_nodes.md). The **target**
 port schema has `SequentialInputConfig`/`RandomAccessInputConfig` for consumer
 access, `TickOutputConfig`/`TockOutputConfig` for producer callback and separate
-`OutputRetention::{ephemeral,persisted}`. The checked-in source still contains
-`IndexedProducer`; this section describes the migration, not landed code.
+`OutputRetention::{ephemeral,persisted}`. The checked-in source has already removed
+`IndexedProducer` and separately represents output retention, but still uses the
+intermediate realtime/indexed port-config names. This section describes the final
+access/production migration and replay model, not landed code.
 
 Every concrete GraphJit node type has a static constexpr port schema, including
 internal builder-created types; dynamic topology and instance/connection metadata
@@ -2408,10 +2407,10 @@ The design is intentionally staged so the existing 443-test runtime can remain t
    recording/capture, specialized views, etc.) as ordinary DSP nodes, general iv
    modules, project/UI state, or focused services. Their old lane implementations
    are requirements/history, not required implementation scaffolding.
-8. Delete the legacy `GraphLowerer`/`GraphCompiler`/`RuntimeGraphRoot` generated-
-   node project executor and its `ModuleLoader` construction path. Derive source
-   introspection from `ConfiguredGraph`; delete non-constexpr concrete-port and
-   old type-erased runtime/facade paths rather than adding another compatibility
+8. **Landed:** the legacy `GraphLowerer`/`GraphCompiler`/`RuntimeGraphRoot`
+   generated-node project executor and its `ModuleLoader` construction path are
+   deleted. Source introspection is derived from `ConfiguredGraph`; non-constexpr
+   concrete-port and old type-erased runtime/facade paths have no compatibility
    adapter.
 9. Extend whole-project finalization to accept many module
    instances/`ConfiguredGraph`s plus these same project connections.
@@ -2571,8 +2570,9 @@ The following are treated as strong architectural decisions unless implementatio
     is independent and persistence never silently evicts generated covered pages.
 28. **Static concrete port schemas.** Public and internal concrete nodes have
     constexpr port declarations; dynamic graph topology does not require dynamic
-    node declarations. Delete the legacy generated-node executor and its dynamic-
-    port fallbacks, but keep package/configuration JIT and GraphJit's LLVM imports.
+    node declarations. The legacy generated-node executor and its dynamic-port
+    fallbacks are deleted; package/configuration JIT and GraphJit's LLVM imports
+    remain.
 29. **Replayability is a node trait plus graph analysis.** An opted-in `tick()`-
     only pointwise node is validated independently of ordinary tick semantics;
     GraphJit reuses its traits-generated LLVM-imported block callback in the

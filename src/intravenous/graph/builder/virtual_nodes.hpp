@@ -1,6 +1,5 @@
 #pragma once
 
-#include <intravenous/graph/builder/stored_node.hpp>
 #include <intravenous/graph/builder/node_bundles.hpp>
 
 #include <algorithm>

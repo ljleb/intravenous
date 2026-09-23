@@ -9,7 +9,6 @@
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
-#include <intravenous/node/block_executor.h>
 
 #include <gtest/gtest.h>
 
@@ -241,55 +240,53 @@ namespace {
 
     auto loader = iv::test::make_loader();
     auto definition = loader.load_package_definitions(workspace).front();
-    auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(definition.root), 8);
+    ASSERT_NE(definition.configured_graph, nullptr);
 
     auto structural_state_nodes = 0u;
-    for (auto const& record : executor.layout().nodes) {
-        auto const has_phase = record.state_structure
+    auto scalar_state_nodes = 0u;
+    auto indexed_state_nodes = 0u;
+    definition.configured_graph->node_bundles.for_each_configured_bundle(
+        [&](iv::ConfiguredNodeBundleView const& bundle) {
+        if (!bundle.state_structures_storage
+            || !*bundle.state_structures_storage) {
+            return;
+        }
+        auto const& structures = **bundle.state_structures_storage;
+        auto const has_phase = structures.state
             && std::ranges::any_of(
-                record.state_structure->fields,
-                [](iv::NodeStateFieldStructure const& field) {
-                    return field.name == "phase";
-                });
+                    structures.state->fields,
+                    [](iv::NodeStateFieldStructure const& field) {
+                        return field.name == "phase";
+                    });
         if (has_phase) {
             ++structural_state_nodes;
-            ASSERT_EQ(record.state_structure->fields.size(), 2u);
-            EXPECT_TRUE(record.state_structure->type_identity.valid());
-            EXPECT_FALSE(record.state_structure->type_identity.display_name.empty());
-            EXPECT_FALSE(record.state_structure->fields.front().type_name.empty());
+            ASSERT_EQ(structures.state->fields.size(), 2u);
+            EXPECT_TRUE(structures.state->type_identity.valid());
+            EXPECT_FALSE(structures.state->type_identity.display_name.empty());
+            EXPECT_FALSE(structures.state->fields.front().type_name.empty());
         }
-    }
-    // NodeState<Node>::Type accepts both a direct alias and an alias found by
-    // normal base-class lookup. Both must reach the finalized runtime layout.
-    EXPECT_EQ(structural_state_nodes, 2u);
-
-    auto scalar_state_nodes = 0u;
-    for (auto const& record : executor.layout().nodes) {
-        if (!record.state_structure
-            || record.state_structure->size_bits != sizeof(std::int32_t) * 8
-            || !record.state_structure->fields.empty()) {
-            continue;
+        if (structures.state
+            && structures.state->size_bits == sizeof(std::int32_t) * 8
+            && structures.state->fields.empty()) {
+            ++scalar_state_nodes;
         }
-        ++scalar_state_nodes;
-    }
-    EXPECT_EQ(scalar_state_nodes, 1u);
-
-    auto indexed_state_nodes = 0u;
-    for (auto const& record : executor.layout().nodes) {
-        if (!record.indexed_state_structure) continue;
+        if (!structures.indexed_state) return;
         auto const has_epoch = std::ranges::any_of(
-            record.indexed_state_structure->fields,
+            structures.indexed_state->fields,
             [](iv::NodeStateFieldStructure const& field) {
                 return field.name == "epoch";
             });
-        if (!has_epoch) continue;
+        if (!has_epoch) return;
         ++indexed_state_nodes;
-        EXPECT_TRUE(record.indexed_state_structure->type_identity.valid());
+        EXPECT_TRUE(structures.indexed_state->type_identity.valid());
         EXPECT_FALSE(
-            record.indexed_state_structure->type_identity.display_name.empty());
-        ASSERT_EQ(record.indexed_state_structure->fields.size(), 2u);
-    }
+            structures.indexed_state->type_identity.display_name.empty());
+        ASSERT_EQ(structures.indexed_state->fields.size(), 2u);
+    });
+    // NodeState<Node>::Type accepts both a direct alias and an alias found by
+    // normal base-class lookup. Both must survive in ConfiguredGraph metadata.
+    EXPECT_EQ(structural_state_nodes, 2u);
+    EXPECT_EQ(scalar_state_nodes, 1u);
     EXPECT_EQ(indexed_state_nodes, 1u);
 }
 

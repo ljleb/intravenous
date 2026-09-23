@@ -873,8 +873,11 @@ struct OutputConfig {
 ```
 
 These are **target API sketches**, not claims that the current source already uses
-these names. The existing source still carries `IndexedProducer` and the older
-realtime/indexed port config names until the implementation migration lands.
+these names. The existing source has already removed `IndexedProducer` and legacy
+recorder-staging planning. It currently uses the intermediate
+`RealtimeInputConfig`/`IndexedInputConfig` and
+`RealtimeOutputConfig`/`IndexedOutputConfig` names with independent
+`OutputRetention` until the final access/production naming migration lands.
 `InputConfig` / `OutputConfig` above elide existing non-access fields rather than
 replacing their real layout. The same separation must survive reflection,
 configured-graph serialization, compiler records, and GraphJit planning. Generic
@@ -1747,16 +1750,19 @@ This is the **normative dependency order** for the next documentation/implementa
 migration; [graph_jit_direction.md](./graph_jit_direction.md) and the application
 architecture should reference this list rather than propose a divergent one.
 The target API/retention/replay semantics described here are **not landed** merely
-because this design is documented. The supplied implementation still contains
-`IndexedProducer` and legacy recorder staging.
+because this design is documented. The supplied implementation has already removed
+`IndexedProducer` and legacy recorder-staging planning, and has independently
+represented output retention. It still uses the intermediate realtime/indexed
+port-config names and equality-based connection domains; the final schema,
+replayability trait, generalized connection planning, and executor remain to land.
 
-1. **Delete legacy execution and dynamic concrete-port declarations.** Stop
-   constructing `GraphLowerer`/`GraphCompiler`/`RuntimeGraphRoot` during module
-   loading; derive source introspection from `ConfiguredGraph`. Remove the legacy
-   generated routing nodes, type-erased executor/facade fallbacks and their old
-   runtime-root ABI. Enforce static constexpr port schemas in public and internal
-   concrete-node construction; retain dynamic graph topology and static-schema
-   graph-specific port metadata.
+1. **Landed: delete legacy execution and dynamic concrete-port declarations.**
+   `ModuleLoader` now publishes the configured graph and derives source
+   introspection directly from it. The `GraphLowerer`/`GraphCompiler`/
+   `RuntimeGraphRoot` path, generated routing nodes, type-erased executor/facade
+   fallbacks, and old runtime-root ABI are deleted. Public and internal concrete-
+   node construction require static constexpr port schemas; graph topology and
+   static-schema per-instance connection metadata remain dynamic.
 2. **Migrate the independent port schema and connection planner.** Carry input
    access, output production and output retention through reflection, serialized
    configured graphs, compiler records and per-channel tiling. Delete inferred
@@ -1821,5 +1827,5 @@ only on a successful transaction commit.
 11. `IndexedState` is non-semantic tock-only acceleration; persistent output stores
     and capture backlogs are executor-owned sidecars, distinct from fixed `NodeStorage`.
 12. The legacy generated-node graph executor and dynamic concrete-port fallbacks
-    are deletion targets; the package/configuration JIT and GraphJit's imported
-    concrete-node LLVM remain.
+    are deleted; the package/configuration JIT and GraphJit's imported concrete-
+    node LLVM remain.

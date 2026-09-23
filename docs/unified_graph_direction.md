@@ -354,9 +354,9 @@ contract and implementation order are in
 retain their established roles. The old realtime/indexed *port config names* are
 replaced by production/access names to avoid implying callback-domain equality.
 The legacy `GraphLowerer`/`GraphCompiler`/`RuntimeGraphRoot` generated-node
-project executor and dynamic concrete-port fallbacks are deletion targets, not
-required compatibility layers. The package/configuration JIT and the new GraphJit
-remain separate and necessary compiler stages.
+project executor and dynamic concrete-port fallbacks are deleted rather than kept
+as compatibility layers. The package/configuration JIT and the new GraphJit remain
+separate and necessary compiler stages.
 
 Realtime sample/event connections follow the same storage-independent principle.
 `ConfiguredGraph` records logical connection semantics only. The whole-project

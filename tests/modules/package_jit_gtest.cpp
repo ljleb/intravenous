@@ -38,9 +38,7 @@ void package_jit_batch_good(iv::GraphBuilder& g)
     auto const bad = declaration("iv.test.jit.bad", bad_root);
 
     iv::StartupConfig startup_config(good_root, iv::test::repo_root(), {});
-    iv::PackageJit jit(
-        startup_config.initialize(),
-        iv::ModuleLoader::OptimizationLevel::O0);
+    iv::PackageJit jit(startup_config.initialize());
 
     iv::PackageJitBatchRequest first_request{
         .declarations = {good, bad},
@@ -88,7 +86,7 @@ TEST(PackageJit, ToolchainConfigurationRoundTripsWithoutForcingABuild)
     auto const project = iv::test_support::fresh_module_fixture_workspace(
         "package_jit_toolchain_round_trip");
     iv::StartupConfig startup_config(project, iv::test::repo_root(), {});
-    iv::PackageJit jit(startup_config.initialize(), iv::ModuleLoader::OptimizationLevel::O0);
+    iv::PackageJit jit(startup_config.initialize());
 
     auto toolchain = jit.toolchain_config();
     toolchain.cmake_generator = "Synthetic Generator";

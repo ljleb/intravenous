@@ -16,15 +16,16 @@
 namespace {
 
 struct RequestNode {
-    char const* input_name = "input";
-    char const* output_name = "output";
     std::size_t latency = 0;
 
-    auto inputs() const { return std::array{iv::realtime_sample_input(input_name)}; }
-    auto outputs() const
+    static constexpr auto inputs()
+    {
+        return std::array{iv::realtime_sample_input("level")};
+    }
+    static constexpr auto outputs()
     {
         return std::array{iv::realtime_sample_output(
-            output_name, {}, {}, iv::OutputRetention::persisted)};
+            "signal", {}, {}, iv::OutputRetention::persisted)};
     }
     std::size_t internal_latency() const { return latency; }
     std::optional<std::size_t> ttl_samples() const { return 64; }
@@ -93,8 +94,6 @@ static_assert(iv::is_persisted(iv::realtime_sample_output(
 TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
 {
     RequestNode source{
-        .input_name = "level",
-        .output_name = "signal",
         .latency = 17,
     };
     auto request = iv::details::make_node_build_request(source);

@@ -217,38 +217,24 @@ IV_FORCEINLINE void with_reflected_sample_ports(
     SampleIndex index,
     Fn&& fn)
 {
-    if constexpr (!has_constexpr_port_configs<Node>) {
-        std::forward<Fn>(fn)(
-            static_cast<std::span<InputPort>>(ctx.inputs),
-            static_cast<std::span<OutputPort>>(ctx.outputs));
-        return;
-    } else {
-        constexpr auto input_count = reflected_sample_input_count_v<Node>;
-        constexpr auto output_count = reflected_sample_output_count_v<Node>;
-        if ((input_count != 0 && ctx.sample_input_bindings.pointer == nullptr)
-            || (output_count != 0
-                && ctx.sample_output_bindings.pointer == nullptr)) {
-            std::forward<Fn>(fn)(
-                static_cast<std::span<InputPort>>(ctx.inputs),
-                static_cast<std::span<OutputPort>>(ctx.outputs));
-            return;
-        }
+    static_assert(has_constexpr_port_configs<Node>,
+        "concrete node ports must be declared by static constexpr inputs() and outputs()");
+    constexpr auto input_count = reflected_sample_input_count_v<Node>;
+    constexpr auto output_count = reflected_sample_output_count_v<Node>;
+    IV_ASSERT(
+        ctx.sample_input_bindings.size() == input_count,
+        "reflected sample input binding count does not match node declaration");
+    IV_ASSERT(
+        ctx.sample_output_bindings.size() == output_count,
+        "reflected sample output binding count does not match node declaration");
 
-        IV_ASSERT(
-            ctx.sample_input_bindings.size() == input_count,
-            "reflected sample input binding count does not match node declaration");
-        IV_ASSERT(
-            ctx.sample_output_bindings.size() == output_count,
-            "reflected sample output binding count does not match node declaration");
-
-        auto inputs = reflected_sample_inputs<Node>(
-            ctx, index, std::make_index_sequence<input_count>{});
-        auto outputs = reflected_sample_outputs<Node>(
-            ctx, index, std::make_index_sequence<output_count>{});
-        std::forward<Fn>(fn)(
-            std::span<InputPort>{inputs},
-            std::span<OutputPort>{outputs});
-    }
+    auto inputs = reflected_sample_inputs<Node>(
+        ctx, index, std::make_index_sequence<input_count>{});
+    auto outputs = reflected_sample_outputs<Node>(
+        ctx, index, std::make_index_sequence<output_count>{});
+    std::forward<Fn>(fn)(
+        std::span<InputPort>{inputs},
+        std::span<OutputPort>{outputs});
 }
 
 template<std::size_t N>
@@ -376,42 +362,28 @@ IV_FORCEINLINE void with_reflected_event_ports(
     std::size_t block_size,
     Fn&& fn)
 {
-    if constexpr (!has_constexpr_port_configs<Node>) {
-        std::forward<Fn>(fn)(
-            static_cast<std::span<EventInputPort>>(ctx.event_inputs),
-            static_cast<std::span<EventOutputPort>>(ctx.event_outputs));
-        return;
-    } else {
-        constexpr auto input_count = reflected_event_input_count_v<Node>;
-        constexpr auto output_count = reflected_event_output_count_v<Node>;
-        if ((input_count != 0 && ctx.event_input_bindings.pointer == nullptr)
-            || (output_count != 0
-                && ctx.event_output_bindings.pointer == nullptr)) {
-            std::forward<Fn>(fn)(
-                static_cast<std::span<EventInputPort>>(ctx.event_inputs),
-                static_cast<std::span<EventOutputPort>>(ctx.event_outputs));
-            return;
-        }
+    static_assert(has_constexpr_port_configs<Node>,
+        "concrete node ports must be declared by static constexpr inputs() and outputs()");
+    constexpr auto input_count = reflected_event_input_count_v<Node>;
+    constexpr auto output_count = reflected_event_output_count_v<Node>;
+    IV_ASSERT(
+        ctx.event_input_bindings.size() == input_count,
+        "reflected event input binding count does not match node declaration");
+    IV_ASSERT(
+        ctx.event_output_bindings.size() == output_count,
+        "reflected event output binding count does not match node declaration");
 
-        IV_ASSERT(
-            ctx.event_input_bindings.size() == input_count,
-            "reflected event input binding count does not match node declaration");
-        IV_ASSERT(
-            ctx.event_output_bindings.size() == output_count,
-            "reflected event output binding count does not match node declaration");
-
-        ReflectedEventInputPorts<input_count> inputs;
-        ReflectedEventOutputPorts<output_count> outputs;
-        initialize_reflected_event_inputs(
-            inputs, ctx, std::make_index_sequence<input_count>{});
-        initialize_reflected_event_outputs(
-            outputs, ctx, index, block_size,
-            std::make_index_sequence<output_count>{});
-        std::forward<Fn>(fn)(
-            std::span<EventInputPort>{inputs.ports},
-            std::span<EventOutputPort>{outputs.ports});
-        commit_reflected_event_outputs(outputs);
-    }
+    ReflectedEventInputPorts<input_count> inputs;
+    ReflectedEventOutputPorts<output_count> outputs;
+    initialize_reflected_event_inputs(
+        inputs, ctx, std::make_index_sequence<input_count>{});
+    initialize_reflected_event_outputs(
+        outputs, ctx, index, block_size,
+        std::make_index_sequence<output_count>{});
+    std::forward<Fn>(fn)(
+        std::span<EventInputPort>{inputs.ports},
+        std::span<EventOutputPort>{outputs.ports});
+    commit_reflected_event_outputs(outputs);
 }
 
 template<class Node>
@@ -638,11 +610,17 @@ template<class Node>
 void describe_node(void const* node_data, NodeDescriptionSink& sink)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    for (InputConfig const& input : get_declared_inputs(node)) {
-        sink.add_input(input);
+    static_assert(has_constexpr_port_configs<Node>,
+        "concrete node ports must be declared by static constexpr inputs() and outputs()");
+    if constexpr (has_inputs<Node>) {
+        for (InputConfig const& input : Node::inputs()) {
+            sink.add_input(input);
+        }
     }
-    for (OutputConfig const& output : get_declared_outputs(node)) {
-        sink.add_output(output);
+    if constexpr (has_outputs<Node>) {
+        for (OutputConfig const& output : Node::outputs()) {
+            sink.add_output(output);
+        }
     }
     sink.set_internal_latency(get_internal_latency(node));
     sink.set_maximum_block_size(get_max_block_size(node));
@@ -657,6 +635,8 @@ template<class Node>
 NodeBuildRequest make_node_build_request(Node const& node)
 {
     using Value = std::remove_cvref_t<Node>;
+    static_assert(has_constexpr_port_configs<Value>,
+        "concrete node ports must be declared by static constexpr inputs() and outputs()");
     // Emit the build-local record in the LLVM module.  The builder consumes
     // it synchronously and retains only copied data and the NodeCodeKey.
     auto const* record = &node_compiler_record<Value>;

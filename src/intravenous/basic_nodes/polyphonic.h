@@ -288,14 +288,14 @@ namespace iv {
             pitch_bend_range_semitones(pitch_bend_range_semitones)
         {}
 
-        constexpr auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array {
                 realtime_event_input("midi", EventTypeId::midi),
             };
         }
 
-        constexpr auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array {
                 realtime_sample_output("amplitude"),

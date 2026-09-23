@@ -54,7 +54,7 @@ TEST(ModulePackageDependencies, DeferredCustomCmakeLinksStaticAndDynamicDependen
     auto loaded = loader.load_package_definitions(workspace);
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.package_dependencies");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 
     // The module builder calls functions from the transitive static archive and
     // from the shared library. A successful configuration proves that deferred

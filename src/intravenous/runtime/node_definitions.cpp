@@ -41,7 +41,6 @@ std::unique_ptr<NodeDefinitions::ModuleDefinitionState> make_module_definition_s
         .introspection = loaded.introspection,
         .dependencies = loaded.dependencies,
         .module_refs = state->module_refs,
-        .root = loaded.root,
         .configured_graph = loaded.configured_graph,
     };
     return state;

@@ -15,7 +15,6 @@ class ProjectPersistenceBuilder;
 
 class PackageJit {
     StartupConfigState startup_config_;
-    ModuleLoader::OptimizationLevel loader_optimization_level_;
     std::unique_ptr<ModuleLoader> loader_;
     mutable std::mutex mutex_;
     std::unordered_map<std::string, std::uint64_t> next_revision_by_package_id_;
@@ -25,10 +24,7 @@ class PackageJit {
         std::vector<IvPackageDeclaration> const& declarations);
 
 public:
-    explicit PackageJit(
-        StartupConfigState startup_config,
-        ModuleLoader::OptimizationLevel loader_optimization_level =
-            ModuleLoader::OptimizationLevel::O3);
+    explicit PackageJit(StartupConfigState startup_config);
 
     void set_toolchain_config(ModuleLoaderToolchainConfig toolchain);
     [[nodiscard]] ModuleLoaderToolchainConfig toolchain_config() const;

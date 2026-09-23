@@ -1,6 +1,5 @@
 #pragma once
 
-#include <intravenous/basic_nodes/weak_type_erased.h>
 #include <intravenous/graph/build_types.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/dependency.h>
@@ -42,31 +41,19 @@ namespace iv {
     public:
         using LogSink = std::function<void(std::string const&)>;
 
-        // Package artifacts remain O0 regardless of this setting. This controls
-        // only optimization of the in-memory compatibility ORC copy after a
-        // package is loaded.
-        enum class OptimizationLevel {
-            O0,
-            O1,
-            O2,
-            O3,
-        };
-
         struct LoadedDefinition {
             std::vector<ModuleRef> module_refs;
-            WeakTypeErasedNode root;
             GraphIntrospectionMetadata introspection;
             std::filesystem::path package_path;
             std::string module_id;
             details::PackageDefinition provider{};
             std::vector<ModuleDependency> dependencies;
-            // The configured graph is retained above the compatibility GraphLowerer
-            // path so whole-project compilation can consume it directly.
+            // The configured graph is the lossless module product consumed by
+            // whole-project compilation.
             std::shared_ptr<ConfiguredGraph const> configured_graph;
 
             LoadedDefinition(
                 std::vector<ModuleRef> module_refs_,
-                WeakTypeErasedNode root_,
                 GraphIntrospectionMetadata introspection_,
                 std::filesystem::path package_path_,
                 std::string module_id_,
@@ -124,8 +111,7 @@ namespace iv {
             std::filesystem::path discovery_start = std::filesystem::current_path(),
             std::vector<std::filesystem::path> extra_search_roots = {},
             ModuleLoaderToolchainConfig toolchain = ModuleLoaderToolchainConfig(),
-            LogSink log_sink = {},
-            OptimizationLevel optimization_level = OptimizationLevel::O3
+            LogSink log_sink = {}
         );
         ~ModuleLoader();
         ModuleLoader(ModuleLoader&&) noexcept;

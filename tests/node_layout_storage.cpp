@@ -1,11 +1,7 @@
 #include <intravenous/node/lifecycle.h>
 #include <intravenous/node/layout.h>
 #include "module_test_utils.h"
-#include <intravenous/basic_nodes/type_erased.h>
-#include <intravenous/basic_nodes/weak_type_erased.h>
 #include <intravenous/dsl.h>
-#include <intravenous/graph/node.h>
-#include <intravenous/graph/node_wrapper.h>
 
 #include <algorithm>
 #include <array>
@@ -990,121 +986,6 @@ int main()
         iv::test::require(second.marker == 17, "second nested node state should be addressable");
         iv::test::require(first_indexed.marker == 23, "first nested IndexedState should be addressable");
         iv::test::require(second_indexed.marker == 23, "second nested IndexedState should be addressable");
-    }
-
-    {
-        iv::NodeLayoutBuilder builder(8);
-        iv::TypeErasedNode node = StatefulTickingNode {};
-        iv::do_declare(node, builder);
-
-        iv::NodeLayout layout = std::move(builder).build();
-        auto resources = make_resources();
-        iv::NodeStorage storage = layout.create_storage(resources);
-        storage.initialize();
-
-        auto& erased_state = *static_cast<iv::TypeErasedNode::State*>(storage.state_ptr(0));
-        iv::test::require(erased_state.nested_node_states.size() == 1, "type-erased node should record exactly one nested child");
-        iv::test::require(erased_state.nested_node_indexed_states.size() == 1, "type-erased node should record exactly one nested indexed child state");
-        iv::test::require(erased_state.nested_node_states[0].data() != nullptr, "type-erased nested child state pointer should be patched");
-        iv::test::require(erased_state.nested_node_indexed_states[0].size() == sizeof(StatefulTickingNode::IndexedState), "type-erased nested IndexedState should be patched");
-
-        node.tick_block({
-            iv::TickContext<iv::TypeErasedNode> {
-                .inputs = {},
-                .outputs = {},
-                .event_inputs = {},
-                .event_outputs = {},
-                .buffer = storage.buffer(),
-            },
-            0,
-            8,
-        });
-
-        auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(erased_state.nested_node_states[0].data());
-        auto& nested_indexed_state = *reinterpret_cast<StatefulTickingNode::IndexedState*>(erased_state.nested_node_indexed_states[0].data());
-        iv::test::require(nested_state.initialized == 1, "type-erased nested child should initialize once");
-        iv::test::require(nested_state.ticked == 8, "type-erased nested child should tick through nested state");
-        iv::test::require(nested_indexed_state.initialized == 1, "type-erased nested child IndexedState should initialize once");
-        iv::test::require(nested_indexed_state.ticked == 0, "type-erased realtime tick must not mutate nested IndexedState");
-    }
-
-    {
-        StatefulTickingNode concrete;
-        iv::WeakTypeErasedNode node = concrete;
-        iv::NodeLayoutBuilder builder(8);
-        iv::do_declare(node, builder);
-
-        iv::NodeLayout layout = std::move(builder).build();
-        auto resources = make_resources();
-        iv::NodeStorage storage = layout.create_storage(resources);
-        storage.initialize();
-
-        auto& erased_state = *static_cast<iv::WeakTypeErasedNode::State*>(
-            storage.state_ptr(0));
-        iv::test::require(
-            erased_state.nested_node_states.size() == 1,
-            "weak type-erased node should record exactly one nested child");
-        iv::test::require(
-            erased_state.nested_node_indexed_states.size() == 1,
-            "weak type-erased node should record exactly one nested indexed child state");
-
-        node.tick_block({
-            iv::TickContext<iv::WeakTypeErasedNode> {
-                .buffer = storage.buffer(),
-            },
-            0,
-            8,
-        });
-
-        auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(
-            erased_state.nested_node_states[0].data());
-        auto& nested_indexed_state =
-            *reinterpret_cast<StatefulTickingNode::IndexedState*>(
-                erased_state.nested_node_indexed_states[0].data());
-        iv::test::require(
-            nested_state.ticked == 8,
-            "weak type-erased child should tick through nested State");
-        iv::test::require(
-            nested_indexed_state.ticked == 0,
-            "weak type-erased realtime tick must not mutate nested IndexedState");
-    }
-
-    {
-        const iv::GraphNodeWrapper wrapper(
-            iv::details::reflect_node(StatefulTickingNode {}),
-            std::vector<iv::InputPortPlan>{},
-            "standalone",
-            std::vector<iv::SampleOutputBinding>{}
-        );
-
-        iv::NodeLayoutBuilder builder(8);
-        iv::do_declare(wrapper, builder);
-        iv::NodeLayout layout = std::move(builder).build();
-        auto resources = make_resources();
-        iv::NodeStorage storage = layout.create_storage(resources);
-        storage.initialize();
-
-        auto& wrapper_state = *static_cast<iv::GraphNodeWrapper::State*>(storage.state_ptr(0));
-        iv::test::require(wrapper_state.nested_node_states.size() == 1, "standalone wrapper without inputs should expose one nested executable child");
-        iv::test::require(wrapper_state.nested_node_indexed_states.size() == 1, "standalone wrapper should expose one nested executable child IndexedState");
-        iv::test::require(wrapper_state.nested_node_states[0].data() != nullptr, "standalone wrapper nested executable child state should be patched");
-        iv::test::require(wrapper_state.nested_node_indexed_states[0].size() == sizeof(StatefulTickingNode::IndexedState), "standalone wrapper nested executable child IndexedState should be patched");
-
-        wrapper.tick({
-            iv::TickContext<iv::GraphNodeWrapper> {
-                .buffer = storage.buffer(),
-            },
-            0,
-            8,
-        });
-
-        auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(
-            wrapper_state.nested_node_states[0].data());
-        auto& nested_indexed_state =
-            *reinterpret_cast<StatefulTickingNode::IndexedState*>(
-                wrapper_state.nested_node_indexed_states[0].data());
-        iv::test::require(nested_state.ticked == 8, "graph wrapper should tick nested State");
-        iv::test::require(nested_indexed_state.ticked == 0, "graph wrapper realtime tick must not mutate nested IndexedState");
     }
 
     return 0;

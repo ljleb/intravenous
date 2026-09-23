@@ -326,19 +326,18 @@ namespace iv {
         template<typename Node>
         inline constexpr bool indexed_dsp_node_declaration_is_valid_v =
             indexed_state_type_is_valid_v<Node>
-            && (!has_constexpr_port_configs<Node>
-                || (
-                    (!declares_indexed_outputs_v<Node>
-                        || has_tock_coverage<Node>)
-                    && (!has_tock_coverage<Node>
-                        || declares_indexed_outputs_v<Node>)
-                    && (!declares_indexed_outputs_v<Node>
-                        || has_propagate_forward_coverage<Node>)
-                    && (!has_propagate_forward_coverage<Node>
-                        || declares_indexed_outputs_v<Node>)
-                    && (!has_propagate_reverse_coverage<Node>
-                        || (declares_indexed_outputs_v<Node>
-                            && declares_indexed_inputs_v<Node>))));
+            && has_constexpr_port_configs<Node>
+            && (!declares_indexed_outputs_v<Node>
+                || has_tock_coverage<Node>)
+            && (!has_tock_coverage<Node>
+                || declares_indexed_outputs_v<Node>)
+            && (!declares_indexed_outputs_v<Node>
+                || has_propagate_forward_coverage<Node>)
+            && (!has_propagate_forward_coverage<Node>
+                || declares_indexed_outputs_v<Node>)
+            && (!has_propagate_reverse_coverage<Node>
+                || (declares_indexed_outputs_v<Node>
+                    && declares_indexed_inputs_v<Node>));
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)
@@ -369,27 +368,21 @@ namespace iv {
     template<typename Node>
     constexpr auto get_declared_outputs(Node const& node)
     {
-        if constexpr (details::has_declared_outputs<Node>)
-        {
-            return node.outputs();
-        }
-        else
-        {
-            return std::span<OutputConfig const, 0>{};
-        }
+        (void)node;
+        static_assert(details::has_constexpr_port_configs<Node>,
+            "concrete node ports must be declared by static constexpr inputs() and outputs()");
+        if constexpr (details::has_outputs<Node>) return Node::outputs();
+        else return std::span<OutputConfig const, 0>{};
     }
 
     template<typename Node>
     constexpr auto get_declared_inputs(Node const& node)
     {
-        if constexpr (details::has_declared_inputs<Node>)
-        {
-            return node.inputs();
-        }
-        else
-        {
-            return std::span<InputConfig const, 0>{};
-        }
+        (void)node;
+        static_assert(details::has_constexpr_port_configs<Node>,
+            "concrete node ports must be declared by static constexpr inputs() and outputs()");
+        if constexpr (details::has_inputs<Node>) return Node::inputs();
+        else return std::span<InputConfig const, 0>{};
     }
 
     template<typename Node>

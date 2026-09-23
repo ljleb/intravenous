@@ -2,10 +2,8 @@
 #include <intravenous/basic_nodes/debug_probe.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/dsl.h>
-#include <configured_graph_test_view.h>
 #include <intravenous/graph/builder.h>
-#include <intravenous/graph/builder/lowering.hpp>
-#include <intravenous/graph/compiler.h>
+#include <intravenous/graph/introspection.h>
 #include <intravenous/module/configured_graph_wire.h>
 #include <intravenous/module/builder_session.h>
 
@@ -111,58 +109,15 @@ void configure_pointer_metadata_package(
     details::select_builder_package(session, 0);
 }
 
-iv::RuntimeGraphPlan compile_graph(
-    iv::ConfiguredGraphTestView view,
-    bool execution_root = false)
-{
-    auto configured = iv::thaw_configured_graph_for_test(view);
-    auto executable = iv::GraphLowerer::lower(
-        std::move(configured), {.execution_root = execution_root});
-    return iv::GraphCompiler::compile(std::move(executable));
-}
-
-ConfiguredGraphTestView configure_functional_subgraph()
-{
-    GraphBuilder g;
-    auto nested = g.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = boundary.input<"in">(0.0f);
-        auto pass = details::configure_concrete_node<
-            Sum<mono, SampleStreamLayout::planar, 1>>(g);
-        pass(input);
-        boundary.outputs("out"_P = pass);
-    });
-
-    nested("in"_P = 0.25f);
-    g.outputs("main"_P = nested["out"]);
-    return freeze_configured_graph_for_test(std::move(g).finish());
-}
-
-bool functional_subgraph_compiles()
-{
-    (void)compile_graph(configure_functional_subgraph());
-    return true;
-}
-
-ConfiguredGraphTestView configure_direct_public_sample_passthrough()
+ConfiguredGraph configure_direct_public_sample_passthrough()
 {
     GraphBuilder g;
     auto input = g.input<"in">(0.0f);
     g.outputs("out"_P = input);
-    return freeze_configured_graph_for_test(std::move(g).finish());
+    return std::move(g).finish();
 }
 
-bool direct_public_sample_passthrough_compiles()
-{
-    auto const built = compile_graph(configure_direct_public_sample_passthrough());
-    return built.graph.inputs().size() == 1
-        && built.graph.outputs().size() == 1;
-}
-
-struct IntrospectionRegressionConfiguration {
-    ConfiguredGraphTestView view;
-};
-
-IntrospectionRegressionConfiguration configure_introspection_regression()
+ConfiguredGraph configure_introspection_regression()
 {
     GraphBuilder g;
     auto input = g.input<"in">(0.25f);
@@ -173,22 +128,19 @@ IntrospectionRegressionConfiguration configure_introspection_regression()
     g.outputs("out"_P = sum);
     (void)annotated;
     (void)event;
-    return {.view = freeze_configured_graph_for_test(std::move(g).finish())};
+    return std::move(g).finish();
 }
 
 struct IntrospectionRegressionSnapshot {
     bool virtual_node_is_preserved = false;
     bool sample_ports_are_preserved = false;
     bool event_ports_are_preserved = false;
-    bool shared_lowering_matches_canonical_metadata = false;
 };
 
 IntrospectionRegressionSnapshot introspection_regression_snapshot()
 {
     auto const configured = configure_introspection_regression();
-    auto const compiled = compile_graph(configured.view, true);
-    auto const& metadata = compiled.introspection;
-    auto const& execution = compiled.introspection;
+    auto const metadata = build_graph_introspection_metadata(configured);
     IntrospectionRegressionSnapshot result;
 
     result.virtual_node_is_preserved = metadata.virtual_nodes.size() == 1
@@ -206,23 +158,6 @@ IntrospectionRegressionSnapshot introspection_regression_snapshot()
         && metadata.public_event_inputs.front().port_ordinal == 0
         && !metadata.public_event_inputs.front().graph_connected
         && metadata.public_event_outputs.empty();
-    result.shared_lowering_matches_canonical_metadata = metadata.virtual_nodes.size()
-            == execution.virtual_nodes.size()
-        && metadata.public_sample_inputs.size()
-            == execution.public_sample_inputs.size()
-        && metadata.public_event_inputs.size()
-            == execution.public_event_inputs.size()
-        && metadata.public_sample_outputs.size()
-            == execution.public_sample_outputs.size()
-        && metadata.public_event_outputs.size()
-            == execution.public_event_outputs.size()
-        && metadata.virtual_nodes.front().id == execution.virtual_nodes.front().id
-        && metadata.virtual_nodes.front().source_identity
-            == execution.virtual_nodes.front().source_identity
-        && metadata.public_sample_inputs.front().configured_connected
-            == execution.public_sample_inputs.front().configured_connected
-        && metadata.public_event_inputs.front().graph_connected
-            == execution.public_event_inputs.front().graph_connected;
     return result;
 }
 
@@ -506,15 +441,20 @@ TEST(GraphModules, OutputRequestCopiesBorrowedStringsIntoTheSession)
     builder.outputs(std::span<SampleOutputRequest const>(&request, 1));
     name[0] = 'x';
 
-    auto plan = compile_graph(
-        freeze_configured_graph_for_test(std::move(builder).finish()));
-    ASSERT_EQ(plan.graph.outputs().size(), 1u);
-    EXPECT_EQ(plan.graph.outputs().front().name, "main");
+    auto configured = std::move(builder).finish();
+    auto const outputs = configured.public_ports.sample_outputs(
+        configured.node_bundles);
+    ASSERT_EQ(outputs.size(), 1u);
+    EXPECT_EQ(outputs.front().name, "main");
 }
 
 TEST(GraphModules, PublicInputCanFeedPublicOutputWithoutAnInternalNode)
 {
-    EXPECT_TRUE(direct_public_sample_passthrough_compiles());
+    auto const configured = configure_direct_public_sample_passthrough();
+    EXPECT_EQ(configured.public_ports.sample_inputs(
+                  configured.node_bundles).size(), 1u);
+    EXPECT_EQ(configured.public_ports.sample_outputs(
+                  configured.node_bundles).size(), 1u);
 }
 
 TEST(GraphModules, RuntimeIntrospectionPreservesVirtualAndPublicPorts)
@@ -523,50 +463,6 @@ TEST(GraphModules, RuntimeIntrospectionPreservesVirtualAndPublicPorts)
     EXPECT_TRUE(snapshot.virtual_node_is_preserved);
     EXPECT_TRUE(snapshot.sample_ports_are_preserved);
     EXPECT_TRUE(snapshot.event_ports_are_preserved);
-    EXPECT_TRUE(snapshot.shared_lowering_matches_canonical_metadata);
-}
-
-TEST(GraphModules, FunctionalSubgraphRemainsAnExplicitBoundaryFacade)
-{
-    EXPECT_TRUE(functional_subgraph_compiles());
-
-    auto const built = compile_graph(configure_functional_subgraph());
-    ASSERT_EQ(built.metadata.lowered_subgraphs.size(), 1u);
-    auto const& scope = built.metadata.lowered_subgraphs.front();
-    EXPECT_EQ(scope.parent_scope, GRAPH_ID);
-    ASSERT_EQ(scope.sample_inputs.size(), 1u);
-    EXPECT_EQ(scope.sample_inputs.front().name, "in");
-    ASSERT_EQ(scope.sample_outputs.size(), 1u);
-    EXPECT_EQ(scope.sample_outputs.front().name, "out");
-    ASSERT_EQ(scope.sample_output_sources.size(), 1u);
-    EXPECT_TRUE(std::ranges::contains(
-        scope.member_nodes, scope.sample_output_sources.front().node));
-}
-
-TEST(GraphModules, EventOnlyFunctionalSubgraphDoesNotRequireSampleOutputs)
-{
-    GraphBuilder g;
-    auto const source = g.event_input<"event">(EventTypeId::empty);
-    auto const scope = g.subgraph([&](SubgraphBuilder& boundary) {
-        auto const input = boundary.event_input<"event">(EventTypeId::empty);
-        auto const relay = details::configure_concrete_node<EventConcatenation>(
-            g, 1, EventTypeId::empty);
-        relay.connect_event_input(0, input);
-        g.event_outputs("event"_P = relay.event_port());
-    });
-    scope.connect_event_input("event", source);
-    g.outputs();
-
-    auto const built = compile_graph(
-        freeze_configured_graph_for_test(std::move(g).finish()));
-    ASSERT_EQ(built.metadata.lowered_subgraphs.size(), 1u);
-    auto const& lowered_scope = built.metadata.lowered_subgraphs.front();
-    EXPECT_TRUE(lowered_scope.sample_outputs.empty());
-    ASSERT_EQ(lowered_scope.event_inputs.size(), 1u);
-    EXPECT_EQ(lowered_scope.event_inputs.front().name, "event");
-    ASSERT_EQ(built.graph.outputs().size(), 1u);
-    EXPECT_FALSE(is_sample(built.graph.outputs().front()));
-    EXPECT_EQ(built.graph.outputs().front().name, "event");
 }
 
 } // namespace iv

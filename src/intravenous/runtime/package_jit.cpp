@@ -24,11 +24,8 @@ std::string describe_exception(std::exception_ptr exception)
 }
 } // namespace
 
-PackageJit::PackageJit(
-    StartupConfigState startup_config,
-    ModuleLoader::OptimizationLevel loader_optimization_level)
+PackageJit::PackageJit(StartupConfigState startup_config)
     : startup_config_(std::move(startup_config))
-    , loader_optimization_level_(loader_optimization_level)
 {}
 
 ModuleLoader& PackageJit::ensure_loader()
@@ -39,8 +36,7 @@ ModuleLoader& PackageJit::ensure_loader()
             startup_config_.discovery_start,
             startup_config_.search_roots,
             startup_config_.toolchain,
-            ModuleLoader::LogSink{},
-            loader_optimization_level_);
+            ModuleLoader::LogSink{});
     }
     return *loader_;
 }
@@ -119,7 +115,6 @@ PackageJitBatchResult PackageJit::build(
                     .introspection = std::move(loaded_definition.introspection),
                     .dependencies = std::move(loaded_definition.dependencies),
                     .module_refs = std::move(loaded_definition.module_refs),
-                    .root = std::move(loaded_definition.root),
                     .configured_graph = std::move(loaded_definition.configured_graph),
                 });
             }

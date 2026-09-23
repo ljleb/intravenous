@@ -1,9 +1,6 @@
-#include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
-#include <intravenous/graph/builder/lowering.hpp>
-#include <intravenous/graph/compiler.h>
 #include <intravenous/module/configured_graph_wire.h>
 
 #include <gtest/gtest.h>
@@ -97,10 +94,8 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_TRUE(iv::is_sample(declared_inputs[1]));
     EXPECT_EQ(declared_inputs[1].name, "gain");
 
-    auto plan = iv::GraphCompiler::compile(
-        iv::GraphLowerer::lower(std::move(decoded)));
-    auto const inputs = plan.graph.inputs();
-    auto const outputs = plan.graph.outputs();
+    auto const& inputs = decoded.public_ports.inputs(decoded.node_bundles);
+    auto const& outputs = decoded.public_ports.outputs(decoded.node_bundles);
 
     ASSERT_EQ(inputs.size(), 2u);
     EXPECT_EQ(inputs[0].name, "trigger");

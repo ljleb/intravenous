@@ -67,8 +67,8 @@ TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
         &iv::ModuleLoader::LoadedDefinition::module_id);
     ASSERT_NE(primary, loaded.end());
     ASSERT_NE(secondary, loaded.end());
-    EXPECT_TRUE(static_cast<bool>(primary->root));
-    EXPECT_TRUE(static_cast<bool>(secondary->root));
+    EXPECT_NE(primary->configured_graph, nullptr);
+    EXPECT_NE(secondary->configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, ScalarSourceOutputResolvesShippedBuiltinConstant)
@@ -94,7 +94,7 @@ TEST(ModuleLoaderPackages, ScalarSourceOutputResolvesShippedBuiltinConstant)
     auto loaded = loader.load_package_definitions(package_root);
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.scalar_output");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, BuiltinNodeShortIdCanConstructATiledRegisteredNode)
@@ -123,7 +123,7 @@ TEST(ModuleLoaderPackages, BuiltinNodeShortIdCanConstructATiledRegisteredNode)
 
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.builtin_oscillator");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlias)
@@ -163,7 +163,7 @@ TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlia
     // builtin alias was considered.
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.local_short_name_consumer");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, RegisteredModuleCanConstructATiledMonoInterface)
@@ -205,7 +205,6 @@ TEST(ModuleLoaderPackages, RegisteredModuleCanConstructATiledMonoInterface)
         "iv.test.tiled_stereo_voice",
         &iv::ModuleLoader::LoadedDefinition::module_id);
     ASSERT_NE(stereo, loaded.end());
-    EXPECT_TRUE(static_cast<bool>(stereo->root));
     ASSERT_NE(stereo->configured_graph, nullptr);
     auto const inputs = stereo->configured_graph->public_ports.sample_inputs(
         stereo->configured_graph->node_bundles);
@@ -338,7 +337,7 @@ TEST(ModuleLoaderPackages, RootPackageDoesNotPublishOtherPackageDefinitions)
 
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.nested_loader_project");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefinitions)
@@ -392,7 +391,7 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
 
     ASSERT_EQ(loaded.size(), 1);
     EXPECT_EQ(loaded.front().module_id, "iv.test.registered_node_consumer");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
     ASSERT_NE(loaded.front().configured_graph, nullptr);
 
     std::optional<iv::RegisteredNodeTypeIdentity> registered_identity;
@@ -562,7 +561,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "iv.test.required_provider_module",
         &iv::ModuleLoader::LoadedDefinition::module_id);
     ASSERT_NE(required_provider, provider_loaded.end());
-    EXPECT_FALSE(static_cast<bool>(required_provider->root));
+    EXPECT_EQ(required_provider->configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderFailures, RegisteredConfigurationRejectsImplicitConversions)

@@ -80,10 +80,6 @@ add_iv_gtest(
     module_loader_failures_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
-    intravenous_module_build_behavior_tests
-    module_build_behavior_gtest.cpp
-    ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
-add_iv_gtest(
     intravenous_module_package_dependencies_tests
     module_package_dependencies_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
@@ -111,10 +107,6 @@ add_iv_gtest(
     module_watcher_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
-    intravenous_module_state_reload_tests
-    module_state_reload_gtest.cpp
-    ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
-add_iv_gtest(
     intravenous_module_context_boundary_tests
     module_context_boundary_gtest.cpp)
 add_iv_gtest(intravenous_compat_tests compat_gtest.cpp)
@@ -124,13 +116,8 @@ add_iv_gtest(
     NO_HOST_RUNTIME_OBJECTS)
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_channels_tests channels_gtest.cpp)
-add_iv_gtest(
-    intravenous_graph_compiler_consteval_tests
-    graph_compiler_consteval_gtest.cpp)
 add_iv_gtest(intravenous_graph_modules_tests graph_modules_gtest.cpp)
 add_iv_gtest(intravenous_predictors_tests predictors_gtest.cpp)
-add_iv_gtest(intravenous_detach_regression_tests detach_regression_gtest.cpp)
-add_iv_gtest(intravenous_block_node_executor_tests node_block_executor_gtest.cpp)
 add_iv_gtest(intravenous_lane_filters_tests modules/lane_filters_gtest.cpp)
 add_iv_gtest(intravenous_lane_views_tests modules/lane_views_gtest.cpp)
 add_iv_gtest(intravenous_lanes_visualization_tests modules/lanes_visualization_gtest.cpp)
@@ -189,7 +176,6 @@ add_iv_gtest(intravenous_project_persistence_tests project_persistence_gtest.cpp
 add_iv_gtest(
     intravenous_project_autosave_tests
     modules/project_autosave_gtest.cpp)
-add_iv_gtest(intravenous_graph_virtual_outputs_tests graph_virtual_outputs_gtest.cpp)
 add_iv_gtest(intravenous_lane_filters_bridges_tests bridges/lane_filters_bridges_gtest.cpp)
 add_iv_gtest(intravenous_runtime_module_bridges_tests bridges/runtime_module_bridges_gtest.cpp)
 add_iv_gtest(intravenous_socket_rpc_server_tests socket_rpc_server_gtest.cpp)

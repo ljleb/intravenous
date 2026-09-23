@@ -1,6 +1,5 @@
 #pragma once
 
-#include <intravenous/basic_nodes/weak_type_erased.h>
 #include <intravenous/graph/build_types.h>
 #include <intravenous/module/dependency.h>
 #include <intravenous/module/package_definitions.h>
@@ -52,7 +51,6 @@ struct ModuleNodeDefinition {
     GraphIntrospectionMetadata introspection{};
     std::vector<ModuleDependency> dependencies{};
     std::vector<ModuleRef> module_refs{};
-    WeakTypeErasedNode root{};
     std::shared_ptr<ConfiguredGraph const> configured_graph{};
 };
 

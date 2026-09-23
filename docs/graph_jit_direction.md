@@ -113,9 +113,11 @@ A tock-produced output never becomes a same-slice sequential dependency merely
 because a sequential consumer reads its prepared pages. The **target** schema has
 `SequentialInputConfig`/`RandomAccessInputConfig` for consumer access,
 `TickOutputConfig`/`TockOutputConfig` for production, and separate
-`OutputRetention::{ephemeral,persisted}`. The current source still uses
-`IndexedProducer`; none of the target schema, replay trait or new executor is
-claimed to have landed by this checkpoint. An unreproducible tick/ephemeral source
+`OutputRetention::{ephemeral,persisted}`. The current source has already removed
+`IndexedProducer` and independently represents output retention, but still uses
+the intermediate realtime/indexed port-config names and equality-based connection
+domains. The target naming, replay trait, generalized planner, and new executor
+have not landed by this checkpoint. An unreproducible tick/ephemeral source
 feeding random-access demand requires an authored recorder; persisted tick and
 contextually replayable tick sources do not. Tock evaluation and page computation
 are background-only, including ephemeral outputs. Prepared but stale pages remain
@@ -610,13 +612,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     zero-output. Device I/O and communication with other application modules are
     ordinary concrete node definitions that own the relevant external resource or
     application-module bridge; GraphJit must not add a root boundary-binding ABI.
-14. **Delete the legacy generated-node graph executor and dynamic concrete-port
-    schema fallbacks.** Stop constructing `GraphLowerer`/`GraphCompiler`/
-    `RuntimeGraphRoot` in `ModuleLoader`. Derive source introspection directly from
-    `ConfiguredGraph`; remove obsolete generated routing nodes, type-erased runtime
-    facades and legacy callback-context spans. Enforce static constexpr concrete
-    node ports in both public `IV_NODE` and internal builder entry points. Dynamic
-    graph topology, instances, and per-instance port metadata remain supported.
+14. **Landed: legacy generated-node graph executor and dynamic concrete-port
+    schema fallbacks deleted.** `ModuleLoader` publishes `ConfiguredGraph` and
+    derives source introspection directly from it. The `GraphLowerer`/
+    `GraphCompiler`/`RuntimeGraphRoot` path, obsolete generated routing nodes,
+    type-erased runtime facades, old root ABI and legacy callback-context spans are
+    gone. Static constexpr concrete-node ports are enforced in both public
+    `IV_NODE` and internal builder entry points; dynamic topology, instances and
+    per-instance connection metadata remain supported.
 15. **Migrate independent port contracts and connection planning.** Input access,
     output production, and output retention remain distinct through the builder,
     serialization, compiler records, and per-channel tiling. Replace equality-based
@@ -940,8 +943,9 @@ The normative port schema and execution semantics are in
 [indexed_dsp_nodes.md](./indexed_dsp_nodes.md#13-authored-port-schema-retention-and-replayability).
 `SequentialInputConfig` and `RandomAccessInputConfig` select consumer access;
 `TickOutputConfig` and `TockOutputConfig` select producer callback; the output's
-`OutputRetention` is separate. These target names are not assertions that the
-checked-in source has completed the `IndexedProducer` migration.
+`OutputRetention` is separate. The checked-in source has already removed
+`IndexedProducer` and made retention independent; these target names describe the
+remaining migration from its intermediate realtime/indexed port-config names.
 
 An ordinary tick/ephemeral stream may feed a sequential input. It needs an explicit
 recording-policy node only when it is **unreproducible** and a downstream input

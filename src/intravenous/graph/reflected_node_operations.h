@@ -1,9 +1,6 @@
 #pragma once
 
-// Transitional adapter from a compiler-selected node implementation to the
-// current reflected executor. It is deliberately separate from the module /
-// finalizer compiler-record boundary so the runtime model can change without
-// widening that record.
+// Compiler-selected operations and binding records for one concrete node.
 
 #include <intravenous/node/compiler_record.h>
 #include <intravenous/node/indexed_port_context.h>
@@ -159,11 +156,6 @@ static_assert(std::is_standard_layout_v<ReflectedEventOutputPortBinding>);
 static_assert(std::is_trivially_copyable_v<ReflectedEventOutputPortBinding>);
 
 struct ReflectedNodeTickContext {
-    // Legacy reflected sample façades remain temporarily for the old Graph
-    // implementation. GraphJit does not populate or store these objects.
-    ReflectedSpan<InputPort> inputs {};
-    ReflectedSpan<OutputPort> outputs {};
-
     // Whole-project sample bindings are compiler records resolved once in the
     // generated root frame. Imported
     // primitive wrappers reconstruct short-lived InputPort/OutputPort values
@@ -175,13 +167,10 @@ struct ReflectedNodeTickContext {
     // bound only by indexed callback contexts.
     ReflectedSpan<ReflectedSampleOutputPortBinding const> sample_output_bindings {};
 
-    // GraphJit event bindings mirror the sample binding architecture. Legacy
-    // reflected event facade spans remain for the old Graph implementation.
+    // GraphJit event bindings mirror the sample binding architecture.
     ReflectedSpan<ReflectedEventInputPortBinding const> event_input_bindings {};
     // Like sample outputs, this span contains realtime outputs only.
     ReflectedSpan<ReflectedEventOutputPortBinding const> event_output_bindings {};
-    ReflectedSpan<EventInputPort> event_inputs {};
-    ReflectedSpan<EventOutputPort> event_outputs {};
     ReflectedSpan<IndexedSampleInputPort const> indexed_inputs {};
     ReflectedSpan<IndexedEventInputPort const> indexed_event_inputs {};
     std::size_t sample_rate = 48000;

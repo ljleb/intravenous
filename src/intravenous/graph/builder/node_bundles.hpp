@@ -4,7 +4,7 @@
 #include <intravenous/graph/error.h>
 #include <intravenous/graph/names.h>
 #include <intravenous/graph/port_ids.h>
-#include <intravenous/graph/builder/stored_node.hpp>
+#include <intravenous/graph/builder/concrete_node.hpp>
 
 #include <algorithm>
 #include <concepts>

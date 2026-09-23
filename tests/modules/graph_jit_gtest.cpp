@@ -5208,9 +5208,7 @@ std::shared_ptr<iv::PackageRevision const> load_graph_jit_runtime_revision()
     auto const workspace = std::filesystem::weakly_canonical(
         ensure_graph_jit_runtime_workspace());
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
-    iv::PackageJit package_jit(
-        startup_config.initialize(),
-        iv::ModuleLoader::OptimizationLevel::O0);
+    iv::PackageJit package_jit(startup_config.initialize());
     iv::PackageJitBatchRequest request{
         .declarations = {iv::IvPackageDeclaration{
             .package_id = graph_jit_state_package_id,

@@ -46,6 +46,10 @@ expect_invalid(
     "define exact propagate_forward_coverage")
 
 expect_invalid(
+    invalid_internal_node.cpp
+    "concrete node ports must be declared by static constexpr inputs() and outputs()")
+
+expect_invalid(
     invalid_indexed_tick_output.cpp
     "tick_block() cannot write an indexed sample output"
     "tick_block() cannot write an indexed event output")

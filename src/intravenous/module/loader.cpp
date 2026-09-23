@@ -5,13 +5,10 @@
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder.h>
-#include <intravenous/graph/builder/lowering.hpp>
-#include <intravenous/graph/compiler.h>
-#include <intravenous/graph/node.h>
+#include <intravenous/graph/introspection.h>
 
 #include <nlohmann/json.hpp>
 
-#include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
@@ -22,9 +19,6 @@
 #include <llvm/IR/GlobalAlias.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/LLVMContext.h>
-#include <llvm/IR/PassManager.h>
-#include <llvm/Passes/OptimizationLevel.h>
-#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
@@ -530,46 +524,13 @@ void initialize_package_jit_target()
     });
 }
 
-llvm::CodeGenOptLevel package_codegen_optimization_level(
-    ModuleLoader::OptimizationLevel optimization_level)
-{
-    switch (optimization_level) {
-    case ModuleLoader::OptimizationLevel::O0:
-        return llvm::CodeGenOptLevel::None;
-    case ModuleLoader::OptimizationLevel::O1:
-        return llvm::CodeGenOptLevel::Less;
-    case ModuleLoader::OptimizationLevel::O2:
-        return llvm::CodeGenOptLevel::Default;
-    case ModuleLoader::OptimizationLevel::O3:
-        return llvm::CodeGenOptLevel::Aggressive;
-    }
-    throw std::logic_error("unknown IV package optimization level");
-}
-
-llvm::OptimizationLevel package_ir_optimization_level(
-    ModuleLoader::OptimizationLevel optimization_level)
-{
-    switch (optimization_level) {
-    case ModuleLoader::OptimizationLevel::O0:
-        return llvm::OptimizationLevel::O0;
-    case ModuleLoader::OptimizationLevel::O1:
-        return llvm::OptimizationLevel::O1;
-    case ModuleLoader::OptimizationLevel::O2:
-        return llvm::OptimizationLevel::O2;
-    case ModuleLoader::OptimizationLevel::O3:
-        return llvm::OptimizationLevel::O3;
-    }
-    throw std::logic_error("unknown IV package optimization level");
-}
-
-std::shared_ptr<SharedPackageJit> create_shared_package_jit(
-    ModuleLoader::OptimizationLevel optimization_level)
+std::shared_ptr<SharedPackageJit> create_shared_package_jit()
 {
     initialize_package_jit_target();
     auto target = take_llvm_expected(
         llvm::orc::JITTargetMachineBuilder::detectHost(),
         "detect package ORC target");
-    target.setCodeGenOptLevel(package_codegen_optimization_level(optimization_level));
+    target.setCodeGenOptLevel(llvm::CodeGenOptLevel::None);
     auto jit = take_llvm_expected(
         llvm::orc::LLJITBuilder()
             .setJITTargetMachineBuilder(std::move(target))
@@ -578,103 +539,6 @@ std::shared_ptr<SharedPackageJit> create_shared_package_jit(
     auto result = std::make_shared<SharedPackageJit>();
     result->jit = std::move(jit);
     return result;
-}
-
-void mark_runtime_reachable(
-    llvm::Value const* value,
-    llvm::SmallPtrSetImpl<llvm::GlobalValue const*>& reachable)
-{
-    if (!value) return;
-    if (auto const* global = llvm::dyn_cast<llvm::GlobalValue>(value)) {
-        if (!reachable.insert(global).second) return;
-        if (auto const* function = llvm::dyn_cast<llvm::Function>(global)) {
-            if (!function->isDeclaration()) {
-                for (auto const& block : *function) {
-                    for (auto const& instruction : block) {
-                        for (auto const& operand : instruction.operands()) {
-                            mark_runtime_reachable(operand.get(), reachable);
-                        }
-                    }
-                }
-            }
-        } else if (auto const* variable = llvm::dyn_cast<llvm::GlobalVariable>(global)) {
-            if (variable->hasInitializer()) {
-                mark_runtime_reachable(variable->getInitializer(), reachable);
-            }
-        } else if (auto const* alias = llvm::dyn_cast<llvm::GlobalAlias>(global)) {
-            mark_runtime_reachable(alias->getAliasee(), reachable);
-        }
-        return;
-    }
-    if (auto const* constant = llvm::dyn_cast<llvm::Constant>(value)) {
-        for (auto const& operand : constant->operands()) {
-            mark_runtime_reachable(operand.get(), reachable);
-        }
-    }
-}
-
-void collect_compatibility_runtime_code(
-    llvm::Module const& module,
-    llvm::SmallPtrSetImpl<llvm::GlobalValue const*>& reachable)
-{
-    for (auto const& global : module.globals()) {
-        auto const section = global.getSection();
-        if (section != "iv_node_types" && !section.ends_with("__iv_node_types")) {
-            continue;
-        }
-        auto const* record = llvm::dyn_cast_or_null<llvm::ConstantStruct>(
-            global.getInitializer());
-        if (!record || record->getNumOperands() != 8) continue;
-        auto const* operations = llvm::dyn_cast<llvm::ConstantStruct>(
-            record->getOperand(1));
-        if (!operations || operations->getNumOperands() != 6) continue;
-
-        // declare_node participates in graph construction and is intentionally
-        // left at package O0.  Package/provider configuration is allowed to
-        // throw across the JIT boundary, and optimizing that path caused those
-        // exceptions to terminate instead of reaching their existing handlers.
-        // Only tick/skip are realtime compatibility-runtime code.
-        mark_runtime_reachable(operations->getOperand(1), reachable);
-        mark_runtime_reachable(operations->getOperand(2), reachable);
-    }
-}
-
-void optimize_package_for_compatibility_runtime(
-    llvm::Module& module,
-    ModuleLoader::OptimizationLevel optimization_level)
-{
-    if (optimization_level == ModuleLoader::OptimizationLevel::O0) return;
-    // Package artifacts intentionally stop at Clang O0 so source rebuilds stay
-    // cheap and the future whole-graph compiler receives the unoptimized IR.
-    // The current reflected executor only needs native-quality node tick/skip
-    // callbacks. Keep package/module graph-construction code at its original O0
-    // semantics: it is allowed to throw through the JIT boundary and some
-    // providers deliberately catch configuration failures inside package code.
-    llvm::SmallPtrSet<llvm::GlobalValue const*, 32> runtime_code;
-    collect_compatibility_runtime_code(module, runtime_code);
-    for (auto const* value : runtime_code) {
-        auto* function = llvm::dyn_cast<llvm::Function>(
-            const_cast<llvm::GlobalValue*>(value));
-        if (!function || !function->hasFnAttribute(llvm::Attribute::OptimizeNone)) {
-            continue;
-        }
-        function->removeFnAttr(llvm::Attribute::OptimizeNone);
-        function->removeFnAttr(llvm::Attribute::NoInline);
-    }
-
-    llvm::PassBuilder pass_builder;
-    llvm::LoopAnalysisManager loops;
-    llvm::FunctionAnalysisManager functions;
-    llvm::CGSCCAnalysisManager cgscc;
-    llvm::ModuleAnalysisManager modules;
-    pass_builder.registerModuleAnalyses(modules);
-    pass_builder.registerCGSCCAnalyses(cgscc);
-    pass_builder.registerFunctionAnalyses(functions);
-    pass_builder.registerLoopAnalyses(loops);
-    pass_builder.crossRegisterProxies(loops, functions, cgscc, modules);
-    auto pipeline = pass_builder.buildPerModuleDefaultPipeline(
-        package_ir_optimization_level(optimization_level));
-    pipeline.run(module, modules);
 }
 
 void apply_configured_dsl_pch(ModuleLoaderToolchainConfig& toolchain)
@@ -752,7 +616,6 @@ class ModuleLoader::Impl {
     std::filesystem::path global_cache_root_;
     ModuleLoaderToolchainConfig toolchain_;
     LogSink log_sink_;
-    OptimizationLevel optimization_level_;
     mutable std::mutex mutex_;
 
     struct CompiledPackage {
@@ -1022,14 +885,12 @@ public:
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> roots,
         ModuleLoaderToolchainConfig toolchain,
-        LogSink sink,
-        OptimizationLevel optimization_level)
+        LogSink sink)
         : repo_root_(discover_repo(std::move(discovery_start))),
           global_cache_root_(global_cache_root()),
           toolchain_(std::move(toolchain)),
           log_sink_(std::move(sink)),
-          optimization_level_(optimization_level),
-          package_jit_(create_shared_package_jit(optimization_level))
+          package_jit_(create_shared_package_jit())
     {
         apply_configured_dsl_pch(toolchain_);
         std::filesystem::create_directories(global_cache_root_);
@@ -1128,17 +989,6 @@ public:
                             (*buffer)->getMemBufferRef(), *context),
                         "parse finalized IV package LLVM");
                 });
-            if (optimization_level_ != OptimizationLevel::O0) {
-                auto const optimize_started_at = std::chrono::steady_clock::now();
-                optimize_package_for_compatibility_runtime(*module, optimization_level_);
-                if (log_sink_) {
-                    log_sink_(
-                        "[package-orc-optimize] elapsed_us="
-                        + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() - optimize_started_at).count()));
-                }
-            }
-
             auto const suffix = package_jit_->next_package.fetch_add(
                 1, std::memory_order_relaxed);
             // Use LLJIT's wrapper rather than ExecutionSession::createJITDylib.
@@ -1458,15 +1308,12 @@ public:
                     "IV module definition has no construction signature");
             }
             details::validate_registered_signature_shape(module_id, *signature);
-            // The compatibility instance runtime has no persisted module
-            // construction arguments yet. Publish a required-argument module
-            // nonetheless: it is a valid provider for another module's
-            // g.node<Id>(...) call, but has no default execution root for a
-            // project instance to realize.
+            // A required-argument module is still a valid provider for another
+            // module's g.node<Id>(...) call, but has no default configured graph
+            // for source introspection.
             if (signature->required_argument_count != 0) {
                 definitions.emplace_back(
                     std::vector<ModuleRef>{root_package},
-                    WeakTypeErasedNode{},
                     GraphIntrospectionMetadata{},
                     compiled.root.module_dir,
                     std::move(module_id),
@@ -1498,13 +1345,11 @@ public:
             definition.module_build(builder, {});
             auto configured = std::make_shared<ConfiguredGraph const>(
                 details::take_built_graph(session.get()));
-            auto plan = GraphCompiler::compile(
-                GraphLowerer::lower(*configured, {.execution_root = true}));
-            auto runtime_root = std::make_shared<RuntimeGraphRoot>(std::move(plan.graph));
+            auto introspection = build_graph_introspection_metadata(*configured);
 
             auto const used_package_indexes = details::builder_used_packages(session.get());
             std::vector<ModuleRef> refs;
-            refs.reserve(used_package_indexes.size() + 1);
+            refs.reserve(used_package_indexes.size());
             for (auto const package_index : used_package_indexes) {
                 if (package_index >= loaded_packages.size()) {
                     throw std::logic_error("configured graph references an invalid IV package");
@@ -1516,8 +1361,6 @@ public:
                 // that configured against it to be rebuilt.
                 refs.push_back(loaded_packages[package_index]);
             }
-            refs.push_back(runtime_root);
-
             std::vector<ModuleDependency> dependencies;
             dependencies.reserve(used_package_indexes.size());
             std::unordered_set<std::string> dependency_roots;
@@ -1531,8 +1374,7 @@ public:
 
             definitions.emplace_back(
                 std::move(refs),
-                WeakTypeErasedNode(*runtime_root),
-                std::move(plan.introspection),
+                std::move(introspection),
                 compiled.root.module_dir,
                 std::move(module_id),
                 definition,
@@ -1685,7 +1527,6 @@ public:
 
 ModuleLoader::LoadedDefinition::LoadedDefinition(
     std::vector<ModuleRef> refs,
-    WeakTypeErasedNode root_,
     GraphIntrospectionMetadata introspection_,
     std::filesystem::path path,
     std::string id,
@@ -1693,7 +1534,6 @@ ModuleLoader::LoadedDefinition::LoadedDefinition(
     std::vector<ModuleDependency> deps,
     std::shared_ptr<ConfiguredGraph const> configured_graph_)
     : module_refs(std::move(refs)),
-      root(root_),
       introspection(std::move(introspection_)),
       package_path(std::move(path)),
       module_id(std::move(id)),
@@ -1706,14 +1546,12 @@ ModuleLoader::ModuleLoader(
     std::filesystem::path start,
     std::vector<std::filesystem::path> roots,
     ModuleLoaderToolchainConfig toolchain,
-    LogSink sink,
-    OptimizationLevel optimization_level)
+    LogSink sink)
     : _impl(std::make_unique<Impl>(
           std::move(start),
           std::move(roots),
           std::move(toolchain),
-          std::move(sink),
-          optimization_level))
+          std::move(sink)))
 {}
 
 ModuleLoader::~ModuleLoader() = default;

@@ -1,7 +1,6 @@
 #include "../module_test_utils.h"
 
 #include <intravenous/bridge.h>
-#include <intravenous/node/block_executor.h>
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/package_definitions.h>
@@ -69,7 +68,7 @@ struct PipelineHarness {
     package_watcher_status_witness_bridge::scope status_scope;
 
     PipelineHarness(iv::StartupConfigState startup, std::filesystem::path project_root)
-        : jit(std::move(startup), iv::ModuleLoader::OptimizationLevel::O0)
+        : jit(std::move(startup))
         , packages(std::move(project_root))
         , watcher_jit_scope(watcher, jit)
         , watcher_packages_scope(watcher, packages)
@@ -106,7 +105,7 @@ TEST(PackagePipeline, DirtyDeclarationsBuildAndPublishDefinitions)
     auto const modules = pipeline.definitions.loaded_module_definitions();
     ASSERT_EQ(modules.size(), 1u);
     EXPECT_EQ(modules.front().definition_id, "iv.test.local_cmake");
-    EXPECT_TRUE(static_cast<bool>(modules.front().root));
+    EXPECT_NE(modules.front().configured_graph, nullptr);
 
     auto const leaves = pipeline.definitions.loaded_leaf_definitions();
     EXPECT_NE(
@@ -187,7 +186,7 @@ TEST(PackagePipeline, SuccessfulBuildStatusIncludesElapsedTime)
         std::regex("IV package build ready to apply in [0-9]+ ms")));
 }
 
-TEST(PackagePipeline, CompiledModuleDefinitionPublishesUsableExecutionRoot)
+TEST(PackagePipeline, CompiledModuleDefinitionPublishesConfiguredGraph)
 {
     auto const workspace =
         iv::test_support::read_only_module_fixture_workspace("reload_sample_period");
@@ -201,17 +200,8 @@ TEST(PackagePipeline, CompiledModuleDefinitionPublishesUsableExecutionRoot)
 
     auto const modules = pipeline.definitions.loaded_module_definitions();
     ASSERT_EQ(modules.size(), 1u);
-    auto const root = modules.front().root;
-    ASSERT_TRUE(static_cast<bool>(root));
-    auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(root),
-        8,
-        {},
-        std::nullopt,
-        iv::DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER,
-        48000);
-    EXPECT_EQ(executor.sample_rate(), 48000u);
-    EXPECT_NO_THROW(executor.tick_block(0));
+    ASSERT_NE(modules.front().configured_graph, nullptr);
+    EXPECT_FALSE(modules.front().configured_graph->identity.value.empty());
 }
 
 TEST(PackagePipeline, RefreshDoesNothingWithoutSourceOrDependencyChanges)
