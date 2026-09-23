@@ -2733,7 +2733,7 @@ struct SampleRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output("out")};
+        return std::array{iv::tick_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<SampleRampSource> const& ctx) const
@@ -2752,7 +2752,7 @@ struct RevisingSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
+        return std::array{iv::tick_sample_output(
             "out", {}, {.latency = 1})};
     }
 
@@ -2777,7 +2777,7 @@ struct PersistentRevisingSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
+        return std::array{iv::tick_sample_output(
             "out", {}, {.history = 5000, .latency = 2})};
     }
 
@@ -2802,7 +2802,7 @@ struct TickFallbackSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
+        return std::array{iv::tick_sample_output(
             "out", {}, {.latency = 1})};
     }
 
@@ -2826,7 +2826,7 @@ struct LimitedSampleRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output("out")};
+        return std::array{iv::tick_sample_output("out")};
     }
 
     std::size_t max_block_size() const { return 16; }
@@ -2851,7 +2851,7 @@ struct SampleConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input("in")};
+        return std::array{iv::sequential_sample_input("in")};
     }
 
     static constexpr auto outputs()
@@ -2888,12 +2888,12 @@ struct SampleFeedbackA {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input("in")};
+        return std::array{iv::sequential_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output("out")};
+        return std::array{iv::tick_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<SampleFeedbackA> const& ctx) const
@@ -2934,12 +2934,12 @@ struct SampleFeedbackB {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input("in")};
+        return std::array{iv::sequential_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output("out")};
+        return std::array{iv::tick_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<SampleFeedbackB> const& ctx) const
@@ -2984,15 +2984,15 @@ struct MultiBranchSampleFeedback {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_sample_input("fast"),
-            iv::realtime_sample_input("slow"),
-            iv::realtime_sample_input("seeded"),
+            iv::sequential_sample_input("fast"),
+            iv::sequential_sample_input("slow"),
+            iv::sequential_sample_input("seeded"),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output("out")};
+        return std::array{iv::tick_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<MultiBranchSampleFeedback> const& ctx) const
@@ -3038,13 +3038,13 @@ struct TemporalSampleFeedback {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input(
+        return std::array{iv::sequential_sample_input(
             "in", {}, {.history = 3})};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
+        return std::array{iv::tick_sample_output(
             "out", {}, {.latency = 2})};
     }
 
@@ -3086,12 +3086,12 @@ struct RevisingSampleFeedback {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input("in")};
+        return std::array{iv::sequential_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
+        return std::array{iv::tick_sample_output(
             "out", {}, {.latency = 2})};
     }
 
@@ -3137,7 +3137,7 @@ struct ProjectedRevisingSampleFeedback {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input(
+        return std::array{iv::sequential_sample_input(
             "in",
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
@@ -3147,7 +3147,7 @@ struct ProjectedRevisingSampleFeedback {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
+        return std::array{iv::tick_sample_output(
             "out", {}, {.latency = 2})};
     }
 
@@ -3197,7 +3197,7 @@ struct ConvertedSampleFeedback {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input(
+        return std::array{iv::sequential_sample_input(
             "in",
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
@@ -3207,7 +3207,7 @@ struct ConvertedSampleFeedback {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output("out")};
+        return std::array{iv::tick_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<ConvertedSampleFeedback> const& ctx) const
@@ -3251,7 +3251,7 @@ struct MonoInterleavedConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input(
+        return std::array{iv::sequential_sample_input(
             "in",
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::mono,
@@ -3288,7 +3288,7 @@ struct StereoRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
+        return std::array{iv::tick_sample_output(
             "out",
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
@@ -3323,7 +3323,7 @@ struct StereoPlanarConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input(
+        return std::array{iv::sequential_sample_input(
             "in",
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
@@ -3374,7 +3374,7 @@ struct StereoSampleConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input(
+        return std::array{iv::sequential_sample_input(
             "in",
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
@@ -3424,7 +3424,7 @@ struct HistoryRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
+        return std::array{iv::tick_sample_output(
             "out", {}, {.history = 3, .latency = 2})};
     }
 
@@ -3452,7 +3452,7 @@ struct HistoryConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input(
+        return std::array{iv::sequential_sample_input(
             "in", {}, {.history = 5})};
     }
 
@@ -3486,7 +3486,7 @@ struct StereoHistoryConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input(
+        return std::array{iv::sequential_sample_input(
             "in",
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
@@ -3521,7 +3521,7 @@ struct LargeHistoryRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output("out")};
+        return std::array{iv::tick_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<LargeHistoryRampSource> const& ctx) const
@@ -3543,7 +3543,7 @@ struct LargeHistoryConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input(
+        return std::array{iv::sequential_sample_input(
             "in", {}, {.history = 5000})};
     }
 
@@ -3570,12 +3570,12 @@ struct FiveSampleDelay {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input("in")};
+        return std::array{iv::sequential_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
+        return std::array{iv::tick_sample_output(
             "out", {}, {.latency = 2})};
     }
 
@@ -3612,8 +3612,8 @@ struct FiveSampleDelay {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_sample_input("fast"),
-            iv::realtime_sample_input("slow"),
+            iv::sequential_sample_input("fast"),
+            iv::sequential_sample_input("slow"),
         };
     }
 
@@ -3665,13 +3665,13 @@ struct InterleavedLatencyCompensationProbe {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_sample_input(
+            iv::sequential_sample_input(
                 "fast",
                 {.channel_layout = {
                     .channel_type = iv::ChannelTypeId::mono,
                     .sample_layout = iv::SampleStreamLayout::interleaved,
                 }}),
-            iv::realtime_sample_input(
+            iv::sequential_sample_input(
                 "slow",
                 {.channel_layout = {
                     .channel_type = iv::ChannelTypeId::mono,
@@ -3729,7 +3729,7 @@ struct DisconnectedSampleInputProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input(
+        return std::array{iv::sequential_sample_input(
             "in",
             {.channel_layout = {
                  .channel_type = iv::ChannelTypeId::stereo,
@@ -3776,7 +3776,7 @@ struct TriggerEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::realtime_event_output("trigger", iv::EventTypeId::trigger),
+            iv::tick_event_output("trigger", iv::EventTypeId::trigger),
         };
     }
 
@@ -3799,7 +3799,7 @@ struct MidiEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::realtime_event_output("midi", iv::EventTypeId::midi),
+            iv::tick_event_output("midi", iv::EventTypeId::midi),
         };
     }
 
@@ -3835,7 +3835,7 @@ struct LimitedTriggerEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::realtime_event_output("trigger", iv::EventTypeId::trigger),
+            iv::tick_event_output("trigger", iv::EventTypeId::trigger),
         };
     }
 
@@ -3859,7 +3859,7 @@ struct FanInBurstEventSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
@@ -3885,7 +3885,7 @@ struct FanInSparseEventSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
@@ -3917,13 +3917,13 @@ struct EventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+            iv::sequential_event_input("in", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
@@ -3959,10 +3959,10 @@ struct RetainedFanInEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input(
+            iv::sequential_event_input(
                 "in",
                 iv::EventTypeId::trigger,
-                iv::RealtimeInputConfig{.history = 8}),
+                iv::SequentialInputConfig{.history = 8}),
         };
     }
 
@@ -4010,19 +4010,19 @@ struct LatentEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+            iv::sequential_event_input("in", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
                 .max_events_per_index = 0.25,
             },
-            iv::RealtimeOutputConfig{.latency = 16})};
+            iv::TickOutputConfig{.latency = 16})};
     }
 
     void tick_block(iv::TickBlockContext<LatentEventFeedbackA> const& ctx) const
@@ -4063,19 +4063,19 @@ struct PersistentLatentEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+            iv::sequential_event_input("in", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
                 .max_events_per_index = 0.25,
             },
-            iv::RealtimeOutputConfig{.latency = 320})};
+            iv::TickOutputConfig{.latency = 320})};
     }
 
     void tick_block(iv::TickBlockContext<PersistentLatentEventFeedbackA> const& ctx) const
@@ -4107,19 +4107,19 @@ struct PersistentLatentBoundaryEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("in", iv::EventTypeId::boundary),
+            iv::sequential_event_input("in", iv::EventTypeId::boundary),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::boundary,
                 .max_events_per_index = 0.25,
             },
-            iv::RealtimeOutputConfig{.latency = 320})};
+            iv::TickOutputConfig{.latency = 320})};
     }
 
     void tick_block(
@@ -4139,13 +4139,13 @@ struct EventFeedbackBurstA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+            iv::sequential_event_input("in", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
@@ -4169,14 +4169,14 @@ struct EventFeedbackFanoutA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("in_a", iv::EventTypeId::trigger),
-            iv::realtime_event_input("in_b", iv::EventTypeId::trigger),
+            iv::sequential_event_input("in_a", iv::EventTypeId::trigger),
+            iv::sequential_event_input("in_b", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
@@ -4212,13 +4212,13 @@ struct EventFeedbackB {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+            iv::sequential_event_input("in", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
@@ -4266,20 +4266,20 @@ struct RetainedDualEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input(
+            iv::sequential_event_input(
                 "exact",
                 iv::EventTypeId::trigger,
-                iv::RealtimeInputConfig{.history = 8}),
-            iv::realtime_event_input(
+                iv::SequentialInputConfig{.history = 8}),
+            iv::sequential_event_input(
                 "converted",
                 iv::EventTypeId::trigger,
-                iv::RealtimeInputConfig{.history = 8}),
+                iv::SequentialInputConfig{.history = 8}),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
@@ -4324,20 +4324,20 @@ struct DualEventFeedbackB {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+            iv::sequential_event_input("in", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::realtime_event_output(
+            iv::tick_event_output(
                 "exact",
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::trigger,
                     .max_events_per_index = 0.25,
                 }),
-            iv::realtime_event_output(
+            iv::tick_event_output(
                 "converted",
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::boundary,
@@ -4375,7 +4375,7 @@ struct TriggerEventConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("trigger", iv::EventTypeId::trigger),
+            iv::sequential_event_input("trigger", iv::EventTypeId::trigger),
         };
     }
 
@@ -4419,10 +4419,10 @@ struct RetainedMidiEventConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input(
+            iv::sequential_event_input(
                 "midi",
                 iv::EventTypeId::midi,
-                iv::RealtimeInputConfig{.history = 160}),
+                iv::SequentialInputConfig{.history = 160}),
         };
     }
 
@@ -4459,13 +4459,13 @@ struct BoundaryEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("in", iv::EventTypeId::boundary),
+            iv::sequential_event_input("in", iv::EventTypeId::boundary),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::boundary,
@@ -4489,13 +4489,13 @@ struct BoundaryEventFeedbackB {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("in", iv::EventTypeId::boundary),
+            iv::sequential_event_input("in", iv::EventTypeId::boundary),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::boundary,
@@ -4529,7 +4529,7 @@ struct LimitedTriggerEventConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("trigger", iv::EventTypeId::trigger),
+            iv::sequential_event_input("trigger", iv::EventTypeId::trigger),
         };
     }
 
@@ -4571,13 +4571,13 @@ struct RetainedTriggerEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::realtime_event_output(
+            iv::tick_event_output(
                 "trigger",
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::trigger,
                     .max_events_per_index = 0.5,
                 },
-                iv::RealtimeOutputConfig{.latency = 8}),
+                iv::TickOutputConfig{.latency = 8}),
         };
     }
 
@@ -4608,10 +4608,10 @@ struct RetainedTriggerEventConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input(
+            iv::sequential_event_input(
                 "trigger",
                 iv::EventTypeId::trigger,
-                iv::RealtimeInputConfig{.history = 8}),
+                iv::SequentialInputConfig{.history = 8}),
         };
     }
 
@@ -4650,7 +4650,7 @@ struct PersistentEventRingSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::realtime_event_output(
+            iv::tick_event_output(
                 "trigger",
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::trigger,
@@ -4683,10 +4683,10 @@ struct PersistentEventRingConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input(
+            iv::sequential_event_input(
                 "trigger",
                 iv::EventTypeId::trigger,
-                iv::RealtimeInputConfig{.history = 160}),
+                iv::SequentialInputConfig{.history = 160}),
         };
     }
 
@@ -4726,10 +4726,10 @@ struct PersistentEventFeedbackConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input(
+            iv::sequential_event_input(
                 "trigger",
                 iv::EventTypeId::trigger,
-                iv::RealtimeInputConfig{.history = 320}),
+                iv::SequentialInputConfig{.history = 320}),
         };
     }
 

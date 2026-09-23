@@ -106,14 +106,14 @@ void GraphBuilderState::validate_tiled_module_interfaces(
   };
   auto same_sample_output = [](SampleOutputConfig const& lhs, SampleOutputConfig const& rhs) {
     return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
-        && lhs.access == rhs.access && lhs.retention == rhs.retention;
+        && lhs.production == rhs.production && lhs.retention == rhs.retention;
   };
   auto same_event_input = [](EventInputConfig const& lhs, EventInputConfig const& rhs) {
     return lhs.name == rhs.name && lhs.type == rhs.type && lhs.access == rhs.access;
   };
   auto same_event_output = [](EventOutputConfig const& lhs, EventOutputConfig const& rhs) {
     return lhs.name == rhs.name && lhs.type == rhs.type
-        && lhs.access == rhs.access && lhs.retention == rhs.retention;
+        && lhs.production == rhs.production && lhs.retention == rhs.retention;
   };
 
   auto const& first = *members.front();

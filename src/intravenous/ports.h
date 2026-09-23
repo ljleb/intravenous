@@ -1612,9 +1612,9 @@ namespace iv {
     };
 
     // The sample/event distinction is one axis of a logical port declaration.
-    // Its temporal access model is a separate axis: realtime ports have a
-    // finite history/latency contract, while indexed ports are random-access
-    // and therefore do not carry realtime timing requirements.
+    // Input access, output production, and output retention are independent.
+    // Sequential inputs and Tick outputs carry temporal history/latency;
+    // RandomAccess inputs and Tock outputs have no Tick timing requirements.
     struct SampleInputProperties {
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
@@ -1658,25 +1658,25 @@ namespace iv {
         double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
     };
 
-    struct RealtimeInputConfig {
+    struct SequentialInputConfig {
         size_t history = 0;
 
-        constexpr bool operator==(RealtimeInputConfig const&) const = default;
+        constexpr bool operator==(SequentialInputConfig const&) const = default;
     };
 
-    struct RealtimeOutputConfig {
+    struct TickOutputConfig {
         size_t history = 0;
         size_t latency = 0;
 
-        constexpr bool operator==(RealtimeOutputConfig const&) const = default;
+        constexpr bool operator==(TickOutputConfig const&) const = default;
     };
 
-    struct IndexedInputConfig {
-        constexpr bool operator==(IndexedInputConfig const&) const = default;
+    struct RandomAccessInputConfig {
+        constexpr bool operator==(RandomAccessInputConfig const&) const = default;
     };
 
-    struct IndexedOutputConfig {
-        constexpr bool operator==(IndexedOutputConfig const&) const = default;
+    struct TockOutputConfig {
+        constexpr bool operator==(TockOutputConfig const&) const = default;
     };
 
     enum class OutputRetention : std::uint8_t {
@@ -1684,20 +1684,20 @@ namespace iv {
         persisted,
     };
 
-    inline constexpr IndexedInputConfig indexed_input {};
-    inline constexpr IndexedOutputConfig indexed_output {};
+    inline constexpr RandomAccessInputConfig random_access_input {};
+    inline constexpr TockOutputConfig tock_output {};
 
-    using InputAccessConfig = std::variant<RealtimeInputConfig, IndexedInputConfig>;
-    using OutputAccessConfig = std::variant<RealtimeOutputConfig, IndexedOutputConfig>;
+    using InputAccessConfig = std::variant<SequentialInputConfig, RandomAccessInputConfig>;
+    using OutputProductionConfig = std::variant<TickOutputConfig, TockOutputConfig>;
 
-    [[nodiscard]] constexpr bool is_indexed(InputAccessConfig const& config)
+    [[nodiscard]] constexpr bool is_random_access(InputAccessConfig const& config)
     {
-        return std::holds_alternative<IndexedInputConfig>(config);
+        return std::holds_alternative<RandomAccessInputConfig>(config);
     }
 
-    [[nodiscard]] constexpr bool is_indexed(OutputAccessConfig const& config)
+    [[nodiscard]] constexpr bool is_tock(OutputProductionConfig const& config)
     {
-        return std::holds_alternative<IndexedOutputConfig>(config);
+        return std::holds_alternative<TockOutputConfig>(config);
     }
 
     [[nodiscard]] constexpr bool is_persisted(OutputRetention retention)
@@ -1705,84 +1705,65 @@ namespace iv {
         return retention == OutputRetention::persisted;
     }
 
-    [[nodiscard]] constexpr bool is_realtime(InputAccessConfig const& config)
+    [[nodiscard]] constexpr bool is_sequential(InputAccessConfig const& config)
     {
-        return std::holds_alternative<RealtimeInputConfig>(config);
+        return std::holds_alternative<SequentialInputConfig>(config);
     }
 
-    [[nodiscard]] constexpr bool is_realtime(OutputAccessConfig const& config)
+    [[nodiscard]] constexpr bool is_tick(OutputProductionConfig const& config)
     {
-        return std::holds_alternative<RealtimeOutputConfig>(config);
+        return std::holds_alternative<TickOutputConfig>(config);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history(InputAccessConfig const& config)
+    [[nodiscard]] constexpr size_t port_history(InputAccessConfig const& config)
     {
-        return std::get<RealtimeInputConfig>(config).history;
+        return std::get<SequentialInputConfig>(config).history;
     }
 
-    [[nodiscard]] constexpr size_t realtime_history(OutputAccessConfig const& config)
+    [[nodiscard]] constexpr size_t port_history(OutputProductionConfig const& config)
     {
-        return std::get<RealtimeOutputConfig>(config).history;
+        return std::get<TickOutputConfig>(config).history;
     }
 
-    [[nodiscard]] constexpr size_t realtime_latency(OutputAccessConfig const& config)
+    [[nodiscard]] constexpr size_t tick_latency(OutputProductionConfig const& config)
     {
-        return std::get<RealtimeOutputConfig>(config).latency;
+        return std::get<TickOutputConfig>(config).latency;
     }
 
-    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+    [[nodiscard]] constexpr size_t port_history_or_zero(
         InputAccessConfig const& config)
     {
-        if (auto const* realtime = std::get_if<RealtimeInputConfig>(&config)) {
+        if (auto const* realtime = std::get_if<SequentialInputConfig>(&config)) {
             return realtime->history;
         }
         return 0;
     }
 
-    [[nodiscard]] constexpr size_t realtime_history_or_zero(
-        OutputAccessConfig const& config)
+    [[nodiscard]] constexpr size_t port_history_or_zero(
+        OutputProductionConfig const& config)
     {
-        if (auto const* realtime = std::get_if<RealtimeOutputConfig>(&config)) {
+        if (auto const* realtime = std::get_if<TickOutputConfig>(&config)) {
             return realtime->history;
         }
         return 0;
     }
 
-    [[nodiscard]] constexpr size_t realtime_latency_or_zero(
-        OutputAccessConfig const& config)
+    [[nodiscard]] constexpr size_t tick_latency_or_zero(
+        OutputProductionConfig const& config)
     {
-        if (auto const* realtime = std::get_if<RealtimeOutputConfig>(&config)) {
+        if (auto const* realtime = std::get_if<TickOutputConfig>(&config)) {
             return realtime->latency;
         }
         return 0;
     }
 
-    [[nodiscard]] constexpr InputAccessConfig inward_input_access(
-        OutputAccessConfig const& config)
-    {
-        if (auto const* realtime = std::get_if<RealtimeOutputConfig>(&config)) {
-            return RealtimeInputConfig{.history = realtime->history};
-        }
-        return IndexedInputConfig{};
-    }
-
-    [[nodiscard]] constexpr OutputAccessConfig inward_output_access(
-        InputAccessConfig const& config)
-    {
-        if (auto const* realtime = std::get_if<RealtimeInputConfig>(&config)) {
-            return RealtimeOutputConfig{.history = realtime->history};
-        }
-        return IndexedOutputConfig{};
-    }
-
     // Authored declarations keep payload kind and temporal/access semantics
-    // orthogonal. Indexed inputs still expose their ordinary current-block
-    // typed wrappers in tick()/tick_block(); the additive capability lives in
-    // that accessor surface rather than in a realtime timing declaration.
+    // orthogonal. RandomAccess inputs also expose their ordinary current-block
+    // typed wrappers in tick()/tick_block().
     struct InputConfig {
         std::string name {};
         std::variant<SampleInputProperties, EventInputProperties> kind {};
-        InputAccessConfig access {RealtimeInputConfig{}};
+        InputAccessConfig access {SequentialInputConfig{}};
 
         constexpr InputConfig() = default;
         constexpr explicit InputConfig(std::string name)
@@ -1791,7 +1772,7 @@ namespace iv {
         constexpr InputConfig(
             std::string name,
             SampleInputProperties config,
-            InputAccessConfig access = RealtimeInputConfig{})
+            InputAccessConfig access = SequentialInputConfig{})
             : name(std::move(name))
             , kind(std::move(config))
             , access(std::move(access))
@@ -1799,7 +1780,7 @@ namespace iv {
         constexpr InputConfig(
             std::string name,
             EventInputProperties config,
-            InputAccessConfig access = RealtimeInputConfig{})
+            InputAccessConfig access = SequentialInputConfig{})
             : name(std::move(name))
             , kind(std::move(config))
             , access(std::move(access))
@@ -1809,7 +1790,7 @@ namespace iv {
     struct OutputConfig {
         std::string name {};
         std::variant<SampleOutputProperties, EventOutputProperties> kind {};
-        OutputAccessConfig access {RealtimeOutputConfig{}};
+        OutputProductionConfig production {TickOutputConfig{}};
         OutputRetention retention = OutputRetention::ephemeral;
 
         constexpr OutputConfig() = default;
@@ -1819,21 +1800,21 @@ namespace iv {
         constexpr OutputConfig(
             std::string name,
             SampleOutputProperties config,
-            OutputAccessConfig access = RealtimeOutputConfig{},
+            OutputProductionConfig production = TickOutputConfig{},
             OutputRetention retention = OutputRetention::ephemeral)
             : name(std::move(name))
             , kind(std::move(config))
-            , access(std::move(access))
+            , production(std::move(production))
             , retention(retention)
         {}
         constexpr OutputConfig(
             std::string name,
             EventOutputProperties config,
-            OutputAccessConfig access = RealtimeOutputConfig{},
+            OutputProductionConfig production = TickOutputConfig{},
             OutputRetention retention = OutputRetention::ephemeral)
             : name(std::move(name))
             , kind(std::move(config))
-            , access(std::move(access))
+            , production(std::move(production))
             , retention(retention)
         {}
     };
@@ -1841,7 +1822,7 @@ namespace iv {
     [[nodiscard]] constexpr InputConfig sample_input(
         std::string name = {},
         SampleInputProperties properties = {},
-        InputAccessConfig access = RealtimeInputConfig{})
+        InputAccessConfig access = SequentialInputConfig{})
     {
         return InputConfig{
             std::move(name), std::move(properties), std::move(access)};
@@ -1850,20 +1831,20 @@ namespace iv {
     [[nodiscard]] constexpr OutputConfig sample_output(
         std::string name = {},
         SampleOutputProperties properties = {},
-        OutputAccessConfig access = RealtimeOutputConfig{},
+        OutputProductionConfig production = TickOutputConfig{},
         OutputRetention retention = OutputRetention::ephemeral)
     {
         return OutputConfig{
             std::move(name),
             std::move(properties),
-            std::move(access),
+            std::move(production),
             retention};
     }
 
     [[nodiscard]] constexpr InputConfig event_input(
         std::string name = {},
         EventTypeId type = {},
-        InputAccessConfig access = RealtimeInputConfig{})
+        InputAccessConfig access = SequentialInputConfig{})
     {
         return InputConfig{
             std::move(name),
@@ -1874,127 +1855,126 @@ namespace iv {
     [[nodiscard]] constexpr OutputConfig event_output(
         std::string name = {},
         EventTypeId type = {},
-        OutputAccessConfig access = RealtimeOutputConfig{},
+        OutputProductionConfig production = TickOutputConfig{},
         OutputRetention retention = OutputRetention::ephemeral)
     {
         return OutputConfig{
             std::move(name),
             EventOutputProperties{.type = type},
-            std::move(access),
+            std::move(production),
             retention};
     }
 
     [[nodiscard]] constexpr OutputConfig event_output(
         std::string name,
         EventOutputProperties properties,
-        OutputAccessConfig access = RealtimeOutputConfig{},
+        OutputProductionConfig production = TickOutputConfig{},
         OutputRetention retention = OutputRetention::ephemeral)
     {
         return OutputConfig{
-            std::move(name), std::move(properties), std::move(access), retention};
+            std::move(name), std::move(properties), std::move(production), retention};
     }
 
-    [[nodiscard]] constexpr InputConfig indexed_sample_input(
+    [[nodiscard]] constexpr InputConfig random_access_sample_input(
         std::string name = {},
         SampleInputProperties properties = {})
     {
-        return sample_input(std::move(name), std::move(properties), indexed_input);
+        return sample_input(std::move(name), std::move(properties), random_access_input);
     }
 
-    [[nodiscard]] constexpr OutputConfig indexed_sample_output(
+    [[nodiscard]] constexpr OutputConfig tock_sample_output(
         std::string name = {},
         SampleOutputProperties properties = {},
         OutputRetention retention = OutputRetention::ephemeral)
     {
         return sample_output(
-            std::move(name), std::move(properties), IndexedOutputConfig{}, retention);
+            std::move(name), std::move(properties), TockOutputConfig{}, retention);
     }
 
-    [[nodiscard]] constexpr InputConfig indexed_event_input(
+    [[nodiscard]] constexpr InputConfig random_access_event_input(
         std::string name = {},
         EventTypeId type = {})
     {
-        return event_input(std::move(name), type, indexed_input);
+        return event_input(std::move(name), type, random_access_input);
     }
 
-    [[nodiscard]] constexpr OutputConfig indexed_event_output(
+    [[nodiscard]] constexpr OutputConfig tock_event_output(
         std::string name = {},
         EventTypeId type = {},
         OutputRetention retention = OutputRetention::ephemeral)
     {
         return event_output(
-            std::move(name), type, IndexedOutputConfig{}, retention);
+            std::move(name), type, TockOutputConfig{}, retention);
     }
 
-    [[nodiscard]] constexpr OutputConfig indexed_event_output(
+    [[nodiscard]] constexpr OutputConfig tock_event_output(
         std::string name,
         EventOutputProperties properties,
         OutputRetention retention = OutputRetention::ephemeral)
     {
         return event_output(
-            std::move(name), std::move(properties), IndexedOutputConfig{}, retention);
+            std::move(name), std::move(properties), TockOutputConfig{}, retention);
     }
 
-    [[nodiscard]] constexpr InputConfig realtime_sample_input(
+    [[nodiscard]] constexpr InputConfig sequential_sample_input(
         std::string name = {},
         SampleInputProperties properties = {},
-        RealtimeInputConfig access = {})
+        SequentialInputConfig access = {})
     {
         return sample_input(std::move(name), std::move(properties), std::move(access));
     }
 
-    [[nodiscard]] constexpr OutputConfig realtime_sample_output(
+    [[nodiscard]] constexpr OutputConfig tick_sample_output(
         std::string name = {},
         SampleOutputProperties properties = {},
-        RealtimeOutputConfig access = {},
+        TickOutputConfig production = {},
         OutputRetention retention = OutputRetention::ephemeral)
     {
         return sample_output(
-            std::move(name), std::move(properties), std::move(access), retention);
+            std::move(name), std::move(properties), std::move(production), retention);
     }
 
-    [[nodiscard]] constexpr InputConfig realtime_event_input(
+    [[nodiscard]] constexpr InputConfig sequential_event_input(
         std::string name = {},
         EventTypeId type = {},
-        RealtimeInputConfig access = {})
+        SequentialInputConfig access = {})
     {
         return event_input(std::move(name), type, std::move(access));
     }
 
-    [[nodiscard]] constexpr OutputConfig realtime_event_output(
+    [[nodiscard]] constexpr OutputConfig tick_event_output(
         std::string name = {},
         EventTypeId type = {},
-        RealtimeOutputConfig access = {},
+        TickOutputConfig production = {},
         OutputRetention retention = OutputRetention::ephemeral)
     {
-        return event_output(std::move(name), type, std::move(access), retention);
+        return event_output(std::move(name), type, std::move(production), retention);
     }
 
-    [[nodiscard]] constexpr OutputConfig realtime_event_output(
+    [[nodiscard]] constexpr OutputConfig tick_event_output(
         std::string name,
         EventOutputProperties properties,
-        RealtimeOutputConfig access = {},
+        TickOutputConfig production = {},
         OutputRetention retention = OutputRetention::ephemeral)
     {
         return event_output(
-            std::move(name), std::move(properties), std::move(access), retention);
+            std::move(name), std::move(properties), std::move(production), retention);
     }
 
     // The configured graph keeps physical sample/event lists because lowering
-    // uses separate sample and event collections. It preserves output access
-    // and retention independently instead of flattening indexed ports back
-    // into meaningless realtime history/latency fields.
+    // uses separate sample and event collections. Production and retention
+    // remain independent; Tock output configs have no Tick history/latency.
     struct EventInputConfig {
         std::string name {};
         EventTypeId type {};
-        InputAccessConfig access {RealtimeInputConfig{}};
+        InputAccessConfig access {SequentialInputConfig{}};
     };
 
     struct EventOutputConfig {
         std::string name {};
         EventTypeId type {};
         double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
-        OutputAccessConfig access {RealtimeOutputConfig{}};
+        OutputProductionConfig production {TickOutputConfig{}};
         OutputRetention retention = OutputRetention::ephemeral;
     };
 
@@ -2004,7 +1984,7 @@ namespace iv {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        InputAccessConfig access {RealtimeInputConfig{}};
+        InputAccessConfig access {SequentialInputConfig{}};
         Sample neutral_value = 0.0;
         Sample default_value = 0.0;
         Sample min = -std::numeric_limits<Sample::storage>::infinity();
@@ -2017,7 +1997,7 @@ namespace iv {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        OutputAccessConfig access {RealtimeOutputConfig{}};
+        OutputProductionConfig production {TickOutputConfig{}};
         OutputRetention retention = OutputRetention::ephemeral;
     };
 
@@ -2031,34 +2011,64 @@ namespace iv {
         return config.channel_layout;
     }
 
-    [[nodiscard]] constexpr bool is_indexed(InputConfig const& config)
+    [[nodiscard]] constexpr bool is_random_access(InputConfig const& config)
     {
-        return is_indexed(config.access);
+        return is_random_access(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_indexed(OutputConfig const& config)
+    [[nodiscard]] constexpr bool is_tock(OutputConfig const& config)
     {
-        return is_indexed(config.access);
+        return is_tock(config.production);
     }
 
-    [[nodiscard]] constexpr bool is_indexed(SampleInputConfig const& config)
+    [[nodiscard]] constexpr bool is_random_access(SampleInputConfig const& config)
     {
-        return is_indexed(config.access);
+        return is_random_access(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_indexed(SampleOutputConfig const& config)
+    [[nodiscard]] constexpr bool is_tock(SampleOutputConfig const& config)
     {
-        return is_indexed(config.access);
+        return is_tock(config.production);
     }
 
-    [[nodiscard]] constexpr bool is_indexed(EventInputConfig const& config)
+    [[nodiscard]] constexpr bool is_random_access(EventInputConfig const& config)
     {
-        return is_indexed(config.access);
+        return is_random_access(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_indexed(EventOutputConfig const& config)
+    [[nodiscard]] constexpr bool is_tock(EventOutputConfig const& config)
     {
-        return is_indexed(config.access);
+        return is_tock(config.production);
+    }
+
+    [[nodiscard]] constexpr bool is_sequential(InputConfig const& config)
+    {
+        return is_sequential(config.access);
+    }
+
+    [[nodiscard]] constexpr bool is_sequential(SampleInputConfig const& config)
+    {
+        return is_sequential(config.access);
+    }
+
+    [[nodiscard]] constexpr bool is_sequential(EventInputConfig const& config)
+    {
+        return is_sequential(config.access);
+    }
+
+    [[nodiscard]] constexpr bool is_tick(OutputConfig const& config)
+    {
+        return is_tick(config.production);
+    }
+
+    [[nodiscard]] constexpr bool is_tick(SampleOutputConfig const& config)
+    {
+        return is_tick(config.production);
+    }
+
+    [[nodiscard]] constexpr bool is_tick(EventOutputConfig const& config)
+    {
+        return is_tick(config.production);
     }
 
     [[nodiscard]] constexpr bool is_persisted(OutputConfig const& config)
@@ -2076,103 +2086,103 @@ namespace iv {
         return is_persisted(config.retention);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history(InputConfig const& config)
+    [[nodiscard]] constexpr size_t port_history(InputConfig const& config)
     {
-        return realtime_history(config.access);
+        return port_history(config.access);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history(OutputConfig const& config)
+    [[nodiscard]] constexpr size_t port_history(OutputConfig const& config)
     {
-        return realtime_history(config.access);
+        return port_history(config.production);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history(SampleInputConfig const& config)
+    [[nodiscard]] constexpr size_t port_history(SampleInputConfig const& config)
     {
-        return realtime_history(config.access);
+        return port_history(config.access);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history(SampleOutputConfig const& config)
+    [[nodiscard]] constexpr size_t port_history(SampleOutputConfig const& config)
     {
-        return realtime_history(config.access);
+        return port_history(config.production);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history(EventInputConfig const& config)
+    [[nodiscard]] constexpr size_t port_history(EventInputConfig const& config)
     {
-        return realtime_history(config.access);
+        return port_history(config.access);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history(EventOutputConfig const& config)
+    [[nodiscard]] constexpr size_t port_history(EventOutputConfig const& config)
     {
-        return realtime_history(config.access);
+        return port_history(config.production);
     }
 
-    [[nodiscard]] constexpr size_t realtime_latency(OutputConfig const& config)
+    [[nodiscard]] constexpr size_t tick_latency(OutputConfig const& config)
     {
-        return realtime_latency(config.access);
+        return tick_latency(config.production);
     }
 
-    [[nodiscard]] constexpr size_t realtime_latency(SampleOutputConfig const& config)
+    [[nodiscard]] constexpr size_t tick_latency(SampleOutputConfig const& config)
     {
-        return realtime_latency(config.access);
+        return tick_latency(config.production);
     }
 
-    [[nodiscard]] constexpr size_t realtime_latency(EventOutputConfig const& config)
+    [[nodiscard]] constexpr size_t tick_latency(EventOutputConfig const& config)
     {
-        return realtime_latency(config.access);
+        return tick_latency(config.production);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+    [[nodiscard]] constexpr size_t port_history_or_zero(
         InputConfig const& config)
     {
-        return realtime_history_or_zero(config.access);
+        return port_history_or_zero(config.access);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+    [[nodiscard]] constexpr size_t port_history_or_zero(
         OutputConfig const& config)
     {
-        return realtime_history_or_zero(config.access);
+        return port_history_or_zero(config.production);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+    [[nodiscard]] constexpr size_t port_history_or_zero(
         SampleInputConfig const& config)
     {
-        return realtime_history_or_zero(config.access);
+        return port_history_or_zero(config.access);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+    [[nodiscard]] constexpr size_t port_history_or_zero(
         SampleOutputConfig const& config)
     {
-        return realtime_history_or_zero(config.access);
+        return port_history_or_zero(config.production);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+    [[nodiscard]] constexpr size_t port_history_or_zero(
         EventInputConfig const& config)
     {
-        return realtime_history_or_zero(config.access);
+        return port_history_or_zero(config.access);
     }
 
-    [[nodiscard]] constexpr size_t realtime_history_or_zero(
+    [[nodiscard]] constexpr size_t port_history_or_zero(
         EventOutputConfig const& config)
     {
-        return realtime_history_or_zero(config.access);
+        return port_history_or_zero(config.production);
     }
 
-    [[nodiscard]] constexpr size_t realtime_latency_or_zero(
+    [[nodiscard]] constexpr size_t tick_latency_or_zero(
         OutputConfig const& config)
     {
-        return realtime_latency_or_zero(config.access);
+        return tick_latency_or_zero(config.production);
     }
 
-    [[nodiscard]] constexpr size_t realtime_latency_or_zero(
+    [[nodiscard]] constexpr size_t tick_latency_or_zero(
         SampleOutputConfig const& config)
     {
-        return realtime_latency_or_zero(config.access);
+        return tick_latency_or_zero(config.production);
     }
 
-    [[nodiscard]] constexpr size_t realtime_latency_or_zero(
+    [[nodiscard]] constexpr size_t tick_latency_or_zero(
         EventOutputConfig const& config)
     {
-        return realtime_latency_or_zero(config.access);
+        return tick_latency_or_zero(config.production);
     }
 
     [[nodiscard]] constexpr SampleInputConfig materialize_sample_config(
@@ -2197,7 +2207,7 @@ namespace iv {
         return {
             .name = config.name,
             .channel_layout = properties.channel_layout,
-            .access = config.access,
+            .production = config.production,
             .retention = config.retention,
         };
     }
@@ -2220,7 +2230,7 @@ namespace iv {
             .name = config.name,
             .type = properties.type,
             .max_events_per_index = properties.max_events_per_index,
-            .access = config.access,
+            .production = config.production,
             .retention = config.retention,
         };
     }
@@ -2257,7 +2267,7 @@ namespace iv {
         return {
             config.name,
             SampleOutputProperties{.channel_layout = config.channel_layout},
-            config.access,
+            config.production,
             config.retention,
         };
     }
@@ -2271,7 +2281,7 @@ namespace iv {
                 .type = config.type,
                 .max_events_per_index = config.max_events_per_index,
             },
-            config.access,
+            config.production,
             config.retention,
         };
     }

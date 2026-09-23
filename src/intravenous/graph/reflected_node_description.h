@@ -32,6 +32,7 @@ struct ReflectedNodeDescription {
     std::size_t maximum_block_size = MAX_BLOCK_SIZE;
     std::optional<std::size_t> default_ttl_samples {};
     bool block_skippable = false;
+    bool intrinsically_replayable = false;
     std::optional<Sample> static_sample_value {};
 
     constexpr std::vector<InputConfig> const& inputs() const

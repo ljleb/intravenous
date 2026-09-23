@@ -210,7 +210,7 @@ std::expected<void, std::string> inventory_sample_connections(
             auto const target = graph.node_bundles.resolve_sample_input(
                 connection_plan.target_port).config;
             connection_plan.target_layout = target.channel_layout;
-            connection_plan.target_history = realtime_history_or_zero(target);
+            connection_plan.target_history = port_history_or_zero(target);
             if (connection.detach) {
                 if (connection.detach->loop_extra_latency == 0)
                     return std::unexpected(
@@ -220,7 +220,7 @@ std::expected<void, std::string> inventory_sample_connections(
                     connection.detach->initial_value_override.value_or(
                         target.neutral_value);
             }
-            auto const target_realtime = is_realtime(target.access);
+            auto const target_realtime = is_sequential(target.access);
 
             std::optional<ChannelLayout> canonical_source_layout;
             std::optional<bool> source_realtime;
@@ -231,8 +231,8 @@ std::expected<void, std::string> inventory_sample_connections(
                     source_channel.bundle, PortKind::sample, source_channel.port};
                 auto const source =
                     graph.node_bundles.resolve_sample_output(source_port).config;
-                auto const source_history = realtime_history_or_zero(source);
-                auto const source_latency = realtime_latency_or_zero(source);
+                auto const source_history = port_history_or_zero(source);
+                auto const source_latency = tick_latency_or_zero(source);
                 connection_plan.source_channel_timings.push_back(
                     SampleSourceChannelTimingPlan{
                         .source = source_channel,
@@ -245,7 +245,7 @@ std::expected<void, std::string> inventory_sample_connections(
                     connection_plan.source_history, source_history);
                 connection_plan.source_latency = std::max(
                     connection_plan.source_latency, source_latency);
-                auto const this_source_realtime = is_realtime(source.access);
+                auto const this_source_realtime = is_tick(source.production);
                 if (source_realtime && *source_realtime != this_source_realtime) {
                     return std::unexpected(
                         "sample connection sources mix realtime and indexed access");
@@ -532,10 +532,10 @@ std::expected<void, std::string> inventory_event_connections(
                     graph.node_bundles.resolve_event_output(source_port).config;
                 connection_plan.source_history = std::max(
                     connection_plan.source_history,
-                    realtime_history_or_zero(source));
+                    port_history_or_zero(source));
                 connection_plan.source_latency = std::max(
                     connection_plan.source_latency,
-                    realtime_latency_or_zero(source));
+                    tick_latency_or_zero(source));
                 if (!is_valid_event_buffer_rate(source.max_events_per_index)) {
                     return std::unexpected(
                         "event output max_events_per_index must be finite and nonnegative");
@@ -545,7 +545,7 @@ std::expected<void, std::string> inventory_event_connections(
                     return std::unexpected(
                         "event connection aggregate max_events_per_index is not representable");
                 }
-                auto const this_source_realtime = is_realtime(source.access);
+                auto const this_source_realtime = is_tick(source.production);
                 if (source_realtime && *source_realtime != this_source_realtime) {
                     return std::unexpected(
                         "event connection sources mix realtime and indexed access");
@@ -559,8 +559,8 @@ std::expected<void, std::string> inventory_event_connections(
                     graph.node_bundles.resolve_event_input(target_port).config;
                 connection_plan.target_history = std::max(
                     connection_plan.target_history,
-                    realtime_history_or_zero(target));
-                auto const this_target_realtime = is_realtime(target.access);
+                    port_history_or_zero(target));
+                auto const this_target_realtime = is_sequential(target.access);
                 if (target_realtime && *target_realtime != this_target_realtime) {
                     return std::unexpected(
                         "event connection targets mix realtime and indexed access");
@@ -1000,19 +1000,19 @@ std::expected<void, std::string> populate_indexed_topology(
     auto has_indexed_port = [&](PlannedGraphNode const& node) {
         auto const bundle = node.bundle;
         for (std::size_t port = 0; port < node.sample_input_count; ++port) {
-            if (is_indexed(graph.node_bundles.resolve_sample_input(
+            if (is_random_access(graph.node_bundles.resolve_sample_input(
                     {bundle, PortKind::sample, port}).config)) return true;
         }
         for (std::size_t port = 0; port < node.sample_output_count; ++port) {
-            if (is_indexed(graph.node_bundles.resolve_sample_output(
+            if (is_tock(graph.node_bundles.resolve_sample_output(
                     {bundle, PortKind::sample, port}).config)) return true;
         }
         for (std::size_t port = 0; port < node.event_input_count; ++port) {
-            if (is_indexed(graph.node_bundles.resolve_event_input(
+            if (is_random_access(graph.node_bundles.resolve_event_input(
                     {bundle, PortKind::event, port}).config)) return true;
         }
         for (std::size_t port = 0; port < node.event_output_count; ++port) {
-            if (is_indexed(graph.node_bundles.resolve_event_output(
+            if (is_tock(graph.node_bundles.resolve_event_output(
                     {bundle, PortKind::event, port}).config)) return true;
         }
         return false;
@@ -1109,7 +1109,7 @@ std::expected<void, std::string> populate_indexed_topology(
         for (std::size_t port = 0; port < node.sample_input_count; ++port) {
             NodeBundlePortId const id{bundle, PortKind::sample, port};
             auto const config = graph.node_bundles.resolve_sample_input(id).config;
-            if (!is_indexed(config)) continue;
+            if (!is_random_access(config)) continue;
             append_endpoint(
                 indexed_node, id, IndexedEndpointDirection::input,
                 config.name, std::nullopt, config.channel_layout,
@@ -1118,7 +1118,7 @@ std::expected<void, std::string> populate_indexed_topology(
         for (std::size_t port = 0; port < node.event_input_count; ++port) {
             NodeBundlePortId const id{bundle, PortKind::event, port};
             auto const config = graph.node_bundles.resolve_event_input(id).config;
-            if (!is_indexed(config)) continue;
+            if (!is_random_access(config)) continue;
             append_endpoint(
                 indexed_node, id, IndexedEndpointDirection::input,
                 config.name, std::nullopt, {}, config.type, 0.0);
@@ -1126,7 +1126,7 @@ std::expected<void, std::string> populate_indexed_topology(
         for (std::size_t port = 0; port < node.sample_output_count; ++port) {
             NodeBundlePortId const id{bundle, PortKind::sample, port};
             auto const config = graph.node_bundles.resolve_sample_output(id).config;
-            if (!is_indexed(config)) continue;
+            if (!is_tock(config)) continue;
             append_endpoint(
                 indexed_node, id, IndexedEndpointDirection::output,
                 config.name, config.retention,
@@ -1135,7 +1135,7 @@ std::expected<void, std::string> populate_indexed_topology(
         for (std::size_t port = 0; port < node.event_output_count; ++port) {
             NodeBundlePortId const id{bundle, PortKind::event, port};
             auto const config = graph.node_bundles.resolve_event_output(id).config;
-            if (!is_indexed(config)) continue;
+            if (!is_tock(config)) continue;
             append_endpoint(
                 indexed_node, id, IndexedEndpointDirection::output,
                 config.name, config.retention,

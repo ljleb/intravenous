@@ -76,12 +76,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { realtime_event_input("midi", EventTypeId::midi) };
+            return std::array { sequential_event_input("midi", EventTypeId::midi) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { realtime_sample_output("frequency") };
+            return std::array { tick_sample_output("frequency") };
         }
 
         void declare(DeclarationContext<MidiPitch> const& ctx) const
@@ -173,12 +173,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { realtime_event_input("midi", EventTypeId::midi) };
+            return std::array { sequential_event_input("midi", EventTypeId::midi) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { realtime_sample_output("gate") };
+            return std::array { tick_sample_output("gate") };
         }
 
         void declare(DeclarationContext<MidiGate> const& ctx) const
@@ -291,16 +291,16 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                realtime_event_input("midi", EventTypeId::midi),
+                sequential_event_input("midi", EventTypeId::midi),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                realtime_sample_output("amplitude"),
-                realtime_sample_output("frequency"),
-                realtime_event_output("trigger", EventTypeId::trigger),
+                tick_sample_output("amplitude"),
+                tick_sample_output("frequency"),
+                tick_event_output("trigger", EventTypeId::trigger),
             };
         }
 

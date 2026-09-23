@@ -18,16 +18,16 @@ struct TimedSamplePass {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_sample_input(
-                "in", {}, iv::RealtimeInputConfig{.history = 5}),
+            iv::sequential_sample_input(
+                "in", {}, iv::SequentialInputConfig{.history = 5}),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::realtime_sample_output(
-                "out", {}, iv::RealtimeOutputConfig{.history = 3, .latency = 2}),
+            iv::tick_sample_output(
+                "out", {}, iv::TickOutputConfig{.history = 3, .latency = 2}),
         };
     }
 
@@ -37,12 +37,12 @@ struct TimedSamplePass {
 struct PlainSamplePass {
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input("in")};
+        return std::array{iv::sequential_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output("out")};
+        return std::array{iv::tick_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<PlainSamplePass> const&) const {}
@@ -51,14 +51,14 @@ struct PlainSamplePass {
 struct MixedAccessPass {
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input("in")};
+        return std::array{iv::sequential_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::realtime_sample_output("realtime"),
-            iv::indexed_sample_output(
+            iv::tick_sample_output("realtime"),
+            iv::tock_sample_output(
                 "indexed", {}, iv::OutputRetention::persisted),
         };
     }
@@ -75,13 +75,13 @@ struct MixedAccessPass {
 struct NeutralSamplePass {
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input(
+        return std::array{iv::sequential_sample_input(
             "in", iv::SampleInputProperties{.neutral_value = 0.375f})};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output("out")};
+        return std::array{iv::tick_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<NeutralSamplePass> const&) const {}
@@ -91,13 +91,13 @@ struct PlainEventPass {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_event_input("in", iv::EventTypeId::trigger),
+            iv::sequential_event_input("in", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_event_output(
+        return std::array{iv::tick_event_output(
             "out",
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
@@ -116,7 +116,7 @@ struct MonoSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output("out")};
+        return std::array{iv::tick_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<MonoSource> const&) const {}
@@ -130,7 +130,7 @@ struct LimitedMonoSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output("out")};
+        return std::array{iv::tick_sample_output("out")};
     }
 
     constexpr std::size_t max_block_size() const { return 16; }
@@ -142,7 +142,7 @@ struct StereoSink {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_sample_input(
+            iv::sequential_sample_input(
                 "in",
                 iv::SampleInputProperties{
                     .channel_layout = iv::ChannelLayout{
@@ -169,7 +169,7 @@ struct IndexedSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::indexed_sample_output("out")};
+        return std::array{iv::tock_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<IndexedSource> const&) const {}
@@ -184,12 +184,12 @@ struct IndexedSource {
 struct IndexedSamplePass {
     static constexpr auto inputs()
     {
-        return std::array{iv::indexed_sample_input("in")};
+        return std::array{iv::random_access_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::indexed_sample_output("out")};
+        return std::array{iv::tock_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<IndexedSamplePass> const&) const {}
@@ -206,14 +206,14 @@ struct IndexedEventPass {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::indexed_event_input("in", iv::EventTypeId::trigger),
+            iv::random_access_event_input("in", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::indexed_event_output("out", iv::EventTypeId::trigger),
+            iv::tock_event_output("out", iv::EventTypeId::trigger),
         };
     }
 
@@ -236,7 +236,7 @@ struct IndexedMidiSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::indexed_event_output("out", iv::EventTypeId::midi),
+            iv::tock_event_output("out", iv::EventTypeId::midi),
         };
     }
 
@@ -249,7 +249,7 @@ struct IndexedMidiSource {
 struct IndexedSink {
     static constexpr auto inputs()
     {
-        return std::array{iv::indexed_sample_input("in")};
+        return std::array{iv::random_access_sample_input("in")};
     }
 
     static constexpr auto outputs()
@@ -264,14 +264,14 @@ struct IndexedTwoInputPass {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::indexed_sample_input("a"),
-            iv::indexed_sample_input("b"),
+            iv::random_access_sample_input("a"),
+            iv::random_access_sample_input("b"),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::indexed_sample_output("out")};
+        return std::array{iv::tock_sample_output("out")};
     }
 
     void tick_block(iv::TickBlockContext<IndexedTwoInputPass> const&) const {}
@@ -289,19 +289,19 @@ struct OutputAccessRetentionModes {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::realtime_sample_output(
+            iv::tick_sample_output(
                 "realtime_ephemeral", {}, {},
                 iv::OutputRetention::ephemeral),
-            iv::realtime_sample_output(
+            iv::tick_sample_output(
                 "realtime_persisted", {}, {},
                 iv::OutputRetention::persisted),
-            iv::indexed_sample_output(
+            iv::tock_sample_output(
                 "indexed_ephemeral", {},
                 iv::OutputRetention::ephemeral),
-            iv::indexed_sample_output(
+            iv::tock_sample_output(
                 "indexed_persisted", {},
                 iv::OutputRetention::persisted),
-            iv::indexed_event_output(
+            iv::tock_event_output(
                 "indexed_persisted_events",
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::trigger,
@@ -322,7 +322,7 @@ struct OutputAccessRetentionModes {
 struct RealtimeSink {
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input("in")};
+        return std::array{iv::sequential_sample_input("in")};
     }
 
     static constexpr auto outputs()
@@ -336,13 +336,13 @@ struct RealtimeSink {
 struct LatentSamplePass {
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input("in")};
+        return std::array{iv::sequential_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
-            "out", {}, iv::RealtimeOutputConfig{.latency = 2})};
+        return std::array{iv::tick_sample_output(
+            "out", {}, iv::TickOutputConfig{.latency = 2})};
     }
 
     constexpr std::size_t internal_latency() const { return 5; }
@@ -354,8 +354,8 @@ struct TwoInputSink {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_sample_input("fast"),
-            iv::realtime_sample_input("slow"),
+            iv::sequential_sample_input("fast"),
+            iv::sequential_sample_input("slow"),
         };
     }
 
@@ -371,15 +371,15 @@ struct LatentTwoInputPass {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::realtime_sample_input("fast"),
-            iv::realtime_sample_input("slow"),
+            iv::sequential_sample_input("fast"),
+            iv::sequential_sample_input("slow"),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
-            "out", {}, iv::RealtimeOutputConfig{.latency = 4})};
+        return std::array{iv::tick_sample_output(
+            "out", {}, iv::TickOutputConfig{.latency = 4})};
     }
 
     constexpr std::size_t internal_latency() const { return 3; }
@@ -390,13 +390,13 @@ struct LatentTwoInputPass {
 struct MediumLatencySamplePass {
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input("in")};
+        return std::array{iv::sequential_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
-            "out", {}, iv::RealtimeOutputConfig{.latency = 1})};
+        return std::array{iv::tick_sample_output(
+            "out", {}, iv::TickOutputConfig{.latency = 1})};
     }
 
     constexpr std::size_t internal_latency() const { return 9; }

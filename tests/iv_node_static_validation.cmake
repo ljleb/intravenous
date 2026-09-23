@@ -63,3 +63,7 @@ expect_invalid(
 expect_invalid(
     invalid_indexed_state.cpp
     "Node::IndexedState must be a mutable, non-volatile, default-constructible object type")
+
+expect_invalid(
+    invalid_replayable_node.cpp
+    "IV_NODE intrinsically replayable nodes must author tick() (not tick_block())")

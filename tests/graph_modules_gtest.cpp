@@ -43,7 +43,7 @@ struct NodeCallEventSource {
     static constexpr auto outputs()
     {
         return std::array<OutputConfig, 1>{
-            realtime_event_output("trigger", EventTypeId::trigger),
+            tick_event_output("trigger", EventTypeId::trigger),
         };
     }
 
@@ -54,9 +54,9 @@ struct NodeCallMixedSink {
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 3>{
-            realtime_sample_input("left"),
-            realtime_sample_input("right"),
-            realtime_event_input("trigger", EventTypeId::trigger),
+            sequential_sample_input("left"),
+            sequential_sample_input("right"),
+            sequential_event_input("trigger", EventTypeId::trigger),
         };
     }
 

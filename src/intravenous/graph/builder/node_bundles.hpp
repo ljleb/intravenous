@@ -57,6 +57,7 @@ class NodeBundle {
     size_t maximum_block_size = MAX_BLOCK_SIZE;
     std::optional<size_t> default_ttl_samples{};
     bool block_skippable = false;
+    bool intrinsically_replayable = false;
     std::optional<Sample> static_sample_value{};
   };
 
@@ -202,6 +203,7 @@ struct ConfiguredNodeBundleRecord {
   size_t maximum_block_size = MAX_BLOCK_SIZE;
   std::optional<size_t> default_ttl_samples{};
   bool block_skippable = false;
+  bool intrinsically_replayable = false;
   std::optional<Sample> static_sample_value{};
 
   std::vector<NodeBundleHandle> tiled_members{};
@@ -240,6 +242,7 @@ struct ConfiguredNodeBundleView {
   size_t maximum_block_size = MAX_BLOCK_SIZE;
   std::optional<size_t> const* default_ttl_samples = nullptr;
   bool block_skippable = false;
+  bool intrinsically_replayable = false;
   std::optional<Sample> const* static_sample_value = nullptr;
 
   std::span<NodeBundleHandle const> tiled_members{};
@@ -374,6 +377,7 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
       .maximum_block_size = description.maximum_block_size,
       .default_ttl_samples = description.default_ttl_samples,
       .block_skippable = description.block_skippable,
+      .intrinsically_replayable = description.intrinsically_replayable,
       .static_sample_value = description.static_sample_value,
   };
 }
@@ -404,6 +408,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
       .maximum_block_size = lowered.maximum_block_size,
       .default_ttl_samples = lowered.default_ttl_samples,
       .block_skippable = lowered.block_skippable,
+      .intrinsically_replayable = lowered.intrinsically_replayable,
       .static_sample_value = lowered.static_sample_value,
   };
   auto const handle = _bundles.size();
@@ -553,7 +558,9 @@ NodeBundle::sample_input_descriptor(size_t ordinal) const {
           return {.config = SampleInputConfig{
               .name = output.name,
               .channel_layout = output.channel_layout,
-              .access = inward_input_access(output.access),
+              .access = is_tick(output) ? InputAccessConfig{SequentialInputConfig{
+                  .history = port_history_or_zero(output)}}
+                  : InputAccessConfig{RandomAccessInputConfig{}},
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return {.config = payload.ports.sample_input(ordinal)};
@@ -578,7 +585,9 @@ NodeBundle::sample_output_descriptor(size_t ordinal) const {
           return {.config = SampleOutputConfig{
               .name = input.name,
               .channel_layout = input.channel_layout,
-              .access = inward_output_access(input.access),
+              .production = is_sequential(input) ? OutputProductionConfig{TickOutputConfig{
+                  .history = port_history_or_zero(input)}}
+                  : OutputProductionConfig{TockOutputConfig{}},
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return {.config = payload.ports.sample_output(ordinal)};
@@ -679,12 +688,16 @@ namespace iv {
 namespace {
 constexpr EventOutputConfig inward_event_output_config(
     EventInputConfig const &config) {
-  return EventOutputConfig{.name = config.name, .type = config.type, .access = inward_output_access(config.access)};
+  return EventOutputConfig{.name = config.name, .type = config.type, .production = is_sequential(config) ? OutputProductionConfig{TickOutputConfig{
+      .history = port_history_or_zero(config)}}
+      : OutputProductionConfig{TockOutputConfig{}}};
 }
 
 constexpr EventInputConfig inward_event_input_config(
     EventOutputConfig const &config) {
-  return EventInputConfig{.name = config.name, .type = config.type, .access = inward_input_access(config.access)};
+  return EventInputConfig{.name = config.name, .type = config.type, .access = is_tick(config) ? InputAccessConfig{SequentialInputConfig{
+      .history = port_history_or_zero(config)}}
+      : InputAccessConfig{RandomAccessInputConfig{}}};
 }
 
 template <class MatchesName>
@@ -995,7 +1008,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
     return event_properties(lhs).type == event_properties(rhs).type;
   };
   auto same_output = [](OutputConfig const& lhs, OutputConfig const& rhs) {
-    if (lhs.name != rhs.name || lhs.access != rhs.access
+    if (lhs.name != rhs.name || lhs.production != rhs.production
         || lhs.retention != rhs.retention
         || is_sample(lhs) != is_sample(rhs)) return false;
     if (is_sample(lhs)) {
@@ -1185,6 +1198,7 @@ GraphBuilderNodeBundles::materialize_concrete_description(
       .maximum_block_size = payload->maximum_block_size,
       .default_ttl_samples = payload->default_ttl_samples,
       .block_skippable = payload->block_skippable,
+      .intrinsically_replayable = payload->intrinsically_replayable,
       .static_sample_value = payload->static_sample_value,
   };
 }
@@ -1286,6 +1300,7 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
         view.maximum_block_size = payload.maximum_block_size;
         view.default_ttl_samples = &payload.default_ttl_samples;
         view.block_skippable = payload.block_skippable;
+        view.intrinsically_replayable = payload.intrinsically_replayable;
         view.static_sample_value = &payload.static_sample_value;
       } else if constexpr (std::same_as<Payload, NodeBundle::TiledNodeBundle>) {
         view.kind = ConfiguredNodeBundleKind::tiled;
@@ -1345,6 +1360,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
           .maximum_block_size = record.maximum_block_size,
           .default_ttl_samples = record.default_ttl_samples,
           .block_skippable = record.block_skippable,
+          .intrinsically_replayable = record.intrinsically_replayable,
           .static_sample_value = record.static_sample_value,
       });
       break;

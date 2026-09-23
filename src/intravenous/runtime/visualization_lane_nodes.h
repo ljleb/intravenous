@@ -113,8 +113,8 @@ struct VisualizationRealtimeSampleLane {
 
     void tick_block_realtime(RealtimeLaneTickContext<VisualizationRealtimeSampleLane>& ctx)
     {
-        if (ctx.realtime_sample_input(0).connected()) {
-            auto const block = ctx.realtime_sample_input(0).block_view();
+        if (ctx.sequential_sample_input(0).connected()) {
+            auto const block = ctx.sequential_sample_input(0).block_view();
             ctx.out().write_block(block);
             if (queue != nullptr) {
                 queue->push(block);
@@ -148,7 +148,7 @@ struct VisualizationRealtimeEventLane {
 
     void tick_block_realtime(RealtimeLaneTickContext<VisualizationRealtimeEventLane>& ctx)
     {
-        auto const events = ctx.realtime_event_input(0).get_block();
+        auto const events = ctx.sequential_event_input(0).get_block();
         ctx.out().push_block(BlockView<TimedEvent const> { .first = events });
         if (queue != nullptr) {
             queue->push(events);

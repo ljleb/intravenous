@@ -174,116 +174,116 @@ namespace iv {
             };
 
         template<typename Node>
-        consteval bool declares_indexed_inputs()
+        consteval bool declares_random_access_inputs()
         {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::inputs()) {
-                    if (is_indexed(config)) return true;
+                    if (is_random_access(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        consteval bool declares_indexed_outputs()
+        consteval bool declares_tock_outputs()
         {
             if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::outputs()) {
-                    if (is_indexed(config)) return true;
+                    if (is_tock(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        consteval bool declares_indexed_sample_inputs()
+        consteval bool declares_random_access_sample_inputs()
         {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::inputs()) {
-                    if (is_sample(config) && is_indexed(config)) return true;
+                    if (is_sample(config) && is_random_access(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        consteval bool declares_indexed_sample_outputs()
+        consteval bool declares_tock_sample_outputs()
         {
             if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::outputs()) {
-                    if (is_sample(config) && is_indexed(config)) return true;
+                    if (is_sample(config) && is_tock(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        consteval bool declares_indexed_event_inputs()
+        consteval bool declares_random_access_event_inputs()
         {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::inputs()) {
-                    if (!is_sample(config) && is_indexed(config)) return true;
+                    if (!is_sample(config) && is_random_access(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        consteval bool declares_indexed_event_outputs()
+        consteval bool declares_tock_event_outputs()
         {
             if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 for (auto const& config : Node::outputs()) {
-                    if (!is_sample(config) && is_indexed(config)) return true;
+                    if (!is_sample(config) && is_tock(config)) return true;
                 }
                 return false;
             }
         }
 
         template<typename Node>
-        inline constexpr bool declares_indexed_inputs_v =
-            declares_indexed_inputs<Node>();
+        inline constexpr bool declares_random_access_inputs_v =
+            declares_random_access_inputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_indexed_outputs_v =
-            declares_indexed_outputs<Node>();
+        inline constexpr bool declares_tock_outputs_v =
+            declares_tock_outputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_indexed_sample_inputs_v =
-            declares_indexed_sample_inputs<Node>();
+        inline constexpr bool declares_random_access_sample_inputs_v =
+            declares_random_access_sample_inputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_indexed_sample_outputs_v =
-            declares_indexed_sample_outputs<Node>();
+        inline constexpr bool declares_tock_sample_outputs_v =
+            declares_tock_sample_outputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_indexed_event_inputs_v =
-            declares_indexed_event_inputs<Node>();
+        inline constexpr bool declares_random_access_event_inputs_v =
+            declares_random_access_event_inputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_indexed_event_outputs_v =
-            declares_indexed_event_outputs<Node>();
+        inline constexpr bool declares_tock_event_outputs_v =
+            declares_tock_event_outputs<Node>();
 
         template<typename Node>
-        inline constexpr bool declares_indexed_sample_ports_v =
-            declares_indexed_sample_inputs_v<Node>
-            || declares_indexed_sample_outputs_v<Node>;
+        inline constexpr bool declares_random_access_or_tock_sample_ports_v =
+            declares_random_access_sample_inputs_v<Node>
+            || declares_tock_sample_outputs_v<Node>;
 
         template<typename Node>
-        inline constexpr bool declares_indexed_event_ports_v =
-            declares_indexed_event_inputs_v<Node>
-            || declares_indexed_event_outputs_v<Node>;
+        inline constexpr bool declares_random_access_or_tock_event_ports_v =
+            declares_random_access_event_inputs_v<Node>
+            || declares_tock_event_outputs_v<Node>;
 
         template<typename Node>
         concept has_tock_coverage = requires(Node const& node) {
@@ -327,17 +327,67 @@ namespace iv {
         inline constexpr bool indexed_dsp_node_declaration_is_valid_v =
             indexed_state_type_is_valid_v<Node>
             && has_constexpr_port_configs<Node>
-            && (!declares_indexed_outputs_v<Node>
+            && (!declares_tock_outputs_v<Node>
                 || has_tock_coverage<Node>)
             && (!has_tock_coverage<Node>
-                || declares_indexed_outputs_v<Node>)
-            && (!declares_indexed_outputs_v<Node>
+                || declares_tock_outputs_v<Node>)
+            && (!declares_tock_outputs_v<Node>
                 || has_propagate_forward_coverage<Node>)
             && (!has_propagate_forward_coverage<Node>
-                || declares_indexed_outputs_v<Node>)
+                || declares_tock_outputs_v<Node>)
             && (!has_propagate_reverse_coverage<Node>
-                || (declares_indexed_outputs_v<Node>
-                    && declares_indexed_inputs_v<Node>));
+                || (declares_tock_outputs_v<Node>
+                    && declares_random_access_inputs_v<Node>));
+
+        // The author opts into a deterministic, side-effect-free Tick contract.
+        // This is a type-level fact, not a producer mode; contextual replay is
+        // established by the whole-graph planner after checking live sources.
+        template<typename Node>
+        consteval bool intrinsically_replayable()
+        {
+            if constexpr (requires { Node::intrinsically_replayable; }) {
+                return std::bool_constant<Node::intrinsically_replayable>::value;
+            } else {
+                return false;
+            }
+        }
+
+        template<typename Node>
+        inline constexpr bool intrinsically_replayable_v =
+            intrinsically_replayable<Node>();
+
+        template<typename Node>
+        consteval bool replay_ports_are_pointwise()
+        {
+            if constexpr (!has_constexpr_port_configs<Node>) {
+                return false;
+            } else {
+                if constexpr (has_inputs<Node>) {
+                    for (InputConfig const& config : Node::inputs()) {
+                        if (!is_sequential(config)
+                            || port_history_or_zero(config) != 0) return false;
+                    }
+                }
+                if constexpr (has_outputs<Node>) {
+                    for (OutputConfig const& config : Node::outputs()) {
+                        if (!is_tick(config)
+                            || port_history_or_zero(config) != 0
+                            || tick_latency_or_zero(config) != 0) return false;
+                    }
+                }
+                return true;
+            }
+        }
+
+        template<typename Node>
+        inline constexpr bool replay_declaration_is_valid_v =
+            !intrinsically_replayable_v<Node>
+            || (has_constexpr_port_configs<Node>
+                && has_tick<Node>
+                && !has_tick_block<Node>
+                && !has_State<Node>
+                && !has_IndexedState<Node>
+                && replay_ports_are_pointwise<Node>());
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)

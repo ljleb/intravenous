@@ -137,6 +137,7 @@ struct IrNodeRecord {
     std::size_t state_alignment = 1;
     std::size_t indexed_state_size = 0;
     std::size_t indexed_state_alignment = 1;
+    bool intrinsically_replayable = false;
 };
 
 std::uint64_t constant_u64(llvm::Value const* value, std::string_view field)
@@ -197,7 +198,7 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
             continue;
         }
         auto* record = llvm::dyn_cast_or_null<llvm::ConstantStruct>(global.getInitializer());
-        if (!record || record->getNumOperands() != 8) {
+        if (!record || record->getNumOperands() != 9) {
             fail(GraphJitDiagnosticStage::package_llvm, "malformed iv_node_types record");
         }
         auto* key = llvm::dyn_cast<llvm::ConstantStruct>(record->getOperand(0));
@@ -213,6 +214,12 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
         // Configuration-only declare_node must exist in the compiler record,
         // but it is deliberately not exposed to whole-project lowering.
         (void)compiler_callback(operations->getOperand(0), "declare_node", true);
+        auto const replay_marker = constant_u64(
+            record->getOperand(8), "intrinsic replayability");
+        if (replay_marker > 1) {
+            fail(GraphJitDiagnosticStage::package_llvm,
+                "malformed iv_node_types intrinsic replayability flag");
+        }
         IrNodeRecord parsed{
             .tick_block = compiler_callback(operations->getOperand(1), "tick_block", true),
             .skip_block = compiler_callback(operations->getOperand(2), "skip_block", true),
@@ -228,6 +235,8 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
                 record->getOperand(6), "indexed state size"),
             .indexed_state_alignment = constant_size(
                 record->getOperand(7), "indexed state alignment"),
+            .intrinsically_replayable =
+                replay_marker != 0,
         };
         if (!result.emplace(code_key, parsed).second) {
             fail(GraphJitDiagnosticStage::package_llvm, "duplicate NodeCodeKey in iv_node_types");
@@ -641,10 +650,11 @@ void verify_compiler_record(
     if (accepted.state_size != ir_record.state_size
         || accepted.state_alignment != ir_record.state_alignment
         || accepted.indexed_state_size != ir_record.indexed_state_size
-        || accepted.indexed_state_alignment != ir_record.indexed_state_alignment) {
+        || accepted.indexed_state_alignment != ir_record.indexed_state_alignment
+        || accepted.intrinsically_replayable != ir_record.intrinsically_replayable) {
         fail(
             GraphJitDiagnosticStage::package_llvm,
-            "NodeCompilerRecord state ABI disagrees with retained package LLVM for node '"
+            "NodeCompilerRecord state/replay ABI disagrees with retained package LLVM for node '"
                 + captured.identity.node_type_id + "'");
     }
     if (static_cast<bool>(accepted.operations.tock_coverage)
@@ -1045,6 +1055,7 @@ public:
                     .state_alignment = record->second.state_alignment,
                     .indexed_state_size = record->second.indexed_state_size,
                     .indexed_state_alignment = record->second.indexed_state_alignment,
+                    .intrinsically_replayable = record->second.intrinsically_replayable,
                     .node_data = captured_node.node_data,
                     .state_structures = captured_node.state_structures,
                     .declare_node = captured_node.declare_node,

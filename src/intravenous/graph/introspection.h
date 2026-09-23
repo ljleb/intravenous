@@ -140,9 +140,9 @@ constexpr std::vector<IntrospectionPortInfo> project_introspection_sample_ports(
             default_value = config.default_value;
             min = config.min;
             max = config.max;
-            history = realtime_history_or_zero(config);
+            history = port_history_or_zero(config);
         } else {
-            latency = realtime_latency_or_zero(
+            latency = tick_latency_or_zero(
                 node_bundles.resolve_sample_output(first_address).config);
         }
 

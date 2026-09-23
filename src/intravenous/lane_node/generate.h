@@ -564,8 +564,8 @@ namespace iv {
         std::span<RealtimeEventLaneInput> realtime_event_inputs() const { return _untyped.realtime_event_inputs; }
         CompiledSampleLaneInput& compiled_sample_input(size_t index) const { return _untyped.compiled_sample_inputs[index]; }
         CompiledEventLaneInput& compiled_event_input(size_t index) const { return _untyped.compiled_event_inputs[index]; }
-        RealtimeSampleLaneInput& realtime_sample_input(size_t index) const { return _untyped.realtime_sample_inputs[index]; }
-        RealtimeEventLaneInput& realtime_event_input(size_t index) const { return _untyped.realtime_event_inputs[index]; }
+        RealtimeSampleLaneInput& sequential_sample_input(size_t index) const { return _untyped.realtime_sample_inputs[index]; }
+        RealtimeEventLaneInput& sequential_event_input(size_t index) const { return _untyped.realtime_event_inputs[index]; }
 
         OutputView& out() const
         {

@@ -5,12 +5,12 @@
 struct ValidIndexedNode {
     static constexpr auto inputs()
     {
-        return std::array {iv::indexed_sample_input("input")};
+        return std::array {iv::random_access_sample_input("input")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {iv::indexed_sample_output("output")};
+        return std::array {iv::tock_sample_output("output")};
     }
 
     static constexpr std::size_t num_inputs() { return inputs().size(); }
@@ -35,14 +35,14 @@ struct ValidIndexedEventNode {
     static constexpr auto inputs()
     {
         return std::array {
-            iv::indexed_event_input("input", iv::EventTypeId::trigger),
+            iv::random_access_event_input("input", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array {
-            iv::indexed_event_output("output", iv::EventTypeId::trigger),
+            iv::tock_event_output("output", iv::EventTypeId::trigger),
         };
     }
 
@@ -62,8 +62,8 @@ struct ValidIndexedInputOnlyNode {
     static constexpr auto inputs()
     {
         return std::array {
-            iv::indexed_sample_input("samples"),
-            iv::indexed_event_input("events", iv::EventTypeId::trigger),
+            iv::random_access_sample_input("samples"),
+            iv::random_access_event_input("events", iv::EventTypeId::trigger),
         };
     }
 
@@ -76,12 +76,12 @@ IV_NODE("iv.test.valid_indexed_input_only_node", ValidIndexedInputOnlyNode);
 struct ValidPersistedRealtimeNode {
     static constexpr auto inputs()
     {
-        return std::array {iv::realtime_sample_input("input")};
+        return std::array {iv::sequential_sample_input("input")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {iv::realtime_sample_output(
+        return std::array {iv::tick_sample_output(
             "recording", {}, {}, iv::OutputRetention::persisted)};
     }
 
@@ -97,3 +97,21 @@ struct ValidPersistedRealtimeNode {
 };
 
 IV_NODE("iv.test.valid_persisted_realtime_node", ValidPersistedRealtimeNode);
+
+// Intrinsic replayability is an opt-in Tick trait, not a Tock output mode.
+struct ValidReplayableNode {
+    static constexpr bool intrinsically_replayable = true;
+    static constexpr auto inputs()
+    {
+        return std::array {iv::sequential_sample_input("input")};
+    }
+    static constexpr auto outputs()
+    {
+        return std::array {iv::tick_sample_output("output")};
+    }
+    void tick(iv::TickSampleContext<ValidReplayableNode> const&) const {}
+};
+
+static_assert(iv::details::replay_declaration_is_valid_v<ValidReplayableNode>);
+static_assert(iv::details::intrinsically_replayable_v<ValidReplayableNode>);
+IV_NODE("iv.test.valid_replayable_node", ValidReplayableNode);

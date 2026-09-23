@@ -5,7 +5,7 @@
 struct InvalidIndexedSampleTickOutput {
     static constexpr auto outputs()
     {
-        return std::array {iv::indexed_sample_output("output")};
+        return std::array {iv::tock_sample_output("output")};
     }
 
     void tick_block(iv::TickBlockContext<InvalidIndexedSampleTickOutput> const& ctx) const
@@ -24,7 +24,7 @@ struct InvalidIndexedEventTickOutput {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::indexed_event_output("events", iv::EventTypeId::trigger),
+            iv::tock_event_output("events", iv::EventTypeId::trigger),
         };
     }
 

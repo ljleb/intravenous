@@ -46,6 +46,7 @@ public:
     void set_default_ttl(std::optional<std::size_t>) const;
     void set_block_skippable(bool) const;
     void set_static_sample_value(std::optional<Sample>) const;
+    void set_intrinsically_replayable(bool) const;
 };
 
 struct NodeBuildRequest {
@@ -90,7 +91,7 @@ consteval std::size_t reflected_sample_output_count()
     if constexpr (has_outputs<Node> && has_constexpr_port_configs<Node>) {
         std::size_t count = 0;
         for (auto const& config : Node::outputs()) {
-            if (is_sample(config) && is_realtime(config.access)) ++count;
+            if (is_sample(config) && is_tick(config.production)) ++count;
         }
         return count;
     } else {
@@ -122,7 +123,7 @@ consteval std::size_t reflected_event_output_count()
     if constexpr (has_outputs<Node> && has_constexpr_port_configs<Node>) {
         std::size_t count = 0;
         for (auto const& config : Node::outputs()) {
-            if (!is_sample(config) && is_realtime(config.access)) ++count;
+            if (!is_sample(config) && is_tick(config.production)) ++count;
         }
         return count;
     } else {
@@ -492,7 +493,7 @@ IV_FORCEINLINE void propagate_node_reverse_coverage(
 template<class Node>
 consteval auto node_tock_coverage_operation()
 {
-    if constexpr (details::declares_indexed_outputs_v<Node>) {
+    if constexpr (details::declares_tock_outputs_v<Node>) {
         static_assert(details::has_tock_coverage<Node>,
             "indexed-output node has no valid tock_coverage implementation");
         return &tock_node_coverage<Node>;
@@ -504,7 +505,7 @@ consteval auto node_tock_coverage_operation()
 template<class Node>
 consteval auto node_propagate_forward_coverage_operation()
 {
-    if constexpr (details::declares_indexed_outputs_v<Node>) {
+    if constexpr (details::declares_tock_outputs_v<Node>) {
         static_assert(details::has_propagate_forward_coverage<Node>,
             "indexed-output node has no exact propagate_forward_coverage implementation");
         return &propagate_node_forward_coverage<Node>;
@@ -516,8 +517,8 @@ consteval auto node_propagate_forward_coverage_operation()
 template<class Node>
 consteval auto node_propagate_reverse_coverage_operation()
 {
-    if constexpr (details::declares_indexed_outputs_v<Node>
-        && details::declares_indexed_inputs_v<Node>) {
+    if constexpr (details::declares_tock_outputs_v<Node>
+        && details::declares_random_access_inputs_v<Node>) {
         return &propagate_node_reverse_coverage<Node>;
     } else {
         return static_cast<void (*)(void const*, void*)>(nullptr);
@@ -602,6 +603,7 @@ IV_NODE_COMPILER_RECORD_ATTR inline const NodeCompilerRecord
         .state_alignment = node_state_alignment<Node>(),
         .indexed_state_size = node_indexed_state_size<Node>(),
         .indexed_state_alignment = node_indexed_state_alignment<Node>(),
+        .intrinsically_replayable = intrinsically_replayable_v<Node>,
     };
 
 #undef IV_NODE_COMPILER_RECORD_ATTR
@@ -622,7 +624,12 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
             sink.add_output(output);
         }
     }
+    static_assert(replay_declaration_is_valid_v<Node>,
+        "intrinsically replayable nodes must author tick() (not tick_block()), "
+        "have no State/IndexedState or RandomAccess inputs, and declare only "
+        "pointwise Sequential inputs and Tick outputs with zero history/latency");
     sink.set_internal_latency(get_internal_latency(node));
+    sink.set_intrinsically_replayable(intrinsically_replayable_v<Node>);
     sink.set_maximum_block_size(get_max_block_size(node));
     sink.set_default_ttl(get_ttl_samples(node));
     sink.set_block_skippable(get_can_skip_block(node));
@@ -637,6 +644,10 @@ NodeBuildRequest make_node_build_request(Node const& node)
     using Value = std::remove_cvref_t<Node>;
     static_assert(has_constexpr_port_configs<Value>,
         "concrete node ports must be declared by static constexpr inputs() and outputs()");
+    static_assert(replay_declaration_is_valid_v<Value>,
+        "intrinsically replayable nodes must author tick() (not tick_block()), "
+        "have no State/IndexedState or RandomAccess inputs, and declare only "
+        "pointwise Sequential inputs and Tick outputs with zero history/latency");
     // Emit the build-local record in the LLVM module.  The builder consumes
     // it synchronously and retains only copied data and the NodeCodeKey.
     auto const* record = &node_compiler_record<Value>;

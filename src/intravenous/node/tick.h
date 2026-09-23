@@ -238,10 +238,10 @@ namespace iv {
                 IV_ASSERT(port_index < this->inputs.size(), "static input port is absent from execution context");
                 IV_ASSERT(this->inputs[port_index].channel_layout() == layout, "static input port layout does not match execution context");
                 constexpr bool indexed =
-                    details::static_input_port_is_indexed<Node, Name>();
+                    details::static_input_port_is_random_access<Node, Name>();
                 if constexpr (indexed) {
                     constexpr auto indexed_index =
-                        details::static_indexed_input_port_index<Node, Name>();
+                        details::static_random_access_input_port_index<Node, Name>();
                     auto const* indexed_port = indexed_index < this->indexed_inputs.size()
                         ? &this->indexed_inputs[indexed_index] : nullptr;
                     return details::StaticIndexedInputSampleTickAccess<layout.channel_type>(
@@ -256,10 +256,10 @@ namespace iv {
                 IV_ASSERT(port_index < this->event_inputs.size(),
                     "static event input port is absent from execution context");
                 constexpr bool indexed =
-                    details::static_event_input_port_is_indexed<Node, Name>();
+                    details::static_event_input_port_is_random_access<Node, Name>();
                 if constexpr (indexed) {
                     constexpr auto indexed_index =
-                        details::static_indexed_event_input_port_index<Node, Name>();
+                        details::static_random_access_event_input_port_index<Node, Name>();
                     auto const* indexed_port =
                         indexed_index < this->indexed_event_inputs.size()
                         ? &this->indexed_event_inputs[indexed_index] : nullptr;
@@ -278,7 +278,7 @@ namespace iv {
         {
             constexpr auto port_kind = details::static_output_port_kind<Node, Name>();
             if constexpr (port_kind == PortKind::sample) {
-                static_assert(!details::static_output_port_is_indexed<Node, Name>(),
+                static_assert(!details::static_output_port_is_tock<Node, Name>(),
                     "tick() cannot write an indexed sample output; produce it from tock_coverage()");
                 constexpr auto layout = details::static_output_port_layout<Node, Name>();
                 constexpr auto port_index =
@@ -287,7 +287,7 @@ namespace iv {
                 IV_ASSERT(this->outputs[port_index].channel_layout() == layout, "static output port layout does not match execution context");
                 return details::StaticOutputSamplePortAccess<layout.channel_type>(this->outputs[port_index]);
             } else {
-                static_assert(!details::static_event_output_port_is_indexed<Node, Name>(),
+                static_assert(!details::static_event_output_port_is_tock<Node, Name>(),
                     "tick() cannot write an indexed event output; produce it from tock_coverage()");
                 constexpr auto port_index =
                     details::static_realtime_event_output_port_index<Node, Name>();
@@ -321,10 +321,10 @@ namespace iv {
                 IV_ASSERT(port_index < this->inputs.size(), "static input port is absent from execution context");
                 IV_ASSERT(this->inputs[port_index].channel_layout() == layout, "static input port layout does not match execution context");
                 constexpr bool indexed =
-                    details::static_input_port_is_indexed<Node, Name>();
+                    details::static_input_port_is_random_access<Node, Name>();
                 if constexpr (indexed) {
                     constexpr auto indexed_index =
-                        details::static_indexed_input_port_index<Node, Name>();
+                        details::static_random_access_input_port_index<Node, Name>();
                     auto const* indexed_port = indexed_index < this->indexed_inputs.size()
                         ? &this->indexed_inputs[indexed_index] : nullptr;
                     return details::StaticIndexedInputBlockTickAccess<
@@ -341,10 +341,10 @@ namespace iv {
                 IV_ASSERT(port_index < this->event_inputs.size(),
                     "static event input port is absent from execution context");
                 constexpr bool indexed =
-                    details::static_event_input_port_is_indexed<Node, Name>();
+                    details::static_event_input_port_is_random_access<Node, Name>();
                 if constexpr (indexed) {
                     constexpr auto indexed_index =
-                        details::static_indexed_event_input_port_index<Node, Name>();
+                        details::static_random_access_event_input_port_index<Node, Name>();
                     auto const* indexed_port =
                         indexed_index < this->indexed_event_inputs.size()
                         ? &this->indexed_event_inputs[indexed_index] : nullptr;
@@ -370,7 +370,7 @@ namespace iv {
             if constexpr (port_kind == PortKind::sample) {
                 constexpr auto layout = details::static_output_port_layout<Node, Name>();
                 static_assert(
-                    !details::static_output_port_is_indexed<Node, Name>(),
+                    !details::static_output_port_is_tock<Node, Name>(),
                     "tick_block() cannot write an indexed sample output; produce it from tock_coverage()");
                 constexpr auto port_index =
                     details::static_realtime_output_port_index<Node, Name>();
@@ -383,7 +383,7 @@ namespace iv {
                         this->outputs[port_index], this->block_size);
             } else {
                 static_assert(
-                    !details::static_event_output_port_is_indexed<Node, Name>(),
+                    !details::static_event_output_port_is_tock<Node, Name>(),
                     "tick_block() cannot write an indexed event output; produce it from tock_coverage()");
                 constexpr auto port_index =
                     details::static_realtime_event_output_port_index<Node, Name>();
@@ -414,11 +414,11 @@ namespace iv {
                 details::static_output_port_kind<Node, Name>();
             if constexpr (port_kind == PortKind::sample) {
                 static_assert(
-                    !details::static_output_port_is_indexed<Node, Name>(),
+                    !details::static_output_port_is_tock<Node, Name>(),
                     "skip_block() cannot write an indexed output");
             } else {
                 static_assert(
-                    !details::static_event_output_port_is_indexed<Node, Name>(),
+                    !details::static_event_output_port_is_tock<Node, Name>(),
                     "skip_block() cannot write an indexed output");
             }
             return TickBlockContext<Node>::template output<Name>();

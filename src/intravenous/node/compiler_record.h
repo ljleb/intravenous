@@ -54,6 +54,9 @@ struct NodeCompilerRecord {
     // tock_coverage(). It is allocated independently from sequential State.
     std::size_t indexed_state_size = 0;
     std::size_t indexed_state_alignment = 1;
+    // Authored and statically validated; the project planner must separately
+    // prove that a specific instance can replay its transitive dependencies.
+    bool intrinsically_replayable = false;
 };
 
 } // namespace details

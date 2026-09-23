@@ -34,6 +34,7 @@ struct NodeImplementation {
     std::size_t state_alignment = 1;
     std::size_t indexed_state_size = 0;
     std::size_t indexed_state_alignment = 1;
+    bool intrinsically_replayable = false;
 
     // Host declaration data is part of lowering because the canonical
     // NodeLayout must be finalized before final LLVM is emitted. That lets

@@ -5,7 +5,7 @@
 struct InvalidInputOnlyTockCallback {
     static constexpr auto inputs()
     {
-        return std::array {iv::indexed_sample_input("input")};
+        return std::array {iv::random_access_sample_input("input")};
     }
 
     void tick_block(iv::TickBlockContext<InvalidInputOnlyTockCallback> const&) const {}
@@ -17,7 +17,7 @@ IV_NODE("iv.test.invalid_input_only_tock_callback", InvalidInputOnlyTockCallback
 struct InvalidInputOnlyForwardCallback {
     static constexpr auto inputs()
     {
-        return std::array {iv::indexed_sample_input("input")};
+        return std::array {iv::random_access_sample_input("input")};
     }
 
     void tick_block(
@@ -33,7 +33,7 @@ IV_NODE(
 struct InvalidOutputOnlyPropagationCallback {
     static constexpr auto outputs()
     {
-        return std::array {iv::indexed_sample_output("output")};
+        return std::array {iv::tock_sample_output("output")};
     }
 
     void tick_block(iv::TickBlockContext<InvalidOutputOnlyPropagationCallback> const&) const {}

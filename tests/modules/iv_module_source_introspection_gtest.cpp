@@ -403,7 +403,7 @@ namespace {
         static constexpr auto outputs()
         {
             return std::array<iv::OutputConfig, 1>{
-                iv::realtime_event_output("trigger", iv::EventTypeId::trigger)};
+                iv::tick_event_output("trigger", iv::EventTypeId::trigger)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };
@@ -412,7 +412,7 @@ namespace {
         static constexpr auto inputs()
         {
             return std::array<iv::InputConfig, 1>{
-                iv::realtime_event_input("gate", iv::EventTypeId::trigger)};
+                iv::sequential_event_input("gate", iv::EventTypeId::trigger)};
         }
         void tick(iv::TickSampleContext<TriggerSink> const&) const {}
     };
@@ -609,7 +609,7 @@ namespace {
         static constexpr auto outputs()
         {
             return std::array<iv::OutputConfig, 1>{
-                iv::realtime_event_output("trigger", iv::EventTypeId::trigger)};
+                iv::tick_event_output("trigger", iv::EventTypeId::trigger)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };

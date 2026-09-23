@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 7;
+inline constexpr std::uint32_t archive_version = 8;
 
 class Writer {
 public:
@@ -219,31 +219,31 @@ inline ChannelLayout read_layout(Reader& r)
 
 inline void write_input_access(Writer& w, InputAccessConfig const& value)
 {
-    w.flag(is_indexed(value));
-    if (auto const* realtime = std::get_if<RealtimeInputConfig>(&value)) {
+    w.flag(is_random_access(value));
+    if (auto const* realtime = std::get_if<SequentialInputConfig>(&value)) {
         w.size(realtime->history);
     }
 }
 
 inline InputAccessConfig read_input_access(Reader& r)
 {
-    if (r.flag()) return IndexedInputConfig{};
-    return RealtimeInputConfig{.history = r.size()};
+    if (r.flag()) return RandomAccessInputConfig{};
+    return SequentialInputConfig{.history = r.size()};
 }
 
-inline void write_output_access(Writer& w, OutputAccessConfig const& value)
+inline void write_output_production(Writer& w, OutputProductionConfig const& value)
 {
-    w.flag(is_indexed(value));
-    if (auto const* realtime = std::get_if<RealtimeOutputConfig>(&value)) {
+    w.flag(is_tock(value));
+    if (auto const* realtime = std::get_if<TickOutputConfig>(&value)) {
         w.size(realtime->history);
         w.size(realtime->latency);
     }
 }
 
-inline OutputAccessConfig read_output_access(Reader& r)
+inline OutputProductionConfig read_output_production(Reader& r)
 {
-    if (r.flag()) return IndexedOutputConfig{};
-    return RealtimeOutputConfig{
+    if (r.flag()) return TockOutputConfig{};
+    return TickOutputConfig{
         .history = r.size(),
         .latency = r.size(),
     };
@@ -293,7 +293,7 @@ inline void write_output(Writer& w, SampleOutputConfig const& value)
 {
     w.string(value.name);
     write_layout(w, value.channel_layout);
-    write_output_access(w, value.access);
+    write_output_production(w, value.production);
     write_output_retention(w, value.retention);
 }
 
@@ -302,7 +302,7 @@ inline SampleOutputConfig read_output(Reader& r)
     return {
         .name = r.string(),
         .channel_layout = read_layout(r),
-        .access = read_output_access(r),
+        .production = read_output_production(r),
         .retention = read_output_retention(r),
     };
 }
@@ -328,7 +328,7 @@ inline void write_event_output(Writer& w, EventOutputConfig const& value)
     w.string(value.name);
     write_enum(w, value.type);
     w.pod(value.max_events_per_index);
-    write_output_access(w, value.access);
+    write_output_production(w, value.production);
     write_output_retention(w, value.retention);
 }
 
@@ -338,7 +338,7 @@ inline EventOutputConfig read_event_output(Reader& r)
         .name = r.string(),
         .type = read_enum<EventTypeId>(r),
         .max_events_per_index = r.pod<double>(),
-        .access = read_output_access(r),
+        .production = read_output_production(r),
         .retention = read_output_retention(r),
     };
 }
@@ -570,6 +570,7 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
             bundles.flag(has_default_ttl);
             if (has_default_ttl) bundles.size(**view.default_ttl_samples);
             bundles.flag(view.block_skippable);
+            bundles.flag(view.intrinsically_replayable);
             auto const has_static_value = view.static_sample_value && *view.static_sample_value;
             bundles.flag(has_static_value);
             if (has_static_value) bundles.pod((**view.static_sample_value).value);
@@ -757,6 +758,14 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             record.maximum_block_size = reader.size();
             if (reader.flag()) record.default_ttl_samples = reader.size();
             record.block_skippable = reader.flag();
+            record.intrinsically_replayable = reader.flag();
+            if (record.intrinsically_replayable
+                != find_type(node_types, record.code_key).intrinsically_replayable
+                || (record.intrinsically_replayable
+                    && record.internal_latency_samples != 0)) {
+                throw std::runtime_error(
+                    "configured graph intrinsic replayability disagrees with compiler metadata");
+            }
             if (reader.flag()) record.static_sample_value = Sample{reader.pod<Sample::storage>()};
             if (reader.flag()) {
                 NodeStateStructures structures;

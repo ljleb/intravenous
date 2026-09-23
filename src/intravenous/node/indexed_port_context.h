@@ -339,9 +339,9 @@ template<typename Node, fixed_string Name>
 constexpr std::size_t indexed_input_ordinal()
 {
     if constexpr (static_input_port_kind<Node, Name>() == PortKind::sample) {
-        return static_indexed_input_port_index<Node, Name>();
+        return static_random_access_input_port_index<Node, Name>();
     } else {
-        return static_indexed_event_input_port_index<Node, Name>();
+        return static_random_access_event_input_port_index<Node, Name>();
     }
 }
 
@@ -362,20 +362,20 @@ struct TockCoverageContext {
     [[nodiscard]] auto input() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(is_indexed(details::static_input_config<Node, Name>()),
+        static_assert(is_random_access(details::static_input_config<Node, Name>()),
             "TockCoverageContext can only access inputs declared indexed");
         if constexpr (details::static_input_port_kind<Node, Name>()
             == PortKind::sample) {
             constexpr auto layout = details::static_input_port_layout<Node, Name>();
             constexpr auto port_index =
-                details::static_indexed_input_port_index<Node, Name>();
+                details::static_random_access_input_port_index<Node, Name>();
             IV_ASSERT(port_index < inputs.size(),
                 "indexed sample input is absent from tock context");
             return details::StaticIndexedSampleInputAccess<layout.channel_type>(
                 inputs[port_index]);
         } else {
             constexpr auto port_index =
-                details::static_indexed_event_input_port_index<Node, Name>();
+                details::static_random_access_event_input_port_index<Node, Name>();
             IV_ASSERT(port_index < event_inputs.size(),
                 "indexed event input is absent from tock context");
             return details::StaticIndexedEventInputAccess(event_inputs[port_index]);
@@ -387,7 +387,7 @@ struct TockCoverageContext {
     requires details::has_constexpr_port_configs<Node>
     {
         static_assert(
-            details::static_output_port_is_indexed<Node, Name>(),
+            details::static_output_port_is_tock<Node, Name>(),
             "TockCoverageContext can only write indexed outputs");
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
@@ -427,17 +427,17 @@ struct PropagateForwardCoverageContext {
     [[nodiscard]] IndexedInputChange const& input() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(is_indexed(details::static_input_config<Node, Name>()),
+        static_assert(is_random_access(details::static_input_config<Node, Name>()),
             "forward coverage can only inspect indexed inputs");
         if constexpr (details::static_input_port_kind<Node, Name>()
             == PortKind::sample) {
-            constexpr auto index = details::static_indexed_input_port_index<Node, Name>();
+            constexpr auto index = details::static_random_access_input_port_index<Node, Name>();
             IV_ASSERT(index < inputs.size(),
                 "indexed sample input is absent from forward context");
             return inputs[index];
         } else {
             constexpr auto index =
-                details::static_indexed_event_input_port_index<Node, Name>();
+                details::static_random_access_event_input_port_index<Node, Name>();
             IV_ASSERT(index < event_inputs.size(),
                 "indexed event input is absent from forward context");
             return event_inputs[index];
@@ -449,7 +449,7 @@ struct PropagateForwardCoverageContext {
     requires details::has_constexpr_port_configs<Node>
     {
         static_assert(
-            details::static_output_port_is_indexed<Node, Name>(),
+            details::static_output_port_is_tock<Node, Name>(),
             "forward coverage can only publish indexed outputs");
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
@@ -481,7 +481,7 @@ struct PropagateReverseCoverageContext {
     requires details::has_constexpr_port_configs<Node>
     {
         static_assert(
-            details::static_output_port_is_indexed<Node, Name>(),
+            details::static_output_port_is_tock<Node, Name>(),
             "reverse coverage can only inspect indexed outputs");
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
@@ -502,17 +502,17 @@ struct PropagateReverseCoverageContext {
     [[nodiscard]] IndexedInputRequirement const& input() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(is_indexed(details::static_input_config<Node, Name>()),
+        static_assert(is_random_access(details::static_input_config<Node, Name>()),
             "reverse coverage can only require indexed inputs");
         if constexpr (details::static_input_port_kind<Node, Name>()
             == PortKind::sample) {
-            constexpr auto index = details::static_indexed_input_port_index<Node, Name>();
+            constexpr auto index = details::static_random_access_input_port_index<Node, Name>();
             IV_ASSERT(index < inputs.size(),
                 "indexed sample input is absent from reverse context");
             return inputs[index];
         } else {
             constexpr auto index =
-                details::static_indexed_event_input_port_index<Node, Name>();
+                details::static_random_access_event_input_port_index<Node, Name>();
             IV_ASSERT(index < event_inputs.size(),
                 "indexed event input is absent from reverse context");
             return event_inputs[index];

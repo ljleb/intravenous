@@ -7,7 +7,7 @@ struct InvalidConstIndexedState {
 
     static constexpr auto outputs()
     {
-        return std::array {iv::indexed_sample_output("output")};
+        return std::array {iv::tock_sample_output("output")};
     }
 
     void tock_coverage(iv::TockCoverageContext<InvalidConstIndexedState>&) const {}

@@ -20,11 +20,11 @@ struct RequestNode {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::realtime_sample_input("level")};
+        return std::array{iv::sequential_sample_input("level")};
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::realtime_sample_output(
+        return std::array{iv::tick_sample_output(
             "signal", {}, {}, iv::OutputRetention::persisted)};
     }
     std::size_t internal_latency() const { return latency; }
@@ -32,6 +32,78 @@ struct RequestNode {
     bool can_skip_block() const { return true; }
     void tick_block(auto const&) const {}
 };
+
+struct ReplayableNode {
+    static constexpr bool intrinsically_replayable = true;
+    std::size_t latency = 0;
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::sequential_sample_input("input")};
+    }
+    static constexpr auto outputs()
+    {
+        return std::array{iv::tick_sample_output("output")};
+    }
+    void tick(iv::TickSampleContext<ReplayableNode> const&) const {}
+    std::size_t internal_latency() const { return latency; }
+};
+
+struct ReplayWithState {
+    static constexpr bool intrinsically_replayable = true;
+    struct State {};
+    void tick(iv::TickSampleContext<ReplayWithState> const&) const {}
+};
+
+struct ReplayWithInputHistory {
+    static constexpr bool intrinsically_replayable = true;
+    static constexpr auto inputs()
+    {
+        return std::array{iv::sequential_sample_input(
+            "input", {}, {.history = 1})};
+    }
+    void tick(iv::TickSampleContext<ReplayWithInputHistory> const&) const {}
+};
+
+struct ReplayWithOutputLatency {
+    static constexpr bool intrinsically_replayable = true;
+    static constexpr auto outputs()
+    {
+        return std::array{iv::tick_sample_output(
+            "output", {}, {.latency = 1})};
+    }
+    void tick(iv::TickSampleContext<ReplayWithOutputLatency> const&) const {}
+};
+
+static_assert(iv::details::replay_declaration_is_valid_v<ReplayableNode>);
+static_assert(!iv::details::replay_declaration_is_valid_v<ReplayWithState>);
+static_assert(!iv::details::replay_declaration_is_valid_v<ReplayWithInputHistory>);
+static_assert(!iv::details::replay_declaration_is_valid_v<ReplayWithOutputLatency>);
+
+TEST(NodeBuildRequest, ValidatesAndReflectsIntrinsicReplayability)
+{
+    ReplayableNode node{};
+    auto request = iv::details::make_node_build_request(node);
+    ASSERT_NE(request.compiler_record, nullptr);
+    EXPECT_TRUE(request.compiler_record->intrinsically_replayable);
+    auto storage = iv::details::copy_node_config_bytes(
+        request.config, request.config_size, request.config_alignment);
+    auto description = iv::details::materialize_node_description(
+        request, std::move(storage));
+    EXPECT_TRUE(description.intrinsically_replayable);
+    EXPECT_EQ(description.internal_latency_samples, 0u);
+    EXPECT_TRUE(iv::is_tick(description.outputs().front()));
+
+    ReplayableNode delayed{.latency = 1};
+    auto delayed_request = iv::details::make_node_build_request(delayed);
+    auto delayed_storage = iv::details::copy_node_config_bytes(
+        delayed_request.config, delayed_request.config_size,
+        delayed_request.config_alignment);
+    EXPECT_THROW(
+        iv::details::materialize_node_description(
+            delayed_request, std::move(delayed_storage)),
+        std::invalid_argument);
+}
 
 template<class Config>
 concept HasSampleRange = requires(Config const& config) { config.min; config.max; };
@@ -42,18 +114,18 @@ concept HasLatency = requires(Config const& config) { config.latency; };
 template<class Config>
 concept HasRetention = requires(Config const& config) { config.retention; };
 
-static_assert(std::same_as<decltype(iv::realtime_sample_input()), iv::InputConfig>);
-static_assert(std::same_as<decltype(iv::indexed_sample_input()), iv::InputConfig>);
+static_assert(std::same_as<decltype(iv::sequential_sample_input()), iv::InputConfig>);
+static_assert(std::same_as<decltype(iv::random_access_sample_input()), iv::InputConfig>);
 static_assert(std::same_as<
-    decltype(iv::realtime_event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
+    decltype(iv::sequential_event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
 static_assert(std::same_as<
-    decltype(iv::indexed_event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
-static_assert(std::same_as<decltype(iv::realtime_sample_output()), iv::OutputConfig>);
-static_assert(std::same_as<decltype(iv::indexed_sample_output()), iv::OutputConfig>);
+    decltype(iv::random_access_event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
+static_assert(std::same_as<decltype(iv::tick_sample_output()), iv::OutputConfig>);
+static_assert(std::same_as<decltype(iv::tock_sample_output()), iv::OutputConfig>);
 static_assert(std::same_as<
-    decltype(iv::realtime_event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
+    decltype(iv::tick_event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
 static_assert(std::same_as<
-    decltype(iv::indexed_event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
+    decltype(iv::tock_event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
 static_assert(HasSampleRange<iv::SampleInputProperties>);
 static_assert(!HasSampleRange<iv::EventInputProperties>);
 static_assert(!HasHistory<iv::SampleInputProperties>);
@@ -62,33 +134,33 @@ static_assert(!HasHistory<iv::EventInputProperties>);
 static_assert(!HasHistory<iv::EventOutputProperties>);
 static_assert(!HasLatency<iv::SampleOutputProperties>);
 static_assert(!HasLatency<iv::EventOutputProperties>);
-static_assert(HasHistory<iv::RealtimeInputConfig>);
-static_assert(HasHistory<iv::RealtimeOutputConfig>);
-static_assert(HasLatency<iv::RealtimeOutputConfig>);
-static_assert(!HasHistory<iv::IndexedInputConfig>);
-static_assert(!HasLatency<iv::IndexedOutputConfig>);
+static_assert(HasHistory<iv::SequentialInputConfig>);
+static_assert(HasHistory<iv::TickOutputConfig>);
+static_assert(HasLatency<iv::TickOutputConfig>);
+static_assert(!HasHistory<iv::RandomAccessInputConfig>);
+static_assert(!HasLatency<iv::TockOutputConfig>);
 static_assert(HasRetention<iv::OutputConfig>);
 static_assert(HasRetention<iv::SampleOutputConfig>);
 static_assert(HasRetention<iv::EventOutputConfig>);
 static_assert(iv::sample_properties(iv::InputConfig {}).neutral_value.value == 0.0f);
-static_assert(iv::realtime_history(
-    iv::realtime_sample_input("history", {}, {.history = 7})) == 7);
-static_assert(iv::realtime_history(
-    iv::realtime_event_input(
+static_assert(iv::port_history(
+    iv::sequential_sample_input("history", {}, {.history = 7})) == 7);
+static_assert(iv::port_history(
+    iv::sequential_event_input(
         "history", iv::EventTypeId::trigger, {.history = 5})) == 5);
-static_assert(iv::realtime_history(
-    iv::realtime_sample_output(
+static_assert(iv::port_history(
+    iv::tick_sample_output(
         "timing", {}, {.history = 11, .latency = 3})) == 11);
-static_assert(iv::realtime_latency(
-    iv::realtime_sample_output(
+static_assert(iv::tick_latency(
+    iv::tick_sample_output(
         "timing", {}, {.history = 11, .latency = 3})) == 3);
-static_assert(iv::is_indexed(iv::indexed_sample_input("indexed")));
-static_assert(iv::is_indexed(iv::indexed_event_output(
+static_assert(iv::is_random_access(iv::random_access_sample_input("indexed")));
+static_assert(iv::is_tock(iv::tock_event_output(
     "indexed", iv::EventTypeId::trigger)));
-static_assert(!iv::is_persisted(iv::indexed_sample_output("ephemeral")));
-static_assert(iv::is_persisted(iv::indexed_sample_output(
+static_assert(!iv::is_persisted(iv::tock_sample_output("ephemeral")));
+static_assert(iv::is_persisted(iv::tock_sample_output(
     "persisted", {}, iv::OutputRetention::persisted)));
-static_assert(iv::is_persisted(iv::realtime_sample_output(
+static_assert(iv::is_persisted(iv::tick_sample_output(
     "persisted", {}, {}, iv::OutputRetention::persisted)));
 
 TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
@@ -160,7 +232,7 @@ struct IndexedSource {
 
     static constexpr auto outputs()
     {
-        return std::array {iv::indexed_sample_output("signal")};
+        return std::array {iv::tock_sample_output("signal")};
     }
 
     void tick_block(iv::TickBlockContext<IndexedSource> const&) const {}
@@ -184,18 +256,18 @@ struct IndexedTransform {
     static constexpr auto inputs()
     {
         return std::array {
-            iv::indexed_sample_input("samples"),
-            iv::indexed_event_input("events", iv::EventTypeId::trigger),
+            iv::random_access_sample_input("samples"),
+            iv::random_access_event_input("events", iv::EventTypeId::trigger),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array {
-            iv::indexed_sample_output(
+            iv::tock_sample_output(
                 "samples-out", {},
                 iv::OutputRetention::ephemeral),
-            iv::indexed_event_output(
+            iv::tock_event_output(
                 "events-out", iv::EventTypeId::trigger,
                 iv::OutputRetention::persisted),
         };
@@ -230,8 +302,8 @@ struct IndexedInputOnly {
     static constexpr auto inputs()
     {
         return std::array {
-            iv::indexed_sample_input("samples"),
-            iv::indexed_event_input("events", iv::EventTypeId::trigger),
+            iv::random_access_sample_input("samples"),
+            iv::random_access_event_input("events", iv::EventTypeId::trigger),
         };
     }
     void tick_block(iv::TickBlockContext<IndexedInputOnly> const&) const {}
@@ -240,7 +312,7 @@ struct IndexedInputOnly {
 struct MissingIndexedTock {
     static constexpr auto outputs()
     {
-        return std::array {iv::indexed_sample_output("output")};
+        return std::array {iv::tock_sample_output("output")};
     }
 };
 
@@ -256,7 +328,7 @@ struct StrayForward {
 struct StrayReverse {
     static constexpr auto outputs()
     {
-        return std::array {iv::indexed_sample_output("output")};
+        return std::array {iv::tock_sample_output("output")};
     }
     void tock_coverage(iv::TockCoverageContext<StrayReverse>&) const {}
     void propagate_forward_coverage(
@@ -269,9 +341,9 @@ struct PersistedRealtimeNode {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::realtime_sample_output(
+            iv::tick_sample_output(
                 "samples", {}, {}, iv::OutputRetention::persisted),
-            iv::realtime_event_output(
+            iv::tick_event_output(
                 "events", iv::EventTypeId::trigger, {},
                 iv::OutputRetention::persisted),
         };
@@ -297,11 +369,11 @@ struct MixedAccessOrdinalNode {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::indexed_sample_output("indexed-sample"),
-            iv::realtime_sample_output("realtime-sample"),
-            iv::indexed_event_output(
+            iv::tock_sample_output("indexed-sample"),
+            iv::tick_sample_output("realtime-sample"),
+            iv::tock_event_output(
                 "indexed-event", iv::EventTypeId::trigger),
-            iv::realtime_event_output(
+            iv::tick_event_output(
                 "realtime-event", iv::EventTypeId::trigger),
         };
     }
@@ -321,14 +393,14 @@ static_assert(iv::details::node_indexed_state_alignment<IndexedSource>()
 static_assert(std::same_as<
     decltype(iv::TickBlockContext<IndexedSource>::index),
     iv::SampleIndex>);
-static_assert(iv::details::declares_indexed_sample_outputs_v<IndexedSource>);
-static_assert(!iv::details::declares_indexed_inputs_v<IndexedSource>);
-static_assert(iv::details::declares_indexed_inputs_v<IndexedTransform>);
-static_assert(iv::details::declares_indexed_outputs_v<IndexedTransform>);
-static_assert(iv::details::declares_indexed_sample_inputs_v<IndexedTransform>);
-static_assert(iv::details::declares_indexed_event_inputs_v<IndexedTransform>);
-static_assert(iv::details::declares_indexed_sample_outputs_v<IndexedTransform>);
-static_assert(iv::details::declares_indexed_event_outputs_v<IndexedTransform>);
+static_assert(iv::details::declares_tock_sample_outputs_v<IndexedSource>);
+static_assert(!iv::details::declares_random_access_inputs_v<IndexedSource>);
+static_assert(iv::details::declares_random_access_inputs_v<IndexedTransform>);
+static_assert(iv::details::declares_tock_outputs_v<IndexedTransform>);
+static_assert(iv::details::declares_random_access_sample_inputs_v<IndexedTransform>);
+static_assert(iv::details::declares_random_access_event_inputs_v<IndexedTransform>);
+static_assert(iv::details::declares_tock_sample_outputs_v<IndexedTransform>);
+static_assert(iv::details::declares_tock_event_outputs_v<IndexedTransform>);
 static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedSource>);
 static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedTransform>);
 static_assert(iv::details::indexed_dsp_node_declaration_is_valid_v<IndexedInputOnly>);
@@ -338,19 +410,19 @@ static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<MissingIndex
 static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<StrayTock>);
 static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<StrayForward>);
 static_assert(!iv::details::indexed_dsp_node_declaration_is_valid_v<StrayReverse>);
-static_assert(iv::details::static_indexed_input_port_index<
+static_assert(iv::details::static_random_access_input_port_index<
     IndexedTransform, "samples">() == 0);
-static_assert(iv::details::static_indexed_event_input_port_index<
+static_assert(iv::details::static_random_access_event_input_port_index<
     IndexedTransform, "events">() == 0);
 static_assert(iv::details::static_tock_output_port_index<
     IndexedTransform, "samples-out">() == 0);
 static_assert(iv::details::static_tock_event_output_port_index<
     IndexedTransform, "events-out">() == 0);
-static_assert(iv::details::static_output_port_is_indexed<
+static_assert(iv::details::static_output_port_is_tock<
     IndexedTransform, "events-out">());
-static_assert(iv::details::static_output_port_is_indexed<
+static_assert(iv::details::static_output_port_is_tock<
     MixedAccessOrdinalNode, "indexed-event">());
-static_assert(!iv::details::static_output_port_is_indexed<
+static_assert(!iv::details::static_output_port_is_tock<
     MixedAccessOrdinalNode, "realtime-event">());
 static_assert(iv::details::static_output_port_index<
     MixedAccessOrdinalNode, "realtime-sample">() == 1);
@@ -686,11 +758,11 @@ TEST(IndexedDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
 struct DefaultPropagationNode {
     static constexpr auto inputs()
     {
-        return std::array {iv::indexed_sample_input("input")};
+        return std::array {iv::random_access_sample_input("input")};
     }
     static constexpr auto outputs()
     {
-        return std::array {iv::indexed_sample_output("output")};
+        return std::array {iv::tock_sample_output("output")};
     }
     void tock_coverage(iv::TockCoverageContext<DefaultPropagationNode>&) const {}
     void propagate_forward_coverage(

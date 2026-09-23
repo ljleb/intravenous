@@ -872,17 +872,13 @@ struct OutputConfig {
 };
 ```
 
-These are **target API sketches**, not claims that the current source already uses
-these names. The existing source has already removed `IndexedProducer` and legacy
-recorder-staging planning. It currently uses the intermediate
-`RealtimeInputConfig`/`IndexedInputConfig` and
-`RealtimeOutputConfig`/`IndexedOutputConfig` names with independent
-`OutputRetention` until the final access/production naming migration lands.
-`InputConfig` / `OutputConfig` above elide existing non-access fields rather than
-replacing their real layout. The same separation must survive reflection,
-configured-graph serialization, compiler records, and GraphJit planning. Generic
+These are abbreviated sketches of the current public schema: `InputConfig` and
+`OutputConfig` retain their sample/event payload properties and identities.
+Input access, output production and output retention are independent in reflection,
+configured-graph serialization and the compiler record interface. The inferred
 `inward_input_access()` / `inward_output_access()` conversions and ambiguous
-`is_indexed()` tests cannot infer one axis from another and should be deleted.
+`is_indexed()` predicates are removed; per-channel compatibility and delivery
+selection still require the separate GraphJit planner rewrite in step 3.
 
 | production | retention | producer and retention semantics |
 | --- | --- | --- |
@@ -910,9 +906,10 @@ its own contract.
 
 ### Replayable node trait
 
-Introduce an explicit node **type trait** (provisionally
-`is_replayable_node_v<Node>`, default false) and validate its declaration. It is
-not a port field or an additional DSP callback. An opted-in node must define the
+A node opts into the intrinsic replay **type trait** by declaring
+`static constexpr bool intrinsically_replayable = true` (default false).
+`iv::details::intrinsically_replayable_v<Node>` is the validated compiler-facing
+value; it is not a port field or an additional DSP callback. An opted-in node must define the
 existing `tick()` but **not** its own native `tick_block()`, have no `State`, no
 random-access inputs, no input/output history, no input/output latency, and zero
 internal latency. Its tick computation must be deterministic and side-effect-free
@@ -1749,12 +1746,11 @@ path, or offending node where practical.
 This is the **normative dependency order** for the next documentation/implementation
 migration; [graph_jit_direction.md](./graph_jit_direction.md) and the application
 architecture should reference this list rather than propose a divergent one.
-The target API/retention/replay semantics described here are **not landed** merely
-because this design is documented. The supplied implementation has already removed
-`IndexedProducer` and legacy recorder-staging planning, and has independently
-represented output retention. It still uses the intermediate realtime/indexed
-port-config names and equality-based connection domains; the final schema,
-replayability trait, generalized connection planning, and executor remain to land.
+The legacy executor deletion and final schema/intrinsic trait changes are
+separate from the GraphJit execution milestone. Even after step 2, the existing
+planner retains equality-based connection domains until the step 3 rewrite;
+contextual replay, background execution and recording are not implied by the
+presence of intrinsic replay metadata.
 
 1. **Landed: delete legacy execution and dynamic concrete-port declarations.**
    `ModuleLoader` now publishes the configured graph and derives source
@@ -1763,17 +1759,21 @@ replayability trait, generalized connection planning, and executor remain to lan
    fallbacks, and old runtime-root ABI are deleted. Public and internal concrete-
    node construction require static constexpr port schemas; graph topology and
    static-schema per-instance connection metadata remain dynamic.
-2. **Migrate the independent port schema and connection planner.** Carry input
-   access, output production and output retention through reflection, serialized
-   configured graphs, compiler records and per-channel tiling. Delete inferred
-   input/output access conversion helpers and equality-based compatibility. Enforce
-   the narrow explicit-recorder boundary, strict persisted retention and
-   background-only tock rule. Preserve existing sequential history/latency.
-3. **Add the replayability trait and dependency planning.** Validate the existing
-   `tick()`-only static node shape and semantic promise, reflect the trait, derive
-   contextual replayability, synthesize pointwise forward/reverse coverage and
-   include eligible imported generated `tick_block()` wrappers in the background
-   DAG. Retain the current tock propagation callback API.
+2. **Land the final port schema and intrinsic replay trait.** Carry independent
+   input access, output production and output retention through reflection, static
+   port lookup, configured graphs, the version-bumped archive and compiler records.
+   Delete inferred cross-axis conversions and obsolete API names. Validate the
+   authored, deterministic, side-effect-free `tick()`-only replay contract,
+   including zero configured internal latency, and reflect it into retained
+   compiler metadata. Preserve authored F/R/T callbacks only for Tock outputs.
+3. **Rewrite connection and background-dependency planning once.** Replace the
+   equality-based two-domain connection gate with per-channel production,
+   retention, destination-access and delivery facts. Derive contextual replay by
+   backward traversal through eligible sequential dependencies to persisted
+   boundaries, reject live sources and unresolved cycles, synthesize pointwise
+   F/R propagation and use the imported `tick_block()` wrapper for replay.
+   Preserve semantic SCCs separately from the expanded background evaluation DAG,
+   enforce the recorder boundary and keep Tock execution off the audio thread.
 4. **Implement ordinary background indexed execution before recording consumption.**
    Finish the reusable batch frame/reflected callback ABI; import forward/reverse/
    tock callbacks and emit generated F/R/evaluation programs. Implement

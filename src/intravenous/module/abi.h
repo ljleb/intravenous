@@ -7,7 +7,9 @@
 #include <type_traits>
 
 namespace iv {
-inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 0;
+// Invalidate package compilation caches when the compiler-record or
+// configured-graph wire contract changes (including the replay flag).
+inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 1;
 
 struct ModuleDataView {
     void const* data = nullptr;

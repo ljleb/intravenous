@@ -29,8 +29,8 @@ namespace iv {
 
         void tick_block_realtime(RealtimeLaneTickContext<KnobLaneNode>& ctx)
         {
-            if (!ctx.realtime_sample_inputs().empty() && ctx.realtime_sample_input(0).connected()) {
-                ctx.out().write_block(ctx.realtime_sample_input(0).block_view());
+            if (!ctx.realtime_sample_inputs().empty() && ctx.sequential_sample_input(0).connected()) {
+                ctx.out().write_block(ctx.sequential_sample_input(0).block_view());
                 return;
             }
             auto const out = ctx.out().block_view();

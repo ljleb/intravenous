@@ -42,6 +42,7 @@ struct ConcreteNode {
   std::size_t maximum_block_size = MAX_BLOCK_SIZE;
   std::optional<std::size_t> default_ttl_samples{};
   bool block_skippable = false;
+  bool intrinsically_replayable = false;
   // Static data attached to a configured node survives graph composition so
   // later compiler passes can materialize it without a ticking producer.
   std::optional<Sample> static_sample_value{};

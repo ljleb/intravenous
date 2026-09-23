@@ -12,16 +12,16 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                realtime_sample_input("in", {}, {.history = 1}),
-                realtime_sample_input("threshold", {.default_value = 1.0}),
+                sequential_sample_input("in", {}, {.history = 1}),
+                sequential_sample_input("threshold", {.default_value = 1.0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                realtime_sample_output("anti_aliased", {}, {.latency = 1}),
-                realtime_sample_output("aliased"),
+                tick_sample_output("anti_aliased", {}, {.latency = 1}),
+                tick_sample_output("aliased"),
             };
         }
 
@@ -56,12 +56,12 @@ namespace iv {
     struct PhaseIntegrator {
         static constexpr auto inputs()
         {
-            return std::array { realtime_sample_input("delta") };
+            return std::array { sequential_sample_input("delta") };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { realtime_sample_output("phase", {}, {.history = 1}) };
+            return std::array { tick_sample_output("phase", {}, {.history = 1}) };
         }
 
         void tick_block(TickBlockContext<PhaseIntegrator> const& ctx) const
@@ -85,15 +85,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                realtime_sample_input("phase_offset", {}, {.history = 1}),
-                realtime_sample_input("frequency", {.min = 0}, {.history = 1}),
+                sequential_sample_input("phase_offset", {}, {.history = 1}),
+                sequential_sample_input("frequency", {.min = 0}, {.history = 1}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                realtime_sample_output("out", {}, {.latency = 1}),
+                tick_sample_output("out", {}, {.latency = 1}),
             };
         }
 
@@ -134,15 +134,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                realtime_sample_input("phase_offset", {}, {.history = 1}),
-                realtime_sample_input("frequency", {.min = 0}, {.history = 1}),
+                sequential_sample_input("phase_offset", {}, {.history = 1}),
+                sequential_sample_input("frequency", {.min = 0}, {.history = 1}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                realtime_sample_output("out", {}, {.latency = 1}),
+                tick_sample_output("out", {}, {.latency = 1}),
             };
         }
 
@@ -292,12 +292,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { realtime_sample_input("f") };
+            return std::array { sequential_sample_input("f") };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { realtime_sample_output("offset") };
+            return std::array { tick_sample_output("offset") };
         }
 
         void tick(TickSampleContext<PhaseOffsetPredictor> const& state) const
@@ -312,15 +312,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                realtime_sample_input("a"),
-                realtime_sample_input("b"),
-                realtime_sample_input("alpha"),
+                sequential_sample_input("a"),
+                sequential_sample_input("b"),
+                sequential_sample_input("alpha"),
             };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { realtime_sample_output("out") };
+            return std::array { tick_sample_output("out") };
         }
 
         void tick(TickSampleContext<Interpolation> const& state) const

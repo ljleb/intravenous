@@ -878,7 +878,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             auto const config = input.graph.node_bundles.resolve_sample_output(
                 {bundle, PortKind::sample, port}).config;
             plan.primitives[i].outputs[port].realtime =
-                is_realtime(config.access);
+                is_tick(config.production);
         }
     }
 
@@ -942,7 +942,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
         auto const target = input.graph.node_bundles
             .resolve_sample_input(target_port).config;
-        if (!is_realtime(target.access)) {
+        if (!is_sequential(target.access)) {
             return std::unexpected(
                 "GraphJit sample-edge slice requires realtime sample port declarations");
         }
@@ -1001,7 +1001,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             auto const source = input.graph.node_bundles
                 .resolve_sample_output(source_port).config;
             auto const& group = connections.sample_producer_groups[*group_index];
-            if (!is_realtime(source.access)
+            if (!is_tick(source.production)
                 || source.channel_layout != timing.source_layout
                 || !group.canonical_source_layout
                 || *group.canonical_source_layout != source.channel_layout
@@ -1205,7 +1205,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 
             auto const config = input.graph.node_bundles.resolve_sample_input(
                 NodeBundlePortId{bundle, PortKind::sample, port}).config;
-            if (!is_realtime(config.access)) {
+            if (!is_sequential(config.access)) {
                 return std::unexpected(
                     "GraphJit disconnected indexed sample input is not supported");
             }
@@ -1233,7 +1233,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 
             auto const config = input.graph.node_bundles.resolve_sample_output(
                 NodeBundlePortId{bundle, PortKind::sample, port}).config;
-            if (!is_realtime(config.access)) continue;
+            if (!is_tick(config.production)) continue;
             disconnected_outputs.push_back(DisconnectedSampleOutput{
                 .primitive = primitive_index,
                 .port = port,
@@ -1241,8 +1241,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             });
             sink_requests.push_back(SampleSinkPhysicalRequest{
                 .channel_layout = config.channel_layout,
-                .history = realtime_history(config),
-                .latency = realtime_latency(config),
+                .history = port_history(config),
+                .latency = tick_latency(config),
                 .execution_position = *execution_position,
                 .migration_identity =
                     "graphjit.sample.disconnected_output:"
@@ -1394,7 +1394,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         auto& binding = plan.primitives[disconnected.primitive]
             .inputs[disconnected.port];
         binding.channel_layout = disconnected.config.channel_layout;
-        binding.history = realtime_history(disconnected.config);
+        binding.history = port_history(disconnected.config);
         binding.read_latency = 0;
         auto const channels = channel_count(disconnected.config.channel_layout);
         binding.channels.reserve(channels);
@@ -1424,8 +1424,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         IV_ASSERT(binding.realtime,
             "realtime sample binding disagrees with its port declaration");
         binding.representation = representation;
-        binding.history = realtime_history(disconnected.config);
-        binding.latency = realtime_latency(disconnected.config);
+        binding.history = port_history(disconnected.config);
+        binding.latency = tick_latency(disconnected.config);
     }
 
     for (auto const& primitive : plan.primitives) {
@@ -1510,7 +1510,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             auto const config = input.graph.node_bundles.resolve_event_output(
                 {bundle, PortKind::event, port}).config;
             plan.primitives[i].outputs[port].realtime =
-                is_realtime(config.access);
+                is_tick(config.production);
         }
     }
 
@@ -1875,13 +1875,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     source_id.bundle, PortKind::event, source_id.port};
                 auto const source = input.graph.node_bundles
                     .resolve_event_output(source_port).config;
-                if (!is_realtime(source.access)
+                if (!is_tick(source.production)
                     || source.type != group.source_type) {
                     return std::unexpected(
                         "GraphJit event fan-in producer disagrees with its declaration");
                 }
-                auto const source_history = realtime_history(source);
-                auto const source_latency = realtime_latency(source);
+                auto const source_history = port_history(source);
+                auto const source_latency = tick_latency(source);
                 auto const source_region = region_index_for_bundle(
                     source_id.bundle);
                 auto const source_cyclic_region = source_region
@@ -2271,8 +2271,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                             .realtime = true,
                             .representation = *local,
                             .source_type = group.source_type,
-                            .history = realtime_history(source.config),
-                            .latency = realtime_latency(source.config),
+                            .history = port_history(source.config),
+                            .latency = tick_latency(source.config),
                             .append_existing = !source.cyclic_region
                                 && analysis.primitives[source.primitive]
                                        .bundle.maximum_block_size
@@ -2318,7 +2318,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                             target_id.bundle, PortKind::event, target_id.port};
                         auto const target = input.graph.node_bundles
                             .resolve_event_input(target_port).config;
-                        if (!is_realtime(target.access)
+                        if (!is_sequential(target.access)
                             || target.type != connection.target_type) {
                             return std::unexpected(
                                 "GraphJit staged event fan-in consumer disagrees with its declaration");
@@ -2559,9 +2559,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 for (std::size_t source_index = 0;
                      source_index < validated_sources.size(); ++source_index) {
                     auto const& source = validated_sources[source_index].config;
-                    if (realtime_latency(source) != 0
+                    if (tick_latency(source) != 0
                         || (source_index == 0
-                            && realtime_history(source) != 0)) {
+                            && port_history(source) != 0)) {
                         retained_home_is_order_safe = false;
                         break;
                     }
@@ -2824,8 +2824,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     .realtime = true,
                     .representation = representation,
                     .source_type = group.source_type,
-                    .history = realtime_history(source.config),
-                    .latency = realtime_latency(source.config),
+                    .history = port_history(source.config),
+                    .latency = tick_latency(source.config),
                     .append_existing = !cyclic_source_region
                         && ((retained_producer_home && source_index == 0)
                         || analysis.primitives[source.primitive]
@@ -2877,7 +2877,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         target_id.bundle, PortKind::event, target_id.port};
                     auto const target = input.graph.node_bundles
                         .resolve_event_input(target_port).config;
-                    if (!is_realtime(target.access)
+                    if (!is_sequential(target.access)
                         || target.type != connection.target_type) {
                         return std::unexpected(
                             "GraphJit event fan-in consumer disagrees with its declaration");
@@ -2990,7 +2990,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             source_id.bundle, PortKind::event, source_id.port};
         auto const source = input.graph.node_bundles
             .resolve_event_output(source_port).config;
-        if (!is_realtime(source.access)
+        if (!is_tick(source.production)
             || source.type != group.source_type) {
             return std::unexpected(
                 "GraphJit event producer disagrees with its declaration");
@@ -3016,8 +3016,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             ? region_scope(*source_region_index, EventOperationPhase::after)
             : primitive_scope(
                 group.live_interval.begin, EventOperationPhase::after);
-        auto const source_history = realtime_history(source);
-        auto const source_latency = realtime_latency(source);
+        auto const source_history = port_history(source);
+        auto const source_latency = tick_latency(source);
         auto const requires_cyclic_local_merge = source_region_is_cyclic
             && (source_history != 0 || source_latency != 0);
         auto producer_window_samples = input.specialization.block_size;
@@ -3250,8 +3250,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             .realtime = true,
             .representation = producer_representation,
             .source_type = group.source_type,
-            .history = realtime_history(source),
-            .latency = realtime_latency(source),
+            .history = port_history(source),
+            .latency = tick_latency(source),
             .append_existing = aggregate_sequence
                 && !requires_cyclic_local_merge,
         };
@@ -3286,7 +3286,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     target_id.bundle, PortKind::event, target_id.port};
                 auto const target = input.graph.node_bundles
                     .resolve_event_input(target_port).config;
-                if (!is_realtime(target.access)
+                if (!is_sequential(target.access)
                     || target.type != connection.target_type
                     || target_id.port
                         >= plan.primitives[*target_primitive].inputs.size()) {
@@ -3694,7 +3694,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 target_id.bundle, PortKind::event, target_id.port};
             auto const target = input.graph.node_bundles
                 .resolve_event_input(target_port).config;
-            if (!is_realtime(target.access)
+            if (!is_sequential(target.access)
                 || target.type != connection.target_type) {
                 return std::unexpected(
                     "GraphJit event feedback consumer disagrees with its declaration");
@@ -3975,7 +3975,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             NodeBundlePortId const port_id{bundle, PortKind::event, port};
             auto const config = input.graph.node_bundles
                 .resolve_event_input(port_id).config;
-            if (!is_realtime(config.access)) {
+            if (!is_sequential(config.access)) {
                 return std::unexpected(
                     "GraphJit disconnected indexed event inputs are not yet supported");
             }
@@ -3998,11 +3998,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             NodeBundlePortId const port_id{bundle, PortKind::event, port};
             auto const config = input.graph.node_bundles
                 .resolve_event_output(port_id).config;
-            IV_ASSERT(is_realtime(config.access),
+            IV_ASSERT(is_tick(config.production),
                 "realtime event binding disagrees with its port declaration");
             auto window_samples = input.specialization.block_size;
-            auto const history = realtime_history(config);
-            auto const latency = realtime_latency(config);
+            auto const history = port_history(config);
+            auto const latency = tick_latency(config);
             if (history > std::numeric_limits<std::size_t>::max()
                     - window_samples
                 || latency > std::numeric_limits<std::size_t>::max()

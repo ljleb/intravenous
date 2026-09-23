@@ -15,7 +15,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{realtime_sample_output("out", {
+            return std::array<OutputConfig, 1>{tick_sample_output("out", {
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = SampleStreamLayout::planar,
@@ -37,7 +37,7 @@ namespace iv {
     public:
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{realtime_sample_input("in", {
+            return std::array<InputConfig, 1>{sequential_sample_input("in", {
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = SampleStreamLayout::planar,
@@ -76,7 +76,7 @@ namespace iv {
     struct DummyEventSink {
         static constexpr auto inputs()
         {
-            return std::array { realtime_event_input({}, EventTypeId::empty) };
+            return std::array { sequential_event_input({}, EventTypeId::empty) };
         }
 
         void tick_block(TickBlockContext<DummyEventSink> const&) const
