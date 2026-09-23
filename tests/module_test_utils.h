@@ -53,6 +53,11 @@ namespace iv::test {
         return IV_CONFIGURED_BINARY_DIR;
     }
 
+    inline std::filesystem::path staged_builtin_package_root()
+    {
+        return configured_build_root() / "src/intravenous/builtin_packages/builtin";
+    }
+
     inline std::filesystem::path duplicate_modules_root()
     {
         return repo_root() / "tests" / "test_modules_duplicate";
@@ -61,10 +66,10 @@ namespace iv::test {
     inline void load_test_default_package_catalog(iv::ModuleLoader& loader)
     {
         // Direct-loader tests have no PackageWatcherService. Seed the same
-        // catalog state it would provide, using the source package available
-        // to the test build rather than a loader-internal fallback.
+        // catalog state it would provide from the package staged in the active
+        // CMake build tree, never from the checkout's source directory.
         auto defaults = loader.load_packages({
-            repo_root() / "src/intravenous/builtin_packages/builtin"});
+            staged_builtin_package_root()});
         if (defaults.size() != 1 || !defaults.front()) {
             throw std::runtime_error(
                 defaults.empty() ? "test default IV package load produced no result"

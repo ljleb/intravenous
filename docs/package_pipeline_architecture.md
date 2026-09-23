@@ -51,6 +51,65 @@ build results to `PackageWatcher` over the existing request/response edge is
 simpler and safer than introducing a separate coordinator and then routing watch
 updates back into the watcher.
 
+## Package roots and build-artifact ownership (planned)
+
+Package discovery has three distinct source scopes for a project. A package is
+identified by its own `iv_package.json`; an IV project is rooted at its
+`iv_project.json` (or the supported `iv_project.jsonl` form). The scopes are:
+
+| Source scope | Source ownership | Intended build-artifact owner |
+| --- | --- | --- |
+| Built-in packages | The executable/build or installed Intravenous distribution | The executable's build tree, or installation-associated prebuilt artifact/cache location |
+| Common packages | Zero or more configured shared package directories | A shared package cache independent of any project |
+| Project-local packages | The current IV project's source tree | That project's `build/iv/` tree |
+
+These are **package search scopes**, not three separate JIT implementations.
+`PackageWatcher` discovers packages from all applicable scopes, `PackageJit`
+uses the same package compilation/finalization contract for all of them, and
+`PackageDefinitions`/`NodeDefinitions` publish the accepted revisions into the
+project's definition snapshot. Scope/provenance must remain explicit; a built-in
+package is not reclassified as project-local simply because its source directory
+is not in a user-configured common root. Overlapping search roots must not cause
+one physical package to be discovered or compiled twice. Definition-ID
+collisions across distinct packages remain an explicit namespace/publication
+matter, not an implicit source-directory precedence rule.
+
+### Built-ins belong to the executable, not the opened project
+
+The build that produces an executable should also produce its built-in package
+LLVM and associated reusable build outputs using that executable's configured
+package toolchain. A build-tree executable should find those artifacts under its
+own CMake build tree; an installed executable needs an installation-associated
+prebuilt location or a versioned writable cache rather than assuming the
+original build directory still exists. Merely staging built-in **sources** into
+the build tree does not satisfy this artifact-location contract.
+
+Every project opened by a compatible executable should reuse the same built-in
+package artifacts. Opening a project must not create a built-in build workspace
+under the built-in source directory or under that project's `build/iv/`. This is
+"once per compatible executable build", not "once forever": changes to the
+built-in source, package ABI, relevant compiler/finalizer/introspection tooling,
+target architecture, or build configuration must invalidate the artifact.
+Normal cache hits should avoid C++ compilation and LLVM package finalization;
+loading a package revision into a process's package/configuration ORC JIT is a
+separate operation and is not guaranteed to be a disk-cache hit.
+
+Common packages may be shared across projects using a cache keyed by package
+identity/source revision and relevant toolchain/ABI settings. Project-local
+packages retain project-owned build workspaces. Neither kind of package needs a
+second implementation of `PackageJit`, and reusing package LLVM does not imply
+reusing a project's configured graph or `GraphJit`-compiled generation.
+
+**Current implementation boundary:** CMake stages the built-in manifest and
+entry source under its binary tree and exposes that directory through
+`iv_package_search_root`. `ModuleLoader` currently treats all configured extra
+search roots as global and places their build workspaces under
+`IV_GLOBAL_MODULE_CACHE` (or its platform default); project-local workspaces
+use `<project>/build/iv/`. Dedicated executable-owned built-in artifacts,
+explicit three-scope provenance, and build/install-time prebuilding are future
+package-pipeline work. This section does not change the current loader or the
+ongoing `GraphJit` implementation plan.
+
 ## `PackageWatcher`
 
 `PackageWatcher` has a broader responsibility than merely wrapping `inotify`:

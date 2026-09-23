@@ -186,26 +186,34 @@ function(iv_add_host_runtime_objects target)
 endfunction()
 
 # Built-ins are a single shipped IV package rather than code linked directly
-# into iv_builder.  Copy the source package into the build layout so the
-# application discovers it through the normal global-package path.
+# into iv_builder. Stage only the package inputs in the build tree: copying the
+# whole source directory would also copy any old compile database or build/ tree
+# left behind by an earlier direct-loader invocation.
 set(IV_BUILTIN_PACKAGE_SOURCE_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}/builtin_packages")
 set(IV_BUILTIN_PACKAGE_SEARCH_ROOT
     "${CMAKE_CURRENT_BINARY_DIR}/builtin_packages")
 set(_iv_builtin_package_manifest
     "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin/iv_package.json")
+set(_iv_builtin_package_entry
+    "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin/module.cpp")
 add_custom_command(
-    OUTPUT "${_iv_builtin_package_manifest}"
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory
-        "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}"
-        "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}"
+    OUTPUT "${_iv_builtin_package_manifest}" "${_iv_builtin_package_entry}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/iv_package.json"
+        "${_iv_builtin_package_manifest}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/module.cpp"
+        "${_iv_builtin_package_entry}"
     DEPENDS
         "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/iv_package.json"
         "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/module.cpp"
     VERBATIM
 )
 add_custom_target(intravenous_builtin_package_assets
-    DEPENDS "${_iv_builtin_package_manifest}")
+    DEPENDS "${_iv_builtin_package_manifest}" "${_iv_builtin_package_entry}")
 
 add_library(intravenous_graph_builder OBJECT
     basic_nodes/debug_probe.cpp

@@ -52,7 +52,7 @@ std::pair<std::string, std::filesystem::path> package_declaration(
 std::pair<std::string, std::filesystem::path> default_package_declaration()
 {
     auto root = std::filesystem::weakly_canonical(
-        iv::test::repo_root() / "src/intravenous/builtin_packages/builtin");
+        iv::test::staged_builtin_package_root());
     return {root.generic_string(), root};
 }
 

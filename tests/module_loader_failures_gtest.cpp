@@ -71,6 +71,21 @@ TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
     EXPECT_NE(secondary->configured_graph, nullptr);
 }
 
+TEST(ModuleLoaderPackages, StagedBuiltinBuildStaysInsideCurrentCmakeBuildTree)
+{
+    // make_loader() seeds the shipped package before loading project packages.
+    // It must not make the source checkout's builtin directory a build owner.
+    auto loader = iv::test::make_loader();
+    auto const staged = iv::test::staged_builtin_package_root();
+    auto const artifact = loader.compile_package(staged);
+    auto const build_root = staged / "build/iv/build";
+    auto const relative_artifact = artifact.lexically_relative(build_root);
+
+    ASSERT_FALSE(relative_artifact.empty());
+    EXPECT_NE(*relative_artifact.begin(), std::filesystem::path{".."});
+    EXPECT_TRUE(std::filesystem::is_regular_file(artifact));
+}
+
 TEST(ModuleLoaderPackages, ScalarSourceOutputResolvesShippedBuiltinConstant)
 {
     auto const package_root = iv::test::runtime_modules_root()
