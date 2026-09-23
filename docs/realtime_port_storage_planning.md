@@ -499,48 +499,59 @@ struct RealtimeOutputConfig {
 };
 
 struct IndexedInputConfig {};
+struct IndexedOutputConfig {};
 
-enum class IndexedProducer {
-    tick_record,
-    tock_realtime,
-    tock_stored,
-};
-
-struct IndexedOutputConfig {
-    IndexedProducer producer = IndexedProducer::tock_stored;
+enum class OutputRetention {
+    ephemeral,
+    persisted,
 };
 
 using InputAccessConfig =
     std::variant<RealtimeInputConfig, IndexedInputConfig>;
 using OutputAccessConfig =
     std::variant<RealtimeOutputConfig, IndexedOutputConfig>;
+
+// Conceptually part of the parent OutputConfig, alongside payload properties.
+struct OutputConfig {
+    OutputAccessConfig access{RealtimeOutputConfig{}};
+    OutputRetention retention = OutputRetention::ephemeral;
+};
 ```
 
-The distinct indexed alternatives are intentional. Indexed outputs declare their
-producer/execution authority; indexed inputs inherit the semantics of connected
-producers and carry no producer preference of their own.
+Output access and retention are independent:
 
-The three output modes are:
+| output access | retention | production semantics |
+| --- | --- | --- |
+| `RealtimeOutputConfig` | `ephemeral` | produced by `tick_block()`; no semantic retention requirement |
+| `RealtimeOutputConfig` | `persisted` | produced by `tick_block()`; finalized values are retained |
+| `IndexedOutputConfig` | `ephemeral` | produced by `tock_coverage()`; no semantic retention requirement |
+| `IndexedOutputConfig` | `persisted` | produced by `tock_coverage()`; complete exact coverage is retained |
 
-- `tock_realtime`: demand-driven `tock_coverage()` output with no persistent result
-  and a positive guarantee that requested live computation is realtime-compatible;
-- `tock_stored`: `tock_coverage()` output whose complete exact coverage is
-  persistently materialized before publication; and
-- `tick_record`: authoritative retained indexed data updated by `tick_block()` in
-  whole-current-block-or-no-write transactions.
+`RealtimeOutputConfig` always keeps its ordinary history/latency authoring
+semantics. Persistence begins only after a position is final according to that
+contract; it does not turn the first write into an immutable value and does not
+impose a separate whole-block recorder transaction.
 
-This replaces the older boolean `cache` split and makes invalid combinations such
-as a tick-written uncached output unrepresentable.
+`ephemeral` means only that retaining produced values is not semantically
+required. GraphJit/GraphExecutor may still allocate bounded transient pages,
+prefetch buffers, or other caches when a connection requires materialization.
+`persisted` is a runtime retention guarantee and does not by itself imply project-
+file serialization or external-file writeback.
 
 `InputConfig` / `OutputConfig` separately carry the sample/event payload variant
-and this access variant. `SampleInputProperties`, `SampleOutputProperties`,
-`EventInputProperties`, and `EventOutputProperties` do not carry history or
-latency. The same distinction is preserved in `ConfiguredGraph`; it must not be
-flattened back into an access-mode boolean plus timing fields that are meaningless
-for indexed declarations.
+and the access variant. Output retention lives once on the parent output config,
+not inside either access alternative. `SampleInputProperties`,
+`SampleOutputProperties`, `EventInputProperties`, and `EventOutputProperties` do
+not carry history or latency. The same distinction is preserved in
+`ConfiguredGraph`.
 
-This makes invalid combinations unrepresentable: an indexed port cannot
-accidentally acquire a finite realtime history or latency.
+Only realtime access carries finite history/latency. Indexed declarations cannot
+accidentally acquire those fields.
+
+For scheduling/storage purposes, a node is stateful across invocations if it has a
+nested `NodeState` **or** any realtime input/output history or output latency.
+History/latency creates a statically bounded temporal dependency; `NodeState` may
+carry a dependency forward without a static bound.
 
 `EventOutputProperties` additionally carries a static event-buffer sizing rate:
 
@@ -578,7 +589,7 @@ storage to reserve for the selected temporal representation.
 
 ## Indexed ports use explicit sparse coverage
 
-Do not apply the realtime bounded-window rule to indexed access.
+Do not apply the realtime bounded-window rule to `IndexedOutputConfig`.
 
 Indexed sample/event outputs publish finite `IndexedCoverage`: a canonical union
 of disjoint half-open global-index regions. Coverage is the indexed semantic
@@ -587,49 +598,85 @@ request indexed values outside input coverage, so long uncovered timeline gaps
 require no storage or computation.
 
 Exact semantic changed/demand regions remain independent of physical storage
-pages. For a persistent stored output, canonically aligned pages may be wholly
+pages. For an indexed/persisted output, canonically aligned pages may be wholly
 valid or invalid for exactly `page_interval & coverage` while a **candidate**
 version is being rebuilt. Forward changed regions are not widened to page
-boundaries. A published `tock_stored` output has every covered page domain valid;
-sparse requests merely read from that complete representation.
+boundaries. A published indexed/persisted output has every covered page domain
+valid; sparse requests merely read from that complete representation.
 
-`tock_realtime` owns no persistent output pages. Non-realtime access uses
-caller/transaction storage, while realtime lowering should use direct consumer
-placement or bounded compiler-owned transient storage whenever possible.
+An indexed/ephemeral output owns no persistent output pages. Non-realtime access
+may use caller/transaction storage, while realtime lowering may use direct
+consumer placement or bounded compiler-owned transient storage when safe.
 
-Persistent `tock_stored` and authoritative `tick_record` data live in
-executor-owned stable indexed storage with per-generation endpoint bindings when
-the output has stable project identity. Their stored-page width is exactly the
-fixed whole-graph root block size for the active layout generation, on the same
-absolute-sample-zero-aligned grid. A complete `tick_record` replacement therefore
-maps 1:1 to one stored page interval. Fixed `State`, tock-only non-semantic
-`IndexedState`, and bounded compiler regions remain in canonical `NodeStorage`.
+Realtime and indexed access remain distinct connection domains. A
+`RealtimeOutputConfig` does not directly satisfy an `IndexedInputConfig`, and
+GraphJit does not insert a generic realtime-to-indexed page/ring adapter. Crossing
+that boundary is an explicit node-level operation so the node can define the
+capture, overwrite, seek, and retention semantics deliberately.
+
+A recording/capture bridge is the important case. Its realtime side consumes an
+ordinary realtime input, while its indexed side exposes an ordinary indexed output.
+Whenever a recording output block is produced during `tick_block()`, the generated
+realtime path immediately copies that block into already-provisioned capture
+storage. Capture does not wait for the end of the root tick. Each captured record
+carries at least:
+
+```text
+CaptureSequence
+OutputPortId
+GlobalBlockPosition
+payload block
+```
+
+`CaptureSequence` is monotonically increasing insertion order in the executor's
+shared recording-capture log. `OutputPortId` identifies the indexed bridge output
+whose value/coverage is affected, and `GlobalBlockPosition` identifies where that
+change belongs. Global positions need not increase with sequence: seeking during
+playback may append a new capture for an earlier position, and consecutive captures
+may belong to different output ports.
+
+Capture exists only while playback/recording is active; the final duration of one
+run need not be known in advance. Storage is slab-backed and dynamically extensible
+without requiring a reallocation of earlier slabs. The audio thread is only a consumer of
+pre-provisioned free blocks: it acquires one, copies the produced block, attaches
+metadata, and publishes the capture record. A separate non-realtime allocation
+worker maintains a target amount of free realtime-consumable capacity by allocating
+reasonably sized slabs independently of indexed execution. Slow propagation/tock
+therefore increases the captured-but-unprocessed backlog rather than consuming a
+fixed compiler-planned bridge window. The allocator may recycle blocks returned by
+completed indexed transactions.
+
+The indexed worker snapshots a fixed contiguous **capture-sequence prefix** at the
+start of each propagation/tock pass. Contiguous here refers only to insertion
+sequence; the selected records may cover arbitrary ports and nonmonotonic global
+positions. Captures published after the snapshot cutoff are excluded from the
+running pass and belong to a later pass.
+
+The selected records are coalesced into exact changed coverage keyed by output port
+and seed the normal indexed forward-propagation machinery. Reverse planning and
+`tock_coverage()` then run normally for all affected nodes and page domains. The
+complete propagation/tock transaction builds candidate indexed pages and atomically
+publishes one new pages version. Capture insertion itself is **not** indexed
+publication and does not advance the pages version.
+
+Published indexed versions own/materialize the data they need and never retain
+references into capture storage. After a successful transaction commits its fixed
+capture prefix, those consumed capture blocks may therefore be returned to the
+allocator immediately. If work is cancelled or rejected as stale, the processed
+capture frontier does not advance and the corresponding blocks remain available
+for a later transaction.
 
 Changing the root block size is a quiescent physical-layout transition, not an
-indexed semantic invalidation. Persistent `tock_stored`/`tick_record` values and
-coverage are losslessly repartitioned onto the new canonical grid, a replacement
-GraphJit generation receives newly sized staging/layout, and publication switches
-to the new layout only after migration completes. Semantic versioning and physical
-layout generation are distinct so old immutable snapshots may retain the old page
-partition until their readers release them.
+indexed semantic invalidation. Persistent indexed values are losslessly
+repartitioned as needed, a replacement GraphJit generation receives the new
+canonical layout, and publication switches only after migration completes.
+Semantic versioning and physical layout generation remain distinct.
 
-`tick_record` additionally has compiler-owned **realtime staging**, which is not
-the persistent indexed store. For a fixed compiled graph, GraphJit knows all
-`tick_record` ports, the root block size, sample channel/layout facts, and event
-capacity bounds, so it can compute one fixed whole-graph staging-frame layout and
-preallocate two frames. The audio thread writes one frame while the publisher
-consumes the other, swapping frame ownership at whole-root-block boundaries.
-
-Each `tick_record` output either writes its entire current root-block interval or
-does nothing. No write preserves pre-existing indexed values/coverage. A complete
-sample write initializes all channels/samples; a complete event write supplies the
-entire event sequence for the block, including the valid case of zero events.
-
-A completed recorder block may be wired directly into causally downstream live
-consumers during the same graph invocation while also being handed off for
-persistent publication. UI/background sparse requests never read mutable staging;
-they remain on immutable published indexed snapshots. Since indexed edges are
-forbidden from SCC cycles, live recorder forwarding has a fixed causal order.
+Persistence does not alter `tick_block()`'s legal history/latency writes: only
+finalized positions acquire the retention obligation. Nor does persistence imply
+indexed accessibility. Realtime/persisted storage remains an output-retention
+concern; an indexed consumer requires an explicit bridge node whose indexed output
+participates in the ordinary indexed transaction model above.
 
 Persistent stored sample payloads may be dense or coverage-packed. Stored event
 payloads are packed ordered events; event fan-in order is deterministic by

@@ -496,40 +496,34 @@ Whole-project lowering partitions the indexed subgraph into weakly connected
 planning components, precomputes forward-change/reverse-demand/evaluation order,
 and emits specialized component executors plus immutable endpoint metadata.
 
-Indexed outputs use a three-state producer contract rather than the older boolean
-cache property:
+Output production and retention are independent. `RealtimeOutputConfig` is
+produced by `tick_block()` with its normal history/latency contract;
+`IndexedOutputConfig` is produced order-independently by `tock_coverage()`. The
+parent output config separately selects `OutputRetention::{ephemeral,persisted}`.
 
-- `tock_realtime`: demand-driven tock output with no persistent materialization and
-  a realtime-safety guarantee;
-- `tock_stored`: tock output whose complete exact coverage is persistently
-  materialized before publication; and
-- `tick_record`: authoritative retained indexed data updated by `tick_block()` with
-  whole-current-block-or-no-write semantics.
+Indexed/persisted outputs are complete over their exact coverage before
+publication. Realtime/persisted retention is separate: tick execution may revise
+positions while allowed by history/latency, and retaining finalized realtime values
+does not make them indexed inputs.
 
-Persistent pages remain useful invalidation/recomputation units for `tock_stored`
-candidates, but a published stored output has every covered page domain complete.
-Stored-page width is the fixed whole-graph root block size and uses the same
-absolute-sample-zero-aligned grid, giving each complete `tick_record` root-block
-replacement a 1:1 stored-page interval. Sparse UI requests do not create
-semantically partial stored results.
+Realtime and indexed connections stay within their execution domains. Crossing
+from realtime production into indexed evaluation is represented by an explicit
+bridge node. A recording bridge copies each produced recording block immediately
+into pre-provisioned slab-backed capture storage and tags it with capture sequence,
+output-port ID, and global block position. A non-realtime allocator replenishes
+free capture capacity independently of indexed execution. Each propagation/tock
+pass snapshots a fixed capture-sequence prefix, seeds ordinary indexed invalidation
+from that snapshot, completes normal reverse/tock work, and publishes one coherent
+successor pages version. Captures arriving during the pass wait for the next one.
 
-Changing the root block size is a quiescent physical-layout migration. Persistent
-`tock_stored` and authoritative `tick_record` data are losslessly repartitioned to
-the new page/block grid without changing indexed semantic version merely because
-the physical partition changed; the new GraphJit generation receives newly sized
-recorder staging before execution resumes.
+Persistent page width may continue to follow the fixed whole-graph root block
+quantum as a physical layout choice. Changing root block size is a quiescent
+physical-layout migration, not a semantic invalidation merely because the page
+partition changed.
 
-Static whole-project validation computes SCCs over the complete semantic dependency
-relation, including indexed dependencies and explicit feedback for cycle
-membership. **Every indexed edge must leave its source node's semantic SCC.** A
-realtime SCC may export indexed data outward, but indexed dependencies never
-participate in a directed cycle regardless of producer mode.
-
-`GraphJit` also lays out all `tick_record` realtime staging statically. For a fixed
-compiled revision it knows the recorder output set, root block size, channel/layout
-facts, and event-capacity bounds, so one whole-graph staging frame has a fixed
-size/offset map. Double-buffering such frames allows the audio thread to write the
-current frame while non-realtime publication consumes the previous one.
+Static whole-project validation still computes SCCs over the complete semantic
+dependency relation. Every indexed dependency must leave its source node's
+semantic SCC; realtime SCCs may export indexed data outward.
 
 Logical sample/event connections do not imply buffers. Connection implementation
 selection is an explicit pure compiler-planning phase before LLVM generation; see
@@ -552,30 +546,36 @@ project generation. It does not own ORC compilation.
 - one canonical `NodeStorage` for each retained executable generation;
 - ordinary lifecycle/migration state for `State` and optional tock-only
   `IndexedState`;
-- stable persistent indexed stores/immutable roots for identifiable `tock_stored`
-  and `tick_record` outputs, with per-generation endpoint bindings;
+- stable persistent indexed stores/immutable roots for identifiable `indexed/persisted`
+  outputs, with per-generation endpoint bindings;
 - reusable indexed transaction workspace for reverse/forward planning and
-  non-realtime `tock_realtime` materialization;
-- indexed semantic versions plus candidate/published immutable snapshots;
+  non-realtime `indexed/ephemeral` materialization;
+- indexed semantic versions plus monotonically advancing immutable pages versions
+  and candidate/published snapshots;
+- the recording-capture log, processed-sequence frontier, slab allocator/
+  reclamation state, and page-version reader pins;
 - exact forward-change transactions, reverse-demand/tock transactions, and full
-  `tock_stored` candidate completion;
-- double/triple-buffered `tick_record` staging publication and deferred
-  off-audio-thread reclamation;
+  `indexed/persisted` candidate completion;
 - sequential execution through the generated zero-port root node; and
 - versioned external indexed sample/event requests/change notifications.
 
-Dynamically sized persistent indexed output data is deliberately not part of fixed
-`NodeStorage`. Stable persistent outputs are not owned by one JIT generation merely
-because endpoint ordinals are generation-local: compatible generations rebind
+Dynamically sized indexed/persisted output data is deliberately not part of fixed
+`NodeStorage`. Stable indexed/persisted outputs are not owned by one JIT generation
+merely because endpoint ordinals are generation-local: compatible generations rebind
 stable virtual-node/member/output identities to the same executor-owned storage
-without copying payloads. `tock_realtime` owns no persistent output payload.
+without copying payloads. `indexed/ephemeral` owns no persistent output payload.
+Realtime/persisted retention does not create an indexed publication path.
+Recording bridges own separate capture storage whose records are transaction inputs
+to the bridge's indexed output. Published indexed versions materialize their own
+payload and never retain pointers into capture blocks.
 
 Executable-generation reconciliation treats genuinely new semantic nodes as node
-creation events. Computed outputs establish exact coverage through mandatory
-forward-coverage semantics; `tock_stored` candidates become publishable only after
-their full coverage is materialized. `tick_record` outputs establish coverage from
-authoritative imported/restored/recorded data. JIT compilation alone is not an
-indexed invalidation event.
+creation events. Computed indexed outputs establish exact coverage through mandatory
+forward-coverage semantics; indexed/persisted candidates become publishable only
+after full materialization. Recording captures seed changed/added coverage on the
+explicit bridge's indexed output only inside a fixed indexed transaction. The pages
+version advances when that complete propagation/tock transaction commits; JIT
+compilation alone is not an indexed invalidation event.
 
 Changing the connection set of an indexed input conservatively marks that whole
 logical input changed over `old_input_coverage | new_input_coverage`; ordinary
@@ -583,33 +583,21 @@ forward propagation determines downstream effects. Reverse coverage planning is
 value-blind and may conservatively request a larger input region when dependency
 addressing depends on input payload values.
 
-Receiving a new `CompiledGraph` does not mutate an in-progress audio pass. One live
-root invocation captures one immutable published indexed base. `tock_realtime`
-paths may execute tock inline using direct/transient compiler-owned storage;
-`tock_stored` reads use complete published persistent data.
+Receiving a new `CompiledGraph` does not mutate an in-progress audio pass.
+Published indexed/persisted data remains immutable. Recording capture storage is
+separate from published pages: the realtime path appends immutable captured blocks,
+while an indexed pass uses only the capture-sequence prefix fixed at its start.
+Later captures cannot enter that pass through the allocator/capture object.
 
-`tick_record` is the deliberate exception to "published base only" for generated
-live code: causally downstream consumers in the same root invocation may observe a
-complete private current-block recorder replacement. UI/background indexed
-requests never observe that mutable staging; they remain on immutable snapshots
-until the authoritative update is incorporated and published at a whole-root-block
-boundary. No indexed edge may participate in an SCC, so this same-pass forwarding
-has a fixed causal order.
-
-A `tick_record` output may also perform no write for a block, preserving the
-pre-existing stored block/coverage. This permits file-backed sampler/clip nodes to
-replay existing content without rewriting it while optionally replacing the
-current block from a realtime input. File persistence is asynchronous downstream
-storage work and does not gate same-pass live use or in-memory indexed publication.
-
-Non-realtime indexed results are versioned. A newer `tock_stored` candidate is
-pending until the **entire** stored output required by that semantic version is
-complete; callers may continue displaying an older completed version rather than
-observe partial/default data. `tock_realtime` requests evaluate exact requested
-coverage against a selected immutable semantic version.
+Non-realtime indexed results are versioned by `(semantic_version, pages_version)`.
+A newer `indexed/persisted` candidate is pending until the **entire** stored output
+required by that version pair is complete; callers may continue displaying an older
+completed pair rather than observe partial/default data. `indexed/ephemeral`
+requests evaluate exact requested coverage against one selected immutable version
+pair.
 
 Changing project sample rate invalidates/repropagates computed indexed semantics.
-Authoritative `tick_record` samples are not automatically resampled or reindexed;
+Realtime/persisted samples are not automatically resampled or reindexed;
 they are interpreted at the new project rate unless an explicit sampler/resampler
 node preserves original timing.
 
@@ -737,13 +725,13 @@ The implementation checkpoints now stand as follows:
    `ProjectNodePortMatcher`s against the complete placement map, applies
    sample/event connections, and preserves dangling matchers with diagnostics.
    Structured persistence and JSON-RPC adapters remain follow-up transport work.
-7. **Landed (fixed state + indexed v3 API foundation):** canonical
+7. **Landed (fixed state + indexed API foundation):** canonical
    `NodeLayout`/`NodeStorage` covers tock-only non-semantic `IndexedState` and
-   compiler-owned raw aligned regions. The three producer modes, exact computed-
-   output forward coverage, callback/write authority, sample-rate context, and
-   whole-semantic-SCC indexed-edge rejection are wired through package records and
-   GraphJit analysis. Stable indexed component/order metadata and fixed recorder-
-   staging analysis remain to be added inside whole-graph lowering;
+   compiler-owned raw aligned regions. Output access/retention, exact computed-
+   output forward coverage, sample-rate context, and whole-semantic-SCC indexed-
+   edge rejection are wired through package records and GraphJit analysis. Stable
+   indexed component/order metadata and explicit recording-bridge capture planning
+   remain to be completed inside whole-graph lowering;
 8. **Landed (compiler shell + storage/lifecycle ABI cleanup):** `GraphJit`
    synchronously captures exact package LLVM/provenance, resolves compiler
    anchors/config relocations, verifies and O3 optimizes generated project LLVM,
