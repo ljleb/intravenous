@@ -4,6 +4,7 @@
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/node/config_relocations.h>
 #include <intravenous/node/node_state_structure.h>
+#include <intravenous/graph/configured_graph.hpp>
 
 #include <cstddef>
 #include <memory>

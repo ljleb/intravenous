@@ -179,16 +179,16 @@ TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
     pass(input);
     builder.outputs("out"_P = pass);
 
-    auto view = freeze_configured_graph_for_test(
-        details::take_built_graph(session.get()));
+    auto configured = details::take_built_graph(session.get());
     EXPECT_THROW(
         (void)details::take_built_graph(session.get()),
         std::logic_error);
     session.reset();
 
-    auto const plan = compile_graph(view);
-    ASSERT_EQ(plan.graph.outputs().size(), 1u);
-    EXPECT_EQ(plan.graph.outputs().front().name, "out");
+    auto const outputs = configured.public_ports.sample_outputs(
+        configured.node_bundles);
+    ASSERT_EQ(outputs.size(), 1u);
+    EXPECT_EQ(outputs.front().name, "out");
 }
 
 TEST(GraphModules, TypedNodeCallsForwardNormalizedSampleAndEventRequests)

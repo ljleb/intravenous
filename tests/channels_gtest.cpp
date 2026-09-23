@@ -115,13 +115,23 @@ TEST(Channels, SamplePortStorageViewSupportsIndependentChannelStorage)
         },
         left.size(),
     };
-    iv::OutputPort output(storage, 0, 10);
+    // This is an input projection: each channel has its own physical ring
+    // capacity and read delay. OutputPort writes producer storage without
+    // applying an input's per-channel frame_delay.
     iv::InputPort input(storage, 0, 0, 10);
 
-    output.write_frame(0, 0, 1.25f);
-    output.write_frame(0, 1, 2.5f);
+    // Logical frame 10 resolves to left[(10 - 2) & 7] and
+    // right[(10 - 5) & 15], respectively.
+    left[0] = 1.25f;
+    right[5] = 2.5f;
     EXPECT_FLOAT_EQ(input.get_frame(0, 0), 1.25f);
     EXPECT_FLOAT_EQ(input.get_frame(0, 1), 2.5f);
+
+    // Ring wrap uses each channel's capacity, not the view's capacity.
+    left[7] = 3.75f;
+    right[15] = 4.5f;
+    EXPECT_FLOAT_EQ(input.get_frame(7, 0), 3.75f);
+    EXPECT_FLOAT_EQ(input.get_frame(10, 1), 4.5f);
 }
 
 TEST(Channels, SamplePortStorageViewSupportsStridedChannelPointers)

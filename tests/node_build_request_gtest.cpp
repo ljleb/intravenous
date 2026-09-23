@@ -346,6 +346,12 @@ static_assert(iv::details::static_tock_output_port_index<
     IndexedTransform, "samples-out">() == 0);
 static_assert(iv::details::static_tock_event_output_port_index<
     IndexedTransform, "events-out">() == 0);
+static_assert(iv::details::static_output_port_is_indexed<
+    IndexedTransform, "events-out">());
+static_assert(iv::details::static_output_port_is_indexed<
+    MixedAccessOrdinalNode, "indexed-event">());
+static_assert(!iv::details::static_output_port_is_indexed<
+    MixedAccessOrdinalNode, "realtime-event">());
 static_assert(iv::details::static_output_port_index<
     MixedAccessOrdinalNode, "realtime-sample">() == 1);
 static_assert(iv::details::static_realtime_output_port_index<

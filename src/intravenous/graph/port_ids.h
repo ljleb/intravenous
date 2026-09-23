@@ -3,6 +3,7 @@
 #include <intravenous/ports.h>
 
 #include <cstddef>
+#include <string>
 
 namespace iv {
 
@@ -10,6 +11,16 @@ namespace iv {
 // details. Keeping them independently includable lets the DSL reference ABI
 // name ports without importing GraphBuilderNodeBundles and its storage.
 using NodeBundleHandle = size_t;
+
+// Stable configured identity. Keep virtual-port identity independent of the
+// node-bundle implementation so it survives configuration rebuilds.
+struct VirtualPortId {
+  std::string virtual_node_id{};
+  PortKind port_kind = PortKind::sample;
+  size_t port_ordinal = 0;
+
+  bool operator==(VirtualPortId const&) const = default;
+};
 
 struct NodeBundlePortId {
   NodeBundleHandle node_bundle_handle = 0;

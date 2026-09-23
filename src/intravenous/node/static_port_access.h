@@ -176,7 +176,6 @@ namespace iv::details {
     consteval bool static_output_port_is_indexed()
     {
         OutputConfig const config = static_output_config<Node, Name>();
-        if (!is_sample(config)) throw "static output port is not a sample port";
         return is_indexed(config);
     }
 

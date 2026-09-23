@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <flat_map>
 #include <limits>
 #include <ranges>
 #include <span>
@@ -117,8 +116,6 @@ private:
         SourceInfo const*);
 
     std::vector<VirtualNodeRecord> _records {};
-    std::flat_map<std::string, std::vector<VirtualNodeHandle>>
-        _handles_by_source_identity {};
 };
 } // namespace iv
 namespace iv {
@@ -207,14 +204,14 @@ constexpr VirtualNodeHandle GraphBuilderVirtualNodes::get_or_create(
     std::string_view source_identity, std::string_view type_identity
 )
 {
-    auto& handles = _handles_by_source_identity[std::string(source_identity)];
     auto const existing = std::find_if(
-        handles.begin(), handles.end(), [&](VirtualNodeHandle handle) {
-            return _records[handle].type_identity == type_identity;
+        _records.begin(), _records.end(), [&](VirtualNodeRecord const& record) {
+            return record.source_identity == source_identity &&
+                record.type_identity == type_identity;
         }
     );
-    if (existing != handles.end())
-        return *existing;
+    if (existing != _records.end())
+        return static_cast<VirtualNodeHandle>(existing - _records.begin());
 
     auto const handle = _records.size();
     _records.push_back({
@@ -222,7 +219,6 @@ constexpr VirtualNodeHandle GraphBuilderVirtualNodes::get_or_create(
         .source_identity = std::string(source_identity),
         .type_identity = std::string(type_identity),
     });
-    handles.push_back(handle);
     return handle;
 }
 
@@ -411,10 +407,6 @@ GraphBuilderVirtualNodes::from_configured_records(
     std::span<VirtualNodeRecord const> records) {
   GraphBuilderVirtualNodes result;
   result._records.assign(records.begin(), records.end());
-  for (size_t handle = 0; handle < result._records.size(); ++handle) {
-    auto const& record = result._records[handle];
-    result._handles_by_source_identity[record.source_identity].push_back(handle);
-  }
   return result;
 }
 constexpr VirtualNodeRecord const& GraphBuilderVirtualNodes::record(
