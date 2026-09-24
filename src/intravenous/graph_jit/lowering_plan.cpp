@@ -885,11 +885,11 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     for (auto const& group : connections.sample_producer_groups) {
         if (!group.has_realtime_connections) {
             return std::unexpected(
-                "GraphJit sample-edge slice does not yet support indexed-only sample connections");
+                "GraphJit realtime lowering does not yet support background-only sample connections");
         }
-        if (group.has_indexed_connections) {
+        if (group.has_background_connections) {
             return std::unexpected(
-                "GraphJit sample-edge slice does not yet support mixed realtime/indexed sample fanout");
+                "GraphJit realtime lowering does not yet support mixed Tick/background sample fanout");
         }
         if (!group.storage_plan) {
             return std::unexpected(
@@ -915,9 +915,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
          connection_index < connections.sample_connections.size();
          ++connection_index) {
         auto const& connection = connections.sample_connections[connection_index];
-        if (connection.access != PlannedConnectionAccess::realtime_to_realtime) {
+        if (!is_entirely_realtime_delivery(connection)) {
             return std::unexpected(
-                "GraphJit sample-edge slice supports only realtime-to-realtime sample connections");
+                "GraphJit realtime lowering supports only entirely Tick -> Sequential sample connections");
         }
         if (connection.external_boundary) {
             return std::unexpected(
@@ -1780,11 +1780,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         auto const& group = connections.event_producer_groups[group_index];
         if (!group.has_realtime_connections) {
             return std::unexpected(
-                "GraphJit event flow does not yet support indexed-only event connections");
+                "GraphJit realtime lowering does not yet support background-only event connections");
         }
-        if (group.has_indexed_connections) {
+        if (group.has_background_connections) {
             return std::unexpected(
-                "GraphJit event flow does not yet support mixed realtime/indexed event fanout");
+                "GraphJit realtime lowering does not yet support mixed Tick/background event fanout");
         }
         if (!group.storage_plan) {
             return std::unexpected(
@@ -2290,8 +2290,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         connection.source_history != 0
                         || connection.source_latency != 0
                         || connection.target_history != 0;
-                    if (connection.access
-                            != PlannedConnectionAccess::realtime_to_realtime
+                    if (!is_entirely_realtime_delivery(connection)
                         || connection.external_boundary
                         || connection.sources != group.sources
                         || connection.source_type != group.source_type
@@ -2850,8 +2849,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     connection.source_history != 0
                     || connection.source_latency != 0
                     || connection.target_history != 0;
-                if (connection.access
-                        != PlannedConnectionAccess::realtime_to_realtime
+                if (!is_entirely_realtime_delivery(connection)
                     || connection.external_boundary
                     || connection.sources != group.sources
                     || connection.source_type != group.source_type
@@ -3263,7 +3261,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 connection.source_history != 0
                 || connection.source_latency != 0
                 || connection.target_history != 0;
-            if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+            if (!is_entirely_realtime_delivery(connection)
                 || connection.external_boundary
                 || connection.sources.size() != 1
                 || connection.sources.front().bundle != source_id.bundle
@@ -3392,7 +3390,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             return std::unexpected(
                 "GraphJit event detach has an invalid SCC execution region");
         }
-        if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+        if (!is_entirely_realtime_delivery(connection)
             || connection.external_boundary) {
             return std::unexpected(
                 "GraphJit event feedback requires internal realtime transport");

@@ -231,7 +231,7 @@ bool can_compute_sample_conversion_channelwise(
 bool can_plan_sample_composition_channels(
     SampleConnectionPlan const& connection)
 {
-    return connection.access == PlannedConnectionAccess::realtime_to_realtime
+    return is_entirely_realtime_delivery(connection)
         && !connection.canonical_source_port
         && !connection.detach
         && !connection.requires_block_materialization
@@ -293,16 +293,28 @@ bool source_channel_belongs_to_group(
     SampleSourceChannelTimingPlan const& timing,
     SampleProducerGroupPlan const& group)
 {
-    return group.source_port
-        && timing.source.bundle == group.source_port->node_bundle_handle
-        && timing.source.port == group.source_port->port_ordinal;
+    return !group.source_port
+        || (timing.source.bundle == group.source_port->node_bundle_handle
+            && timing.source.port == group.source_port->port_ordinal);
+}
+
+bool connection_has_realtime_source_for_group(
+    SampleConnectionPlan const& connection,
+    SampleProducerGroupPlan const& group)
+{
+    return std::ranges::any_of(
+        connection.source_channel_timings,
+        [&](SampleSourceChannelTimingPlan const& timing) {
+            return uses_realtime_storage(timing.delivery)
+                && source_channel_belongs_to_group(timing, group);
+        });
 }
 
 bool feedback_can_use_producer_buffer(
     SampleConnectionPlan const& connection,
     SampleProducerGroupPlan const& group)
 {
-    return connection.access == PlannedConnectionAccess::realtime_to_realtime
+    return is_entirely_realtime_delivery(connection)
         && connection.detach
         && connection.detach_initial_value
         && std::bit_cast<std::uint32_t>(
@@ -387,7 +399,7 @@ RealtimeStorageOperationCounts sample_producer_operation_counts(
     for (auto const connection_index : group.connection_indices) {
         if (connection_index >= connections.sample_connections.size()) continue;
         auto const& connection = connections.sample_connections[connection_index];
-        if (connection.access != PlannedConnectionAccess::realtime_to_realtime) {
+        if (!is_entirely_realtime_delivery(connection)) {
             continue;
         }
 
@@ -740,18 +752,8 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     "GraphJit sample producer group references an invalid connection");
             }
             auto const& connection = connections.sample_connections[connection_index];
-            if (connection.access != PlannedConnectionAccess::realtime_to_realtime) {
-                continue;
-            }
             auto const belongs_to_group = !group.source_port
-                || std::ranges::any_of(
-                    connection.source_channel_timings,
-                    [&](SampleSourceChannelTimingPlan const& channel) {
-                        return channel.source.bundle
-                                == group.source_port->node_bundle_handle
-                            && channel.source.port
-                                == group.source_port->port_ordinal;
-                    });
+                || connection_has_realtime_source_for_group(connection, group);
             if (!belongs_to_group) {
                 return std::unexpected(
                     "GraphJit sample producer group contains a foreign source port");
@@ -767,7 +769,17 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         };
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = connections.sample_connections[connection_index];
-            if (connection.access != PlannedConnectionAccess::realtime_to_realtime) {
+            if (!connection_has_realtime_source_for_group(connection, group)) {
+                continue;
+            }
+            if (!is_entirely_realtime_delivery(connection)) {
+                // A mixed Tick/Tock composition is not lowered into one live
+                // input representation until background playback exists, but
+                // its Tick contribution still has to remain live through the
+                // consuming primitive.
+                canonical_live.end = std::max(
+                    canonical_live.end,
+                    target_position(connection, group.live_interval));
                 continue;
             }
             auto const canonical_branch = !group.source_port
@@ -823,7 +835,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         if (group.storage_requirements.retained_frames == 0) {
             for (auto const connection_index : group.connection_indices) {
                 auto const& connection = connections.sample_connections[connection_index];
-                if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+                if (!is_entirely_realtime_delivery(connection)
                     || !connection.detach
                     || !connection.detach_initial_value
                     || std::bit_cast<std::uint32_t>(
@@ -1048,7 +1060,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
 
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = connections.sample_connections[connection_index];
-            if (connection.access != PlannedConnectionAccess::realtime_to_realtime) {
+            if (!is_entirely_realtime_delivery(connection)) {
                 continue;
             }
             if (plan.connection_representations[connection_index]) {
@@ -1202,7 +1214,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         // execute, so persistent feedback state stays producer-format and stable.
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = connections.sample_connections[connection_index];
-            if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+            if (!is_entirely_realtime_delivery(connection)
                 || !connection.detach) {
                 continue;
             }
@@ -1463,8 +1475,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
          connection_index < connections.sample_connections.size();
          ++connection_index) {
         auto const& connection = connections.sample_connections[connection_index];
-        if (connection.access != PlannedConnectionAccess::realtime_to_realtime
+        if (!is_entirely_realtime_delivery(connection)
             || connection.canonical_source_port
+            || connection.projection_contributions.empty()
             || connection.source_channel_timings.empty()) {
             continue;
         }
@@ -1477,8 +1490,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 "GraphJit sample composition does not yet realize external storage");
         }
         if (connection.source_channel_timings.size()
-                != connection.source_channels.size()
-            || connection.projection_contributions.empty()) {
+            != connection.source_channels.size()) {
             return std::unexpected(
                 "GraphJit sample composition lost normalized projection metadata");
         }

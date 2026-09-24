@@ -877,8 +877,9 @@ These are abbreviated sketches of the current public schema: `InputConfig` and
 Input access, output production and output retention are independent in reflection,
 configured-graph serialization and the compiler record interface. The inferred
 `inward_input_access()` / `inward_output_access()` conversions and ambiguous
-`is_indexed()` predicates are removed; per-channel compatibility and delivery
-selection still require the separate GraphJit planner rewrite in step 3.
+`is_indexed()` predicates are removed. GraphJit now classifies per-channel
+compatibility and delivery using those orthogonal contracts; execution of the retained
+background plan begins in step 4.
 
 | production | retention | producer and retention semantics |
 | --- | --- | --- |
@@ -1746,11 +1747,12 @@ path, or offending node where practical.
 This is the **normative dependency order** for the next documentation/implementation
 migration; [graph_jit_direction.md](./graph_jit_direction.md) and the application
 architecture should reference this list rather than propose a divergent one.
-The legacy executor deletion and final schema/intrinsic trait changes are
-separate from the GraphJit execution milestone. Even after step 2, the existing
-planner retains equality-based connection domains until the step 3 rewrite;
-contextual replay, background execution and recording are not implied by the
-presence of intrinsic replay metadata.
+The legacy executor deletion, final schema/intrinsic trait changes, and the
+connection/background-dependency planner rewrite are now separate landed stages
+before GraphJit background execution. Through step 3, GraphJit retains orthogonal
+production/retention/access/delivery facts, contextual replay proofs, and a
+background evaluation DAG; it still does not execute Tock/replay work or imply
+recording merely because that planning metadata exists.
 
 1. **Landed: delete legacy execution and dynamic concrete-port declarations.**
    `ModuleLoader` now publishes the configured graph and derives source
@@ -1759,14 +1761,14 @@ presence of intrinsic replay metadata.
    fallbacks, and old runtime-root ABI are deleted. Public and internal concrete-
    node construction require static constexpr port schemas; graph topology and
    static-schema per-instance connection metadata remain dynamic.
-2. **Land the final port schema and intrinsic replay trait.** Carry independent
+2. **Landed: final port schema and intrinsic replay trait.** Carry independent
    input access, output production and output retention through reflection, static
    port lookup, configured graphs, the version-bumped archive and compiler records.
    Delete inferred cross-axis conversions and obsolete API names. Validate the
    authored, deterministic, side-effect-free `tick()`-only replay contract,
    including zero configured internal latency, and reflect it into retained
    compiler metadata. Preserve authored F/R/T callbacks only for Tock outputs.
-3. **Rewrite connection and background-dependency planning once.** Replace the
+3. **Landed: connection and background-dependency planning.** Replace the
    equality-based two-domain connection gate with per-channel production,
    retention, destination-access and delivery facts. Derive contextual replay by
    backward traversal through eligible sequential dependencies to persisted

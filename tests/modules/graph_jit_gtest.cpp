@@ -1126,14 +1126,18 @@ TEST(GraphJitSamplePhysicalPlan, LeavesIndexedAccessBranchesUnresolved)
 
     ConnectionAnalysisPlan connections;
     SampleConnectionPlan realtime;
-    realtime.access = PlannedConnectionAccess::realtime_to_realtime;
+    realtime.source_channel_timings = {SampleSourceChannelTimingPlan{}};
     realtime.target_layout = iv::ChannelLayout{
         .channel_type = iv::ChannelTypeId::mono,
         .sample_layout = iv::SampleStreamLayout::planar,
     };
     connections.sample_connections.push_back(std::move(realtime));
     SampleConnectionPlan indexed;
-    indexed.access = PlannedConnectionAccess::indexed_to_indexed;
+    indexed.destination_access = PlannedDestinationAccess::random_access;
+    indexed.source_channel_timings = {SampleSourceChannelTimingPlan{
+        .destination_access = PlannedDestinationAccess::random_access,
+        .delivery = PlannedDeliveryMechanism::tock_to_random_access,
+    }};
     connections.sample_connections.push_back(std::move(indexed));
 
     SampleProducerGroupPlan realtime_group;
@@ -1153,7 +1157,7 @@ TEST(GraphJitSamplePhysicalPlan, LeavesIndexedAccessBranchesUnresolved)
 
     SampleProducerGroupPlan indexed_group;
     indexed_group.connection_indices = {1};
-    indexed_group.has_indexed_connections = true;
+    indexed_group.has_background_connections = true;
     connections.sample_producer_groups.push_back(std::move(indexed_group));
 
     auto physical = build_sample_physical_plan(connections, 64);
@@ -1185,14 +1189,14 @@ TEST(GraphJitSamplePhysicalPlan, AliasesLayoutAndMonoToStereoConvertedFanout)
 
     ConnectionAnalysisPlan connections;
     SampleConnectionPlan identity;
-    identity.access = PlannedConnectionAccess::realtime_to_realtime;
+    identity.source_channel_timings = {SampleSourceChannelTimingPlan{}};
     identity.canonical_source_layout = mono;
     identity.target_layout = mono;
     identity.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
     connections.sample_connections.push_back(identity);
 
     SampleConnectionPlan converted_a;
-    converted_a.access = PlannedConnectionAccess::realtime_to_realtime;
+    converted_a.source_channel_timings = {SampleSourceChannelTimingPlan{}};
     converted_a.canonical_source_layout = mono;
     converted_a.target_layout = stereo_interleaved;
     converted_a.target_port = iv::NodeBundlePortId{3, iv::PortKind::sample, 0};
@@ -1445,7 +1449,6 @@ TEST(GraphJitSamplePhysicalPlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     feedback.source_latency = 2;
     feedback.read_latency = 2;
     feedback.target_history = 3;
-    feedback.access = PlannedConnectionAccess::realtime_to_realtime;
     feedback.detach = iv::ConfiguredSampleConnectionDetach{
         .loop_extra_latency = 5,
         .initial_value_override = iv::Sample{0.25f},
@@ -1601,7 +1604,6 @@ TEST(GraphJitSamplePhysicalPlan, ZeroInitializedFeedbackUsesProducerHomeAndCopie
         }};
         feedback.target_port = iv::NodeBundlePortId{
             target_bundle, iv::PortKind::sample, 0};
-        feedback.access = PlannedConnectionAccess::realtime_to_realtime;
         feedback.detach = iv::ConfiguredSampleConnectionDetach{
             .loop_extra_latency = latency,
             .initial_value_override = initial_value,
@@ -1786,7 +1788,6 @@ TEST(GraphJitSamplePhysicalPlan, DetachedCompositionUsesPersistentShiftedTimelin
     feedback.source_latency = 7;
     feedback.read_latency = 7;
     feedback.target_history = 3;
-    feedback.access = PlannedConnectionAccess::realtime_to_realtime;
     feedback.requires_conversion = true;
     feedback.detach = iv::ConfiguredSampleConnectionDetach{
         .loop_extra_latency = 5,
@@ -1968,7 +1969,6 @@ TEST(GraphJitSamplePhysicalPlan, DetachedMixingAlignsUnequalSourceLatencies)
     feedback.source_latency = 7;
     feedback.read_latency = 7;
     feedback.target_history = 3;
-    feedback.access = PlannedConnectionAccess::realtime_to_realtime;
     feedback.requires_conversion = true;
     feedback.detach = iv::ConfiguredSampleConnectionDetach{
         .loop_extra_latency = 5,
@@ -2101,7 +2101,6 @@ TEST(GraphJitSamplePhysicalPlan, ConvertedFeedbackUsesCompactCarryTimeline)
     };
     feedback.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
     feedback.target_history = 3;
-    feedback.access = PlannedConnectionAccess::realtime_to_realtime;
     feedback.requires_conversion = true;
     feedback.detach = iv::ConfiguredSampleConnectionDetach{
         .loop_extra_latency = 6,
@@ -2202,7 +2201,7 @@ TEST(GraphJitSamplePhysicalPlan, AliasableConversionReadsRetainedProducerHistory
 
     ConnectionAnalysisPlan connections;
     SampleConnectionPlan converted;
-    converted.access = PlannedConnectionAccess::realtime_to_realtime;
+    converted.source_channel_timings = {SampleSourceChannelTimingPlan{}};
     converted.canonical_source_layout = mono;
     converted.target_layout = stereo;
     converted.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
@@ -2274,7 +2273,7 @@ TEST(GraphJitSamplePhysicalPlan, AliasableConvertedFanoutSharesRetainedProducerT
 
     ConnectionAnalysisPlan connections;
     SampleConnectionPlan compensated;
-    compensated.access = PlannedConnectionAccess::realtime_to_realtime;
+    compensated.source_channel_timings = {SampleSourceChannelTimingPlan{}};
     compensated.canonical_source_layout = mono;
     compensated.target_layout = stereo;
     compensated.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
@@ -2381,7 +2380,6 @@ TEST(GraphJitSamplePhysicalPlan, GeneratedConversionReadsAffectProducerStorageCo
         iv::SampleInputChannelId{.bundle = 2, .port = 0, .channel = 0},
     };
     converted.target_port = iv::NodeBundlePortId{2, iv::PortKind::sample, 0};
-    converted.access = PlannedConnectionAccess::realtime_to_realtime;
     converted.requires_conversion = true;
     connections.sample_connections.push_back(converted);
 

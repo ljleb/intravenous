@@ -11,6 +11,7 @@
 #include <limits>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <ranges>
@@ -57,33 +58,77 @@ bool is_internal_bundle(
     return bundle != boundary;
 }
 
-std::expected<PlannedConnectionAccess, std::string> connection_access(
-    bool source_realtime,
-    bool target_realtime,
+PlannedSourceProduction source_production(
+    OutputProductionConfig const& production) noexcept
+{
+    return is_tick(production)
+        ? PlannedSourceProduction::tick
+        : PlannedSourceProduction::tock;
+}
+
+PlannedDestinationAccess destination_access(
+    InputAccessConfig const& access) noexcept
+{
+    return is_sequential(access)
+        ? PlannedDestinationAccess::sequential
+        : PlannedDestinationAccess::random_access;
+}
+
+std::expected<PlannedDeliveryMechanism, std::string> connection_delivery(
+    PlannedSourceProduction production,
+    OutputRetention retention,
+    PlannedDestinationAccess access,
+    bool source_intrinsically_replayable,
     std::string_view payload,
     std::size_t connection_index)
 {
-    if (source_realtime && target_realtime) {
-        return PlannedConnectionAccess::realtime_to_realtime;
+    if (production == PlannedSourceProduction::tick
+        && access == PlannedDestinationAccess::sequential) {
+        return PlannedDeliveryMechanism::tick_to_sequential;
     }
-    if (!source_realtime && !target_realtime) {
-        return PlannedConnectionAccess::indexed_to_indexed;
+    if (production == PlannedSourceProduction::tock
+        && access == PlannedDestinationAccess::sequential) {
+        return PlannedDeliveryMechanism::tock_to_sequential;
+    }
+    if (production == PlannedSourceProduction::tock) {
+        return PlannedDeliveryMechanism::tock_to_random_access;
+    }
+    if (retention == OutputRetention::persisted) {
+        return PlannedDeliveryMechanism::persisted_tick_to_random_access;
+    }
+    if (source_intrinsically_replayable) {
+        return PlannedDeliveryMechanism::replayed_tick_to_random_access;
     }
     return std::unexpected(
         "GraphJit " + std::string(payload) + " connection "
         + std::to_string(connection_index)
-        + " crosses realtime and indexed access domains; "
-          "cross-domain transfer requires an explicit bridge node");
+        + " requires random access to an unreproducible Tick/ephemeral source; "
+          "an explicit recorder is required");
 }
 
-bool uses_realtime_storage(PlannedConnectionAccess access) noexcept
+PlannedGraphNode const* planned_node_for_bundle(
+    ConnectionAnalysisPlan const& plan, NodeBundleHandle bundle) noexcept
 {
-    return access == PlannedConnectionAccess::realtime_to_realtime;
+    auto const found = std::ranges::find_if(
+        plan.nodes,
+        [&](PlannedGraphNode const& node) { return node.bundle == bundle; });
+    return found == plan.nodes.end() ? nullptr : std::addressof(*found);
 }
 
-bool has_sequential_source(PlannedConnectionAccess access) noexcept
+PlannedGraphNode* planned_node_for_bundle(
+    ConnectionAnalysisPlan& plan, NodeBundleHandle bundle) noexcept
 {
-    return access == PlannedConnectionAccess::realtime_to_realtime;
+    auto const found = std::ranges::find_if(
+        plan.nodes,
+        [&](PlannedGraphNode const& node) { return node.bundle == bundle; });
+    return found == plan.nodes.end() ? nullptr : std::addressof(*found);
+}
+
+bool source_is_intrinsically_replayable(
+    ConnectionAnalysisPlan const& plan, NodeBundleHandle bundle) noexcept
+{
+    auto const* node = planned_node_for_bundle(plan, bundle);
+    return node && node->intrinsically_replayable;
 }
 
 std::expected<void, std::string> inventory_nodes(
@@ -127,6 +172,7 @@ std::expected<void, std::string> inventory_nodes(
                 .sample_output_count = view.ports->sample_output_count(),
                 .event_input_count = view.ports->event_input_count(),
                 .event_output_count = view.ports->event_output_count(),
+                .intrinsically_replayable = view.intrinsically_replayable,
             });
         });
 
@@ -143,7 +189,10 @@ void append_dependency(
     NodeBundleHandle source,
     NodeBundleHandle target,
     PlannedConnectionPayload payload,
-    PlannedConnectionAccess access,
+    PlannedSourceProduction production,
+    OutputRetention retention,
+    PlannedDestinationAccess access,
+    PlannedDeliveryMechanism delivery,
     std::size_t connection_index)
 {
     if (!is_internal_bundle(source, plan.boundary_bundle)
@@ -155,7 +204,10 @@ void append_dependency(
         [&](DependencyEdgePlan const& edge) {
             return edge.source_bundle == source && edge.target_bundle == target
                 && edge.payload == payload
-                && edge.access == access
+                && edge.source_production == production
+                && edge.source_retention == retention
+                && edge.destination_access == access
+                && edge.delivery == delivery
                 && edge.configured_connection_index == connection_index;
         });
     if (duplicate == plan.dependencies.end()) {
@@ -163,9 +215,13 @@ void append_dependency(
             .source_bundle = source,
             .target_bundle = target,
             .payload = payload,
-            .access = access,
+            .source_production = production,
+            .source_retention = retention,
+            .destination_access = access,
+            .delivery = delivery,
             .configured_connection_index = connection_index,
-            .sequential_tick_dependency = has_sequential_source(access),
+            .sequential_tick_dependency =
+                delivery == PlannedDeliveryMechanism::tick_to_sequential,
         });
     }
 }
@@ -220,10 +276,10 @@ std::expected<void, std::string> inventory_sample_connections(
                     connection.detach->initial_value_override.value_or(
                         target.neutral_value);
             }
-            auto const target_realtime = is_sequential(target.access);
+            auto const target_access = destination_access(target.access);
+            connection_plan.destination_access = target_access;
 
             std::optional<ChannelLayout> canonical_source_layout;
-            std::optional<bool> source_realtime;
             connection_plan.source_channel_timings.reserve(
                 connection.source_channels.size());
             for (auto const source_channel : connection.source_channels) {
@@ -233,10 +289,25 @@ std::expected<void, std::string> inventory_sample_connections(
                     graph.node_bundles.resolve_sample_output(source_port).config;
                 auto const source_history = port_history_or_zero(source);
                 auto const source_latency = tick_latency_or_zero(source);
+                auto const production = source_production(source.production);
+                auto delivery = connection_delivery(
+                    production,
+                    source.retention,
+                    target_access,
+                    source_is_intrinsically_replayable(plan, source_channel.bundle),
+                    "sample",
+                    i);
+                if (!delivery) {
+                    return std::unexpected(std::move(delivery.error()));
+                }
                 connection_plan.source_channel_timings.push_back(
                     SampleSourceChannelTimingPlan{
                         .source = source_channel,
                         .source_layout = source.channel_layout,
+                        .production = production,
+                        .retention = source.retention,
+                        .destination_access = target_access,
+                        .delivery = *delivery,
                         .source_history = source_history,
                         .source_latency = source_latency,
                         .read_latency = source_latency,
@@ -245,12 +316,6 @@ std::expected<void, std::string> inventory_sample_connections(
                     connection_plan.source_history, source_history);
                 connection_plan.source_latency = std::max(
                     connection_plan.source_latency, source_latency);
-                auto const this_source_realtime = is_tick(source.production);
-                if (source_realtime && *source_realtime != this_source_realtime) {
-                    return std::unexpected(
-                        "sample connection sources mix realtime and indexed access");
-                }
-                source_realtime = this_source_realtime;
                 if (connection_plan.canonical_source_port
                     && *connection_plan.canonical_source_port == source_port) {
                     canonical_source_layout = source.channel_layout;
@@ -258,18 +323,17 @@ std::expected<void, std::string> inventory_sample_connections(
             }
             connection_plan.canonical_source_layout = canonical_source_layout;
             connection_plan.read_latency = connection_plan.source_latency;
-            auto access = connection_access(
-                source_realtime.value_or(true), target_realtime, "sample", i);
-            if (!access) return std::unexpected(std::move(access.error()));
-            connection_plan.access = *access;
             if (!connection.detach) {
-                for (auto const source_channel : connection.source_channels) {
+                for (auto const& source : connection_plan.source_channel_timings) {
                     append_dependency(
                         plan,
-                        source_channel.bundle,
+                        source.source.bundle,
                         first_target.bundle,
                         PlannedConnectionPayload::sample,
-                        connection_plan.access,
+                        source.production,
+                        source.retention,
+                        source.destination_access,
+                        source.delivery,
                         i);
                 }
             }
@@ -364,7 +428,6 @@ std::expected<void, std::string> normalize_sample_target_projections(
         std::vector<bool> claimed(target_channel_total, false);
 
         auto const& first = plan.sample_connections[first_index];
-        auto access = first.access;
         auto target_history = first.target_history;
         auto detach = first.detach;
         auto detach_initial_value = first.detach_initial_value;
@@ -383,7 +446,7 @@ std::expected<void, std::string> normalize_sample_target_projections(
                 canonical_targets.begin(), canonical_targets.end()},
             .target_port = target_port,
             .target_history = target_history,
-            .access = access,
+            .destination_access = first.destination_access,
             .requires_conversion = true,
             .requires_block_materialization = false,
             .external_boundary = false,
@@ -395,7 +458,7 @@ std::expected<void, std::string> normalize_sample_target_projections(
             auto const& connection = plan.sample_connections[connection_index];
             if (connection.target_layout != target.channel_layout
                 || connection.target_history != target_history
-                || connection.access != access
+                || connection.destination_access != first.destination_access
                 || connection.detach != detach) {
                 return std::unexpected(
                     "GraphJit sample target-channel projections disagree on target semantics");
@@ -523,19 +586,18 @@ std::expected<void, std::string> inventory_event_connections(
         };
 
         try {
-            std::optional<bool> source_realtime;
-            std::optional<bool> target_realtime;
+            connection_plan.source_plans.reserve(connection.sources.size());
             for (auto const source_id : connection.sources) {
                 NodeBundlePortId const source_port{
                     source_id.bundle, PortKind::event, source_id.port};
                 auto const source =
                     graph.node_bundles.resolve_event_output(source_port).config;
+                auto const history = port_history_or_zero(source);
+                auto const latency = tick_latency_or_zero(source);
                 connection_plan.source_history = std::max(
-                    connection_plan.source_history,
-                    port_history_or_zero(source));
+                    connection_plan.source_history, history);
                 connection_plan.source_latency = std::max(
-                    connection_plan.source_latency,
-                    tick_latency_or_zero(source));
+                    connection_plan.source_latency, latency);
                 if (!is_valid_event_buffer_rate(source.max_events_per_index)) {
                     return std::unexpected(
                         "event output max_events_per_index must be finite and nonnegative");
@@ -545,51 +607,84 @@ std::expected<void, std::string> inventory_event_connections(
                     return std::unexpected(
                         "event connection aggregate max_events_per_index is not representable");
                 }
-                auto const this_source_realtime = is_tick(source.production);
-                if (source_realtime && *source_realtime != this_source_realtime) {
-                    return std::unexpected(
-                        "event connection sources mix realtime and indexed access");
-                }
-                source_realtime = this_source_realtime;
+                connection_plan.source_plans.push_back(EventSourcePlan{
+                    .source = source_id,
+                    .production = source_production(source.production),
+                    .retention = source.retention,
+                    .history = history,
+                    .latency = latency,
+                    .max_events_per_index = source.max_events_per_index,
+                });
             }
+
+            connection_plan.target_plans.reserve(connection.targets.size());
             for (auto const target_id : connection.targets) {
                 NodeBundlePortId const target_port{
                     target_id.bundle, PortKind::event, target_id.port};
                 auto const target =
                     graph.node_bundles.resolve_event_input(target_port).config;
+                auto const history = port_history_or_zero(target);
                 connection_plan.target_history = std::max(
-                    connection_plan.target_history,
-                    port_history_or_zero(target));
-                auto const this_target_realtime = is_sequential(target.access);
-                if (target_realtime && *target_realtime != this_target_realtime) {
-                    return std::unexpected(
-                        "event connection targets mix realtime and indexed access");
-                }
-                target_realtime = this_target_realtime;
+                    connection_plan.target_history, history);
+                connection_plan.target_plans.push_back(EventTargetPlan{
+                    .target = target_id,
+                    .access = destination_access(target.access),
+                    .history = history,
+                });
             }
-            auto access = connection_access(
-                source_realtime.value_or(true),
-                target_realtime.value_or(true),
-                "event",
-                i);
-            if (!access) return std::unexpected(std::move(access.error()));
-            connection_plan.access = *access;
+
+            connection_plan.deliveries.reserve(
+                connection_plan.source_plans.size()
+                * connection_plan.target_plans.size());
+            for (std::size_t source_index = 0;
+                 source_index < connection_plan.source_plans.size();
+                 ++source_index) {
+                auto const& source = connection_plan.source_plans[source_index];
+                for (std::size_t target_index = 0;
+                     target_index < connection_plan.target_plans.size();
+                     ++target_index) {
+                    auto const& target = connection_plan.target_plans[target_index];
+                    auto delivery = connection_delivery(
+                        source.production,
+                        source.retention,
+                        target.access,
+                        source_is_intrinsically_replayable(
+                            plan, source.source.bundle),
+                        "event",
+                        i);
+                    if (!delivery) {
+                        return std::unexpected(std::move(delivery.error()));
+                    }
+                    connection_plan.deliveries.push_back(EventDeliveryPlan{
+                        .source_index = source_index,
+                        .target_index = target_index,
+                        .mechanism = *delivery,
+                    });
+                }
+            }
+
             if (connection.detach) {
-                if (connection.detach->loop_extra_latency == 0)
+                if (connection.detach->loop_extra_latency == 0) {
                     return std::unexpected(
                         "GraphJit event detach latency must be at least one sample");
+                }
                 connection_plan.detach = connection.detach;
             } else {
-                for (auto const source_id : connection.sources) {
-                    for (auto const target_id : connection.targets) {
-                        append_dependency(
-                            plan,
-                            source_id.bundle,
-                            target_id.bundle,
-                            PlannedConnectionPayload::event,
-                            connection_plan.access,
-                            i);
-                    }
+                for (auto const& delivery : connection_plan.deliveries) {
+                    auto const& source =
+                        connection_plan.source_plans[delivery.source_index];
+                    auto const& target =
+                        connection_plan.target_plans[delivery.target_index];
+                    append_dependency(
+                        plan,
+                        source.source.bundle,
+                        target.target.bundle,
+                        PlannedConnectionPayload::event,
+                        source.production,
+                        source.retention,
+                        target.access,
+                        delivery.mechanism,
+                        i);
                 }
             }
             connection_plan.external_boundary =
@@ -618,6 +713,189 @@ std::expected<void, std::string> inventory_event_connections(
                 "event connection analysis failed: " + std::string(e.what()));
         }
         plan.event_connections.push_back(std::move(connection_plan));
+    }
+    return {};
+}
+
+struct ReplayDependencyFact {
+    NodeBundleHandle source_bundle = 0;
+    NodeBundlePortId source_port{};
+    NodeBundlePortId target_port{};
+    PlannedConnectionPayload payload = PlannedConnectionPayload::sample;
+    PlannedSourceProduction production = PlannedSourceProduction::tick;
+    OutputRetention retention = OutputRetention::ephemeral;
+    std::size_t configured_connection_index = 0;
+};
+
+std::expected<void, std::string> derive_contextual_replayability(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan& plan)
+{
+    std::vector<std::vector<ReplayDependencyFact>> incoming(
+        graph.node_bundles.size());
+
+    for (auto const& connection : plan.sample_connections) {
+        auto const target_bundle = connection.target_port.node_bundle_handle;
+        if (!is_internal_bundle(target_bundle, plan.boundary_bundle)
+            || target_bundle >= incoming.size()) {
+            continue;
+        }
+        for (auto const& source : connection.source_channel_timings) {
+            incoming[target_bundle].push_back(ReplayDependencyFact{
+                .source_bundle = source.source.bundle,
+                .source_port = NodeBundlePortId{
+                    source.source.bundle, PortKind::sample, source.source.port},
+                .target_port = connection.target_port,
+                .payload = PlannedConnectionPayload::sample,
+                .production = source.production,
+                .retention = source.retention,
+                .configured_connection_index =
+                    connection.configured_connection_index,
+            });
+        }
+    }
+    for (auto const& connection : plan.event_connections) {
+        for (auto const& delivery : connection.deliveries) {
+            auto const& source = connection.source_plans[delivery.source_index];
+            auto const& target = connection.target_plans[delivery.target_index];
+            if (!is_internal_bundle(target.target.bundle, plan.boundary_bundle)
+                || target.target.bundle >= incoming.size()) {
+                continue;
+            }
+            incoming[target.target.bundle].push_back(ReplayDependencyFact{
+                .source_bundle = source.source.bundle,
+                .source_port = NodeBundlePortId{
+                    source.source.bundle, PortKind::event, source.source.port},
+                .target_port = NodeBundlePortId{
+                    target.target.bundle, PortKind::event, target.target.port},
+                .payload = PlannedConnectionPayload::event,
+                .production = source.production,
+                .retention = source.retention,
+                .configured_connection_index =
+                    connection.configured_connection_index,
+            });
+        }
+    }
+
+    enum class VisitState : std::uint8_t { unseen, visiting, proven };
+    std::vector<VisitState> state(graph.node_bundles.size(), VisitState::unseen);
+    std::vector<NodeBundleHandle> stack;
+
+    auto payload_name = [](PlannedConnectionPayload payload) -> std::string_view {
+        return payload == PlannedConnectionPayload::sample ? "sample" : "event";
+    };
+    auto port_description = [&](ReplayDependencyFact const& dependency) {
+        return std::string(payload_name(dependency.payload)) + " connection "
+            + std::to_string(dependency.configured_connection_index)
+            + " from bundle " + std::to_string(dependency.source_bundle)
+            + " port " + std::to_string(dependency.source_port.port_ordinal)
+            + " to bundle "
+            + std::to_string(dependency.target_port.node_bundle_handle)
+            + " port " + std::to_string(dependency.target_port.port_ordinal);
+    };
+
+    auto prove = [&](auto&& self, NodeBundleHandle bundle)
+        -> std::expected<void, std::string> {
+        auto* node = planned_node_for_bundle(plan, bundle);
+        if (!node || !is_internal_bundle(bundle, plan.boundary_bundle)) {
+            return std::unexpected(
+                "GraphJit contextual replay reached an unavailable live source bundle "
+                + std::to_string(bundle));
+        }
+        if (!node->intrinsically_replayable) {
+            return std::unexpected(
+                "GraphJit contextual replay requires bundle "
+                + std::to_string(bundle)
+                + " to be intrinsically replayable or separated by a persisted boundary");
+        }
+        if (bundle >= state.size()) {
+            return std::unexpected(
+                "GraphJit contextual replay references an invalid node bundle");
+        }
+        if (state[bundle] == VisitState::proven) return {};
+        if (state[bundle] == VisitState::visiting) {
+            std::string cycle;
+            auto const first = std::ranges::find(stack, bundle);
+            for (auto it = first; it != stack.end(); ++it) {
+                if (!cycle.empty()) cycle += " -> ";
+                cycle += std::to_string(*it);
+            }
+            if (!cycle.empty()) cycle += " -> ";
+            cycle += std::to_string(bundle);
+            return std::unexpected(
+                "GraphJit contextual replay dependency cycle [" + cycle
+                + "] requires a persisted boundary or explicit recorder");
+        }
+
+        state[bundle] = VisitState::visiting;
+        stack.push_back(bundle);
+        for (auto const& dependency : incoming[bundle]) {
+            // Authored Tock production is already a background producer. A
+            // finalized persisted Tick output is a stored boundary and must not
+            // traverse back into its live producer.
+            if (dependency.production == PlannedSourceProduction::tock
+                || dependency.retention == OutputRetention::persisted) {
+                continue;
+            }
+
+            auto const* source = planned_node_for_bundle(
+                plan, dependency.source_bundle);
+            if (!source
+                || !is_internal_bundle(
+                    dependency.source_bundle, plan.boundary_bundle)) {
+                stack.pop_back();
+                state[bundle] = VisitState::unseen;
+                return std::unexpected(
+                    "GraphJit contextual replay of bundle "
+                    + std::to_string(bundle) + " depends on unavailable live "
+                    + port_description(dependency)
+                    + "; an explicit recorder is required");
+            }
+            if (!source->intrinsically_replayable) {
+                stack.pop_back();
+                state[bundle] = VisitState::unseen;
+                return std::unexpected(
+                    "GraphJit contextual replay of bundle "
+                    + std::to_string(bundle) + " depends on unreproducible Tick/ephemeral "
+                    + port_description(dependency)
+                    + "; an explicit recorder is required");
+            }
+            if (auto upstream = self(self, dependency.source_bundle); !upstream) {
+                stack.pop_back();
+                state[bundle] = VisitState::unseen;
+                return upstream;
+            }
+        }
+        stack.pop_back();
+        state[bundle] = VisitState::proven;
+        node->contextually_replayable = true;
+        return {};
+    };
+
+    for (auto& connection : plan.sample_connections) {
+        for (auto& source : connection.source_channel_timings) {
+            if (source.delivery
+                != PlannedDeliveryMechanism::replayed_tick_to_random_access) {
+                continue;
+            }
+            if (auto replay = prove(prove, source.source.bundle); !replay) {
+                return replay;
+            }
+            source.contextually_replayable = true;
+        }
+    }
+    for (auto& connection : plan.event_connections) {
+        for (auto& delivery : connection.deliveries) {
+            if (delivery.mechanism
+                != PlannedDeliveryMechanism::replayed_tick_to_random_access) {
+                continue;
+            }
+            auto const& source = connection.source_plans[delivery.source_index];
+            if (auto replay = prove(prove, source.source.bundle); !replay) {
+                return replay;
+            }
+            delivery.contextually_replayable = true;
+        }
     }
     return {};
 }
@@ -697,6 +975,24 @@ std::expected<void, std::string> validate_explicit_graph_is_acyclic(
     if (visited != outgoing.size()) {
         return std::unexpected(
             "GraphJit graph contains an implicit cycle; use detach() to break feedback explicitly");
+    }
+    return {};
+}
+
+std::expected<void, std::string> validate_detach_delivery_mechanisms(
+    ConnectionAnalysisPlan const& plan)
+{
+    for (auto const& connection : plan.sample_connections) {
+        if (connection.detach && !is_entirely_realtime_delivery(connection)) {
+            return std::unexpected(
+                "GraphJit sample detach requires Tick -> Sequential transport");
+        }
+    }
+    for (auto const& connection : plan.event_connections) {
+        if (connection.detach && !is_entirely_realtime_delivery(connection)) {
+            return std::unexpected(
+                "GraphJit event detach requires Tick -> Sequential transport");
+        }
     }
     return {};
 }
@@ -927,14 +1223,10 @@ std::expected<IndexedPlan, std::string> build_semantic_indexed_plan(
     };
 
     for (auto const& connection : plan.sample_connections) {
-        if (connection.access
-            == PlannedConnectionAccess::realtime_to_realtime) {
-            continue;
-        }
-        for (auto const source : unique_source_bundles(
-                 connection.source_channels)) {
+        for (auto const& source : connection.source_channel_timings) {
+            if (uses_realtime_storage(source.delivery)) continue;
             if (auto valid = validate_edge(
-                    source,
+                    source.source.bundle,
                     connection.target_port.node_bundle_handle,
                     "sample",
                     connection.configured_connection_index);
@@ -944,20 +1236,17 @@ std::expected<IndexedPlan, std::string> build_semantic_indexed_plan(
         }
     }
     for (auto const& connection : plan.event_connections) {
-        if (connection.access
-            == PlannedConnectionAccess::realtime_to_realtime) {
-            continue;
-        }
-        for (auto const source : unique_source_bundles(connection.sources)) {
-            for (auto const target : connection.targets) {
-                if (auto valid = validate_edge(
-                        source,
-                        target.bundle,
-                        "event",
-                        connection.configured_connection_index);
-                    !valid) {
-                    return std::unexpected(std::move(valid.error()));
-                }
+        for (auto const& delivery : connection.deliveries) {
+            if (uses_realtime_storage(delivery.mechanism)) continue;
+            auto const& source = connection.source_plans[delivery.source_index];
+            auto const& target = connection.target_plans[delivery.target_index];
+            if (auto valid = validate_edge(
+                    source.source.bundle,
+                    target.target.bundle,
+                    "event",
+                    connection.configured_connection_index);
+                !valid) {
+                return std::unexpected(std::move(valid.error()));
             }
         }
     }
@@ -975,8 +1264,6 @@ std::expected<void, std::string> populate_indexed_topology(
         std::optional<StableConcreteNodeId> selected;
         for (auto const handle : configured_bundle.virtual_node_handles()) {
             auto const& record = graph.virtual_nodes.record(handle);
-            // Port-only virtual records describe aggregates, not concrete
-            // members whose runtime state can be rebound.
             if (record.type_identity != configured_bundle.type_identity()) continue;
             auto const member = std::ranges::find(
                 record.node_bundle_handles, bundle);
@@ -997,84 +1284,233 @@ std::expected<void, std::string> populate_indexed_topology(
         return selected;
     };
 
-    auto has_indexed_port = [&](PlannedGraphNode const& node) {
-        auto const bundle = node.bundle;
-        for (std::size_t port = 0; port < node.sample_input_count; ++port) {
-            if (is_random_access(graph.node_bundles.resolve_sample_input(
-                    {bundle, PortKind::sample, port}).config)) return true;
+    plan.intrinsic_replay_candidates.clear();
+    for (auto const& node : connections.nodes) {
+        if (node.intrinsically_replayable
+            && is_internal_bundle(node.bundle, connections.boundary_bundle)) {
+            plan.intrinsic_replay_candidates.push_back(node.bundle);
         }
-        for (std::size_t port = 0; port < node.sample_output_count; ++port) {
-            if (is_tock(graph.node_bundles.resolve_sample_output(
-                    {bundle, PortKind::sample, port}).config)) return true;
+    }
+
+    std::vector<bool> needs_indexed_node(graph.node_bundles.size(), false);
+    auto require_bundle = [&](NodeBundleHandle bundle) {
+        if (bundle < needs_indexed_node.size()
+            && is_internal_bundle(bundle, connections.boundary_bundle)) {
+            needs_indexed_node[bundle] = true;
+        }
+    };
+
+    for (auto const& node : connections.nodes) {
+        auto const bundle = node.bundle;
+        bool relevant = node.contextually_replayable;
+        for (std::size_t port = 0; port < node.sample_input_count; ++port) {
+            relevant = relevant || is_random_access(
+                graph.node_bundles.resolve_sample_input(
+                    {bundle, PortKind::sample, port}).config);
         }
         for (std::size_t port = 0; port < node.event_input_count; ++port) {
-            if (is_random_access(graph.node_bundles.resolve_event_input(
-                    {bundle, PortKind::event, port}).config)) return true;
+            relevant = relevant || is_random_access(
+                graph.node_bundles.resolve_event_input(
+                    {bundle, PortKind::event, port}).config);
+        }
+        for (std::size_t port = 0; port < node.sample_output_count; ++port) {
+            auto const config = graph.node_bundles.resolve_sample_output(
+                {bundle, PortKind::sample, port}).config;
+            relevant = relevant || is_tock(config)
+                || config.retention == OutputRetention::persisted;
         }
         for (std::size_t port = 0; port < node.event_output_count; ++port) {
-            if (is_tock(graph.node_bundles.resolve_event_output(
-                    {bundle, PortKind::event, port}).config)) return true;
+            auto const config = graph.node_bundles.resolve_event_output(
+                {bundle, PortKind::event, port}).config;
+            relevant = relevant || is_tock(config)
+                || config.retention == OutputRetention::persisted;
         }
-        return false;
-    };
+        if (relevant) require_bundle(bundle);
+    }
+    for (auto const& connection : connections.sample_connections) {
+        for (auto const& source : connection.source_channel_timings) {
+            if (uses_realtime_storage(source.delivery)) continue;
+            require_bundle(source.source.bundle);
+            require_bundle(connection.target_port.node_bundle_handle);
+        }
+    }
+    for (auto const& connection : connections.event_connections) {
+        for (auto const& delivery : connection.deliveries) {
+            if (uses_realtime_storage(delivery.mechanism)) continue;
+            require_bundle(connection.source_plans[delivery.source_index].source.bundle);
+            require_bundle(connection.target_plans[delivery.target_index].target.bundle);
+        }
+    }
 
     for (std::size_t semantic_node = 0;
          semantic_node < connections.nodes.size(); ++semantic_node) {
         auto const& node = connections.nodes[semantic_node];
-        if (!has_indexed_port(node)) continue;
+        if (node.bundle >= needs_indexed_node.size()
+            || !needs_indexed_node[node.bundle]) {
+            continue;
+        }
         auto const indexed_node = plan.nodes.size();
         plan.bundle_to_indexed_node[node.bundle] = indexed_node;
         plan.semantic_nodes[semantic_node].indexed_node = indexed_node;
+
+        bool authored_tock = false;
+        for (std::size_t port = 0; port < node.sample_output_count; ++port) {
+            authored_tock = authored_tock || is_tock(
+                graph.node_bundles.resolve_sample_output(
+                    {node.bundle, PortKind::sample, port}).config);
+        }
+        for (std::size_t port = 0; port < node.event_output_count; ++port) {
+            authored_tock = authored_tock || is_tock(
+                graph.node_bundles.resolve_event_output(
+                    {node.bundle, PortKind::event, port}).config);
+        }
+
         plan.nodes.push_back(IndexedNodePlan{
             .bundle = node.bundle,
             .semantic_node = semantic_node,
             .semantic_scc = plan.semantic_nodes[semantic_node].scc,
             .stable_identity = stable_node_identity(node.bundle),
+            .authored_tock_execution = authored_tock,
+            .synthesized_tick_replay = node.contextually_replayable,
+            .synthesized_forward_coverage = node.contextually_replayable,
+            .synthesized_reverse_coverage = node.contextually_replayable,
+            .uses_imported_tick_block_for_replay = node.contextually_replayable,
         });
     }
 
-    std::map<NodeBundlePortId, IndexedEndpointOrdinal, NodeBundlePortIdLess>
-        endpoint_by_port;
-    auto append_endpoint = [&](IndexedNodeOrdinal node,
-                               NodeBundlePortId port,
-                               IndexedEndpointDirection direction,
-                               std::string name,
-                               std::optional<OutputRetention> retention,
-                               ChannelLayout sample_layout,
-                               EventTypeId event_type,
-                               double max_events_per_index) {
-        auto& node_plan = plan.nodes[node];
-        auto const endpoint = plan.endpoints.size();
-        auto& node_accumulators = node_plan.accumulators;
-        IndexedAccumulatorSlotPlan slots;
-        if (direction == IndexedEndpointDirection::input) {
-            if (node_accumulators.input_change_count == 0) {
-                node_accumulators.input_change_begin =
-                    plan.accumulators.input_change_count;
-                node_accumulators.input_requirement_begin =
-                    plan.accumulators.input_requirement_count;
-            }
-            slots.input_change = plan.accumulators.input_change_count++;
-            slots.input_requirement =
-                plan.accumulators.input_requirement_count++;
-            ++node_accumulators.input_change_count;
-            ++node_accumulators.input_requirement_count;
-            node_plan.inputs.push_back(endpoint);
-        } else {
-            if (node_accumulators.output_change_count == 0) {
-                node_accumulators.output_change_begin =
-                    plan.accumulators.output_change_count;
-                node_accumulators.output_requirement_begin =
-                    plan.accumulators.output_requirement_count;
-            }
-            slots.output_change = plan.accumulators.output_change_count++;
-            slots.output_requirement =
-                plan.accumulators.output_requirement_count++;
-            ++node_accumulators.output_change_count;
-            ++node_accumulators.output_requirement_count;
-            node_plan.outputs.push_back(endpoint);
-            plan.requestable_outputs.push_back(endpoint);
+    struct EndpointRoles {
+        bool random_access_input = false;
+        bool prepared_sequential_input = false;
+        bool replay_sequential_input = false;
+        bool authored_tock_output = false;
+        bool persisted_tick_output = false;
+        bool replayed_tick_output = false;
+    };
+
+    struct EndpointKey {
+        NodeBundlePortId port{};
+        IndexedEndpointDirection direction = IndexedEndpointDirection::input;
+    };
+    struct EndpointKeyLess {
+        bool operator()(EndpointKey const& lhs, EndpointKey const& rhs) const noexcept
+        {
+            NodeBundlePortIdLess const port_less;
+            if (port_less(lhs.port, rhs.port)) return true;
+            if (port_less(rhs.port, lhs.port)) return false;
+            return lhs.direction < rhs.direction;
         }
+    };
+    std::map<EndpointKey, IndexedEndpointOrdinal, EndpointKeyLess>
+        endpoint_by_port;
+
+    auto allocate_input_accumulators = [&](IndexedNodePlan& node_plan) {
+        IndexedAccumulatorSlotPlan slots;
+        auto& node_accumulators = node_plan.accumulators;
+        if (node_accumulators.input_change_count == 0) {
+            node_accumulators.input_change_begin =
+                plan.accumulators.input_change_count;
+            node_accumulators.input_requirement_begin =
+                plan.accumulators.input_requirement_count;
+        }
+        slots.input_change = plan.accumulators.input_change_count++;
+        slots.input_requirement = plan.accumulators.input_requirement_count++;
+        ++node_accumulators.input_change_count;
+        ++node_accumulators.input_requirement_count;
+        return slots;
+    };
+    auto allocate_output_accumulators = [&](IndexedNodePlan& node_plan) {
+        IndexedAccumulatorSlotPlan slots;
+        auto& node_accumulators = node_plan.accumulators;
+        if (node_accumulators.output_change_count == 0) {
+            node_accumulators.output_change_begin =
+                plan.accumulators.output_change_count;
+            node_accumulators.output_requirement_begin =
+                plan.accumulators.output_requirement_count;
+        }
+        slots.output_change = plan.accumulators.output_change_count++;
+        slots.output_requirement = plan.accumulators.output_requirement_count++;
+        ++node_accumulators.output_change_count;
+        ++node_accumulators.output_requirement_count;
+        return slots;
+    };
+
+    auto ensure_endpoint = [&](NodeBundlePortId port,
+                               IndexedEndpointDirection direction,
+                               EndpointRoles roles)
+        -> std::expected<IndexedEndpointOrdinal, std::string> {
+        if (port.node_bundle_handle >= plan.bundle_to_indexed_node.size()
+            || !plan.bundle_to_indexed_node[port.node_bundle_handle]) {
+            return std::unexpected(
+                "GraphJit background topology references a node with no indexed plan entry");
+        }
+        auto const indexed_node = *plan.bundle_to_indexed_node[port.node_bundle_handle];
+        auto& node_plan = plan.nodes[indexed_node];
+
+        EndpointKey const key{port, direction};
+        if (auto const found = endpoint_by_port.find(key);
+            found != endpoint_by_port.end()) {
+            auto& endpoint = plan.endpoints[found->second];
+            endpoint.random_access_input = endpoint.random_access_input
+                || roles.random_access_input;
+            endpoint.prepared_sequential_input = endpoint.prepared_sequential_input
+                || roles.prepared_sequential_input;
+            endpoint.replay_sequential_input = endpoint.replay_sequential_input
+                || roles.replay_sequential_input;
+            endpoint.authored_tock_output = endpoint.authored_tock_output
+                || roles.authored_tock_output;
+            endpoint.persisted_tick_output = endpoint.persisted_tick_output
+                || roles.persisted_tick_output;
+            endpoint.replayed_tick_output = endpoint.replayed_tick_output
+                || roles.replayed_tick_output;
+            if (roles.prepared_sequential_input
+                && !std::ranges::contains(
+                    plan.prepared_sequential_inputs, found->second)) {
+                plan.prepared_sequential_inputs.push_back(found->second);
+            }
+            return found->second;
+        }
+
+        std::string name;
+        std::optional<OutputRetention> retention;
+        ChannelLayout sample_layout{};
+        EventTypeId event_type = EventTypeId::empty;
+        double max_events_per_index = 0.0;
+        Sample neutral{};
+        if (direction == IndexedEndpointDirection::input) {
+            if (port.port_kind == PortKind::sample) {
+                auto const config = graph.node_bundles.resolve_sample_input(port).config;
+                name = config.name;
+                sample_layout = config.channel_layout;
+                neutral = config.neutral_value;
+            } else {
+                auto const config = graph.node_bundles.resolve_event_input(port).config;
+                name = config.name;
+                event_type = config.type;
+            }
+        } else {
+            if (port.port_kind == PortKind::sample) {
+                auto const config = graph.node_bundles.resolve_sample_output(port).config;
+                name = config.name;
+                retention = config.retention;
+                sample_layout = config.channel_layout;
+            } else {
+                auto const config = graph.node_bundles.resolve_event_output(port).config;
+                name = config.name;
+                retention = config.retention;
+                event_type = config.type;
+                max_events_per_index = config.max_events_per_index;
+            }
+        }
+
+        IndexedAccumulatorSlotPlan slots;
+        if (direction == IndexedEndpointDirection::input
+            && (roles.random_access_input || roles.replay_sequential_input)) {
+            slots = allocate_input_accumulators(node_plan);
+        } else if (direction == IndexedEndpointDirection::output) {
+            slots = allocate_output_accumulators(node_plan);
+        }
+
+        auto const endpoint = plan.endpoints.size();
         std::optional<StableIndexedOutputId> stable_output;
         if (direction == IndexedEndpointDirection::output
             && node_plan.stable_identity) {
@@ -1086,11 +1522,18 @@ std::expected<void, std::string> populate_indexed_topology(
             };
         }
         plan.endpoints.push_back(IndexedEndpointPlan{
-            .node = node,
+            .node = indexed_node,
             .configured_port = port,
             .kind = port.port_kind,
             .direction = direction,
             .name = std::move(name),
+            .random_access_input = roles.random_access_input,
+            .prepared_sequential_input = roles.prepared_sequential_input,
+            .replay_sequential_input = roles.replay_sequential_input,
+            .authored_tock_output = roles.authored_tock_output,
+            .persisted_tick_output = roles.persisted_tick_output,
+            .replayed_tick_output = roles.replayed_tick_output,
+            .sample_neutral_value = neutral,
             .retention = retention,
             .stable_identity = std::move(stable_output),
             .sample_layout = sample_layout,
@@ -1098,7 +1541,17 @@ std::expected<void, std::string> populate_indexed_topology(
             .max_events_per_index = max_events_per_index,
             .accumulators = slots,
         });
-        endpoint_by_port.emplace(port, endpoint);
+        endpoint_by_port.emplace(key, endpoint);
+        if (direction == IndexedEndpointDirection::input) {
+            node_plan.inputs.push_back(endpoint);
+            if (roles.prepared_sequential_input) {
+                plan.prepared_sequential_inputs.push_back(endpoint);
+            }
+        } else {
+            node_plan.outputs.push_back(endpoint);
+            plan.requestable_outputs.push_back(endpoint);
+        }
+        return endpoint;
     };
 
     for (IndexedNodeOrdinal indexed_node = 0;
@@ -1109,52 +1562,84 @@ std::expected<void, std::string> populate_indexed_topology(
         for (std::size_t port = 0; port < node.sample_input_count; ++port) {
             NodeBundlePortId const id{bundle, PortKind::sample, port};
             auto const config = graph.node_bundles.resolve_sample_input(id).config;
-            if (!is_random_access(config)) continue;
-            append_endpoint(
-                indexed_node, id, IndexedEndpointDirection::input,
-                config.name, std::nullopt, config.channel_layout,
-                EventTypeId::empty, 0.0);
+            EndpointRoles roles{
+                .random_access_input = is_random_access(config),
+                .replay_sequential_input = node.contextually_replayable
+                    && is_sequential(config),
+            };
+            if (!roles.random_access_input && !roles.replay_sequential_input) continue;
+            auto endpoint = ensure_endpoint(
+                id, IndexedEndpointDirection::input, roles);
+            if (!endpoint) return std::unexpected(std::move(endpoint.error()));
         }
         for (std::size_t port = 0; port < node.event_input_count; ++port) {
             NodeBundlePortId const id{bundle, PortKind::event, port};
             auto const config = graph.node_bundles.resolve_event_input(id).config;
-            if (!is_random_access(config)) continue;
-            append_endpoint(
-                indexed_node, id, IndexedEndpointDirection::input,
-                config.name, std::nullopt, {}, config.type, 0.0);
+            EndpointRoles roles{
+                .random_access_input = is_random_access(config),
+                .replay_sequential_input = node.contextually_replayable
+                    && is_sequential(config),
+            };
+            if (!roles.random_access_input && !roles.replay_sequential_input) continue;
+            auto endpoint = ensure_endpoint(
+                id, IndexedEndpointDirection::input, roles);
+            if (!endpoint) return std::unexpected(std::move(endpoint.error()));
         }
         for (std::size_t port = 0; port < node.sample_output_count; ++port) {
             NodeBundlePortId const id{bundle, PortKind::sample, port};
             auto const config = graph.node_bundles.resolve_sample_output(id).config;
-            if (!is_tock(config)) continue;
-            append_endpoint(
-                indexed_node, id, IndexedEndpointDirection::output,
-                config.name, config.retention,
-                config.channel_layout, EventTypeId::empty, 0.0);
+            EndpointRoles roles{
+                .authored_tock_output = is_tock(config),
+                .persisted_tick_output = is_tick(config.production)
+                    && config.retention == OutputRetention::persisted,
+                .replayed_tick_output = is_tick(config.production)
+                    && config.retention == OutputRetention::ephemeral
+                    && node.contextually_replayable,
+            };
+            if (!roles.authored_tock_output && !roles.persisted_tick_output
+                && !roles.replayed_tick_output) continue;
+            auto endpoint = ensure_endpoint(
+                id, IndexedEndpointDirection::output, roles);
+            if (!endpoint) return std::unexpected(std::move(endpoint.error()));
         }
         for (std::size_t port = 0; port < node.event_output_count; ++port) {
             NodeBundlePortId const id{bundle, PortKind::event, port};
             auto const config = graph.node_bundles.resolve_event_output(id).config;
-            if (!is_tock(config)) continue;
-            append_endpoint(
-                indexed_node, id, IndexedEndpointDirection::output,
-                config.name, config.retention,
-                {}, config.type, config.max_events_per_index);
+            EndpointRoles roles{
+                .authored_tock_output = is_tock(config),
+                .persisted_tick_output = is_tick(config.production)
+                    && config.retention == OutputRetention::persisted,
+                .replayed_tick_output = is_tick(config.production)
+                    && config.retention == OutputRetention::ephemeral
+                    && node.contextually_replayable,
+            };
+            if (!roles.authored_tock_output && !roles.persisted_tick_output
+                && !roles.replayed_tick_output) continue;
+            auto endpoint = ensure_endpoint(
+                id, IndexedEndpointDirection::output, roles);
+            if (!endpoint) return std::unexpected(std::move(endpoint.error()));
         }
     }
 
-    auto endpoint_for = [&](NodeBundlePortId port)
+    auto endpoint_for = [&](NodeBundlePortId port,
+                            IndexedEndpointDirection direction)
         -> std::expected<IndexedEndpointOrdinal, std::string> {
-        auto const found = endpoint_by_port.find(port);
+        auto const found = endpoint_by_port.find(EndpointKey{port, direction});
         if (found == endpoint_by_port.end()) {
             return std::unexpected(
-                "GraphJit indexed connection references a non-indexed endpoint");
+                "GraphJit background connection references an unavailable endpoint");
         }
         return found->second;
     };
     auto append_unique_port = [](std::vector<NodeBundlePortId>& ports,
                                  NodeBundlePortId port) {
         if (!std::ranges::contains(ports, port)) ports.push_back(port);
+    };
+    auto append_unique_endpoint = [](std::vector<IndexedEndpointOrdinal>& endpoints,
+                                     IndexedEndpointOrdinal endpoint) {
+        if (!std::ranges::contains(endpoints, endpoint)) {
+            endpoints.push_back(endpoint);
+        }
     };
     auto append_connection = [&](IndexedConnectionPlan connection) {
         auto const ordinal = plan.connections.size();
@@ -1174,10 +1659,59 @@ std::expected<void, std::string> populate_indexed_topology(
         }
         plan.connections.push_back(std::move(connection));
     };
+    auto append_background_dependency = [&](IndexedBackgroundDependencyPlan dependency) {
+        auto const duplicate = std::ranges::find_if(
+            plan.background_dependencies,
+            [&](IndexedBackgroundDependencyPlan const& existing) {
+                return existing.source_node == dependency.source_node
+                    && existing.target_node == dependency.target_node
+                    && existing.source_port == dependency.source_port
+                    && existing.target_port == dependency.target_port
+                    && existing.kind == dependency.kind
+                    && existing.delivery == dependency.delivery
+                    && existing.source_is_stored_boundary
+                        == dependency.source_is_stored_boundary;
+            });
+        if (duplicate == plan.background_dependencies.end()) {
+            plan.background_dependencies.push_back(std::move(dependency));
+        }
+    };
+
+    auto node_is_contextually_replayable = [&](NodeBundleHandle bundle) {
+        auto const* node = planned_node_for_bundle(connections, bundle);
+        return node && node->contextually_replayable;
+    };
+    auto indexed_node_for_bundle = [&](NodeBundleHandle bundle)
+        -> std::optional<IndexedNodeOrdinal> {
+        if (bundle >= plan.bundle_to_indexed_node.size()) return std::nullopt;
+        return plan.bundle_to_indexed_node[bundle];
+    };
 
     for (auto const& connection : connections.sample_connections) {
-        if (connection.access
-            == PlannedConnectionAccess::realtime_to_realtime) continue;
+        auto const target_bundle = connection.target_port.node_bundle_handle;
+        auto const target_replay = node_is_contextually_replayable(target_bundle);
+        auto const has_background_delivery = std::ranges::any_of(
+            connection.source_channel_timings,
+            [](SampleSourceChannelTimingPlan const& source) {
+                return !uses_realtime_storage(source.delivery);
+            });
+        if (!has_background_delivery && !target_replay) continue;
+
+        bool prepared_target = std::ranges::any_of(
+            connection.source_channel_timings,
+            [](SampleSourceChannelTimingPlan const& source) {
+                return source.delivery
+                    == PlannedDeliveryMechanism::tock_to_sequential;
+            });
+        if (prepared_target
+            && is_internal_bundle(target_bundle, connections.boundary_bundle)) {
+            auto prepared = ensure_endpoint(
+                connection.target_port,
+                IndexedEndpointDirection::input,
+                EndpointRoles{.prepared_sequential_input = true});
+            if (!prepared) return std::unexpected(std::move(prepared.error()));
+        }
+
         IndexedConnectionPlan indexed{
             .configured_connection_index = connection.configured_connection_index,
             .kind = PortKind::sample,
@@ -1187,21 +1721,39 @@ std::expected<void, std::string> populate_indexed_topology(
             .sample_target_channels = connection.target_channels,
             .requires_conversion = connection.requires_conversion,
         };
-        for (auto const channel : connection.source_channels) {
+        indexed.sample_source_endpoint_by_channel.reserve(
+            connection.source_channel_timings.size());
+        indexed.sample_deliveries.reserve(
+            connection.source_channel_timings.size());
+
+        for (auto const& source : connection.source_channel_timings) {
+            indexed.sample_deliveries.push_back(source.delivery);
+            auto const background_source = !uses_realtime_storage(source.delivery)
+                || target_replay;
+            if (!background_source) {
+                indexed.sample_source_endpoint_by_channel.push_back(std::nullopt);
+                continue;
+            }
             NodeBundlePortId const port{
-                channel.bundle, PortKind::sample, channel.port};
-            if (std::ranges::contains(indexed.source_ports, port)) continue;
-            indexed.source_ports.push_back(port);
-            auto endpoint = endpoint_for(port);
+                source.source.bundle, PortKind::sample, source.source.port};
+            auto endpoint = endpoint_for(
+                port, IndexedEndpointDirection::output);
             if (!endpoint) return std::unexpected(std::move(endpoint.error()));
-            indexed.source_endpoints.push_back(*endpoint);
+            indexed.sample_source_endpoint_by_channel.push_back(*endpoint);
+            append_unique_port(indexed.source_ports, port);
+            append_unique_endpoint(indexed.source_endpoints, *endpoint);
         }
-        indexed.target_ports.push_back(connection.target_port);
-        auto target_endpoint = endpoint_for(connection.target_port);
-        if (!target_endpoint) {
-            return std::unexpected(std::move(target_endpoint.error()));
+
+        if (is_internal_bundle(target_bundle, connections.boundary_bundle)) {
+            auto target_endpoint = endpoint_for(
+                connection.target_port, IndexedEndpointDirection::input);
+            if (!target_endpoint) {
+                return std::unexpected(std::move(target_endpoint.error()));
+            }
+            indexed.sample_target_endpoint = *target_endpoint;
+            indexed.target_ports.push_back(connection.target_port);
+            indexed.target_endpoints.push_back(*target_endpoint);
         }
-        indexed.target_endpoints.push_back(*target_endpoint);
         for (auto const& projection : connection.projection_contributions) {
             indexed.sample_projections.push_back(IndexedSampleProjectionPlan{
                 .source_type = projection.source_type,
@@ -1211,10 +1763,44 @@ std::expected<void, std::string> populate_indexed_topology(
             });
         }
         append_connection(std::move(indexed));
+
+        auto const target_node = indexed_node_for_bundle(target_bundle);
+        if (!target_node) continue;
+        for (auto const& source : connection.source_channel_timings) {
+            auto const materialized = !uses_realtime_storage(source.delivery);
+            auto const replay_sequential = target_replay
+                && uses_realtime_storage(source.delivery);
+            if (!materialized && !replay_sequential) continue;
+            auto const source_node = indexed_node_for_bundle(source.source.bundle);
+            if (!source_node) continue;
+            NodeBundlePortId const source_port{
+                source.source.bundle, PortKind::sample, source.source.port};
+            append_background_dependency(IndexedBackgroundDependencyPlan{
+                .source_node = *source_node,
+                .target_node = *target_node,
+                .source_port = source_port,
+                .target_port = connection.target_port,
+                .kind = replay_sequential
+                    ? IndexedBackgroundDependencyKind::replay_sequential
+                    : IndexedBackgroundDependencyKind::materialized_delivery,
+                .delivery = source.delivery,
+                .source_is_stored_boundary =
+                    source.production == PlannedSourceProduction::tick
+                    && source.retention == OutputRetention::persisted,
+            });
+        }
     }
+
     for (auto const& connection : connections.event_connections) {
-        if (connection.access
-            == PlannedConnectionAccess::realtime_to_realtime) continue;
+        bool any_relevant = false;
+        for (auto const& delivery : connection.deliveries) {
+            auto const& target = connection.target_plans[delivery.target_index];
+            any_relevant = any_relevant
+                || !uses_realtime_storage(delivery.mechanism)
+                || node_is_contextually_replayable(target.target.bundle);
+        }
+        if (!any_relevant) continue;
+
         IndexedConnectionPlan indexed{
             .configured_connection_index = connection.configured_connection_index,
             .kind = PortKind::event,
@@ -1223,25 +1809,84 @@ std::expected<void, std::string> populate_indexed_topology(
             .event_conversion = connection.conversion,
             .requires_conversion = connection.requires_conversion,
         };
-        for (auto const source : connection.sources) {
-            append_unique_port(indexed.source_ports, {
-                source.bundle, PortKind::event, source.port});
-        }
-        for (auto const port : indexed.source_ports) {
-            auto endpoint = endpoint_for(port);
-            if (!endpoint) return std::unexpected(std::move(endpoint.error()));
-            indexed.source_endpoints.push_back(*endpoint);
-        }
-        for (auto const target : connection.targets) {
-            append_unique_port(indexed.target_ports, {
-                target.bundle, PortKind::event, target.port});
-        }
-        for (auto const port : indexed.target_ports) {
-            auto endpoint = endpoint_for(port);
-            if (!endpoint) {
-                return std::unexpected(std::move(endpoint.error()));
+
+        for (auto const& delivery : connection.deliveries) {
+            auto const& source = connection.source_plans[delivery.source_index];
+            auto const& target = connection.target_plans[delivery.target_index];
+            auto const target_replay =
+                node_is_contextually_replayable(target.target.bundle);
+            auto const relevant = !uses_realtime_storage(delivery.mechanism)
+                || target_replay;
+
+            NodeBundlePortId const source_port{
+                source.source.bundle, PortKind::event, source.source.port};
+            NodeBundlePortId const target_port{
+                target.target.bundle, PortKind::event, target.target.port};
+            if (delivery.mechanism
+                    == PlannedDeliveryMechanism::tock_to_sequential
+                && is_internal_bundle(
+                    target.target.bundle, connections.boundary_bundle)) {
+                auto prepared = ensure_endpoint(
+                    target_port,
+                    IndexedEndpointDirection::input,
+                    EndpointRoles{.prepared_sequential_input = true});
+                if (!prepared) {
+                    return std::unexpected(std::move(prepared.error()));
+                }
             }
-            indexed.target_endpoints.push_back(*endpoint);
+
+            std::optional<IndexedEndpointOrdinal> source_endpoint;
+            std::optional<IndexedEndpointOrdinal> target_endpoint;
+            if (relevant && is_internal_bundle(
+                    source.source.bundle, connections.boundary_bundle)) {
+                auto endpoint = endpoint_for(
+                    source_port, IndexedEndpointDirection::output);
+                if (!endpoint) return std::unexpected(std::move(endpoint.error()));
+                source_endpoint = *endpoint;
+                append_unique_port(indexed.source_ports, source_port);
+                append_unique_endpoint(indexed.source_endpoints, *endpoint);
+            }
+            if (is_internal_bundle(
+                    target.target.bundle, connections.boundary_bundle)) {
+                auto const found = endpoint_by_port.find(EndpointKey{
+                    target_port, IndexedEndpointDirection::input});
+                if (found != endpoint_by_port.end()) {
+                    target_endpoint = found->second;
+                    append_unique_port(indexed.target_ports, target_port);
+                    append_unique_endpoint(
+                        indexed.target_endpoints, found->second);
+                } else if (relevant) {
+                    return std::unexpected(
+                        "GraphJit background event delivery lost its target endpoint");
+                }
+            }
+            indexed.event_deliveries.push_back(IndexedEventDeliveryPlan{
+                .source = source.source,
+                .target = target.target,
+                .source_endpoint = source_endpoint,
+                .target_endpoint = target_endpoint,
+                .mechanism = delivery.mechanism,
+            });
+
+            if (!relevant) continue;
+            auto const source_node = indexed_node_for_bundle(source.source.bundle);
+            auto const target_node = indexed_node_for_bundle(target.target.bundle);
+            if (!source_node || !target_node) continue;
+            auto const replay_sequential = target_replay
+                && uses_realtime_storage(delivery.mechanism);
+            append_background_dependency(IndexedBackgroundDependencyPlan{
+                .source_node = *source_node,
+                .target_node = *target_node,
+                .source_port = source_port,
+                .target_port = target_port,
+                .kind = replay_sequential
+                    ? IndexedBackgroundDependencyKind::replay_sequential
+                    : IndexedBackgroundDependencyKind::materialized_delivery,
+                .delivery = delivery.mechanism,
+                .source_is_stored_boundary =
+                    source.production == PlannedSourceProduction::tick
+                    && source.retention == OutputRetention::persisted,
+            });
         }
         append_connection(std::move(indexed));
     }
@@ -1314,10 +1959,62 @@ std::expected<void, std::string> populate_indexed_topology(
     }
     if (indexed_order.size() != plan.nodes.size()) {
         return std::unexpected(
-            "GraphJit indexed dependency graph is cyclic after semantic SCC validation");
+            "GraphJit indexed coverage dependency graph is cyclic after semantic SCC validation");
+    }
+
+    // The background evaluation DAG is deliberately distinct from semantic SCC
+    // membership and from coverage propagation. Stored Tick boundaries terminate
+    // traversal, while authored Tock and synthesized replay nodes participate in
+    // the executable order.
+    std::vector<std::vector<IndexedNodeOrdinal>> background_outgoing(
+        plan.nodes.size());
+    std::vector<std::size_t> background_indegree(plan.nodes.size(), 0);
+    auto executes_in_background = [&](IndexedNodeOrdinal node) {
+        return plan.nodes[node].authored_tock_execution
+            || plan.nodes[node].synthesized_tick_replay;
+    };
+    for (auto const& dependency : plan.background_dependencies) {
+        if (dependency.source_is_stored_boundary) continue;
+        if (!executes_in_background(dependency.source_node)
+            || !executes_in_background(dependency.target_node)) {
+            continue;
+        }
+        background_outgoing[dependency.source_node].push_back(
+            dependency.target_node);
+    }
+    for (auto& targets : background_outgoing) {
+        std::ranges::sort(targets);
+        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+        for (auto const target : targets) ++background_indegree[target];
+    }
+    std::vector<IndexedNodeOrdinal> background_ready;
+    auto insert_background_ready = [&](IndexedNodeOrdinal node) {
+        background_ready.insert(
+            std::ranges::lower_bound(background_ready, node), node);
+    };
+    std::size_t executable_count = 0;
+    for (IndexedNodeOrdinal node = 0; node < plan.nodes.size(); ++node) {
+        if (!executes_in_background(node)) continue;
+        ++executable_count;
+        if (background_indegree[node] == 0) insert_background_ready(node);
+    }
+    while (!background_ready.empty()) {
+        auto const node = background_ready.front();
+        background_ready.erase(background_ready.begin());
+        plan.background_evaluation_order.push_back(node);
+        for (auto const target : background_outgoing[node]) {
+            if (--background_indegree[target] == 0) {
+                insert_background_ready(target);
+            }
+        }
+    }
+    if (plan.background_evaluation_order.size() != executable_count) {
+        return std::unexpected(
+            "GraphJit background evaluation dependency graph contains an unresolved replay cycle");
     }
 
     std::map<IndexedNodeOrdinal, std::size_t> component_by_root;
+    std::vector<std::optional<std::size_t>> component_by_node(plan.nodes.size());
     for (auto const node : indexed_order) {
         auto const root = find_root(find_root, node);
         auto [entry, inserted] = component_by_root.emplace(
@@ -1327,9 +2024,15 @@ std::expected<void, std::string> populate_indexed_topology(
             plan.components.emplace_back();
         }
         auto& component = plan.components[entry->second];
+        component_by_node[node] = entry->second;
         component.nodes.push_back(node);
         component.forward_order.push_back(node);
-        component.tock_order.push_back(node);
+        if (plan.nodes[node].authored_tock_execution) {
+            component.tock_order.push_back(node);
+        }
+        if (plan.nodes[node].synthesized_tick_replay) {
+            component.replay_order.push_back(node);
+        }
         auto const scc = plan.nodes[node].semantic_scc;
         if (!std::ranges::contains(component.semantic_scc_order, scc)) {
             component.semantic_scc_order.push_back(scc);
@@ -1339,12 +2042,23 @@ std::expected<void, std::string> populate_indexed_topology(
         component.reverse_order = component.forward_order;
         std::ranges::reverse(component.reverse_order);
     }
+    for (auto const node : plan.background_evaluation_order) {
+        if (node < component_by_node.size() && component_by_node[node]) {
+            plan.components[*component_by_node[node]]
+                .background_evaluation_order.push_back(node);
+        }
+    }
     for (IndexedConnectionOrdinal connection = 0;
          connection < plan.connections.size(); ++connection) {
         auto const& planned = plan.connections[connection];
-        if (planned.source_endpoints.empty()) continue;
-        auto const node = plan.endpoints[planned.source_endpoints.front()].node;
-        auto const root = find_root(find_root, node);
+        std::optional<IndexedNodeOrdinal> node;
+        if (!planned.source_endpoints.empty()) {
+            node = plan.endpoints[planned.source_endpoints.front()].node;
+        } else if (!planned.target_endpoints.empty()) {
+            node = plan.endpoints[planned.target_endpoints.front()].node;
+        }
+        if (!node) continue;
+        auto const root = find_root(find_root, *node);
         plan.components[component_by_root.at(root)]
             .connections.push_back(connection);
     }
@@ -1642,7 +2356,7 @@ std::expected<void, std::string> plan_sample_latency_compensation(
     };
 
     // Keep authored output latency as the default for connections not covered
-    // by this feed-forward realtime pass (indexed access, boundaries, and
+    // by this feed-forward Tick pass (background access, boundaries, and
     // cyclic regions whose feedback latency belongs to point 12).
     for (auto& connection : plan.sample_connections) {
         connection.read_latency = connection.source_latency;
@@ -1690,8 +2404,7 @@ std::expected<void, std::string> plan_sample_latency_compensation(
                  connection_index < plan.sample_connections.size();
                  ++connection_index) {
                 auto const& connection = plan.sample_connections[connection_index];
-                if (connection.access
-                        != PlannedConnectionAccess::realtime_to_realtime
+                if (!is_entirely_realtime_delivery(connection)
                     || connection.detach
                     || connection.target_port.node_bundle_handle != bundle) {
                     continue;
@@ -1814,7 +2527,16 @@ ConnectionLiveIntervalPlan live_interval_for_sample_group(
 
     for (auto const connection_index : group.connection_indices) {
         auto const& connection = plan.sample_connections[connection_index];
-        if (!uses_realtime_storage(connection.access)) continue;
+        auto const has_group_realtime = std::ranges::any_of(
+            connection.source_channel_timings,
+            [&](SampleSourceChannelTimingPlan const& source) {
+                if (!uses_realtime_storage(source.delivery)) return false;
+                return !group.source_port
+                    || (source.source.bundle
+                            == group.source_port->node_bundle_handle
+                        && source.source.port == group.source_port->port_ordinal);
+            });
+        if (!has_group_realtime) continue;
         auto const target = connection.target_port.node_bundle_handle;
         saw_endpoint = true;
         if (target == plan.boundary_bundle) {
@@ -1846,23 +2568,26 @@ ConnectionLiveIntervalPlan live_interval_for_event_group(
     bool saw_endpoint = false;
     for (auto const connection_index : group.connection_indices) {
         auto const& connection = plan.event_connections[connection_index];
-        if (!uses_realtime_storage(connection.access)) continue;
-        for (auto const source : connection.sources) {
+        for (auto const& delivery : connection.deliveries) {
+            if (!uses_realtime_storage(delivery.mechanism)) continue;
+            auto const source =
+                connection.source_plans[delivery.source_index].source;
+            auto const target =
+                connection.target_plans[delivery.target_index].target;
             saw_endpoint = true;
             if (source.bundle == plan.boundary_bundle) {
                 live.begin = 0;
-            } else if (source.bundle < plan.schedule.bundle_execution_position.size()
+            } else if (source.bundle
+                    < plan.schedule.bundle_execution_position.size()
                 && plan.schedule.bundle_execution_position[source.bundle]) {
                 live.begin = std::min(
                     live.begin,
                     *plan.schedule.bundle_execution_position[source.bundle]);
             }
-        }
-        for (auto const target : connection.targets) {
-            saw_endpoint = true;
             if (target.bundle == plan.boundary_bundle) {
                 live.end = execution_count;
-            } else if (target.bundle < plan.schedule.bundle_execution_position.size()
+            } else if (target.bundle
+                    < plan.schedule.bundle_execution_position.size()
                 && plan.schedule.bundle_execution_position[target.bundle]) {
                 live.end = std::max(
                     live.end,
@@ -1895,12 +2620,13 @@ void plan_sample_groups(
             continue;
         }
 
-        if (uses_realtime_storage(connection.access)) {
+        if (has_realtime_delivery(connection)) {
             auto const target_block = effective_block_size(
                 plan,
                 connection.target_port.node_bundle_handle,
                 kernel_block_size);
             for (auto const& channel : connection.source_channel_timings) {
+                if (!uses_realtime_storage(channel.delivery)) continue;
                 if (effective_block_size(
                         plan, channel.source.bundle, kernel_block_size)
                     != target_block) {
@@ -1959,24 +2685,19 @@ void plan_sample_groups(
         std::size_t retained = 0;
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = plan.sample_connections[connection_index];
-            if (!uses_realtime_storage(connection.access)) {
-                group.has_indexed_connections = true;
-                continue;
-            }
-            group.has_realtime_connections = true;
-            // Feedback storage is branch-local: the canonical producer group
-            // remains an ordinary aggregate sequence and detached branches
-            // acquire their own persistent rings during physical lowering.
-            external = external || connection.external_boundary;
-
             std::size_t connection_retained = 0;
-            bool saw_group_channel = false;
+            bool saw_group_realtime_channel = false;
+            bool saw_group_background_channel = false;
             for (auto const& channel : connection.source_channel_timings) {
                 if (!group.source_port
                     || source_port_for(channel.source) != *group.source_port) {
                     continue;
                 }
-                saw_group_channel = true;
+                if (!uses_realtime_storage(channel.delivery)) {
+                    saw_group_background_channel = true;
+                    continue;
+                }
+                saw_group_realtime_channel = true;
                 // A detached consumer owns its delay/history retention in
                 // the branch-local retained feedback timeline. The canonical producer still
                 // retains its own declared output history, which its callback
@@ -1991,7 +2712,14 @@ void plan_sample_groups(
                             channel.read_latency,
                             connection.target_history));
             }
-            if (!saw_group_channel) continue;
+            group.has_background_connections = group.has_background_connections
+                || saw_group_background_channel;
+            if (!saw_group_realtime_channel) continue;
+            group.has_realtime_connections = true;
+            // Only Tick -> Sequential contributions enter realtime storage
+            // planning. A mixed composition may also have background-prepared
+            // source channels, but those are not represented by this buffer.
+            external = external || connection.external_boundary;
             retained = std::max(retained, connection_retained);
         }
         group.storage_requirements = SampleConnectionStorageRequirements{
@@ -2063,7 +2791,7 @@ std::expected<void, std::string> plan_event_groups(
 {
     for (std::size_t i = 0; i < plan.event_connections.size(); ++i) {
         auto& connection = plan.event_connections[i];
-        if (uses_realtime_storage(connection.access)) {
+        if (has_realtime_delivery(connection)) {
             std::optional<std::size_t> block_size;
             std::optional<std::size_t> common_region;
             bool same_cyclic_region = true;
@@ -2092,17 +2820,21 @@ std::expected<void, std::string> plan_event_groups(
                     common_region = region;
                 }
             };
-            for (auto const source : connection.sources) observe(source.bundle);
-            for (auto const target : connection.targets) observe(target.bundle);
+            for (auto const& delivery : connection.deliveries) {
+                if (!uses_realtime_storage(delivery.mechanism)) continue;
+                observe(connection.source_plans[delivery.source_index].source.bundle);
+                observe(connection.target_plans[delivery.target_index].target.bundle);
+            }
             // Slice-major SCC execution keeps exact-type event transport direct
             // inside one region. Outside an SCC, invocation-oriented sequences
-            // still need root-block materialization whenever either endpoint is
-            // sliced.
+            // still need root-block materialization whenever either realtime
+            // endpoint is sliced.
             if (!same_cyclic_region
                 && block_size && *block_size != kernel_block_size) {
                 connection.requires_block_materialization = true;
             }
         }
+
         auto group = std::ranges::find_if(
             plan.event_producer_groups,
             [&](EventProducerGroupPlan const& candidate) {
@@ -2113,20 +2845,57 @@ std::expected<void, std::string> plan_event_groups(
             plan.event_producer_groups.push_back(EventProducerGroupPlan{
                 .source_type = connection.source_type,
                 .sources = connection.sources,
-                .max_events_per_index = connection.max_events_per_index,
             });
             group = std::prev(plan.event_producer_groups.end());
         }
         group->connection_indices.push_back(i);
+
+        for (std::size_t source_index = 0;
+             source_index < connection.source_plans.size(); ++source_index) {
+            auto const source = connection.source_plans[source_index].source;
+            auto const source_realtime = std::ranges::any_of(
+                connection.deliveries,
+                [&](EventDeliveryPlan const& delivery) {
+                    return delivery.source_index == source_index
+                        && uses_realtime_storage(delivery.mechanism);
+                });
+            auto const source_background = std::ranges::any_of(
+                connection.deliveries,
+                [&](EventDeliveryPlan const& delivery) {
+                    return delivery.source_index == source_index
+                        && !uses_realtime_storage(delivery.mechanism);
+                });
+            if (source_realtime
+                && !std::ranges::contains(group->realtime_sources, source)) {
+                group->realtime_sources.push_back(source);
+                auto const rate =
+                    connection.source_plans[source_index].max_events_per_index;
+                if (!is_valid_event_buffer_rate(rate)
+                    || !is_valid_event_buffer_rate(
+                        group->max_events_per_index + rate)) {
+                    return std::unexpected(
+                        "GraphJit realtime event producer aggregate rate is not representable");
+                }
+                group->max_events_per_index += rate;
+            }
+            if (source_background
+                && !std::ranges::contains(group->background_sources, source)) {
+                group->background_sources.push_back(source);
+            }
+            group->has_realtime_connections = group->has_realtime_connections
+                || source_realtime;
+            group->has_background_connections = group->has_background_connections
+                || source_background;
+        }
     }
 
     for (std::size_t group_index = 0;
          group_index < plan.event_producer_groups.size(); ++group_index) {
         auto& group = plan.event_producer_groups[group_index];
         bool external = false;
-        bool requires_invocation_aggregate = group.sources.size() > 1;
+        bool requires_invocation_aggregate = group.realtime_sources.size() > 1;
         std::size_t retained = 0;
-        for (auto const source : group.sources) {
+        for (auto const source : group.realtime_sources) {
             if (source.bundle >= plan.schedule.bundle_to_region.size()
                 || !plan.schedule.bundle_to_region[source.bundle]) {
                 continue;
@@ -2138,11 +2907,7 @@ std::expected<void, std::string> plan_event_groups(
         }
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = plan.event_connections[connection_index];
-            if (!uses_realtime_storage(connection.access)) {
-                group.has_indexed_connections = true;
-                continue;
-            }
-            group.has_realtime_connections = true;
+            if (!has_realtime_delivery(connection)) continue;
             // Feedback storage is branch-local: the canonical producer group
             // remains an ordinary aggregate sequence and detached branches
             // acquire their own persistent rings during physical lowering.
@@ -2151,11 +2916,17 @@ std::expected<void, std::string> plan_event_groups(
                 || connection.requires_conversion
                 || connection.requires_block_materialization
                 || connection.detach.has_value();
-            auto const connection_retained = retained_extent(
-                connection.source_history,
-                connection.source_latency,
-                connection.target_history);
-            retained = std::max(retained, connection_retained);
+            for (auto const& delivery : connection.deliveries) {
+                if (!uses_realtime_storage(delivery.mechanism)) continue;
+                auto const& source =
+                    connection.source_plans[delivery.source_index];
+                auto const& target =
+                    connection.target_plans[delivery.target_index];
+                retained = std::max(
+                    retained,
+                    retained_extent(
+                        source.history, source.latency, target.history));
+            }
         }
         auto const current_event_capacity = event_count_for_sample_span(
             group.max_events_per_index, kernel_block_size);
@@ -2260,6 +3031,9 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto events = inventory_event_connections(graph, plan); !events) {
         return std::unexpected(std::move(events.error()));
     }
+    if (auto replay = derive_contextual_replayability(graph, plan); !replay) {
+        return std::unexpected(std::move(replay.error()));
+    }
     if (retained_indexed_plan) {
         if (retained_indexed_plan->semantic_nodes.size()
                 != plan.nodes.size()
@@ -2279,11 +3053,19 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     } else {
         auto indexed = build_semantic_indexed_plan(graph, plan);
         if (!indexed) return std::unexpected(std::move(indexed.error()));
-        if (auto populated = populate_indexed_topology(graph, plan, *indexed);
+        plan.indexed = std::move(*indexed);
+    }
+    // Semantic SCC validation intentionally precedes the narrower physical
+    // restriction on detach transport so indexed feedback is diagnosed in
+    // terms of the whole semantic graph.
+    if (auto detaches = validate_detach_delivery_mechanisms(plan); !detaches) {
+        return std::unexpected(std::move(detaches.error()));
+    }
+    if (!retained_indexed_plan) {
+        if (auto populated = populate_indexed_topology(graph, plan, plan.indexed);
             !populated) {
             return std::unexpected(std::move(populated.error()));
         }
-        plan.indexed = std::move(*indexed);
     }
     if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic) {
         return std::unexpected(std::move(acyclic.error()));

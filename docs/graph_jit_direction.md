@@ -110,19 +110,21 @@ groups fanout by producer, derives the requirement
 records consumed by the existing sample/event physical-storage choosers, and
 emits semantic transient/persistent/external storage and liveness requests.
 A tock-produced output never becomes a same-slice sequential dependency merely
-because a sequential consumer reads its prepared pages. The **target** schema has
+because a sequential consumer reads its prepared pages. The source now uses
 `SequentialInputConfig`/`RandomAccessInputConfig` for consumer access,
 `TickOutputConfig`/`TockOutputConfig` for production, and separate
-`OutputRetention::{ephemeral,persisted}`. The current source has already removed
-`IndexedProducer` and independently represents output retention, but still uses
-the intermediate realtime/indexed port-config names and equality-based connection
-domains. The target naming, replay trait, generalized planner, and new executor
-have not landed by this checkpoint. An unreproducible tick/ephemeral source
-feeding random-access demand requires an authored recorder; persisted tick and
-contextually replayable tick sources do not. Tock evaluation and page computation
-are background-only, including ephemeral outputs. Prepared but stale pages remain
-readable during playback; missing pages supply each sequential input's own
-`neutral_value`. Recording captures are transaction inputs, not publication.
+`OutputRetention::{ephemeral,persisted}`. Connection analysis classifies those
+axes independently per sample source channel and event source/target pair. It
+retains Tick -> Sequential dependencies for realtime scheduling, records Tock ->
+Sequential preparation and random-access materialization separately, treats
+persisted Tick outputs as stored boundaries, and proves contextual replay for
+eligible Tick/ephemeral paths by traversing sequential dependencies. The retained
+`IndexedPlan` keeps semantic SCCs separate from the background evaluation DAG and
+records authored Tock execution versus synthesized replay. An unreproducible
+Tick/ephemeral source feeding random-access demand requires an authored recorder.
+The background executor itself has not landed at this checkpoint: Tock evaluation,
+replay evaluation, page publication, missing-page neutral playback, and recording
+consumption remain subsequent execution work.
 Block-slice mismatches conservatively require materialization
 until a later scheduler proves a shared subdivision. At the point this refactor
 landed, the lowering capability gate still rejected ports/connections; the sample-
@@ -264,8 +266,9 @@ The current internal realtime connection surface is intentionally asymmetric:
   compensation, compact carry/persistent rings, and `detach()` SCC feedback. A
   sample producer inside an SCC may also fan out to downstream acyclic identity or
   converted/history-bearing consumers. What remains is not another ordinary sample
-  transport mode: realtime/indexed mixed or indexed-only access still belongs
-  to indexed DSP points 14-19 below. Root I/O is not a boundary-connection
+  transport mode: mixed Tick/background and background-only delivery are planned
+  by the background/indexed topology and still require the executor work in indexed
+  DSP points 14-19 below. Root I/O is not a boundary-connection
   mode; it is expressed by concrete system/communication node types.
 - **Events, feed-forward:** internal realtime direct/transient sequences, block
   adaptation, non-expanding conversion, fanout, stable multi-producer fan-in,
@@ -299,7 +302,7 @@ The current internal realtime connection surface is intentionally asymmetric:
 | Detached feedback within one SCC | Implemented for internal realtime samples | A fixed-capacity delayed timeline uses the same transient/carry/full-storage alternatives. Producer-home and branch-local writers support history, latency, conversion, permutation, composition, and nonzero `loop_extra_latency`. |
 | Cyclic producer with ordinary downstream fanout | Implemented | The SCC timeline is updated slice by slice; downstream identity or converted/history-bearing branches are realized at the scope where the completed SCC result becomes available. |
 | Acyclic ingress or an edge between execution regions | Implemented | Explicit before/after materialization placement carries the resolved channel representation across the schedule; persistent storage is used only when the semantic history/latency lifetime crosses root calls. |
-| Mixed realtime/indexed or indexed-only sample access | Capability-gated separately | This belongs to indexed component evaluation rather than another realtime sample-buffer representation. |
+| Mixed Tick/background or background-only sample delivery | Planned; realtime lowering capability-gated | The connection/background plan now preserves each contribution independently. Playback/materialization belongs to background execution rather than another realtime sample-buffer representation. |
 | Unconnected realtime sample port | Implemented | An unconnected input binds to compiler-emitted constant sample data filled with its declared `default_value`. An unconnected output receives an ordinary writable buffer sized from its declared history/latency; retained samples use the same stack-plus-`NodeStorage` or full-`NodeStorage` choice as connected outputs. |
 
 #### Realtime event SCC capability matrix
@@ -317,7 +320,7 @@ The current internal realtime connection surface is intentionally asymmetric:
 | Edge spanning distinct cyclic regions | Implemented | The source aggregate remains live across regions. Conversion runs at source-region exit and the downstream region reads its absolute-time slices. |
 | Multi-producer fan-in touching a cyclic region | Implemented | Acyclic producers merge once after their completed invocation; each cyclic-region stage merges bounded producer-local streams after that region's final producer on every slice. A compiler-private source-ordinal sidecar on the canonical aggregate preserves semantic equal-time ordering even when execution-region order differs from source order. Compact carry and persistent rings retain the ordinals with their events. |
 | One derived materialization consumed both inside the source SCC and downstream | Implemented | Representation sharing is keyed by conversion and execution scope. The in-SCC and SCC-exit branches receive distinct scope-correct derived representations. |
-| Mixed realtime/indexed or indexed-only event access | Capability-gated separately | This belongs to indexed component evaluation rather than another realtime storage kind. |
+| Mixed Tick/background or background-only event delivery | Planned; realtime lowering capability-gated | Per-source/per-target delivery is retained in the background/indexed plan. Playback/materialization belongs to background execution rather than another realtime storage kind. |
 | Unconnected primitive event port | Implemented for realtime ports | Inputs receive a reset zero-capacity sequence. Outputs receive a bounded sink sized from `max_events_per_index`, history, latency, and root block size, with normal overflow telemetry. |
 
 #### Remaining event-connection work
@@ -328,8 +331,8 @@ for one universal event buffer.
 
 Remaining semantic capability work:
 
-1. Implement mixed realtime/indexed and indexed-only event access through the
-   indexed component plan.
+1. Lower the already-planned mixed Tick/background and background-only event
+   deliveries through the background executor and prepared-playback path.
 
 Efficiency and observability work that does not change event semantics:
 
@@ -620,18 +623,21 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     gone. Static constexpr concrete-node ports are enforced in both public
     `IV_NODE` and internal builder entry points; dynamic topology, instances and
     per-instance connection metadata remain supported.
-15. **Migrate independent port contracts and connection planning.** Input access,
-    output production, and output retention remain distinct through the builder,
-    serialization, compiler records, and per-channel tiling. Replace equality-based
-    realtime/indexed compatibility with source-capability checks. Forbid only
-    unreproducible tick/ephemeral -> random-access demand without explicit recording;
-    remove invented inward input/output access conversions. Tock is background-only.
-16. **Introduce the replayability node trait.** It opts in an existing `tick()`-only
-    node with no `State`, random-access inputs, history or latency and a fixed-version
-    pure/deterministic contract. Keep the node traits' generated `tick_block()` and
-    GraphJit's imported LLVM definition; validate concrete declarations, reflect the
-    trait, prove upstream availability and synthesize pointwise F/R propagation.
-    Contextual replayability is a per-path compiler fact, not an output config field.
+15. **Landed: independent port contracts and generalized connection planning.**
+    Input access, output production, and output retention remain distinct through
+    the builder, serialization, compiler records, per-channel tiling and GraphJit
+    planning. Connection compatibility is classified per source channel/event pair;
+    only Tick -> Sequential contributes same-slice scheduling and realtime storage,
+    while Tock preparation/materialization and persisted Tick boundaries are retained
+    as background facts. Unreproducible Tick/ephemeral -> RandomAccess demand is the
+    remaining connection-level rejection and requires explicit recording.
+16. **Landed: replayability trait and contextual replay planning.** The trait opts in
+    an existing `tick()`-only node with no `State`, random-access inputs, history or
+    latency and a fixed-version pure/deterministic contract. GraphJit retains the
+    generated `tick_block()` import, proves upstream availability through ordinary
+    Sequential dependencies, stops at persisted boundaries, rejects replay cycles
+    and records synthesized pointwise F/R plus background replay ordering. Contextual
+    replayability remains a per-path compiler fact, not an output config field.
 17. **Finish ordinary background indexed execution before capture consumption.**
     Retain the landed `IndexedPlan`, then add the still-pending reusable batch ABI,
     indexed callback imports, generated F/R/evaluation programs, `GraphExecutor`,
@@ -943,9 +949,8 @@ The normative port schema and execution semantics are in
 [indexed_dsp_nodes.md](./indexed_dsp_nodes.md#13-authored-port-schema-retention-and-replayability).
 `SequentialInputConfig` and `RandomAccessInputConfig` select consumer access;
 `TickOutputConfig` and `TockOutputConfig` select producer callback; the output's
-`OutputRetention` is separate. The checked-in source has already removed
-`IndexedProducer` and made retention independent; these target names describe the
-remaining migration from its intermediate realtime/indexed port-config names.
+`OutputRetention` is separate. The checked-in source uses these final independent contracts directly; no
+intermediate realtime/indexed port-config aliases remain.
 
 An ordinary tick/ephemeral stream may feed a sequential input. It needs an explicit
 recording-policy node only when it is **unreproducible** and a downstream input
@@ -1017,7 +1022,7 @@ without rediscovering project topology. In addition to ordinary realtime schedul
 metadata it needs, as applicable:
 
 - stable indexed endpoint identities and generation-local ordinals;
-- output access and retention per output;
+- output production and retention per output, plus destination access/delivery facts per connection contribution;
 - generated batched forward/reverse/tock traversal entrypoints and constant
   context-layout facts;
 - indexed component/order information;

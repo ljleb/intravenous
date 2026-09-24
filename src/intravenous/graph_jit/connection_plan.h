@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <expected>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -18,10 +19,9 @@ enum class PlannedConnectionPayload {
     event,
 };
 
-enum class PlannedConnectionAccess {
-    realtime_to_realtime,
-    indexed_to_indexed,
-};
+using ::iv::graph_jit::PlannedDestinationAccess;
+using ::iv::graph_jit::PlannedDeliveryMechanism;
+using ::iv::graph_jit::PlannedSourceProduction;
 
 struct PlannedGraphNode {
     NodeBundleHandle bundle = 0;
@@ -31,18 +31,23 @@ struct PlannedGraphNode {
     std::size_t sample_output_count = 0;
     std::size_t event_input_count = 0;
     std::size_t event_output_count = 0;
+    bool intrinsically_replayable = false;
+    bool contextually_replayable = false;
 };
 
 struct DependencyEdgePlan {
     NodeBundleHandle source_bundle = 0;
     NodeBundleHandle target_bundle = 0;
     PlannedConnectionPayload payload = PlannedConnectionPayload::sample;
-    PlannedConnectionAccess access = PlannedConnectionAccess::realtime_to_realtime;
+    PlannedSourceProduction source_production = PlannedSourceProduction::tick;
+    OutputRetention source_retention = OutputRetention::ephemeral;
+    PlannedDestinationAccess destination_access = PlannedDestinationAccess::sequential;
+    PlannedDeliveryMechanism delivery = PlannedDeliveryMechanism::tick_to_sequential;
     std::size_t configured_connection_index = 0;
 
-    // Only sequential producers impose ordinary tick ordering. An indexed
-    // output is materialized by the indexed executor and must not be
-    // ordered by pretending its producer tick creates that output.
+    // Only Tick -> Sequential transport imposes ordinary same-slice ordering.
+    // Background materialization and replay dependencies are retained
+    // separately by IndexedPlan.
     bool sequential_tick_dependency = true;
 };
 
@@ -75,6 +80,11 @@ struct SchedulePlan {
 struct SampleSourceChannelTimingPlan {
     SampleOutputChannelId source{};
     ChannelLayout source_layout{};
+    PlannedSourceProduction production = PlannedSourceProduction::tick;
+    OutputRetention retention = OutputRetention::ephemeral;
+    PlannedDestinationAccess destination_access = PlannedDestinationAccess::sequential;
+    PlannedDeliveryMechanism delivery = PlannedDeliveryMechanism::tick_to_sequential;
+    bool contextually_replayable = false;
     std::size_t source_history = 0;
     std::size_t source_latency = 0;
     // Effective latency for this particular source channel after feed-forward
@@ -127,7 +137,7 @@ struct SampleConnectionPlan {
     // latency until physical channel composition is lowered explicitly.
     std::size_t read_latency = 0;
     std::size_t target_history = 0;
-    PlannedConnectionAccess access = PlannedConnectionAccess::realtime_to_realtime;
+    PlannedDestinationAccess destination_access = PlannedDestinationAccess::sequential;
     bool requires_conversion = false;
     bool requires_block_materialization = false;
     bool external_boundary = false;
@@ -136,25 +146,99 @@ struct SampleConnectionPlan {
     std::optional<std::size_t> detach_region{};
 };
 
+
+struct EventSourcePlan {
+    EventOutputPortId source{};
+    PlannedSourceProduction production = PlannedSourceProduction::tick;
+    OutputRetention retention = OutputRetention::ephemeral;
+    std::size_t history = 0;
+    std::size_t latency = 0;
+    double max_events_per_index = 0.0;
+};
+
+struct EventTargetPlan {
+    EventInputPortId target{};
+    PlannedDestinationAccess access = PlannedDestinationAccess::sequential;
+    std::size_t history = 0;
+};
+
+struct EventDeliveryPlan {
+    std::size_t source_index = 0;
+    std::size_t target_index = 0;
+    PlannedDeliveryMechanism mechanism = PlannedDeliveryMechanism::tick_to_sequential;
+    bool contextually_replayable = false;
+};
+
 struct EventConnectionPlan {
     std::size_t configured_connection_index = 0;
     EventTypeId source_type = EventTypeId::empty;
     std::vector<EventOutputPortId> sources{};
+    std::vector<EventSourcePlan> source_plans{};
     EventTypeId target_type = EventTypeId::empty;
     std::vector<EventInputPortId> targets{};
+    std::vector<EventTargetPlan> target_plans{};
+    std::vector<EventDeliveryPlan> deliveries{};
     EventConversionPlan conversion{};
 
     std::size_t source_history = 0;
     std::size_t source_latency = 0;
     std::size_t target_history = 0;
     double max_events_per_index = 0.0;
-    PlannedConnectionAccess access = PlannedConnectionAccess::realtime_to_realtime;
     bool requires_conversion = false;
     bool requires_block_materialization = false;
     bool external_boundary = false;
     std::optional<ConfiguredEventConnectionDetach> detach{};
     std::optional<std::size_t> detach_region{};
 };
+
+
+[[nodiscard]] constexpr bool uses_realtime_storage(
+    PlannedDeliveryMechanism delivery) noexcept
+{
+    return delivery == PlannedDeliveryMechanism::tick_to_sequential;
+}
+
+[[nodiscard]] inline bool has_realtime_delivery(
+    SampleConnectionPlan const& connection) noexcept
+{
+    return std::ranges::any_of(
+        connection.source_channel_timings,
+        [](SampleSourceChannelTimingPlan const& source) {
+            return uses_realtime_storage(source.delivery);
+        });
+}
+
+[[nodiscard]] inline bool is_entirely_realtime_delivery(
+    SampleConnectionPlan const& connection) noexcept
+{
+    return !connection.source_channel_timings.empty()
+        && std::ranges::all_of(
+            connection.source_channel_timings,
+            [](SampleSourceChannelTimingPlan const& source) {
+                return uses_realtime_storage(source.delivery);
+            });
+}
+
+[[nodiscard]] inline bool has_realtime_delivery(
+    EventConnectionPlan const& connection) noexcept
+{
+    return std::ranges::any_of(
+        connection.deliveries,
+        [](EventDeliveryPlan const& delivery) {
+            return uses_realtime_storage(delivery.mechanism);
+        });
+}
+
+[[nodiscard]] inline bool is_entirely_realtime_delivery(
+    EventConnectionPlan const& connection) noexcept
+{
+    return !connection.deliveries.empty()
+        && std::ranges::all_of(
+            connection.deliveries,
+            [](EventDeliveryPlan const& delivery) {
+                return uses_realtime_storage(delivery.mechanism);
+            });
+}
 
 
 struct ConnectionLiveIntervalPlan {
@@ -174,7 +258,7 @@ struct SampleProducerGroupPlan {
     std::optional<ChannelLayout> canonical_source_layout{};
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
-    bool has_indexed_connections = false;
+    bool has_background_connections = false;
     SampleConnectionStorageRequirements storage_requirements{};
     std::optional<SampleConnectionStoragePlan> storage_plan{};
     ConnectionLiveIntervalPlan live_interval{};
@@ -183,10 +267,16 @@ struct SampleProducerGroupPlan {
 struct EventProducerGroupPlan {
     EventTypeId source_type = EventTypeId::empty;
     std::vector<EventOutputPortId> sources{};
+    // The semantic fan-in source set is retained above. Realtime physical
+    // planning uses only Tick -> Sequential contributors; background-only
+    // sources are tracked separately so mixed fan-in is representable without
+    // allocating realtime storage for Tock/replay materialization.
+    std::vector<EventOutputPortId> realtime_sources{};
+    std::vector<EventOutputPortId> background_sources{};
     double max_events_per_index = 0.0;
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
-    bool has_indexed_connections = false;
+    bool has_background_connections = false;
     // Cyclic or block-adapted producers append into one invocation-wide
     // sequence. This is an execution/materialization fact, not a storage kind.
     bool requires_invocation_aggregate = false;
@@ -230,8 +320,8 @@ struct ConnectionAnalysisPlan {
     std::vector<EventProducerGroupPlan> event_producer_groups{};
     ConnectionStoragePlan storage{};
     // The indexed plan owns the complete semantic SCC decomposition as well as
-    // the indexed-only topology. Later lowering/runtime stages retain and reuse
-    // it instead of rediscovering either graph view.
+    // the background/indexed topology. Later lowering/runtime stages retain and
+    // reuse it instead of rediscovering either graph view.
     IndexedPlan indexed{};
 };
 

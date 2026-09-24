@@ -18,9 +18,43 @@ using IndexedNodeOrdinal = std::size_t;
 using IndexedEndpointOrdinal = std::size_t;
 using IndexedConnectionOrdinal = std::size_t;
 
+enum class PlannedSourceProduction : std::uint8_t {
+    tick,
+    tock,
+};
+
+enum class PlannedDestinationAccess : std::uint8_t {
+    sequential,
+    random_access,
+};
+
+enum class PlannedDeliveryMechanism : std::uint8_t {
+    // Same-slice ordinary realtime transport. This is the only delivery kind
+    // consumed by the realtime physical-storage planner.
+    tick_to_sequential,
+    // A background-produced page is prepared before realtime playback.
+    tock_to_sequential,
+    // Background-produced temporary or retained page materialization.
+    tock_to_random_access,
+    // Finalized retained Tick data is a stored random-access boundary.
+    persisted_tick_to_random_access,
+    // A pointwise Tick producer is recomputed in the background after
+    // whole-graph contextual replayability has been proven.
+    replayed_tick_to_random_access,
+};
+
 enum class IndexedEndpointDirection : std::uint8_t {
     input,
     output,
+};
+
+enum class IndexedBackgroundDependencyKind : std::uint8_t {
+    // A non-realtime authored connection participates directly in background
+    // materialization/evaluation.
+    materialized_delivery,
+    // An ordinary Sequential input is traversed only because its Tick consumer
+    // is being synthesized as a replay evaluation.
+    replay_sequential,
 };
 
 // A persistent identity exists only when the configured concrete node belongs
@@ -85,6 +119,25 @@ struct IndexedEndpointPlan {
     IndexedEndpointDirection direction = IndexedEndpointDirection::input;
     std::string name{};
 
+    // Input roles are independent because a Sequential input can require
+    // advance-prepared Tock data for live playback and also participate in a
+    // synthesized replay of its Tick consumer. Random-access inputs always
+    // participate in indexed coverage propagation.
+    bool random_access_input = false;
+    bool prepared_sequential_input = false;
+    bool replay_sequential_input = false;
+
+    // Output roles distinguish authored background production, retained Tick
+    // boundaries, and synthesized replay. They are planning facts, not authored
+    // port modes.
+    bool authored_tock_output = false;
+    bool persisted_tick_output = false;
+    bool replayed_tick_output = false;
+
+    // Sample-input neutral values are retained for later missing-page playback
+    // lowering. Event inputs use absence-of-events as their neutral value.
+    Sample sample_neutral_value{};
+
     // Output-only. Input endpoints have no retention contract.
     std::optional<OutputRetention> retention{};
     std::optional<StableIndexedOutputId> stable_identity{};
@@ -94,7 +147,7 @@ struct IndexedEndpointPlan {
     double max_events_per_index = 0.0;
 
     // Connection ordinals make fan-in/fan-out convergence explicit. Lists
-    // contain each logical indexed connection once, even when a sample
+    // contain each logical background/indexed connection once, even when a sample
     // connection contributes several channels from the same output port.
     std::vector<IndexedConnectionOrdinal> incoming_connections{};
     std::vector<IndexedConnectionOrdinal> outgoing_connections{};
@@ -106,6 +159,17 @@ struct IndexedNodePlan {
     SemanticNodeOrdinal semantic_node = 0;
     SemanticSccOrdinal semantic_scc = 0;
     std::optional<StableConcreteNodeId> stable_identity{};
+
+    // Authored Tock nodes execute their imported F/R/T callbacks. Replay nodes
+    // instead use compiler-synthesized pointwise F/R coverage propagation and
+    // the already-imported generated tick_block() wrapper. A retained Tick-only
+    // boundary may have neither execution mode.
+    bool authored_tock_execution = false;
+    bool synthesized_tick_replay = false;
+    bool synthesized_forward_coverage = false;
+    bool synthesized_reverse_coverage = false;
+    bool uses_imported_tick_block_for_replay = false;
+
     std::vector<IndexedEndpointOrdinal> inputs{};
     std::vector<IndexedEndpointOrdinal> outputs{};
     IndexedNodeAccumulatorPlan accumulators{};
@@ -116,6 +180,15 @@ struct IndexedSampleProjectionPlan {
     std::vector<std::size_t> source_channel_indices{};
     ChannelTypeId target_type = ChannelTypeId::mono;
     std::vector<std::size_t> target_channels{};
+};
+
+struct IndexedEventDeliveryPlan {
+    EventOutputPortId source{};
+    EventInputPortId target{};
+    std::optional<IndexedEndpointOrdinal> source_endpoint{};
+    std::optional<IndexedEndpointOrdinal> target_endpoint{};
+    PlannedDeliveryMechanism mechanism =
+        PlannedDeliveryMechanism::tick_to_sequential;
 };
 
 struct IndexedConnectionPlan {
@@ -129,12 +202,34 @@ struct IndexedConnectionPlan {
     ChannelTypeId sample_source_type = ChannelTypeId::mono;
     ChannelTypeId sample_target_type = ChannelTypeId::mono;
     std::vector<SampleOutputChannelId> sample_source_channels{};
+    // Aligned one-for-one with sample_source_channels. Tick -> Sequential
+    // entries have no indexed endpoint; all background/stored entries do.
+    std::vector<std::optional<IndexedEndpointOrdinal>>
+        sample_source_endpoint_by_channel{};
+    std::vector<PlannedDeliveryMechanism> sample_deliveries{};
     std::vector<SampleInputChannelId> sample_target_channels{};
+    std::optional<IndexedEndpointOrdinal> sample_target_endpoint{};
     std::vector<IndexedSampleProjectionPlan> sample_projections{};
     EventTypeId event_source_type = EventTypeId::empty;
     EventTypeId event_target_type = EventTypeId::empty;
     EventConversionPlan event_conversion{};
+    std::vector<IndexedEventDeliveryPlan> event_deliveries{};
     bool requires_conversion = false;
+};
+
+struct IndexedBackgroundDependencyPlan {
+    IndexedNodeOrdinal source_node = 0;
+    IndexedNodeOrdinal target_node = 0;
+    NodeBundlePortId source_port{};
+    NodeBundlePortId target_port{};
+    IndexedBackgroundDependencyKind kind =
+        IndexedBackgroundDependencyKind::materialized_delivery;
+    PlannedDeliveryMechanism delivery =
+        PlannedDeliveryMechanism::tick_to_sequential;
+    // Persisted Tick is a terminal stored boundary: ordering may depend on the
+    // selected stored version, but background evaluation never traverses into
+    // the live producer.
+    bool source_is_stored_boundary = false;
 };
 
 struct IndexedComponentPlan {
@@ -143,6 +238,8 @@ struct IndexedComponentPlan {
     std::vector<IndexedNodeOrdinal> forward_order{};
     std::vector<IndexedNodeOrdinal> reverse_order{};
     std::vector<IndexedNodeOrdinal> tock_order{};
+    std::vector<IndexedNodeOrdinal> replay_order{};
+    std::vector<IndexedNodeOrdinal> background_evaluation_order{};
     std::vector<IndexedConnectionOrdinal> connections{};
 };
 
@@ -167,7 +264,15 @@ struct IndexedPlan {
     std::vector<IndexedConnectionPlan> connections{};
     std::vector<IndexedComponentPlan> components{};
     std::vector<std::size_t> component_order{};
+    // Intrinsic replayability is an authored candidate fact. A candidate enters
+    // synthesized replay only when whole-graph contextual proof reaches it.
+    // Keeping candidate bundles separate does not make an otherwise realtime
+    // graph an active indexed/background plan.
+    std::vector<NodeBundleHandle> intrinsic_replay_candidates{};
     std::vector<IndexedEndpointOrdinal> requestable_outputs{};
+    std::vector<IndexedEndpointOrdinal> prepared_sequential_inputs{};
+    std::vector<IndexedBackgroundDependencyPlan> background_dependencies{};
+    std::vector<IndexedNodeOrdinal> background_evaluation_order{};
     IndexedAccumulatorPlan accumulators{};
 
     [[nodiscard]] bool empty() const noexcept
