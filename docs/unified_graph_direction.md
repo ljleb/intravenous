@@ -5,9 +5,9 @@ node terminology, caching ownership, recursive project matcher model, and event
 procedures are now normative in
 [project_graph_application_architecture.md](./project_graph_application_architecture.md),
 with whole-project compilation ownership in
-[graph_jit_direction.md](./graph_jit_direction.md) and realtime physical
+[graph_jit_direction.md](./graph_jit_direction.md) and sequential physical
 connection planning in
-[realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
+[sequential_port_storage_planning.md](./sequential_port_storage_planning.md).
 Where older sections below use `iv module` as the general node abstraction,
 describe a separate managed-realization/controller layer, or imply that logical
 connections require buffers, the newer documents take precedence._
@@ -34,8 +34,8 @@ registered construction, greedy iv-module expansion, retained lossless
 `ConfiguredGraph`s, and explicit registered primitive provenance), but those
 changes make the project-graph convergence simpler rather than invalidating it.
 
-Indexed DSP-port semantics are specified separately and normatively in
-[indexed_dsp_nodes.md](./indexed_dsp_nodes.md). This document describes how
+Coverage, random-access, and background-evaluation semantics are specified separately and normatively in
+[coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md). This document describes how
 that capability fits the unified project graph; it should not restate or replace
 the node API, request-planning, or storage rules from that document.
 
@@ -323,7 +323,7 @@ extra graph nodes merely for presentation.
 Input access, output production and output retention are orthogonal capabilities
 of ordinary DSP ports in one graph, not separate graph executors. The normative
 contract and implementation order are in
-[indexed_dsp_nodes.md](./indexed_dsp_nodes.md). In particular:
+[coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md). In particular:
 
 - `SequentialInputConfig` declares finite history; `RandomAccessInputConfig`
   declares arbitrary reads within available exact coverage, regardless of the
@@ -336,36 +336,37 @@ contract and implementation order are in
   replay only when upstream inputs are available for the requested positions.
 - An unreproducible ephemeral tick output requires an explicit recording-policy
   node before random-access demand. Persisted tick, contextually replayable tick,
-  and either tock output can satisfy random-access inputs directly. A tock output
-  feeding a random-access input is paged even when ephemeral.
+  and either Tock output can satisfy random-access inputs directly. An ephemeral
+  Tock output feeding a random-access input uses a transaction-local page-backed
+  materialization.
 - Tiling preserves per-channel contracts; it does not create an implicit recorder.
 - Tock and propagation callbacks never execute on the audio thread. An audio-thread
   sequential input plays an available stale page as-is, or supplies **its own**
   `neutral_value` for a missing page, without blocking or invoking tock.
-- Persisted outputs never evict generated covered pages. Coverage removal may
-  remove logical retained pages; superseded physical versions are reclaimed only
-  after readers unpin them. The author accepts the memory growth implied by
-  persistence.
+- Persisted outputs never evict generated/finalized covered data. Coverage removal
+  is the only semantic reason to stop retaining it; superseded physical versions
+  are reclaimed only after readers unpin them. The author accepts the memory growth
+  implied by persistence.
 - Recording captures still use production-point copies to provisioned slabs and
   fixed-prefix background F/R/evaluation transactions. Capture insertion is not
-  publication; publication commits one complete pages version.
+  publication; publication commits one complete page version.
 
 `IndexedCoverage`, `IndexedState`, and the tock propagation callback vocabulary
-retain their established roles. The old realtime/indexed *port config names* are
+retain their established roles. The old `Realtime*`/`Indexed*` *port config names* are
 replaced by production/access names to avoid implying callback-domain equality.
 The legacy `GraphLowerer`/`GraphCompiler`/`RuntimeGraphRoot` generated-node
 project executor and dynamic concrete-port fallbacks are deleted rather than kept
 as compatibility layers. The package/configuration JIT and the new GraphJit remain
 separate and necessary compiler stages.
 
-Realtime sample/event connections follow the same storage-independent principle.
+Tick-to-Sequential sample/event connections follow the same storage-independent principle.
 `ConfiguredGraph` records logical connection semantics only. The whole-project
 compiler derives history/latency/event-window correctness requirements, chooses
 physical connection implementations with a pure testable planner, performs
-transient liveness/scratch reuse, and only then emits LLVM. Realtime event
-outputs must have finite compiler-known production windows; indexed event access
-remains arbitrary-range. See
-[realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
+transient liveness/scratch reuse, and only then emits LLVM. Tick event
+outputs must have finite compiler-known production windows; random-access event
+consumption remains arbitrary-range. See
+[sequential_port_storage_planning.md](./sequential_port_storage_planning.md).
 
 `GraphJit` owns that synchronous whole-project compiler/ORC domain. It compiles
 one coherent configured/provider generation and returns an immutable
@@ -400,7 +401,7 @@ The capabilities that must be designed independently of the old lane
 implementation are:
 
 1. **Random-access DSP and replay.** Implement the normative
-   [indexed_dsp_nodes.md](./indexed_dsp_nodes.md) contract: independent input access,
+   [coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md) contract: independent input access,
    output production and retention; static concrete-port schemas; replayability
    trait/context validation; background-only tock; exact F/R coverage; stale/missing
    sequential playback; no persisted eviction; explicit recording only for
@@ -450,7 +451,7 @@ Preserve or reinterpret:
 Replace:
 
 - `Timeline` as the canonical graph owner;
-- lane execution scheduling and legacy indexed/realtime executor partitioning;
+- lane execution scheduling and the legacy two-domain executor partitioning;
 - separate lane and DSP runtime graphs;
 - graph input/output proxy lanes; and
 - eventually, per-module DSP execution partitions.
@@ -471,8 +472,9 @@ The following are intentionally unresolved:
 - reification provenance and subsumption correspondence APIs;
 - interactions between user-created and iv-module-managed hierarchy;
 - C++ expression support in ordinary webviews;
-- low-level indexed-port API/ABI/tuning choices intentionally left open by
-  `indexed_dsp_nodes.md` (including exact request endpoint/index ABI, concrete
+- low-level APIs/ABIs for random-access consumption, Tock production, coverage,
+  and persisted storage intentionally left open by
+  `coverage_and_background_evaluation.md` (including exact request endpoint/index ABI, concrete
   segmented-event iterator types, stored payload/arena/mmap layout and block-size
   repaging implementation, recording-capture slab sizing/free-capacity/queue
   representation, and concrete mutation/notification data structures);
@@ -507,22 +509,23 @@ this direction.
     require user disambiguation.
 12. Runtime-state migration remains essential, while the old lane scheduler and
     module execution partitions do not.
-13. Indexed data is an ordinary DSP-port capability, not a parallel lane/node
-    graph or a storage class.
-14. Indexed outputs publish canonical sparse coverage; node code never requests
-    indexed values outside that coverage.
+13. Random-access consumption, Tock production, and coverage are ordinary DSP-port
+    capabilities, not a parallel lane/node graph or a storage class.
+14. Outputs addressable through random access expose canonical sparse coverage;
+    node code never requests values outside that coverage.
 15. Input access, output production and output retention are independent.
-    Tick and tock outputs may be ephemeral or persisted; persistence never evicts
-    generated covered pages merely because memory grows or content becomes stale.
+    Tick and Tock outputs may be ephemeral or persisted; persistence never evicts
+    generated/finalized covered data merely because memory grows or content becomes stale.
 16. An unreproducible ephemeral tick source cannot directly satisfy random-access
     input demand. Persisted tick, contextually replayable tick and tock outputs can;
     tock callbacks never run on the audio thread. Sequential playback reads stale
     pages as-is and supplies the consuming input's neutral value on a missing page.
     Recording bridges retain their explicit authored policy and fixed-prefix
-    slab-capture F/R/evaluation transaction.
-17. Exact changed indexed regions and coverage changes propagate forward without
-    eager evaluation or page widening. Computed indexed outputs require exact
-    forward coverage semantics; reverse propagation is value-blind and may
+    slab-capture background evaluation transaction.
+17. Exact changed regions and coverage changes propagate forward without eager
+    evaluation or page widening. Outputs participating in background coverage
+    propagation require exact forward-coverage semantics; reverse propagation is
+    value-blind and may
     conservatively over-request.
 18. `IndexedState` is non-semantic acceleration state available only to
     `tock_coverage()`. It is not shared persistent semantics between tick and tock.

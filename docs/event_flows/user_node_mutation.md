@@ -66,7 +66,7 @@ silently deleting the requested node or its dangling project connections.
 
 The root-build transaction, including `GraphJit`, is synchronous with the
 mutation handler. A JSON-RPC result may therefore include graph-JIT diagnostics.
-It still does not wait for realtime activation of the compiled successor, which
+It still does not wait for activation of the compiled successor, which
 occurs only at a legal `GraphExecutor` pass boundary.
 
 ## Derived read models and notifications

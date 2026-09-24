@@ -12,14 +12,14 @@
 > not a requirement that the future whole-project executor retain `Graph` or
 > ring-buffer-backed ports as its final representation. The current target adds
 > `GraphJit`, which consumes the complete root configured graph, performs pure
-> connection/history/latency/storage and indexed-topology/validity planning,
-> generates a specialized zero-input/zero-output root node plus internal indexed
-> component executors, and returns an immutable `CompiledGraph`. Runtime storage uses
+> connection/history/latency/storage and background-evaluation topology/page-validity planning,
+> generates a specialized zero-input/zero-output root node plus internal background-
+> evaluation component executors, and returns an immutable `CompiledGraph`. Runtime storage uses
 > the canonical `NodeLayout`/`NodeStorage` model; compiler-owned fixed-size regions
 > are declared into the same layout rather than a parallel project-kernel arena.
 > See [graph_jit_direction.md](./graph_jit_direction.md),
-> [realtime_port_storage_planning.md](./realtime_port_storage_planning.md), and
-> [indexed_dsp_nodes.md](./indexed_dsp_nodes.md).
+> [sequential_port_storage_planning.md](./sequential_port_storage_planning.md), and
+> [coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md).
 
 ## Purpose
 
@@ -152,14 +152,14 @@ connection group. Layout-compatible sample consumers may alias one produced
 value/materialization, conversion branches may materialize only when necessary,
 and a simple acyclic chain may need no physical edge storage at all. Event
 fan-out likewise becomes eligible for shared immutable transient representation
-or direct/fused handling once realtime event windows and consumer retention are
+or direct/fused handling once Tick event windows and consumer retention are
 statically known.
 
 Do not preserve `SharedPortData`, `EventSharedPortData`, one-ring-per-stream, or
 `BroadcastEvent` merely to match the compatibility runtime. Correctness facts
 (history, latency, feedback, legal event windows, conversion, fanout) are derived
 first; a separate pure heuristic then chooses physical storage. See
-[realtime_port_storage_planning.md](./realtime_port_storage_planning.md).
+[sequential_port_storage_planning.md](./sequential_port_storage_planning.md).
 
 ## Conversion ownership and information flow
 

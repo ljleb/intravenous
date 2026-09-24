@@ -1,12 +1,13 @@
-# Realtime Port Storage And Connection Planning
+# Sequential Port Storage And Connection Planning
 
-_Status: current design direction for whole-project realtime sample/event lowering._
+_Status: current design direction for whole-project Tick execution and sequential-consumption sample/event lowering._
 
 Related documents:
 
+- [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)
 - [graph_jit_direction.md](./graph_jit_direction.md)
 - [builder_lowering_pipeline_design.md](./builder_lowering_pipeline_design.md)
-- [indexed_dsp_nodes.md](./indexed_dsp_nodes.md)
+- [coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md)
 - [intravenous-llvm-hot-reload-and-whole-graph-design.md](./intravenous-llvm-hot-reload-and-whole-graph-design.md)
 
 ## Core rule: a connection is not a buffer
@@ -32,7 +33,7 @@ The compatibility runtime may continue to use ring-buffer-backed
 the semantic contract of `ConfiguredGraph` or the generated whole-project
 kernel.
 
-## Node-facing realtime APIs express logical access
+## Node-facing Tick APIs express logical access
 
 A node author should use the same `tick_block()` port API regardless of the
 chosen physical representation.
@@ -46,8 +47,8 @@ auto output = ctx.output<"output">();
 output[i] = process(input[i]);
 ```
 
-must not mean "index a ring buffer." It means "access the logical realtime port
-at this sample position inside the statically legal window."
+must not mean "index a ring buffer." It means "access the logical port
+at this sample position inside the statically legal Tick window."
 
 The retained package LLVM should expose/invoke simple recognizable port access
 operations that `GraphJit` can specialize after the whole graph is known.
@@ -92,10 +93,10 @@ the optimized tick/access programs. Lifecycle order remains a separate
 `NodeLayout` concern derived from declaration dependencies. Compiler-owned raw
 regions that require a defined fresh value must declare a raw-region initializer
 and receive that value through `NodeStorage::initialize()` before activation; the
-generated realtime root must not substitute a first-call/run-once guard.
+generated Tick root must not substitute a first-call/run-once guard.
 
 Truly request-sized caller data whose maximum size is not known at graph compile
-time is not a legal realtime-port backing strategy. It belongs to a non-realtime
+time is not a legal backing strategy for Tick execution. It belongs to a background
 request boundary and does not justify a second persistent project storage
 abstraction.
 
@@ -170,7 +171,7 @@ This stage answers correctness questions such as:
 - does a concrete system/communication node require ordinary retained state for
   its external resource interaction?
 - what is the pass-local live interval?
-- what temporal window is legal for realtime event production/consumption?
+- what temporal window is legal for Tick event production and sequential event consumption?
 
 Then choose among the legal storage plans using two explicit pure policy
 functions, one per payload class. Their result contains the common storage kind
@@ -197,7 +198,7 @@ The configured project root itself has no boundary ports. Device I/O and
 communication with other application modules are modeled by concrete node types,
 so root-boundary handling is not a port-storage implementation kind.
 
-### Realtime port storage plans
+### Sequential port storage plans
 
 There are three useful physical storage plans for an event stream or a sample
 channel group:
@@ -412,7 +413,7 @@ storage into persistent state after physical planning.
 
 The important properties are:
 
-- no realtime heap allocation;
+- no audio-thread heap allocation;
 - sizes, alignments, offsets, and lifetimes are known before execution;
 - unrelated stack temporaries may reuse one stack-frame range when their live
   intervals do not overlap;
@@ -444,25 +445,25 @@ Conversely, information-rich event types may collapse into `Trigger`, and any
 event type may be discarded into `Empty`.
 
 This rule also removes the old conversions which synthesized a second event at
-`t + 1`; current built-in conversions never invent a later timestamp. Realtime
-window validation nevertheless checks converted events at the point they are
+`t + 1`; current built-in conversions never invent a later timestamp. Tick-window
+validation nevertheless checks converted events at the point they are
 emitted, so future conversion additions cannot silently escape the legal
 window.
 
-## Realtime event ports need bounded time windows
+## Tick event ports need bounded time windows
 
-Realtime event outputs must have a statically predictable temporal window just
-like realtime sample outputs.
+Tick event outputs must have a statically predictable temporal window just
+like Tick sample outputs.
 
-A realtime output callback must not be able to produce an event at an arbitrary
+A Tick output callback must not be able to produce an event at an arbitrary
 absolute time unrelated to the current invocation. Its legal output timestamps
 must lie inside the finite window defined by the current block together with the
-port's declared history and declared/corrected latency. In other words, realtime
+port's declared history and declared/corrected latency. In other words, Tick
 event production is constrained by the same `current block + history + latency`
-semantic extent used to make realtime sample access predictable.
+semantic extent used to make sequential sample access predictable.
 
 For a callback beginning at global sample index `B`, block size `N`, output
-history `H`, and effective/corrected output latency `L`, the legal realtime event
+history `H`, and effective/corrected output latency `L`, the legal Tick event
 output extent is the half-open interval:
 
 ```text
@@ -476,8 +477,8 @@ proved to stay inside the same extent.
 The compatibility runtime should validate this constraint. The whole-project
 JIT may then specialize it away when the authored access is statically valid.
 
-Arbitrary `TimedEvent` insertion outside that window is not part of the future
-realtime port contract.
+Arbitrary `TimedEvent` insertion outside that window is not part of the Tick-output
+contract.
 
 ## Sequential timing is independent of output production and retention
 
@@ -511,7 +512,7 @@ struct OutputConfig {
 };
 ```
 
-These names describe the target migration, not the current checked-in C++ API.
+The current checked-in C++ API uses these independent names directly.
 `SequentialInputConfig` has the existing finite history contract; `TickOutputConfig`
 has the existing history and latency authoring contract. A random-access input
 can be consumed in either execution callback. A tick-produced output can satisfy
@@ -519,12 +520,12 @@ random-access demand through finalized persisted data or contextually replayable
 computation; a tock-produced output can feed a sequential input if its data is
 prepared off the audio thread. Production does not select the consumer's access.
 
-`ephemeral` permits transient prefetch or pages but makes no lasting retention
-promise. `persisted` retains **all generated finalized pages in coverage**: there
-is no automatic eviction for memory pressure, cache size, age, invalidation or
-lack of current readers. Logical pages may be removed only when output coverage
-ceases to include them; superseded physical versions can be reclaimed after
-readers unpin them. Memory growth is the graph author's retention choice.
+`ephemeral` permits transaction-local prepared or page-backed materialization but
+makes no lasting retention promise. `persisted` retains **all generated/finalized
+covered data**: there is no automatic eviction for memory pressure, cache size,
+age, invalidation, or lack of current readers. Coverage removal is the only semantic
+reason to stop retaining that data; superseded physical versions can be reclaimed
+after readers unpin them. Memory growth is the graph author's retention choice.
 
 `InputConfig` / `OutputConfig` independently carry sample/event payload properties
 and the above access/production/retention contracts. Static concrete node types
@@ -564,7 +565,7 @@ window, not the distribution of timestamps inside it: all 16 events may occur at
 one legal sample position. The value must be finite and nonnegative. `0.0`
 declares that the producer emits no events.
 
-Exceeding the declared maximum is outside the realtime producer contract and has
+Exceeding the declared maximum is outside the Tick producer contract and has
 implementation-defined behavior. A particular implementation may drop excess
 events and count them, but callers must not depend on that policy. It must never
 grow a buffer or allocate memory on the audio thread.
@@ -583,9 +584,9 @@ exact semantic changed regions remain distinct from aligned physical page domain
 
 A persisted tock candidate page is computed for its complete covered domain before
 the candidate publishes. Invalidation never deletes the existing readable published
-page. An ephemeral tock output directly feeding a random-access input must also
-materialize addressable temporary pages, retained for the consuming transaction but
-not promised as persistent output data.
+page. An ephemeral Tock output directly feeding a random-access input must use a
+transaction-local page-backed materialization, retained for the consuming transaction
+but not promised as persisted output data.
 
 **The only implicit-storage connection that is forbidden** is an unreproducible
 tick/ephemeral source directly feeding random-access demand, whether the input is
@@ -601,10 +602,11 @@ own `neutral_value`. Even when another input shares the source page, its neutral
 value is chosen independently. Playback does not block or synchronously generate
 missing pages; published snapshot pins protect readers during replacement.
 
-A recording/capture bridge is the important case. Its realtime side consumes an
-ordinary realtime input, while its indexed side exposes an ordinary indexed output.
-Whenever a recording output block is produced during `tick_block()`, the generated
-realtime path immediately copies that block into already-provisioned capture
+A recording/capture bridge is the important case. Its Tick side consumes an
+ordinary sequential input, while its background side exposes the bridge output
+through coverage and `tock_coverage()`. Whenever a recording output block is
+produced during `tick_block()`, the generated audio-thread path immediately copies
+that block into already-provisioned capture
 storage. Capture does not wait for the end of the root tick. Each captured record
 carries at least:
 
@@ -616,7 +618,7 @@ payload block
 ```
 
 `CaptureSequence` is monotonically increasing insertion order in the executor's
-shared recording-capture log. `OutputPortId` identifies the indexed bridge output
+shared recording-capture log. `OutputPortId` identifies the bridge output
 whose value/coverage is affected, and `GlobalBlockPosition` identifies where that
 change belongs. Global positions need not increase with sequence: seeking during
 playback may append a new capture for an earlier position, and consecutive captures
@@ -626,35 +628,35 @@ Capture exists only while playback/recording is active; the final duration of on
 run need not be known in advance. Storage is slab-backed and dynamically extensible
 without requiring a reallocation of earlier slabs. The audio thread is only a consumer of
 pre-provisioned free blocks: it acquires one, copies the produced block, attaches
-metadata, and publishes the capture record. A separate non-realtime allocation
-worker maintains a target amount of free realtime-consumable capacity by allocating
-reasonably sized slabs independently of indexed execution. Slow propagation/tock
-therefore increases the captured-but-unprocessed backlog rather than consuming a
-fixed compiler-planned bridge window. The allocator may recycle blocks returned by
-completed indexed transactions.
+metadata, and publishes the capture record. A separate **capture allocator** maintains a target amount of free capture-block
+capacity for the audio thread by allocating reasonably sized slabs independently
+of background evaluation. Slow propagation/tock work therefore increases the
+captured-but-unprocessed backlog rather than consuming a fixed compiler-planned
+bridge window. The allocator may recycle blocks returned by completed background
+evaluation transactions.
 
-The indexed worker snapshots a fixed contiguous **capture-sequence prefix** at the
+The background worker snapshots a fixed contiguous **capture-sequence prefix** at the
 start of each propagation/tock pass. Contiguous here refers only to insertion
 sequence; the selected records may cover arbitrary ports and nonmonotonic global
 positions. Captures published after the snapshot cutoff are excluded from the
 running pass and belong to a later pass.
 
 The selected records are coalesced into exact changed coverage keyed by output port
-and seed the normal indexed forward-propagation machinery. Reverse planning and
+and seed the normal forward-coverage propagation machinery. Reverse planning and
 `tock_coverage()` then run normally for all affected nodes and page domains. The
-complete propagation/tock transaction builds candidate indexed pages and atomically
-publishes one new pages version. Capture insertion itself is **not** indexed
-publication and does not advance the pages version.
+background evaluation transaction builds candidate persisted pages and atomically
+publishes one new page version. Capture insertion itself is **not** page
+publication and does not advance the page version.
 
-Published indexed versions own/materialize the data they need and never retain
+Published page versions own/materialize the data they need and never retain
 references into capture storage. After a successful transaction commits its fixed
 capture prefix, those consumed capture blocks may therefore be returned to the
 allocator immediately. If work is cancelled or rejected as stale, the processed
 capture frontier does not advance and the corresponding blocks remain available
 for a later transaction.
 
-Changing the root block size is a quiescent physical-layout transition, not an
-indexed semantic invalidation. Persistent indexed values are losslessly
+Changing the root block size is a quiescent physical-layout transition, not a
+semantic invalidation. Persisted output values are losslessly
 repartitioned as needed, a replacement GraphJit generation receives the new
 canonical layout, and publication switches only after migration completes.
 Semantic versioning and physical layout generation remain distinct.
@@ -671,12 +673,12 @@ absolute sample index, stable source/connection ordinal, then producer-local
 order. Combined live event-buffer capacities must account for all incoming
 `max_events_per_index` bounds.
 
-See [indexed_dsp_nodes.md](./indexed_dsp_nodes.md) for the normative indexed
-execution/publication semantics.
+See [coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md) for the normative coverage propagation,
+background evaluation, and publication semantics.
 
 ## Event storage planning mirrors sample storage planning where possible
 
-Once realtime event windows are bounded, event connection storage can also be
+Once Tick event windows are bounded, event connection storage can also be
 selected from graph facts rather than fixed globally.
 
 Examples:
@@ -700,7 +702,7 @@ static event capacity. For a representation covering `W` sample positions from
 a producer with `D = max_events_per_index`, GraphJIT starts from
 `ceil(D * W)` event slots. The current bounded-sequence representation rounds
 that count upward to a power of two because `EventSharedPortData` uses a ring
-mask. Every realtime event representation must have such a finite compile-time
+mask. Every Tick event representation must have such a finite compile-time
 capacity. Failure to represent the calculated capacity is a graph-compilation
 error, not a reason to select a dynamically sized fallback.
 
@@ -743,7 +745,7 @@ rate-times-live-span formula.
 
 Fanout does not multiply the sizing rate: several consumers of one logical
 producer share the same source event stream. A merge of independent producers
-sums their rates for the merged representation. Realtime event producers are
+sums their rates for the merged representation. Tick event producers are
 contractually sorted by nondecreasing absolute sample index. For transient
 feed-forward multi-producer fan-in, semantic source 0 writes directly into the
 canonical aggregate allocation while retaining its own logical producer
@@ -813,7 +815,7 @@ The current implementation gives each logical event output one saturating
 overflow counter and drops an event when that output's sequence is full. That is
 one allowed implementation-defined response to a producer exceeding its declared
 maximum, not part of the authored-port contract. Derived
-conversion/materialization fanout does not duplicate the counter. Realtime
+conversion/materialization fanout does not duplicate the counter. Audio-thread
 execution must never resize or allocate. Overflow of compiler-owned conversion
 or materialization storage while every producer respects its declaration is a
 GraphJIT sizing bug, not a producer overflow.
@@ -877,17 +879,17 @@ At minimum cover:
 - disjoint transient live intervals reuse one stack-frame range;
 - tiled/multi-channel layout changes planner facts without changing connection
   semantics;
-- realtime event production outside the legal window is rejected;
+- Tick event production outside the legal window is rejected;
 - every event buffer capacity is derived from producer
   `max_events_per_index` and its exact simultaneously-live temporal span;
-- unrepresentable realtime capacities fail planning and never fall back to a
+- unrepresentable Tick-event capacities fail planning and never fall back to a
   runtime allocation;
 - carry and full-persistent candidates preserve the same event semantics while
   exposing their different copy counts to policy;
 - feedback capacity is derived from delayed live span rather than multiplying
   one invocation capacity by a callback count;
-- realtime event identity fanout can share an immutable event representation;
-- indexed event/sample access remains independent from realtime storage
+- Tick event identity fanout can share an immutable event representation;
+- random-access event/sample consumption remains independent from sequential-consumption storage
   planning.
 
 ## Compiler pipeline placement
@@ -901,7 +903,7 @@ ConfiguredGraph logical connections
 schedule / dependency / SCC analysis
         |
         v
-history / latency / realtime-event-window analysis
+history / latency / Tick-event-window analysis
         |
         v
 derive connection storage requirements

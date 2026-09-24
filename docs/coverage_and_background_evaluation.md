@@ -1,22 +1,24 @@
-# Indexed DSP ports and incremental indexed evaluation
+# Coverage, Random Access, And Background Evaluation
 
-This document is the normative design for **indexed DSP ports**, their
-incremental evaluation model, and the executor-side storage/publication rules
-needed to make indexed data usable by both UI-style random access and realtime
-processing.
+[DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md) defines the normative vocabulary used here.
 
-`indexed` replaces the older `compiled` DSP-port terminology. `compiled` is now
-reserved for actual program/JIT compilation (`GraphJit`, `CompiledGraph`, LLVM
-modules, generated code, and similar concepts). The public port declarations,
-callback contexts, node traits, indexed state, compiler records, and GraphJit
-implementation metadata use indexed terminology directly; the former
-compiled-port API is not retained as a compatibility layer.
+This document is the normative design for **coverage and random-access DSP semantics**,
+their incremental background-evaluation model, and the executor-side
+storage/publication rules needed to make data at global positions usable by both
+random-access consumers and Sequential inputs during Tick execution.
+
+Older revisions used `indexed` as an umbrella term for several independent
+properties that are now named directly: random-access consumption, Tock
+production, output retention, coverage, background evaluation, and persisted-page
+storage. Existing C++ identifiers such as `IndexedCoverage`, `IndexedState`, and
+`IndexedPlan` retain their source spelling until a separate source/API rename;
+that spelling does not define an architectural category.
 
 The intended callback vocabulary is:
 
 ```cpp
-tick_block(...);                       // sequential realtime execution
-tock_coverage(...);                    // one-node indexed evaluation over coverage
+tick_block(...);                       // Tick execution over Sequential inputs
+tock_coverage(...);                    // one-node background evaluation over coverage
 propagate_forward_coverage(...);       // one-node changed inputs/state -> outputs/coverage
 propagate_reverse_coverage(...);       // one-node required outputs -> required inputs
 ```
@@ -25,7 +27,7 @@ The `_coverage` callbacks each operate on **one node** even when the supplied
 `IndexedCoverage` contains many disjoint regions. This deliberately differs from
 existing names such as `tick_block_batch`, where `batch` means that multiple
 nodes are processed as one compiler/runtime operation. A future multi-node
-indexed interface may therefore use the names:
+background-evaluation interface may therefore use the names:
 
 ```cpp
 tock_coverage_batch(...);
@@ -57,8 +59,8 @@ The central rules are:
 > page even when it is out of date; for a missing page it supplies that particular
 > input's `neutral_value`. No cache miss invokes tock or blocks the audio thread.
 
-> A random-access input may consume a tock output (including ephemeral temporary
-> pages), a persisted tick output's finalized published data, or a contextually
+> A random-access input may consume a tock output (including an ephemeral
+> transaction-local addressable materialization), a persisted tick output's finalized published data, or a contextually
 > replayable tick output. An unreproducible ephemeral tick output cannot directly
 > satisfy random-access demand: the DSP author must place a recording node with an
 > explicit retention policy. The restriction prevents **implicit recording**, not
@@ -75,15 +77,16 @@ The central rules are:
 > boundaries never widen semantic coverage or forward changed regions. A replayable
 > pointwise tick node's temporal propagation may be synthesized by GraphJit.
 
-> Indexed invalidation and demand are batched transactions: all roots accumulate
+> Invalidation and requested coverage are processed as batched background
+> evaluation transactions: all roots accumulate
 > before traversal; fan-in/fan-out requirements are unioned; each applicable authored
-> forward/reverse/tock callback runs at most once per implicated node per batch.
+> forward/reverse/tock callback runs at most once per implicated node per transaction.
 > `IndexedState` remains non-semantic acceleration available only to tock.
 
 > No unresolved random-access computation dependency may participate in a cycle.
 > Replayable tick subgraphs must be acyclic when expanded for background demand;
 > valid published persisted values can terminate replay traversal. Ordinary
-> sequential feedback retains its existing scheduling semantics.
+> Tick-to-Sequential feedback retains its existing scheduling semantics.
 
 > Persisted output pages are **never evicted** for age, cache limits, memory
 > pressure, or invalidation. Retained generated pages may be removed only when
@@ -94,11 +97,11 @@ The central rules are:
 > An explicit recording node captures otherwise unreproducible sequential data at
 > its production point into already-provisioned slab-backed storage. Each background
 > pass snapshots a fixed capture-sequence prefix; captures enter ordinary exact
-> invalidation, reverse planning, background computation, and one atomic pages-version
+> invalidation, reverse planning, background computation, and one atomic page-version
 > publication. The capture log is temporary transaction input, not persisted pages.
 
-This is an incremental indexed-evaluation model integrated with realtime graph
-execution, not a second realtime scheduler and not a storage class.
+This is an incremental coverage-evaluation model integrated with Tick execution,
+not a second audio-thread scheduler and not a storage class.
 
 ## 1. Port model
 
@@ -122,14 +125,14 @@ schema is in section 13; the direct-connection rule is in section 22.
 `tick()` already exists: the node traits generate its `tick_block()` wrapper, and
 GraphJit imports that wrapper's LLVM definition. The new replayability trait
 permits **some** such nodes to execute through that same wrapper in the background
-random-access DAG. It does not make all `tick()` implementations pure or replayable.
+evaluation DAG. It does not make all `tick()` implementations pure or replayable.
 No `tock_coverage()` call occurs on the audio thread.
 
-## 2. `IndexedCoverage` is the only indexed domain boundary
+## 2. `IndexedCoverage` is the only coverage boundary
 
 Every tock output publishes a finite **coverage**: a canonical union of
-nonempty, disjoint half-open global index regions. There is no separate indexed
-`extent`, bounding hull, or implicit infinite default-valued domain.
+nonempty, disjoint half-open global index regions. There is no separate `extent`,
+bounding hull, or implicit infinite default-valued domain.
 
 For example:
 
@@ -138,7 +141,7 @@ For example:
 ```
 
 may describe two audio clips separated by a large empty timeline gap. The gap
-requires no indexed cache storage, validity metadata, reverse demand, or tock
+requires no persisted-page storage, validity metadata, reverse demand, or Tock
 work.
 
 Outside coverage, the output is not requestable by node code. The executor and
@@ -146,7 +149,7 @@ node wrappers should assert this contract in debug builds. This is stronger than
 saying that reads outside coverage return zero/no-events: lowering is allowed to
 assume such reads never occur and optimize accordingly.
 
-Disconnected indexed inputs have empty coverage.
+Disconnected random-access inputs have empty coverage.
 
 A random-access input exposes the canonical union of the mapped, available
 coverages of its connected sources, including tock outputs, finalized published
@@ -161,7 +164,7 @@ Conceptually:
 auto input = ctx.input<"audio">();
 
 for (auto region : input.coverage()) {
-    // Indexed requests made through this input stay inside coverage.
+    // Random-access reads through this input stay inside coverage.
 }
 ```
 
@@ -249,20 +252,20 @@ represented by one `IndexedCoverage` bit per sample.
 
 ## 4. Coverage, stored page domains, validity, and payload
 
-The executor distinguishes several concepts for persistent indexed outputs:
+The executor distinguishes several concepts for persisted outputs:
 
 - **coverage**: exact regions where the output exists and may legally be requested;
 - **page domain**: for one physical stored page, `page_interval & coverage`;
-- **validity**: whether that whole page domain is current for a candidate indexed
-  version pair;
+- **validity**: whether that whole page domain is current for a candidate
+  `(semantic_version, page_version)` pair;
 - **payload**: retained sample/event values for the page domain;
 - **semantic version**: the dependency/configuration environment for which those
   values are meaningful; and
-- **pages version**: the immutable published indexed-data view against which those
-  values were computed or read.
+- **page version**: the immutable published page view against which those values
+  were computed or read.
 
-Coverage is exact and independent of physical page boundaries. Persistent stored
-pages use the same canonical quantum as the fixed whole-graph root block for the
+Coverage is exact and independent of physical page boundaries. Stored pages for
+persisted outputs use the same canonical quantum as the fixed whole-graph root block for the
 active executable/layout generation. For root block/page width `1024` and output
 coverage:
 
@@ -295,19 +298,19 @@ valid: the entire published coverage is materialized. Partial page validity is
 therefore an internal candidate-building state, not an externally observable
 published-output state.
 
-Physical RAM residency is intentionally not part of indexed semantics. A complete
+Physical RAM residency is intentionally not part of coverage or retention semantics. A complete
 stored output may later use ordinary heap memory, stable arenas, mmap-backed files,
 compressed backing, or another representation. Such choices must still satisfy
-the realtime-read requirements of the generated graph, for example by pinning or
+the audio-thread read requirements of the generated graph, for example by pinning or
 prefaulting live regions where the backing mechanism can otherwise fault or block.
 They do not reintroduce semantic "missing pages" into a published stored output.
 
 ## 5. Sparse logical requests and stored materialization
 
-External indexed requests may be sparse. UI waveform rendering may ask for a few
+External random-access requests may be sparse. UI waveform rendering may ask for a few
 positions from a very large coverage, for example. Sparse demand behaves according to the output's access and retention semantics, not according to a generic cache policy.
 
-A `tock/ephemeral` output owns no persistent materialization. A sparse request is
+A `tock/ephemeral` output has no persisted materialization obligation. A sparse request is
 intersected with exact coverage and stays exact through that output. Its
 `tock_coverage()` work may therefore compute only the requested covered regions,
 writing directly into caller/result or transaction-local storage.
@@ -338,7 +341,7 @@ changed  = { [20,21) }
 
 The uncovered gap is never processed. Once every nonempty page domain of the
 candidate is valid, the `tock/persisted` output is complete for its target
-`(semantic_version, pages_version)` pair and may become publishable.
+`(semantic_version, page_version)` pair and may become publishable.
 
 A tick/persisted output retains finalized sequentially produced values; its
 published coverage is a random-access **stored boundary** without requiring tock
@@ -348,9 +351,9 @@ an unreproducible tick/ephemeral source requires explicit recording before such
 demand. Semantic changes to any published retained source seed downstream exact
 invalidation; they do not erase old readable pages.
 
-Thus stored-page width is **not** an independent indexed-storage tuning knob. It is
+Thus stored-page width is **not** an independent persisted-page storage tuning knob. It is
 the active whole-graph root block size. Choosing a smaller or larger root block
-therefore changes both realtime scheduling granularity and stored-page granularity,
+therefore changes both Tick scheduling granularity and stored-page granularity,
 while coverage and external-request semantics remain unchanged.
 
 ## 6. Exact propagation remains independent of page granularity
@@ -400,11 +403,12 @@ This is the deliberate asymmetry:
 
 ## 7. Forward changes are independent of demand
 
-Forward propagation is independent of indexed access and is not limited to
-incoming indexed-edge changes.
+Forward propagation is independent of random-access consumption and is not limited
+to changes arriving through random-access input connections.
 
-The executor has a closed set of **external invalidation roots**. Every persistent
-indexed semantic invalidation originates from one of these classes:
+The executor has a closed set of **external invalidation roots**. Every external
+semantic invalidation root for background coverage propagation belongs to one of
+these classes:
 
 1. **node-local semantic mutation**: an application/UI operation changes node
    state, configuration, or a resource according to that node type's own semantic
@@ -412,29 +416,29 @@ indexed semantic invalidation originates from one of these classes:
 2. **finalized persisted tick publication**: newly finalized or legally revised
    persisted tick positions update published retained coverage/value versions and
    seed exact changes downstream without rerunning their tick producer;
-3. **recording-bridge capture snapshot**: a fixed prefix of newly captured blocks changes one or more explicit bridge indexed outputs at their recorded global positions;
+3. **recording-bridge capture snapshot**: a fixed prefix of newly captured blocks changes one or more explicit bridge outputs at their recorded global positions;
 4. **graph semantic configuration change**: node creation/removal/replacement,
-   indexed connection-set changes, or another graph/configuration change that
-   changes indexed dependencies or implementation semantics; or
-5. **project sample-rate change**: computed indexed semantics are reevaluated
+   random-access input connection-set changes, or another graph/configuration change that
+   changes background-evaluation dependencies or implementation semantics; or
+5. **project sample-rate change**: background-computed output semantics are reevaluated
    under a new sample rate.
 
-An indexed input changing because an upstream output changed is **not** another
-root class. It is the ordinary continuation of the same forward batch through an
-indexed connection. Likewise, creation of a new computed node is handled as a
+A random-access input changing because an upstream output changed is **not** another
+root class. It is the ordinary continuation of the same forward batch through the
+connection into that random-access input. Likewise, creation of a new computed node is handled as a
 graph semantic configuration change whose old output coverage is empty.
 
 Executable regeneration by itself is not an invalidation root. A compatible new
-`CompiledGraph` generation rebinds stable stored indexed state; only a semantic
+`CompiledGraph` generation rebinds stable persisted-output state; only a semantic
 change exposed while reconciling the generation enters one of the root classes
 above.
 
-A node may therefore run its forward-coverage logic with **zero changed indexed
+A node may therefore run its forward-coverage logic with **zero changed random-access
 input regions** because local semantic configuration changed. The callback/context
 must distinguish such a local-state-triggered update from the absence of work.
 
-A forward update may change two independent things for each computed indexed
-output:
+A forward update may change two independent things for each output participating
+in background coverage propagation:
 
 1. the output's new exact `IndexedCoverage`; and
 2. exact regions inside the old/new coverage whose values may have changed.
@@ -464,7 +468,7 @@ the executor runs them back-to-back.
 
 The forward dependency callback answers:
 
-> Given this node's current indexed-input coverages, exact changed indexed-input
+> Given this node's current random-access-input coverages, exact changed random-access-input
 > regions, current semantic configuration, sample rate, and any local semantic
 > change cause, what are the resulting computed-output coverages and which exact
 > output regions may have changed?
@@ -476,10 +480,10 @@ F(node): input coverage + changed input regions + semantic configuration + sampl
       -> output coverage + affected output regions
 ```
 
-It runs in forward graph direction. Incoming changed regions from all indexed
+It runs in forward graph direction. Incoming changed regions from all random-access
 inputs and all invalidation roots belonging to the batch are accumulated/unioned
 before the node is visited. **Each implicated node is visited at most once by the
-forward phase of one indexed batch.** A node may still have many disjoint changed
+forward phase of one background evaluation transaction.** A node may still have many disjoint changed
 regions and multiple changed inputs in that one callback invocation. Replayable
 tick pointwise nodes use compiler-synthesized coverage propagation in the same
 forward/reverse orders.
@@ -519,9 +523,9 @@ while reverse demand maps output requirements to a different input region.
 
 The reverse dependency callback answers:
 
-> Given exact covered regions of this node's computed indexed outputs that must be
-> evaluated, which covered regions of its indexed inputs must be available to
-> compute them?
+> Given exact covered output regions that must be evaluated by this node in the
+> background, which covered regions of its random-access inputs must be available
+> to compute them?
 
 Conceptually:
 
@@ -533,15 +537,15 @@ R(node): requested output coverage + semantic configuration + sample rate
 It runs in reverse graph direction. Requirements reaching a node through multiple
 downstream paths and demand roots are accumulated/unioned before the node is
 visited. **Each implicated node is visited at most once by the reverse phase of
-one indexed batch.**
+one background evaluation transaction.**
 
 For `tock/ephemeral`, the output requirement is the exact covered demand. For
 `tock/persisted`, candidate completion first selects the complete covered domains of
 invalid stored pages, and those selected domains become the requirements supplied
 to reverse planning.
 
-Persistent indexed data is a reverse-propagation boundary only when it is valid
-for the `(semantic_version, pages_version)` pair selected by the batch:
+Persisted output data is a reverse-propagation boundary only when it is valid
+for the `(semantic_version, page_version)` pair selected by the batch:
 
 - a valid `tock/persisted` page/domain for the selected target/base version pair
   satisfies that requirement and stops reverse propagation through that region;
@@ -549,7 +553,7 @@ for the `(semantic_version, pages_version)` pair selected by the batch:
   propagation merely because an older physical page still exists. Its complete
   covered page domain becomes a materialization requirement and reverse planning
   continues through its producer; and
-- `tock/ephemeral` owns no persistent result and therefore never forms a persistent
+- `tock/ephemeral` owns no persisted result and therefore never forms a retained
   reverse cut.
 
 Thus page retention and page semantic validity are deliberately distinct. Never
@@ -561,19 +565,19 @@ input's exact coverage.
 
 The callback is **value-blind**. It may inspect coverage, semantic node
 configuration, sample rate, and other deterministic structural metadata, but it
-must not inspect indexed input payload values to discover a second-stage
-dependency footprint. If exact addressing depends on an indexed control signal,
+must not inspect random-access input payload values to discover a second-stage
+dependency footprint. If exact addressing depends on a random-access control input,
 the callback returns a conservative superset derivable without reading that
 signal, up to the complete potentially relevant input coverage. A future staged
 value-dependent dependency facility may relax this rule without changing the
 initial ABI.
 
 The callback may be omitted where the conservative exact rule is mechanically
-known, for example by requiring all covered regions of every indexed input.
-Output-only indexed sources have nothing upstream to request and therefore require
+known, for example by requiring all covered regions of every random-access input.
+Output-only Tock sources have nothing upstream to request and therefore require
 no reverse callback.
 
-For a tock-produced output needed by realtime playback, reverse planning and
+For a tock-produced output needed by sequential playback, reverse planning and
 all required computation run off the audio thread. The audio thread only reads
 the already published/prepared result; an unavailable page uses the sequential
 consumer's `neutral_value`.
@@ -583,12 +587,12 @@ memoization history.
 
 ## 10. `tock_coverage()`
 
-`tock_coverage()` is the one-node indexed evaluation callback for outputs whose
+`tock_coverage()` is the one-node background-evaluation callback for outputs whose
 output production is `TockOutputConfig`. Its context carries requested
-`IndexedCoverage` per computed indexed output; one invocation may therefore
+`IndexedCoverage` per Tock output; one invocation may therefore
 compute many disjoint regions and several outputs of the same node.
 
-Within one indexed batch, reverse planning first finishes accumulating the final
+Within one background evaluation transaction, reverse planning first finishes accumulating the final
 requested coverage for every implicated output. Forward evaluation then calls
 `tock_coverage()` **at most once per implicated node for the whole batch**. Requests
 for several outputs, several disjoint regions, and several downstream consumers
@@ -611,16 +615,16 @@ The callback:
 - cannot depend on mutable or unavailable live tick values; finalized persisted
   tick outputs and contextually replayed tick values are valid sources through
   random-access inputs;
-- cannot depend on sequential realtime `State`;
+- cannot depend on sequential `State`;
 - may use `IndexedState` solely as non-semantic acceleration/memoization state; and
-- must produce observable results independent of indexed request order and the
+- must produce observable results independent of background request order and the
   contents/history of `IndexedState`.
 
 `IndexedState` has one deliberately narrow meaning:
 
 > It may change the pace or implementation strategy of `tock_coverage()`, but it
 > may not change output values, output coverage, reverse requirements, or any other
-> observable indexed semantics.
+> observable semantics.
 
 A correct node must therefore produce the same result from a freshly initialized
 `IndexedState`. The executor is free to serialize access, duplicate state per
@@ -652,15 +656,15 @@ all work for that node into one invocation. A future `tock_coverage_batch()` wou
 be a different ABI optimization that evaluates **multiple nodes** simultaneously,
 with separate coverage and optional acceleration state for each node.
 
-## 11. Batched indexed demand and stored-candidate completion
+## 11. Batched requested coverage and stored-candidate completion
 
-Indexed evaluation is organized around **batched demand**, not one traversal per
+Background evaluation is organized around **batched demand**, not one traversal per
 read or invalid page. A batch first collects all demand roots that are allowed to
 participate in that transaction, unions convergent requirements, then runs one
 reverse phase and one forward evaluation phase.
 
-One logical indexed batch is evaluated against one coherent environment: one
-target/base `(semantic_version, pages_version)` pair, one sample-rate/configuration
+One background evaluation transaction is evaluated against one coherent environment: one
+target/base `(semantic_version, page_version)` pair, one sample-rate/configuration
 view, one coherent set of tock/persisted bindings, and—when a recording bridge
 has pending captures—one fixed capture-sequence snapshot selected before forward
 propagation begins. Captures published after that cutoff are not part of the batch.
@@ -671,8 +675,8 @@ phase is present, not which phases every caller must execute.
 
 There are two closed classes of **external demand roots**:
 
-1. **application/UI indexed fetches**, such as JSON-RPC requests for one or more
-   indexed outputs/regions; and
+1. **application/UI random-access fetches**, such as JSON-RPC requests for one or more
+   requestable outputs/regions; and
 2. **advance preparation demand** for sequential playback, scheduled in the
    background for the positions a `CompiledGraph::tick_block()` invocation may
    later read. Audio execution never synchronously turns a miss into a new demand
@@ -695,17 +699,17 @@ For requested `tock/ephemeral` sink outputs, the batch:
 1. intersects every explicit request with exact output coverage;
 2. unions all covered requirements for each output;
 3. reverse-propagates the coalesced requirements through ephemeral tock producers
-   and contextually replayable tick nodes until reaching valid published persistent
+   and contextually replayable tick nodes until reaching valid published persisted-output
    boundaries or source nodes;
 4. evaluates implicated nodes in forward dependency order, at most once per node;
    and
 5. returns/forwards the requested materialization from caller, transaction, direct
-   consumer, temporary addressable pages for a random-access input, or prepared
-   bounded transient storage for a sequential input.
+   consumer, an addressable transaction-local materialization for a random-access
+   input, or prepared bounded transient storage for a sequential input.
 
 A request for a published `tock/persisted` output does not trigger partial
 reconstruction of that output. It reads the requested subset directly from the
-complete persistent representation selected for the batch. Finalized published
+complete persisted representation selected for the transaction. Finalized published
 tick/persisted data is also directly requestable over its retained coverage,
 without a tock callback or an explicit bridge.
 
@@ -720,14 +724,14 @@ materialization_requirement(page) = page_interval & candidate_output.coverage
 ```
 
 Those complete page domains are then unioned with all other materialization demands
-for the same indexed batch. To make the candidate publishable, the executor:
+for the same background evaluation transaction. To make the candidate publishable, the executor:
 
 1. gathers all invalid/nonexistent `tock/persisted` page domains that the candidate
    requires;
 2. unions those internal roots with any explicit demand roots allowed in the same
    transaction;
 3. runs one reverse-order pass, coalescing downstream requirements before each
-   node and stopping per-region at persistent data valid for the selected semantic
+   node and stopping per-region at persisted output data valid for the selected semantic
    version;
 4. runs one forward-order background evaluation pass: each implicated tock node
    gets at most one tock callback for the consolidated batch, while a replayable
@@ -789,7 +793,7 @@ still preserves the one-callback-per-node batch semantics.
 ## 12. Batched forward invalidation phase
 
 A forward invalidation phase begins from the closed invalidation-root set in
-section 7. All roots assigned to one logical indexed batch are installed before
+section 7. All roots assigned to one background evaluation transaction are installed before
 forward traversal starts.
 
 The evaluator conceptually performs:
@@ -885,10 +889,10 @@ background plan begins in step 4.
 | --- | --- | --- |
 | tick | ephemeral | sequential generation; no post-window retention obligation |
 | tick | persisted | sequential generation; every finalized generated value is retained |
-| tock | ephemeral | background demand-driven generation; temporary page materialization permitted |
+| tock | ephemeral | background demand-driven generation; transaction-local materialization permitted |
 | tock | persisted | background demand-driven generation; generated covered pages retained |
 
-`ephemeral` does not forbid temporary page storage. `persisted` is a strict runtime
+`ephemeral` does not forbid transaction-local materialization. `persisted` is a strict runtime
 retention guarantee, not a best-effort cache or a promise of project-file
 serialization. No persisted page is evicted for memory pressure, age, inactivity,
 invalidation, or lack of readers. Retained pages are removed only when output
@@ -941,8 +945,8 @@ block-position/alignment contract; it cannot mutate shared live execution state.
 
 Persisted tock-output storage uses canonically aligned fixed-width pages whose width
 matches the fixed whole-graph root block size for the active layout generation.
-This is a physical representation choice; semantic coverage and realtime
-history/latency remain independent of page boundaries.
+This is a physical representation choice; semantic coverage remains independent of sequential-input history and Tick-output
+history/latency.
 
 For a tock/persisted output:
 
@@ -952,14 +956,14 @@ page_domain(i)   = page_interval(i) & output.coverage
 ```
 
 A candidate page becomes valid only after its complete nonempty `page_domain` has
-been materialized for the target `(semantic_version, pages_version)` pair. One
+been materialized for the target `(semantic_version, page_version)` pair. One
 `tock_coverage()` call may
 cover many selected pages; page boundaries do not imply one callback per page.
 
 Tick/persisted retention begins when positions become final under the ordinary
 history/latency contract. Those finalized published positions directly satisfy
 random-access demand; no implicit bridge or tock callback is required. Its physical
-retention representation may differ from canonical tock pages, but requests must
+retention representation may differ from persisted Tock page storage, but requests must
 observe coherent published coverage and the same no-eviction guarantee.
 
 Payload representation may adapt to coverage occupancy: dense pages may store one
@@ -969,20 +973,20 @@ handles while large payloads live in stable arena/chunk/file-backed storage.
 
 ### Changing the whole-graph block size repages stored data
 
-Changing `B` changes physical partitioning, not DSP meaning. Persistent values are
+Changing `B` changes physical partitioning, not DSP meaning. Persisted values are
 losslessly repartitioned onto the new canonical page grid during a quiescent
 layout transition. Sample values retain absolute indices; event payloads are
 repartitioned by absolute index while preserving deterministic event order.
 
-Indexed/ephemeral outputs have no semantic persistent payload requiring migration.
+Tock/ephemeral outputs have no persisted payload obligation requiring migration.
 Capture slabs owned by explicit recording bridges are transaction-input storage,
-not indexed pages, and may be recycled after the transaction that consumes them
-commits. Old immutable indexed snapshots may retain the old physical layout until
+not persisted pages, and may be recycled after the transaction that consumes them
+commits. Old immutable published snapshots may retain the old physical layout until
 their readers release them.
 
-## 15. Stored event pages, fan-in order, and indexed event iteration
+## 15. Stored event pages, fan-in order, and random-access event iteration
 
-Persistent indexed events use whole-page candidate validity with packed event
+Persisted event outputs use whole-page candidate validity with packed event
 payloads.
 
 A valid event page means the **complete event set for every position in the exact
@@ -1002,10 +1006,10 @@ When several event connections are combined into one buffer, GraphJit must accou
 for all incoming effective capacity bounds so every legal incoming sequence fits
 without audio-thread allocation.
 
-Indexed execution may dynamically commit persistent event payload capacity off the
-audio thread. An explicit recording bridge uses slab-backed capture storage supplied
-by its non-realtime allocator; the realtime path consumes only already-provisioned
-blocks and performs no request-sized indexed allocation.
+Background evaluation may dynamically commit persisted event payload capacity off
+the audio thread. An explicit recording bridge uses slab-backed capture storage
+supplied by its capture allocator; the audio-thread path consumes only
+already-provisioned blocks and performs no request-sized allocation.
 
 Event order is semantic and deterministic. Within one producer, events are emitted
 in nondecreasing absolute sample-index order. Fan-in uses a stable tie break:
@@ -1019,15 +1023,15 @@ in nondecreasing absolute sample-index order. Fan-in uses a stable tie break:
 Page evaluation order, worker scheduling, cache/store layout, and request order
 must never change equal-timestamp ordering.
 
-Because one logical indexed event read can span multiple stored pages, node-facing
+Because one logical random-access event read can span multiple stored pages, node-facing
 reads expose a segmented ordered range/iterator rather than promise one contiguous
 `std::span<TimedEvent>`. Iteration preserves the ordering above and never exposes
 events outside input coverage.
 
-## 16. Persistent indexed storage, stable output identity, and `NodeStorage`
+## 16. Persisted output storage, stable output identity, and `NodeStorage`
 
 Each executable generation still has one canonical fixed-layout `NodeStorage`, but
-dynamically sized indexed output data is **not** part of that fixed layout and
+dynamically sized persisted-output data is **not** part of that fixed layout and
 should not be owned merely by one JIT generation when the output has stable project
 identity.
 
@@ -1039,13 +1043,13 @@ built, including:
   state only;
 - compiler-owned bounded persistent regions;
 - bounded reusable workspaces where useful; and
-- realtime carry/history/feedback storage selected for persistent placement.
+- Tick carry/history/feedback storage selected for persistent placement.
 
-`IndexedState` is not an authoritative indexed-output store and is not shared with
+`IndexedState` is not an authoritative persisted-output store and is not shared with
 `tick_block()` or propagation callbacks. A node's observable behavior must remain
 correct if its `IndexedState` is discarded or independently instantiated.
 
-`GraphExecutor` instead owns stable persistent indexed-output storage plus
+`GraphExecutor` instead owns stable persisted-output storage plus
 per-generation endpoint bindings. Conceptually:
 
 ```cpp
@@ -1066,24 +1070,24 @@ Ownership rules:
 
 - stable `tock/persisted` outputs bind new executable generations to their
   existing stable stored entries when semantic compatibility permits;
-- `tock/ephemeral` outputs own no persistent output entry to migrate or rebind;
+- `tock/ephemeral` outputs own no persisted-output entry to migrate or rebind;
 - anonymous tock/persisted outputs receive generation-local stored state;
 - tick/persisted finalized data is a stable random-access stored boundary,
   reconciled by its own stable output identity without inventing a tock producer; and
 - recording-bridge capture slabs/log records are executor/runtime transaction-input
-  storage and are not owned by any published indexed version.
+  storage and are not owned by any published page version.
 
 Stable tock/persisted storage reuse is normally **rebinding**, not copying. Page
 directories, persistent payloads, file-backed roots, and immutable snapshots may
 remain owned by the executor while old/new executable generations refer to
 appropriate versions.
 
-The currently specified indexed physical forms are therefore:
+The currently specified physical forms are therefore:
 
 ```text
-persistent authoritative/stored tock/persisted representation
-transaction-local paged or prepared transient tock/ephemeral materialization
-recording-bridge captured-block log (temporary indexed transaction input)
+authoritative persisted representation for `tock/persisted` output
+transaction-local addressable or prepared materialization for `tock/ephemeral` output
+recording-bridge capture log (background evaluation transaction input)
 ```
 
 Recording capture storage is append-only by insertion sequence while outstanding,
@@ -1091,9 +1095,9 @@ slab-backed, and independently provisioned from tock progress. Tick/persisted re
 values and makes the published coverage directly readable by random-access inputs.
 It need not adopt tock page layout or acquire a tock callback.
 
-## 17. Indexed transaction workspace
+## 17. Background evaluation transaction workspace
 
-Indexed planning/evaluation needs request-sized temporary storage that is not
+Coverage planning and background evaluation need request-sized temporary storage that is not
 necessarily bounded at graph compile time. `GraphExecutor` should own/reuse a
 transaction workspace or arena containing things such as:
 
@@ -1102,11 +1106,11 @@ transaction workspace or arena containing things such as:
 - computed-output request sets used by the one-call-per-node tock pass;
 - forward/reverse region-set work buffers;
 - selected stored-page completion plans;
-- non-realtime `tock/ephemeral` result/intermediate sample/event values;
+- background-produced `tock/ephemeral` result/intermediate sample/event values;
 - temporary event payloads and segmented views; and
 - temporary references to immutable stored snapshots/pages.
 
-The workspace is initialized once per logical indexed batch. All invalidation or
+The workspace is initialized once per background evaluation transaction. All invalidation or
 demand roots assigned to that batch contribute into the same accumulators before
 the corresponding traversal reaches a node. Transaction-local values remain
 shareable across all consumers in the same batch. Once their last consumer is
@@ -1114,14 +1118,14 @@ complete, storage may be reused; future liveness packing is an implementation
 optimization.
 
 Tock/ephemeral materialization and all tock callbacks are scheduled off the audio
-thread. Temporary pages needed by random-access input connections remain alive
-through their consuming evaluation. Recording capture is different: its logical backlog may grow with playback duration and tock
-lag, so a non-realtime allocation worker extends slab-backed capture storage while
-the realtime path consumes only already-provisioned free blocks.
+thread. Transaction-local addressable materializations needed by random-access input
+connections remain alive through their consuming evaluation. Recording capture is different: its logical backlog may grow with playback duration and tock
+lag, so the capture allocator extends slab-backed capture storage while
+the audio-thread path consumes only already-provisioned free blocks.
 
-## 18. Background random-access components and cycle validation
+## 18. Background evaluation components and cycle validation
 
-The **random-access evaluation graph** contains tock-produced dependencies,
+The **background evaluation DAG** contains tock-produced dependencies,
 contextually replayable tick producers and the ordinary sequential input edges
 traversed while replaying them. Published persisted outputs are stored boundaries:
 the background evaluator reads their selected version and does not traverse their
@@ -1130,7 +1134,7 @@ evaluation orders, stable endpoint ordinals, coverage accumulators and callback
 imports. The existing tock propagation callback ABI is unchanged; replayable
 pointwise tick nodes use compiler-synthesized temporal propagation.
 
-Whole-project semantic SCC analysis remains necessary for sequential feedback and
+Whole-project semantic SCC analysis remains necessary for Tick-to-Sequential feedback and
 for the conservative prohibition on a random-access **input** edge inside its own
 semantic SCC. Additionally, the background replay dependency graph must be a DAG:
 sequential edges traversed by replay can introduce a cycle even when no input is
@@ -1145,21 +1149,20 @@ Having `tock_coverage()` does not imply that a node evaluates merely because a
 project or executable generation was created.
 
 The primitive lifecycle event is **semantic concrete-node creation**: a node has
-no retained compatible counterpart and is introduced into the indexed graph.
+no retained compatible counterpart and is introduced into the background evaluation DAG.
 Project startup is the case where every project node is newly created. Producing
 new machine code for a stable retained node is not by itself semantic creation.
 
-For a new node with computed indexed outputs (`tock/ephemeral` or
-`tock/persisted`):
+For a new node with Tock outputs (`tock/ephemeral` or `tock/persisted`):
 
 1. ordinary node configuration/resources and optional `IndexedState` are
    initialized;
-2. current indexed-input coverages are available once upstream coverage is known;
+2. current random-access-input coverages are available once upstream coverage is known;
 3. `propagate_forward_coverage()` runs with a node-created/local-change cause and
-   may have zero changed indexed-input regions; and
+   may have zero changed random-access-input regions; and
 4. exact computed-output coverage is established before demand may target it.
 
-For a newly created computed output, old coverage is empty, so all new coverage is
+For a newly created Tock output, old coverage is empty, so all new coverage is
 an exact semantic output change and propagates downstream.
 
 For a replayable tick output, GraphJit derives pointwise coverage from the exact
@@ -1168,27 +1171,26 @@ authored tock or propagation callbacks. A tick/persisted output acquires
 random-access coverage as its finalized values are published, whether or not
 its producer is replayable.
 
-A recording bridge's indexed output begins with whatever exact coverage its bridge
-semantics establish from captured records/restored retained state. Realtime capture
-itself does not publish indexed coverage. When a propagation/tock pass snapshots
+A recording bridge's output begins with whatever exact coverage its bridge
+semantics establish from captured records/restored retained state. Audio-thread capture
+itself does not publish output coverage. When a propagation/tock pass snapshots
 new capture records, their `(OutputPortId, GlobalBlockPosition)` identities seed
-exact changed/added coverage for the bridge output inside that indexed transaction.
+exact changed/added coverage for the bridge output inside that background evaluation transaction.
 
 A retained stable node does not republish/recompute all coverage merely because a
 new `CompiledGraph` generation was JIT-compiled. Compatible stored state and
-coverage are rebound unless semantic configuration, indexed connection sets,
+coverage are rebound unless semantic configuration, random-access input connection sets,
 implementation semantics, sample rate, or another explicit forward cause requires
 recomputation.
 
 A `tock/persisted` candidate must become complete over its full new coverage
-before publication. A `tock/ephemeral` output needs no persistent
-precomputation.
+before publication. A `tock/ephemeral` output has no persisted precomputation obligation.
 
 ## 20. Executor-controlled semantic mutation entry points
 
-Any mutation that affects published indexed semantics enters through an
-executor-controlled boundary. Code outside `GraphExecutor` must not mutate active
-persistent indexed roots/pages behind the executor's versioning rules.
+Any mutation that affects published coverage or persisted-output semantics enters
+through an executor-controlled boundary. Code outside `GraphExecutor` must not mutate active
+persisted roots/pages behind the executor's versioning rules.
 
 The architectural invalidation-root set is deliberately closed:
 
@@ -1202,7 +1204,7 @@ Node-type-specific rules determine the exact initial changed regions for a
 node-local mutation. Recording captures already identify their originating bridge
 output port and global block position, so the executor coalesces the selected
 capture records into exact changed coverage per output port. Graph/runtime rules
-determine seeds for the other classes. Once seeded, an indexed-input change at a
+determine seeds for the other classes. Once seeded, a random-access-input change at a
 downstream node is merely propagation inside the same batch, not a new executor
 entry point.
 
@@ -1218,23 +1220,23 @@ executor-owned semantic mutation
 update configuration/resource identity
         |
         v
-create candidate indexed semantic version
+create candidate semantic version
         |
         v
-run exact forward coverage/change transaction
+run exact forward coverage/change phase
         |
         v
 complete affected tock/persisted outputs
 ```
 
-The mutation may have zero changed indexed inputs and still change output coverage
+The mutation may have zero changed random-access inputs and still change output coverage
 or values. Several application mutations may be applied to one candidate and
 seeded together before the batch's forward pass; intermediate semantic versions
 need not be externally observable.
 
-An indexed **connection-set change** is another executor-controlled forward cause.
+A random-access input **connection-set change** is another executor-controlled forward cause.
 Addition, removal, replacement, or another semantic change to the set of
-connections feeding one indexed input conservatively marks that whole logical
+connections feeding one random-access input conservatively marks that whole logical
 input as changed:
 
 ```text
@@ -1245,16 +1247,17 @@ The node sees the new current input coverage plus that changed region. This may
 overinvalidate unaffected fan-in portions but is finite, simple, and correct.
 
 A recording bridge contributes captures differently from an ordinary semantic edit.
-Before the indexed pass starts, the executor snapshots the largest currently
+Before the background evaluation pass starts, the executor snapshots the largest currently
 available contiguous prefix of capture **insertion sequence** beginning at the
 capture log's unprocessed frontier. That snapshot is immutable for the pass.
 Captures appended while propagation or tock is running are not added to the current
 batch even if they target earlier global positions; they wait for the next pass.
 
 The selected capture records seed ordinary forward invalidation. The bridge's
-`tock_coverage()` then materializes required indexed output pages from those
-captured payloads as part of the same reverse/tock transaction as downstream work.
-Only the final transaction commit publishes a new indexed pages version.
+`tock_coverage()` then materializes the bridge output required by the selected
+retention policy from those captured payloads as part of the same reverse/tock
+transaction as downstream work.
+Only the final transaction commit publishes a new page version.
 
 External reads have a correspondingly closed entry-point set: application/UI
 random-access fetches and advance background preparation for sequential playback.
@@ -1263,33 +1266,33 @@ its consuming sequential input's neutral value; it never runs tock.
 Invalid `tock/persisted` page domains are internal materialization
 roots, not a third external caller. The external protocol may combine updates and
 fetches in one request; `GraphExecutor` normalizes that shape into mutation seeds,
-demand seeds, and one or more legal indexed batches.
+demand seeds, and one or more legal background evaluation transactions.
 
-## 21. Indexed semantic versions, pages versions, and stale-work rejection
+## 21. Semantic versions, page versions, and stale-work rejection
 
-Indexed computation may overlap realtime execution and may be superseded by newer
+Background computation may overlap Tick execution and may be superseded by newer
 edits or by captures that arrive after a running batch has taken its snapshot. The
-published indexed state uses two version coordinates:
+published page-backed output state uses two version coordinates:
 
 - **semantic version** identifies graph/configuration/resource/sample-rate semantics;
-- **pages version** identifies one immutable published indexed page view produced by
-  a complete indexed propagation/tock transaction under those semantics.
+- **page version** identifies one immutable published page view produced by
+  a completed background evaluation transaction under those semantics.
 
-A recording capture does **not** advance the pages version. Captures accumulate as
-pending transaction input. A pages version advances only when the indexed worker
+A recording capture does **not** advance the page version. Captures accumulate as
+pending transaction input. A page version advances only when the background worker
 has propagated a fixed set of invalidation roots, completed all required
 `tock_coverage()` work, and atomically committed the resulting candidate pages.
 A semantic edit may likewise create a new semantic version whose pages are built
 before publication.
 
-Indexed transactions therefore operate against a coherent base/target pair:
+Background evaluation transactions therefore operate against a coherent base/target pair:
 
 ```text
-(semantic_version, pages_version)
+(semantic_version, page_version)
 ```
 
-A reverse/tock transaction uses one immutable base pages version for existing
-indexed reads and produces one candidate successor. It never switches its base to
+The reverse/evaluation phases of a background evaluation transaction use one
+immutable base page version for existing random-access reads and produce one candidate successor. It never switches its base to
 a newer publication in the middle of evaluation. An already-running transaction
 may finish against an older immutable base, but stale-work/version validation must
 prevent it from being committed as current when its semantic assumptions are no
@@ -1299,20 +1302,20 @@ For `tock/persisted`, a candidate is publishable only when every covered page
 domain of every required stored computed output is valid for the target
 transaction. Unchanged pages may be structurally shared from the immutable base.
 
-For `tock/ephemeral`, no persistent output validity exists; the selected version
-chooses the configuration, coverage, sample rate, and immutable persistent upstream
+For `tock/ephemeral`, no persisted output validity exists; the selected version
+chooses the configuration, coverage, sample rate, and immutable persisted upstream
 pages against which the exact request is evaluated.
 
 A recording-capture pass additionally owns one fixed executor-wide capture-sequence
 interval, for example `[processed_sequence, snapshot_tail)`. The candidate may read exactly
-those captured blocks plus already-published indexed state. Captures with sequence
+those captured blocks plus already-published retained output state. Captures with sequence
 at or beyond `snapshot_tail` are invisible to that pass and cannot change its
 coverage, invalidation roots, reverse requirements, or tock inputs.
 
-If the pass commits, publication atomically advances the pages version and the
+If the pass commits, publication atomically advances the page version and the
 capture log's processed-capture frontier together. Capture blocks consumed by that pass
-may then be reclaimed because the newly published indexed pages own/materialize
-all data they retain. If the pass is cancelled or rejected as stale, its processed
+may then be reclaimed because the newly published output state owns/materializes
+all data that must outlive the transaction. If the pass is cancelled or rejected as stale, its processed
 frontier does not advance and its capture blocks remain available for a later pass.
 
 ## 22. Direct connection compatibility and explicit recording
@@ -1326,11 +1329,11 @@ These are connection permissions, not guarantees of audio-thread scheduling:
 | tick/ephemeral, unreproducible for demanded coverage | allowed | explicit recording policy node required |
 | tick/ephemeral, contextually replayable | allowed | allowed by background replay |
 | tick/persisted | allowed | allowed over finalized published coverage |
-| tock/ephemeral | allowed with prepared data | allowed with temporary page materialization |
+| tock/ephemeral | allowed with prepared data | allowed with transaction-local addressable materialization |
 | tock/persisted | allowed with prepared data | allowed through retained pages/background recomputation |
 
-An ephemeral sequential output cannot acquire implicit historical storage because
-it happens to feed a random-access input; that is the **only special connection
+An unreproducible Tick/ephemeral output cannot acquire implicit historical storage
+merely because it feeds a random-access input; that is the **only special connection
 prohibition** introduced by retention. The restriction applies whether the
 random-access input is consumed by tick or tock. Tock outputs may feed sequential
 inputs, and persisted tick outputs may feed random-access inputs. Tiling does not
@@ -1338,10 +1341,11 @@ change these permissions or silently materialize a new output: a whole-tile
 random-access connection requires every selected source channel to satisfy it.
 Projections preserve their source channel's original capability.
 
-A tock-produced output directly feeding another node's random-access input must
-be materialized into addressable pages before that consumer evaluates. Ephemeral
-tock pages may be transaction-local and reclaimed after their readers finish;
-persisted pages follow the strict retention guarantee. Replayable tick subgraphs
+A Tock-produced output directly feeding another node's random-access input must
+be materialized into an addressable representation before that consumer evaluates.
+For an ephemeral output, the current design uses a transaction-local page-backed
+materialization that may be reclaimed after its readers finish; persisted pages
+follow the strict retention guarantee. Replayable tick subgraphs
 may be fused and materialized only where their consumers' addressing contracts
 require it. Every tock callback, forward/reverse propagation callback, and page
 recomputation runs off the audio thread.
@@ -1361,14 +1365,14 @@ that page is stale or invalidated for a pending candidate. A genuinely missing p
 produces that **input's own `neutral_value`** (including when members of a tile
 have different neutral values). Stale does not mean missing: an invalidated old
 page remains readable until a replacement is atomically published. The audio thread
-never waits for a background transaction, invokes `tock_coverage()`, or allocates
+never waits for a background evaluation transaction, invokes `tock_coverage()`, or allocates
 a page on demand. A coherent pinned snapshot prevents concurrent publication from
 mutating memory under an audio callback. The neutral fallback does not authorize
 out-of-coverage arbitrary random-access reads by node code; those remain invalid.
 
 ### Recording bridge capture
 
-A recording bridge consumes realtime data during normal `tick_block()` execution.
+A recording bridge consumes sequential data during normal `tick_block()` execution.
 As soon as a recording output block is produced—not at the end of the whole root
 `tick_block()`—the generated path copies that block into a pre-provisioned capture
 block and publishes one immutable capture record:
@@ -1384,11 +1388,11 @@ struct CapturedBlock {
 
 `sequence` is the monotonic insertion order of the executor's recording-capture
 log. All participating recording output ports share that ordering domain. It does
-not order timeline positions. `output_port` identifies the indexed bridge output
+not order timeline positions. `output_port` identifies the bridge output
 whose value/coverage is changed by the captured payload. Consecutive records may
 belong to different output ports, and seeking while playback/recording is active may
 append records for positions earlier than records that have not yet been consumed
-by indexed execution.
+by background evaluation.
 
 For example:
 
@@ -1407,9 +1411,9 @@ nor global position is contiguous. If multiple captures in one snapshot overlap 
 same output/range, bridge materialization applies them in capture-sequence order so
 later captures represent the later recorded state.
 
-### Fixed capture snapshot per indexed pass
+### Fixed capture snapshot per background evaluation pass
 
-At the beginning of one indexed propagation/tock pass, the worker reads the
+At the beginning of one background propagation/Tock pass, the worker reads the
 current capture tail exactly once and fixes a cutoff:
 
 ```text
@@ -1423,15 +1427,15 @@ even if its `GlobalBlockPosition` is numerically earlier than positions in the
 current pass.
 
 The worker converts the fixed records into changed/added `IndexedCoverage` keyed by
-`OutputPortId`. Those output changes are ordinary indexed invalidation roots. From
+`OutputPortId`. Those output changes are ordinary invalidation roots. From
 that point forward there is no bridge-specific downstream scheduler: normal
 `propagate_forward_coverage()` determines downstream changed coverage, normal
 reverse planning determines the exact input coverage required by implicated nodes,
 and normal `tock_coverage()` evaluation materializes bridge output pages and all
 affected downstream outputs.
 
-A bridge's captured payload is transaction-input storage, not a published indexed
-view. Indexed callbacks never observe captures outside the fixed snapshot, and
+A bridge's captured payload is transaction-input storage, not a published output
+view. Coverage/Tock callbacks never observe captures outside the fixed snapshot, and
 capture insertion never changes a running transaction's inputs.
 
 ## 23. Complete stored outputs and physical backing
@@ -1443,12 +1447,12 @@ the published stored output.
 
 Complete materialization does not require all bytes to remain in anonymous RAM.
 Physical backing may use mmap/files, compression, deduplicated immutable pages,
-or copy-on-write roots, but **never automatic eviction** of generated persisted
-coverage. Invalidation retains readable old published pages while a successor is
+or copy-on-write roots, but **never automatic eviction** of persisted covered
+data. Invalidation retains readable old published pages while a successor is
 computed. Pages may be removed from the logical retained output only when its
 coverage no longer includes them. Superseded immutable physical versions may be
-reclaimed after their readers release them. Any representation accessed directly
-by realtime execution must meet realtime access requirements.
+reclaimed after their readers release them. Any representation accessed directly by the audio-thread Tick path must meet
+audio-thread access requirements.
 
 Tick/persisted output differs in how values become final: `tick_block()` may
 revise positions under normal history/latency semantics, and finalized regions
@@ -1459,18 +1463,18 @@ retained physical representation need not equal the tock page-store design.
 ## 24. Recording capture allocation, snapshots, and reclamation
 
 The recording bridge uses three independently progressing runtime roles so arbitrary
-tock latency does not have to fit inside a bounded realtime staging window. Capture
+tock latency does not have to fit inside a bounded audio-thread staging window. Capture
 is active only while playback/recording is active; when playback stops, no new
-records are appended and the indexed worker can drain the remaining backlog.
+records are appended and the background worker can drain the remaining backlog.
 
 ```text
-non-realtime allocation worker
+capture allocator
         |
         | allocate/recycle slabs
         v
 pre-provisioned free capture blocks
         |
-        | realtime thread is the consumer
+        | audio thread is the consumer
         v
 recording output production during tick_block()
         |
@@ -1480,16 +1484,16 @@ append-only capture log
         |
         | fixed sequence snapshot per pass
         v
-indexed propagation / reverse planning / tock worker
+background propagation / reverse planning / Tock worker
         |
-        | atomic indexed commit
+        | atomic page-version commit
         v
-published pages version + reclaimed capture blocks
+published page version + reclaimed capture blocks
 ```
 
-### 24.1 Realtime capture
+### 24.1 Audio-thread capture
 
-The realtime path does not wait for propagation/tock and does not scan the graph at
+The audio-thread path does not wait for propagation/tock and does not scan the graph at
 the end of `tick_block()`. At the precise production point of a recording output
 block it:
 
@@ -1498,19 +1502,19 @@ block it:
 3. writes the output-port ID, global block position, and next capture sequence; and
 4. publishes the immutable record to the capture log.
 
-Only the realtime path consumes blocks from the free-capacity pool. The allocator
-never takes a free block back from underneath it, so realtime priority is structural
+Only the audio-thread path consumes blocks from the free-capacity pool. The allocator
+never takes a free block back from underneath it, so audio-thread priority is structural
 rather than a lock/scheduling race.
 
 ### 24.2 Slab provisioning
 
-A dedicated non-realtime allocator keeps free capture capacity near a configured
+A dedicated capture allocator keeps free capture capacity near a configured
 target for the shared recording-capture log. It allocates append-only slabs in units
 large enough to amortize allocation
 cost but small enough to provision promptly, splits/reuses them as capture blocks,
-and publishes those free blocks for realtime consumption.
+and publishes those free blocks for audio-thread consumption.
 
-Provisioning is independent of indexed execution. If a propagation/tock DAG takes
+Provisioning is independent of background evaluation. If a propagation/tock DAG takes
 four seconds, forty seconds, or longer, captured blocks may accumulate in ordinary
 dynamically allocated recording storage while the allocator continues extending
 capacity. Slow tock execution therefore does not by itself force block dropping or
@@ -1520,11 +1524,11 @@ No finite reserve can provide a mathematical no-allocation/no-block/no-drop
 guarantee if the allocation worker itself is prevented from running indefinitely
 or the process exhausts addressable/storage resources. That catastrophic policy is
 separate from normal bridge semantics; the architecture must not impose ordinary
-block loss merely because indexed execution is slower than realtime.
+block loss merely because background evaluation is slower than audio-thread production.
 
-### 24.3 Indexed consumption
+### 24.3 Background consumption
 
-The indexed worker never races the capture tail during a pass. It snapshots the
+The background worker never races the capture tail during a pass. It snapshots the
 largest momentarily available capture-sequence prefix at pass start and processes
 exactly that prefix. Newly visible blocks are left for the next pass.
 
@@ -1537,32 +1541,32 @@ For the fixed snapshot it:
 5. runs ordinary background evaluation: `tock_coverage()` for implicated tock
    producers and imported generated `tick_block()` for eligible replayable
    producers; and
-6. publishes one coherent successor pages version for the complete transaction.
+6. publishes one coherent successor page version for the complete transaction.
 
-This is the normal indexed execution routine. There is no intermediate
+This is the normal background evaluation routine. There is no intermediate
 "capture-pages publication" that downstream work waits for.
 
 ### 24.4 Reclamation
 
-Published indexed versions never reference capture storage. Bridge tock execution
-copies/materializes everything retained by the candidate into version-owned indexed
-pages. Therefore, after successful atomic commit, every captured block in the
+Published page versions never reference capture storage. Bridge Tock execution
+copies/materializes everything retained by the candidate into version-owned output
+storage. Therefore, after successful atomic commit, every captured block in the
 committed sequence interval can be returned immediately to the allocator/reuse
 pool.
 
-Old indexed readers pin old indexed pages, not raw capture blocks. Conversely, a
+Old readers pin old published output versions, not raw capture blocks. Conversely, a
 failed/cancelled/stale transaction cannot reclaim its capture interval as consumed;
 those records remain pending until some later transaction commits them.
 
-## 25. Indexed event/sample reads from node callbacks
+## 25. Random-access event/sample reads from node callbacks
 
-Random-access sample reads address global covered sample indices. Persisted tick
-and tock outputs provide published direct/page-backed access; tock/ephemeral
+Random-access sample reads address global covered sample positions. Persisted Tick
+outputs and persisted Tock outputs provide published direct/page-backed access; Tock/ephemeral
 outputs feeding a random-access input are materialized into transaction-local
-addressable pages. Replayable tick subgraphs may produce temporary results when
+addressable materializations. Replayable tick subgraphs may produce transaction-local results when
 their consumers require materialization.
 
-Indexed event reads may span several stored segments/pages and therefore use a
+Random-access event reads may span several stored segments/pages and therefore use a
 segmented ordered iterator/range rather than requiring contiguous storage. The
 iterator preserves global timestamp/source/local order and never exposes or
 requests outside input coverage.
@@ -1570,11 +1574,11 @@ requests outside input coverage.
 Random-access accessors expose exact input coverage. Debug validation catches
 requests outside coverage. A `tock_coverage()` accessor reads random-access
 inputs from the selected immutable transaction view, which may include finalized
-persisted tick data, background-replayed tick values, tock pages, and an explicit
+persisted Tick data, background-replayed Tick values, persisted Tock pages, transaction-local Tock materializations, and an explicit
 recorder's published output. It never reads mutable live tick storage or captures
 appended after the transaction snapshot cutoff.
 
-## 26. External indexed-access result lifetime
+## 26. External random-access result lifetime
 
 Application/UI callers should not receive unscoped raw pointers into executor-owned
 immutable storage whose snapshot may later be reclaimed.
@@ -1591,8 +1595,8 @@ lifetime is controlled by `GraphExecutor`.
 
 ### External version selection and incomplete candidates
 
-Every externally returned indexed result is associated with the
-`(semantic_version, pages_version)` pair from which it was read.
+Every externally returned random-access result is associated with the
+`(semantic_version, page_version)` pair from which it was read.
 
 For `tock/persisted`, a newer candidate is not externally presented as a partially
 materialized stored output. Until the entire required stored candidate is complete,
@@ -1606,27 +1610,27 @@ host API may satisfy the request synchronously or expose explicit pending/future
 behavior; the exact ABI is implementation work.
 
 A caller must not combine independently returned data from different semantic or
-pages versions as if it were one coherent indexed result.
+page versions as if it were one coherent random-access result.
 
 ## 27. Outward change notification
 
-After an indexed candidate becomes published—including a transaction that
-consumed recording-bridge captures—the executor may emit a coalesced indexed-output
+After a candidate page version becomes published—including a transaction that
+consumed recording-bridge captures—the executor may emit a coalesced output
 change notification for subscribed external consumers.
 
 Conceptually it contains:
 
 ```text
 output identity
-indexed semantic version/revision
-published pages version
+semantic version/revision
+published page version
 new coverage (or a coverage-changed indication)
 exact changed IndexedCoverage
 ```
 
 Notification is emitted from the executor publication/change boundary, not
 recursively from individual callbacks. Presentation/UI code can react by issuing
-ordinary indexed access requests. The notification does not itself force
+ordinary random-access requests. The notification does not itself force
 `tock/ephemeral` evaluation.
 
 ## 28. Executable-generation reconciliation and stable stored-output rebinding
@@ -1645,7 +1649,7 @@ Important cases:
 - tock/persisted with changed semantics runs exact invalidation and rebuilds
   invalid candidate pages before publication;
 - tick/persisted preserves finalized retained content across recompilation;
-- ephemeral outputs have no semantic persistent payload to migrate; and
+- ephemeral outputs have no persisted payload to migrate; and
 - access/retention changes rerun validation and reconcile storage conservatively.
 
 Connection comparisons use stable semantic endpoint identity rather than builder
@@ -1653,20 +1657,20 @@ handles, lowered node indices, or ORC-generation-local ordinals.
 
 ## 29. Whole-project GraphJit integration
 
-The generated project root remains a zero-input/zero-output realtime root. It does
-not gain synthetic indexed output ports or a project-wide tock callback.
+The generated project root remains a zero-input/zero-output Tick root. It does
+not gain synthetic output ports for background evaluation or a project-wide tock callback.
 
-`CompiledGraph` carries immutable metadata mapping internal indexed endpoints to
-generated random-access component executors, persisted bindings,
+`CompiledGraph` carries immutable metadata mapping internal coverage-planned endpoints to
+generated background-evaluation component executors, persisted bindings,
 advance-preparation plans,
-and explicit recording-bridge capture/output identities. Static indexed topology is
+and explicit recording-bridge capture/output identities. Static background-evaluation topology is
 specialized during lowering rather than rediscovered for every request or block.
 
 ### Reuse whole-graph analysis products during lowering
 
 Whole-project lowering reuses one SCC decomposition of the complete semantic
 dependency graph to reject random-access input edges within a semantic SCC.
-Separately, expand the background evaluation graph through sequential input edges
+Separately, expand the background evaluation DAG through sequential input edges
 of replayable tick nodes. Reject any unresolved replay dependency cycle; a valid
 published persisted output is a terminal stored boundary for its covered requests.
 Checking only labeled random-access edges is **not** sufficient for this second
@@ -1674,13 +1678,13 @@ check. Reuse the same stable ordinals and graph-analysis data; do not perform a
 new reachability search per output.
 
 SCC IDs, member ranges, condensation-DAG/topological order, dense node ordinals,
-and reusable adjacency storage should be carried forward where useful. Indexed
-component planning, live scheduling, liveness/storage planning, access/retention
+and reusable adjacency storage should be carried forward where useful. Background
+component planning, same-Tick scheduling, liveness/storage planning, access/retention
 lowering, and later batching/fusion/vectorization should consume those facts
 instead of rebuilding equivalent graph views.
 
 This is an efficiency rule, not a semantic requirement to collapse distinct graph
-relations into one. Explicit-DAG validation, detach legality, same-slice realtime
+relations into one. Explicit-DAG validation, detach legality, same-Tick
 dependencies, and complete semantic dependency relations answer different
 questions. Detach validation may still require pre-feedback reachability. Share
 ordinals/storage/traversal scratch where the edge relation actually matches.
@@ -1693,17 +1697,17 @@ lowering/optimization until profiling proves otherwise.
 `GraphExecutor` owns:
 
 - canonical fixed-layout `NodeStorage` for each retained executable generation;
-- stable persistent indexed stores/immutable roots for `tock/persisted`
+- stable persisted-output stores/immutable roots for `tock/persisted`
   outputs, plus per-generation bindings;
-- indexed semantic versions plus immutable pages versions and candidate/published
+- semantic versions plus immutable page versions and candidate/published
   snapshots;
 - the recording-capture log, its processed-sequence frontier, slab/block reclamation
-  state, and coordination with a non-realtime allocation worker;
+  state, and coordination with a capture allocator;
 - transaction workspaces;
 - exact forward mutation/change transactions;
 - reverse demand/tock transactions;
 - completion scheduling for candidate `tock/persisted` outputs; and
-- external indexed access/change-notification lifetime.
+- external random-access request/change-notification lifetime.
 
 ## 30. Deliberately open implementation/tuning choices
 
@@ -1737,7 +1741,7 @@ SCCs, derives contextual replayability and exact available coverage, rejects
 unreproducible tick/ephemeral -> random-access demand unless an explicit recorder
 intervenes, and rejects unresolved background evaluation cycles. A tock ->
 random-access consumer requires page materialization. Capture bridges must have
-valid sequential-input/tock-output shapes and realtime-safe pre-provisioned capture
+valid sequential-input/tock-output shapes and audio-thread-safe pre-provisioned capture
 capacity. Unsupported event-replay contracts must be rejected, not silently treated
 as sample replay. Errors identify the specific source channel, input, dependency
 path, or offending node where practical.
@@ -1776,16 +1780,16 @@ recording merely because that planning metadata exists.
    F/R propagation and use the imported `tick_block()` wrapper for replay.
    Preserve semantic SCCs separately from the expanded background evaluation DAG,
    enforce the recorder boundary and keep Tock execution off the audio thread.
-4. **Implement ordinary background indexed execution before recording consumption.**
+4. **Implement ordinary background evaluation before recording consumption.**
    The reusable batch frame/reflected callback ABI, forward/reverse/tock imports,
    and generated F/R/evaluation programs have landed. Implement `GraphExecutor`,
-   temporary tock paging, complete persisted candidate pages,
+   transaction-local Tock materialization, complete persisted candidate pages,
    pinned snapshot reads (stale-as-is, missing-per-input-neutral), atomic publication
    and advance preparation. Verify that no audio-thread path can invoke tock.
 5. **Make explicit recording operational on that executor.** Define bridge node
-   semantics/capture ABI; implement independent non-realtime slab provisioning and
-   realtime-safe block capture at production time. Consume fixed capture-sequence
-   snapshots through the already working F/R/evaluation transaction; publish once
+   semantics/capture ABI; implement independent capture-allocator slab provisioning and
+   audio-thread-safe block capture at production time. Consume fixed capture-sequence
+   snapshots through the already working background evaluation transaction; publish once
    and reclaim committed capture blocks without losing cancelled/stale work.
 6. **Finish generation reconciliation, authored-node cases and optimization.**
    Rebind compatible persisted output stores, preserve correct state/layout
@@ -1808,25 +1812,26 @@ only on a successful transaction commit.
    GraphJit proves contextual replayability through available upstream coverage.
 4. An unreproducible tick/ephemeral source cannot directly satisfy random-access
    demand. Persisted tick, reproducible tick and either tock output can; a tock
-   output feeding a random-access input is page-materialized even when ephemeral.
+   output feeding a random-access input is materialized into an addressable transaction-local representation for random-access consumption.
 5. Tiling preserves per-channel contracts and creates neither an implicit recording
    policy nor an implicit producer.
 6. `tock_coverage()` and authored propagation callbacks run only off the audio
    thread. A sequential input plays a stale published page as-is and substitutes
    **its own** `neutral_value` for a missing page without waiting.
-7. Persisted outputs retain all generated pages in coverage without automatic
-   eviction. Coverage removal can remove logical pages; superseded physical versions
-   are reclaimed only after readers release them. Memory growth is author-selected.
+7. Persisted outputs retain all generated/finalized covered data without automatic
+   eviction. Coverage removal alone ends the semantic retention obligation;
+   superseded physical versions are reclaimed only after readers release them.
+   Memory growth is author-selected.
 8. Exact `IndexedCoverage` and forward changes are independent of the physical
    page grid. Reverse demand is value-blind; replayable pointwise tick propagation
    is synthesized from static dependencies.
-9. The background demand/replay graph has no unresolved cycles; sequential feedback
-   retains its separate scheduling semantics.
+9. The background evaluation DAG has no unresolved cycles; feedback in the
+   same-Tick scheduling graph retains its separate temporal semantics.
 10. Recording nodes use explicit authored policies, pre-provisioned capture slabs,
     monotonic capture *insertion* sequences and fixed-prefix transactions. Capture
     insertion is not page publication; committed outputs never reference capture
     storage and commit alone advances the processed frontier.
-11. `IndexedState` is non-semantic tock-only acceleration; persistent output stores
+11. `IndexedState` is non-semantic tock-only acceleration; persisted-output stores
     and capture backlogs are executor-owned sidecars, distinct from fixed `NodeStorage`.
 12. The legacy generated-node graph executor and dynamic concrete-port fallbacks
     are deleted; the package/configuration JIT and GraphJit's imported concrete-

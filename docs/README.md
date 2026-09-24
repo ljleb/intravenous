@@ -10,7 +10,9 @@ The primary application-architecture entry points are:
 - [GraphBuilder Embedding, Hierarchy, And Project Port Matchers](./graph_builder_embedding_and_matchers.md)
 - [System Audio Devices Direction](./system_audio_devices_direction.md)
 - [Graph JIT Direction](./graph_jit_direction.md)
-- [Realtime Port Storage And Connection Planning](./realtime_port_storage_planning.md)
+- [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)
+- [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md)
+- [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md)
 - [Event Propagation Tree Constraint](./event_propagation_tree_constraint.md)
 - [Fundamental Event Flows](./event_flows/README.md)
 

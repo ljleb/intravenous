@@ -13,7 +13,7 @@ _Status: historical migration inventory. `Timeline` ownership and lane/DSP
 execution-partition decisions are superseded by
 [unified_graph_direction.md](../unified_graph_direction.md). Compiled-data
 execution semantics are superseded by
-[indexed_dsp_nodes.md](../indexed_dsp_nodes.md). Preserve useful product,
+[coverage_and_background_evaluation.md](../coverage_and_background_evaluation.md). Preserve useful product,
 transport, and device behavior described here; do not preserve the requirement
 that `Timeline` remain a long-lived runtime substrate or the old compiled-lane
 execution/storage model._
@@ -87,7 +87,7 @@ Other output devices consume streams resampled to the master device rate.
 > current compiled DSP-port design. Compiled sample ports use arbitrary global
 > sample positions and globally batched sampling requests; compiled event ports
 > are a distinct planned capability using global event-range queries, as specified
-> in [indexed_dsp_nodes.md](../indexed_dsp_nodes.md). The realtime frontier ideas
+> in [coverage_and_background_evaluation.md](../coverage_and_background_evaluation.md). The realtime frontier ideas
 > below remain useful only as historical transport/runtime context.
 
 We do not want to globally index every produced sample block.

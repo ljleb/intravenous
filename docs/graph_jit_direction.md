@@ -4,9 +4,10 @@ _Status: current design direction for synchronous whole-project graph compilatio
 
 Related documents:
 
+- [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)
 - [project_graph_application_architecture.md](./project_graph_application_architecture.md)
-- [realtime_port_storage_planning.md](./realtime_port_storage_planning.md)
-- [indexed_dsp_nodes.md](./indexed_dsp_nodes.md)
+- [sequential_port_storage_planning.md](./sequential_port_storage_planning.md)
+- [coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md)
 - [builder_lowering_pipeline_design.md](./builder_lowering_pipeline_design.md)
 - [intravenous-llvm-hot-reload-and-whole-graph-design.md](./intravenous-llvm-hot-reload-and-whole-graph-design.md)
 - [event_flows/README.md](./event_flows/README.md)
@@ -76,10 +77,10 @@ callback share one imported root while still receiving distinct node
 configuration/storage contexts. The reflected compiler callback ABI uses
 explicit pointer/count span records rather than assuming an
 implementation-specific `std::span` object representation. The generated
-realtime root exports only `tick_block`: it is the scheduler and may use primitive
+Tick root exports only `tick_block`: it is the scheduler and may use primitive
 `skip_block` callbacks internally when activity/skip semantics make that legal. A
-separate realtime root `skip_block` ABI would invert that ownership and is
-intentionally absent. Graphs with indexed work additionally export off-thread
+separate Tick-root `skip_block` ABI would invert that ownership and is
+intentionally absent. Graphs with background-evaluation work additionally export off-thread
 forward, reverse, and evaluation batch roots. Those roots use the retained
 `IndexedPlan` orders, imported reflected Tock callbacks, and the existing imported
 `tick_block()` wrapper for replay; executor-owned batch frames still supply
@@ -108,8 +109,8 @@ boundary.
 The second major landing-site refactor has now landed. Pure host-side connection
 analysis lives in `graph_jit/connection_plan.{h,cpp}` and is intentionally usable
 before LLVM/package realization. It inventories concrete nodes, classifies
-connection access direction, derives sequential tick dependencies, computes
-deterministic realtime SCC/region ordering plus whole-project semantic cycle
+connection access direction, derives Tick-to-Sequential scheduling dependencies, computes
+deterministic Tick SCC/region ordering plus whole-project semantic cycle
 reachability, records per-edge history/latency/conversion/boundary/feedback facts,
 groups fanout by producer, derives the requirement
 records consumed by the existing sample/event physical-storage choosers, and
@@ -120,7 +121,7 @@ because a sequential consumer reads its prepared pages. The source now uses
 `TickOutputConfig`/`TockOutputConfig` for production, and separate
 `OutputRetention::{ephemeral,persisted}`. Connection analysis classifies those
 axes independently per sample source channel and event source/target pair. It
-retains Tick -> Sequential dependencies for realtime scheduling, records Tock ->
+retains Tick -> Sequential dependencies for Tick scheduling, records Tock ->
 Sequential preparation and random-access materialization separately, treats
 persisted Tick outputs as stored boundaries, and proves contextual replay for
 eligible Tick/ephemeral paths by traversing sequential dependencies. The retained
@@ -148,7 +149,7 @@ anchored to the absolute sample index. Those
 facades have no cross-call identity; after whole-project inlining/O3 they are
 expected to scalarize into address/index arithmetic. The direct and transient
 materialization choices therefore allocate only bounded sample backing. There is
-no realtime heap allocation, lazy initialization, placement construction,
+no audio-thread heap allocation, lazy initialization, placement construction,
 persistent façade cursor, or `SharedPortData` tax.
 
 The `choose_sample_connection_storage_plan()` and
@@ -162,9 +163,9 @@ carried forward merely to keep the old executor compiling.
 The sample realization now has its own stable physical-plan layer in
 `graph_jit/sample_physical_plan.{h,cpp}`. Primitive bindings refer to immutable
 **sample representation handles**, not raw buffer identities or producer-group
-storage objects. Every realtime producer group owns a canonical representation;
+storage objects. Every Tick producer group owns a canonical representation;
 each realized
-realtime connection resolves to a representation handle. Identity realtime
+Tick-to-Sequential connection resolves to a representation handle. Identity Tick-to-Sequential
 fanout branches resolve to that canonical representation. Point 8 adds explicit
 derived transient representations for whole-port channel/layout conversions;
 identical converted fanout branches share one derived representation and one
@@ -178,7 +179,7 @@ reserved. Equal-start allocations are considered size/alignment-first to reduce
 fragmentation. Overlapping lifetimes never alias. The arena high-water mark and
 all representation offsets are finalized before LLVM emission. The generated
 root allocates that fixed arena in its stack frame and resolves each primitive
-binding to a concrete representation pointer; realtime execution contains no
+binding to a concrete representation pointer; audio-thread execution contains no
 allocator bookkeeping or storage-class branch. The current packer is a
 deterministic lowest-gap heuristic rather than a globally optimal interval-packing
 solver; correctness and sub-range reuse are contractual, while globally minimal
@@ -193,8 +194,9 @@ telemetry.
 
 The physical planner consumes the storage decision already made by
 `choose_sample_connection_storage_plan()`; it does not choose policy again.
-Only realtime branches receive realtime representation handles here; indexed
-access branches remain unresolved for the later indexed component executor. Whole-
+Only Tick-to-Sequential branches receive sequential-storage representation handles
+here; random-access and background-prepared branches remain unresolved for the later
+background evaluation component executor. Whole-
 port conversion is channel-granular: layout-only conversion and mono-to-stereo
 duplication bind existing producer channels directly, while arithmetic conversion
 materializes only its computed result channels. Semantic channel projection and
@@ -211,7 +213,7 @@ unequal-latency alignment, and migration. This does not reintroduce connection
 helper nodes. External boundaries remain capability-gated rather than being
 approximated with transient storage.
 
-### Realtime port realization rules
+### Tick/Sequential port realization rules
 
 The remaining port work should preserve these invariants:
 
@@ -258,24 +260,23 @@ carries the finalized `NodeLayout` plus the generated root `tick_block`, while
 lifecycle remains entirely in ordinary `NodeStorage`. Primitive `skip_block`
 callbacks are internal scheduling tools, not root operations. Whole-project
 lowering must not reintroduce a second node-storage
-layout, a second lifecycle system, or a synthetic project-wide indexed/tock ABI
-merely to expose indexed outputs.
+layout, a second lifecycle system, or a synthetic project-wide coverage/Tock ABI merely to expose internal Tock outputs.
 
 ### Current connection capability audit
 
-The current internal realtime connection surface is intentionally asymmetric:
+The current internal Tick/Sequential connection surface is intentionally asymmetric:
 
-- **Samples:** ordinary internal realtime transport is complete across direct and
+- **Samples:** ordinary internal Tick-to-Sequential transport is complete across direct and
   transient storage, fanout/deduplicated conversion, channel composition and
   projection/permutation, declared history/output latency, whole-graph latency
   compensation, compact carry/persistent rings, and `detach()` SCC feedback. A
   sample producer inside an SCC may also fan out to downstream acyclic identity or
   converted/history-bearing consumers. What remains is not another ordinary sample
   transport mode: mixed Tick/background and background-only delivery are planned
-  by the background/indexed topology and still require the executor work in indexed
-  DSP points 14-19 below. Root I/O is not a boundary-connection
+  by the background-evaluation topology and still require the executor work in
+  coverage/background points 14-19 below. Root I/O is not a boundary-connection
   mode; it is expressed by concrete system/communication node types.
-- **Events, feed-forward:** internal realtime direct/transient sequences, block
+- **Events, feed-forward:** internal Tick-event direct/transient sequences, block
   adaptation, non-expanding conversion, fanout, stable multi-producer fan-in,
   compact retained carry, persistent rings, and retained converted fanout are
   implemented. Independent producers write bounded local sequences which are
@@ -290,9 +291,9 @@ The current internal realtime connection surface is intentionally asymmetric:
 - **Both kinds:** the root graph is required to have zero public/boundary ports.
   Device I/O and communication with other application modules enter through
   concrete node types, so there is no future root-boundary transport ABI to add.
-  Indexed-access directions remain a separate lowering capability.
+  Random-access and background-prepared directions remain a separate lowering capability.
 
-#### Realtime sample capability matrix
+#### Tick/Sequential sample capability matrix
 
 | Connection shape or feature | Current state | Physical behavior or remaining requirement |
 | --- | --- | --- |
@@ -304,13 +305,13 @@ The current internal realtime connection surface is intentionally asymmetric:
 | Multi-source channel composition/fan-in | Implemented | The target layout is resolved channel by channel. Aliasable channels remain direct; arithmetic mixing/conversion materializes only the affected result channels, with latency alignment applied before composition. |
 | Source history, output latency, and target read history/latency | Implemented | Timing analysis derives the exact retained horizon. Small horizons use stack working storage plus persistent carry; larger horizons use a full persistent timeline. Consumers retain one unconditional resolved-channel lookup path. |
 | Unequal feed-forward path latency | Implemented | Whole-graph cumulative latency analysis assigns compiler-owned read compensation to faster branches before conversion, composition, projection, or fanout. |
-| Detached feedback within one SCC | Implemented for internal realtime samples | A fixed-capacity delayed timeline uses the same transient/carry/full-storage alternatives. Producer-home and branch-local writers support history, latency, conversion, permutation, composition, and nonzero `loop_extra_latency`. |
+| Detached feedback within one SCC | Implemented for internal Tick-to-Sequential samples | A fixed-capacity delayed timeline uses the same transient/carry/full-storage alternatives. Producer-home and branch-local writers support history, latency, conversion, permutation, composition, and nonzero `loop_extra_latency`. |
 | Cyclic producer with ordinary downstream fanout | Implemented | The SCC timeline is updated slice by slice; downstream identity or converted/history-bearing branches are realized at the scope where the completed SCC result becomes available. |
 | Acyclic ingress or an edge between execution regions | Implemented | Explicit before/after materialization placement carries the resolved channel representation across the schedule; persistent storage is used only when the semantic history/latency lifetime crosses root calls. |
-| Mixed Tick/background or background-only sample delivery | Planned; realtime lowering capability-gated | The connection/background plan now preserves each contribution independently. Playback/materialization belongs to background execution rather than another realtime sample-buffer representation. |
-| Unconnected realtime sample port | Implemented | An unconnected input binds to compiler-emitted constant sample data filled with its declared `default_value`. An unconnected output receives an ordinary writable buffer sized from its declared history/latency; retained samples use the same stack-plus-`NodeStorage` or full-`NodeStorage` choice as connected outputs. |
+| Mixed Tick/background or background-only sample delivery | Planned; Tick lowering capability-gated | The connection/background plan now preserves each contribution independently. Playback/materialization belongs to background execution rather than another sequential sample-buffer representation. |
+| Unconnected sample port in Tick lowering | Implemented | An unconnected input binds to compiler-emitted constant sample data filled with its declared `default_value`. An unconnected output receives an ordinary writable buffer sized from its declared history/latency; retained samples use the same stack-plus-`NodeStorage` or full-`NodeStorage` choice as connected outputs. |
 
-#### Realtime event SCC capability matrix
+#### Tick-event SCC capability matrix
 
 | Connection shape or feature | Current state | Physical behavior or remaining requirement |
 | --- | --- | --- |
@@ -319,14 +320,14 @@ The current internal realtime connection surface is intentionally asymmetric:
 | Same-SCC target history | Implemented | Canonical retained storage keeps restored root history and earlier-slice events visible. Exact-type consumers read that storage directly; a converted derived branch materializes `[slice-history, slice-end)` after each producer slice. |
 | Same-SCC source history | Implemented | A history-bearing cyclic output writes one bounded invocation-local sequence. A slice-scoped stable merge inserts it into the retained canonical aggregate, so an event authored behind the previous slice tail does not violate append ordering. |
 | Same-SCC source latency consumed by a non-detached target | Implemented | The same invocation-local merge keeps future-authored events sorted in the canonical retained timeline; exact consumers filter it directly and converted consumers receive a slice-scoped view. |
-| Detached feedback within one SCC | Implemented for realtime sources | The delayed live span includes source/target history, authored latency, and `loop_extra_latency`, then selects the shared transient/carry/full storage planner. Exact consumers alias the delayed stream; non-expanding conversions materialize before the consumer slice. Temporal sources feed feedback from an invocation-local stream, so only newly authored events are delayed, and bounded insertion preserves time order across overlapping history. |
+| Detached feedback within one SCC | Implemented for Tick sources | The delayed live span includes source/target history, authored latency, and `loop_extra_latency`, then selects the shared transient/carry/full storage planner. Exact consumers alias the delayed stream; non-expanding conversions materialize before the consumer slice. Temporal sources feed feedback from an invocation-local stream, so only newly authored events are delayed, and bounded insertion preserves time order across overlapping history. |
 | Cyclic producer to acyclic consumer | Implemented | Materialize once at SCC exit from the complete root-call aggregate. Exact type, non-expanding conversion, outbound target history, and authored source latency compose with compact carry or a canonical persistent ring. |
 | Acyclic producer entering a cyclic region | Implemented | Exact-type consumers read the completed root-call aggregate directly. Converted ingress is materialized once at target-region entry. |
 | Edge spanning distinct cyclic regions | Implemented | The source aggregate remains live across regions. Conversion runs at source-region exit and the downstream region reads its absolute-time slices. |
 | Multi-producer fan-in touching a cyclic region | Implemented | Acyclic producers merge once after their completed invocation; each cyclic-region stage merges bounded producer-local streams after that region's final producer on every slice. A compiler-private source-ordinal sidecar on the canonical aggregate preserves semantic equal-time ordering even when execution-region order differs from source order. Compact carry and persistent rings retain the ordinals with their events. |
 | One derived materialization consumed both inside the source SCC and downstream | Implemented | Representation sharing is keyed by conversion and execution scope. The in-SCC and SCC-exit branches receive distinct scope-correct derived representations. |
-| Mixed Tick/background or background-only event delivery | Planned; realtime lowering capability-gated | Per-source/per-target delivery is retained in the background/indexed plan. Playback/materialization belongs to background execution rather than another realtime storage kind. |
-| Unconnected primitive event port | Implemented for realtime ports | Inputs receive a reset zero-capacity sequence. Outputs receive a bounded sink sized from `max_events_per_index`, history, latency, and root block size, with normal overflow telemetry. |
+| Mixed Tick/background or background-only event delivery | Planned; Tick lowering capability-gated | Per-source/per-target delivery is retained in the background plan. Playback/materialization belongs to background execution rather than another sequential-storage kind. |
+| Unconnected primitive event port | Implemented in Tick lowering | Inputs receive a reset zero-capacity sequence. Outputs receive a bounded sink sized from `max_events_per_index`, history, latency, and root block size, with normal overflow telemetry. |
 
 #### Remaining event-connection work
 
@@ -430,7 +431,7 @@ when the callback returns. A node that implements only `tick()` is executed by
 `do_tick_block()` as one one-sample context per frame, advancing input/output
 cursors after every call. Primitive maximum-block slicing reconstructs the same
 facades at each slice index, so authored-latency revision must remain valid across
-both slice and root-call boundaries. Well-formed realtime nodes publish exactly
+both slice and root-call boundaries. Well-formed Tick nodes publish exactly
 one sample frame per output per `tick()`, or `block_size` frames per output per
 `tick_block()`; release execution does not maintain a redundant production-count
 check.
@@ -444,7 +445,7 @@ generic callback contract until activity/TTL lowering lands.
 Fresh compiler-owned persistent connection state is lifecycle-owned. Sample
 feedback/carry/alignment raw regions and persistent event representations install
 `NodeLayout` raw initializers; exact-shape persistent regions skip initialization
-when migration restores their bytes. The generated realtime root contains no
+when migration restores their bytes. The generated Tick root contains no
 first-call initialization guard. Transient event sequences and feedback cursors
 are fixed stack/SSA state for one root call and reset there. Unequal-latency
 sample-feedback alignment uses the initialized alignment-ring samples directly as
@@ -480,13 +481,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    records node/dependency topology, deterministic SCC/region scheduling,
    producer-group/connection temporal facts, sample/event chooser requirements,
    and semantic liveness/storage requests before any package LLVM is consumed.
-   Realtime policy selection remains in `choose_*_connection_implementation()`;
-   indexed and mixed-access directions are classified separately. Configured
+   Sequential-storage policy selection remains in
+   `choose_*_connection_implementation()`; random-access and mixed-delivery
+   directions are classified separately. Configured
    virtual-node records are metadata only: execution planning follows concrete
    bundles and configured connections directly and never lowers legacy/internal
    virtual/runtime helper nodes.
 6. **Simple feed-forward sample connections.** **Landed.** Internal whole-port
-   realtime sample edges realize `direct` and `transient_materialization` with
+   Tick-to-Sequential sample edges realize `direct` and `transient_materialization` with
    bounded sample backing only. Reflected binding records hold concrete resolved
    per-channel pointer/stride slices; imported primitive wrappers reconstruct
    invocation-local `InputPort`/`OutputPort` facades from those pointers and the
@@ -504,7 +506,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    representation is faked with transient storage; persistent/feedback/external
    kinds remain capability-gated for their dedicated later steps.
 8. **Sample fanout, layout conversion, and channel composition.** **Landed for
-   feed-forward realtime branches.** One canonical producer-layout representation
+   feed-forward Tick-to-Sequential branches.** One canonical producer-layout representation
    is written once; identity, layout-only, and mono-to-stereo consumers bind its
    channels directly. Arithmetic converted fanout still uses a deduplicated derived
    result representation. Pure semantic channel projection/permutation and
@@ -514,10 +516,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    channel-selective: aliasable channels remain direct, while arithmetic conversion
    reads distinct resolved source channels and materializes only its result channels.
    Materialization is generated
-   whole-project LLVM using absolute-indexed physical storage and contains no
+   whole-project LLVM using absolute-position-addressed physical storage and contains no
    runtime converter object, heap allocation, or `OutputPort` conversion state.
-9. **Sample history and latency.** **Landed for declared realtime sample history/latency.**
-   `compact_persistent_carry` uses one transient absolute-indexed working ring plus
+9. **Sample history and latency.** **Landed for declared sample history/latency in Tick execution.**
+   `compact_persistent_carry` uses one transient absolute-position-addressed working ring plus
    exactly the retained tail in persistent raw `NodeStorage`; the tail is restored
    before its producer and committed after producer-side materializations. Larger
    retention uses `persistent_ring`, binding primitives directly to one power-of-two
@@ -539,13 +541,13 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     persisting `EventSharedPortData`/port objects. Transient representations are
     lifetime-packed into a fixed generated-root stack arena, while bindings hold
     already-resolved pointers to stack or persistent storage. Exact-type, zero-retention,
-    unsliced realtime producer groups realize direct bounded sequences. Sliced
+    unsliced Tick producer groups realize direct bounded sequences. Sliced
     producers use a bounded invocation aggregate. Exact-type consumers alias it
     and select their absolute-time window without a copy; conversion creates an
     explicitly scoped derived sequence.
     Event conversion plans are preserved by semantic analysis and realized as
     explicit transient sequence operations; identical converted fanout branches
-    share one derived representation/materialization. Realtime event outputs are
+    share one derived representation/materialization. Tick event outputs are
     contractually emitted in nondecreasing absolute sample-index order within
     each callback invocation. Transient
     multi-producer event inputs place semantic source 0 directly in the canonical
@@ -589,18 +591,18 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     because the declared maximum does not require events to be distributed
     uniformly across timestamps. Event feedback storage lands in point 12; telemetry
     surfacing remains; transient event backing and direct-pointer binding are landed.
-12. **SCC/feedback execution.** **Sample and realtime event feedback landed.**
+12. **SCC/feedback execution.** **Sample and Tick-event feedback landed.**
     Sample `detach()` now executes through feedback-aware SCC
     scheduling with nonzero reflected `scc_feedback_latency`, producer-home or
     branch-local retained timelines selected through the shared storage planner,
     source latency/history, channel conversion,
     projected/permuted composition, unequal-latency mixing alignment, exact-shape
     generation migration, and ordinary identity/converted/history fanout from an
-    SCC producer into downstream acyclic regions. For internal realtime sample
+    SCC producer into downstream acyclic regions. For internal Tick-to-Sequential sample
     connections this closes the normal transport surface; the remaining sample
-    connection gates are indexed-access directions; root I/O is represented by
+    connection gates are random-access/background delivery directions; root I/O is represented by
     ordinary concrete system/communication nodes rather than boundary ports.
-    Event feedback accepts realtime exact or non-expanding converted streams,
+    Event feedback accepts Tick-produced exact or non-expanding converted streams,
     including source/target history, source latency, and same-SCC fan-in. The
     implementation covers same-delay
     detached fanout, burst retention, changing root-call sizes, and generation
@@ -632,7 +634,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     Input access, output production, and output retention remain distinct through
     the builder, serialization, compiler records, per-channel tiling and GraphJit
     planning. Connection compatibility is classified per source channel/event pair;
-    only Tick -> Sequential contributes same-slice scheduling and realtime storage,
+    only Tick -> Sequential contributes same-slice scheduling and sequential storage,
     while Tock preparation/materialization and persisted Tick boundaries are retained
     as background facts. Unreproducible Tick/ephemeral -> RandomAccess demand is the
     remaining connection-level rejection and requires explicit recording.
@@ -643,30 +645,31 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     Sequential dependencies, stops at persisted boundaries, rejects replay cycles
     and records synthesized pointwise F/R plus background replay ordering. Contextual
     replayability remains a per-path compiler fact, not an output config field.
-17. **Finish ordinary background indexed execution before capture consumption.**
-    The reusable reflected batch ABI, indexed callback imports, and generated
+17. **Finish ordinary background evaluation before capture consumption.**
+    The reusable reflected batch ABI, coverage/Tock callback imports, and generated
     F/R/evaluation programs have landed. Next implement `GraphExecutor`,
-    temporary tock pages, persisted page completion, atomic publication, pinned
+    transaction-local Tock materializations, persisted page completion, atomic publication, pinned
     snapshot reads and advance preparation for sequential playback. Tock-to-random-
-    access edges require addressable pages even if the tock output is ephemeral;
+    access edges require a transaction-local page-backed materialization when the
+    Tock output is ephemeral;
     eligible pure-tick subgraphs can be fused. Playback reads stale pages as-is and
     substitutes an input's neutral value for missing pages without blocking.
 18. **Enable explicit recording.** Define bridge capture metadata and authored
     recording policy, provision slab storage off the audio thread, then capture
     immediately at the producing block. Consume fixed capture prefixes through the
     **already implemented** F/R/evaluation transactions; publish once and reclaim
-    committed capture blocks. Invalidation never evicts persisted pages.
+    committed capture blocks. Invalidation never evicts persisted covered data.
 19. **Generation reconciliation.** Rebind compatible stable persisted stores across
-    generations. Persisted generated pages remain retained throughout their covered
-    lifetime; coverage removal is the only logical deletion condition. Superseded
-    physical versions are reclaimed after their readers release them.
+    generations. Persisted generated/finalized data remains retained throughout its
+    covered lifetime; coverage removal is the only semantic deletion condition.
+    Superseded physical versions are reclaimed after their readers release them.
 20. **Finish remaining authored-node semantics** (nested declarations, compiler-
     owned regions, activity/TTL, detach, events and skip scheduling).
 21. **Optimize** with SIMD, loop fusion, materialization placement, storage liveness
     and bounded immutable-value specialization only after correctness is established.
 
 The detailed, normative dependency order is
-[indexed_dsp_nodes.md §32](./indexed_dsp_nodes.md#32-implementation-landing-order).
+[coverage_and_background_evaluation.md §32](./coverage_and_background_evaluation.md#32-implementation-landing-order).
 The two compiler JIT **stages** below must not be confused with the deprecated
 legacy graph **executor**, which is to be removed completely.
 
@@ -699,7 +702,7 @@ ConfiguredGraph
 whole-project lowering and explicit graph analyses
         |
         v
-specialized root-node LLVM + indexed-component executors
+specialized root-node LLVM + background-evaluation component executors
         |
         v
 GraphJit ORC
@@ -836,8 +839,8 @@ invoking initialization, move/migration, release, and destruction in the order
 described by that layout. Do not replace that orchestration with monolithic
 generated project initialize/move/release functions.
 
-The root node has no indexed output ports, therefore it has no project-wide
-`tock_coverage()` operation. Indexed outputs inside the project remain
+The root node has no project-visible background-evaluation output ports, therefore it has no
+project-wide `tock_coverage()` operation. Internal requestable outputs remain
 addressable through immutable `CompiledGraph` metadata described below; they are
 not exposed by pretending that the zero-port project root has synthetic outputs.
 
@@ -854,13 +857,13 @@ one `NodeLayoutBuilder` and finalizes it before emitting final storage accesses
 into LLVM. The completed `NodeLayout` becomes part of `CompiledGraph`, and
 `GraphExecutor` creates and owns the corresponding `NodeStorage`.
 
-The canonical fixed layout may cover indexed-domain `IndexedState` as well as
-normal `State`, but their semantics differ. `State` participates in sequential
+The canonical fixed layout may include `IndexedState` as well as
+normal `State`, but their semantics differ. `IndexedState` is Tock-side acceleration state. `State` participates in sequential
 node behavior. `IndexedState` is optional non-semantic acceleration storage exposed
 only to `tock_coverage()`; tick and propagation callbacks do not receive it.
 Ordinary declaration/lifecycle machinery still owns its construction/migration/
 destruction as fixed node storage, and the executor may reset or duplicate it when
-that does not violate storage-lifecycle constraints because observable indexed
+that does not violate storage-lifecycle constraints because observable Tock-output
 results cannot depend on its contents.
 
 Source introspection publishes symmetric metadata for `State` and
@@ -878,15 +881,15 @@ should use the same `NodeLayout` / `NodeStorage`, including for example:
 - history/latency/feedback carry;
 - full fixed persistent sample/event buffers;
 - root/compiler-owned activity state;
-- bounded reusable indexed-evaluation workspaces; and
+- bounded reusable background-evaluation workspaces; and
 - other fixed-size compiler-selected project regions.
 
 Dynamically sized tock/persisted output storage is an explicit exception because
 its page/payload size follows actual coverage and retained authoritative content
 rather than one fixed `NodeLayout`. Stable tock/persisted outputs live in an
-executor-owned indexed store independent of one JIT generation; each
+executor-owned persisted-output store independent of one JIT generation; each
 `CompiledGraph` supplies immutable endpoint bindings and representation facts.
-`tock/ephemeral` outputs own no persistent result. Outputs without stable project
+`tock/ephemeral` outputs own no persisted result. Outputs without stable project
 identity may use generation-local tock/persisted state where needed. This is not
 a second node-state layout system: fixed `State`, optional tock-only `IndexedState`,
 and compiler-known bounded regions still have one canonical `NodeStorage`, while
@@ -895,15 +898,15 @@ sidecars. Tick/persisted finalized data can satisfy random-access reads directly
 replayable tick/ephemeral output can do so where upstream data is available. Explicit
 recording bridges additionally use executor/runtime-owned slab-backed capture logs;
 those blocks are temporary immutable transaction inputs and are reclaimed after the
-indexed transaction that materializes them commits.
+background evaluation transaction that materializes them commits.
 
-Invocation-local realtime sample/event buffers occupy compile-time byte ranges in
+Invocation-local Tick-execution sample/event buffers occupy compile-time byte ranges in
 the generated root stack. Sample and event ranges are lifetime-packed within
 their payload class, then placed as two aligned subranges of one root allocation.
 If the resulting byte count exceeds the configured limit, lowering re-runs
 storage selection so eligible buffers use full `NodeStorage`; if the remaining
 conversion/merge buffers still do not fit, compilation fails. Execution never
-allocates a replacement dynamically on the realtime path.
+allocates a replacement dynamically on the audio-thread path.
 
 This gives the whole-project compiler control over physical declaration order.
 The current layout builder packs regions in declaration order while solving
@@ -948,14 +951,14 @@ workspace has a known maximum size or is intentionally reusable across queries,
 the compiler should prefer a root-owned `NodeLayout` region rather than a
 separate project scratch allocation.
 
-## Background random-access evaluation is internal to the generated project
+## Background evaluation is internal to the generated project
 
 The normative port schema and execution semantics are in
-[indexed_dsp_nodes.md](./indexed_dsp_nodes.md#13-authored-port-schema-retention-and-replayability).
+[coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md#13-authored-port-schema-retention-and-replayability).
 `SequentialInputConfig` and `RandomAccessInputConfig` select consumer access;
 `TickOutputConfig` and `TockOutputConfig` select producer callback; the output's
 `OutputRetention` is separate. The checked-in source uses these final independent contracts directly; no
-intermediate realtime/indexed port-config aliases remain.
+intermediate `Realtime*`/`Indexed*` port-config aliases remain.
 
 An ordinary tick/ephemeral stream may feed a sequential input. It needs an explicit
 recording-policy node only when it is **unreproducible** and a downstream input
@@ -969,7 +972,7 @@ A separate replayability node type trait validates eligible `tick()`-only nodes:
 no native `tick_block()`, no `State`, random-access inputs, history, or latency,
 plus a fixed-version pure/deterministic replay contract. GraphJit reuses the
 **existing** generated and LLVM-imported `tick_block()` wrapper in background
-random-access evaluation. Its static same-position temporal dependencies admit
+evaluation. Its static same-position temporal dependencies admit
 compiler-synthesized F/R; upstream availability determines whether each particular
 output can actually replay. The tock forward/reverse callback interface is unchanged.
 
@@ -977,15 +980,15 @@ output can actually replay. The tock forward/reverse callback interface is uncha
 Background workers prepare data. An audio-thread sequential input reads an existing
 published page as-is even if stale, and substitutes that input's `neutral_value`
 for a missing page. The audio thread never waits or recomputes a missing page.
-A persisted output never evicts generated pages within coverage for memory
-pressure, age or invalidation. Recomputed pages replace old published versions
-atomically; coverage removal alone permits logical page deletion, and old physical
-versions remain until reader pins are released.
+A persisted output never evicts generated/finalized covered data for memory
+pressure, age or invalidation. For page-backed outputs, recomputed pages replace old
+published versions atomically. Coverage removal alone ends the retention obligation,
+and old physical versions remain until reader pins are released.
 
 The explicit recording bridge remains for unreproducible sequential sources.
 `tick_block()` captures each produced recording block into provisioned slabs;
 a background pass snapshots a fixed capture-sequence prefix and commits its
-ordinary F/R/evaluation transaction once. The indexed page version advances on
+ordinary background evaluation transaction once. The page version advances on
 commit, not capture insertion. Published retained pages never refer to the
 recyclable capture slabs.
 
@@ -1023,35 +1026,35 @@ structural recompilation input instead.
 ## Lowering boundary
 
 The lowering result should carry immutable metadata sufficient for runtime work
-without rediscovering project topology. In addition to ordinary realtime schedule
+without rediscovering project topology. In addition to ordinary Tick schedule
 metadata it needs, as applicable:
 
-- stable indexed endpoint identities and generation-local ordinals;
+- stable background-planning endpoint identities and generation-local ordinals;
 - output production and retention per output, plus destination access/delivery facts per connection contribution;
 - generated batched forward/reverse/tock traversal entrypoints and constant
   context-layout facts;
-- indexed component/order information;
-- per-node/per-port indexed-batch accumulator offsets/layout;
+- background evaluation component/order information;
+- per-node/per-port background evaluation transaction accumulator offsets/layout;
 - semantic SCC IDs/validation products;
-- persistent stored-output bindings;
-- persistent reverse-cut/page-validity binding facts;
+- persisted-output store bindings;
+- persisted-output reverse-cut/page-validity binding facts;
 - direct/transient plans for tock/ephemeral outputs;
 - complete stored bindings for tock/persisted outputs;
 - explicit recording-bridge output identities and capture metadata layout;
-- immutable pages-version bindings/publication metadata and reader-pin requirements;
+- immutable page-version bindings/publication metadata and reader-pin requirements;
 - capture-sequence/frontier and allocator/reclamation integration facts; and
 - event fan-in ordering/capacity facts.
 
-Project sample rate is part of computed indexed semantics and must be supplied to
+Project sample rate is part of background-computed output semantics and must be supplied to
 `tock_coverage()` and propagation where mappings depend on it.
 
 ## `CompiledGraph`
 
 `CompiledGraph` remains the immutable JIT artifact: generated machine code plus
-compiler metadata. The name describes compilation, not indexed port access.
+compiler metadata. The name describes compilation, not random-access semantics.
 
-It owns no mutable dynamic indexed payloads. It describes how a generation binds
-to executor-owned persistent indexed storage, recording-capture resources, and
+It owns no mutable dynamic persisted-output or transaction payloads. It describes
+how a generation binds to executor-owned persisted-output storage, recording-capture resources, and
 transaction workspaces.
 Stable stored-output identity is derived from stable project node/member/output
 identity, not generation-local primitive IDs. This applies to tick/persisted as
@@ -1059,44 +1062,44 @@ well as tock/persisted outputs; neither is a best-effort cache.
 
 ## `GraphExecutor` boundary
 
-`GraphExecutor` owns the mutable runtime side of indexed execution:
+`GraphExecutor` owns the mutable runtime state for background evaluation and
+persisted outputs:
 
 - active/pending executable generations and canonical `NodeStorage`;
 - optional tock-only `IndexedState` lifecycle/storage;
-- stable persistent stores/immutable roots for `tock/persisted` outputs;
-- candidate/published indexed semantic versions plus immutable pages versions;
+- stable persisted-output stores/immutable roots for `tock/persisted` outputs;
+- candidate/published semantic versions plus immutable page versions;
 - the recording-capture log, processed-sequence frontier, slab allocation/
   reclamation state, and page-version reader pins;
-- reusable indexed batch workspaces/accumulators;
+- reusable background evaluation transaction workspaces/accumulators;
 - closed invalidation-root and demand-root normalization;
 - exact batched forward invalidation and reverse-demand/tock transactions, with
   each node callback invoked at most once per applicable phase of a batch;
 - complete `tock/persisted` candidate materialization;
-- external indexed request/result/change-notification lifetimes; and
+- external random-access request/result/change-notification lifetimes; and
 - safe whole-root-block executable/snapshot publication.
 
-A semantic edit may build a complete indexed candidate while realtime continues
+A semantic edit may build a complete candidate page version while audio-thread execution continues
 against an older immutable published base. Playback reads those old pages as-is,
 using each sequential input's neutral value only for genuinely absent pages. Recording captures may likewise
-accumulate while an indexed pass runs, but they do not advance the pages version.
-The running pass keeps its fixed capture cutoff; a successor pages version appears
-only after the complete indexed propagation/tock transaction commits.
+accumulate while a background evaluation pass runs, but they do not advance the page version.
+The running pass keeps its fixed capture cutoff; a successor page version appears
+only after the background evaluation transaction commits.
 
-Stable executable replacement is rebinding rather than automatic indexed
+Stable executable replacement is rebinding rather than automatic semantic
 invalidation. Unchanged tock/persisted payloads and compatible retained tick/
-persisted content survive compatible JIT rebuilds. Persisted covered pages are not
-evicted merely because they are stale or memory use grows. `tock/ephemeral` owns
-no persistent output data to rebind.
+persisted content survive compatible JIT rebuilds. Persisted covered data is not evicted merely because it is stale or memory use grows. `tock/ephemeral` owns
+no persisted output data to rebind.
 
-Changing project sample rate invalidates/repropagates computed indexed semantics.
+Changing project sample rate invalidates/repropagates background-computed output semantics.
 `tock/persisted` candidates are recomputed before publication; `tock/ephemeral`
-naturally evaluates under the new rate. Existing tick/persisted samples are not automatically resampled or reindexed: if preserving their
+naturally evaluates under the new rate. Existing tick/persisted samples are not automatically resampled or remapped to new sample indices: if preserving their
 original timing matters, an explicit sampler/resampler node performs that DSP.
 
 Receiving a new executable generation likewise does not mutate an in-progress live
 pass. Expensive preparation happens off the hot path. Executable activation occurs
 only at legal whole-pass boundaries. Recording captures published concurrently with
-an indexed pass remain outside that pass's fixed capture-sequence cutoff and are
+a background evaluation pass remain outside that pass's fixed capture-sequence cutoff and are
 consumed by a later transaction.
 
 ## Failure semantics
@@ -1131,7 +1134,7 @@ logical whole-graph lowering
     v
 dependency / schedule / SCC / region analysis
     |
-    +--> indexed component + forward-invalidation/reverse-demand order analysis
+    +--> background evaluation components + forward-invalidation/reverse-demand order analysis
     |
     v
 history / latency / event-window analysis
@@ -1147,7 +1150,7 @@ canonical declaration/layout planning
     +--> finalized NodeLayout + constant offsets
     |
     v
-specialized project-root + indexed-component LLVM generation
+specialized project-root + background-evaluation-component LLVM generation
     |
     v
 graph-specific optimization / -O3 / target optimization
@@ -1170,8 +1173,8 @@ either kind of region, their size/alignment, liveness, and desirable layout
 before LLVM/declaration generation; they do not create a parallel persistent
 allocation model.
 
-See [realtime_port_storage_planning.md](./realtime_port_storage_planning.md) for
+See [sequential_port_storage_planning.md](./sequential_port_storage_planning.md) for
 the rule that logical connections do not imply buffers, and
-[indexed_dsp_nodes.md](./indexed_dsp_nodes.md) for exact coverage/change
+[coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md) for exact coverage/change
 propagation, whole-page covered-domain validity/versioning, reverse demand, and
 batched tock semantics that lowering specializes.

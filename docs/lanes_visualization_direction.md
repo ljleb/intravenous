@@ -25,7 +25,7 @@ It should also be read with the current intended split between:
 The timeline/lane graph is intended to be the single unified graph for both:
 
 - compiled timeline content
-- realtime/live content such as microphones or controls
+- live content such as microphones or controls
 
 Everything is represented as lanes.
 
@@ -126,7 +126,7 @@ This is needed for:
 
 ### Causal sampling
 
-Both compiled and realtime lanes also need causal block-by-block sampling for
+Both compiled and live lanes also need causal block-by-block sampling for
 playback.
 
 This means:
@@ -135,7 +135,7 @@ This means:
 - in order
 - one block at a time
 
-Realtime lanes naturally participate in causal playback. Compiled lanes may also
+Live lanes naturally participate in causal playback. Compiled lanes may also
 be consumed that way during playback.
 
 Execution and sampling should therefore be separated:
@@ -167,16 +167,16 @@ This means:
 
 This is preferred over notifying the UI once per finished audio block.
 
-## Realtime versus compiled visualization refresh
+## Live versus compiled visualization refresh
 
-### Realtime lanes
+### Live lanes
 
-Realtime lanes should usually contribute fresh data continuously as execution
+Live lanes should usually contribute fresh data continuously as execution
 runs.
 
-Most UI visualization ticks will therefore mostly reflect realtime lane updates.
+Most UI visualization ticks will therefore mostly reflect live lane updates.
 
-Later, some realtime visualization parameters may themselves be worth exposing
+Later, some live visualization parameters may themselves be worth exposing
 as lane-driven inputs. One example is waveform-window width or period: an
 appropriate event input could drive the displayed window width so the UI can
 follow a meaningful frequency or period rather than showing a chaotic rolling

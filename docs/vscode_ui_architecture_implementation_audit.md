@@ -43,7 +43,7 @@ replace the intended direction in `vscode_ui_architecture_direction.md`.
   position, lane virtualization/viewport updates, and currently visible local
   connections.
 - Lane-kind-specific rendering exists for the generated beat-trigger plugin and
-  realtime meter/event presentation. Lane UI state can be persisted through
+  live meter/event presentation. Lane UI state can be persisted through
   `timeline.setLaneUiState`.
 - The lane UI already uses VS Code theme variables and has a dense timeline
   direction, but it is still a hand-written DOM application.

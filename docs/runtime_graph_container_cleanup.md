@@ -428,7 +428,7 @@ measurable purpose.
 
 The most likely improvements are graph configuration/lowering/compiler latency,
 allocation count, and standard-library portability. None of these changes
-should affect realtime DSP execution after a graph has been built; they are
+should affect audio-thread DSP execution after a graph has been built; they are
 build/reload-path improvements.
 
 Removing all graph uses of `<flat_map>` / `<flat_set>` would also eliminate the
