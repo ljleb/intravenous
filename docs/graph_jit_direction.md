@@ -645,20 +645,21 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     Sequential dependencies, stops at persisted boundaries, rejects replay cycles
     and records synthesized pointwise F/R plus background replay ordering. Contextual
     replayability remains a per-path compiler fact, not an output config field.
-17. **Finish ordinary background evaluation before capture consumption.**
-    The reusable reflected batch ABI, coverage/Tock callback imports, and generated
-    F/R/evaluation programs have landed. Next implement `GraphExecutor`,
-    transaction-local Tock materializations, persisted page completion, atomic publication, pinned
-    snapshot reads and advance preparation for sequential playback. Tock-to-random-
-    access edges require a transaction-local page-backed materialization when the
-    Tock output is ephemeral;
-    eligible pure-tick subgraphs can be fused. Playback reads stale pages as-is and
-    substitutes an input's neutral value for missing pages without blocking.
-18. **Enable explicit recording.** Define bridge capture metadata and authored
-    recording policy, provision slab storage off the audio thread, then capture
-    immediately at the producing block. Consume fixed capture prefixes through the
-    **already implemented** F/R/evaluation transactions; publish once and reclaim
-    committed capture blocks. Invalidation never evicts persisted covered data.
+17. **Implement subset-based storage inference and ordinary background evaluation.**
+    Partition overlapping endpoint incidence, join source/target capabilities, and
+    coalesce only after correctness requirements are known. Then implement
+    `GraphExecutor`, transaction-local/prepared ephemeral materialization, canonical
+    persisted-page completion for Tick and Tock persisted outputs, atomic publication,
+    and preliminary published/prepared-snapshot-only Random Access reads. Background
+    ephemeral Random Access may use transaction-local page-backed materialization;
+    Tick-time ephemeral Random Access must be prepared before the callback. Playback
+    never blocks or invokes Tock.
+18. **Enable shared Tick capture and explicit recording.** Define the shared capture
+    metadata/pool, provision slabs off the audio thread, and capture Tick/persisted or
+    explicit-recorder blocks at production/finalization time. Consume fixed capture
+    prefixes through the background transaction, publish into the canonical page store,
+    and reclaim blocks only with callback-boundary-safe ownership. A same-Tick recent-
+    capture Random Access overlay remains a later optional experiment.
 19. **Generation reconciliation.** Rebind compatible stable persisted stores across
     generations. Persisted generated/finalized data remains retained throughout its
     covered lifetime; coverage removal is the only semantic deletion condition.
@@ -884,21 +885,25 @@ should use the same `NodeLayout` / `NodeStorage`, including for example:
 - bounded reusable background-evaluation workspaces; and
 - other fixed-size compiler-selected project regions.
 
-Dynamically sized tock/persisted output storage is an explicit exception because
-its page/payload size follows actual coverage and retained authoritative content
-rather than one fixed `NodeLayout`. Stable tock/persisted outputs live in an
-executor-owned persisted-output store independent of one JIT generation; each
-`CompiledGraph` supplies immutable endpoint bindings and representation facts.
-`tock/ephemeral` outputs own no persisted result. Outputs without stable project
-identity may use generation-local tock/persisted state where needed. This is not
-a second node-state layout system: fixed `State`, optional tock-only `IndexedState`,
-and compiler-known bounded regions still have one canonical `NodeStorage`, while
-tock/persisted payloads and request-sized transaction storage are executor
-sidecars. Tick/persisted finalized data can satisfy random-access reads directly;
-replayable tick/ephemeral output can do so where upstream data is available. Explicit
-recording bridges additionally use executor/runtime-owned slab-backed capture logs;
-those blocks are temporary immutable transaction inputs and are reclaimed after the
-background evaluation transaction that materializes them commits.
+Dynamically sized persisted-output storage is an explicit exception because its
+page/payload size follows actual coverage and retained authoritative content rather
+than one fixed `NodeLayout`. Tick/persisted and Tock/persisted outputs use the same
+executor-owned canonical persisted-page store abstraction independent of one JIT
+generation; each `CompiledGraph` supplies immutable endpoint bindings and
+representation facts. `tock/ephemeral` outputs own no persisted result. Outputs
+without stable project identity may use generation-local persisted bindings where
+needed. This is not a second node-state layout system: fixed `State`, optional
+Tock-only `IndexedState`, and compiler-known bounded regions still have one canonical
+`NodeStorage`, while persisted-page payloads and request-sized transaction storage
+are executor sidecars.
+
+Tick/persisted finalized data satisfies Random Access through the published
+persisted-page snapshot; replayable Tick/ephemeral output can satisfy it through
+background replay where upstream data is available. Explicit recording and
+Tick/persisted staging may share executor/runtime-owned slab-backed Tick-capture
+blocks/logs. In the preliminary implementation those capture blocks are not a
+second Random Access source: newly captured Tick/persisted data becomes visible only
+after publication into the canonical page store.
 
 Invocation-local Tick-execution sample/event buffers occupy compile-time byte ranges in
 the generated root stack. Sample and event ranges are lifetime-packed within
@@ -960,13 +965,15 @@ The normative port schema and execution semantics are in
 `OutputRetention` is separate. The checked-in source uses these final independent contracts directly; no
 intermediate `Realtime*`/`Indexed*` port-config aliases remain.
 
-An ordinary tick/ephemeral stream may feed a sequential input. It needs an explicit
-recording-policy node only when it is **unreproducible** and a downstream input
-requires random-access demand. Finalized persisted tick data and outputs of
-contextually replayable `tick()` nodes can satisfy that demand directly. A tock
-output (ephemeral or persisted) can feed sequential or random-access consumers;
-a tock-to-random-access edge materializes addressable pages. Per-channel tiling
-preserves each member's contract without implicit retention.
+An ordinary Tick/ephemeral stream may feed a Sequential input. It needs authored
+persistence or an explicit recorder only when it is **unreproducible** and downstream
+Random Access demand reaches it. Tick/persisted data satisfies that demand through
+the canonical published persisted-page snapshot. Contextually replayable
+Tick/ephemeral and Tock/ephemeral data use immutable addressable materialization;
+background-only consumers may use transaction-local storage while Tick-time consumers
+require prepared data. Tock/persisted uses the same canonical page read path as
+Tick/persisted. Per-channel tiling preserves each member's contract without implicit
+retention.
 
 A separate replayability node type trait validates eligible `tick()`-only nodes:
 no native `tick_block()`, no `State`, random-access inputs, history, or latency,
@@ -981,16 +988,32 @@ Background workers prepare data. An audio-thread sequential input reads an exist
 published page as-is even if stale, and substitutes that input's `neutral_value`
 for a missing page. The audio thread never waits or recomputes a missing page.
 A persisted output never evicts generated/finalized covered data for memory
-pressure, age or invalidation. For page-backed outputs, recomputed pages replace old
-published versions atomically. Coverage removal alone ends the retention obligation,
-and old physical versions remain until reader pins are released.
+pressure, age or invalidation. All persisted outputs use the canonical persisted-page
+store; recomputed/finalized pages replace old published versions atomically. Coverage
+removal alone ends the retention obligation, and old physical versions remain until
+reader pins are released.
 
-The explicit recording bridge remains for unreproducible sequential sources.
-`tick_block()` captures each produced recording block into provisioned slabs;
-a background pass snapshots a fixed capture-sequence prefix and commits its
-ordinary background evaluation transaction once. The page version advances on
-commit, not capture insertion. Published retained pages never refer to the
-recyclable capture slabs.
+Physical storage selection is performed over **overlapping endpoint subsets**, not
+one connection at a time. GraphJit partitions source/target channel incidence into
+endpoint atoms, joins the independent capabilities required by every fan-out/fan-in
+use, then deduplicates conversions/compositions and physically coalesces equivalent
+atoms. This allows one Tock/ephemeral subset with Tick-time Random Access to require
+an addressable prepared window without promoting unrelated channels, while a
+Tick/persisted subset can simultaneously retain current Tick storage for Sequential
+consumers and canonical pages for Random Access.
+
+The preliminary Tick-time Random Access path pins a published page snapshot at the
+root callback boundary. A newly produced Tick/persisted capture in that callback is
+not visible until page publication and a later snapshot selection. A same-Tick recent
+capture overlay is a later optional optimization, not baseline semantics.
+
+The explicit recording bridge remains for unreproducible sequential sources, but
+its transport is no longer special-purpose. Tick/persisted staging and recorder
+outputs may use the same provisioned Tick-capture pool. A background pass snapshots a
+fixed capture-sequence prefix and commits its ordinary background transaction once.
+The page version advances on commit, not capture insertion. A page candidate may copy
+or adopt compatible capture payloads, but consumers see the canonical persisted-page
+abstraction rather than a separate capture-storage read path.
 
 ### Value specialization over immutable temporal data
 
@@ -1036,11 +1059,12 @@ metadata it needs, as applicable:
 - background evaluation component/order information;
 - per-node/per-port background evaluation transaction accumulator offsets/layout;
 - semantic SCC IDs/validation products;
-- persisted-output store bindings;
+- canonical persisted-page store bindings for Tick/persisted and Tock/persisted outputs;
 - persisted-output reverse-cut/page-validity binding facts;
+- endpoint-atom incidence partitions plus joined source/target storage-capability facts;
 - direct/transient plans for tock/ephemeral outputs;
-- complete stored bindings for tock/persisted outputs;
-- explicit recording-bridge output identities and capture metadata layout;
+- complete persisted-page bindings for Tick/persisted and Tock/persisted outputs;
+- Tick-capture output identities/policies and shared capture metadata layout;
 - immutable page-version bindings/publication metadata and reader-pin requirements;
 - capture-sequence/frontier and allocator/reclamation integration facts; and
 - event fan-in ordering/capacity facts.
@@ -1054,8 +1078,8 @@ Project sample rate is part of background-computed output semantics and must be 
 compiler metadata. The name describes compilation, not random-access semantics.
 
 It owns no mutable dynamic persisted-output or transaction payloads. It describes
-how a generation binds to executor-owned persisted-output storage, recording-capture resources, and
-transaction workspaces.
+how a generation binds to executor-owned canonical persisted-page storage,
+Tick-capture resources, and transaction workspaces.
 Stable stored-output identity is derived from stable project node/member/output
 identity, not generation-local primitive IDs. This applies to tick/persisted as
 well as tock/persisted outputs; neither is a best-effort cache.
@@ -1067,29 +1091,33 @@ persisted outputs:
 
 - active/pending executable generations and canonical `NodeStorage`;
 - optional tock-only `IndexedState` lifecycle/storage;
-- stable persisted-output stores/immutable roots for `tock/persisted` outputs;
+- stable canonical persisted-page stores/immutable roots for Tick/persisted and
+  Tock/persisted outputs;
 - candidate/published semantic versions plus immutable page versions;
-- the recording-capture log, processed-sequence frontier, slab allocation/
-  reclamation state, and page-version reader pins;
+- the shared Tick-capture log/pool, processed-sequence frontiers, callback-boundary
+  ownership, slab allocation/reclamation state, and page-version reader pins;
 - reusable background evaluation transaction workspaces/accumulators;
 - closed invalidation-root and demand-root normalization;
 - exact batched forward invalidation and reverse-demand/tock transactions, with
   each node callback invoked at most once per applicable phase of a batch;
-- complete `tock/persisted` candidate materialization;
+- complete Tock/persisted candidate materialization plus fixed-prefix incorporation
+  of Tick/persisted capture records;
 - external random-access request/result/change-notification lifetimes; and
 - safe whole-root-block executable/snapshot publication.
 
-A semantic edit may build a complete candidate page version while audio-thread execution continues
-against an older immutable published base. Playback reads those old pages as-is,
-using each sequential input's neutral value only for genuinely absent pages. Recording captures may likewise
-accumulate while a background evaluation pass runs, but they do not advance the page version.
-The running pass keeps its fixed capture cutoff; a successor page version appears
-only after the background evaluation transaction commits.
+A semantic edit may build a complete candidate page version while audio-thread
+execution continues against an older immutable published base. Playback reads those
+old pages as-is, using each Sequential input's neutral value only for genuinely
+absent pages. Tick captures may likewise accumulate while a background evaluation
+pass runs, but capture insertion does not advance the page version. The running pass
+keeps its fixed capture cutoff; a successor page version appears only after the
+background transaction commits.
 
 Stable executable replacement is rebinding rather than automatic semantic
-invalidation. Unchanged tock/persisted payloads and compatible retained tick/
-persisted content survive compatible JIT rebuilds. Persisted covered data is not evicted merely because it is stale or memory use grows. `tock/ephemeral` owns
-no persisted output data to rebind.
+invalidation. Compatible persisted payloads survive compatible JIT rebuilds
+regardless of Tick/Tock provenance. Persisted covered data is not evicted merely
+because it is stale or memory use grows. Ephemeral outputs own no persisted output
+data to rebind.
 
 Changing project sample rate invalidates/repropagates background-computed output semantics.
 `tock/persisted` candidates are recomputed before publication; `tock/ephemeral`
@@ -1098,8 +1126,8 @@ original timing matters, an explicit sampler/resampler node performs that DSP.
 
 Receiving a new executable generation likewise does not mutate an in-progress live
 pass. Expensive preparation happens off the hot path. Executable activation occurs
-only at legal whole-pass boundaries. Recording captures published concurrently with
-a background evaluation pass remain outside that pass's fixed capture-sequence cutoff and are
+only at legal whole-pass boundaries. Tick captures sealed concurrently with a
+background pass remain outside that pass's fixed capture-sequence cutoff and are
 consumed by a later transaction.
 
 ## Failure semantics

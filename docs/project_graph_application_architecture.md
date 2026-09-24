@@ -567,37 +567,41 @@ project generation. It does not own ORC compilation.
 - one canonical `NodeStorage` for each retained executable generation;
 - ordinary lifecycle/migration state for `State` and optional tock-only
   `IndexedState`;
-- stable persisted-output stores/immutable roots for identifiable `tock/persisted`
-  outputs, with per-generation endpoint bindings;
+- stable canonical persisted-page stores/immutable roots for identifiable
+  Tick/persisted and Tock/persisted outputs, with per-generation endpoint bindings;
 - reusable background-evaluation transaction workspace for reverse/forward planning and
   transaction-local `tock/ephemeral` materialization;
 - semantic versions plus monotonically advancing immutable page versions
   and candidate/published snapshots;
-- the recording-capture log, processed-sequence frontier, slab allocator/
-  reclamation state, and page-version reader pins;
+- the shared Tick-capture pool/log used by Tick/persisted staging and explicit
+  recording, processed-sequence frontiers, callback-boundary reclamation state,
+  slab allocator state, and page-version reader pins;
 - exact forward-change transactions, reverse-demand/tock transactions, and full
   `tock/persisted` candidate completion;
 - sequential execution through the generated zero-port root node; and
 - versioned external random-access sample/event requests/change notifications.
 
-Dynamically sized tock/persisted output data is deliberately not part of fixed
-`NodeStorage`. Stable tock/persisted outputs are not owned by one JIT generation
-merely because endpoint ordinals are generation-local: compatible generations rebind
-stable virtual-node/member/output identities to the same executor-owned storage
-without copying payloads. `tock/ephemeral` owns no persisted output payload.
-Finalized tick/persisted content is a directly readable random-access stored
-boundary, not a tock callback. Recording bridges own separate capture storage
-whose records are transaction inputs
-to the bridge's output. Published page versions materialize their own
-payload and never retain pointers into capture blocks.
+Dynamically sized persisted output data is deliberately not part of fixed
+`NodeStorage`. Stable persisted outputs are not owned by one JIT generation merely
+because endpoint ordinals are generation-local: compatible generations rebind stable
+virtual-node/member/output identities to the same executor-owned canonical page store
+without copying payloads. Ephemeral outputs own no persisted payload.
+
+Tick/persisted production reaches that same page store through capture/finalization
+staging rather than a Tock callback. Explicit recorder bridges may share the capture
+pool but retain their authored recording semantics. Capture records are
+pre-publication/background inputs, not a second retained-data representation. A page
+candidate may copy or adopt compatible capture payloads, but Random Access and
+persisted Sequential playback use the canonical published page abstraction.
 
 Executable-generation reconciliation treats genuinely new semantic nodes as node
 creation events. Outputs participating in background coverage propagation establish
 exact coverage through authored or compiler-synthesized forward-coverage semantics;
-tock/persisted candidates become publishable only after full materialization. Recording captures seed changed/added coverage on the
-explicit bridge's output only inside a fixed background evaluation transaction. The page
-version advances when that background evaluation transaction commits; JIT
-compilation alone is not a semantic invalidation event.
+Tock/persisted candidates become publishable only after full materialization.
+A fixed Tick-capture snapshot can seed explicit recorder output changes and can fill
+Tick/persisted candidate pages. The page version advances when the background
+evaluation/publication transaction commits; capture insertion and JIT compilation
+alone are not page publication or semantic invalidation events.
 
 Changing the connection set of a random-access input conservatively marks that whole
 logical input changed over `old_input_coverage | new_input_coverage`; ordinary
@@ -606,13 +610,14 @@ value-blind and may conservatively request a larger input region when dependency
 addressing depends on input payload values.
 
 Receiving a new `CompiledGraph` does not mutate an in-progress audio pass.
-The audio thread pins one published page view, plays present pages even when
-out of date, and substitutes the consuming sequential input's `neutral_value`
-for missing pages. It never invokes tock, allocates on a page miss, or waits
-for its replacement. Published tock/persisted data remains immutable. Recording capture storage is
-separate from published pages: the audio-thread path appends immutable captured blocks,
-while a background evaluation pass uses only the capture-sequence prefix fixed at its start.
-Later captures cannot enter that pass through the allocator/capture object.
+The audio thread pins one published page view at the callback boundary, plays present
+pages even when out of date, and substitutes the consuming Sequential input's
+`neutral_value` for missing pages. Tick-time Random Access uses the same selected
+immutable published/prepared snapshot in the preliminary implementation. It never
+invokes Tock, allocates on a page miss, or waits for replacement. Pending page
+candidates and newly sealed Tick-capture blocks do not become visible mid-callback.
+A background pass uses only the capture-sequence prefix fixed at its start; later
+captures cannot enter that pass.
 
 Persisted output data remains logically retained throughout generated coverage:
 there is no eviction for memory pressure, invalidation or lack of current readers.

@@ -1486,10 +1486,11 @@ not depend on its contents. `tick_block()`, `propagate_forward_coverage()`, and
 serialize, duplicate, reset, or independently instantiate `IndexedState`
 acceleration without changing observable output semantics.
 
-An unreproducible ephemeral tick stream requires an explicitly authored recording
-policy before it can satisfy random-access demand. Finalized persisted tick data
-and contextually replayable tick outputs can satisfy that demand without a recorder.
-`IndexedState` is not a recording store.
+An unreproducible Tick/ephemeral stream requires authored persistence or an explicit
+recorder before it can satisfy Random Access demand. Tick/persisted data satisfies
+that demand through the canonical published persisted-page snapshot; contextually
+replayable Tick/ephemeral data satisfies it through prepared/background replay
+materialization. `IndexedState` is not a recording store.
 
 This gives LLVM ordinary field-addressing and alias information after inlining.
 
@@ -1513,13 +1514,14 @@ establishes **contextual** replayability, which a node trait alone cannot assert
 Pointwise tick F/R temporal mappings can be compiler-synthesized; tock's existing
 authored propagation API remains unchanged.
 
-A sequential input can consume either producer. A random-access input can consume
-an ephemeral tock output through transaction-local addressable materialization, a persisted tock
-output through retained pages, a finalized persisted tick output directly, or a
-contextually replayable ephemeral tick output by background computation. An
-unreproducible ephemeral tick output requires an explicit recording-policy node;
-GraphJit never silently records it. Tiling preserves all member-channel contracts
-and adds no implicit output or recorder.
+A Sequential input can consume either producer. A Random Access input can consume
+Tick/persisted or Tock/persisted output through the canonical published page snapshot,
+or ephemeral Tock/replay output through an immutable addressable materialization.
+Background-only ephemeral reads may use transaction-local materialization; Tick-time
+reads require preparation before the callback. An unreproducible Tick/ephemeral
+output requires authored persistence or an explicit recorder; GraphJit never silently
+records it. Tiling preserves all member-channel contracts and adds no implicit output
+or recorder.
 
 `tock_coverage()` and forward/reverse tock propagation never execute on the audio
 thread. For audio-thread sequential playback, a present published page is read as-is
@@ -2522,9 +2524,18 @@ Important coverage includes:
 - converging reverse-demand paths coalesced before producer execution;
 - forward invalidation caused by both input changes and node-local state changes;
 - multi-output/global-position random-access batching;
+- overlapping fan-in/fan-out subset partitions where only some source/target atoms
+  require persistence, Tick-time Random Access preparation, conversion, or mixing;
+- physical coalescing after atom-level requirement joins, including prepared
+  addressable windows satisfying both Sequential and Random Access use;
+- Tick/persisted fanout to same-Tick Sequential and Random Access consumers, proving
+  that the Sequential consumer sees the current block while Random Access remains on
+  the callback-pinned published page snapshot until publication;
+- shared Tick-capture allocation for Tick/persisted staging and explicit recording,
+  including no free-pool reuse before a root callback boundary;
 - Tock request-order independence; and
-- explicit recording-bridge capture, fixed-snapshot propagation/tock, and random
-  access after transaction publication.
+- explicit recorder capture, fixed-snapshot propagation/Tock, and Random Access after
+  transaction publication.
 
 The existing test suite is a behavioral specification. The new kernel does not need to preserve obsolete runtime structures, but it must preserve relevant product semantics.
 
@@ -2579,31 +2590,46 @@ The following are treated as strong architectural decisions unless implementatio
     GraphJit reuses its traits-generated LLVM-imported block callback in the
     background DAG only when its upstream data is available. Static pointwise F/R
     propagation can be synthesized.
-30. **No implicit recording.** A tick/ephemeral source lacking contextual
-    reproducibility requires an explicit authored recording policy before random-
-    access demand. Finalized tick/persisted and both tock modes can be read
-    randomly; Tock-to-random-access edges use transaction-local page-backed materialization when ephemeral.
-31. **Background-only tock.** `tock_coverage()` and authored propagation callbacks
+30. **No implicit recording.** An unreproducible Tick/ephemeral source requires
+    authored persistence or an explicit recorder before Random Access demand.
+    Replayable Tick/ephemeral, Tick/persisted and both Tock modes can satisfy Random
+    Access through their legal materialization/publication paths.
+31. **Published/prepared snapshot Random Access first.** The preliminary Tick-time
+    Random Access implementation reads only an immutable callback-pinned published or
+    prepared view. Current mutable Tick buffers, pending page candidates and newly
+    sealed Tick captures are not read directly. Therefore a Tick/persisted-to-Random-
+    Access edge adds no same-Tick dependency in the baseline implementation.
+32. **One canonical persisted-page store.** Tick/persisted and Tock/persisted outputs
+    use the same page lookup, versioning, pinning and consumer read abstraction.
+    Production mode changes how candidate pages are populated, not how persisted data
+    is later read. Persistence still retains every generated/finalized covered value
+    without age, memory-pressure or invalidation eviction; coverage removal alone ends
+    the obligation.
+33. **Background-only Tock.** `tock_coverage()` and authored propagation callbacks
     never execute on the audio thread. Sequential playback reads a stale published
-    page as-is, and supplies its own `neutral_value` for a genuinely missing page.
-32. **Strict persistence.** Retain every generated/finalized persisted value while
-    covered, without memory-pressure, age or invalidation eviction. Coverage removal
-    alone ends the semantic retention obligation; free superseded physical versions
-    after unpinning.
-33. **Exact coverage and value-blind reverse demand.** `IndexedCoverage` and
-    the existing tock F/R ABI remain; page boundaries do not widen semantic
-    forward changes. The background replay dependency DAG rejects unresolved cycles.
-34. **`IndexedState` is only acceleration state.** It is available only to tock,
-    and cannot determine observable semantics.
-35. **Recording capture uses independent slab provisioning and fixed snapshots.**
-    An audio-thread recording path consumes pre-provisioned capture blocks at its
-    production point. Background F/R/evaluation processes one fixed capture-
-    sequence prefix; only transaction commit publishes pages and advances the
-    processed frontier. Capture storage is separate from retained output pages.
-36. **One canonical fixed `NodeStorage` per executable generation.** Retained
-    output stores, transaction-local materialization arenas and capture logs are executor-owned
-    sidecars; graph-specific node layouts and package code stay immutable.
-37. **Node creation and actual semantic changes establish invalidation.**
+    page as-is and supplies its own `neutral_value` for a genuinely missing page.
+    Ephemeral Tock/replay data needed by Tick execution is prepared ahead of the
+    callback rather than forcing full persistence.
+34. **Exact coverage and value-blind reverse demand.** `IndexedCoverage` and the
+    existing Tock F/R ABI remain; page boundaries do not widen semantic forward
+    changes. The background replay dependency DAG rejects unresolved cycles.
+35. **`IndexedState` is only acceleration state.** It is available only to Tock and
+    cannot determine observable semantics.
+36. **Shared Tick capture uses independent slab provisioning and fixed snapshots.**
+    Tick/persisted staging and explicit recording may consume the same allocator-
+    managed capture blocks. Background evaluation/publication processes one fixed
+    capture-sequence prefix. Capture insertion is not page publication, and a block
+    visible during one root callback is not returned to the audio-thread free pool
+    until a callback boundary.
+37. **Storage planning is subset-based.** Overlapping fan-in/fan-out selections are
+    partitioned into exact endpoint atoms. GraphJit joins every required capability
+    for each atom, derives/deduplicates conversion/composition results, then physically
+    coalesces equivalent storage. Requirements are not chosen independently per edge
+    or promoted wholesale per authored port.
+38. **One canonical fixed `NodeStorage` per executable generation.** Persisted-page
+    stores, ephemeral materialization workspaces and Tick-capture logs are executor-
+    owned sidecars; graph-specific node layouts and package code stay immutable.
+39. **Node creation and actual semantic changes establish invalidation.**
     Compatible JIT replacement is rebinding, not a reason to evict or invalidate
     retained data. Sample-rate changes re-evaluate computed semantics but do not
     silently resample finalized tick data.

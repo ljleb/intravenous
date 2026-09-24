@@ -116,7 +116,12 @@ Tick production within the same execution slice. In the current port model,
 Tick-to-Sequential contributions are the ordinary same-Tick scheduling dependencies.
 
 Use **same-Tick dependency**, **Tick schedule**, or **same-Tick scheduling graph**
-when scheduling order is the property that matters.
+when scheduling order is the property that matters. Under the preliminary
+published-snapshot Random Access implementation, a Tick-to-Random-Access connection
+does **not** create a same-Tick dependency: the consumer sees its callback-pinned
+published/prepared snapshot, not the producer's current block. A future recent-capture
+overlay that promises same-Tick Random Access visibility would add such a dependency
+explicitly.
 
 ### Background evaluation DAG
 
@@ -140,7 +145,7 @@ endpoint metadata.
 ### Audio thread / audio-thread execution
 
 Use **audio thread** only when the scheduling or hard execution constraint actually
-matters: no blocking, no request-sized allocation, pre-provisioned recording capture,
+matters: no blocking, no request-sized allocation, pre-provisioned Tick capture,
 or safe-boundary publication.
 
 Do not use Tick as a synonym for the audio thread. Tick callbacks may also be reused
@@ -159,8 +164,10 @@ runtime choice unless a document states otherwise.
 ### Capture allocator
 
 The **capture allocator** is the non-audio-thread provisioning role that maintains
-free capture-block capacity for recording. It is independent of background
-evaluation progress.
+the free-block reserve for the shared Tick-capture pool. Explicit recording and
+Tick/persisted staging may consume blocks from the same pool. Provisioning is
+independent of background-evaluation progress; a slow background worker increases
+the sealed/pending backlog rather than changing the audio-thread allocation rules.
 
 ## Coverage and change propagation
 
@@ -282,16 +289,21 @@ generation. It contains fixed node state and compiler-selected persistent region
 It is not the owner of dynamically sized persisted-output pages or recording
 capture backlogs.
 
-### Persisted page
+### Persisted page / persisted-page store
 
-A **persisted page** is a retained/versioned physical unit used when a persisted
-output has page-backed storage. Page validity is version-specific; an older readable
-persisted page may remain pinned while a successor is invalid or being rebuilt.
+A **persisted page** is the canonical retained/versioned physical unit for persisted
+sample or event output data. **All persisted outputs use the same persisted-page
+store abstraction regardless of whether their producer is Tick or Tock.** Production
+mode changes how pages are filled; it does not create another retained-data read
+path.
 
-Not every persisted representation must use this physical form: finalized
-Tick/persisted data may use a different retained representation. Use **persisted
-page** only when page-backed persisted storage is actually meant. Do not call an
-ephemeral intermediate a persisted page.
+Page validity is version-specific. An older readable persisted page may remain pinned
+while a successor candidate is incomplete or invalid. Physical backing may still be
+RAM, mmap/file-backed storage, immutable chunks, compression, or another page-store
+backend, but those are implementations of the same persisted-page abstraction rather
+than distinct semantic representations.
+
+Do not call an ephemeral intermediate a persisted page.
 
 ### Transaction-local materialization
 
@@ -299,28 +311,89 @@ A **transaction-local materialization** is an ephemeral concrete representation
 created for one background evaluation transaction and reusable by consumers within
 that transaction.
 
-For a Tock/ephemeral output feeding a Random Access consumer, the current design
-uses a **transaction-local page-backed materialization** so the consumer receives
-the required addressable representation. Replayable Tick work may avoid or fuse
-materialization where the consumer contract permits it. A transaction-local
-page-backed materialization is not a persisted page and carries no retention
-guarantee beyond the transaction/readers that require it.
+For a Tock/ephemeral or replayed Tick/ephemeral result feeding a background-only
+Random Access consumer, the preliminary implementation may use a
+**transaction-local page-backed materialization** so the consumer receives the
+required addressable representation. If Random Access occurs during Tick execution,
+the addressable representation must instead be prepared and published before the
+callback. Replayable Tick work may avoid or fuse materialization where the consumer
+contract permits it. A transaction-local page-backed materialization is not a
+persisted page and carries no retention guarantee beyond the transaction/readers
+that require it.
 
-### Prepared sequential data
+### Prepared sequential data / prepared addressable window
 
 **Prepared sequential data** is background-produced data made available before a
 future Sequential consumer runs. It is a delivery/materialization role, not an
 output-retention mode; the source may be ephemeral or persisted.
 
+For a Tock/ephemeral source, a bounded rolling **prepared sequential window** may be
+sufficient when all Tick-time consumers are Sequential. If any Tick-time consumer
+requires Random Access, the preparation must instead provide an immutable
+**prepared addressable window**. The latter can also provide sequential slices, so
+one addressable preparation may satisfy both uses for the same source subset.
+Persisted sources normally need no separate playback copy: Sequential consumers can
+view the appropriate pinned persisted pages directly.
+
+### Current Tick representation
+
+A **current Tick representation** is the mutable/current-block representation written
+by Tick production and read by same-Tick Sequential consumers after the required
+same-Tick dependency has executed. It is not a published persisted snapshot and is
+never the baseline backing for a Random Access input.
+
 ### Capture block / capture log
 
-A **capture block** is pre-provisioned storage used to copy a recording output at its
-production point without request-sized audio-thread allocation.
+A **capture block** is pre-provisioned storage that lets Tick-produced data escape the
+ordinary current-block lifetime without request-sized audio-thread allocation. The
+same allocator-managed block mechanism serves explicit recording and Tick/persisted
+staging. When layout permits and the captured region is already final under the Tick
+history/latency contract, the capture block may simultaneously be the producer's
+current Tick payload: Tick writes it once, same-Tick Sequential consumers read it
+after the producer executes, and background persistence later consumes/adopts it.
+Otherwise the generated path performs a bounded copy into a capture block when the
+region becomes final.
 
-The **capture log** is the append-only sequence of published capture records awaiting
-background consumption. Capture blocks are transaction input, not persisted output
-pages. Successfully committed transactions can return consumed capture blocks to
-the allocator/reuse pool after their retained result has been materialized elsewhere.
+A sealed capture block is immutable. A block that was acquired, written, or exposed
+during one root `tick_block()` callback remains physically stable until that callback
+boundary; it may be marked reclaimable earlier by another thread, but it is not
+returned to the audio-thread free-block pool during the callback.
+
+The **capture log** is the append-only sequence of sealed capture records awaiting
+background consumption/publication. In the preliminary implementation, Random Access
+reads do **not** consult this log: persisted data becomes Random-Access-visible only
+through a published persisted-page version. After commit, copied capture blocks may
+become reclaimable once callback/background ownership is gone; a payload adopted by
+the page store instead transfers physical ownership to the published page version.
+
+### Published-snapshot Random Access
+
+The preliminary Random Access implementation reads one immutable selected/pinned
+published representation. For persisted outputs that representation is the
+persisted-page snapshot. Pending candidates, current Tick buffers, and sealed but
+unpublished Tick capture blocks do not extend Random Access coverage or visibility.
+A Tick callback therefore cannot observe a newly produced Tick/persisted block until
+a successor page version containing it has been published and a later callback/read
+context selects that version.
+
+A future optimization may overlay a bounded recent set of sealed Tick capture blocks
+on top of the published persisted-page snapshot so a later node in the **same Tick**
+can Random-Access newly finalized recorded data. That optimization requires a
+same-Tick producer-to-consumer dependency, a source-selection branch (published page
+versus recent capture block; ordered merge for events), and callback-boundary-safe
+reclamation. It is deliberately not part of the preliminary implementation.
+
+### Endpoint atom / incidence partition
+
+An **endpoint atom** is a maximal source or target subset whose members have identical
+connection incidence and therefore identical correctness requirements before
+physical coalescing. Sample channels are the natural initial source elements; event
+ports may remain whole-port atoms unless routing semantics introduce a finer split.
+
+An **incidence partition** splits overlapping fan-in/fan-out selections into endpoint
+atoms before storage is chosen. Storage requirements are then joined across every
+use of each atom. Equivalent atoms may later share a physical policy or allocation;
+partitioning for correctness and coalescing for efficiency are separate stages.
 
 ## Source availability
 
@@ -328,8 +401,8 @@ the allocator/reuse pool after their retained result has been materialized elsew
 
 Use **live source** only when the relevant property is that historical values are
 not inherently reproducible from retained data. An unreproducible ephemeral Tick
-source needs an explicit recording policy before it can satisfy historical
-random-access demand.
+source needs authored persistence or an explicit recording policy before it can
+satisfy historical Random Access demand.
 
 Do not use **live** as a synonym for Tick, Sequential, or audio-thread execution.
 

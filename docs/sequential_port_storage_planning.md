@@ -126,28 +126,197 @@ choices rather than by materializing every logical edge.
 The compiler should make that decision from graph facts and a cost model rather
 than exposing a storage choice in the node declaration.
 
-## Plan producer connection groups, not isolated edges
+## Partition overlapping endpoint subsets before choosing storage
 
-Storage choices are shared across fanout, so the planning unit should normally
-be one producer/output and all of its consumers rather than each edge in
-isolation.
+Storage is not selected edge by edge and is not selected once for an entire authored
+port. Fanout/fan-in selections may overlap only on subsets of channels, and those
+subsets can participate in different connections elsewhere. The correctness unit is
+therefore an **endpoint atom**: a maximal source or target subset with identical
+connection incidence and identical semantic requirements.
 
-Example:
+Start from atomic payload elements (sample channels, or an event port/source unless
+its routing semantics provide a finer partition) and partition them by incidence.
+For example:
 
 ```text
-producer
-   +--> identity consumer A
-   +--> identity consumer B
-   +--> converted consumer C
+output O = {a,b,c,d}
+
+input I1 (Sequential)     <- {a,b}
+input I2 (Random Access)  <- {b,c}
+input I3 (Sequential)     <- {d}
 ```
 
-may use one transient producer representation aliased by A/B and one conversion
-materialization for C. If one consumer requires persistent history, the planner
-may choose a persistent source representation while keeping conversion scratch
-transient.
+induces source signatures:
 
-Planning one edge at a time would miss these sharing opportunities and can
-force unnecessary copies.
+```text
+a : I1
+b : I1 + I2
+c : I2
+d : I3
+```
+
+`b` must be separated because its uses differ from both neighbors. `a` and `d` may
+have equivalent storage requirements even though they are not the same connection
+subset; physical coalescing is a later choice. Conversely, if `{a,b}` participates
+in exactly the same connections with the same conversion/timing facts, it may remain
+one atom.
+
+Perform the same partition from the target side. A target atom records the exact
+incoming source atoms, conversion/composition, timing alignment, and access contract.
+This matters for overlapping fan-in: direct channel placement can remain a set of
+views, while arithmetic mixing into one target channel requires a derived
+representation only for the affected target atom.
+
+The planner therefore uses the sequence:
+
+```text
+configured connections
+        ↓
+atomic channel/event contributions
+        ↓
+source + target incidence partitions
+        ↓
+join correctness capabilities for every atom
+        ↓
+derive/deduplicate converted or composed representations
+        ↓
+physically coalesce equivalent storage where profitable
+```
+
+Partitioning is semantic and exact. Coalescing is an optimization. Do not merge atoms
+first and then infer requirements from the union, because one Random Access or
+retention requirement on one subset would unnecessarily promote unrelated channels.
+
+### Storage requirements are capability joins, not one strongest enum
+
+For each source atom `S`, derive an independent set of required capabilities from
+its authored output properties and **all** outgoing uses:
+
+```text
+source_requirements(S) =
+    intrinsic_output_requirements(S)
+    UNION
+    union(edge/use requirements for every outgoing contribution of S)
+```
+
+For each target atom `T`, independently derive the access/composition representation
+required by all incoming source atoms:
+
+```text
+target_requirements(T) =
+    authored_input_access(T)
+    + composition/conversion/timing requirements(incoming(T))
+```
+
+Some capabilities subsume others. A prepared immutable addressable window can also
+provide sequential slices for the same range. Other capabilities are orthogonal and
+must coexist: a Tick/persisted source with a same-Tick Sequential consumer requires
+a current Tick representation, capture/persistence staging, and canonical persisted
+pages because current visibility and published snapshot visibility are different
+contracts. These are logical capabilities, not necessarily separate payload buffers:
+when geometry permits, the current Tick payload may itself be the allocator-managed
+capture block later consumed/adopted by the page-publication path.
+
+Useful monotone implications include:
+
+```text
+if output.retention == persisted:
+    require canonical persisted-page storage
+    require candidate/published version state and reader lifetime support
+
+if output.production == Tick and output.retention == persisted:
+    require capture-backed transfer from Tick lifetime into persisted-page publication
+
+if output.production == Tick and any same-Tick Sequential consumer exists:
+    require current Tick-readable representation
+
+if output.production == Tock and output.retention == ephemeral
+   and any Tick-time Sequential consumer exists:
+    require prepared sequential window
+
+if any Tick-time Random Access consumer requires an ephemeral Tock/replay result:
+    require prepared immutable addressable window
+
+if any background-only Random Access consumer requires an ephemeral Tock/replay result:
+    require transaction-local addressable materialization
+
+if Tick/ephemeral is unreproducible and any Random Access demand reaches it:
+    reject the implicit connection; require authored persistence/recording
+```
+
+The corresponding baseline payload decisions per source atom/use are:
+
+| Source atom / use | Minimum baseline representation |
+| --- | --- |
+| Tick/ephemeral -> same-Tick Sequential | current Tick representation |
+| replayable Tick/ephemeral -> background Random Access | transaction-local addressable replay materialization |
+| replayable Tick/ephemeral -> Tick-time Random Access | prepared immutable addressable replay window |
+| unreproducible Tick/ephemeral -> any Random Access | disallowed implicitly; authored persistence or recorder required |
+| Tick/persisted -> same-Tick Sequential | current Tick representation + capture-backed persistence staging + canonical persisted pages |
+| Tick/persisted -> Random Access | canonical published persisted pages; capture staging is intrinsic to persistence, but the current capture is not a baseline read source |
+| Tock/ephemeral -> Tick-time Sequential | prepared sequential window |
+| Tock/ephemeral -> background Random Access | transaction-local addressable materialization |
+| Tock/ephemeral -> Tick-time Random Access | prepared immutable addressable window |
+| Tock/persisted -> Tick-time Sequential | canonical published persisted pages generated sufficiently ahead of playback |
+| Tock/persisted -> Random Access | canonical published persisted pages |
+
+For several outgoing uses, take the capability union of the applicable rows and then
+remove payload representations subsumed by another requirement for the same atom/range.
+For example, a prepared addressable window subsumes a prepared sequential-only window,
+while current Tick visibility and a published persisted snapshot do not subsume one
+another. This table describes logical capabilities; physical planning may alias the
+current Tick payload with a capture block when the payload is already final under the
+Tick history/latency contract and page/capture geometry permits it.
+
+`RandomAccessInputConfig` alone does not state whether node code reads that input
+from Tick, Tock, or both. GraphJit should use statically known callback access when
+available. Until that fact is represented precisely, planning must conservatively
+join the requirements of every callback context in which the input can legally be
+read.
+
+### Fanout joins requirements; fan-in may create derived representations
+
+For ordinary fanout:
+
+```text
+Tick/persisted source
+   +--> Sequential Tick consumer
+   +--> Random Access consumer
+```
+
+requires current Tick visibility plus canonical persisted pages. Capture-backed
+staging bridges the producer lifetime into page publication. The preliminary Random
+Access contract reads only the callback-pinned published snapshot, while the
+Sequential edge may consume the new current block immediately after the producer
+executes. The Random Access edge therefore adds no same-Tick dependency in this
+baseline implementation; only the Tick-to-Sequential edge orders the producer and
+consumer. If layout permits, the producer's current payload and capture block may be
+the same physical block, so the extra capabilities do not imply an extra copy.
+
+For a Tock/ephemeral source:
+
+```text
+source
+   +--> Sequential Tick consumer
+   +--> Random Access Tick consumer
+```
+
+a prepared addressable window may satisfy both uses; there is no reason to allocate
+a second sequential-only copy for the same atom/range.
+
+Fan-in is different. If independent source channels merely fill distinct target
+channels, the target can often remain a set of direct views. If several sources
+arithmetically contribute to the same target channel, materialize the derived value
+with the lifetime/access required by the target: current-block for same-Tick
+Sequential use, transaction-local addressable for background Random Access, or
+prepared immutable addressable for Tick-time Random Access. Event fan-in follows the
+same lifetime rule but must additionally preserve deterministic event ordering.
+
+A derived representation can be shared only when its source-atom set,
+conversion/composition, temporal mapping, selected semantic/page snapshot, requested
+range, and lifetime/access contract are equivalent. This prevents overlapping
+connections from accidentally sharing a result computed for a different subset or
+version.
 
 ## Separate correctness requirements from heuristic choice
 
@@ -212,7 +381,7 @@ channel group:
 A shared physical-planning vocabulary can therefore begin with:
 
 ```cpp
-enum class RealtimeBufferStorageKind {
+enum class SequentialBufferStorageKind {
     transient_stack,
     stack_with_persistent_carry,
     full_node_storage,
@@ -582,11 +751,14 @@ may also use finalized published `tick/persisted` data or a contextually replaya
 tick output. Outside coverage, a random-access node read is invalid. Coverage and
 exact semantic changed regions remain distinct from aligned physical page domains.
 
-A persisted tock candidate page is computed for its complete covered domain before
-the candidate publishes. Invalidation never deletes the existing readable published
-page. An ephemeral Tock output directly feeding a random-access input must use a
-transaction-local page-backed materialization, retained for the consuming transaction
-but not promised as persisted output data.
+A persisted candidate page is computed for its complete covered domain before the
+candidate publishes. Tick/persisted and Tock/persisted outputs use the same canonical
+persisted-page store; only their production/finalization paths differ. Invalidation
+never deletes the existing readable published page. An ephemeral Tock output directly
+feeding a background random-access input uses a transaction-local addressable
+materialization. If the same ephemeral result must be read by Random Access during
+Tick execution, background work must prepare an immutable addressable window before
+the callback; that preparation is not persisted output data.
 
 **The only implicit-storage connection that is forbidden** is an unreproducible
 tick/ephemeral source directly feeding random-access demand, whether the input is
@@ -596,19 +768,25 @@ subject to dependency availability, coverage, and execution scheduling. A tile
 retains per-source channel capabilities and does not create a producer or recorder.
 
 `tock_coverage()` and its propagation callbacks are **never executed on the audio
-thread**. For a sequential input consuming pages, an existing stale or invalidated
-published page is read as-is, while a genuinely missing page produces that input's
-own `neutral_value`. Even when another input shares the source page, its neutral
-value is chosen independently. Playback does not block or synchronously generate
-missing pages; published snapshot pins protect readers during replacement.
+thread**. For persisted data, the preliminary implementation pins the selected
+published page snapshot at the Tick callback boundary. Both Sequential page playback
+and Tick-time Random Access use that immutable snapshot; pending candidate pages and
+newly sealed Tick capture blocks are invisible until a successor page version is
+published and a later callback selects it. An existing stale or invalidated published
+page is read as-is, while a genuinely missing Sequential page produces that input's
+own `neutral_value`. Playback does not block or synchronously generate missing pages.
 
-A recording/capture bridge is the important case. Its Tick side consumes an
-ordinary sequential input, while its background side exposes the bridge output
-through coverage and `tock_coverage()`. Whenever a recording output block is
-produced during `tick_block()`, the generated audio-thread path immediately copies
-that block into already-provisioned capture
-storage. Capture does not wait for the end of the root tick. Each captured record
-carries at least:
+Tick capture is the important cross-thread lifetime bridge. The same allocator-managed
+capture-block infrastructure can serve both an explicit recording bridge and
+Tick/persisted output staging. A recording bridge consumes ordinary sequential data
+and exposes retained/background-computable output according to its authored policy;
+a Tick/persisted producer uses capture to move newly finalized Tick data toward the
+canonical persisted-page store without allocating on the audio thread.
+
+When layout permits, the producer may write directly into a pre-provisioned capture
+block; otherwise the generated path performs a bounded copy at the production/finalization
+point. Capture does not wait for the end of the root Tick callback. Each capture
+record carries at least:
 
 ```text
 CaptureSequence
@@ -618,22 +796,26 @@ payload block
 ```
 
 `CaptureSequence` is monotonically increasing insertion order in the executor's
-shared recording-capture log. `OutputPortId` identifies the bridge output
-whose value/coverage is affected, and `GlobalBlockPosition` identifies where that
-change belongs. Global positions need not increase with sequence: seeking during
-playback may append a new capture for an earlier position, and consecutive captures
-may belong to different output ports.
+shared Tick-capture log. `OutputPortId` identifies the capture-backed output whose
+value/coverage is affected, and `GlobalBlockPosition` identifies where that change
+belongs. Global positions need not increase with sequence: seeking during playback
+may append a new capture for an earlier position, and consecutive captures may
+belong to different outputs.
 
-Capture exists only while playback/recording is active; the final duration of one
-run need not be known in advance. Storage is slab-backed and dynamically extensible
-without requiring a reallocation of earlier slabs. The audio thread is only a consumer of
-pre-provisioned free blocks: it acquires one, copies the produced block, attaches
-metadata, and publishes the capture record. A separate **capture allocator** maintains a target amount of free capture-block
-capacity for the audio thread by allocating reasonably sized slabs independently
-of background evaluation. Slow propagation/tock work therefore increases the
-captured-but-unprocessed backlog rather than consuming a fixed compiler-planned
-bridge window. The allocator may recycle blocks returned by completed background
-evaluation transactions.
+Capture capacity is slab-backed and dynamically extensible; the effective number of
+recent/pending blocks is determined by allocator supply and background progress, not
+by a fixed guessed duration such as one second. The audio thread only consumes
+already-provisioned free blocks. A separate **capture allocator** maintains a target
+free-block reserve by allocating reasonably sized slabs independently of background
+evaluation. Slow background work therefore increases the sealed-but-unpublished
+backlog rather than overflowing a compiler-planned staging ring.
+
+A block acquired, written, or made readable during one root `tick_block()` callback
+is not returned to the audio-thread free pool during that callback. Background work
+may mark it reclaimable, but actual free-pool reuse is handed off at a callback
+boundary after all audio-thread views from that epoch are dead. This rule permits
+capture blocks to be shared safely by persistence and, in a later optimization,
+recent same-Tick Random Access.
 
 The background worker snapshots a fixed contiguous **capture-sequence prefix** at the
 start of each propagation/tock pass. Contiguous here refers only to insertion
@@ -648,12 +830,24 @@ background evaluation transaction builds candidate persisted pages and atomicall
 publishes one new page version. Capture insertion itself is **not** page
 publication and does not advance the page version.
 
-Published page versions own/materialize the data they need and never retain
-references into capture storage. After a successful transaction commits its fixed
-capture prefix, those consumed capture blocks may therefore be returned to the
-allocator immediately. If work is cancelled or rejected as stale, the processed
-capture frontier does not advance and the corresponding blocks remain available
-for a later transaction.
+The canonical persisted-page store owns the published representation. A candidate
+may copy from capture blocks or, when physical layout/ownership permits, adopt their
+payload without changing the page-store abstraction. If a candidate copies, the
+capture block becomes reclaimable once no background ownership remains; if the page
+store adopts the payload, ownership transfers and that physical block is no longer a
+free capture block until the published page version itself can release it. In either
+case, a block that was visible during the current audio callback cannot return to the
+audio-thread free pool until a callback boundary. If work is cancelled or rejected
+as stale, the processed capture frontier does not advance and the corresponding
+blocks remain available for a later transaction.
+
+The preliminary Random Access implementation does not search these recent capture
+blocks. A future optional optimization may treat sealed Tick/persisted captures newer
+than the pinned published snapshot as a recent overlay, allowing a later Tick node
+to Random-Access newly finalized data in the same callback. That requires an explicit
+same-Tick producer dependency plus a lookup branch between recent blocks and
+published pages (or an ordered two-source merge for events). It must not be enabled
+implicitly until those visibility/version rules are implemented and tested.
 
 Changing the root block size is a quiescent physical-layout transition, not a
 semantic invalidation. Persisted output values are losslessly

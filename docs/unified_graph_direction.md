@@ -334,11 +334,12 @@ contract and implementation order are in
 - A separate replayability node trait validates the restricted pure `tick()`-only
   shape. GraphJit imports/reuses its generated block wrapper during background
   replay only when upstream inputs are available for the requested positions.
-- An unreproducible ephemeral tick output requires an explicit recording-policy
-  node before random-access demand. Persisted tick, contextually replayable tick,
-  and either Tock output can satisfy random-access inputs directly. An ephemeral
-  Tock output feeding a random-access input uses a transaction-local page-backed
-  materialization.
+- An unreproducible Tick/ephemeral output requires authored persistence or an
+  explicit recorder before Random Access demand. Tick/persisted and Tock/persisted
+  use the canonical published persisted-page path. Contextually replayable
+  Tick/ephemeral and Tock/ephemeral use immutable addressable materialization:
+  transaction-local for background-only Random Access, or prepared ahead of the
+  callback for Tick-time Random Access.
 - Tiling preserves per-channel contracts; it does not create an implicit recorder.
 - Tock and propagation callbacks never execute on the audio thread. An audio-thread
   sequential input plays an available stale page as-is, or supplies **its own**
@@ -347,9 +348,18 @@ contract and implementation order are in
   is the only semantic reason to stop retaining it; superseded physical versions
   are reclaimed only after readers unpin them. The author accepts the memory growth
   implied by persistence.
-- Recording captures still use production-point copies to provisioned slabs and
-  fixed-prefix background F/R/evaluation transactions. Capture insertion is not
-  publication; publication commits one complete page version.
+- Tick capture uses a shared allocator-managed slab pool for explicit recording and
+  Tick/persisted staging. Capture may be a production-point copy or, when geometry
+  permits, the producer's current block itself. Fixed-prefix background transactions
+  consume sealed records. Capture insertion is not publication; blocks visible to the
+  audio callback are not recycled until a callback boundary.
+- The preliminary Tick-time Random Access path reads only the callback-pinned
+  published/prepared snapshot. Newly sealed Tick/persisted captures are not visible
+  in the same callback. A recent-capture overlay is a later optional optimization.
+- Storage is inferred over overlapping source/target endpoint subsets: partition
+  exact fan-in/fan-out incidence first, join all required capabilities per subset,
+  then coalesce physically equivalent representations. One connection must not
+  promote unrelated channels of the same authored port.
 
 `IndexedCoverage`, `IndexedState`, and the tock propagation callback vocabulary
 retain their established roles. The old `Realtime*`/`Indexed*` *port config names* are
@@ -476,8 +486,9 @@ The following are intentionally unresolved:
   and persisted storage intentionally left open by
   `coverage_and_background_evaluation.md` (including exact request endpoint/index ABI, concrete
   segmented-event iterator types, stored payload/arena/mmap layout and block-size
-  repaging implementation, recording-capture slab sizing/free-capacity/queue
-  representation, and concrete mutation/notification data structures);
+  repaging implementation, shared Tick-capture slab sizing/free-capacity/queue
+  representation, endpoint-atom storage-plan ABI, and concrete mutation/notification
+  data structures);
 - kernel invalidation, caching, inlining, and state layout; and
 - the most useful generic and specialized graph-editing surfaces.
 
