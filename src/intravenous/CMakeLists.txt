@@ -309,6 +309,7 @@ iv_configure_intravenous_target(intravenous_module_watcher PUBLIC)
 add_library(intravenous_graph_jit OBJECT
     runtime/graph_jit.cpp
     graph_jit/connection_plan.cpp
+    graph_jit/indexed_physical_plan.cpp
     graph_jit/lowering.cpp
     graph_jit/lowering_plan.cpp
     graph_jit/sample_physical_plan.cpp

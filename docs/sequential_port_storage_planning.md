@@ -487,6 +487,16 @@ The storage-model and physical-residence refactors have landed:
   source/target atom ordinals, and existing node-facing Tick producer groups
   record the atoms they physically coalesce, while background
   page/materialization realization remains executor work;
+- immutable indexed physical planning now converts those requirements into
+  canonical persisted-page bindings, non-owning current-Tick views, prepared
+  sequential/addressable windows, and transaction-local addressable
+  representations. Direct sample channels and single-source exact-type events
+  retain views; conversion and fan-in produce typed materialization templates.
+  Equivalent derived templates share only when source atoms, selected input
+  residences, transform, timing, target subset, history, and output residence
+  match. A prepared addressable result also subsumes an otherwise-identical
+  prepared sequential result, independent of configured connection order.
+  Runtime range/page-version selection remains executor state;
 - sample and event producer groups now select the shared three-kind storage
   model, while event invocation aggregation is a separate operation fact;
 - ordinary event capacities start from

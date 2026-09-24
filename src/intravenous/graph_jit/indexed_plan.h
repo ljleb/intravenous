@@ -18,6 +18,9 @@ using IndexedNodeOrdinal = std::size_t;
 using IndexedEndpointOrdinal = std::size_t;
 using IndexedConnectionOrdinal = std::size_t;
 using EndpointAtomOrdinal = std::size_t;
+using IndexedRepresentationOrdinal = std::size_t;
+using IndexedSampleMaterializationOrdinal = std::size_t;
+using IndexedEventMaterializationOrdinal = std::size_t;
 
 enum class PlannedSourceProduction : std::uint8_t {
     tick,
@@ -244,6 +247,8 @@ struct IndexedSampleProjectionPlan {
     std::vector<std::size_t> source_channel_indices{};
     ChannelTypeId target_type = ChannelTypeId::mono;
     std::vector<std::size_t> target_channels{};
+
+    bool operator==(IndexedSampleProjectionPlan const&) const = default;
 };
 
 struct IndexedEventDeliveryPlan {
@@ -283,6 +288,141 @@ struct IndexedConnectionPlan {
     EventConversionPlan event_conversion{};
     std::vector<IndexedEventDeliveryPlan> event_deliveries{};
     bool requires_conversion = false;
+};
+
+// Physical indexed representations are immutable binding decisions. The
+// executor supplies their requested range, selected page version and storage;
+// those transaction-specific values never enter the compiled plan.
+enum class IndexedRepresentationResidence : std::uint8_t {
+    // Source-origin records are non-owning views of the ordinary Tick physical
+    // plan. A derived record names a current-callback materialization.
+    current_tick,
+    canonical_persisted_pages,
+    prepared_sequential_window,
+    prepared_addressable_window,
+    transaction_local_addressable,
+};
+
+enum class IndexedRepresentationOrigin : std::uint8_t {
+    source,
+    derived,
+};
+
+struct IndexedRepresentationPlan {
+    PortKind kind = PortKind::sample;
+    IndexedRepresentationResidence residence =
+        IndexedRepresentationResidence::transaction_local_addressable;
+    IndexedRepresentationOrigin origin = IndexedRepresentationOrigin::source;
+
+    // Atom ordinals use the payload/direction-specific vectors in IndexedPlan.
+    // Source representations may physically coalesce several source atoms;
+    // derived representations additionally name every target atom they serve.
+    std::vector<EndpointAtomOrdinal> source_atoms{};
+    std::vector<EndpointAtomOrdinal> target_atoms{};
+    std::vector<IndexedConnectionOrdinal> connections{};
+    std::vector<IndexedRepresentationOrdinal> input_representations{};
+
+    // Source representations retain their authored port. Canonical persisted
+    // pages also bind the logical output endpoint carrying stable identity.
+    std::optional<NodeBundlePortId> source_port{};
+    std::optional<IndexedEndpointOrdinal> output_endpoint{};
+
+    ChannelLayout sample_layout{};
+    std::vector<std::size_t> sample_channels{};
+    EventTypeId event_type = EventTypeId::empty;
+    double max_events_per_index = 0.0;
+
+    std::optional<IndexedSampleMaterializationOrdinal> sample_materialization{};
+    std::optional<IndexedEventMaterializationOrdinal> event_materialization{};
+};
+
+// One derived sample operation template. Range and selected input-page version
+// are runtime keys; everything below is the compile-time portion of the sharing
+// key. Several consumers may reference one record only when these facts match.
+// A prepared-addressable record may also serve an otherwise-identical prepared
+// sequential use because the former capability subsumes the latter.
+struct IndexedSampleMaterializationPlan {
+    IndexedRepresentationResidence residence =
+        IndexedRepresentationResidence::transaction_local_addressable;
+    std::vector<EndpointAtomOrdinal> source_atoms{};
+    std::vector<IndexedRepresentationOrdinal> input_representations{};
+    std::vector<SampleOutputChannelId> source_channels{};
+    std::vector<std::size_t> source_read_latencies{};
+    ChannelTypeId source_type = ChannelTypeId::mono;
+    ChannelLayout target_layout{};
+    std::vector<std::size_t> target_channels{};
+    std::vector<IndexedSampleProjectionPlan> projections{};
+    std::size_t target_history = 0;
+    IndexedRepresentationOrdinal output_representation = 0;
+    std::vector<EndpointAtomOrdinal> target_atoms{};
+    std::vector<IndexedConnectionOrdinal> connections{};
+};
+
+// Event conversion and fan-in are one ordered materialization. source_atoms and
+// input_representations retain semantic source order so equal-time ordering is
+// not lost when otherwise-equivalent consumers share the result. Prepared
+// addressable residence likewise subsumes an identical sequential-only result.
+struct IndexedEventMaterializationPlan {
+    IndexedRepresentationResidence residence =
+        IndexedRepresentationResidence::transaction_local_addressable;
+    std::vector<EndpointAtomOrdinal> source_atoms{};
+    std::vector<IndexedRepresentationOrdinal> input_representations{};
+    EventTypeId source_type = EventTypeId::empty;
+    EventTypeId target_type = EventTypeId::empty;
+    EventConversionPlan conversion{};
+    std::size_t target_history = 0;
+    IndexedRepresentationOrdinal output_representation = 0;
+    std::vector<EndpointAtomOrdinal> target_atoms{};
+    std::vector<IndexedConnectionOrdinal> connections{};
+};
+
+struct IndexedSampleDirectBindingPlan {
+    IndexedConnectionOrdinal connection = 0;
+    EndpointAtomOrdinal target_atom = 0;
+    std::size_t target_channel = 0;
+    EndpointAtomOrdinal source_atom = 0;
+    std::size_t source_channel = 0;
+    IndexedRepresentationOrdinal representation = 0;
+    PlannedDeliveryMechanism delivery =
+        PlannedDeliveryMechanism::tick_to_sequential;
+    std::size_t read_latency = 0;
+    std::size_t target_history = 0;
+};
+
+struct IndexedEventDirectBindingPlan {
+    IndexedConnectionOrdinal connection = 0;
+    EndpointAtomOrdinal target_atom = 0;
+    EndpointAtomOrdinal source_atom = 0;
+    IndexedRepresentationOrdinal representation = 0;
+    PlannedDeliveryMechanism delivery =
+        PlannedDeliveryMechanism::tick_to_sequential;
+    std::size_t target_history = 0;
+};
+
+struct IndexedConnectionPhysicalPlan {
+    std::vector<std::size_t> sample_direct_bindings{};
+    std::vector<std::size_t> event_direct_bindings{};
+    std::vector<IndexedSampleMaterializationOrdinal> sample_materializations{};
+    std::vector<IndexedEventMaterializationOrdinal> event_materializations{};
+};
+
+struct IndexedPhysicalPlan {
+    std::vector<IndexedRepresentationPlan> representations{};
+    // Aligned with the four endpoint-atom vectors in IndexedPlan.
+    std::vector<std::vector<IndexedRepresentationOrdinal>>
+        sample_source_representations{};
+    std::vector<std::vector<IndexedRepresentationOrdinal>>
+        sample_target_representations{};
+    std::vector<std::vector<IndexedRepresentationOrdinal>>
+        event_source_representations{};
+    std::vector<std::vector<IndexedRepresentationOrdinal>>
+        event_target_representations{};
+    std::vector<IndexedSampleMaterializationPlan> sample_materializations{};
+    std::vector<IndexedEventMaterializationPlan> event_materializations{};
+    std::vector<IndexedSampleDirectBindingPlan> sample_direct_bindings{};
+    std::vector<IndexedEventDirectBindingPlan> event_direct_bindings{};
+    // Aligned with IndexedPlan::connections.
+    std::vector<IndexedConnectionPhysicalPlan> connections{};
 };
 
 struct IndexedBackgroundDependencyPlan {
@@ -338,6 +478,7 @@ struct IndexedPlan {
     std::vector<SampleTargetEndpointAtomPlan> sample_target_atoms{};
     std::vector<EventSourceEndpointAtomPlan> event_source_atoms{};
     std::vector<EventTargetEndpointAtomPlan> event_target_atoms{};
+    IndexedPhysicalPlan physical{};
     std::vector<IndexedComponentPlan> components{};
     std::vector<std::size_t> component_order{};
     // Intrinsic replayability is an authored candidate fact. A candidate enters

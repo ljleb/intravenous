@@ -204,6 +204,33 @@ struct IndexedSource {
     }
 };
 
+struct IndexedStereoSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::tock_sample_output(
+            "out",
+            iv::SampleOutputProperties{
+                .channel_layout = iv::ChannelLayout{
+                    .channel_type = iv::ChannelTypeId::stereo,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                },
+            })};
+    }
+
+    void tick_block(iv::TickBlockContext<IndexedStereoSource> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<IndexedStereoSource>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<IndexedStereoSource>& context) const
+    {
+        context.template output<"out">().publish_coverage({});
+    }
+};
+
 struct IndexedSamplePass {
     static constexpr auto inputs()
     {
@@ -1219,6 +1246,34 @@ TEST(GraphJitConnectionPlan, PartitionsOverlappingSamplePortUsesIntoEndpointAtom
         plan->indexed.connections.front().source_atoms.front(),
         static_cast<graph_jit::EndpointAtomOrdinal>(
             right - atoms.data()));
+
+    auto const& physical = plan->indexed.physical;
+    ASSERT_EQ(physical.sample_source_representations.size(), atoms.size());
+    auto const left_ordinal = static_cast<graph_jit::EndpointAtomOrdinal>(
+        left - atoms.data());
+    auto const right_ordinal = static_cast<graph_jit::EndpointAtomOrdinal>(
+        right - atoms.data());
+    auto canonical_for = [&](graph_jit::EndpointAtomOrdinal atom) {
+        return std::ranges::find_if(
+            physical.sample_source_representations[atom],
+            [&](graph_jit::IndexedRepresentationOrdinal representation) {
+                return physical.representations[representation].residence
+                    == graph_jit::IndexedRepresentationResidence::
+                        canonical_persisted_pages;
+            });
+    };
+    auto const left_canonical = canonical_for(left_ordinal);
+    auto const right_canonical = canonical_for(right_ordinal);
+    ASSERT_NE(
+        left_canonical,
+        physical.sample_source_representations[left_ordinal].end());
+    ASSERT_NE(
+        right_canonical,
+        physical.sample_source_representations[right_ordinal].end());
+    EXPECT_EQ(*left_canonical, *right_canonical);
+    EXPECT_EQ(
+        physical.representations[*left_canonical].sample_channels,
+        (std::vector<std::size_t>{0, 1}));
 }
 
 TEST(GraphJitConnectionPlan, ConversionUsesTransientMaterialization)
@@ -1504,6 +1559,125 @@ TEST(GraphJitConnectionPlan, RetainsIndexedEventConversion)
         built->indexed.endpoints[connection.target_endpoints.front()]
             .incoming_connections,
         (std::vector<graph_jit::IndexedConnectionOrdinal>{0}));
+
+    auto const& physical = built->indexed.physical;
+    ASSERT_EQ(physical.connections.size(), 1u);
+    EXPECT_TRUE(physical.connections.front().event_direct_bindings.empty());
+    ASSERT_EQ(
+        physical.connections.front().event_materializations.size(), 2u);
+    std::vector<graph_jit::IndexedRepresentationResidence> residences;
+    for (auto const materialization :
+         physical.connections.front().event_materializations) {
+        ASSERT_LT(materialization, physical.event_materializations.size());
+        residences.push_back(
+            physical.event_materializations[materialization].residence);
+    }
+    EXPECT_TRUE(std::ranges::contains(
+        residences,
+        graph_jit::IndexedRepresentationResidence::prepared_addressable_window));
+    EXPECT_TRUE(std::ranges::contains(
+        residences,
+        graph_jit::IndexedRepresentationResidence::
+            transaction_local_addressable));
+}
+
+TEST(GraphJitConnectionPlan, SharesEquivalentIndexedEventMaterializations)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<IndexedMidiSource>(graph);
+    auto left = details::configure_concrete_node<IndexedEventPass>(graph);
+    auto right = details::configure_concrete_node<IndexedEventPass>(graph);
+    left.connect_event_input(0, source.event_port());
+    right.connect_event_input(0, source.event_port());
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->indexed.connections.size(), 2u);
+
+    auto const& physical = plan->indexed.physical;
+    ASSERT_EQ(physical.connections.size(), 2u);
+    ASSERT_EQ(physical.event_materializations.size(), 2u);
+    ASSERT_TRUE(std::ranges::all_of(
+        physical.connections,
+        [](graph_jit::IndexedConnectionPhysicalPlan const& connection) {
+            return connection.event_materializations.size() == 2;
+        }));
+    EXPECT_EQ(
+        physical.connections[0].event_materializations,
+        physical.connections[1].event_materializations);
+    for (auto const& materialization : physical.event_materializations) {
+        EXPECT_EQ(materialization.connections.size(), 2u);
+        EXPECT_EQ(materialization.target_atoms.size(), 2u);
+    }
+}
+
+TEST(GraphJitConnectionPlan, PreparedAddressableEventMaterializationSubsumesSequential)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<IndexedMidiSource>(graph);
+    auto sequential = details::configure_concrete_node<PlainEventPass>(graph);
+    auto random_access = details::configure_concrete_node<IndexedEventPass>(graph);
+    sequential.connect_event_input(0, source.event_port());
+    random_access.connect_event_input(0, source.event_port());
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->indexed.connections.size(), 2u);
+
+    auto const& physical = plan->indexed.physical;
+    ASSERT_EQ(physical.event_materializations.size(), 2u);
+    ASSERT_EQ(physical.connections[0].event_materializations.size(), 1u);
+    ASSERT_EQ(physical.connections[1].event_materializations.size(), 2u);
+    auto const prepared = physical.connections[0].event_materializations.front();
+    EXPECT_TRUE(std::ranges::contains(
+        physical.connections[1].event_materializations, prepared));
+    EXPECT_EQ(
+        physical.event_materializations[prepared].residence,
+        graph_jit::IndexedRepresentationResidence::prepared_addressable_window);
+}
+
+TEST(GraphJitConnectionPlan, ExactEventFanoutAliasesPreparedRepresentations)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<TockTriggerSource>(graph);
+    auto sequential = details::configure_concrete_node<PlainEventPass>(graph);
+    auto random_access = details::configure_concrete_node<IndexedEventPass>(graph);
+    sequential.connect_event_input(0, source.event_port());
+    random_access.connect_event_input(0, source.event_port());
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->indexed.connections.size(), 2u);
+
+    auto const& physical = plan->indexed.physical;
+    EXPECT_TRUE(physical.event_materializations.empty());
+    ASSERT_EQ(physical.connections[0].event_direct_bindings.size(), 1u);
+    ASSERT_EQ(physical.connections[1].event_direct_bindings.size(), 2u);
+    auto const sequential_binding =
+        physical.connections[0].event_direct_bindings.front();
+    auto const sequential_representation =
+        physical.event_direct_bindings[sequential_binding].representation;
+    EXPECT_EQ(
+        physical.representations[sequential_representation].residence,
+        graph_jit::IndexedRepresentationResidence::prepared_addressable_window);
+    EXPECT_TRUE(std::ranges::any_of(
+        physical.connections[1].event_direct_bindings,
+        [&](std::size_t binding) {
+            return physical.event_direct_bindings[binding].representation
+                == sequential_representation;
+        }));
 }
 
 TEST(GraphJitConnectionPlan, TockToSequentialUsesPreparedBackgroundDelivery)
@@ -1577,6 +1751,100 @@ TEST(GraphJitConnectionPlan, PreparedAddressableAtomSubsumesSequentialWindow)
     EXPECT_TRUE(atom->capabilities.prepared_addressable_window);
     EXPECT_TRUE(atom->capabilities.transaction_local_addressable);
     EXPECT_FALSE(atom->capabilities.prepared_sequential_window);
+
+    auto const atom_ordinal = static_cast<graph_jit::EndpointAtomOrdinal>(
+        std::distance(plan->indexed.sample_source_atoms.begin(), atom));
+    auto const& physical = plan->indexed.physical;
+    ASSERT_EQ(physical.sample_source_representations[atom_ordinal].size(), 2u);
+    std::vector<graph_jit::IndexedRepresentationResidence> residences;
+    for (auto const representation :
+         physical.sample_source_representations[atom_ordinal]) {
+        residences.push_back(physical.representations[representation].residence);
+    }
+    EXPECT_TRUE(std::ranges::contains(
+        residences,
+        graph_jit::IndexedRepresentationResidence::prepared_addressable_window));
+    EXPECT_TRUE(std::ranges::contains(
+        residences,
+        graph_jit::IndexedRepresentationResidence::
+            transaction_local_addressable));
+    EXPECT_FALSE(std::ranges::contains(
+        residences,
+        graph_jit::IndexedRepresentationResidence::prepared_sequential_window));
+    ASSERT_EQ(physical.connections.size(), 2u);
+    EXPECT_TRUE(std::ranges::all_of(
+        physical.connections,
+        [](graph_jit::IndexedConnectionPhysicalPlan const& connection) {
+            return !connection.sample_direct_bindings.empty()
+                && connection.sample_materializations.empty();
+        }));
+}
+
+TEST(GraphJitConnectionPlan, SharesEquivalentIndexedSampleMaterializations)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<IndexedStereoSource>(graph);
+    auto left = details::configure_concrete_node<RealtimeSink>(graph);
+    auto right = details::configure_concrete_node<RealtimeSink>(graph);
+    left(source);
+    right(source);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->indexed.connections.size(), 2u);
+
+    auto const& physical = plan->indexed.physical;
+    ASSERT_EQ(physical.connections.size(), 2u);
+    ASSERT_EQ(physical.sample_materializations.size(), 1u);
+    ASSERT_TRUE(std::ranges::all_of(
+        physical.connections,
+        [](graph_jit::IndexedConnectionPhysicalPlan const& connection) {
+            return connection.sample_direct_bindings.empty()
+                && connection.sample_materializations.size() == 1;
+        }));
+    EXPECT_EQ(
+        physical.connections[0].sample_materializations,
+        physical.connections[1].sample_materializations);
+    auto const& materialization = physical.sample_materializations.front();
+    EXPECT_EQ(
+        materialization.residence,
+        graph_jit::IndexedRepresentationResidence::prepared_sequential_window);
+    EXPECT_EQ(materialization.connections.size(), 2u);
+    EXPECT_EQ(materialization.target_atoms.size(), 2u);
+    EXPECT_EQ(materialization.source_channels.size(), 2u);
+}
+
+TEST(GraphJitConnectionPlan, PreparedAddressableSampleMaterializationSubsumesSequential)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<IndexedStereoSource>(graph);
+    auto sequential = details::configure_concrete_node<RealtimeSink>(graph);
+    auto random_access = details::configure_concrete_node<IndexedSamplePass>(graph);
+    sequential(source);
+    random_access(source);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->indexed.connections.size(), 2u);
+
+    auto const& physical = plan->indexed.physical;
+    ASSERT_EQ(physical.sample_materializations.size(), 2u);
+    ASSERT_EQ(physical.connections[0].sample_materializations.size(), 1u);
+    ASSERT_EQ(physical.connections[1].sample_materializations.size(), 2u);
+    auto const prepared = physical.connections[0].sample_materializations.front();
+    EXPECT_TRUE(std::ranges::contains(
+        physical.connections[1].sample_materializations, prepared));
+    EXPECT_EQ(
+        physical.sample_materializations[prepared].residence,
+        graph_jit::IndexedRepresentationResidence::prepared_addressable_window);
 }
 
 TEST(GraphJitConnectionPlan, MixedTickAndTockSampleTilePlansPerSourceChannel)
@@ -1750,6 +2018,37 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockEventFanInPlansPerSource)
     ASSERT_NE(tock_atom, plan->indexed.event_source_atoms.end());
     EXPECT_TRUE(tick_atom->capabilities.current_tick_readable);
     EXPECT_TRUE(tock_atom->capabilities.prepared_sequential_window);
+
+    auto const& physical = plan->indexed.physical;
+    ASSERT_EQ(physical.connections.size(), 1u);
+    EXPECT_TRUE(physical.connections.front().event_direct_bindings.empty());
+    ASSERT_EQ(
+        physical.connections.front().event_materializations.size(), 1u);
+    auto const materialization_ordinal =
+        physical.connections.front().event_materializations.front();
+    ASSERT_LT(
+        materialization_ordinal, physical.event_materializations.size());
+    auto const& materialization =
+        physical.event_materializations[materialization_ordinal];
+    EXPECT_EQ(
+        materialization.residence,
+        graph_jit::IndexedRepresentationResidence::current_tick);
+    ASSERT_EQ(materialization.input_representations.size(), 2u);
+    std::vector<graph_jit::IndexedRepresentationResidence> input_residences;
+    for (auto const representation : materialization.input_representations) {
+        input_residences.push_back(
+            physical.representations[representation].residence);
+    }
+    EXPECT_TRUE(std::ranges::contains(
+        input_residences,
+        graph_jit::IndexedRepresentationResidence::current_tick));
+    EXPECT_TRUE(std::ranges::contains(
+        input_residences,
+        graph_jit::IndexedRepresentationResidence::prepared_sequential_window));
+    EXPECT_DOUBLE_EQ(
+        physical.representations[materialization.output_representation]
+            .max_events_per_index,
+        0.75);
 }
 
 TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
@@ -1872,6 +2171,38 @@ TEST(GraphJitConnectionPlan, ContextualReplayTraversesSequentialDependencies)
                 && dependency.kind
                     == graph_jit::IndexedBackgroundDependencyKind::replay_sequential;
         }));
+
+    auto const replay_connection = std::ranges::find_if(
+        plan->indexed.connections,
+        [&](graph_jit::IndexedConnectionPlan const& connection) {
+            return connection.kind == PortKind::sample
+                && std::ranges::any_of(
+                    connection.sample_target_channels,
+                    [&](SampleInputChannelId channel) {
+                        return channel.bundle == pass_handle;
+                    });
+        });
+    ASSERT_NE(replay_connection, plan->indexed.connections.end());
+    auto const replay_connection_ordinal = static_cast<std::size_t>(
+        std::distance(plan->indexed.connections.begin(), replay_connection));
+    auto const& physical = plan->indexed.physical;
+    ASSERT_LT(replay_connection_ordinal, physical.connections.size());
+    auto const& physical_connection =
+        physical.connections[replay_connection_ordinal];
+    ASSERT_EQ(physical_connection.sample_direct_bindings.size(), 2u);
+    std::vector<graph_jit::IndexedRepresentationResidence> residences;
+    for (auto const binding : physical_connection.sample_direct_bindings) {
+        ASSERT_LT(binding, physical.sample_direct_bindings.size());
+        residences.push_back(physical.representations[
+            physical.sample_direct_bindings[binding].representation].residence);
+    }
+    EXPECT_TRUE(std::ranges::contains(
+        residences,
+        graph_jit::IndexedRepresentationResidence::current_tick));
+    EXPECT_TRUE(std::ranges::contains(
+        residences,
+        graph_jit::IndexedRepresentationResidence::
+            transaction_local_addressable));
 }
 
 TEST(GraphJitConnectionPlan, TockDependencyCanFeedSynthesizedReplay)
@@ -1902,6 +2233,36 @@ TEST(GraphJitConnectionPlan, TockDependencyCanFeedSynthesizedReplay)
     ASSERT_NE(source_position, plan->indexed.background_evaluation_order.end());
     ASSERT_NE(pass_position, plan->indexed.background_evaluation_order.end());
     EXPECT_LT(source_position, pass_position);
+
+    auto const replay_connection = std::ranges::find_if(
+        plan->indexed.connections,
+        [&](graph_jit::IndexedConnectionPlan const& connection) {
+            return connection.kind == PortKind::sample
+                && std::ranges::any_of(
+                    connection.sample_target_channels,
+                    [&](SampleInputChannelId channel) {
+                        return channel.bundle == pass_handle;
+                    });
+        });
+    ASSERT_NE(replay_connection, plan->indexed.connections.end());
+    auto const replay_connection_ordinal = static_cast<std::size_t>(
+        std::distance(plan->indexed.connections.begin(), replay_connection));
+    auto const& physical = plan->indexed.physical;
+    auto const& physical_connection =
+        physical.connections[replay_connection_ordinal];
+    ASSERT_EQ(physical_connection.sample_direct_bindings.size(), 2u);
+    std::vector<graph_jit::IndexedRepresentationResidence> residences;
+    for (auto const binding : physical_connection.sample_direct_bindings) {
+        residences.push_back(physical.representations[
+            physical.sample_direct_bindings[binding].representation].residence);
+    }
+    EXPECT_TRUE(std::ranges::contains(
+        residences,
+        graph_jit::IndexedRepresentationResidence::prepared_sequential_window));
+    EXPECT_TRUE(std::ranges::contains(
+        residences,
+        graph_jit::IndexedRepresentationResidence::
+            transaction_local_addressable));
 }
 
 TEST(GraphJitConnectionPlan, PersistedTickBoundaryStopsContextualReplayTraversal)

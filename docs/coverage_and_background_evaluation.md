@@ -1964,10 +1964,14 @@ recording merely because that planning metadata exists.
    Preserve semantic SCCs separately from the expanded background evaluation DAG,
    enforce the recorder boundary and keep Tock execution off the audio thread.
 4. **In progress: storage-requirement inference and ordinary background evaluation.**
-   Exact source/target endpoint-atom partitioning and independent capability joins
-   have landed; logical callback/coverage endpoints remain port-granular, and
-   node-facing Tick groups explicitly record the atoms they physically coalesce.
-   Next implement `GraphExecutor`, transaction-local/advance ephemeral
+   Exact source/target endpoint-atom partitioning, independent capability joins,
+   and immutable indexed physical planning have landed. The physical plan selects
+   canonical persisted-page bindings, current-Tick views, prepared windows,
+   transaction-local materializations, direct channel/event views, and exactly keyed
+   shared derived conversion/fan-in operations. Prepared addressable derived storage
+   subsumes its otherwise-identical prepared sequential form. Logical callback/
+   coverage endpoints remain port-granular. Next implement `GraphExecutor`, transaction workspaces,
+   runtime realization of those representations, and advance ephemeral
    materialization, canonical persisted pages for Tick and Tock persisted outputs,
    pinned **published-snapshot-only** Random Access reads, atomic publication, and
    advance preparation. Verify that no audio-thread path can invoke Tock.

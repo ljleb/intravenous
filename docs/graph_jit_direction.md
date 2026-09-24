@@ -646,11 +646,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     and records synthesized pointwise F/R plus background replay ordering. Contextual
     replayability remains a per-path compiler fact, not an output config field.
 17. **In progress: subset-based storage inference and ordinary background evaluation.**
-    Exact source/target endpoint-atom incidence partitioning and capability joins
-    have landed, with current node-facing Tick groups retaining which atoms they
-    physically coalesce. Next implement `GraphExecutor`, transaction-local/prepared
-    ephemeral materialization, canonical persisted-page completion for Tick and Tock
-    persisted outputs, atomic publication, and preliminary
+    Exact source/target endpoint-atom incidence partitioning, capability joins, and
+    immutable indexed physical planning have landed. Source representations now
+    select canonical pages/current-Tick views/prepared or transaction-local residence;
+    direct views stay copy-free, while derived conversion/fan-in templates share only
+    under an exact compile-time key, with prepared addressable results subsuming
+    otherwise-identical prepared sequential results. Next implement `GraphExecutor`, runtime
+    realization of those representations, canonical persisted-page completion for
+    Tick and Tock persisted outputs, atomic publication, and preliminary
     published/prepared-snapshot-only Random Access reads. Background ephemeral Random
     Access may use transaction-local page-backed materialization; Tick-time ephemeral
     Random Access must be prepared before the callback. Playback never blocks or

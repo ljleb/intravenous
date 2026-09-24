@@ -1,5 +1,7 @@
 #include <intravenous/graph_jit/connection_plan.h>
 
+#include <intravenous/graph_jit/indexed_physical_plan.h>
+
 #include <intravenous/channel_layout.h>
 #include <intravenous/ports.h>
 #include <intravenous/sample.h>
@@ -3826,6 +3828,11 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
             plan, kernel_block_size, cost_model); !events) {
         return std::unexpected(std::move(events.error()));
     }
+    auto indexed_physical = build_indexed_physical_plan(plan);
+    if (!indexed_physical) {
+        return std::unexpected(std::move(indexed_physical.error()));
+    }
+    plan.indexed.physical = std::move(*indexed_physical);
     return plan;
 }
 
