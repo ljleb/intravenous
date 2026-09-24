@@ -2603,6 +2603,706 @@ ConnectionLiveIntervalPlan live_interval_for_event_group(
     return live;
 }
 
+void join_capabilities(
+    EndpointStorageCapabilities& target,
+    EndpointStorageCapabilities const& source) noexcept
+{
+    target.current_tick_readable = target.current_tick_readable
+        || source.current_tick_readable;
+    target.capture_backed_persistence = target.capture_backed_persistence
+        || source.capture_backed_persistence;
+    target.canonical_persisted_pages = target.canonical_persisted_pages
+        || source.canonical_persisted_pages;
+    target.prepared_sequential_window = target.prepared_sequential_window
+        || source.prepared_sequential_window;
+    target.prepared_addressable_window = target.prepared_addressable_window
+        || source.prepared_addressable_window;
+    target.transaction_local_addressable =
+        target.transaction_local_addressable
+        || source.transaction_local_addressable;
+}
+
+void remove_subsumed_capabilities(
+    EndpointStorageCapabilities& capabilities) noexcept
+{
+    // One prepared immutable addressable window supplies ordinary sequential
+    // slices for the same atom/range. Keep the incidence facts separately, but
+    // do not ask physical planning for a redundant sequential-only payload.
+    if (capabilities.prepared_addressable_window) {
+        capabilities.prepared_sequential_window = false;
+    }
+}
+
+EndpointStorageCapabilities storage_capabilities_for(
+    PlannedSourceProduction production,
+    OutputRetention retention,
+    PlannedDeliveryMechanism delivery) noexcept
+{
+    EndpointStorageCapabilities result;
+    if (retention == OutputRetention::persisted) {
+        result.canonical_persisted_pages = true;
+        result.capture_backed_persistence =
+            production == PlannedSourceProduction::tick;
+    }
+
+    switch (delivery) {
+    case PlannedDeliveryMechanism::tick_to_sequential:
+        result.current_tick_readable = true;
+        break;
+    case PlannedDeliveryMechanism::tock_to_sequential:
+        if (retention == OutputRetention::ephemeral) {
+            result.prepared_sequential_window = true;
+        }
+        break;
+    case PlannedDeliveryMechanism::tock_to_random_access:
+    case PlannedDeliveryMechanism::replayed_tick_to_random_access:
+        if (retention == OutputRetention::ephemeral) {
+            // RandomAccessInputConfig does not yet say which legal callback
+            // reads it. Until callback-use facts are reflected, join both the
+            // Tick-time prepared and background-transaction representations.
+            result.prepared_addressable_window = true;
+            result.transaction_local_addressable = true;
+        }
+        break;
+    case PlannedDeliveryMechanism::persisted_tick_to_random_access:
+        break;
+    }
+    return result;
+}
+
+EndpointStorageCapabilities target_capabilities_for(
+    PlannedSourceProduction production,
+    OutputRetention retention,
+    PlannedDeliveryMechanism delivery) noexcept
+{
+    auto result = storage_capabilities_for(production, retention, delivery);
+    // Capture is an intrinsic source-side transfer obligation. A target may
+    // consume the resulting published pages, but it never owns another copy of
+    // the producer's capture staging.
+    result.capture_backed_persistence = false;
+    return result;
+}
+
+template<class T>
+void append_unique(std::vector<T>& values, T value)
+{
+    if (!std::ranges::contains(values, value)) values.push_back(std::move(value));
+}
+
+struct SampleSourceAtomUse {
+    std::size_t connection_index = 0;
+    std::size_t contribution_index = 0;
+    // Position within the contribution's semantic conversion input. Channels
+    // participating in the same contribution are not interchangeable merely
+    // because their connection/contribution ordinals match.
+    std::size_t projection_source_position = 0;
+    PlannedDeliveryMechanism delivery =
+        PlannedDeliveryMechanism::tick_to_sequential;
+    PlannedDestinationAccess destination_access =
+        PlannedDestinationAccess::sequential;
+    std::size_t source_history = 0;
+    std::size_t source_latency = 0;
+    std::size_t read_latency = 0;
+    std::size_t target_history = 0;
+    bool detached = false;
+
+    bool operator==(SampleSourceAtomUse const&) const = default;
+};
+
+struct SampleTargetAtomUse {
+    std::size_t connection_index = 0;
+    std::size_t contribution_index = 0;
+    // Position within the contribution's semantic conversion result.
+    std::size_t projection_target_position = 0;
+    std::vector<std::size_t> source_channel_indices{};
+    PlannedDestinationAccess destination_access =
+        PlannedDestinationAccess::sequential;
+    std::size_t target_history = 0;
+    bool detached = false;
+
+    bool operator==(SampleTargetAtomUse const&) const = default;
+};
+
+struct SampleSourceAtomCandidate {
+    SampleOutputChannelId channel{};
+    ChannelLayout layout{};
+    PlannedSourceProduction production = PlannedSourceProduction::tick;
+    OutputRetention retention = OutputRetention::ephemeral;
+    std::vector<SampleSourceAtomUse> uses{};
+    EndpointStorageCapabilities capabilities{};
+};
+
+struct SampleTargetAtomCandidate {
+    SampleInputChannelId channel{};
+    ChannelLayout layout{};
+    PlannedDestinationAccess access = PlannedDestinationAccess::sequential;
+    std::vector<SampleTargetAtomUse> uses{};
+    EndpointStorageCapabilities capabilities{};
+};
+
+void plan_endpoint_atoms(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan& plan)
+{
+    auto& indexed = plan.indexed;
+    indexed.sample_source_atoms.clear();
+    indexed.sample_target_atoms.clear();
+    indexed.event_source_atoms.clear();
+    indexed.event_target_atoms.clear();
+
+    constexpr auto whole_contribution =
+        std::numeric_limits<std::size_t>::max();
+    std::vector<SampleSourceAtomCandidate> sample_sources;
+    std::vector<SampleTargetAtomCandidate> sample_targets;
+
+    auto source_candidate = [&](SampleOutputChannelId channel,
+                                ChannelLayout layout,
+                                PlannedSourceProduction production,
+                                OutputRetention retention)
+        -> SampleSourceAtomCandidate& {
+        auto const found = std::ranges::find_if(
+            sample_sources,
+            [&](SampleSourceAtomCandidate const& candidate) {
+                return candidate.channel.bundle == channel.bundle
+                    && candidate.channel.port == channel.port
+                    && candidate.channel.channel == channel.channel;
+            });
+        if (found != sample_sources.end()) return *found;
+        sample_sources.push_back(SampleSourceAtomCandidate{
+            .channel = channel,
+            .layout = layout,
+            .production = production,
+            .retention = retention,
+        });
+        return sample_sources.back();
+    };
+    auto target_candidate = [&](SampleInputChannelId channel,
+                                ChannelLayout layout,
+                                PlannedDestinationAccess access)
+        -> SampleTargetAtomCandidate& {
+        auto const found = std::ranges::find_if(
+            sample_targets,
+            [&](SampleTargetAtomCandidate const& candidate) {
+                return candidate.channel.bundle == channel.bundle
+                    && candidate.channel.port == channel.port
+                    && candidate.channel.channel == channel.channel;
+            });
+        if (found != sample_targets.end()) return *found;
+        sample_targets.push_back(SampleTargetAtomCandidate{
+            .channel = channel,
+            .layout = layout,
+            .access = access,
+        });
+        return sample_targets.back();
+    };
+
+    // Begin with every authored endpoint element, including disconnected
+    // values. Connections refine incidence below; intrinsic persistence and
+    // requestability remain storage roots even without a current consumer.
+    for (auto const& node : plan.nodes) {
+        for (std::size_t port = 0; port < node.sample_input_count; ++port) {
+            NodeBundlePortId const id{node.bundle, PortKind::sample, port};
+            auto const config = graph.node_bundles.resolve_sample_input(id).config;
+            auto const count = channel_count(config.channel_layout);
+            for (std::size_t channel = 0; channel < count; ++channel) {
+                target_candidate(
+                    SampleInputChannelId{
+                        .bundle = node.bundle,
+                        .port = port,
+                        .channel = channel,
+                    },
+                    config.channel_layout,
+                    destination_access(config.access));
+            }
+        }
+        for (std::size_t port = 0; port < node.sample_output_count; ++port) {
+            NodeBundlePortId const id{node.bundle, PortKind::sample, port};
+            auto const config = graph.node_bundles.resolve_sample_output(id).config;
+            auto const production = source_production(config.production);
+            EndpointStorageCapabilities intrinsic;
+            if (config.retention == OutputRetention::persisted) {
+                intrinsic.canonical_persisted_pages = true;
+                intrinsic.capture_backed_persistence =
+                    production == PlannedSourceProduction::tick;
+            } else if (production == PlannedSourceProduction::tock
+                       || (production == PlannedSourceProduction::tick
+                           && node.contextually_replayable)) {
+                intrinsic.transaction_local_addressable = true;
+            }
+            auto const count = channel_count(config.channel_layout);
+            for (std::size_t channel = 0; channel < count; ++channel) {
+                auto& candidate = source_candidate(
+                    SampleOutputChannelId{
+                        .bundle = node.bundle,
+                        .port = port,
+                        .channel = channel,
+                    },
+                    config.channel_layout,
+                    production,
+                    config.retention);
+                join_capabilities(candidate.capabilities, intrinsic);
+            }
+        }
+    }
+
+    for (std::size_t connection_index = 0;
+         connection_index < plan.sample_connections.size();
+         ++connection_index) {
+        auto const& connection = plan.sample_connections[connection_index];
+        for (std::size_t source_index = 0;
+             source_index < connection.source_channel_timings.size();
+             ++source_index) {
+            auto const& timing = connection.source_channel_timings[source_index];
+            auto& candidate = source_candidate(
+                timing.source,
+                timing.source_layout,
+                timing.production,
+                timing.retention);
+            std::vector<std::size_t> contributions;
+            for (std::size_t contribution = 0;
+                 contribution < connection.projection_contributions.size();
+                 ++contribution) {
+                if (std::ranges::contains(
+                        connection.projection_contributions[contribution]
+                            .source_channel_indices,
+                        source_index)) {
+                    contributions.push_back(contribution);
+                }
+            }
+            if (contributions.empty()) contributions.push_back(whole_contribution);
+            for (auto const contribution : contributions) {
+                auto source_position = source_index;
+                if (contribution != whole_contribution) {
+                    auto const& source_indices =
+                        connection.projection_contributions[contribution]
+                            .source_channel_indices;
+                    source_position = static_cast<std::size_t>(std::distance(
+                        source_indices.begin(),
+                        std::ranges::find(source_indices, source_index)));
+                }
+                append_unique(candidate.uses, SampleSourceAtomUse{
+                    .connection_index = connection_index,
+                    .contribution_index = contribution,
+                    .projection_source_position = source_position,
+                    .delivery = timing.delivery,
+                    .destination_access = timing.destination_access,
+                    .source_history = timing.source_history,
+                    .source_latency = timing.source_latency,
+                    .read_latency = timing.read_latency,
+                    .target_history = connection.target_history,
+                    .detached = connection.detach.has_value(),
+                });
+            }
+            join_capabilities(
+                candidate.capabilities,
+                storage_capabilities_for(
+                    timing.production, timing.retention, timing.delivery));
+        }
+
+        for (std::size_t target_channel = 0;
+             target_channel < connection.target_channels.size();
+             ++target_channel) {
+            auto& candidate = target_candidate(
+                connection.target_channels[target_channel],
+                connection.target_layout,
+                connection.destination_access);
+            bool saw_contribution = false;
+            for (std::size_t contribution = 0;
+                 contribution < connection.projection_contributions.size();
+                 ++contribution) {
+                auto const& projection =
+                    connection.projection_contributions[contribution];
+                if (!std::ranges::contains(
+                        projection.target_channels, target_channel)) {
+                    continue;
+                }
+                saw_contribution = true;
+                auto const target_position =
+                    static_cast<std::size_t>(std::distance(
+                        projection.target_channels.begin(),
+                        std::ranges::find(
+                            projection.target_channels, target_channel)));
+                append_unique(candidate.uses, SampleTargetAtomUse{
+                    .connection_index = connection_index,
+                    .contribution_index = contribution,
+                    .projection_target_position = target_position,
+                    .source_channel_indices =
+                        projection.source_channel_indices,
+                    .destination_access = connection.destination_access,
+                    .target_history = connection.target_history,
+                    .detached = connection.detach.has_value(),
+                });
+                for (auto const source_index :
+                     projection.source_channel_indices) {
+                    if (source_index >= connection.source_channel_timings.size()) {
+                        continue;
+                    }
+                    auto const& timing =
+                        connection.source_channel_timings[source_index];
+                    join_capabilities(
+                        candidate.capabilities,
+                        target_capabilities_for(
+                            timing.production,
+                            timing.retention,
+                            timing.delivery));
+                }
+            }
+            if (!saw_contribution) {
+                std::vector<std::size_t> source_indices(
+                    connection.source_channel_timings.size());
+                std::iota(source_indices.begin(), source_indices.end(), 0);
+                append_unique(candidate.uses, SampleTargetAtomUse{
+                    .connection_index = connection_index,
+                    .contribution_index = whole_contribution,
+                    .projection_target_position = target_channel,
+                    .source_channel_indices = std::move(source_indices),
+                    .destination_access = connection.destination_access,
+                    .target_history = connection.target_history,
+                    .detached = connection.detach.has_value(),
+                });
+                for (auto const& timing : connection.source_channel_timings) {
+                    join_capabilities(
+                        candidate.capabilities,
+                        target_capabilities_for(
+                            timing.production,
+                            timing.retention,
+                            timing.delivery));
+                }
+            }
+        }
+    }
+
+    for (auto& candidate : sample_sources) {
+        remove_subsumed_capabilities(candidate.capabilities);
+    }
+    for (auto& candidate : sample_targets) {
+        remove_subsumed_capabilities(candidate.capabilities);
+    }
+
+    auto source_port = [](SampleOutputChannelId channel) {
+        return NodeBundlePortId{
+            channel.bundle, PortKind::sample, channel.port};
+    };
+    for (auto const& candidate : sample_sources) {
+        auto atom = std::ranges::find_if(
+            indexed.sample_source_atoms,
+            [&](SampleSourceEndpointAtomPlan const& existing) {
+                if (existing.port != source_port(candidate.channel)
+                    || existing.source_layout != candidate.layout
+                    || existing.production != candidate.production
+                    || existing.retention != candidate.retention
+                    || existing.capabilities != candidate.capabilities
+                    || existing.channels.empty()) {
+                    return false;
+                }
+                auto const representative = std::ranges::find_if(
+                    sample_sources,
+                    [&](SampleSourceAtomCandidate const& value) {
+                        auto const& first = existing.channels.front();
+                        return value.channel.bundle == first.bundle
+                            && value.channel.port == first.port
+                            && value.channel.channel == first.channel;
+                    });
+                return representative != sample_sources.end()
+                    && representative->uses == candidate.uses;
+            });
+        if (atom == indexed.sample_source_atoms.end()) {
+            indexed.sample_source_atoms.push_back(
+                SampleSourceEndpointAtomPlan{
+                    .port = source_port(candidate.channel),
+                    .source_layout = candidate.layout,
+                    .production = candidate.production,
+                    .retention = candidate.retention,
+                    .channels = {candidate.channel},
+                    .capabilities = candidate.capabilities,
+                });
+            atom = std::prev(indexed.sample_source_atoms.end());
+        } else {
+            atom->channels.push_back(candidate.channel);
+        }
+        for (auto const& use : candidate.uses) {
+            append_unique(atom->connection_indices, use.connection_index);
+            append_unique(
+                atom->configured_connection_indices,
+                plan.sample_connections[use.connection_index]
+                    .configured_connection_index);
+        }
+    }
+
+    auto sample_source_atom_for = [&](SampleOutputChannelId channel)
+        -> std::optional<EndpointAtomOrdinal> {
+        for (EndpointAtomOrdinal atom = 0;
+             atom < indexed.sample_source_atoms.size(); ++atom) {
+            if (std::ranges::contains(
+                    indexed.sample_source_atoms[atom].channels, channel)) {
+                return atom;
+            }
+        }
+        return std::nullopt;
+    };
+    auto target_port = [](SampleInputChannelId channel) {
+        return NodeBundlePortId{
+            channel.bundle, PortKind::sample, channel.port};
+    };
+    for (auto const& candidate : sample_targets) {
+        std::vector<EndpointAtomOrdinal> source_atoms;
+        for (auto const& use : candidate.uses) {
+            auto const& connection =
+                plan.sample_connections[use.connection_index];
+            for (auto const source_index : use.source_channel_indices) {
+                if (source_index >= connection.source_channel_timings.size()) {
+                    continue;
+                }
+                if (auto const atom = sample_source_atom_for(
+                        connection.source_channel_timings[source_index].source)) {
+                    append_unique(source_atoms, *atom);
+                }
+            }
+        }
+        auto atom = std::ranges::find_if(
+            indexed.sample_target_atoms,
+            [&](SampleTargetEndpointAtomPlan const& existing) {
+                if (existing.port != target_port(candidate.channel)
+                    || existing.target_layout != candidate.layout
+                    || existing.access != candidate.access
+                    || existing.capabilities != candidate.capabilities
+                    || existing.source_atoms != source_atoms
+                    || existing.channels.empty()) {
+                    return false;
+                }
+                auto const representative = std::ranges::find_if(
+                    sample_targets,
+                    [&](SampleTargetAtomCandidate const& value) {
+                        auto const& first = existing.channels.front();
+                        return value.channel.bundle == first.bundle
+                            && value.channel.port == first.port
+                            && value.channel.channel == first.channel;
+                    });
+                return representative != sample_targets.end()
+                    && representative->uses == candidate.uses;
+            });
+        if (atom == indexed.sample_target_atoms.end()) {
+            indexed.sample_target_atoms.push_back(
+                SampleTargetEndpointAtomPlan{
+                    .port = target_port(candidate.channel),
+                    .target_layout = candidate.layout,
+                    .access = candidate.access,
+                    .channels = {candidate.channel},
+                    .source_atoms = std::move(source_atoms),
+                    .capabilities = candidate.capabilities,
+                });
+            atom = std::prev(indexed.sample_target_atoms.end());
+        } else {
+            atom->channels.push_back(candidate.channel);
+        }
+        for (auto const& use : candidate.uses) {
+            append_unique(atom->connection_indices, use.connection_index);
+            append_unique(
+                atom->configured_connection_indices,
+                plan.sample_connections[use.connection_index]
+                    .configured_connection_index);
+        }
+    }
+
+    for (auto const& node : plan.nodes) {
+        for (std::size_t port = 0; port < node.event_input_count; ++port) {
+            NodeBundlePortId const id{node.bundle, PortKind::event, port};
+            auto const config = graph.node_bundles.resolve_event_input(id).config;
+            indexed.event_target_atoms.push_back(EventTargetEndpointAtomPlan{
+                .port = EventInputPortId{node.bundle, port},
+                .type = config.type,
+                .access = destination_access(config.access),
+            });
+        }
+        for (std::size_t port = 0; port < node.event_output_count; ++port) {
+            NodeBundlePortId const id{node.bundle, PortKind::event, port};
+            auto const config = graph.node_bundles.resolve_event_output(id).config;
+            auto const production = source_production(config.production);
+            EndpointStorageCapabilities intrinsic;
+            if (config.retention == OutputRetention::persisted) {
+                intrinsic.canonical_persisted_pages = true;
+                intrinsic.capture_backed_persistence =
+                    production == PlannedSourceProduction::tick;
+            } else if (production == PlannedSourceProduction::tock
+                       || (production == PlannedSourceProduction::tick
+                           && node.contextually_replayable)) {
+                intrinsic.transaction_local_addressable = true;
+            }
+            indexed.event_source_atoms.push_back(EventSourceEndpointAtomPlan{
+                .port = EventOutputPortId{node.bundle, port},
+                .type = config.type,
+                .production = production,
+                .retention = config.retention,
+                .max_events_per_index = config.max_events_per_index,
+                .capabilities = intrinsic,
+            });
+        }
+    }
+
+    for (std::size_t connection_index = 0;
+         connection_index < plan.event_connections.size(); ++connection_index) {
+        auto const& connection = plan.event_connections[connection_index];
+        for (std::size_t source_index = 0;
+             source_index < connection.source_plans.size(); ++source_index) {
+            auto const& source = connection.source_plans[source_index];
+            auto found = std::ranges::find_if(
+                indexed.event_source_atoms,
+                [&](EventSourceEndpointAtomPlan const& atom) {
+                    return atom.port == source.source;
+                });
+            if (found == indexed.event_source_atoms.end()) {
+                indexed.event_source_atoms.push_back(
+                    EventSourceEndpointAtomPlan{
+                        .port = source.source,
+                        .type = connection.source_type,
+                        .production = source.production,
+                        .retention = source.retention,
+                        .max_events_per_index = source.max_events_per_index,
+                    });
+                found = std::prev(indexed.event_source_atoms.end());
+            }
+            append_unique(found->connection_indices, connection_index);
+            append_unique(
+                found->configured_connection_indices,
+                connection.configured_connection_index);
+            for (auto const& delivery : connection.deliveries) {
+                if (delivery.source_index != source_index) continue;
+                join_capabilities(
+                    found->capabilities,
+                    storage_capabilities_for(
+                        source.production,
+                        source.retention,
+                        delivery.mechanism));
+            }
+        }
+
+        for (std::size_t target_index = 0;
+             target_index < connection.target_plans.size(); ++target_index) {
+            auto const& target = connection.target_plans[target_index];
+            auto found = std::ranges::find_if(
+                indexed.event_target_atoms,
+                [&](EventTargetEndpointAtomPlan const& atom) {
+                    return atom.port == target.target;
+                });
+            if (found == indexed.event_target_atoms.end()) {
+                indexed.event_target_atoms.push_back(
+                    EventTargetEndpointAtomPlan{
+                        .port = target.target,
+                        .type = connection.target_type,
+                        .access = target.access,
+                    });
+                found = std::prev(indexed.event_target_atoms.end());
+            }
+            append_unique(found->connection_indices, connection_index);
+            append_unique(
+                found->configured_connection_indices,
+                connection.configured_connection_index);
+            for (auto const& delivery : connection.deliveries) {
+                if (delivery.target_index != target_index
+                    || delivery.source_index >= connection.source_plans.size()) {
+                    continue;
+                }
+                auto const& source =
+                    connection.source_plans[delivery.source_index];
+                auto const source_atom = std::ranges::find_if(
+                    indexed.event_source_atoms,
+                    [&](EventSourceEndpointAtomPlan const& atom) {
+                        return atom.port == source.source;
+                    });
+                if (source_atom != indexed.event_source_atoms.end()) {
+                    append_unique(
+                        found->source_atoms,
+                        static_cast<EndpointAtomOrdinal>(std::distance(
+                            indexed.event_source_atoms.begin(), source_atom)));
+                }
+                join_capabilities(
+                    found->capabilities,
+                    target_capabilities_for(
+                        source.production,
+                        source.retention,
+                        delivery.mechanism));
+            }
+        }
+    }
+
+    for (auto& connection : indexed.connections) {
+        connection.source_atoms.clear();
+        connection.target_atoms.clear();
+        if (connection.kind == PortKind::sample) {
+            for (EndpointAtomOrdinal atom = 0;
+                 atom < indexed.sample_source_atoms.size(); ++atom) {
+                auto const& candidate = indexed.sample_source_atoms[atom];
+                if (!std::ranges::contains(
+                        candidate.configured_connection_indices,
+                        connection.configured_connection_index)) {
+                    continue;
+                }
+                auto const contributes = std::ranges::any_of(
+                    candidate.channels,
+                    [&](SampleOutputChannelId const& channel) {
+                        return std::ranges::contains(
+                            connection.sample_source_channels, channel);
+                    });
+                if (contributes) append_unique(connection.source_atoms, atom);
+            }
+            for (EndpointAtomOrdinal atom = 0;
+                 atom < indexed.sample_target_atoms.size(); ++atom) {
+                auto const& candidate = indexed.sample_target_atoms[atom];
+                if (!std::ranges::contains(
+                        candidate.configured_connection_indices,
+                        connection.configured_connection_index)) {
+                    continue;
+                }
+                auto const contributes = std::ranges::any_of(
+                    candidate.channels,
+                    [&](SampleInputChannelId const& channel) {
+                        return std::ranges::contains(
+                            connection.sample_target_channels, channel);
+                    });
+                if (contributes) append_unique(connection.target_atoms, atom);
+            }
+            continue;
+        }
+
+        for (EndpointAtomOrdinal atom = 0;
+             atom < indexed.event_source_atoms.size(); ++atom) {
+            auto const& candidate = indexed.event_source_atoms[atom];
+            if (!std::ranges::contains(
+                    candidate.configured_connection_indices,
+                    connection.configured_connection_index)) {
+                continue;
+            }
+            auto const contributes = std::ranges::any_of(
+                connection.event_deliveries,
+                [&](IndexedEventDeliveryPlan const& delivery) {
+                    return delivery.source == candidate.port;
+                });
+            if (contributes) append_unique(connection.source_atoms, atom);
+        }
+        for (EndpointAtomOrdinal atom = 0;
+             atom < indexed.event_target_atoms.size(); ++atom) {
+            auto const& candidate = indexed.event_target_atoms[atom];
+            if (!std::ranges::contains(
+                    candidate.configured_connection_indices,
+                    connection.configured_connection_index)) {
+                continue;
+            }
+            auto const contributes = std::ranges::any_of(
+                connection.event_deliveries,
+                [&](IndexedEventDeliveryPlan const& delivery) {
+                    return delivery.target == candidate.port;
+                });
+            if (contributes) append_unique(connection.target_atoms, atom);
+        }
+    }
+    for (auto& atom : indexed.event_source_atoms) {
+        remove_subsumed_capabilities(atom.capabilities);
+    }
+    for (auto& atom : indexed.event_target_atoms) {
+        remove_subsumed_capabilities(atom.capabilities);
+    }
+}
+
 void plan_sample_groups(
     ConnectionAnalysisPlan& plan,
     std::size_t kernel_block_size,
@@ -2636,46 +3336,57 @@ void plan_sample_groups(
             }
         }
 
-        for (auto const& channel : connection.source_channel_timings) {
-            auto const source_port = source_port_for(channel.source);
-            auto group = std::ranges::find_if(
-                plan.sample_producer_groups,
-                [&](SampleProducerGroupPlan const& candidate) {
-                    return candidate.source_port
-                        && *candidate.source_port == source_port;
-                });
-            if (group == plan.sample_producer_groups.end()) {
-                std::vector<SampleOutputChannelId> source_channels;
-                auto const channel_total = channel_count(channel.source_layout);
-                source_channels.reserve(channel_total);
-                for (std::size_t source_channel = 0;
-                     source_channel < channel_total;
-                     ++source_channel) {
-                    source_channels.push_back(SampleOutputChannelId{
-                        .bundle = channel.source.bundle,
-                        .port = channel.source.port,
-                        .channel = source_channel,
-                    });
-                }
-                plan.sample_producer_groups.push_back(SampleProducerGroupPlan{
-                    .source_port = source_port,
-                    .source_type = channel.source_layout.channel_type,
-                    .source_channels = std::move(source_channels),
-                    .canonical_source_layout = channel.source_layout,
-                });
-                group = std::prev(plan.sample_producer_groups.end());
-            } else if (!group->canonical_source_layout
-                || *group->canonical_source_layout != channel.source_layout) {
-                // inventory_sample_connections() resolves one immutable output
-                // declaration per source port, so disagreement here means the
-                // semantic plan has already lost producer identity.
-                continue;
-            }
-            if (std::ranges::find(group->connection_indices, i)
-                == group->connection_indices.end()) {
-                group->connection_indices.push_back(i);
-            }
+    }
+
+    // Endpoint atoms are the correctness partition. The current node-facing
+    // Tick representation may still coalesce the atoms of one authored output
+    // port because OutputPort writes that port as one operation; all incidence
+    // and capability distinctions remain retained in IndexedPlan for derived
+    // preparation/page representations.
+    std::vector<NodeBundlePortId> connected_source_ports;
+    for (auto const& atom : plan.indexed.sample_source_atoms) {
+        if (!atom.connection_indices.empty()) {
+            append_unique(connected_source_ports, atom.port);
         }
+    }
+    for (EndpointAtomOrdinal atom_index = 0;
+         atom_index < plan.indexed.sample_source_atoms.size(); ++atom_index) {
+        auto const& atom = plan.indexed.sample_source_atoms[atom_index];
+        if (!std::ranges::contains(connected_source_ports, atom.port)) continue;
+        auto group = std::ranges::find_if(
+            plan.sample_producer_groups,
+            [&](SampleProducerGroupPlan const& candidate) {
+                return candidate.source_port
+                    && *candidate.source_port == atom.port;
+            });
+        if (group == plan.sample_producer_groups.end()) {
+            plan.sample_producer_groups.push_back(SampleProducerGroupPlan{
+                .source_port = atom.port,
+                .source_type = atom.source_layout.channel_type,
+                .canonical_source_layout = atom.source_layout,
+            });
+            group = std::prev(plan.sample_producer_groups.end());
+        } else if (!group->canonical_source_layout
+            || *group->canonical_source_layout != atom.source_layout) {
+            continue;
+        }
+        append_unique(group->source_atom_indices, atom_index);
+        for (auto const channel : atom.channels) {
+            append_unique(group->source_channels, channel);
+        }
+        for (auto const connection_index : atom.connection_indices) {
+            append_unique(group->connection_indices, connection_index);
+        }
+    }
+    for (auto& group : plan.sample_producer_groups) {
+        std::ranges::sort(
+            group.source_channels,
+            {},
+            [](SampleOutputChannelId const& channel) {
+                return std::tuple{
+                    channel.bundle, channel.port, channel.channel};
+            });
+        std::ranges::sort(group.connection_indices);
     }
 
     for (std::size_t group_index = 0;
@@ -2849,6 +3560,33 @@ std::expected<void, std::string> plan_event_groups(
             group = std::prev(plan.event_producer_groups.end());
         }
         group->connection_indices.push_back(i);
+
+        for (auto const source : connection.sources) {
+            auto const atom = std::ranges::find_if(
+                plan.indexed.event_source_atoms,
+                [&](EventSourceEndpointAtomPlan const& candidate) {
+                    return candidate.port == source;
+                });
+            if (atom != plan.indexed.event_source_atoms.end()) {
+                append_unique(
+                    group->source_atom_indices,
+                    static_cast<EndpointAtomOrdinal>(std::distance(
+                        plan.indexed.event_source_atoms.begin(), atom)));
+            }
+        }
+        for (auto const target : connection.targets) {
+            auto const atom = std::ranges::find_if(
+                plan.indexed.event_target_atoms,
+                [&](EventTargetEndpointAtomPlan const& candidate) {
+                    return candidate.port == target;
+                });
+            if (atom != plan.indexed.event_target_atoms.end()) {
+                append_unique(
+                    group->target_atom_indices,
+                    static_cast<EndpointAtomOrdinal>(std::distance(
+                        plan.indexed.event_target_atoms.begin(), atom)));
+            }
+        }
 
         for (std::size_t source_index = 0;
              source_index < connection.source_plans.size(); ++source_index) {
@@ -3082,6 +3820,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto latency = plan_sample_latency_compensation(plan); !latency) {
         return std::unexpected(std::move(latency.error()));
     }
+    plan_endpoint_atoms(graph, plan);
     plan_sample_groups(plan, kernel_block_size, cost_model);
     if (auto events = plan_event_groups(
             plan, kernel_block_size, cost_model); !events) {

@@ -2142,10 +2142,13 @@ Compute:
 
 ### Stage 10 — pure connection/storage planning
 
-First derive correctness requirements for each producer connection group from
-fanout, schedule, conversion, history/latency, feedback, event windows, and
-cross-pass lifetime. Then call a deterministic heuristic/cost-model function to
-choose among legal physical representations such as:
+First partition overlapping source and target incidence into exact endpoint
+atoms. Derive each atom's joined correctness requirements from fanout, fan-in,
+schedule, conversion, history/latency, feedback, event windows, access context,
+retention, and cross-pass lifetime. Derive and deduplicate converted/composed
+representations, then physically coalesce equivalent requirements where useful.
+Only after that should a deterministic heuristic/cost-model function choose
+among legal physical representations such as:
 
 ```text
 SSA/direct forwarding

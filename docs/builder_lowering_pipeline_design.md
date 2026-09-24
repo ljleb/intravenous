@@ -147,10 +147,12 @@ representations such as shared sample rings and `BroadcastEvent`. Those are
 implementation details of the compatibility `Graph`, not semantic requirements
 of `ConfiguredGraph`.
 
-The whole-project compiler must plan a producer and all of its consumers as one
-connection group. Layout-compatible sample consumers may alias one produced
-value/materialization, conversion branches may materialize only when necessary,
-and a simple acyclic chain may need no physical edge storage at all. Event
+The whole-project compiler first partitions overlapping source and target
+incidence into endpoint atoms, then joins every use requirement for each atom.
+Layout-compatible sample consumers may alias one produced value/materialization,
+conversion branches may materialize only when necessary, and a simple acyclic
+chain may need no physical edge storage at all. Equivalent atoms may be
+physically coalesced only after those correctness requirements are known. Event
 fan-out likewise becomes eligible for shared immutable transient representation
 or direct/fused handling once Tick event windows and consumer retention are
 statically known.

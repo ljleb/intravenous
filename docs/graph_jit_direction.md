@@ -645,15 +645,16 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     Sequential dependencies, stops at persisted boundaries, rejects replay cycles
     and records synthesized pointwise F/R plus background replay ordering. Contextual
     replayability remains a per-path compiler fact, not an output config field.
-17. **Implement subset-based storage inference and ordinary background evaluation.**
-    Partition overlapping endpoint incidence, join source/target capabilities, and
-    coalesce only after correctness requirements are known. Then implement
-    `GraphExecutor`, transaction-local/prepared ephemeral materialization, canonical
-    persisted-page completion for Tick and Tock persisted outputs, atomic publication,
-    and preliminary published/prepared-snapshot-only Random Access reads. Background
-    ephemeral Random Access may use transaction-local page-backed materialization;
-    Tick-time ephemeral Random Access must be prepared before the callback. Playback
-    never blocks or invokes Tock.
+17. **In progress: subset-based storage inference and ordinary background evaluation.**
+    Exact source/target endpoint-atom incidence partitioning and capability joins
+    have landed, with current node-facing Tick groups retaining which atoms they
+    physically coalesce. Next implement `GraphExecutor`, transaction-local/prepared
+    ephemeral materialization, canonical persisted-page completion for Tick and Tock
+    persisted outputs, atomic publication, and preliminary
+    published/prepared-snapshot-only Random Access reads. Background ephemeral Random
+    Access may use transaction-local page-backed materialization; Tick-time ephemeral
+    Random Access must be prepared before the callback. Playback never blocks or
+    invokes Tock.
 18. **Enable shared Tick capture and explicit recording.** Define the shared capture
     metadata/pool, provision slabs off the audio thread, and capture Tick/persisted or
     explicit-recorder blocks at production/finalization time. Consume fixed capture

@@ -240,7 +240,6 @@ struct EventConnectionPlan {
             });
 }
 
-
 struct ConnectionLiveIntervalPlan {
     // Positions in SchedulePlan's flattened concrete-node order. Boundary
     // ingress is represented by 0; boundary egress by execution_count.
@@ -255,6 +254,9 @@ struct SampleProducerGroupPlan {
     std::optional<NodeBundlePortId> source_port{};
     ChannelTypeId source_type = ChannelTypeId::mono;
     std::vector<SampleOutputChannelId> source_channels{};
+    // Endpoint atoms are the correctness units. This group is a later physical
+    // coalescing decision for the node-facing Tick representation.
+    std::vector<EndpointAtomOrdinal> source_atom_indices{};
     std::optional<ChannelLayout> canonical_source_layout{};
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
@@ -267,6 +269,8 @@ struct SampleProducerGroupPlan {
 struct EventProducerGroupPlan {
     EventTypeId source_type = EventTypeId::empty;
     std::vector<EventOutputPortId> sources{};
+    std::vector<EndpointAtomOrdinal> source_atom_indices{};
+    std::vector<EndpointAtomOrdinal> target_atom_indices{};
     // The semantic fan-in source set is retained above. Realtime physical
     // planning uses only Tick -> Sequential contributors; background-only
     // sources are tracked separately so mixed fan-in is representable without

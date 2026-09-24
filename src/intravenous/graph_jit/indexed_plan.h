@@ -17,6 +17,7 @@ using SemanticSccOrdinal = std::size_t;
 using IndexedNodeOrdinal = std::size_t;
 using IndexedEndpointOrdinal = std::size_t;
 using IndexedConnectionOrdinal = std::size_t;
+using EndpointAtomOrdinal = std::size_t;
 
 enum class PlannedSourceProduction : std::uint8_t {
     tick,
@@ -55,6 +56,69 @@ enum class IndexedBackgroundDependencyKind : std::uint8_t {
     // An ordinary Sequential input is traversed only because its Tick consumer
     // is being synthesized as a replay evaluation.
     replay_sequential,
+};
+
+// Correctness requirements are joined per exact source/target incidence atom
+// before any physical representation is selected. These capabilities describe
+// representations an atom must own or be able to view; they do not imply that
+// every target allocates another copy of its source representation. They are
+// intentionally independent: for example, a Tick/persisted source may require
+// both current-Tick visibility and canonical published pages.
+struct EndpointStorageCapabilities {
+    bool current_tick_readable = false;
+    bool capture_backed_persistence = false;
+    bool canonical_persisted_pages = false;
+    bool prepared_sequential_window = false;
+    bool prepared_addressable_window = false;
+    bool transaction_local_addressable = false;
+
+    bool operator==(EndpointStorageCapabilities const&) const = default;
+};
+
+struct SampleSourceEndpointAtomPlan {
+    NodeBundlePortId port{};
+    ChannelLayout source_layout{};
+    PlannedSourceProduction production = PlannedSourceProduction::tick;
+    OutputRetention retention = OutputRetention::ephemeral;
+    std::vector<SampleOutputChannelId> channels{};
+    // Ordinals in ConnectionAnalysisPlan::sample_connections. They are
+    // compile-time incidence facts; configured_connection_indices remain
+    // meaningful in the immutable CompiledGraph metadata.
+    std::vector<std::size_t> connection_indices{};
+    std::vector<std::size_t> configured_connection_indices{};
+    EndpointStorageCapabilities capabilities{};
+};
+
+struct SampleTargetEndpointAtomPlan {
+    NodeBundlePortId port{};
+    ChannelLayout target_layout{};
+    PlannedDestinationAccess access = PlannedDestinationAccess::sequential;
+    std::vector<SampleInputChannelId> channels{};
+    std::vector<std::size_t> connection_indices{};
+    std::vector<std::size_t> configured_connection_indices{};
+    std::vector<EndpointAtomOrdinal> source_atoms{};
+    EndpointStorageCapabilities capabilities{};
+};
+
+struct EventSourceEndpointAtomPlan {
+    EventOutputPortId port{};
+    EventTypeId type = EventTypeId::empty;
+    PlannedSourceProduction production = PlannedSourceProduction::tick;
+    OutputRetention retention = OutputRetention::ephemeral;
+    double max_events_per_index = 0.0;
+    std::vector<std::size_t> connection_indices{};
+    std::vector<std::size_t> configured_connection_indices{};
+    EndpointStorageCapabilities capabilities{};
+};
+
+struct EventTargetEndpointAtomPlan {
+    EventInputPortId port{};
+    EventTypeId type = EventTypeId::empty;
+    PlannedDestinationAccess access = PlannedDestinationAccess::sequential;
+    std::vector<std::size_t> connection_indices{};
+    std::vector<std::size_t> configured_connection_indices{};
+    std::vector<EndpointAtomOrdinal> source_atoms{};
+    EndpointStorageCapabilities capabilities{};
 };
 
 // A persistent identity exists only when the configured concrete node belongs
@@ -198,6 +262,10 @@ struct IndexedConnectionPlan {
     std::vector<IndexedEndpointOrdinal> target_endpoints{};
     std::vector<NodeBundlePortId> source_ports{};
     std::vector<NodeBundlePortId> target_ports{};
+    // Ordinals in the payload-specific source/target atom vectors retained by
+    // IndexedPlan. Port-level endpoints remain the callback/coverage identity.
+    std::vector<EndpointAtomOrdinal> source_atoms{};
+    std::vector<EndpointAtomOrdinal> target_atoms{};
 
     ChannelTypeId sample_source_type = ChannelTypeId::mono;
     ChannelTypeId sample_target_type = ChannelTypeId::mono;
@@ -262,6 +330,14 @@ struct IndexedPlan {
     std::vector<std::optional<IndexedNodeOrdinal>> bundle_to_indexed_node{};
     std::vector<IndexedEndpointPlan> endpoints{};
     std::vector<IndexedConnectionPlan> connections{};
+    // Logical callback/coverage endpoints above remain whole ports. These
+    // partitions are the finer correctness unit used by storage planning.
+    // Physical coalescing may combine atoms only after their full requirements
+    // have been derived.
+    std::vector<SampleSourceEndpointAtomPlan> sample_source_atoms{};
+    std::vector<SampleTargetEndpointAtomPlan> sample_target_atoms{};
+    std::vector<EventSourceEndpointAtomPlan> event_source_atoms{};
+    std::vector<EventTargetEndpointAtomPlan> event_target_atoms{};
     std::vector<IndexedComponentPlan> components{};
     std::vector<std::size_t> component_order{};
     // Intrinsic replayability is an authored candidate fact. A candidate enters
@@ -277,6 +353,8 @@ struct IndexedPlan {
 
     [[nodiscard]] bool empty() const noexcept
     {
+        // Sequential-only graphs still retain endpoint-atom storage facts;
+        // they do not require generated background roots.
         return endpoints.empty();
     }
 };

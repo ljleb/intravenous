@@ -1963,13 +1963,14 @@ recording merely because that planning metadata exists.
    F/R propagation and use the imported `tick_block()` wrapper for replay.
    Preserve semantic SCCs separately from the expanded background evaluation DAG,
    enforce the recorder boundary and keep Tock execution off the audio thread.
-4. **Implement storage-requirement inference and ordinary background evaluation.**
-   Partition overlapping source/target subsets into endpoint atoms, join capabilities
-   across all fan-in/fan-out uses, and physically coalesce only after correctness
-   requirements are known. Implement `GraphExecutor`, transaction-local/advance
-   ephemeral materialization, canonical persisted pages for Tick and Tock persisted
-   outputs, pinned **published-snapshot-only** Random Access reads, atomic publication,
-   and advance preparation. Verify that no audio-thread path can invoke Tock.
+4. **In progress: storage-requirement inference and ordinary background evaluation.**
+   Exact source/target endpoint-atom partitioning and independent capability joins
+   have landed; logical callback/coverage endpoints remain port-granular, and
+   node-facing Tick groups explicitly record the atoms they physically coalesce.
+   Next implement `GraphExecutor`, transaction-local/advance ephemeral
+   materialization, canonical persisted pages for Tick and Tock persisted outputs,
+   pinned **published-snapshot-only** Random Access reads, atomic publication, and
+   advance preparation. Verify that no audio-thread path can invoke Tock.
 5. **Make capture-backed Tick persistence and explicit recording operational.**
    Define the shared capture ABI/pool; implement independent capture-allocator slab
    provisioning and audio-thread-safe capture at production/finalization time. Use it

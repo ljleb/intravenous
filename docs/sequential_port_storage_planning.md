@@ -475,6 +475,18 @@ without changing graph semantics or LLVM lowering.
 
 The storage-model and physical-residence refactors have landed:
 
+- exact source and target endpoint-atom inference now runs after latency
+  compensation and before physical producer grouping. Sample channels are
+  partitioned by complete connection/contribution/timing incidence; event ports
+  remain whole-port atoms. Disconnected authored input and output elements are
+  retained too, so intrinsic retention/requestability and target identity do not
+  depend on current fan-in/fan-out. Each atom retains its joined
+  current-Tick, capture, persisted-page, prepared-window, and transaction-local
+  addressability capabilities. Port-granular coverage endpoints remain separate
+  from these storage atoms. Background connection records retain their exact
+  source/target atom ordinals, and existing node-facing Tick producer groups
+  record the atoms they physically coalesce, while background
+  page/materialization realization remains executor work;
 - sample and event producer groups now select the shared three-kind storage
   model, while event invocation aggregation is a separate operation fact;
 - ordinary event capacities start from
