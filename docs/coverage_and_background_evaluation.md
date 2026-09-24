@@ -1970,8 +1970,12 @@ recording merely because that planning metadata exists.
    transaction-local materializations, direct channel/event views, and exactly keyed
    shared derived conversion/fan-in operations. Prepared addressable derived storage
    subsumes its otherwise-identical prepared sequential form. Logical callback/
-   coverage endpoints remain port-granular. Next implement `GraphExecutor`, transaction workspaces,
-   runtime realization of those representations, and advance ephemeral
+   coverage endpoints remain port-granular. The first `GraphExecutor` substrate
+   now owns active/pending compiled realizations, stages pending storage without
+   reading live mutable state, performs ordinary `NodeStorage` migration only at
+   an explicit quiescent boundary, and dispatches the already-active generated root
+   without hidden lifecycle work. Next implement transaction workspaces, runtime
+   realization of indexed representations, and advance ephemeral
    materialization, canonical persisted pages for Tick and Tock persisted outputs,
    pinned **published-snapshot-only** Random Access reads, atomic publication, and
    advance preparation. Verify that no audio-thread path can invoke Tock.

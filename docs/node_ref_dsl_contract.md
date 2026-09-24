@@ -129,3 +129,17 @@ match.
 - Internal conversion, pack, and unpack nodes are not configured virtual nodes.
 - Runtime execution consumes lowered concrete graphs; it does not consume C++
   node-ref types or virtual-node metadata.
+
+## Planned post-runtime ownership migration
+
+The contracts above describe the current implementation, where a live ref is tied
+to one `GraphBuilder` façade. After GraphJit and GraphExecutor are complete and the
+planned optimization/profiling pass has established the builder-performance
+baseline, live-reference ownership is planned to move from `GraphBuilder*` to
+`BuilderSession*`. See
+[scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md).
+
+That change preserves the source-facing DSL but changes the live compatibility
+rule: different `GraphBuilder`/`SubgraphBuilder` views over one session become
+compatible, while refs from different sessions remain invalid. `ConfiguredGraph`
+continues to contain no live refs.

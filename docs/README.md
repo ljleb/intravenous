@@ -8,6 +8,8 @@ The primary application-architecture entry points are:
 - [Package Pipeline Application Architecture](./package_pipeline_architecture.md)
 - [Node Definitions And Instances Direction](./node_definitions_and_instances_direction.md)
 - [GraphBuilder Embedding, Hierarchy, And Project Port Matchers](./graph_builder_embedding_and_matchers.md)
+- [Scoped GraphBuilder And SubgraphClosure Direction](./scoped_graph_builder_and_subgraph_closure_direction.md)
+- [Node Presentation And Manual Controls Direction](./node_presentation_and_manual_controls_direction.md)
 - [System Audio Devices Direction](./system_audio_devices_direction.md)
 - [Graph JIT Direction](./graph_jit_direction.md)
 - [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)

@@ -11,6 +11,13 @@ It is meant to stabilize both:
 This should be treated as the UI-side counterpart to the runtime and project
 architecture notes already present under `docs/`.
 
+The later node-presentation/control model is specified separately in
+[node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md).
+That document supersedes any implication here that a gesture belongs to one
+rendered component or that presentation profile differences require distinct
+execution/control models. This document remains authoritative for the broader VS
+Code surface/workspace architecture.
+
 ## High-level product split
 
 The UI is made of two distinct but coordinated surfaces:

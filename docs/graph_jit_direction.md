@@ -654,9 +654,13 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     select canonical pages/current-Tick views/prepared or transaction-local residence;
     direct views stay copy-free, while derived conversion/fan-in templates share only
     under an exact compile-time key, with prepared addressable results subsuming
-    otherwise-identical prepared sequential results. Next implement `GraphExecutor`, runtime
-    realization of those representations, canonical persisted-page completion for
-    Tick and Tock persisted outputs, atomic publication, and preliminary
+    otherwise-identical prepared sequential results. The initial `GraphExecutor`
+    substrate now owns active/pending `CompiledGraph` + `NodeStorage` realizations,
+    stages pending storage without sampling live state, performs migration at explicit
+    quiescent-boundary activation, and keeps activation out of its Tick entry point.
+    Next add indexed transaction workspaces and runtime
+    realization of the physical plan, canonical persisted-page completion for Tick
+    and Tock persisted outputs, atomic publication, and preliminary
     published/prepared-snapshot-only Random Access reads. Background ephemeral Random
     Access may use transaction-local page-backed materialization; Tick-time ephemeral
     Random Access must be prepared before the callback. Playback never blocks or
@@ -1195,6 +1199,23 @@ small/high-value constants may be embedded directly.
 Only code-only facts are eligible for this scheme. A value that changes
 `NodeLayout`, state identity, initialization, lifecycle, or graph structure is a
 structural recompilation input instead.
+
+### Manual-control dynamic-input variants
+
+The planned manual-control application of this mechanism is specified in
+[node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md).
+A settled participating manual value is a constant-specialization candidate.
+Hover/gesture intent may request a code variant whose exact `dynamic_inputs` set
+contains the controls that must be read dynamically; simultaneous gestures form a
+set rather than one optional control. Stale LLVM results carry exact request/revision
+identity and are discarded when superseded. On release, a settled constant variant
+is requested again while the current dynamic variant may continue reading the final
+unchanged scalar until replacement is ready.
+
+All such variants are code-only variants of one structural realization: they share
+the same canonical `NodeLayout`/`NodeStorage` and must preserve compatible persistent-
+state semantics, not merely identical offsets. No recent-variant cache is required
+initially; add one only if later profiling justifies it.
 
 ## Lowering boundary
 

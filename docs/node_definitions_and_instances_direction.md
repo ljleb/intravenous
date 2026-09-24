@@ -72,6 +72,15 @@ of a new definitions snapshot clears the reusable cache. Preserving entries whos
 exact transitive provider dependencies did not change is a later optimization pass,
 not a prerequisite for the application architecture.
 
+A later builder-level redesign must not be confused with that near-term cache
+optimization work. Once GraphJit and GraphExecutor have fully landed, the project
+will first run a substantial optimization/profiling iteration over the current
+configuration/build path. The next GraphBuilder API step after that measured
+optimization pass is the same-session scoped construction model in
+[scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md).
+Until then, the detached-session/cache behavior in this document remains the
+implemented architecture.
+
 The **C++ configuration-expression compiler has not landed yet**. The new
 configuration core currently accepts already-typed erased arguments synchronously.
 The next checkpoint is to compile the durable project argument-list source into an
@@ -222,6 +231,13 @@ definition-generation provenance
 
 Do not retain a live `GraphBuilder`/`BuilderSession` as the reusable configured
 instance representation merely to simplify embedding.
+
+The later same-session construction direction does **not** change this cache-value
+contract. It changes only how a cache miss is built. A successful, self-contained
+live `GraphBuilder` scope will be copied non-destructively into a `ConfiguredGraph`
+for reuse; the live scope remains in its `BuilderSession` for the current invocation
+and is not extracted/reimported. A live scope with free ancestor captures remains a
+valid construction but cannot independently produce a reusable `ConfiguredGraph`.
 
 `BuilderSession` contains transient construction state beyond the semantic
 configured graph, including definition/package context, recursion/cycle state,

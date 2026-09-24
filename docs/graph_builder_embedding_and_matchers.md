@@ -9,6 +9,14 @@ This document supplements [graph_builder.md](./graph_builder.md),
 [virtual_nodes_channel_aware_graph_direction.md](./virtual_nodes_channel_aware_graph_direction.md),
 and [project_graph_application_architecture.md](./project_graph_application_architecture.md).
 
+The implemented live-child/frozen-child importer described here is the current
+checkpoint. The planned post-GraphJit/GraphExecutor builder redesign is documented
+in [scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md).
+That later design keeps direct `ConfiguredGraph` import, but replaces newly
+constructed live child graphs with zero-copy same-`BuilderSession` nested-scope
+finalization. It is intentionally deferred until the runtime work has landed and a
+substantial optimization/profiling iteration has been completed.
+
 ## Implemented embedding checkpoint
 
 The builder now imports a frozen `ConfiguredGraph` directly; it does not rebuild
@@ -38,6 +46,12 @@ structured matchers plus richer compound-path/adversarial coverage as graph
 shapes become more varied.
 
 ## One embedding mechanism
+
+> **Current implementation note:** the shared live-child/frozen-child importer in
+> this section remains the implemented checkpoint. In the later scoped-builder
+> design, only frozen `ConfiguredGraph` placement needs import/remap; a newly
+> constructed live child already resides in the parent `BuilderSession` and is
+> finalized in place. The lower-level component remapping rules remain reusable.
 
 `ConfiguredGraph` must be directly embeddable into a parent `GraphBuilder`.
 

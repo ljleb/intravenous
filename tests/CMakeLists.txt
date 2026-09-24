@@ -136,6 +136,9 @@ add_iv_gtest(
     intravenous_graph_jit_connection_plan_tests
     graph_jit_connection_plan_gtest.cpp)
 add_iv_gtest(
+    intravenous_graph_executor_tests
+    graph_executor_gtest.cpp)
+add_iv_gtest(
     intravenous_graph_jit_tests
     modules/graph_jit_gtest.cpp
     IV_MODULE_COMPILATION_TESTS

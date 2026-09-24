@@ -1,5 +1,11 @@
 # GraphBuilder Historical Decomposition Notes
 
+> These are historical decomposition notes, not the next GraphBuilder API plan.
+> The post-GraphJit/GraphExecutor scoped-builder direction is
+> [scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md),
+> deliberately scheduled only after the runtime has landed and a substantial
+> optimization/profiling iteration has been completed.
+
 > **Current structural requirements:** direct frozen `ConfiguredGraph` embedding,
 > explicit local-to-parent handle translation, hierarchical virtual scopes,
 > stable direct-member ordering, tiled-child identity, and recursive project path

@@ -560,6 +560,13 @@ See [graph_jit_direction.md](./graph_jit_direction.md) for the complete root-nod
 `GraphExecutor` owns the mutable runtime realization of an already compiled
 project generation. It does not own ORC compilation.
 
+The initial runtime substrate is in place: a compiled generation is staged into
+executor-owned `NodeStorage` without reading mutable active state, and an explicit
+quiescent whole-root-boundary operation migrates the final active state and publishes
+it. `tick_block()` dispatches only the already-active generation and never performs
+activation, allocation, or lifecycle work. Project-transaction wiring and indexed
+page/transaction realization remain the next layer.
+
 `GraphExecutor` keeps at least:
 
 - one immutable active `CompiledGraph` generation and optionally one newest
@@ -735,7 +742,12 @@ in the request tree and a child/sink in the notification tree, but the same
 cause must never leave and then re-enter it.
 
 Detailed presentation event flows are deferred until the core execution graph
-is implemented.
+is implemented. The intended follow-on presentation/manual-control semantics are
+now consolidated in
+[node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md):
+one `NodePresentation` extension family, four global display modes, stable
+interaction rebinding, persistent manual-input values, scrub-only interpolation,
+and code-only dynamic-input specialization over one compatible `NodeLayout`.
 
 ## Immediate implementation order
 
@@ -786,5 +798,14 @@ The implementation checkpoints now stand as follows:
     consumption; add stale-page playback and per-input missing-page neutrality;
 11. integrate stable logical `SystemAudioDevices` bindings with ordinary system
     audio leaf node definitions;
-12. add presentation-specific and automatic-device convenience services only
-    after the core graph path is stable.
+12. once GraphJit and GraphExecutor have fully landed as the normal execution
+    path, run a substantial optimization/profiling iteration over the complete
+    runtime plus the current configuration/cache/builder path and establish the
+    performance baseline that later structural work must preserve;
+13. make the scoped `BuilderSession`/`GraphBuilder` API migration in
+    [scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md)
+    the next builder-level architectural step after that optimization pass;
+14. add presentation/manual-control and automatic-device convenience services
+    only after the core graph path is stable, using
+    [node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md)
+    for the presentation/control contract.
