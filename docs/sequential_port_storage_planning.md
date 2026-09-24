@@ -126,6 +126,52 @@ choices rather than by materializing every logical edge.
 The compiler should make that decision from graph facts and a cost model rather
 than exposing a storage choice in the node declaration.
 
+## Port windows are semantically node-owned even when storage is shared
+
+The authored history/latency declarations should be interpreted by an **as-if private
+state** rule. For graph-revision semantics, each concrete node behaves as though its
+port windows were ordinary state owned beside its nested `State`:
+
+- a Sequential input owns the resolved values in its declared history window;
+- a Tick output owns the values in its declared history window; and
+- a Tick output owns its already-authored latency/future window.
+
+This is an effect requirement, not a physical-allocation requirement. The steady
+storage planner may satisfy several conceptual port states using one producer ring,
+may let a consumer history view alias producer storage, and may eliminate dedicated
+state entirely when the required values are directly addressable. Those are valid
+optimizations only while they remain observationally equivalent to private node-owned
+state across graph revisions.
+
+A connection edit therefore changes future routing, not the past owned by a surviving
+port. If `A.out -> C.in(history=H)` becomes `B.out -> C.in(history=H)` at position `P`,
+then `C.in[P-H,P)` initially remains the resolved history C saw through the old graph.
+The same applies to fan-in: historical composed values belong to the destination
+input, not to whichever producer set happens to feed it in the new revision.
+
+A graph-version transition may temporarily duplicate data that steady execution had
+shared. For example, if old C history was merely a view into A's producer ring while
+new steady C history can be a view into B's ring, the transition realization may copy
+C's still-visible old history into a small carry. That copy is allowed to coexist with
+other copies of the same physical source data; avoiding steady-state copies is the
+optimization objective, not avoiding migration-time copies.
+
+For a surviving port whose required extent changes, preserve the overlapping valid
+semantic range. Shrinking history/latency may discard values that cease to be
+observable. Growing it preserves the previously owned range and initializes the newly
+exposed portion according to ordinary fresh-state semantics; do not fabricate old
+consumer history from unrelated source persistence merely because source data happens
+to exist.
+
+The stable migration identity belongs to the concrete node endpoint, not the
+connection or storage plan: user-instantiated node/module identity, virtual-node and
+concrete-member path, port direction/ordinal, channel index or event stream, and a
+state-role discriminator. Endpoint incidence classes, connection IDs, allocation
+indices, compact/ring kind, capacity and offsets are generation-local physical facts.
+Any physical plan that aliases/elides one of these conceptual state pieces must retain
+cold metadata capable of reading that semantic window again during a later graph
+transition.
+
 ## Partition overlapping endpoint subsets before choosing storage
 
 Storage is not selected edge by edge and is not selected once for an entire authored
@@ -1108,6 +1154,45 @@ At minimum cover:
 - random-access event/sample consumption remains independent from sequential-consumption storage
   planning.
 
+## Graph-revision transition planning precedes optimization
+
+A new logical graph revision may have two physical realizations:
+
+```text
+old executable
+      |
+      | safe splice at absolute position P
+      v
+transition realization of new graph
+      |
+      | last inherited transition-only port state expires
+      v
+steady realization of the same new graph
+```
+
+The transition realization is required only when the final steady plan cannot itself
+represent inherited node-owned state. It may add compact carries, composed-history
+materializations, or other bounded temporary storage. Those requirements have a
+finite semantic range for ordinary history/latency and therefore an absolute expiry
+position. GraphExecutor may translate that to a known block count for a fixed block
+size, but the semantic handoff is at the first legal root callback boundary at or
+after the expiry position.
+
+GraphJit should plan/compile both realizations during the original graph rebuild when
+both are needed. The second handoff is activation of already compiled code, not a
+second asynchronous compilation. State that has evolved while the transition form was
+active is reconciled into the steady realization at that handoff. If the steady
+representation can directly absorb all inherited state, only the steady realization
+is necessary. If another graph edit supersedes the transition before its expiry, the
+next rebuild uses the currently active transition realization as its old semantic
+state source and discards the obsolete pending steady form.
+
+This transition-correctness layer must land **before further storage/code
+optimization**. It is deliberately independent of later `NodeStorage` simplification:
+the first implementation may use the current raw-region/carry/ring machinery, as long
+as it can expose each semantic port-state view during reconciliation and preserve the
+required range.
+
 ## Compiler pipeline placement
 
 The whole-project compiler order should make the boundary explicit:
@@ -1122,21 +1207,31 @@ schedule / dependency / SCC analysis
 history / latency / Tick-event-window analysis
         |
         v
+derive stable concrete-node port-state identities/ranges
+        |
+        v
 derive connection storage requirements
         |
         v
-choose sample/event implementation plans
+choose steady sample/event implementation plans
+        |
+        v
+reconcile old semantic state realizations
+        |
+        +--> direct migration into steady plan, when sufficient
+        |
+        `--> transition realization + finite expiry horizon, when required
         |
         v
 transient liveness + reusable-region allocation
         |
         v
-root declaration / canonical NodeLayout planning
+root declaration / canonical NodeLayout planning for required realization(s)
         |
         | NodeStorage contains only cross-call state;
         | generated root owns fixed transient arenas
         v
-specialized whole-project LLVM
+specialized whole-project LLVM realization(s)
         |
         v
 LLVM optimization / ORC

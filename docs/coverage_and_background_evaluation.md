@@ -1040,7 +1040,7 @@ events outside input coverage.
 
 ## 16. Persisted output storage, stable output identity, and `NodeStorage`
 
-Each executable generation still has one canonical fixed-layout `NodeStorage`, but
+Each executable realization still has one canonical fixed-layout `NodeStorage`, but
 dynamically sized persisted-output data is **not** part of that fixed layout and
 should not be owned merely by one JIT generation when the output has stable project
 identity.
@@ -1982,10 +1982,25 @@ recording merely because that planning metadata exists.
    fixed capture-sequence snapshots through the background transaction, publish into
    the canonical page store, and reclaim only with callback-boundary-safe ownership.
    The recent-capture Random Access overlay remains a later optional experiment.
-6. **Finish generation reconciliation, authored-node cases and optimization.**
-   Rebind compatible persisted output stores, preserve correct state/layout
-   transitions and finish remaining node/feedback/event semantics. Only then refine
-   SIMD/fusion, page placement, transient reuse and immutable-value specialization.
+6. **Implement concrete-node port-state continuity and graph-revision transitions.**
+   Before optimization, define port history/latency exactly as if each surviving
+   concrete node privately owned that state. Carry stable user-instance/virtual-member/
+   port/channel-or-event identities plus cold realization metadata; preserve the
+   overlapping valid temporal range across rewiring, fan-in/fanout changes, size
+   changes, and compact/ring/alias representation changes. When the steady new graph
+   cannot directly represent inherited state, compile a transition realization with
+   temporary materialized state and a finite absolute-position expiry horizon, plus
+   the final steady realization. `GraphExecutor` performs the splice and the later
+   safe-boundary handoff without requiring another compilation. This stage is a
+   correctness prerequisite and does not require first simplifying `NodeStorage`.
+7. **Finish generation reconciliation and remaining authored-node cases.** Rebind
+   compatible persisted output stores and finish remaining nested-state, feedback,
+   event, detach, activity/TTL and skip semantics. Preserve persisted generated/
+   finalized data throughout its covered lifetime; coverage removal remains the only
+   semantic deletion condition for persisted output data.
+8. **Optimize only after transition correctness is established.** Refine SIMD/fusion,
+   page placement, transient reuse, storage aliasing/liveness and immutable-value
+   specialization only after graph-version state continuity is covered by tests.
 
 A capture sequence is an insertion order, not a global timeline order: seeking may
 append changes at previously processed positions. The processed frontier advances

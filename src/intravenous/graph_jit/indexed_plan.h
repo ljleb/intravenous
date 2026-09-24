@@ -351,6 +351,10 @@ struct IndexedSampleMaterializationPlan {
     ChannelTypeId source_type = ChannelTypeId::mono;
     ChannelLayout target_layout{};
     std::vector<std::size_t> target_channels{};
+    // Only projection contributions belonging to this exact target atom are
+    // retained. Their source_channel_indices index this materialization's
+    // source_channels/input_representations, not the parent connection's
+    // flattened source-channel table.
     std::vector<IndexedSampleProjectionPlan> projections{};
     std::size_t target_history = 0;
     IndexedRepresentationOrdinal output_representation = 0;

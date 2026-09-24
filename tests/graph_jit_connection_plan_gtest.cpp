@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <iterator>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -1845,6 +1846,99 @@ TEST(GraphJitConnectionPlan, PreparedAddressableSampleMaterializationSubsumesSeq
     EXPECT_EQ(
         physical.sample_materializations[prepared].residence,
         graph_jit::IndexedRepresentationResidence::prepared_addressable_window);
+}
+
+TEST(GraphJitConnectionPlan, IndexedSampleMaterializationIsTargetAtomLocal)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto mono = details::configure_concrete_node<MonoSource>(graph);
+    auto stereo_source =
+        details::configure_concrete_node<IndexedStereoSource>(graph);
+    auto sink = details::configure_concrete_node<StereoSink>(graph);
+    auto const mono_handle = mono.node_bundle_handle();
+    auto const stereo_handle = stereo_source.node_bundle_handle();
+    auto const sink_handle = sink.node_bundle_handle();
+
+    // Give the builder an ordinary connection, then replace the lossless
+    // configured form with the projection composition we need to exercise:
+    // left is a direct Tick mono alias while right is an unrelated Tock
+    // stereo -> mono conversion.
+    sink(graph.tile<stereo>(mono, mono));
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    std::array<ConfiguredSampleConnection, 2> connections{
+        ConfiguredSampleConnection{
+            .source_type = ChannelTypeId::mono,
+            .source_channels = {
+                SampleOutputChannelId{mono_handle, 0u, 0u},
+            },
+            .target_type = ChannelTypeId::mono,
+            .target_channels = {
+                SampleInputChannelId{sink_handle, 0u, 0u},
+            },
+        },
+        ConfiguredSampleConnection{
+            .source_type = ChannelTypeId::stereo,
+            .source_channels = {
+                SampleOutputChannelId{stereo_handle, 0u, 0u},
+                SampleOutputChannelId{stereo_handle, 0u, 1u},
+            },
+            .target_type = ChannelTypeId::mono,
+            .target_channels = {
+                SampleInputChannelId{sink_handle, 0u, 1u},
+            },
+        },
+    };
+    configured.connections = GraphBuilderConnections::from_configured_connections(
+        connections,
+        std::span<ConfiguredEventConnection const>{});
+
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->sample_connections.size(), 1u);
+    ASSERT_EQ(plan->sample_connections.front().projection_contributions.size(), 2u);
+    ASSERT_EQ(plan->indexed.connections.size(), 1u);
+
+    auto const& physical = plan->indexed.physical;
+    ASSERT_EQ(physical.connections.size(), 1u);
+    ASSERT_EQ(physical.connections.front().sample_direct_bindings.size(), 1u);
+    ASSERT_EQ(physical.connections.front().sample_materializations.size(), 1u);
+    ASSERT_EQ(physical.sample_materializations.size(), 1u);
+
+    auto const& direct = physical.sample_direct_bindings[
+        physical.connections.front().sample_direct_bindings.front()];
+    EXPECT_EQ(direct.target_channel, 0u);
+    EXPECT_EQ(
+        physical.representations[direct.representation].residence,
+        graph_jit::IndexedRepresentationResidence::current_tick);
+
+    auto const& materialization = physical.sample_materializations[
+        physical.connections.front().sample_materializations.front()];
+    EXPECT_EQ(
+        materialization.residence,
+        graph_jit::IndexedRepresentationResidence::prepared_sequential_window);
+    EXPECT_EQ(materialization.target_channels, (std::vector<std::size_t>{1u}));
+    ASSERT_EQ(materialization.source_channels.size(), 2u);
+    EXPECT_TRUE(std::ranges::all_of(
+        materialization.source_channels,
+        [&](SampleOutputChannelId channel) {
+            return channel.bundle == stereo_handle;
+        }));
+    ASSERT_EQ(materialization.projections.size(), 1u);
+    EXPECT_EQ(
+        materialization.projections.front().source_type,
+        ChannelTypeId::stereo);
+    EXPECT_EQ(
+        materialization.projections.front().target_type,
+        ChannelTypeId::mono);
+    EXPECT_EQ(
+        materialization.projections.front().source_channel_indices,
+        (std::vector<std::size_t>{0u, 1u}));
+    EXPECT_EQ(
+        materialization.projections.front().target_channels,
+        (std::vector<std::size_t>{1u}));
 }
 
 TEST(GraphJitConnectionPlan, MixedTickAndTockSampleTilePlansPerSourceChannel)

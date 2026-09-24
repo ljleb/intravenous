@@ -1888,7 +1888,38 @@ The execution plan assigns persistent state storage for:
 - activity/TTL counters where required;
 - other long-lived execution data.
 
-### 22.2 Lifecycle plan is generated; lifecycle runs in the host
+### 22.2 Port history and latency remain concrete-node state across revisions
+
+Port history/latency is semantically owned by the concrete node even when the whole-
+graph storage planner does not allocate a private buffer for it. Treat each Sequential
+input history and Tick output history/latency window as though it were ordinary node-
+local state. Physical lowering may alias those windows into shared producer storage or
+another representation, but that optimization does not transfer semantic ownership to
+the connection.
+
+If a surviving destination input is rewired, its immediately visible history remains
+what that input observed before the graph splice. If fan-in contributors change, the
+old resolved/composed history remains visible until it ages out. A surviving output
+similarly retains the overlapping valid portion of its authored history/latency state
+when consumers or physical representation change.
+
+Compiled realizations therefore publish stable concrete-node port-state identities
+and cold realization metadata. Any physical optimization that aliases/elides private
+port storage must retain enough metadata to recover that semantic state later. When
+the new steady layout cannot directly express inherited values, the finalizer may emit
+a temporary transition realization with extra bounded state and the final steady
+realization together. The live executor activates the transition form at a safe splice
+and later reconciles its currently evolved state into the precompiled steady form
+after the last transition-only range expires. Migration-time copying or duplication
+is acceptable; the optimization target is steady execution, not a zero-copy graph
+replacement. A newer graph edit arriving before expiry migrates from the currently
+active transition realization and supersedes the pending steady form.
+
+This correctness layer must be implemented before further whole-graph storage/code
+optimization. It does not depend on first simplifying the existing `NodeStorage`
+special cases.
+
+### 22.3 Lifecycle plan is generated; lifecycle runs in the host
 
 The finalizer has enough information to generate a lifecycle/state-layout description for the new kernel generation.
 
@@ -1897,25 +1928,28 @@ Actual migration must happen in the live application because it owns the old run
 On generation replacement:
 
 ```text
-same stable node + compatible state
-    -> move/migrate
+same stable node + compatible authored State
+    -> move/migrate typed State
 
-new node
+same stable port-state identity
+    -> preserve overlapping semantic history/latency range
+
+new node/state piece
     -> initialize
 
-removed node
-    -> release
+removed node/state piece
+    -> release/discard
 ```
 
 Do not execute live-state `move()` inside the build/finalizer process.
 
-### 22.3 Node type registration owns lifecycle implementation
+### 22.4 Node type registration owns lifecycle implementation
 
 Lifecycle code belongs to the independently registered node type, not to every iv module that instantiates it.
 
 The finalizer/activation machinery resolves lifecycle operations from the node-type registry.
 
-### 22.4 Do not freeze the final state ABI prematurely
+### 22.5 Do not freeze the final state ABI prematurely
 
 State layout/migration remains essential, but the exact final runtime ABI should be explored alongside the generated execution model.
 
@@ -2216,8 +2250,11 @@ project-generation-specific ORC resources, and returns one immutable
 `CompiledGraph` with its code-lifetime handle.
 
 `ProjectGraph` then immediately calls `GraphExecutor` with that result in the
-same propagation cause. `GraphExecutor` prepares mutable runtime storage/state
-migration and activates the successor only at a legal audio-pass boundary.
+same propagation cause. The result may contain one steady realization or a
+preplanned transition+steady pair for the same logical revision. `GraphExecutor`
+prepares mutable runtime storage/state migration, activates the successor only at a
+legal audio-pass boundary, and performs any later transition-to-steady handoff at its
+precomputed safe boundary without another compilation.
 
 Keep the previous executable generation active if `GraphJit` fails; do not call
 `GraphExecutor` with a partial result.
@@ -2569,7 +2606,7 @@ The following are treated as strong architectural decisions unless implementatio
 19. **Consecutive sample-wise tick nodes should share graph-level outer loops when legal.**
 20. **TTL/activity should be compiled from graph knowledge rather than rediscovered by scanning every internal audio block.**
 21. **Global-pointer configuration relocation remains supported.**
-22. **The finalizer generates the canonical node declaration/layout contract; lowering finalizes layout before LLVM emission; the live host executes lifecycle/state migration.** The optimized project masquerades as a zero-input/zero-output root node. During lowering, the exact accepted native `declare_node` callbacks and compiler-owned raw-region declarations build one canonical `NodeLayout`; final offsets are then constants in generated LLVM. `GraphExecutor` owns the corresponding `NodeStorage` and uses the ordinary initialize/move/release machinery for both `State` and `IndexedState`. Source introspection supplies symmetric nominal-definition identity and structural metadata for both state domains so cross-generation typed migration never relies on RTTI names or byte size alone.
+22. **The finalizer generates the canonical node declaration/layout contract; lowering finalizes layout before LLVM emission; the live host executes lifecycle/state migration.** The optimized project masquerades as a zero-input/zero-output root node. During lowering, the exact accepted native `declare_node` callbacks and compiler-owned raw-region declarations build the required canonical `NodeLayout` realization(s); final offsets are then constants in generated LLVM. `GraphExecutor` owns the corresponding `NodeStorage` and uses the ordinary initialize/move/release machinery for authored `State`/`IndexedState`, while compiler-owned port history/latency follows stable concrete-node port-state identities and semantic-range reconciliation. When inherited state cannot fit the final steady aliasing plan, the same graph revision may carry a temporary transition realization and a precompiled steady realization. This state-continuity layer is mandatory before further storage/code optimization. Source introspection supplies symmetric nominal-definition identity and structural metadata for typed state so cross-generation typed migration never relies on RTTI names or byte size alone.
 23. **Profiling and LLVM visibility are first-class.** Every important whole-graph compiler stage should be dumpable and timed.
 24. **Lane control-plane deletion is orthogonal to the kernel rewrite.** Once the replacement project ownership and required DSP/module capabilities exist, `Timeline`/`LaneGraph` may be removed before the whole-project kernel. A compatibility execution adapter is optional migration scaffolding, not a prerequisite. The same project graph and connection semantics must later feed the generated kernel without another identity migration.
 25. **Registered constructors/functions are provider-owned.** `IV_NODE` and

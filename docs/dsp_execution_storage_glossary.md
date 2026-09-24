@@ -285,7 +285,9 @@ uses it. Superseded physical versions may be reclaimed after their pins disappea
 ### `NodeStorage`
 
 `NodeStorage` is the canonical fixed-layout storage owned for an executable
-generation. It contains fixed node state and compiler-selected persistent regions.
+realization. A logical graph revision may briefly have transition and steady
+realizations, each with its own canonical `NodeStorage`. It contains fixed node state
+and compiler-selected persistent regions.
 It is not the owner of dynamically sized persisted-output pages or recording
 capture backlogs.
 
@@ -394,6 +396,38 @@ An **incidence partition** splits overlapping fan-in/fan-out selections into end
 atoms before storage is chosen. Storage requirements are then joined across every
 use of each atom. Equivalent atoms may later share a physical policy or allocation;
 partitioning for correctness and coalescing for efficiency are separate stages.
+
+### Node-owned port state
+
+**Node-owned port state** is the semantic history/latency state of a surviving
+concrete node's ports across graph revisions. A Sequential input owns its resolved
+history; a Tick output owns its authored history and latency/future window. This is
+an **as-if private state** rule: physical lowering may alias or share the data with
+producer timelines or other representations, but graph replacement must preserve the
+same observable state that private node-local storage would have preserved.
+
+Connection topology is not the identity of this state. Rewiring changes future
+routing while still-visible destination history remains unchanged until it ages out.
+A stable identity is rooted in user-instance/concrete-node/virtual-member and
+port/channel-or-event-stream identity plus the state role. Physical representation,
+capacity, offset, incidence partition and ordinary connection identity are not part of
+that semantic identity.
+
+### Transition realization / steady realization
+
+A **transition realization** is a temporary compiled physical realization of a new
+logical graph revision that contains extra bounded state needed to preserve inherited
+node-owned port state which the steady representation cannot directly expose.
+A **steady realization** is the physical realization used after all transition-only
+state has expired.
+
+Both represent the same logical graph revision. GraphJit should compile both in the
+original rebuild when both are necessary; `GraphExecutor` activates the transition
+form at the splice and later reconciles currently evolved state into the already-
+compiled steady form at a safe root callback boundary. Expiry is defined by absolute
+semantic positions/ranges, even if a fixed-block implementation also precomputes the
+equivalent callback count. A newer graph revision that arrives before expiry starts
+from the active transition realization, not from its pending steady successor.
 
 ## Source availability
 

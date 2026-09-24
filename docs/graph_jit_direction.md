@@ -526,10 +526,13 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    persistent ring. Immutable input bindings carry authored history/read latency;
    aliasable converted branches read retained producer history directly, while
    arithmetic derived results materialize the historical window they actually need.
-   Both modes use absolute sample-index addressing. Persistent compiler-owned raw regions
-   carry stable migration identities and exact-shape `NodeStorage` migration copies
-   their bytes across generations; transient arenas never migrate. This point covers
-   declared output latency and input/output history. Feed-forward whole-graph
+   Both modes use absolute sample-index addressing. The **currently landed** generation
+   migration for compiler-owned raw regions is only an exact-shape copy keyed by the
+   current physical plan; transient arenas never migrate. That implementation is not
+   the final semantic contract for declared output latency or input/output history.
+   Before optimization work proceeds, graph-revision reconciliation must preserve those
+   port-visible windows as concrete-node-owned state even when the old/new physical
+   representation, source connection, fan-in set, or retained size changes. Feed-forward whole-graph
    path-latency equalization is also landed: cumulative node/internal/output latency
    propagates through the schedule, faster branches receive compiler-owned read
    compensation, and that timing survives conversion, fanout, channel composition,
@@ -668,10 +671,22 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     generations. Persisted generated/finalized data remains retained throughout its
     covered lifetime; coverage removal is the only semantic deletion condition.
     Superseded physical versions are reclaimed after their readers release them.
-20. **Finish remaining authored-node semantics** (nested declarations, compiler-
+20. **Implement concrete-node port-state continuity and transition realizations.**
+    Treat each surviving input history and output history/latency window as though it
+    were private state owned by that concrete node/port, regardless of how the steady
+    storage planner aliases or shares it. Carry stable node/virtual-member/port/channel
+    identities plus realization metadata across generations, preserve the overlapping
+    valid temporal range, and materialize temporary transition state when the new
+    steady representation cannot itself expose inherited values. `GraphExecutor`
+    activates the transition realization at the graph splice and, when its finite
+    inherited-state horizon expires, switches at a safe root boundary to the already
+    compiled steady realization. This correctness stage is mandatory before storage or
+    code optimization work.
+21. **Finish remaining authored-node semantics** (nested declarations, compiler-
     owned regions, activity/TTL, detach, events and skip scheduling).
-21. **Optimize** with SIMD, loop fusion, materialization placement, storage liveness
-    and bounded immutable-value specialization only after correctness is established.
+22. **Optimize** with SIMD, loop fusion, materialization placement, storage liveness
+    and bounded immutable-value specialization only after state continuity and the
+    remaining correctness semantics are established.
 
 The detailed, normative dependency order is
 [coverage_and_background_evaluation.md §32](./coverage_and_background_evaluation.md#32-implementation-landing-order).
@@ -849,18 +864,21 @@ project-wide `tock_coverage()` operation. Internal requestable outputs remain
 addressable through immutable `CompiledGraph` metadata described below; they are
 not exposed by pretending that the zero-port project root has synthetic outputs.
 
-## One canonical fixed-layout `NodeLayout` and `NodeStorage`
+## One canonical fixed-layout `NodeLayout` and `NodeStorage` model
 
-There is exactly one **fixed-layout** persistent storage model for an executable
-graph generation: the existing `NodeLayout`/`NodeStorage` machinery. This does
-not mean every request-sized or dynamically growing runtime object belongs in
-`NodeStorage`.
+There is exactly one **fixed-layout** persistent storage model for each executable
+realization: the existing `NodeLayout`/`NodeStorage` machinery. A logical graph
+revision may temporarily have both a transition and a steady executable realization,
+but each realization uses this same canonical storage model rather than introducing a
+second kind of state arena. This does not mean every request-sized or dynamically
+growing runtime object belongs in `NodeStorage`.
 
 `GraphJit` must not introduce `CompiledGraphNodeStorageLayout`,
-`GraphKernelStorage`, or another parallel fixed state arena. Lowering populates
-one `NodeLayoutBuilder` and finalizes it before emitting final storage accesses
-into LLVM. The completed `NodeLayout` becomes part of `CompiledGraph`, and
-`GraphExecutor` creates and owns the corresponding `NodeStorage`.
+`GraphKernelStorage`, or another parallel fixed state arena. Lowering populates one
+`NodeLayoutBuilder` per executable realization and finalizes it before emitting that
+realization's storage accesses into LLVM. Each completed `NodeLayout` becomes part of
+its `CompiledGraph`, and `GraphExecutor` creates/owns the corresponding `NodeStorage`
+while that realization can be active or is needed for a handoff.
 
 The canonical fixed layout may include `IndexedState` as well as
 normal `State`, but their semantics differ. `IndexedState` is Tock-side acceleration state. `State` participates in sequential
@@ -959,6 +977,134 @@ Truly request-sized caller input/output objects need not be embedded in
 workspace has a known maximum size or is intentionally reusable across queries,
 the compiler should prefer a root-owned `NodeLayout` region rather than a
 separate project scratch allocation.
+
+## Port history and latency are node-owned semantic state
+
+Port history and latency are authored **effect requirements**, not declarations that a
+particular connection buffer must exist. Their graph-revision semantics must be
+observationally equivalent to a simple conceptual implementation in which each
+concrete node privately owns its port-related state alongside its authored `State`:
+
+```text
+concrete node
+    +-- authored State
+    +-- each Sequential input's resolved history
+    +-- each Tick output's authored history
+    `-- each Tick output's authored latency/future window
+```
+
+The physical planner remains free to alias several of those conceptual states onto one
+producer timeline, a compact carry, a full ring, a derived fan-in result, or another
+representation. Steady execution should continue to minimize copies. **Semantic
+ownership does not imply one physical copy.** The ownership rule exists so graph
+replacement has a representation-independent answer about which values must survive.
+
+For example, if a graph switches at absolute position `P` from:
+
+```text
+A.out -> C.in(history = 64)
+```
+
+to:
+
+```text
+B.out -> C.in(history = 64)
+```
+
+then immediately after activation `C.in[P-64, P)` remains the resolved history that C
+actually observed before the splice, while positions from `P` onward use the new
+connection. Rewiring does not reinterpret C's past as B data. The same rule applies to
+fan-in: if C previously observed an `A+B` composition and the new graph supplies
+`A+D`, its still-visible history remains the old resolved `A+B` values until they age
+out.
+
+Likewise, a surviving output owns its authored history and latency/future state.
+Changing consumers must not discard that state. When an authored history/latency
+extent itself changes, migration preserves the intersection of the old valid semantic
+range with the new required range; newly exposed range receives the normal fresh-state
+initialization semantics, and no-longer-observable range may be discarded. Physical
+ring capacity, compact/full representation choice, root block size, fanout count, and
+connection incidence are not semantic identities.
+
+Compiler-managed port-state identity must therefore be rooted in the stable concrete
+node path already present in configured/project graph metadata: user-instantiated
+leaf/module identity, virtual-node/direct-member path, port direction and ordinal,
+channel index (or event stream), plus a small state-role discriminator such as
+`input_history`, `output_history`, or `output_latency`. Ordinary connection identity,
+allocation number, incidence-atom ordinal, buffer kind, capacity, and byte offset are
+not part of that identity. A connection may disappear or change while the destination
+input state survives.
+
+Each compiled realization must carry cold metadata that explains how those semantic
+state pieces are represented in that realization. A state piece may be a contiguous
+region, a ring range, a channel view into a shared producer representation, or a
+resolved/composed view that has no dedicated steady-state buffer. Any optimization
+that aliases or eliminates a conceptual private port-state buffer must still emit
+enough realization metadata to recover the semantic window during a later graph
+replacement. The audio-thread kernel never consults the identity map. `GraphExecutor`
+uses it only when reconciling executable realizations, and may copy/materialize the
+same underlying physical data more than once if several node-owned semantic states
+previously shared it.
+
+### Transition and steady realizations of one graph revision
+
+A new logical graph revision may require a temporary physical realization solely to
+preserve inherited node-owned port state. This happens when the steady physical
+representation cannot itself express the old values. The compiler may therefore
+produce up to two executable realizations for one logical revision:
+
+```text
+old revision G0
+      |
+      | splice at P
+      v
+G1 transition realization
+      |
+      | inherited transition-only state expires
+      v
+G1 steady realization
+```
+
+For the rewiring example above, steady G1 may optimally let `C.in` read B's producer
+storage directly. The transition realization may additionally own a 64-sample carry
+containing C's pre-splice resolved input, or it may temporarily pin/read suitable
+old-generation storage when that is cheaper and semantically exact. As new B-derived
+samples arrive the inherited range ages out. Once no transition-only state remains
+observable, it is legal to activate the steady realization that contains no such
+carry/old-generation dependency.
+
+This is not a second semantic graph edit and should not require a later compilation.
+GraphJit has the old realization, the new logical graph, the splice position, and all
+finite history/latency windows during the original rebuild, so it can pre-plan and
+compile both realizations together when necessary. The handoff horizon is defined in
+absolute timeline positions and activation occurs at the first legal root callback
+boundary at or beyond the last inherited state's expiry. A fixed-block implementation
+may precompute an equivalent block count, but callback count is not the semantic
+coordinate.
+
+Two realizations are not mandatory. If the G1 steady representation can directly
+receive every surviving state piece, GraphExecutor migrates into it and activates it
+without a transition realization. Conversely, state that remains observable
+indefinitely is ordinary G1 state, not transition-only state, and must be represented
+by the steady realization. At the later transition-to-steady handoff, authored `State`
+and any other still-live node/port state have evolved under G1 and must be reconciled
+from the transition realization into the steady one; only the transition-only inherited
+portion is known to have expired.
+
+If another project revision arrives before the current transition expires, that new
+revision reconciles from the **currently active transition realization** and its
+semantic state views. Any pending steady realization for the superseded revision may
+be discarded. Rebuild logic must never reconstruct history from an older logical graph
+or assume that the not-yet-activated steady plan describes the state the node has
+actually observed.
+
+This continuity work is a **correctness prerequisite for optimization**. The eventual
+NodeStorage cleanup is a separate task. The first implementation may retain existing
+compiler-owned raw-region and `NodeStorage` special cases internally, provided their
+migration/reconciliation behavior implements the node-owned semantic rule above.
+Only after this rule is tested across rewiring, fan-in/fanout changes, size changes,
+and representation changes should GraphJit invest further in eliminating/aliasing
+state or other storage/code optimizations.
 
 ## Background evaluation is internal to the generated project
 
@@ -1066,6 +1212,10 @@ metadata it needs, as applicable:
 - canonical persisted-page store bindings for Tick/persisted and Tock/persisted outputs;
 - persisted-output reverse-cut/page-validity binding facts;
 - endpoint-atom incidence partitions plus joined source/target storage-capability facts;
+- stable concrete-node port-state identities and cold realization descriptors for
+  input history and output history/latency, including their valid semantic ranges;
+- optional transition-realization requirements and finite expiry positions when a
+  steady binding cannot directly represent inherited node-owned state;
 - direct/transient plans for tock/ephemeral outputs;
 - complete persisted-page bindings for Tick/persisted and Tock/persisted outputs;
 - Tick-capture output identities/policies and shared capture metadata layout;
@@ -1083,7 +1233,10 @@ compiler metadata. The name describes compilation, not random-access semantics.
 
 It owns no mutable dynamic persisted-output or transaction payloads. It describes
 how a generation binds to executor-owned canonical persisted-page storage,
-Tick-capture resources, and transaction workspaces.
+Tick-capture resources, and transaction workspaces. It also carries the cold
+port-state realization metadata needed to reconcile concrete-node-owned history and
+latency across graph revisions; that metadata is not part of the hot generated
+storage-access path.
 Stable stored-output identity is derived from stable project node/member/output
 identity, not generation-local primitive IDs. This applies to tick/persisted as
 well as tock/persisted outputs; neither is a best-effort cache.
@@ -1094,6 +1247,8 @@ well as tock/persisted outputs; neither is a best-effort cache.
 persisted outputs:
 
 - active/pending executable generations and canonical `NodeStorage`;
+- graph-revision state reconciliation, including optional transition/steady
+  realizations and their safe-boundary activation horizon;
 - optional tock-only `IndexedState` lifecycle/storage;
 - stable canonical persisted-page stores/immutable roots for Tick/persisted and
   Tock/persisted outputs;
@@ -1122,6 +1277,26 @@ invalidation. Compatible persisted payloads survive compatible JIT rebuilds
 regardless of Tick/Tock provenance. Persisted covered data is not evicted merely
 because it is stale or memory use grows. Ephemeral outputs own no persisted output
 data to rebind.
+
+Executable replacement must separately preserve concrete-node-owned port state.
+Input history belongs to the surviving destination input; output history and authored
+latency/future state belong to the surviving source output. Connection rewiring,
+fan-in/fanout changes, or a different steady storage representation do not by
+themselves reset those windows. GraphExecutor reconciles the overlapping valid
+semantic ranges from the old realization into the new revision, materializing
+transition-only state when necessary even if steady execution normally aliases the
+same values from another physical representation.
+
+When transition-only state has a finite horizon, GraphJit may hand GraphExecutor both
+a transition realization and the final steady realization for the same logical graph
+revision. GraphExecutor activates the transition form at a legal root boundary and
+switches to the precompiled steady form at the first legal boundary after the last
+transition-only range can no longer be observed. This handoff must not depend on a
+second compilation completing later.
+The transition-to-steady handoff performs ordinary reconciliation for state that has
+continued to evolve while the transition realization was active. If a newer project
+revision supersedes the transition before its expiry, reconciliation starts from that
+active transition realization and the obsolete pending steady realization is dropped.
 
 Changing project sample rate invalidates/repropagates background-computed output semantics.
 `tock/persisted` candidates are recomputed before publication; `tock/ephemeral`

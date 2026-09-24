@@ -775,6 +775,55 @@ std::expected<IndexedPhysicalPlan, std::string> build_indexed_physical_plan(
                     continue;
                 }
 
+                std::vector<std::size_t> source_indices;
+                std::vector<SampleProjectionContributionPlan const*>
+                    projections;
+                if (connection->projection_contributions.empty()) {
+                    source_indices.resize(
+                        connection->source_channel_timings.size());
+                    for (std::size_t source_index = 0;
+                         source_index < source_indices.size(); ++source_index) {
+                        source_indices[source_index] = source_index;
+                    }
+                } else {
+                    auto const target_atom_has_channel =
+                        [&](std::size_t target_channel) {
+                            return target_channel
+                                    < connection->target_channels.size()
+                                && std::ranges::contains(
+                                target_atom.channels,
+                                connection->target_channels[target_channel]);
+                        };
+                    for (auto const& projection :
+                         connection->projection_contributions) {
+                        if (!std::ranges::any_of(
+                                projection.target_channels,
+                                target_atom_has_channel)) {
+                            continue;
+                        }
+                        if (!std::ranges::all_of(
+                                projection.target_channels,
+                                target_atom_has_channel)) {
+                            return std::unexpected(
+                                "GraphJit indexed sample projection spans multiple target atoms");
+                        }
+                        projections.push_back(&projection);
+                        for (auto const source_index :
+                             projection.source_channel_indices) {
+                            if (source_index
+                                >= connection->source_channel_timings.size()) {
+                                return std::unexpected(
+                                    "GraphJit indexed sample projection has an invalid source index");
+                            }
+                            append_unique(source_indices, source_index);
+                        }
+                    }
+                    if (projections.empty()) {
+                        return std::unexpected(
+                            "GraphJit indexed sample target atom has no projection contribution");
+                    }
+                }
+
                 std::vector<IndexedRepresentationResidence> residences;
                 if (target_atom.access
                     == PlannedDestinationAccess::random_access) {
@@ -784,10 +833,12 @@ std::expected<IndexedPhysicalPlan, std::string> build_indexed_physical_plan(
                     };
                 } else {
                     auto const has_current = std::ranges::any_of(
-                        connection->source_channel_timings,
-                        [](SampleSourceChannelTimingPlan const& timing) {
-                            return timing.delivery
-                                == PlannedDeliveryMechanism::tick_to_sequential;
+                        source_indices,
+                        [&](std::size_t source_index) {
+                            return connection
+                                       ->source_channel_timings[source_index]
+                                       .delivery
+                                    == PlannedDeliveryMechanism::tick_to_sequential;
                         });
                     residences.push_back(
                         has_current
@@ -811,25 +862,18 @@ std::expected<IndexedPhysicalPlan, std::string> build_indexed_physical_plan(
                     for (auto const channel : target_atom.channels) {
                         materialization.target_channels.push_back(channel.channel);
                     }
-                    for (auto const& projection :
-                         connection->projection_contributions) {
-                        materialization.projections.push_back(
-                            IndexedSampleProjectionPlan{
-                                .source_type = projection.source_type,
-                                .source_channel_indices =
-                                    projection.source_channel_indices,
-                                .target_type = projection.target_type,
-                                .target_channels = projection.target_channels,
-                            });
-                    }
-                    for (auto const& timing :
-                         connection->source_channel_timings) {
+                    std::vector<std::optional<std::size_t>> local_source_index(
+                        connection->source_channel_timings.size());
+                    for (auto const source_index : source_indices) {
+                        auto const& timing =
+                            connection->source_channel_timings[source_index];
                         auto const source_atom = sample_source_atom_for(
                             indexed, indexed_connection, timing.source);
                         if (!source_atom
                             || !std::ranges::contains(
                                 target_atom.source_atoms, *source_atom)) {
-                            continue;
+                            return std::unexpected(
+                                "GraphJit indexed sample materialization source is outside its target atom");
                         }
                         auto const representation = representation_for_context(
                             result,
@@ -841,12 +885,35 @@ std::expected<IndexedPhysicalPlan, std::string> build_indexed_physical_plan(
                             return std::unexpected(
                                 "GraphJit indexed sample materialization has no legal source representation");
                         }
+                        local_source_index[source_index] =
+                            materialization.source_channels.size();
                         materialization.source_atoms.push_back(*source_atom);
                         materialization.input_representations.push_back(
                             *representation);
                         materialization.source_channels.push_back(timing.source);
                         materialization.source_read_latencies.push_back(
                             timing.read_latency);
+                    }
+                    for (auto const* projection : projections) {
+                        IndexedSampleProjectionPlan retained{
+                            .source_type = projection->source_type,
+                            .target_type = projection->target_type,
+                            .target_channels = projection->target_channels,
+                        };
+                        retained.source_channel_indices.reserve(
+                            projection->source_channel_indices.size());
+                        for (auto const source_index :
+                             projection->source_channel_indices) {
+                            if (source_index >= local_source_index.size()
+                                || !local_source_index[source_index]) {
+                                return std::unexpected(
+                                    "GraphJit indexed sample projection references a source outside its target atom");
+                            }
+                            retained.source_channel_indices.push_back(
+                                *local_source_index[source_index]);
+                        }
+                        materialization.projections.push_back(
+                            std::move(retained));
                     }
                     auto const materialization_ordinal =
                         append_sample_materialization(
