@@ -463,30 +463,48 @@ IV_FORCEINLINE void skip_node_block(
 
 template<class Node>
 IV_FORCEINLINE void tock_node_coverage(
-    void const* node_data, void* opaque_context)
+    void const* node_data, ReflectedNodeTockCoverageContext const& reflected)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    auto& context = *static_cast<TockCoverageContext<Node>*>(opaque_context);
+    TockCoverageContext<Node> context{
+        .inputs = reflected.inputs,
+        .outputs = reflected.outputs,
+        .event_inputs = reflected.event_inputs,
+        .event_outputs = reflected.event_outputs,
+        .indexed_state_storage = reflected.indexed_state_storage,
+        .sample_rate = reflected.sample_rate,
+    };
     do_tock_coverage(node, context);
 }
 
 template<class Node>
 IV_FORCEINLINE void propagate_node_forward_coverage(
-    void const* node_data, void* opaque_context)
+    void const* node_data, ReflectedNodeForwardCoverageContext const& reflected)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    auto& context = *static_cast<PropagateForwardCoverageContext<Node>*>(
-        opaque_context);
+    PropagateForwardCoverageContext<Node> context{
+        .inputs = reflected.inputs,
+        .outputs = reflected.outputs,
+        .event_inputs = reflected.event_inputs,
+        .event_outputs = reflected.event_outputs,
+        .local_state_changed = reflected.local_state_changed,
+        .sample_rate = reflected.sample_rate,
+    };
     do_propagate_forward_coverage(node, context);
 }
 
 template<class Node>
 IV_FORCEINLINE void propagate_node_reverse_coverage(
-    void const* node_data, void* opaque_context)
+    void const* node_data, ReflectedNodeReverseCoverageContext const& reflected)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    auto& context = *static_cast<PropagateReverseCoverageContext<Node>*>(
-        opaque_context);
+    PropagateReverseCoverageContext<Node> context{
+        .inputs = reflected.inputs,
+        .outputs = reflected.outputs,
+        .event_inputs = reflected.event_inputs,
+        .event_outputs = reflected.event_outputs,
+        .sample_rate = reflected.sample_rate,
+    };
     do_propagate_reverse_coverage(node, context);
 }
 
@@ -498,7 +516,8 @@ consteval auto node_tock_coverage_operation()
             "indexed-output node has no valid tock_coverage implementation");
         return &tock_node_coverage<Node>;
     } else {
-        return static_cast<void (*)(void const*, void*)>(nullptr);
+        return static_cast<void (*)(
+            void const*, ReflectedNodeTockCoverageContext const&)>(nullptr);
     }
 }
 
@@ -510,7 +529,8 @@ consteval auto node_propagate_forward_coverage_operation()
             "indexed-output node has no exact propagate_forward_coverage implementation");
         return &propagate_node_forward_coverage<Node>;
     } else {
-        return static_cast<void (*)(void const*, void*)>(nullptr);
+        return static_cast<void (*)(
+            void const*, ReflectedNodeForwardCoverageContext const&)>(nullptr);
     }
 }
 
@@ -521,7 +541,8 @@ consteval auto node_propagate_reverse_coverage_operation()
         && details::declares_random_access_inputs_v<Node>) {
         return &propagate_node_reverse_coverage<Node>;
     } else {
-        return static_cast<void (*)(void const*, void*)>(nullptr);
+        return static_cast<void (*)(
+            void const*, ReflectedNodeReverseCoverageContext const&)>(nullptr);
     }
 }
 

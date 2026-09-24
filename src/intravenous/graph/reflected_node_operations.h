@@ -181,6 +181,42 @@ struct ReflectedNodeTickContext {
 static_assert(std::is_standard_layout_v<ReflectedNodeTickContext>);
 static_assert(std::is_trivially_copyable_v<ReflectedNodeTickContext>);
 
+// Stable compiler-facing indexed callback contexts. These mirror the public
+// Node-specialized contexts without exposing std::span's implementation-defined
+// representation to package LLVM or whole-graph lowering.
+struct ReflectedNodeTockCoverageContext {
+    ReflectedSpan<IndexedSampleInputPort const> inputs {};
+    ReflectedSpan<IndexedSampleOutputPort> outputs {};
+    ReflectedSpan<IndexedEventInputPort const> event_inputs {};
+    ReflectedSpan<IndexedEventOutputPort> event_outputs {};
+    ReflectedSpan<std::byte> indexed_state_storage {};
+    std::size_t sample_rate = 48000;
+};
+
+struct ReflectedNodeForwardCoverageContext {
+    ReflectedSpan<IndexedInputChange const> inputs {};
+    ReflectedSpan<IndexedOutputChange> outputs {};
+    ReflectedSpan<IndexedInputChange const> event_inputs {};
+    ReflectedSpan<IndexedOutputChange> event_outputs {};
+    bool local_state_changed = false;
+    std::size_t sample_rate = 48000;
+};
+
+struct ReflectedNodeReverseCoverageContext {
+    ReflectedSpan<IndexedInputRequirement> inputs {};
+    ReflectedSpan<IndexedOutputRequirement const> outputs {};
+    ReflectedSpan<IndexedInputRequirement> event_inputs {};
+    ReflectedSpan<IndexedOutputRequirement const> event_outputs {};
+    std::size_t sample_rate = 48000;
+};
+
+static_assert(std::is_standard_layout_v<ReflectedNodeTockCoverageContext>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeTockCoverageContext>);
+static_assert(std::is_standard_layout_v<ReflectedNodeForwardCoverageContext>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeForwardCoverageContext>);
+static_assert(std::is_standard_layout_v<ReflectedNodeReverseCoverageContext>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeReverseCoverageContext>);
+
 struct ReflectedNodeRuntimeOperations {
     void const* node_data = nullptr;
     NodeStateStructures const* state_structures = nullptr;

@@ -31,6 +31,12 @@
 namespace iv::graph_jit {
 namespace {
 constexpr std::string_view root_tick_block_symbol = "__iv_graph_root_tick_block";
+constexpr std::string_view root_indexed_forward_symbol =
+    "__iv_graph_root_indexed_forward";
+constexpr std::string_view root_indexed_reverse_symbol =
+    "__iv_graph_root_indexed_reverse";
+constexpr std::string_view root_indexed_evaluate_symbol =
+    "__iv_graph_root_indexed_evaluate";
 
 struct ReflectedContextByteOffsets {
     std::size_t sample_input_bindings_data = 0;
@@ -43,6 +49,23 @@ struct ReflectedContextByteOffsets {
     std::size_t event_output_bindings_size = 0;
     std::size_t state_data = 0;
     std::size_t state_size = 0;
+};
+
+struct IndexedBatchByteOffsets {
+    std::size_t nodes_data = 0;
+    std::size_t nodes_size = 0;
+    std::size_t activity = 0;
+    std::size_t forward_context = 0;
+    std::size_t reverse_context = 0;
+    std::size_t tock_context = 0;
+    std::size_t synthesized_context = 0;
+    std::size_t synthesized_forward = 0;
+    std::size_t synthesized_reverse = 0;
+    std::size_t replay_context = 0;
+    std::size_t replay_regions_data = 0;
+    std::size_t replay_regions_size = 0;
+    std::size_t tock_indexed_state_data = 0;
+    std::size_t tock_indexed_state_size = 0;
 };
 
 struct EmittedNodeConfiguration {
@@ -115,6 +138,37 @@ constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
     };
 }
 
+constexpr IndexedBatchByteOffsets indexed_batch_byte_offsets() noexcept
+{
+    return {
+        .nodes_data = offsetof(IndexedBatchFrame, nodes)
+            + offsetof(ReflectedSpan<IndexedNodeBatchFrame>, pointer),
+        .nodes_size = offsetof(IndexedBatchFrame, nodes)
+            + offsetof(ReflectedSpan<IndexedNodeBatchFrame>, extent),
+        .activity = offsetof(IndexedNodeBatchFrame, activity),
+        .forward_context = offsetof(IndexedNodeBatchFrame, forward),
+        .reverse_context = offsetof(IndexedNodeBatchFrame, reverse),
+        .tock_context = offsetof(IndexedNodeBatchFrame, tock),
+        .synthesized_context = offsetof(
+            IndexedNodeBatchFrame, synthesized_context),
+        .synthesized_forward = offsetof(
+            IndexedNodeBatchFrame, synthesized_forward),
+        .synthesized_reverse = offsetof(
+            IndexedNodeBatchFrame, synthesized_reverse),
+        .replay_context = offsetof(IndexedNodeBatchFrame, replay),
+        .replay_regions_data = offsetof(IndexedNodeBatchFrame, replay_regions)
+            + offsetof(ReflectedSpan<IndexedRegion const>, pointer),
+        .replay_regions_size = offsetof(IndexedNodeBatchFrame, replay_regions)
+            + offsetof(ReflectedSpan<IndexedRegion const>, extent),
+        .tock_indexed_state_data = offsetof(IndexedNodeBatchFrame, tock)
+            + offsetof(ReflectedNodeTockCoverageContext, indexed_state_storage)
+            + offsetof(ReflectedSpan<std::byte>, pointer),
+        .tock_indexed_state_size = offsetof(IndexedNodeBatchFrame, tock)
+            + offsetof(ReflectedNodeTockCoverageContext, indexed_state_storage)
+            + offsetof(ReflectedSpan<std::byte>, extent),
+    };
+}
+
 llvm::FunctionType* root_block_operation_type(llvm::LLVMContext& context)
 {
     auto* pointer = llvm::PointerType::getUnqual(context);
@@ -135,6 +189,13 @@ llvm::FunctionType* primitive_block_operation_type(llvm::LLVMContext& context)
         llvm::Type::getVoidTy(context),
         {pointer, pointer, size_type, size_type},
         false);
+}
+
+llvm::FunctionType* indexed_operation_type(llvm::LLVMContext& context)
+{
+    auto* pointer = llvm::PointerType::getUnqual(context);
+    return llvm::FunctionType::get(
+        llvm::Type::getVoidTy(context), {pointer, pointer}, false);
 }
 
 llvm::GlobalVariable* immutable_bytes_global(
@@ -276,7 +337,8 @@ std::expected<void, std::string> emit_package_imports(
     detail::PackageImportPlan const& plan,
     llvm::Module& output_module)
 {
-    auto* primitive_type = primitive_block_operation_type(output_module.getContext());
+    auto* block_type = primitive_block_operation_type(output_module.getContext());
+    auto* indexed_type = indexed_operation_type(output_module.getContext());
     for (auto const& package_plan : plan.packages) {
         if (package_plan.package_index >= input.packages.size()
             || !input.packages[package_plan.package_index].module) {
@@ -291,11 +353,14 @@ std::expected<void, std::string> emit_package_imports(
         auto source_module =
             std::move(input.packages[package_plan.package_index].module);
         for (auto const& callback : package_plan.callbacks) {
+            auto* callback_type = callback.abi == detail::CallbackImportAbi::block
+                ? block_type
+                : indexed_type;
             auto imported = prepare_primitive_callback_import(
                 output_module,
                 *source_module,
                 callback.source_symbol,
-                primitive_type,
+                callback_type,
                 callback.import_symbol,
                 callback.role);
             if (!imported) return std::unexpected(std::move(imported.error()));
@@ -3753,6 +3818,420 @@ std::expected<llvm::Function*, std::string> define_root_operation(
     return function;
 }
 
+enum class IndexedRootPhase : std::uint8_t {
+    forward,
+    reverse,
+    evaluate,
+};
+
+std::expected<llvm::Function*, std::string> define_indexed_root_operation(
+    llvm::Module& module,
+    std::string_view symbol,
+    detail::LoweringPlan const& plan,
+    std::span<EmittedNodeConfiguration const> configurations,
+    IndexedRootPhase phase)
+{
+    auto& context = module.getContext();
+    auto* function_type = indexed_operation_type(context);
+    auto* function = llvm::Function::Create(
+        function_type,
+        llvm::GlobalValue::ExternalLinkage,
+        llvm::StringRef(symbol.data(), symbol.size()),
+        module);
+    function->setCallingConv(llvm::CallingConv::C);
+
+    auto arguments = function->arg_begin();
+    llvm::Value* storage_base = &*arguments++;
+    storage_base->setName("storage");
+    llvm::Value* batch = &*arguments;
+    batch->setName("batch");
+
+    llvm::IRBuilder<> builder(
+        llvm::BasicBlock::Create(context, "entry", function));
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* byte_type = llvm::Type::getInt8Ty(context);
+    auto const offsets = indexed_batch_byte_offsets();
+
+    auto* nodes = builder.CreateLoad(
+        pointer_type,
+        byte_offset_pointer(builder, batch, offsets.nodes_data, "nodes.slot"),
+        "nodes");
+    auto* node_count = builder.CreateLoad(
+        size_type,
+        byte_offset_pointer(builder, batch, offsets.nodes_size, "node.count.slot"),
+        "node.count");
+    auto* frame_complete = builder.CreateICmpUGE(
+        node_count,
+        llvm::ConstantInt::get(size_type, plan.connections.indexed.nodes.size()),
+        "batch.complete");
+    auto* ready = llvm::BasicBlock::Create(context, "batch.ready", function);
+    auto* invalid = llvm::BasicBlock::Create(context, "batch.invalid", function);
+    builder.CreateCondBr(frame_complete, ready, invalid);
+    builder.SetInsertPoint(invalid);
+    builder.CreateRetVoid();
+    builder.SetInsertPoint(ready);
+
+    auto primitive_for = [&](IndexedNodeOrdinal node)
+        -> std::expected<std::size_t, std::string> {
+        if (node >= plan.connections.indexed.nodes.size()) {
+            return std::unexpected(
+                "GraphJit indexed execution order references a missing node");
+        }
+        auto const bundle = plan.connections.indexed.nodes[node].bundle;
+        for (std::size_t primitive = 0;
+             primitive < plan.imports.primitive_callbacks.size(); ++primitive) {
+            if (plan.imports.primitive_callbacks[primitive].bundle == bundle) {
+                if (primitive >= configurations.size()
+                    || primitive >= plan.declarations.primitive_storage.size()) {
+                    return std::unexpected(
+                        "GraphJit indexed node has no configuration/storage plan");
+                }
+                return primitive;
+            }
+        }
+        return std::unexpected(
+            "GraphJit indexed plan references a non-primitive node");
+    };
+
+    auto node_pointer = [&](IndexedNodeOrdinal node) {
+        return byte_offset_pointer(
+            builder,
+            nodes,
+            node * sizeof(IndexedNodeBatchFrame),
+            "indexed.node");
+    };
+
+    auto emit_when_active = [&]<typename Emit>(
+                                IndexedNodeOrdinal node,
+                                IndexedNodeBatchActivity activity,
+                                Emit&& emit) {
+        auto* node_frame = node_pointer(node);
+        auto* activity_value = builder.CreateLoad(
+            byte_type,
+            byte_offset_pointer(
+                builder, node_frame, offsets.activity, "activity.slot"),
+            "activity");
+        auto const bit = static_cast<std::uint8_t>(activity);
+        auto* active = builder.CreateICmpNE(
+            builder.CreateAnd(
+                activity_value,
+                llvm::ConstantInt::get(byte_type, bit)),
+            llvm::ConstantInt::get(byte_type, 0),
+            "active");
+        auto* invoke = llvm::BasicBlock::Create(context, "indexed.invoke", function);
+        auto* next = llvm::BasicBlock::Create(context, "indexed.next", function);
+        builder.CreateCondBr(active, invoke, next);
+        builder.SetInsertPoint(invoke);
+        emit(node_frame);
+        // Every emitter deliberately leaves its current tail open. Authored and
+        // synthesized callbacks leave `invoke` open; replay leaves its loop's
+        // `replay.done` block open. Close that exact tail unconditionally before
+        // continuing the statically generated traversal instead of making the
+        // control-flow contract depend on inspection of its last instruction.
+        builder.CreateBr(next);
+        builder.SetInsertPoint(next);
+    };
+
+    auto emit_authored = [&](llvm::Value* node_frame,
+                             std::size_t primitive,
+                             std::string const& callback,
+                             std::size_t context_offset) {
+        auto* imported = module.getFunction(callback);
+        builder.CreateCall(
+            indexed_operation_type(context),
+            imported,
+            {configurations[primitive].node_config,
+             byte_offset_pointer(
+                 builder, node_frame, context_offset, "indexed.context")});
+    };
+
+    auto emit_synthesized = [&](llvm::Value* node_frame,
+                                std::size_t callback_offset,
+                                std::size_t context_offset) {
+        auto* callback = builder.CreateLoad(
+            pointer_type,
+            byte_offset_pointer(
+                builder, node_frame, callback_offset, "synthesized.callback.slot"),
+            "synthesized.callback");
+        auto* opaque = builder.CreateLoad(
+            pointer_type,
+            byte_offset_pointer(
+                builder,
+                node_frame,
+                offsets.synthesized_context,
+                "synthesized.context.slot"),
+            "synthesized.context");
+        builder.CreateCall(
+            indexed_operation_type(context),
+            callback,
+            {opaque,
+             byte_offset_pointer(
+                 builder, node_frame, context_offset, "indexed.context")});
+    };
+
+    auto emit_node = [&](IndexedNodeOrdinal node)
+        -> std::expected<void, std::string> {
+        if (node >= plan.connections.indexed.nodes.size()) {
+            return std::unexpected(
+                "GraphJit indexed execution order references a missing node");
+        }
+        auto const& indexed_node = plan.connections.indexed.nodes[node];
+        auto const applicable = phase == IndexedRootPhase::forward
+            ? indexed_node.authored_tock_execution
+                || indexed_node.synthesized_forward_coverage
+            : phase == IndexedRootPhase::reverse
+                ? (indexed_node.authored_tock_execution
+                      && indexed_node.accumulators.input_requirement_count != 0)
+                    || indexed_node.synthesized_reverse_coverage
+                : indexed_node.authored_tock_execution
+                    || indexed_node.synthesized_tick_replay;
+        if (!applicable) return {};
+
+        auto primitive = primitive_for(node);
+        if (!primitive) return std::unexpected(std::move(primitive.error()));
+        auto const& callbacks = plan.imports.primitive_callbacks[*primitive];
+
+        if (phase == IndexedRootPhase::forward) {
+            if (indexed_node.authored_tock_execution) {
+                if (callbacks.propagate_forward_coverage.empty()) {
+                    return std::unexpected(
+                        "GraphJit indexed forward program has no authored callback");
+                }
+                emit_when_active(
+                    node,
+                    IndexedNodeBatchActivity::forward,
+                    [&](llvm::Value* node_frame) {
+                        emit_authored(
+                            node_frame,
+                            *primitive,
+                            callbacks.propagate_forward_coverage,
+                            offsets.forward_context);
+                    });
+            } else if (indexed_node.synthesized_forward_coverage) {
+                emit_when_active(
+                    node,
+                    IndexedNodeBatchActivity::forward,
+                    [&](llvm::Value* node_frame) {
+                        emit_synthesized(
+                            node_frame,
+                            offsets.synthesized_forward,
+                            offsets.forward_context);
+                    });
+            }
+            return {};
+        }
+
+        if (phase == IndexedRootPhase::reverse) {
+            if (indexed_node.authored_tock_execution
+                && indexed_node.accumulators.input_requirement_count != 0) {
+                if (callbacks.propagate_reverse_coverage.empty()) {
+                    return std::unexpected(
+                        "GraphJit indexed reverse program has no authored callback");
+                }
+                emit_when_active(
+                    node,
+                    IndexedNodeBatchActivity::reverse,
+                    [&](llvm::Value* node_frame) {
+                        emit_authored(
+                            node_frame,
+                            *primitive,
+                            callbacks.propagate_reverse_coverage,
+                            offsets.reverse_context);
+                    });
+            } else if (indexed_node.synthesized_reverse_coverage) {
+                emit_when_active(
+                    node,
+                    IndexedNodeBatchActivity::reverse,
+                    [&](llvm::Value* node_frame) {
+                        emit_synthesized(
+                            node_frame,
+                            offsets.synthesized_reverse,
+                            offsets.reverse_context);
+                    });
+            }
+            return {};
+        }
+
+        if (indexed_node.authored_tock_execution) {
+            if (callbacks.tock_coverage.empty()) {
+                return std::unexpected(
+                    "GraphJit indexed evaluation program has no authored Tock callback");
+            }
+            emit_when_active(
+                node,
+                IndexedNodeBatchActivity::evaluate,
+                [&](llvm::Value* node_frame) {
+                    auto const& storage =
+                        plan.declarations.primitive_storage[*primitive];
+                    llvm::Value* indexed_state =
+                        llvm::ConstantPointerNull::get(pointer_type);
+                    auto indexed_state_size = std::size_t{0};
+                    if (storage.has_indexed_state) {
+                        indexed_state = byte_offset_pointer(
+                            builder,
+                            storage_base,
+                            storage.indexed_state_offset,
+                            "indexed.state");
+                        indexed_state_size = storage.indexed_state_size;
+                    }
+                    builder.CreateStore(
+                        indexed_state,
+                        byte_offset_pointer(
+                            builder,
+                            node_frame,
+                            offsets.tock_indexed_state_data,
+                            "indexed.state.slot"));
+                    builder.CreateStore(
+                        llvm::ConstantInt::get(size_type, indexed_state_size),
+                        byte_offset_pointer(
+                            builder,
+                            node_frame,
+                            offsets.tock_indexed_state_size,
+                            "indexed.state.size.slot"));
+                    emit_authored(
+                        node_frame,
+                        *primitive,
+                        callbacks.tock_coverage,
+                        offsets.tock_context);
+                });
+            return {};
+        }
+
+        if (!indexed_node.uses_imported_tick_block_for_replay
+            || callbacks.tick_block.empty()) {
+            return std::unexpected(
+                "GraphJit replay program has no imported tick_block callback");
+        }
+        auto* tick = module.getFunction(callbacks.tick_block);
+        emit_when_active(
+            node,
+            IndexedNodeBatchActivity::evaluate,
+            [&](llvm::Value* node_frame) {
+                auto* regions = builder.CreateLoad(
+                    pointer_type,
+                    byte_offset_pointer(
+                        builder,
+                        node_frame,
+                        offsets.replay_regions_data,
+                        "replay.regions.slot"),
+                    "replay.regions");
+                auto* count = builder.CreateLoad(
+                    size_type,
+                    byte_offset_pointer(
+                        builder,
+                        node_frame,
+                        offsets.replay_regions_size,
+                        "replay.region.count.slot"),
+                    "replay.region.count");
+                auto* preheader = builder.GetInsertBlock();
+                auto* loop = llvm::BasicBlock::Create(
+                    context, "replay.region", function);
+                auto* invoke = llvm::BasicBlock::Create(
+                    context, "replay.invoke", function);
+                auto* advance = llvm::BasicBlock::Create(
+                    context, "replay.advance", function);
+                auto* done = llvm::BasicBlock::Create(
+                    context, "replay.done", function);
+                auto* nonempty = builder.CreateICmpNE(
+                    count,
+                    llvm::ConstantInt::get(size_type, 0),
+                    "replay.nonempty");
+                builder.CreateCondBr(nonempty, loop, done);
+
+                builder.SetInsertPoint(loop);
+                auto* ordinal = builder.CreatePHI(
+                    size_type, 2, "replay.region.ordinal");
+                ordinal->addIncoming(
+                    llvm::ConstantInt::get(size_type, 0), preheader);
+                auto* region = builder.CreateInBoundsGEP(
+                    byte_type,
+                    regions,
+                    builder.CreateMul(
+                        ordinal,
+                        llvm::ConstantInt::get(
+                            size_type, sizeof(IndexedRegion))),
+                    "replay.region.pointer");
+                auto* begin = builder.CreateLoad(
+                    size_type,
+                    byte_offset_pointer(
+                        builder,
+                        region,
+                        offsetof(IndexedRegion, begin),
+                        "replay.begin.slot"),
+                    "replay.begin");
+                auto* end = builder.CreateLoad(
+                    size_type,
+                    byte_offset_pointer(
+                        builder,
+                        region,
+                        offsetof(IndexedRegion, end),
+                        "replay.end.slot"),
+                    "replay.end");
+                builder.CreateCondBr(
+                    builder.CreateICmpUGT(end, begin, "replay.region.valid"),
+                    invoke,
+                    advance);
+
+                builder.SetInsertPoint(invoke);
+                builder.CreateCall(
+                    primitive_block_operation_type(context),
+                    tick,
+                    {configurations[*primitive].node_config,
+                     byte_offset_pointer(
+                         builder,
+                         node_frame,
+                         offsets.replay_context,
+                         "replay.context"),
+                     begin,
+                     builder.CreateSub(end, begin, "replay.block.size")});
+                builder.CreateBr(advance);
+
+                builder.SetInsertPoint(advance);
+                auto* next = builder.CreateAdd(
+                    ordinal,
+                    llvm::ConstantInt::get(size_type, 1),
+                    "replay.region.next");
+                auto* complete = builder.CreateICmpUGE(
+                    next, count, "replay.complete");
+                builder.CreateCondBr(complete, done, loop);
+                ordinal->addIncoming(next, advance);
+                builder.SetInsertPoint(done);
+            });
+        return {};
+    };
+
+    if (phase == IndexedRootPhase::evaluate) {
+        for (auto const node :
+             plan.connections.indexed.background_evaluation_order) {
+            auto emitted = emit_node(node);
+            if (!emitted) return std::unexpected(std::move(emitted.error()));
+        }
+    } else {
+        for (auto const component_index : plan.connections.indexed.component_order) {
+            if (component_index >= plan.connections.indexed.components.size()) {
+                return std::unexpected(
+                    "GraphJit indexed traversal references a missing component");
+            }
+            auto const& component =
+                plan.connections.indexed.components[component_index];
+            auto const& order = phase == IndexedRootPhase::forward
+                ? component.forward_order
+                : component.reverse_order;
+            for (auto const node : order) {
+                auto emitted = emit_node(node);
+                if (!emitted) {
+                    return std::unexpected(std::move(emitted.error()));
+                }
+            }
+        }
+    }
+
+    builder.CreateRetVoid();
+    return function;
+}
+
 std::expected<LoweringOutput, std::string> emit_lowering_plan(
     LoweringInput& input,
     detail::LoweringPlan&& plan,
@@ -3775,11 +4254,45 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
         false);
     if (!tick) return std::unexpected(std::move(tick.error()));
 
+    auto const has_indexed_program = !plan.connections.indexed.empty();
+    if (has_indexed_program) {
+        auto forward = define_indexed_root_operation(
+            output_module,
+            root_indexed_forward_symbol,
+            plan,
+            *configurations,
+            IndexedRootPhase::forward);
+        if (!forward) return std::unexpected(std::move(forward.error()));
+        auto reverse = define_indexed_root_operation(
+            output_module,
+            root_indexed_reverse_symbol,
+            plan,
+            *configurations,
+            IndexedRootPhase::reverse);
+        if (!reverse) return std::unexpected(std::move(reverse.error()));
+        auto evaluate = define_indexed_root_operation(
+            output_module,
+            root_indexed_evaluate_symbol,
+            plan,
+            *configurations,
+            IndexedRootPhase::evaluate);
+        if (!evaluate) return std::unexpected(std::move(evaluate.error()));
+    }
+
     return LoweringOutput{
         .node_layout = std::move(plan.declarations.node_layout),
         .indexed_plan = std::move(plan.connections.indexed),
         .root_symbols = {
             .tick_block = std::string(root_tick_block_symbol),
+            .propagate_indexed_forward = has_indexed_program
+                ? std::string(root_indexed_forward_symbol)
+                : std::string{},
+            .propagate_indexed_reverse = has_indexed_program
+                ? std::string(root_indexed_reverse_symbol)
+                : std::string{},
+            .evaluate_indexed = has_indexed_program
+                ? std::string(root_indexed_evaluate_symbol)
+                : std::string{},
         },
     };
 }
@@ -3789,7 +4302,10 @@ std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
     LoweringInput& input,
     llvm::Module& output_module)
 {
-    if (output_module.getNamedValue(root_tick_block_symbol)) {
+    if (output_module.getNamedValue(root_tick_block_symbol)
+        || output_module.getNamedValue(root_indexed_forward_symbol)
+        || output_module.getNamedValue(root_indexed_reverse_symbol)
+        || output_module.getNamedValue(root_indexed_evaluate_symbol)) {
         return std::unexpected(
             "ConfiguredGraph -> LLVM IR lowering output module already contains reserved root symbols");
     }

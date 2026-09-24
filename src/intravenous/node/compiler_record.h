@@ -13,6 +13,9 @@ namespace iv {
 struct NodeLayoutBuilder;
 struct NodeStateStructures;
 struct ReflectedNodeTickContext;
+struct ReflectedNodeTockCoverageContext;
+struct ReflectedNodeForwardCoverageContext;
+struct ReflectedNodeReverseCoverageContext;
 
 namespace details {
 
@@ -26,13 +29,16 @@ struct NodeCompilerOperations {
     void (*skip_block)(
         void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
 
-    // Compiler-facing one-node indexed callback anchors. The opaque context
-    // points to the corresponding Node-specialized public context. Whole-
-    // project lowering imports and specializes these stable LLVM entry points;
-    // future multi-node batching uses a separate ABI.
-    void (*tock_coverage)(void const*, void*) = nullptr;
-    void (*propagate_forward_coverage)(void const*, void*) = nullptr;
-    void (*propagate_reverse_coverage)(void const*, void*) = nullptr;
+    // Compiler-facing one-node indexed callback anchors. Reflected contexts use
+    // explicit pointer/count spans; wrappers reconstruct the Node-specialized
+    // public contexts before entering authored code. Whole-project batching is
+    // a separate root ABI.
+    void (*tock_coverage)(
+        void const*, ReflectedNodeTockCoverageContext const&) = nullptr;
+    void (*propagate_forward_coverage)(
+        void const*, ReflectedNodeForwardCoverageContext const&) = nullptr;
+    void (*propagate_reverse_coverage)(
+        void const*, ReflectedNodeReverseCoverageContext const&) = nullptr;
 
     constexpr bool valid() const
     {

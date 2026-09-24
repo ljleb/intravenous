@@ -728,6 +728,13 @@ llvm::FunctionType* root_block_operation_type(llvm::LLVMContext& context)
         false);
 }
 
+llvm::FunctionType* root_indexed_operation_type(llvm::LLVMContext& context)
+{
+    auto* pointer = llvm::PointerType::getUnqual(context);
+    return llvm::FunctionType::get(
+        llvm::Type::getVoidTy(context), {pointer, pointer}, false);
+}
+
 void validate_root_operation(
     llvm::Module const& module,
     std::string const& symbol,
@@ -769,6 +776,27 @@ void validate_lowering_output(
     auto* block_type = root_block_operation_type(module.getContext());
     validate_root_operation(
         module, output.root_symbols.tick_block, block_type, "tick_block", true);
+
+    auto* indexed_type = root_indexed_operation_type(module.getContext());
+    auto const indexed_required = !output.indexed_plan.empty();
+    validate_root_operation(
+        module,
+        output.root_symbols.propagate_indexed_forward,
+        indexed_type,
+        "indexed forward propagation",
+        indexed_required);
+    validate_root_operation(
+        module,
+        output.root_symbols.propagate_indexed_reverse,
+        indexed_type,
+        "indexed reverse propagation",
+        indexed_required);
+    validate_root_operation(
+        module,
+        output.root_symbols.evaluate_indexed,
+        indexed_type,
+        "indexed evaluation",
+        indexed_required);
 }
 
 void optimize_project_module(llvm::Module& module, llvm::TargetMachine& target_machine)
@@ -836,6 +864,7 @@ struct ProjectCodeLifetime {
 
 struct MaterializedProjectCode {
     CompiledGraphRootOperations root_operations{};
+    CompiledGraphIndexedOperations indexed_operations{};
     std::shared_ptr<void const> lifetime{};
 };
 
@@ -917,8 +946,40 @@ MaterializedProjectCode materialize_project_module(
                 GraphJitDiagnosticStage::materialization,
                 "project LLVM resolved an incomplete root-node execution ABI");
         }
+        CompiledGraphIndexedOperations indexed_operations;
+        if (!root_symbols.propagate_indexed_forward.empty()
+            || !root_symbols.propagate_indexed_reverse.empty()
+            || !root_symbols.evaluate_indexed.empty()) {
+            if (root_symbols.propagate_indexed_forward.empty()
+                || root_symbols.propagate_indexed_reverse.empty()
+                || root_symbols.evaluate_indexed.empty()) {
+                fail(
+                    GraphJitDiagnosticStage::materialization,
+                    "project LLVM exposed an incomplete indexed execution ABI");
+            }
+            indexed_operations = CompiledGraphIndexedOperations{
+                .propagate_forward = symbol.template operator()<
+                    CompiledGraphIndexedBatchFunction>(
+                    root_symbols.propagate_indexed_forward,
+                    "indexed forward propagation"),
+                .propagate_reverse = symbol.template operator()<
+                    CompiledGraphIndexedBatchFunction>(
+                    root_symbols.propagate_indexed_reverse,
+                    "indexed reverse propagation"),
+                .evaluate = symbol.template operator()<
+                    CompiledGraphIndexedBatchFunction>(
+                    root_symbols.evaluate_indexed,
+                    "indexed evaluation"),
+            };
+            if (!indexed_operations.valid()) {
+                fail(
+                    GraphJitDiagnosticStage::materialization,
+                    "project LLVM resolved an incomplete indexed execution ABI");
+            }
+        }
         return MaterializedProjectCode{
             .root_operations = root_operations,
+            .indexed_operations = indexed_operations,
             .lifetime = std::shared_ptr<void const>(std::move(lifetime)),
         };
     } catch (...) {
@@ -1169,6 +1230,7 @@ public:
                 .node_layout = std::move(lowering->node_layout),
                 .indexed_plan = std::move(lowering->indexed_plan),
                 .root_operations = materialized.root_operations,
+                .indexed_operations = materialized.indexed_operations,
                 .code_lifetime = std::move(materialized.lifetime),
             });
         } catch (GraphJitCompileError const& error) {

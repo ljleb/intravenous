@@ -1777,9 +1777,9 @@ recording merely because that planning metadata exists.
    Preserve semantic SCCs separately from the expanded background evaluation DAG,
    enforce the recorder boundary and keep Tock execution off the audio thread.
 4. **Implement ordinary background indexed execution before recording consumption.**
-   Finish the reusable batch frame/reflected callback ABI; import forward/reverse/
-   tock callbacks and emit generated F/R/evaluation programs. Implement
-   `GraphExecutor`, temporary tock paging, complete persisted candidate pages,
+   The reusable batch frame/reflected callback ABI, forward/reverse/tock imports,
+   and generated F/R/evaluation programs have landed. Implement `GraphExecutor`,
+   temporary tock paging, complete persisted candidate pages,
    pinned snapshot reads (stale-as-is, missing-per-input-neutral), atomic publication
    and advance preparation. Verify that no audio-thread path can invoke tock.
 5. **Make explicit recording operational on that executor.** Define bridge node

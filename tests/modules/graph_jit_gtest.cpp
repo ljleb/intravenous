@@ -42,6 +42,7 @@ constexpr char graph_jit_state_package_id[] = "iv.test.graph_jit.state_context.p
 constexpr char graph_jit_stateful_module_id[] = "iv.test.graph_jit.state_context.stateful_module";
 constexpr char graph_jit_state_only_module_id[] = "iv.test.graph_jit.state_context.state_only_module";
 constexpr char graph_jit_indexed_only_module_id[] = "iv.test.graph_jit.state_context.indexed_only_module";
+constexpr char graph_jit_indexed_execution_module_id[] = "iv.test.graph_jit.state_context.indexed_execution_module";
 constexpr char graph_jit_stateless_module_id[] = "iv.test.graph_jit.state_context.stateless_module";
 constexpr char graph_jit_configured_module_id[] = "iv.test.graph_jit.state_context.configured_module";
 constexpr char graph_jit_pointer_configured_module_id[] = "iv.test.graph_jit.state_context.pointer_configured_module";
@@ -117,6 +118,39 @@ struct SingleSpanProbeMirror {
     std::uint64_t observed_state_extent = 0;
     std::uint64_t observed_indexed_extent = 0;
 };
+
+struct IndexedExecutionProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t sample_rate = 0;
+};
+
+struct IndexedExecutionCapture {
+    iv::IndexedCoverage coverage{};
+    iv::IndexedCoverage changed{};
+    std::vector<std::pair<iv::SampleIndex, float>> samples{};
+};
+
+void capture_indexed_coverage(
+    void* opaque, iv::IndexedCoverage const& coverage)
+{
+    static_cast<IndexedExecutionCapture*>(opaque)->coverage = coverage;
+}
+
+void capture_indexed_change(
+    void* opaque, iv::IndexedCoverage const& changed)
+{
+    static_cast<IndexedExecutionCapture*>(opaque)->changed = changed;
+}
+
+void capture_indexed_sample(
+    void* opaque,
+    iv::SampleIndex index,
+    std::size_t,
+    iv::Sample sample)
+{
+    static_cast<IndexedExecutionCapture*>(opaque)->samples.emplace_back(
+        index, static_cast<float>(sample));
+}
 
 struct ConfiguredProbeStateMirror {
     std::uint64_t calls = 0;
@@ -719,6 +753,7 @@ TEST(GraphJit, EmptyGraphCompilesAndMaterializesRootOperation)
     EXPECT_TRUE(result.compiled_graph->node_layout.nodes.empty());
     EXPECT_TRUE(result.compiled_graph->indexed_plan.empty());
     EXPECT_TRUE(result.compiled_graph->root_operations.valid());
+    EXPECT_FALSE(result.compiled_graph->indexed_operations.valid());
 
     EXPECT_NO_THROW(result.compiled_graph->root_operations.tick_block(nullptr, 0, 256));
 }
@@ -2576,6 +2611,47 @@ struct IndexedOnlyProbe {
     }
 
     void tick_block(iv::TickBlockContext<IndexedOnlyProbe> const&) const {}
+};
+
+struct IndexedExecutionProbe {
+    struct IndexedState {
+        std::uint64_t calls = 0;
+        std::uint64_t sample_rate = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::tock_sample_output("out")};
+    }
+
+    void tick_block(iv::TickBlockContext<IndexedExecutionProbe> const&) const {}
+
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<IndexedExecutionProbe>& context) const
+    {
+        iv::IndexedCoverage const coverage{{{10, 13}}};
+        context.template output<"out">().publish_coverage(coverage);
+        context.template output<"out">().change(coverage);
+    }
+
+    void tock_coverage(
+        iv::TockCoverageContext<IndexedExecutionProbe>& context) const
+    {
+        auto& state = context.indexed_state();
+        ++state.calls;
+        state.sample_rate = context.sample_rate;
+        auto output = context.template output<"out">();
+        for (auto const region : output.requested_coverage().regions()) {
+            for (auto index = region.begin; index < region.end; ++index) {
+                output.write(index, iv::Sample{static_cast<float>(index)});
+            }
+        }
+    }
 };
 
 struct StatelessProbe {
@@ -4791,6 +4867,12 @@ void indexed_only_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void indexed_execution_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.state_context.indexed_execution">();
+    graph.outputs();
+}
+
 void stateless_module(iv::GraphBuilder& graph)
 {
     (void)graph.node<"iv.test.graph_jit.state_context.stateless">();
@@ -5068,6 +5150,7 @@ void ported_module(iv::GraphBuilder& graph)
 IV_NODE("iv.test.graph_jit.state_context.stateful", StatefulProbe);
 IV_NODE("iv.test.graph_jit.state_context.state_only", StateOnlyProbe);
 IV_NODE("iv.test.graph_jit.state_context.indexed_only", IndexedOnlyProbe);
+IV_NODE("iv.test.graph_jit.state_context.indexed_execution", IndexedExecutionProbe);
 IV_NODE("iv.test.graph_jit.state_context.stateless", StatelessProbe);
 IV_NODE("iv.test.graph_jit.state_context.configured", ConfiguredProbe);
 IV_NODE("iv.test.graph_jit.state_context.pointer_configured", PointerConfiguredProbe);
@@ -5127,6 +5210,7 @@ IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
 IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
 IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
 IV_MODULE("iv.test.graph_jit.state_context.indexed_only_module", indexed_only_module);
+IV_MODULE("iv.test.graph_jit.state_context.indexed_execution_module", indexed_execution_module);
 IV_MODULE("iv.test.graph_jit.state_context.stateless_module", stateless_module);
 IV_MODULE("iv.test.graph_jit.state_context.configured_module", configured_module);
 IV_MODULE("iv.test.graph_jit.state_context.pointer_configured_module", pointer_configured_module);
@@ -6283,6 +6367,9 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.mono_interleaved_consumer"));
     EXPECT_TRUE(has_leaf_definition(
+        "iv.test.graph_jit.state_context.indexed_execution"));
+    EXPECT_TRUE(has_module_definition(graph_jit_indexed_execution_module_id));
+    EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.stereo_ramp_source"));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.stereo_planar_consumer"));
@@ -6463,6 +6550,65 @@ TEST_F(GraphJitRuntimeFixture, StateAndIndexedStateContexts)
     EXPECT_EQ(stateless.compiled_graph->node_layout.storage_size, 0u);
     EXPECT_NO_THROW(stateless.compiled_graph->root_operations.tick_block(nullptr, 9, 32));
 
+}
+
+TEST_F(GraphJitRuntimeFixture, GeneratedIndexedRootsUseSuppliedBatchBindings)
+{
+    auto compiled = compile(graph_jit_indexed_execution_module_id, 104);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    ASSERT_TRUE(compiled.compiled_graph->indexed_operations.valid());
+    ASSERT_EQ(compiled.compiled_graph->indexed_plan.nodes.size(), 1u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* state = static_cast<IndexedExecutionProbeStateMirror*>(
+        storage.indexed_state_ptr(0));
+    ASSERT_NE(state, nullptr);
+
+    IndexedExecutionCapture capture;
+    iv::IndexedCoverage const empty;
+    std::array output_changes{iv::IndexedOutputChange{
+        .data = &capture,
+        .previous_coverage_value = &empty,
+        .publish_coverage_value = &capture_indexed_coverage,
+        .publish_changed_value = &capture_indexed_change,
+    }};
+    std::array node_frames{iv::graph_jit::IndexedNodeBatchFrame{
+        .activity = iv::graph_jit::IndexedNodeBatchActivity::forward,
+        .forward = iv::ReflectedNodeForwardCoverageContext{
+            .outputs = output_changes,
+            .local_state_changed = true,
+            .sample_rate = 88200,
+        },
+    }};
+    iv::graph_jit::IndexedBatchFrame batch{.nodes = node_frames};
+
+    compiled.compiled_graph->indexed_operations.propagate_forward(
+        storage.buffer().data(), &batch);
+    EXPECT_EQ(capture.coverage, (iv::IndexedCoverage{{{10, 13}}}));
+    EXPECT_EQ(capture.changed, capture.coverage);
+
+    iv::IndexedCoverage const requested{{{10, 13}}};
+    std::array outputs{iv::IndexedSampleOutputPort{
+        .data = &capture,
+        .requested_coverage_value = &requested,
+        .write_sample = &capture_indexed_sample,
+    }};
+    node_frames[0].activity = iv::graph_jit::IndexedNodeBatchActivity::evaluate;
+    node_frames[0].tock = iv::ReflectedNodeTockCoverageContext{
+        .outputs = outputs,
+        .sample_rate = 88200,
+    };
+    compiled.compiled_graph->indexed_operations.evaluate(
+        storage.buffer().data(), &batch);
+
+    EXPECT_EQ(state->calls, 1u);
+    EXPECT_EQ(state->sample_rate, 88200u);
+    ASSERT_EQ(capture.samples.size(), 3u);
+    EXPECT_EQ(capture.samples[0], (std::pair<iv::SampleIndex, float>{10, 10.0f}));
+    EXPECT_EQ(capture.samples[1], (std::pair<iv::SampleIndex, float>{11, 11.0f}));
+    EXPECT_EQ(capture.samples[2], (std::pair<iv::SampleIndex, float>{12, 12.0f}));
 }
 
 TEST_F(GraphJitRuntimeFixture, ConfiguredValuesAndPointerRelocations)

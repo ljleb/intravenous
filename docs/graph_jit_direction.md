@@ -75,10 +75,15 @@ per package before a compile-local package module is consumed once, and repeated
 callback share one imported root while still receiving distinct node
 configuration/storage contexts. The reflected compiler callback ABI uses
 explicit pointer/count span records rather than assuming an
-implementation-specific `std::span` object representation. The generated root
-exports only `tick_block`: it is the scheduler and may use primitive `skip_block`
-callbacks internally when activity/skip semantics make that legal. A separate
-root `skip_block` ABI would invert that ownership and is intentionally absent.
+implementation-specific `std::span` object representation. The generated
+realtime root exports only `tick_block`: it is the scheduler and may use primitive
+`skip_block` callbacks internally when activity/skip semantics make that legal. A
+separate realtime root `skip_block` ABI would invert that ownership and is
+intentionally absent. Graphs with indexed work additionally export off-thread
+forward, reverse, and evaluation batch roots. Those roots use the retained
+`IndexedPlan` orders, imported reflected Tock callbacks, and the existing imported
+`tick_block()` wrapper for replay; executor-owned batch frames still supply
+coverage accumulators and page bindings.
 Unsupported shapes still fail explicitly at the lowering boundary; they are
 never compiled as no-ops.
 
@@ -639,8 +644,8 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     and records synthesized pointwise F/R plus background replay ordering. Contextual
     replayability remains a per-path compiler fact, not an output config field.
 17. **Finish ordinary background indexed execution before capture consumption.**
-    Retain the landed `IndexedPlan`, then add the still-pending reusable batch ABI,
-    indexed callback imports, generated F/R/evaluation programs, `GraphExecutor`,
+    The reusable reflected batch ABI, indexed callback imports, and generated
+    F/R/evaluation programs have landed. Next implement `GraphExecutor`,
     temporary tock pages, persisted page completion, atomic publication, pinned
     snapshot reads and advance preparation for sequential playback. Tock-to-random-
     access edges require addressable pages even if the tock output is ephemeral;

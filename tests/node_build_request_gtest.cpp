@@ -838,11 +838,11 @@ TEST(IndexedDspPorts, IndexedStateAndSampleRateAreTockOnly)
     auto const operations = iv::details::node_compiler_operations<IndexedSource>();
 
     operations.tick_block(&node, iv::ReflectedNodeTickContext {}, 0, 16);
-    iv::TockCoverageContext<IndexedSource> tock {
+    iv::ReflectedNodeTockCoverageContext tock {
         .indexed_state_storage = storage,
         .sample_rate = 96000,
     };
-    operations.tock_coverage(&node, &tock);
+    operations.tock_coverage(&node, tock);
 
     EXPECT_EQ(state->calls, 1);
     EXPECT_EQ(state->sample_rate, 96000u);

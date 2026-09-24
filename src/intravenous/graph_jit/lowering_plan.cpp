@@ -536,7 +536,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
 
 std::expected<PackageImportPlan, std::string> plan_package_imports(
     LoweringInput const& input,
-    GraphAnalysis const& analysis)
+    GraphAnalysis const& analysis,
+    IndexedPlan const& indexed)
 {
     PackageImportPlan plan;
     if (analysis.empty && input.config_relocations.empty()) return plan;
@@ -575,7 +576,8 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
                             PackageImportGroup& package,
                             std::string source_symbol,
                             std::string import_symbol,
-                            std::string role) -> std::string {
+                            std::string role,
+                            CallbackImportAbi abi) -> std::string {
         for (auto const& callback : package.callbacks) {
             if (callback.source_symbol == source_symbol) {
                 return callback.import_symbol;
@@ -585,6 +587,7 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
             .source_symbol = std::move(source_symbol),
             .import_symbol = std::move(import_symbol),
             .role = std::move(role),
+            .abi = abi,
         });
         return package.callbacks.back().import_symbol;
     };
@@ -626,18 +629,67 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
         if (!package_index) return std::unexpected(std::move(package_index.error()));
         auto& package = package_group(*package_index);
 
-        PrimitiveCallbackPlan callbacks;
+        PrimitiveCallbackPlan callbacks{
+            .bundle = primitive.bundle.node_bundle,
+        };
         callbacks.tick_block = add_callback(
             package,
             implementation.tick_block->getName().str(),
             primitive_callback_import_symbol(i, "tick_block"),
-            "tick_block");
+            "tick_block",
+            CallbackImportAbi::block);
         if (primitive.bundle.block_skippable) {
             callbacks.skip_block = add_callback(
                 package,
                 implementation.skip_block->getName().str(),
                 primitive_callback_import_symbol(i, "skip_block"),
-                "skip_block");
+                "skip_block",
+                CallbackImportAbi::block);
+        }
+
+        auto const bundle = primitive.bundle.node_bundle;
+        auto const indexed_node = bundle < indexed.bundle_to_indexed_node.size()
+            ? indexed.bundle_to_indexed_node[bundle]
+            : std::optional<IndexedNodeOrdinal>{};
+        if (indexed_node) {
+            if (*indexed_node >= indexed.nodes.size()) {
+                return std::unexpected(
+                    "GraphJit indexed callback import references a missing indexed node");
+            }
+            auto const& node = indexed.nodes[*indexed_node];
+            if (node.authored_tock_execution) {
+                if (!implementation.tock_coverage
+                    || !implementation.propagate_forward_coverage) {
+                    return std::unexpected(
+                        "GraphJit authored Tock node has incomplete indexed callbacks");
+                }
+                callbacks.tock_coverage = add_callback(
+                    package,
+                    implementation.tock_coverage->getName().str(),
+                    primitive_callback_import_symbol(i, "tock_coverage"),
+                    "tock_coverage",
+                    CallbackImportAbi::indexed);
+                callbacks.propagate_forward_coverage = add_callback(
+                    package,
+                    implementation.propagate_forward_coverage->getName().str(),
+                    primitive_callback_import_symbol(
+                        i, "propagate_forward_coverage"),
+                    "propagate_forward_coverage",
+                    CallbackImportAbi::indexed);
+                if (node.accumulators.input_requirement_count != 0) {
+                    if (!implementation.propagate_reverse_coverage) {
+                        return std::unexpected(
+                            "GraphJit authored Tock node with indexed inputs has no reverse callback");
+                    }
+                    callbacks.propagate_reverse_coverage = add_callback(
+                        package,
+                        implementation.propagate_reverse_coverage->getName().str(),
+                        primitive_callback_import_symbol(
+                            i, "propagate_reverse_coverage"),
+                        "propagate_reverse_coverage",
+                        CallbackImportAbi::indexed);
+                }
+            }
         }
         plan.primitive_callbacks.push_back(std::move(callbacks));
     }
@@ -4925,7 +4977,8 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         realtime_ports->event_ports);
     if (!declarations) return std::unexpected(std::move(declarations.error()));
 
-    auto imports = plan_package_imports(input, *analysis);
+    auto imports = plan_package_imports(
+        input, *analysis, realtime_ports->connections.indexed);
     if (!imports) return std::unexpected(std::move(imports.error()));
 
     auto configurations = plan_node_configurations(

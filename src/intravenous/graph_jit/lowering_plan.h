@@ -33,10 +33,16 @@ struct DeclarationPlan {
     std::vector<PrimitiveStoragePlan> primitive_storage{};
 };
 
+enum class CallbackImportAbi : std::uint8_t {
+    block,
+    indexed,
+};
+
 struct CallbackImportPlan {
     std::string source_symbol{};
     std::string import_symbol{};
     std::string role{};
+    CallbackImportAbi abi = CallbackImportAbi::block;
 };
 
 struct RetainedGlobalImportPlan {
@@ -52,8 +58,12 @@ struct PackageImportGroup {
 };
 
 struct PrimitiveCallbackPlan {
+    NodeBundleHandle bundle = 0;
     std::string tick_block{};
     std::string skip_block{};
+    std::string tock_coverage{};
+    std::string propagate_forward_coverage{};
+    std::string propagate_reverse_coverage{};
 };
 
 struct PackageImportPlan {

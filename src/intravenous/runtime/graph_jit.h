@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/realtime_port_planning.h>
+#include <intravenous/graph_jit/indexed_execution.h>
 #include <intravenous/graph_jit/indexed_plan.h>
 #include <intravenous/node/layout.h>
 #include <intravenous/runtime/node_definition_types.h>
@@ -66,6 +67,25 @@ struct CompiledGraphRootOperations {
     }
 };
 
+// Background roots consume one executor-owned logical batch. storage_base is
+// the same canonical NodeStorage allocation used by realtime execution and is
+// used only for IndexedState. Calling these roots is never audio-thread work.
+using CompiledGraphIndexedBatchFunction =
+    void (*)(std::byte* storage_base, graph_jit::IndexedBatchFrame* batch);
+
+struct CompiledGraphIndexedOperations {
+    CompiledGraphIndexedBatchFunction propagate_forward = nullptr;
+    CompiledGraphIndexedBatchFunction propagate_reverse = nullptr;
+    CompiledGraphIndexedBatchFunction evaluate = nullptr;
+
+    [[nodiscard]] bool valid() const noexcept
+    {
+        return propagate_forward != nullptr
+            && propagate_reverse != nullptr
+            && evaluate != nullptr;
+    }
+};
+
 // One immutable native project generation. GraphJit owns code/layout/planning
 // metadata only; GraphExecutor creates NodeStorage from node_layout and owns all
 // mutable state plus initialize/move/release lifecycle. Generated code remains
@@ -79,6 +99,7 @@ struct CompiledGraph {
     NodeLayout node_layout{};
     graph_jit::IndexedPlan indexed_plan{};
     CompiledGraphRootOperations root_operations{};
+    CompiledGraphIndexedOperations indexed_operations{};
     std::shared_ptr<void const> code_lifetime{};
 };
 

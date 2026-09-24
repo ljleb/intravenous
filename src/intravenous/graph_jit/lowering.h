@@ -86,6 +86,9 @@ struct LoweringInput {
 // details and are never exposed as a root skip_block ABI.
 struct LoweredGraphRootSymbols {
     std::string tick_block{};
+    std::string propagate_indexed_forward{};
+    std::string propagate_indexed_reverse{};
+    std::string evaluate_indexed{};
 };
 
 // The lowerer owns graph analysis and canonical storage planning as well as
