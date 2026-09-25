@@ -10,6 +10,7 @@
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/runtime/graph_connections.h>
+#include <intravenous/runtime/graph_executor.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/node_instances.h>
@@ -6609,6 +6610,29 @@ TEST_F(GraphJitRuntimeFixture, GeneratedIndexedRootsUseSuppliedBatchBindings)
     EXPECT_EQ(capture.samples[0], (std::pair<iv::SampleIndex, float>{10, 10.0f}));
     EXPECT_EQ(capture.samples[1], (std::pair<iv::SampleIndex, float>{11, 11.0f}));
     EXPECT_EQ(capture.samples[2], (std::pair<iv::SampleIndex, float>{12, 12.0f}));
+
+    iv::GraphExecutor executor;
+    ASSERT_EQ(
+        executor.stage(compiled.compiled_graph),
+        iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending());
+    auto const propagated = executor.propagate_indexed(
+        iv::GraphExecutorIndexedPropagationRequest{
+            .locally_changed_nodes = {0},
+            .output_demands = {
+                iv::GraphExecutorIndexedOutputDemandRoot{
+                    .endpoint = 0,
+                    .required = iv::IndexedCoverage{{{10, 13}}},
+                },
+            },
+        });
+    ASSERT_EQ(propagated.output_changes.size(), 1u);
+    EXPECT_EQ(propagated.output_changes[0].endpoint, 0u);
+    EXPECT_EQ(propagated.output_changes[0].coverage, requested);
+    EXPECT_EQ(propagated.output_changes[0].changed, requested);
+    ASSERT_EQ(propagated.output_requirements.size(), 1u);
+    EXPECT_EQ(propagated.output_requirements[0].endpoint, 0u);
+    EXPECT_EQ(propagated.output_requirements[0].required, requested);
 }
 
 TEST_F(GraphJitRuntimeFixture, ConfiguredValuesAndPointerRelocations)

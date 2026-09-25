@@ -1974,8 +1974,15 @@ recording merely because that planning metadata exists.
    now owns active/pending compiled realizations, stages pending storage without
    reading live mutable state, performs ordinary `NodeStorage` migration only at
    an explicit quiescent boundary, and dispatches the already-active generated root
-   without hidden lifecycle work. Next implement transaction workspaces, runtime
-   realization of indexed representations, and advance ephemeral
+   without hidden lifecycle work. It now also owns a reusable per-realization
+   indexed propagation workspace: generation-local endpoint/node ordinals bind the
+   compiler-planned accumulators into `IndexedBatchFrame`, exact fan-in changes and
+   fan-out requirements converge before one generated F/R callback per implicated
+   node, synthesized pointwise replay propagation uses the same frame, and the
+   propagated semantic-coverage baseline advances only after both traversals succeed.
+   This propagation checkpoint
+   deliberately produces exact changes/requirements but no payloads or page
+   publication. Next realize the indexed physical representations and advance ephemeral
    materialization, canonical persisted pages for Tick and Tock persisted outputs,
    pinned **published-snapshot-only** Random Access reads, atomic publication, and
    advance preparation. Verify that no audio-thread path can invoke Tock.

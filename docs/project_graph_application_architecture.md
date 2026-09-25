@@ -565,7 +565,12 @@ executor-owned `NodeStorage` without reading mutable active state, and an explic
 quiescent whole-root-boundary operation migrates the final active state and publishes
 it. `tick_block()` dispatches only the already-active generation and never performs
 activation, allocation, or lifecycle work. Project-transaction wiring and indexed
-page/transaction realization remain the next layer.
+page/payload realization remain the next layer. The executor now also owns the
+reusable indexed propagation workspace for the active realization: it binds the
+compiler-planned endpoint accumulators into `IndexedBatchFrame`, executes exact
+generated forward/reverse traversals once per implicated node, and advances the
+propagated coverage baseline only after successful propagation. That checkpoint returns materialization
+requirements; it does not yet run Tock/replay payload evaluation or publish pages.
 
 `GraphExecutor` keeps at least:
 

@@ -658,7 +658,12 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     substrate now owns active/pending `CompiledGraph` + `NodeStorage` realizations,
     stages pending storage without sampling live state, performs migration at explicit
     quiescent-boundary activation, and keeps activation out of its Tick entry point.
-    Next add indexed transaction workspaces and runtime
+    The executor now also realizes compiler-planned indexed accumulator slots as a
+    reusable `IndexedBatchFrame`, runs exact transactional forward/reverse propagation
+    through the generated roots, accumulates fan-in/fan-out before the one-call-per-node
+    callbacks, and advances its propagated semantic-coverage baseline only when both
+    traversals succeed. It
+    does not yet bind Tock/replay payload ports or publish pages. Next add runtime
     realization of the physical plan, canonical persisted-page completion for Tick
     and Tock persisted outputs, atomic publication, and preliminary
     published/prepared-snapshot-only Random Access reads. Background ephemeral Random
