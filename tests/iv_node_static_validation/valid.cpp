@@ -2,7 +2,7 @@
 
 #include <array>
 
-struct ValidIndexedNode {
+struct ValidBackgroundNode {
     static constexpr auto inputs()
     {
         return std::array {iv::random_access_sample_input("input")};
@@ -16,22 +16,22 @@ struct ValidIndexedNode {
     static constexpr std::size_t num_inputs() { return inputs().size(); }
     static constexpr std::size_t num_outputs() { return outputs().size(); }
 
-    void tick_block(iv::TickBlockContext<ValidIndexedNode> const& ctx) const
+    void tick_block(iv::TickBlockContext<ValidBackgroundNode> const& ctx) const
     {
         (void)ctx.template input<"input">();
     }
-    void tock_coverage(iv::TockCoverageContext<ValidIndexedNode>&) const {}
+    void tock_coverage(iv::TockCoverageContext<ValidBackgroundNode>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<ValidIndexedNode>& context) const
+        iv::PropagateForwardCoverageContext<ValidBackgroundNode>& context) const
     {
         context.template output<"output">().publish_coverage(
             context.template input<"input">().coverage());
     }
 };
 
-IV_NODE("iv.test.valid_indexed_node", ValidIndexedNode);
+IV_NODE("iv.test.valid_background_node", ValidBackgroundNode);
 
-struct ValidIndexedEventNode {
+struct ValidBackgroundEventNode {
     static constexpr auto inputs()
     {
         return std::array {
@@ -46,19 +46,19 @@ struct ValidIndexedEventNode {
         };
     }
 
-    void tick_block(iv::TickBlockContext<ValidIndexedEventNode> const&) const {}
-    void tock_coverage(iv::TockCoverageContext<ValidIndexedEventNode>&) const {}
+    void tick_block(iv::TickBlockContext<ValidBackgroundEventNode> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<ValidBackgroundEventNode>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<ValidIndexedEventNode>& context) const
+        iv::PropagateForwardCoverageContext<ValidBackgroundEventNode>& context) const
     {
         context.template output<"output">().publish_coverage(
             context.template input<"input">().coverage());
     }
 };
 
-IV_NODE("iv.test.valid_indexed_event_node", ValidIndexedEventNode);
+IV_NODE("iv.test.valid_background_event_node", ValidBackgroundEventNode);
 
-struct ValidIndexedInputOnlyNode {
+struct ValidBackgroundInputOnlyNode {
     static constexpr auto inputs()
     {
         return std::array {
@@ -67,10 +67,10 @@ struct ValidIndexedInputOnlyNode {
         };
     }
 
-    void tick_block(iv::TickBlockContext<ValidIndexedInputOnlyNode> const&) const {}
+    void tick_block(iv::TickBlockContext<ValidBackgroundInputOnlyNode> const&) const {}
 };
 
-IV_NODE("iv.test.valid_indexed_input_only_node", ValidIndexedInputOnlyNode);
+IV_NODE("iv.test.valid_background_input_only_node", ValidBackgroundInputOnlyNode);
 
 
 struct ValidPersistedRealtimeNode {

@@ -59,7 +59,7 @@ namespace iv {
     struct LaneInputId {
         LaneId lane {};
         PortKind kind = PortKind::sample;
-        size_t ordinal = 0;
+        size_t index = 0;
 
         bool operator==(LaneInputId const&) const = default;
     };
@@ -73,13 +73,13 @@ namespace iv {
 
     struct GraphInputPortDescriptor {
         std::string virtual_node_id {};
-        // This is the stable ordinal of a NodeBundlePort within a virtual
-        // port's builder mapping, not a concrete-node or tile ordinal.
+        // This is the stable index of a NodeBundlePort within a virtual
+        // port's builder mapping, not a concrete-node or tile index.
         // The matching NodeBundlePortId is used only while completing a
         // particular builder instance.
-        std::optional<size_t> node_bundle_port_ordinal {};
+        std::optional<size_t> node_bundle_port_index {};
         PortKind port_kind = PortKind::sample;
-        size_t port_ordinal = 0;
+        size_t port_index = 0;
         std::string port_name {};
         std::string port_type {};
         std::optional<ChannelTypeId> sample_channel_type {};
@@ -107,15 +107,15 @@ namespace iv {
         {
             std::string key = port.virtual_node_id;
             key += "\x1fmember:";
-            if (port.node_bundle_port_ordinal.has_value()) {
-                key += std::to_string(*port.node_bundle_port_ordinal);
+            if (port.node_bundle_port_index.has_value()) {
+                key += std::to_string(*port.node_bundle_port_index);
             } else {
                 key += "virtual";
             }
             key += "\x1fkind:";
             key += port.port_kind == PortKind::sample ? "sample" : "event";
-            key += "\x1fordinal:";
-            key += std::to_string(port.port_ordinal);
+            key += "\x1findex:";
+            key += std::to_string(port.port_index);
             key += "\x1f" "channel:";
             if (port.sample_channel_type.has_value()) {
                 key += std::to_string(static_cast<int>(*port.sample_channel_type));

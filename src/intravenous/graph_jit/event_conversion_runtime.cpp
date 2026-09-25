@@ -73,7 +73,7 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequence(
         target_write_index - target_read_index, target_capacity);
     auto const bounded_source_count = std::min(source_count, source_capacity);
     if (bounded_source_count > target_capacity - target_count) {
-        // Physical planning guarantees enough aggregate capacity. Preserve the
+        // Storage planning guarantees enough aggregate capacity. Preserve the
         // already-valid target rather than silently manufacturing a partial
         // ordering if that invariant is ever violated.
         return target_write_index;
@@ -117,16 +117,16 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequence(
 
 extern "C" std::size_t iv_graph_jit_merge_ordered_event_sequence(
     void* target_events,
-    std::size_t* target_source_ordinals,
+    std::size_t* target_source_indices,
     std::size_t target_capacity,
     std::size_t target_read_index,
     std::size_t target_write_index,
     void const* source_events,
     std::size_t source_capacity,
     std::size_t source_count,
-    std::size_t source_ordinal) noexcept
+    std::size_t source_index) noexcept
 {
-    if (target_events == nullptr || target_source_ordinals == nullptr
+    if (target_events == nullptr || target_source_indices == nullptr
         || source_events == nullptr
         || (target_capacity != 0 && !is_power_of_2(target_capacity))) {
         return target_write_index;
@@ -154,14 +154,14 @@ extern "C" std::size_t iv_graph_jit_merge_ordered_event_sequence(
         if (source_remaining == 0) {
             take_target = true;
         } else if (target_remaining != 0) {
-            auto const target_index =
+            auto const target_event_index =
                 (target_read_index + target_remaining - 1) & mask;
-            auto const& target_event = target[target_index];
+            auto const& target_event = target[target_event_index];
             auto const& source_event = source[source_remaining - 1];
-            auto const target_ordinal = target_source_ordinals[target_index];
+            auto const target_index = target_source_indices[target_event_index];
             take_target = target_event.time > source_event.time
                 || (target_event.time == source_event.time
-                    && target_ordinal > source_ordinal);
+                    && target_index > source_index);
         }
 
         auto const output_index =
@@ -170,12 +170,12 @@ extern "C" std::size_t iv_graph_jit_merge_ordered_event_sequence(
             auto const input_index =
                 (target_read_index + target_remaining - 1) & mask;
             target[output_index] = target[input_index];
-            target_source_ordinals[output_index] =
-                target_source_ordinals[input_index];
+            target_source_indices[output_index] =
+                target_source_indices[input_index];
             --target_remaining;
         } else {
             target[output_index] = source[source_remaining - 1];
-            target_source_ordinals[output_index] = source_ordinal;
+            target_source_indices[output_index] = source_index;
             --source_remaining;
         }
         --output_remaining;
@@ -223,7 +223,7 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequences_into_home(
         EventTime chosen_time = chose_target
             ? target[target_remaining - 1].time
             : EventTime{};
-        std::size_t chosen_ordinal = 0;
+        std::size_t chosen_index = 0;
 
         for (std::size_t source = 0; source < source_count; ++source) {
             auto const remaining = source_remaining[source];
@@ -231,20 +231,20 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequences_into_home(
             auto const* events =
                 static_cast<TimedEvent const*>(source_events[source]);
             auto const candidate_time = events[remaining - 1].time;
-            auto const candidate_ordinal = source + 1;
-            if (!chose_target && chosen_ordinal == 0) {
+            auto const candidate_index = source + 1;
+            if (!chose_target && chosen_index == 0) {
                 chosen_source = source;
                 chosen_time = candidate_time;
-                chosen_ordinal = candidate_ordinal;
+                chosen_index = candidate_index;
                 continue;
             }
             if (candidate_time > chosen_time
                 || (candidate_time == chosen_time
-                    && candidate_ordinal > chosen_ordinal)) {
+                    && candidate_index > chosen_index)) {
                 chose_target = false;
                 chosen_source = source;
                 chosen_time = candidate_time;
-                chosen_ordinal = candidate_ordinal;
+                chosen_index = candidate_index;
             }
         }
 

@@ -282,8 +282,8 @@ struct IrNodeRecord {
     std::string type_name{};
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
-    std::size_t indexed_state_size = 0;
-    std::size_t indexed_state_alignment = 1;
+    std::size_t background_state_size = 0;
+    std::size_t background_state_alignment = 1;
     Constant* initializer = nullptr;
 };
 
@@ -334,9 +334,9 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
             .type_name = name.substr(0, name_size).str(),
             .state_size = constant_size(record->getOperand(4), "state size"),
             .state_alignment = constant_size(record->getOperand(5), "state alignment"),
-            .indexed_state_size = constant_size(
+            .background_state_size = constant_size(
                 record->getOperand(6), "indexed state size"),
-            .indexed_state_alignment = constant_size(
+            .background_state_alignment = constant_size(
                 record->getOperand(7), "indexed state alignment"),
             .initializer = record,
         });
@@ -408,7 +408,7 @@ struct PackageDefinitionMetadata {
 
 struct CompilerMetadata {
     std::vector<StateMetadata> states;
-    std::vector<StateMetadata> indexed_states;
+    std::vector<StateMetadata> background_states;
     std::vector<ConfigPointerMetadata> config_pointers;
     std::vector<ConfigurationTypeMetadata> configuration_types;
     std::vector<PackageDefinitionMetadata> package_definitions;
@@ -439,9 +439,9 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         if (!states) {
             fail("metadata has no state array in '" + entry.path().string() + "'");
         }
-        auto* indexed_states = object->getArray("indexed_states");
-        if (!indexed_states) {
-            fail("metadata has no indexed-state array in '" + entry.path().string() + "'");
+        auto* background_states = object->getArray("background_states");
+        if (!background_states) {
+            fail("metadata has no background-state array in '" + entry.path().string() + "'");
         }
         auto* config_pointers = object->getArray("config_pointers");
         if (!config_pointers) {
@@ -646,7 +646,7 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         };
         append_state_metadata(*states, result.states, "state");
         append_state_metadata(
-            *indexed_states, result.indexed_states, "indexed-state");
+            *background_states, result.background_states, "background-state");
         for (auto const& field_value : *config_pointers) {
             auto* field = field_value.getAsObject();
             if (!field) fail("config-pointer metadata entry is not an object in '" + entry.path().string() + "'");
@@ -759,7 +759,7 @@ void reject_node_runtime_mutable_globals(std::span<IrNodeRecord const> records)
                 "node type '" + record.type_name
                 + "' runtime/compiler operations reference mutable package global '"
                 + global->getName().str()
-                + "'; persistent mutable runtime data must be Node::State or Node::IndexedState");
+                + "'; persistent mutable runtime data must be Node::State or Node::TockState");
         }
     }
 }
@@ -953,19 +953,19 @@ std::vector<RetainedGlobal> collect_retained_globals(
 std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> bind_state_metadata(
     std::span<IrNodeRecord const> records,
     std::span<StateMetadata const> metadata,
-    bool indexed_state)
+    bool background_state)
 {
     std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> result;
-    auto const label = indexed_state ? "Node::IndexedState" : "Node::State";
+    auto const label = background_state ? "Node::TockState" : "Node::State";
     for (auto const& record : records) {
         auto const state = std::find_if(metadata.begin(), metadata.end(), [&](auto const& item) {
             return item.key == record.key;
         });
-        auto const state_size = indexed_state
-            ? record.indexed_state_size
+        auto const state_size = background_state
+            ? record.background_state_size
             : record.state_size;
-        auto const state_alignment = indexed_state
-            ? record.indexed_state_alignment
+        auto const state_alignment = background_state
+            ? record.background_state_alignment
             : record.state_alignment;
         if (state_size == 0) {
             if (state != metadata.end()) {
@@ -1213,7 +1213,7 @@ void inject_package_configuration_metadata(
     Module& module,
     CompilerMetadata const& metadata,
     std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> state_structures,
-    std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> indexed_state_structures,
+    std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> background_state_structures,
     std::span<RetainedGlobal const> retained_globals)
 {
     auto& context = module.getContext();
@@ -1400,10 +1400,10 @@ void inject_package_configuration_metadata(
         "iv.package_state",
         state_structures);
     emit_state_structures(
-        "iv_package_node_indexed_state_structures",
-        "iv.package_node_indexed_state_structures",
-        "iv.package_indexed_state",
-        indexed_state_structures);
+        "iv_package_node_background_state_structures",
+        "iv.package_node_background_state_structures",
+        "iv.package_background_state",
+        background_state_structures);
 
 }
 
@@ -1415,7 +1415,7 @@ void preserve_package_code(Module& module)
         "iv_package_node_config_pointer_fields",
         "iv_package_retained_globals",
         "iv_package_node_state_structures",
-        "iv_package_node_indexed_state_structures",
+        "iv_package_node_background_state_structures",
     };
     SmallPtrSet<GlobalValue const*, 32> reachable;
     for (auto const name : entry_points) {
@@ -1520,8 +1520,8 @@ int finalize(Options options)
     reject_node_runtime_mutable_globals(node_records);
     auto state_structures = bind_state_metadata(
         node_records, metadata.states, false);
-    auto indexed_state_structures = bind_state_metadata(
-        node_records, metadata.indexed_states, true);
+    auto background_state_structures = bind_state_metadata(
+        node_records, metadata.background_states, true);
     require_node_config_metadata(node_records, metadata);
     auto definitions = package_definition_globals(package);
     validate_package_definitions(definitions, metadata);
@@ -1536,7 +1536,7 @@ int finalize(Options options)
         package,
         metadata,
         state_structures,
-        indexed_state_structures,
+        background_state_structures,
         retained_globals);
     preserve_package_code(package);
     verify_finalized_package(package);

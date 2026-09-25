@@ -17,7 +17,7 @@ using NodeBundleHandle = size_t;
 struct VirtualPortId {
   std::string virtual_node_id{};
   PortKind port_kind = PortKind::sample;
-  size_t port_ordinal = 0;
+  size_t port_index = 0;
 
   bool operator==(VirtualPortId const&) const = default;
 };
@@ -25,7 +25,7 @@ struct VirtualPortId {
 struct NodeBundlePortId {
   NodeBundleHandle node_bundle_handle = 0;
   PortKind port_kind = PortKind::sample;
-  size_t port_ordinal = 0;
+  size_t port_index = 0;
   bool operator==(NodeBundlePortId const &) const = default;
 };
 
@@ -36,7 +36,7 @@ struct NodeBundlePortIdLess {
       return lhs.node_bundle_handle < rhs.node_bundle_handle;
     if (lhs.port_kind != rhs.port_kind)
       return lhs.port_kind < rhs.port_kind;
-    return lhs.port_ordinal < rhs.port_ordinal;
+    return lhs.port_index < rhs.port_index;
   }
 };
 

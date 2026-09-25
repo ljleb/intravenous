@@ -135,8 +135,8 @@ struct IrNodeRecord {
     llvm::Function* propagate_reverse_coverage = nullptr;
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
-    std::size_t indexed_state_size = 0;
-    std::size_t indexed_state_alignment = 1;
+    std::size_t background_state_size = 0;
+    std::size_t background_state_alignment = 1;
     bool intrinsically_replayable = false;
 };
 
@@ -231,10 +231,10 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
                 operations->getOperand(5), "propagate_reverse_coverage", false),
             .state_size = constant_size(record->getOperand(4), "state size"),
             .state_alignment = constant_size(record->getOperand(5), "state alignment"),
-            .indexed_state_size = constant_size(
-                record->getOperand(6), "indexed state size"),
-            .indexed_state_alignment = constant_size(
-                record->getOperand(7), "indexed state alignment"),
+            .background_state_size = constant_size(
+                record->getOperand(6), "background state size"),
+            .background_state_alignment = constant_size(
+                record->getOperand(7), "background state alignment"),
             .intrinsically_replayable =
                 replay_marker != 0,
         };
@@ -271,15 +271,15 @@ std::vector<llvm::GlobalVariable*> scan_retained_globals(
     }
 
     std::vector<llvm::GlobalVariable*> result(array->getNumOperands(), nullptr);
-    for (unsigned index = 0; index < array->getNumOperands(); ++index) {
-        auto* entry = llvm::dyn_cast<llvm::ConstantStruct>(array->getOperand(index));
+    for (unsigned record_index = 0; record_index < array->getNumOperands(); ++record_index) {
+        auto* entry = llvm::dyn_cast<llvm::ConstantStruct>(array->getOperand(record_index));
         if (!entry || entry->getNumOperands() != 3) {
             fail(GraphJitDiagnosticStage::package_llvm, "malformed retained-global record");
         }
         auto const size = constant_size(entry->getOperand(1), "retained-global size");
-        auto const ordinal = constant_size(entry->getOperand(2), "retained-global ordinal");
-        if (ordinal >= result.size() || result[ordinal] != nullptr) {
-            fail(GraphJitDiagnosticStage::package_llvm, "invalid retained-global ordinal");
+        auto const index = constant_size(entry->getOperand(2), "retained-global index");
+        if (index >= result.size() || result[index] != nullptr) {
+            fail(GraphJitDiagnosticStage::package_llvm, "invalid retained-global index");
         }
         auto* address = llvm::dyn_cast<llvm::Constant>(entry->getOperand(0));
         auto* global = address
@@ -290,13 +290,13 @@ std::vector<llvm::GlobalVariable*> scan_retained_globals(
                 GraphJitDiagnosticStage::package_llvm,
                 "retained-global record does not reference an LLVM global");
         }
-        auto const& accepted = revision.retained_globals[ordinal];
-        if (accepted.ordinal != ordinal || accepted.size != size) {
+        auto const& accepted = revision.retained_globals[index];
+        if (accepted.index != index || accepted.size != size) {
             fail(
                 GraphJitDiagnosticStage::package_llvm,
                 "retained-global ABI disagrees with accepted revision");
         }
-        result[ordinal] = global;
+        result[index] = global;
     }
     return result;
 }
@@ -469,7 +469,7 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
                     if (!leaf) {
                         result.diagnostics.push_back(diagnostic(
                             GraphJitDiagnosticStage::input_capture,
-                            "leaf definition payload is malformed",
+                            "leaf definition data is malformed",
                             current_bundle,
                             identity.node_type_id,
                             identity.provider_package_root));
@@ -542,7 +542,7 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
                             if (!state_structures_match) {
                                 result.diagnostics.push_back(diagnostic(
                                     GraphJitDiagnosticStage::input_capture,
-                                    "configured node State/IndexedState metadata disagrees "
+                                    "configured node State/TockState metadata disagrees "
                                     "with pinned package revision",
                                     current_bundle,
                                     identity.node_type_id,
@@ -579,7 +579,7 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
                         relocation.package_root));
                     continue;
                 }
-                if (!relocation.retained_global_ordinal) {
+                if (!relocation.retained_global_index) {
                     result.relocations.push_back(CapturedRelocation{
                         .node_bundle = current_bundle,
                         .relocation = &relocation,
@@ -601,11 +601,11 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
                         relocation.package_root));
                     continue;
                 }
-                auto const ordinal = *relocation.retained_global_ordinal;
-                if (ordinal >= revision->second->retained_globals.size()) {
+                auto const index = *relocation.retained_global_index;
+                if (index >= revision->second->retained_globals.size()) {
                     result.diagnostics.push_back(diagnostic(
                         GraphJitDiagnosticStage::input_capture,
-                        "configuration relocation retained-global ordinal is out of range",
+                        "configuration relocation retained-global index is out of range",
                         current_bundle,
                         view.registered_node_type_identity
                             ? view.registered_node_type_identity->node_type_id
@@ -613,8 +613,8 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
                         relocation.package_root));
                     continue;
                 }
-                auto const& global = revision->second->retained_globals[ordinal];
-                if (global.ordinal != ordinal || relocation.addend >= global.size) {
+                auto const& global = revision->second->retained_globals[index];
+                if (global.index != index || relocation.addend >= global.size) {
                     result.diagnostics.push_back(diagnostic(
                         GraphJitDiagnosticStage::input_capture,
                         "configuration relocation retained-global metadata is invalid",
@@ -649,8 +649,8 @@ void verify_compiler_record(
     }
     if (accepted.state_size != ir_record.state_size
         || accepted.state_alignment != ir_record.state_alignment
-        || accepted.indexed_state_size != ir_record.indexed_state_size
-        || accepted.indexed_state_alignment != ir_record.indexed_state_alignment
+        || accepted.background_state_size != ir_record.background_state_size
+        || accepted.background_state_alignment != ir_record.background_state_alignment
         || accepted.intrinsically_replayable != ir_record.intrinsically_replayable) {
         fail(
             GraphJitDiagnosticStage::package_llvm,
@@ -665,7 +665,7 @@ void verify_compiler_record(
             != static_cast<bool>(ir_record.propagate_reverse_coverage)) {
         fail(
             GraphJitDiagnosticStage::package_llvm,
-            "NodeCompilerRecord indexed-callback ABI disagrees with retained package LLVM for node '"
+            "NodeCompilerRecord background-callback ABI disagrees with retained package LLVM for node '"
                 + captured.identity.node_type_id + "'");
     }
 }
@@ -728,7 +728,7 @@ llvm::FunctionType* root_block_operation_type(llvm::LLVMContext& context)
         false);
 }
 
-llvm::FunctionType* root_indexed_operation_type(llvm::LLVMContext& context)
+llvm::FunctionType* root_background_operation_type(llvm::LLVMContext& context)
 {
     auto* pointer = llvm::PointerType::getUnqual(context);
     return llvm::FunctionType::get(
@@ -777,26 +777,26 @@ void validate_lowering_output(
     validate_root_operation(
         module, output.root_symbols.tick_block, block_type, "tick_block", true);
 
-    auto* indexed_type = root_indexed_operation_type(module.getContext());
-    auto const indexed_required = !output.indexed_plan.empty();
+    auto* background_type = root_background_operation_type(module.getContext());
+    auto const background_required = !output.background_evaluation_plan.empty();
     validate_root_operation(
         module,
-        output.root_symbols.propagate_indexed_forward,
-        indexed_type,
-        "indexed forward propagation",
-        indexed_required);
+        output.root_symbols.propagate_background_forward,
+        background_type,
+        "background forward propagation",
+        background_required);
     validate_root_operation(
         module,
-        output.root_symbols.propagate_indexed_reverse,
-        indexed_type,
-        "indexed reverse propagation",
-        indexed_required);
+        output.root_symbols.propagate_background_reverse,
+        background_type,
+        "background reverse propagation",
+        background_required);
     validate_root_operation(
         module,
-        output.root_symbols.evaluate_indexed,
-        indexed_type,
-        "indexed evaluation",
-        indexed_required);
+        output.root_symbols.evaluate_background,
+        background_type,
+        "background evaluation",
+        background_required);
 }
 
 void optimize_project_module(llvm::Module& module, llvm::TargetMachine& target_machine)
@@ -864,7 +864,7 @@ struct ProjectCodeLifetime {
 
 struct MaterializedProjectCode {
     CompiledGraphRootOperations root_operations{};
-    CompiledGraphIndexedOperations indexed_operations{};
+    CompiledGraphBackgroundOperations background_operations{};
     std::shared_ptr<void const> lifetime{};
 };
 
@@ -946,40 +946,40 @@ MaterializedProjectCode materialize_project_module(
                 GraphJitDiagnosticStage::materialization,
                 "project LLVM resolved an incomplete root-node execution ABI");
         }
-        CompiledGraphIndexedOperations indexed_operations;
-        if (!root_symbols.propagate_indexed_forward.empty()
-            || !root_symbols.propagate_indexed_reverse.empty()
-            || !root_symbols.evaluate_indexed.empty()) {
-            if (root_symbols.propagate_indexed_forward.empty()
-                || root_symbols.propagate_indexed_reverse.empty()
-                || root_symbols.evaluate_indexed.empty()) {
+        CompiledGraphBackgroundOperations background_operations;
+        if (!root_symbols.propagate_background_forward.empty()
+            || !root_symbols.propagate_background_reverse.empty()
+            || !root_symbols.evaluate_background.empty()) {
+            if (root_symbols.propagate_background_forward.empty()
+                || root_symbols.propagate_background_reverse.empty()
+                || root_symbols.evaluate_background.empty()) {
                 fail(
                     GraphJitDiagnosticStage::materialization,
-                    "project LLVM exposed an incomplete indexed execution ABI");
+                    "project LLVM exposed an incomplete background execution ABI");
             }
-            indexed_operations = CompiledGraphIndexedOperations{
+            background_operations = CompiledGraphBackgroundOperations{
                 .propagate_forward = symbol.template operator()<
-                    CompiledGraphIndexedBatchFunction>(
-                    root_symbols.propagate_indexed_forward,
-                    "indexed forward propagation"),
+                    CompiledGraphBackgroundFunction>(
+                    root_symbols.propagate_background_forward,
+                    "background forward propagation"),
                 .propagate_reverse = symbol.template operator()<
-                    CompiledGraphIndexedBatchFunction>(
-                    root_symbols.propagate_indexed_reverse,
-                    "indexed reverse propagation"),
+                    CompiledGraphBackgroundFunction>(
+                    root_symbols.propagate_background_reverse,
+                    "background reverse propagation"),
                 .evaluate = symbol.template operator()<
-                    CompiledGraphIndexedBatchFunction>(
-                    root_symbols.evaluate_indexed,
-                    "indexed evaluation"),
+                    CompiledGraphBackgroundFunction>(
+                    root_symbols.evaluate_background,
+                    "background evaluation"),
             };
-            if (!indexed_operations.valid()) {
+            if (!background_operations.valid()) {
                 fail(
                     GraphJitDiagnosticStage::materialization,
-                    "project LLVM resolved an incomplete indexed execution ABI");
+                    "project LLVM resolved an incomplete background execution ABI");
             }
         }
         return MaterializedProjectCode{
             .root_operations = root_operations,
-            .indexed_operations = indexed_operations,
+            .background_operations = background_operations,
             .lifetime = std::shared_ptr<void const>(std::move(lifetime)),
         };
     } catch (...) {
@@ -1114,8 +1114,8 @@ public:
                     .package_module = package_modules[parsed_index->second].module.get(),
                     .state_size = record->second.state_size,
                     .state_alignment = record->second.state_alignment,
-                    .indexed_state_size = record->second.indexed_state_size,
-                    .indexed_state_alignment = record->second.indexed_state_alignment,
+                    .background_state_size = record->second.background_state_size,
+                    .background_state_alignment = record->second.background_state_alignment,
                     .intrinsically_replayable = record->second.intrinsically_replayable,
                     .node_data = captured_node.node_data,
                     .state_structures = captured_node.state_structures,
@@ -1138,7 +1138,7 @@ public:
         relocations.reserve(captured.relocations.size());
         try {
             for (auto const& captured_relocation : captured.relocations) {
-                if (!captured_relocation.relocation->retained_global_ordinal) {
+                if (!captured_relocation.relocation->retained_global_index) {
                     relocations.push_back(graph_jit::ConfigRelocation{
                         .node_bundle = captured_relocation.node_bundle,
                         .relocation = captured_relocation.relocation,
@@ -1153,9 +1153,9 @@ public:
                         "internal GraphJit error: relocation package was not parsed");
                 }
                 auto& parsed = parsed_packages[parsed_index->second];
-                auto const ordinal = *captured_relocation.relocation->retained_global_ordinal;
-                if (ordinal >= parsed.retained_globals.size()
-                    || parsed.retained_globals[ordinal] == nullptr) {
+                auto const index = *captured_relocation.relocation->retained_global_index;
+                if (index >= parsed.retained_globals.size()
+                    || parsed.retained_globals[index] == nullptr) {
                     fail(
                         GraphJitDiagnosticStage::package_llvm,
                         "retained package LLVM is missing a configuration relocation global");
@@ -1164,7 +1164,7 @@ public:
                     .node_bundle = captured_relocation.node_bundle,
                     .relocation = captured_relocation.relocation,
                     .revision = captured_relocation.revision,
-                    .retained_global = parsed.retained_globals[ordinal],
+                    .retained_global = parsed.retained_globals[index],
                 });
             }
         } catch (GraphJitCompileError const& error) {
@@ -1228,9 +1228,9 @@ public:
                 .configured_graph = request.graph,
                 .package_revisions = std::move(package_revisions),
                 .node_layout = std::move(lowering->node_layout),
-                .indexed_plan = std::move(lowering->indexed_plan),
+                .background_evaluation_plan = std::move(lowering->background_evaluation_plan),
                 .root_operations = materialized.root_operations,
-                .indexed_operations = materialized.indexed_operations,
+                .background_operations = materialized.background_operations,
                 .code_lifetime = std::move(materialized.lifetime),
             });
         } catch (GraphJitCompileError const& error) {

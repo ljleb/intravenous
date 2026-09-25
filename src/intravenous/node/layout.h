@@ -31,16 +31,16 @@ namespace iv {
         struct Region {
             enum class Kind {
                 state,
-                indexed_state,
+                tock_state,
                 local_array,
                 nested_node_states,
-                nested_node_indexed_states,
+                nested_node_background_states,
                 raw,
             };
 
             Kind kind = Kind::state;
             size_t owner_node = no_owner_node;
-            bool indexed_state_field = false;
+            bool background_state_field = false;
             ptrdiff_t state_field_offset = 0;
             size_t storage_offset = 0;
             size_t size = 0;
@@ -69,7 +69,7 @@ namespace iv {
         struct ArrayBinding {
             size_t owner_node = 0;
             std::string id;
-            bool indexed_state_field = false;
+            bool background_state_field = false;
             ptrdiff_t state_field_offset = 0;
             void const* element_type = nullptr;
             size_t element_size = 0;
@@ -86,13 +86,13 @@ namespace iv {
             void const* node_type = nullptr;
             char const* node_type_name = nullptr;
             std::optional<NodeStateStructure> state_structure {};
-            std::optional<NodeStateStructure> indexed_state_structure {};
+            std::optional<NodeStateStructure> background_state_structure {};
             ptrdiff_t state_offset = 0;
             size_t state_size = 0;
             size_t state_alignment = 1;
-            ptrdiff_t indexed_state_offset = -1;
-            size_t indexed_state_size = 0;
-            size_t indexed_state_alignment = 1;
+            ptrdiff_t background_state_offset = -1;
+            size_t background_state_size = 0;
+            size_t background_state_alignment = 1;
             std::vector<size_t> dependencies;
             NodeLifecycleCallbacks lifecycle;
         };
@@ -177,13 +177,13 @@ namespace iv {
             NodeLayoutBuilder&, details::NodeLayoutNodeRegistration const&);
         friend void details::allocate_node_state(
             NodeLayoutBuilder&, size_t, size_t, size_t);
-        friend void details::allocate_node_indexed_state(
+        friend void details::allocate_node_background_state(
             NodeLayoutBuilder&, size_t, size_t, size_t);
         friend void details::declare_local_array(
             NodeLayoutBuilder&, details::NodeLayoutArrayDeclaration const&);
         friend size_t details::declare_nested_node_states(
             NodeLayoutBuilder&, size_t, ptrdiff_t);
-        friend size_t details::declare_nested_node_indexed_states(
+        friend size_t details::declare_nested_node_background_states(
             NodeLayoutBuilder&, size_t, ptrdiff_t);
         friend void details::finalize_nested_node_states(
             NodeLayoutBuilder&, size_t, std::vector<size_t>);
@@ -223,7 +223,7 @@ namespace iv {
         ResourceContext const* resources = nullptr;
         std::unique_ptr<std::byte[], StorageDeleter> storage;
         std::vector<size_t> constructed_nodes;
-        std::vector<size_t> constructed_indexed_states;
+        std::vector<size_t> constructed_background_states;
         std::vector<size_t> initialized_nodes;
 
         NodeStorage();
@@ -237,7 +237,7 @@ namespace iv {
         std::span<std::byte> buffer() const;
         size_t max_block_size() const;
         void* state_ptr(size_t node_index) const;
-        void* indexed_state_ptr(size_t node_index) const;
+        void* background_state_ptr(size_t node_index) const;
         std::span<std::byte> region_bytes(NodeLayout::RegionHandle region) const;
 
         template<typename A>

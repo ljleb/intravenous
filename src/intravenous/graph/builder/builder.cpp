@@ -256,12 +256,12 @@ NodeRef GraphBuilder::configure_runtime_binary_op(
     std::array<details::NodeCallSampleInput, 2> inputs{{
         {.source = std::move(lhs),
          .name = {},
-         .input_ordinal = 0,
-         .target = details::NodeCallInputTarget::explicit_ordinal},
+         .input_index = 0,
+         .target = details::NodeCallInputTarget::explicit_index},
         {.source = std::move(rhs),
          .name = {},
-         .input_ordinal = 1,
-         .target = details::NodeCallInputTarget::explicit_ordinal},
+         .input_index = 1,
+         .target = details::NodeCallInputTarget::explicit_index},
     }};
     result.apply_node_call(
         {.data = inputs.data(), .size = inputs.size()}, {});
@@ -465,14 +465,14 @@ void GraphBuilder::annotate_public_event_output_source_info(
     state(*this).annotate_public_event_output_source_info(infos);
 }
 void GraphBuilder::annotate_public_sample_output_source_info(
-    size_t ordinal, SourceInfo info)
+    size_t index, SourceInfo info)
 {
-    state(*this).annotate_public_sample_output_source_info(ordinal, std::move(info));
+    state(*this).annotate_public_sample_output_source_info(index, std::move(info));
 }
 void GraphBuilder::annotate_public_event_output_source_info(
-    size_t ordinal, SourceInfo info)
+    size_t index, SourceInfo info)
 {
-    state(*this).annotate_public_event_output_source_info(ordinal, std::move(info));
+    state(*this).annotate_public_event_output_source_info(index, std::move(info));
 }
 
 NodeRef GraphBuilder::embed_child(GraphBuilder& child, std::string_view kind)

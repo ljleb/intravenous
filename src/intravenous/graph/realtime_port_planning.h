@@ -6,7 +6,7 @@
 
 namespace iv {
 
-// A realtime sample channel group or event stream has only three physical
+// A realtime sample channel group or event stream has only three storage
 // storage plans. Conversion, fan-in, fanout, feedback, and scheduling are
 // operations over these plans rather than additional storage kinds.
 enum class RealtimeBufferStorageKind {
@@ -33,7 +33,7 @@ struct RealtimeStorageCostModel {
     std::size_t persistent_footprint_byte_weight = 2;
 };
 
-// Operation work that is known before physical residence is selected. Counts
+// Operation work that is known before storage residence is selected. Counts
 // are payload values rather than bytes so sample channels and event sequences
 // can share the same policy. Invariant work is reported for every candidate;
 // candidate-specific work lets topology planning account for producer-home

@@ -49,10 +49,10 @@ namespace iv {
 
     // Source-produced metadata for both persistent node-state domains. Keeping
     // these together prevents declaration/migration paths from accidentally
-    // treating IndexedState as a weaker ABI than State.
+    // treating TockState as a weaker ABI than State.
     struct NodeStateStructures {
         std::optional<NodeStateStructure> state {};
-        std::optional<NodeStateStructure> indexed_state {};
+        std::optional<NodeStateStructure> tock_state {};
 
         bool operator==(NodeStateStructures const&) const = default;
     };

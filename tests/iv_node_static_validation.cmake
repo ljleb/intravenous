@@ -42,7 +42,7 @@ expect_valid(valid.cpp)
 expect_invalid(
     invalid.cpp
     "IV_NODE requires inputs() and outputs()"
-    "declares an indexed output port; define tock_coverage"
+    "declares a Tock output port; define tock_coverage"
     "define exact propagate_forward_coverage")
 
 expect_invalid(
@@ -50,19 +50,19 @@ expect_invalid(
     "concrete node ports must be declared by static constexpr inputs() and outputs()")
 
 expect_invalid(
-    invalid_indexed_tick_output.cpp
-    "tick_block() cannot write an indexed sample output"
-    "tick_block() cannot write an indexed event output")
+    invalid_tick_access_to_tock_output.cpp
+    "tick_block() cannot write a Tock sample output"
+    "tick_block() cannot write a Tock event output")
 
 expect_invalid(
-    invalid_indexed_callback_shape.cpp
-    "defines tock_coverage but declares no indexed output port"
-    "defines propagate_forward_coverage but declares no indexed output port"
-    "defines propagate_reverse_coverage but does not declare both indexed input and indexed output ports")
+    invalid_tock_callback_shape.cpp
+    "defines tock_coverage but declares no Tock output port"
+    "defines propagate_forward_coverage but declares no Tock output port"
+    "defines propagate_reverse_coverage but does not declare both random-access input and Tock output ports")
 
 expect_invalid(
-    invalid_indexed_state.cpp
-    "Node::IndexedState must be a mutable, non-volatile, default-constructible object type")
+    invalid_tock_state.cpp
+    "Node::TockState must be a mutable, non-volatile, default-constructible object type")
 
 expect_invalid(
     invalid_replayable_node.cpp

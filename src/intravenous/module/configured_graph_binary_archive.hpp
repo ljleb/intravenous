@@ -400,11 +400,11 @@ inline NodeCodeKey read_code_key(Reader& r) { return {.low = r.pod<std::uint64_t
 
 inline void write_bundle_port(Writer& w, NodeBundlePortId value)
 {
-    w.size(value.node_bundle_handle); write_enum(w, value.port_kind); w.size(value.port_ordinal);
+    w.size(value.node_bundle_handle); write_enum(w, value.port_kind); w.size(value.port_index);
 }
 inline NodeBundlePortId read_bundle_port(Reader& r)
 {
-    return {.node_bundle_handle = r.size(), .port_kind = read_enum<PortKind>(r), .port_ordinal = r.size()};
+    return {.node_bundle_handle = r.size(), .port_kind = read_enum<PortKind>(r), .port_index = r.size()};
 }
 
 inline void write_output_channel(Writer& w, SampleOutputChannelId value)
@@ -472,7 +472,7 @@ inline NodeStateStructure read_state(Reader& r)
 
 template<class Channel, class Fn> void write_virtual_sample(Writer& w, VirtualSamplePortMapping<Channel> const& value, Fn&& write_channel)
 {
-    w.string(value.name); w.size(value.ordinal); write_layout(w, value.channel_layout);
+    w.string(value.name); w.size(value.index); write_layout(w, value.channel_layout);
     write_source_infos(w, value.source_infos);
     write_values<Channel>(w, value.channels, write_channel);
     w.list(value.member_channels, [&](auto const& members) { write_values<Channel>(w, members, write_channel); });
@@ -480,7 +480,7 @@ template<class Channel, class Fn> void write_virtual_sample(Writer& w, VirtualSa
 
 template<class Channel, class Fn> VirtualSamplePortMapping<Channel> read_virtual_sample(Reader& r, Fn&& read_channel)
 {
-    VirtualSamplePortMapping<Channel> result{.name = r.string(), .ordinal = r.size(), .channel_layout = read_layout(r),
+    VirtualSamplePortMapping<Channel> result{.name = r.string(), .index = r.size(), .channel_layout = read_layout(r),
         .source_infos = read_source_infos(r),
         .channels = read_values<Channel>(r, read_channel)};
     result.member_channels = read_list<std::vector<Channel>>(r, [&] { return read_values<Channel>(r, read_channel); });
@@ -489,13 +489,13 @@ template<class Channel, class Fn> VirtualSamplePortMapping<Channel> read_virtual
 
 inline void write_virtual_event(Writer& w, VirtualEventPortMapping const& value)
 {
-    w.string(value.name); w.size(value.ordinal); write_enum(w, value.type);
+    w.string(value.name); w.size(value.index); write_enum(w, value.type);
     write_source_infos(w, value.source_infos);
     write_values<NodeBundlePortId>(w, value.node_bundle_ports, write_bundle_port);
 }
 inline VirtualEventPortMapping read_virtual_event(Reader& r)
 {
-    return {.name = r.string(), .ordinal = r.size(), .type = read_enum<EventTypeId>(r),
+    return {.name = r.string(), .index = r.size(), .type = read_enum<EventTypeId>(r),
         .source_infos = read_source_infos(r),
         .node_bundle_ports = read_values<NodeBundlePortId>(r, read_bundle_port)};
 }
@@ -539,7 +539,7 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
     SerializedConfiguredGraph result;
     Writer bundles;
     std::size_t bundle_count = 0;
-    std::size_t config_ordinal = 0;
+    std::size_t config_index = 0;
     configured.node_bundles.for_each_configured_bundle([&](ConfiguredNodeBundleView view) {
         ++bundle_count;
         write_enum(bundles, view.kind);
@@ -556,7 +556,7 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
                 bundles.string(
                     view.registered_node_type_identity->provider_package_root);
             }
-            bundles.size(config_ordinal++);
+            bundles.size(config_index++);
             bundles.size(view.node_size);
             bundles.size(view.node_alignment);
             auto const has_ttl = view.lifetime && view.lifetime->ttl_samples;
@@ -581,9 +581,9 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
                 auto const& structures = **view.state_structures_storage;
                 bundles.flag(structures.state.has_value());
                 if (structures.state) write_state(bundles, *structures.state);
-                bundles.flag(structures.indexed_state.has_value());
-                if (structures.indexed_state) {
-                    write_state(bundles, *structures.indexed_state);
+                bundles.flag(structures.tock_state.has_value());
+                if (structures.tock_state) {
+                    write_state(bundles, *structures.tock_state);
                 }
             }
 
@@ -663,7 +663,7 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
     writer.size(public_ports.boundary);
     write_source_info_groups(writer, public_ports.sample_input_source_infos);
     write_source_info_groups(writer, public_ports.event_input_source_infos);
-    writer.list(public_ports.last_sample_output_port_ordinals, [&](std::size_t value) { writer.size(value); });
+    writer.list(public_ports.last_sample_output_port_indices, [&](std::size_t value) { writer.size(value); });
     write_source_info_groups(writer, public_ports.sample_output_source_infos);
     write_source_info_groups(writer, public_ports.event_output_source_infos);
     writer.flag(public_ports.sample_outputs_defined);
@@ -732,9 +732,9 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
                     .provider_package_root = reader.string(),
                 };
             }
-            auto const ordinal = reader.size();
-            if (ordinal >= node_configs.size()) throw std::runtime_error("configured graph config ordinal is out of range");
-            auto const& config = node_configs[ordinal];
+            auto const index = reader.size();
+            if (index >= node_configs.size()) throw std::runtime_error("configured graph config index is out of range");
+            auto const& config = node_configs[index];
             record.node_size = reader.size();
             record.node_alignment = reader.size();
             if (config.bytes.size() != record.node_size
@@ -744,7 +744,7 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             }
             record.node_storage = node_config_storage.empty()
                 ? make_owned_config_storage(config)
-                : node_config_storage[ordinal];
+                : node_config_storage[index];
             if (!record.node_storage) {
                 throw std::runtime_error(
                     "configured graph has null node configuration storage");
@@ -770,7 +770,7 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             if (reader.flag()) {
                 NodeStateStructures structures;
                 if (reader.flag()) structures.state = read_state(reader);
-                if (reader.flag()) structures.indexed_state = read_state(reader);
+                if (reader.flag()) structures.tock_state = read_state(reader);
                 record.state_structures_storage =
                     std::make_shared<NodeStateStructures const>(std::move(structures));
                 record.operations.runtime.state_structures =
@@ -830,7 +830,7 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
     ConfiguredPublicPortsRecord public_ports{.boundary = reader.size(),
         .sample_input_source_infos = read_source_info_groups(reader),
         .event_input_source_infos = read_source_info_groups(reader),
-        .last_sample_output_port_ordinals = read_list<std::size_t>(reader, [&] { return reader.size(); }),
+        .last_sample_output_port_indices = read_list<std::size_t>(reader, [&] { return reader.size(); }),
         .sample_output_source_infos = read_source_info_groups(reader),
         .event_output_source_infos = read_source_info_groups(reader),
         .sample_outputs_defined = reader.flag()};

@@ -8,9 +8,9 @@
 namespace iv::graph_jit::detail {
 
 // Select immutable source views and derived materializations for every
-// background or mixed-domain connection. No payload memory is allocated here;
+// background or mixed-domain connection. No data memory is allocated here;
 // GraphExecutor later realizes these records for a requested range/version.
-std::expected<IndexedPhysicalPlan, std::string> build_indexed_physical_plan(
+std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
     ConnectionAnalysisPlan const& connections);
 
 } // namespace iv::graph_jit::detail

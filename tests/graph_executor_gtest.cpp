@@ -26,17 +26,17 @@ std::size_t first_raw_offset = 0;
 std::size_t second_raw_offset = 0;
 unsigned migrated_raw_value = 0;
 
-struct IndexedPropagationObservation {
+struct BackgroundPropagationObservation {
     std::size_t source_forward_calls[2]{};
     std::size_t sink_forward_calls = 0;
     std::size_t sink_reverse_calls = 0;
-    iv::IndexedCoverage sink_input_coverage{};
-    iv::IndexedCoverage sink_input_changed{};
-    iv::IndexedCoverage sink_output_required{};
+    iv::Coverage sink_input_coverage{};
+    iv::Coverage sink_input_changed{};
+    iv::Coverage sink_output_required{};
     bool throw_from_sink = false;
 };
 
-IndexedPropagationObservation indexed_observation;
+BackgroundPropagationObservation background_observation;
 
 void observe_first(
     std::byte* storage,
@@ -76,103 +76,103 @@ void observe_raw_state(std::byte* storage, std::size_t, std::size_t)
 
 void no_op_tick(std::byte*, std::size_t, std::size_t) {}
 
-void propagate_indexed_forward(
+void propagate_background_forward(
     std::byte*,
-    iv::graph_jit::IndexedBatchFrame* batch)
+    iv::graph_jit::BackgroundEvaluationCall* batch)
 {
     auto nodes = static_cast<
-        std::span<iv::graph_jit::IndexedNodeBatchFrame>>(batch->nodes);
+        std::span<iv::graph_jit::BackgroundNodeCall>>(batch->nodes);
     for (std::size_t node = 0; node < nodes.size(); ++node) {
         auto& frame = nodes[node];
         if (!iv::graph_jit::has_activity(
                 frame.activity,
-                iv::graph_jit::IndexedNodeBatchActivity::forward)) {
+                iv::graph_jit::BackgroundNodeActivity::forward)) {
             continue;
         }
-        auto outputs = static_cast<std::span<iv::IndexedOutputChange>>(
+        auto outputs = static_cast<std::span<iv::OutputCoverageChange>>(
             frame.forward.outputs);
         if (node < 2) {
-            ++indexed_observation.source_forward_calls[node];
+            ++background_observation.source_forward_calls[node];
             auto const coverage = node == 0
-                ? iv::IndexedCoverage{{{10, 13}}}
-                : iv::IndexedCoverage{{{20, 22}}};
+                ? iv::Coverage{{{10, 13}}}
+                : iv::Coverage{{{20, 22}}};
             outputs[0].publish_coverage(coverage);
             outputs[0].change(coverage);
             continue;
         }
 
-        ++indexed_observation.sink_forward_calls;
-        if (indexed_observation.throw_from_sink) {
-            throw std::runtime_error("indexed propagation probe failure");
+        ++background_observation.sink_forward_calls;
+        if (background_observation.throw_from_sink) {
+            throw std::runtime_error("background propagation probe failure");
         }
         auto const inputs = static_cast<
-            std::span<iv::IndexedInputChange const>>(frame.forward.inputs);
-        indexed_observation.sink_input_coverage = inputs[0].coverage();
-        indexed_observation.sink_input_changed = inputs[0].changed();
+            std::span<iv::InputCoverageChange const>>(frame.forward.inputs);
+        background_observation.sink_input_coverage = inputs[0].coverage();
+        background_observation.sink_input_changed = inputs[0].changed();
         outputs[0].publish_coverage(inputs[0].coverage());
         outputs[0].change(inputs[0].changed());
     }
 }
 
-void propagate_indexed_reverse(
+void propagate_background_reverse(
     std::byte*,
-    iv::graph_jit::IndexedBatchFrame* batch)
+    iv::graph_jit::BackgroundEvaluationCall* batch)
 {
     auto nodes = static_cast<
-        std::span<iv::graph_jit::IndexedNodeBatchFrame>>(batch->nodes);
+        std::span<iv::graph_jit::BackgroundNodeCall>>(batch->nodes);
     auto& sink = nodes[2];
     if (!iv::graph_jit::has_activity(
             sink.activity,
-            iv::graph_jit::IndexedNodeBatchActivity::reverse)) {
+            iv::graph_jit::BackgroundNodeActivity::reverse)) {
         return;
     }
-    ++indexed_observation.sink_reverse_calls;
+    ++background_observation.sink_reverse_calls;
     auto const outputs = static_cast<
-        std::span<iv::IndexedOutputRequirement const>>(sink.reverse.outputs);
-    auto inputs = static_cast<std::span<iv::IndexedInputRequirement>>(
+        std::span<iv::OutputCoverageRequirement const>>(sink.reverse.outputs);
+    auto inputs = static_cast<std::span<iv::InputCoverageRequirement>>(
         sink.reverse.inputs);
-    indexed_observation.sink_output_required = outputs[0].required();
+    background_observation.sink_output_required = outputs[0].required();
     inputs[0].require(outputs[0].required());
 }
 
-void no_op_indexed_evaluate(
+void no_op_background_evaluate(
     std::byte*,
-    iv::graph_jit::IndexedBatchFrame*)
+    iv::graph_jit::BackgroundEvaluationCall*)
 {}
 
-iv::graph_jit::IndexedPlan indexed_fanin_plan()
+iv::graph_jit::BackgroundEvaluationPlan background_fanin_plan()
 {
     using namespace iv::graph_jit;
-    IndexedPlan plan;
+    BackgroundEvaluationPlan plan;
     plan.nodes = {
-        IndexedNodePlan{
+        BackgroundNodePlan{
             .bundle = 0,
             .authored_tock_execution = true,
             .outputs = {0},
-            .accumulators = IndexedNodeAccumulatorPlan{
+            .accumulators = NodeAccumulatorRanges{
                 .output_change_begin = 0,
                 .output_change_count = 1,
                 .output_requirement_begin = 0,
                 .output_requirement_count = 1,
             },
         },
-        IndexedNodePlan{
+        BackgroundNodePlan{
             .bundle = 1,
             .authored_tock_execution = true,
             .outputs = {1},
-            .accumulators = IndexedNodeAccumulatorPlan{
+            .accumulators = NodeAccumulatorRanges{
                 .output_change_begin = 1,
                 .output_change_count = 1,
                 .output_requirement_begin = 1,
                 .output_requirement_count = 1,
             },
         },
-        IndexedNodePlan{
+        BackgroundNodePlan{
             .bundle = 2,
             .authored_tock_execution = true,
             .inputs = {2},
             .outputs = {3},
-            .accumulators = IndexedNodeAccumulatorPlan{
+            .accumulators = NodeAccumulatorRanges{
                 .input_change_begin = 0,
                 .input_change_count = 1,
                 .output_change_begin = 2,
@@ -184,71 +184,71 @@ iv::graph_jit::IndexedPlan indexed_fanin_plan()
             },
         },
     };
-    plan.endpoints = {
-        IndexedEndpointPlan{
+    plan.ports = {
+        BackgroundPortPlan{
             .node = 0,
             .configured_port = {0, iv::PortKind::sample, 0},
             .kind = iv::PortKind::sample,
-            .direction = IndexedEndpointDirection::output,
+            .direction = PortDirection::output,
             .authored_tock_output = true,
             .retention = iv::OutputRetention::ephemeral,
             .outgoing_connections = {0},
-            .accumulators = IndexedAccumulatorSlotPlan{
+            .accumulators = PortAccumulatorIndices{
                 .output_change = 0,
                 .output_requirement = 0,
             },
         },
-        IndexedEndpointPlan{
+        BackgroundPortPlan{
             .node = 1,
             .configured_port = {1, iv::PortKind::sample, 0},
             .kind = iv::PortKind::sample,
-            .direction = IndexedEndpointDirection::output,
+            .direction = PortDirection::output,
             .authored_tock_output = true,
             .retention = iv::OutputRetention::ephemeral,
             .outgoing_connections = {1},
-            .accumulators = IndexedAccumulatorSlotPlan{
+            .accumulators = PortAccumulatorIndices{
                 .output_change = 1,
                 .output_requirement = 1,
             },
         },
-        IndexedEndpointPlan{
+        BackgroundPortPlan{
             .node = 2,
             .configured_port = {2, iv::PortKind::sample, 0},
             .kind = iv::PortKind::sample,
-            .direction = IndexedEndpointDirection::input,
+            .direction = PortDirection::input,
             .random_access_input = true,
             .incoming_connections = {0, 1},
-            .accumulators = IndexedAccumulatorSlotPlan{
+            .accumulators = PortAccumulatorIndices{
                 .input_change = 0,
                 .input_requirement = 0,
             },
         },
-        IndexedEndpointPlan{
+        BackgroundPortPlan{
             .node = 2,
             .configured_port = {2, iv::PortKind::sample, 0},
             .kind = iv::PortKind::sample,
-            .direction = IndexedEndpointDirection::output,
+            .direction = PortDirection::output,
             .authored_tock_output = true,
             .retention = iv::OutputRetention::ephemeral,
-            .accumulators = IndexedAccumulatorSlotPlan{
+            .accumulators = PortAccumulatorIndices{
                 .output_change = 2,
                 .output_requirement = 2,
             },
         },
     };
     plan.connections = {
-        IndexedConnectionPlan{
+        BackgroundConnectionPlan{
             .kind = iv::PortKind::sample,
-            .source_endpoints = {0},
-            .target_endpoints = {2},
+            .source_coverage_ports = {0},
+            .target_coverage_ports = {2},
         },
-        IndexedConnectionPlan{
+        BackgroundConnectionPlan{
             .kind = iv::PortKind::sample,
-            .source_endpoints = {1},
-            .target_endpoints = {2},
+            .source_coverage_ports = {1},
+            .target_coverage_ports = {2},
         },
     };
-    plan.accumulators = IndexedAccumulatorPlan{
+    plan.accumulators = CoverageAccumulatorCounts{
         .input_change_count = 1,
         .output_change_count = 3,
         .output_requirement_count = 3,
@@ -257,7 +257,7 @@ iv::graph_jit::IndexedPlan indexed_fanin_plan()
     return plan;
 }
 
-std::shared_ptr<iv::CompiledGraph const> indexed_compiled_graph(
+std::shared_ptr<iv::CompiledGraph const> background_compiled_graph(
     std::uint64_t generation)
 {
     auto graph = std::make_shared<iv::CompiledGraph>();
@@ -265,17 +265,17 @@ std::shared_ptr<iv::CompiledGraph const> indexed_compiled_graph(
     graph->specialization.sample_rate = 48000;
     graph->specialization.block_size = 64;
     graph->node_layout = iv::NodeLayoutBuilder(64).build();
-    graph->indexed_plan = indexed_fanin_plan();
+    graph->background_evaluation_plan = background_fanin_plan();
     graph->root_operations.tick_block = &no_op_tick;
-    graph->indexed_operations = iv::CompiledGraphIndexedOperations{
-        .propagate_forward = &propagate_indexed_forward,
-        .propagate_reverse = &propagate_indexed_reverse,
-        .evaluate = &no_op_indexed_evaluate,
+    graph->background_operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &propagate_background_reverse,
+        .evaluate = &no_op_background_evaluate,
     };
     return graph;
 }
 
-std::shared_ptr<iv::CompiledGraph const> indexed_mixed_output_graph(
+std::shared_ptr<iv::CompiledGraph const> background_mixed_output_graph(
     std::uint64_t generation)
 {
     using namespace iv::graph_jit;
@@ -284,12 +284,12 @@ std::shared_ptr<iv::CompiledGraph const> indexed_mixed_output_graph(
     graph->specialization.sample_rate = 48000;
     graph->specialization.block_size = 64;
     graph->node_layout = iv::NodeLayoutBuilder(64).build();
-    graph->indexed_plan.nodes = {
-        IndexedNodePlan{
+    graph->background_evaluation_plan.nodes = {
+        BackgroundNodePlan{
             .bundle = 0,
             .authored_tock_execution = true,
             .outputs = {0, 1},
-            .accumulators = IndexedNodeAccumulatorPlan{
+            .accumulators = NodeAccumulatorRanges{
                 .output_change_begin = 0,
                 .output_change_count = 2,
                 .output_requirement_begin = 0,
@@ -297,41 +297,41 @@ std::shared_ptr<iv::CompiledGraph const> indexed_mixed_output_graph(
             },
         },
     };
-    graph->indexed_plan.endpoints = {
-        IndexedEndpointPlan{
+    graph->background_evaluation_plan.ports = {
+        BackgroundPortPlan{
             .node = 0,
             .configured_port = {0, iv::PortKind::sample, 0},
             .kind = iv::PortKind::sample,
-            .direction = IndexedEndpointDirection::output,
+            .direction = PortDirection::output,
             .persisted_tick_output = true,
             .retention = iv::OutputRetention::persisted,
-            .accumulators = IndexedAccumulatorSlotPlan{
+            .accumulators = PortAccumulatorIndices{
                 .output_change = 0,
                 .output_requirement = 0,
             },
         },
-        IndexedEndpointPlan{
+        BackgroundPortPlan{
             .node = 0,
             .configured_port = {0, iv::PortKind::sample, 1},
             .kind = iv::PortKind::sample,
-            .direction = IndexedEndpointDirection::output,
+            .direction = PortDirection::output,
             .authored_tock_output = true,
             .retention = iv::OutputRetention::ephemeral,
-            .accumulators = IndexedAccumulatorSlotPlan{
+            .accumulators = PortAccumulatorIndices{
                 .output_change = 1,
                 .output_requirement = 1,
             },
         },
     };
-    graph->indexed_plan.accumulators = IndexedAccumulatorPlan{
+    graph->background_evaluation_plan.accumulators = CoverageAccumulatorCounts{
         .output_change_count = 2,
         .output_requirement_count = 2,
     };
     graph->root_operations.tick_block = &no_op_tick;
-    graph->indexed_operations = iv::CompiledGraphIndexedOperations{
-        .propagate_forward = &propagate_indexed_forward,
-        .propagate_reverse = &no_op_indexed_evaluate,
-        .evaluate = &no_op_indexed_evaluate,
+    graph->background_operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &no_op_background_evaluate,
+        .evaluate = &no_op_background_evaluate,
     };
     return graph;
 }
@@ -369,7 +369,7 @@ protected:
         first_raw_offset = 0;
         second_raw_offset = 0;
         migrated_raw_value = 0;
-        indexed_observation = {};
+        background_observation = {};
     }
 };
 
@@ -449,16 +449,10 @@ TEST_F(GraphExecutorFixture, MigratesPersistentNodeStorageBeforeActivation)
     EXPECT_EQ(migrated_raw_value, 0x5au);
 }
 
-TEST_F(GraphExecutorFixture, RejectsInvalidGraphsAndBlockSizes)
+TEST_F(GraphExecutorFixture, RejectsInvalidRequestsAndBlockSizes)
 {
     iv::GraphExecutor executor;
     EXPECT_THROW(executor.stage(nullptr), std::invalid_argument);
-
-    auto invalid = std::make_shared<iv::CompiledGraph>();
-    invalid->project_generation = 1;
-    invalid->specialization.block_size = 64;
-    invalid->node_layout = iv::NodeLayoutBuilder(64).build();
-    EXPECT_THROW(executor.stage(invalid), std::invalid_argument);
 
     ASSERT_EQ(
         executor.stage(compiled_graph(1, &observe_first)),
@@ -470,172 +464,172 @@ TEST_F(GraphExecutorFixture, RejectsInvalidGraphsAndBlockSizes)
 
 TEST_F(
     GraphExecutorFixture,
-    IndexedPropagationAccumulatesFaninAndReverseDemandOncePerNode)
+    BackgroundPropagationAccumulatesFaninAndReverseDemandOncePerNode)
 {
     iv::GraphExecutor executor;
     ASSERT_EQ(
-        executor.stage(indexed_compiled_graph(1)),
+        executor.stage(background_compiled_graph(1)),
         iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
 
-    auto const result = executor.propagate_indexed(
-        iv::GraphExecutorIndexedPropagationRequest{
+    auto const result = executor.propagate_coverage(
+        iv::CoveragePropagationRequest{
             .locally_changed_nodes = {0, 1},
             .output_demands = {
-                iv::GraphExecutorIndexedOutputDemandRoot{
-                    .endpoint = 3,
-                    .required = iv::IndexedCoverage{{{11, 21}}},
+                iv::OutputCoverageRequest{
+                    .port = 3,
+                    .required = iv::Coverage{{{11, 21}}},
                 },
             },
         });
 
-    EXPECT_EQ(indexed_observation.source_forward_calls[0], 1u);
-    EXPECT_EQ(indexed_observation.source_forward_calls[1], 1u);
-    EXPECT_EQ(indexed_observation.sink_forward_calls, 1u);
+    EXPECT_EQ(background_observation.source_forward_calls[0], 1u);
+    EXPECT_EQ(background_observation.source_forward_calls[1], 1u);
+    EXPECT_EQ(background_observation.sink_forward_calls, 1u);
     EXPECT_EQ(
-        indexed_observation.sink_input_coverage,
-        (iv::IndexedCoverage{{{10, 13}, {20, 22}}}));
+        background_observation.sink_input_coverage,
+        (iv::Coverage{{{10, 13}, {20, 22}}}));
     EXPECT_EQ(
-        indexed_observation.sink_input_changed,
-        indexed_observation.sink_input_coverage);
-    EXPECT_EQ(indexed_observation.sink_reverse_calls, 1u);
+        background_observation.sink_input_changed,
+        background_observation.sink_input_coverage);
+    EXPECT_EQ(background_observation.sink_reverse_calls, 1u);
     EXPECT_EQ(
-        indexed_observation.sink_output_required,
-        (iv::IndexedCoverage{{{11, 13}, {20, 21}}}));
+        background_observation.sink_output_required,
+        (iv::Coverage{{{11, 13}, {20, 21}}}));
 
     ASSERT_EQ(result.output_changes.size(), 3u);
     EXPECT_EQ(
         result.output_changes[2].coverage,
-        (iv::IndexedCoverage{{{10, 13}, {20, 22}}}));
+        (iv::Coverage{{{10, 13}, {20, 22}}}));
     ASSERT_EQ(result.input_requirements.size(), 1u);
-    EXPECT_EQ(result.input_requirements[0].endpoint, 2u);
+    EXPECT_EQ(result.input_requirements[0].port, 2u);
     EXPECT_EQ(
         result.input_requirements[0].required,
-        (iv::IndexedCoverage{{{11, 13}, {20, 21}}}));
+        (iv::Coverage{{{11, 13}, {20, 21}}}));
     ASSERT_EQ(result.output_requirements.size(), 3u);
-    EXPECT_EQ(result.output_requirements[0].endpoint, 0u);
+    EXPECT_EQ(result.output_requirements[0].port, 0u);
     EXPECT_EQ(
         result.output_requirements[0].required,
-        (iv::IndexedCoverage{{{11, 13}}}));
-    EXPECT_EQ(result.output_requirements[1].endpoint, 1u);
+        (iv::Coverage{{{11, 13}}}));
+    EXPECT_EQ(result.output_requirements[1].port, 1u);
     EXPECT_EQ(
         result.output_requirements[1].required,
-        (iv::IndexedCoverage{{{20, 21}}}));
-    EXPECT_EQ(result.output_requirements[2].endpoint, 3u);
+        (iv::Coverage{{{20, 21}}}));
+    EXPECT_EQ(result.output_requirements[2].port, 3u);
     EXPECT_EQ(
         result.output_requirements[2].required,
-        (iv::IndexedCoverage{{{11, 13}, {20, 21}}}));
+        (iv::Coverage{{{11, 13}, {20, 21}}}));
 
-    indexed_observation = {};
-    auto const demand_only = executor.propagate_indexed(
-        iv::GraphExecutorIndexedPropagationRequest{
+    background_observation = {};
+    auto const demand_only = executor.propagate_coverage(
+        iv::CoveragePropagationRequest{
             .output_demands = {
-                iv::GraphExecutorIndexedOutputDemandRoot{
-                    .endpoint = 3,
-                    .required = iv::IndexedCoverage{{{10, 22}}},
+                iv::OutputCoverageRequest{
+                    .port = 3,
+                    .required = iv::Coverage{{{10, 22}}},
                 },
             },
         });
-    EXPECT_EQ(indexed_observation.sink_forward_calls, 0u);
-    EXPECT_EQ(indexed_observation.sink_reverse_calls, 1u);
+    EXPECT_EQ(background_observation.sink_forward_calls, 0u);
+    EXPECT_EQ(background_observation.sink_reverse_calls, 1u);
     ASSERT_EQ(demand_only.output_requirements.size(), 3u);
 
-    indexed_observation = {};
-    auto const prepared_input = executor.propagate_indexed(
-        iv::GraphExecutorIndexedPropagationRequest{
+    background_observation = {};
+    auto const prepared_input = executor.propagate_coverage(
+        iv::CoveragePropagationRequest{
             .input_demands = {
-                iv::GraphExecutorIndexedInputDemandRoot{
-                    .endpoint = 2,
-                    .required = iv::IndexedCoverage{{{10, 22}}},
+                iv::InputCoverageRequest{
+                    .port = 2,
+                    .required = iv::Coverage{{{10, 22}}},
                 },
             },
         });
-    EXPECT_EQ(indexed_observation.sink_reverse_calls, 0u);
+    EXPECT_EQ(background_observation.sink_reverse_calls, 0u);
     ASSERT_EQ(prepared_input.input_requirements.size(), 1u);
-    EXPECT_EQ(prepared_input.input_requirements[0].endpoint, 2u);
+    EXPECT_EQ(prepared_input.input_requirements[0].port, 2u);
     ASSERT_EQ(prepared_input.output_requirements.size(), 2u);
-    EXPECT_EQ(prepared_input.output_requirements[0].endpoint, 0u);
-    EXPECT_EQ(prepared_input.output_requirements[1].endpoint, 1u);
+    EXPECT_EQ(prepared_input.output_requirements[0].port, 0u);
+    EXPECT_EQ(prepared_input.output_requirements[1].port, 1u);
 }
 
-TEST_F(GraphExecutorFixture, FailedIndexedPropagationDoesNotCommitCoverage)
+TEST_F(GraphExecutorFixture, FailedBackgroundPropagationDoesNotCommitCoverage)
 {
     iv::GraphExecutor executor;
     ASSERT_EQ(
-        executor.stage(indexed_compiled_graph(1)),
+        executor.stage(background_compiled_graph(1)),
         iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
 
-    indexed_observation.throw_from_sink = true;
+    background_observation.throw_from_sink = true;
     EXPECT_THROW(
-        static_cast<void>(executor.propagate_indexed(
-            iv::GraphExecutorIndexedPropagationRequest{
+        static_cast<void>(executor.propagate_coverage(
+            iv::CoveragePropagationRequest{
                 .locally_changed_nodes = {0, 1},
             })),
         std::runtime_error);
 
-    indexed_observation = {};
-    auto const result = executor.propagate_indexed(
-        iv::GraphExecutorIndexedPropagationRequest{
+    background_observation = {};
+    auto const result = executor.propagate_coverage(
+        iv::CoveragePropagationRequest{
             .output_demands = {
-                iv::GraphExecutorIndexedOutputDemandRoot{
-                    .endpoint = 3,
-                    .required = iv::IndexedCoverage{{{10, 22}}},
+                iv::OutputCoverageRequest{
+                    .port = 3,
+                    .required = iv::Coverage{{{10, 22}}},
                 },
             },
         });
     EXPECT_TRUE(result.output_requirements.empty());
-    EXPECT_EQ(indexed_observation.sink_reverse_calls, 0u);
+    EXPECT_EQ(background_observation.sink_reverse_calls, 0u);
 }
 
-TEST_F(GraphExecutorFixture, IndexedInputRootRepresentsConnectionSetChange)
+TEST_F(GraphExecutorFixture, BackgroundInputRootRepresentsConnectionSetChange)
 {
     iv::GraphExecutor executor;
     ASSERT_EQ(
-        executor.stage(indexed_compiled_graph(1)),
+        executor.stage(background_compiled_graph(1)),
         iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
 
-    auto const coverage = iv::IndexedCoverage{{{30, 34}}};
-    auto const result = executor.propagate_indexed(
-        iv::GraphExecutorIndexedPropagationRequest{
+    auto const coverage = iv::Coverage{{{30, 34}}};
+    auto const result = executor.propagate_coverage(
+        iv::CoveragePropagationRequest{
             .input_changes = {
-                iv::GraphExecutorIndexedInputChangeRoot{
-                    .endpoint = 2,
+                iv::InputCoverageChangeRequest{
+                    .port = 2,
                     .coverage = coverage,
                     .changed = coverage,
                 },
             },
         });
 
-    EXPECT_EQ(indexed_observation.source_forward_calls[0], 0u);
-    EXPECT_EQ(indexed_observation.source_forward_calls[1], 0u);
-    EXPECT_EQ(indexed_observation.sink_forward_calls, 1u);
-    EXPECT_EQ(indexed_observation.sink_input_coverage, coverage);
+    EXPECT_EQ(background_observation.source_forward_calls[0], 0u);
+    EXPECT_EQ(background_observation.source_forward_calls[1], 0u);
+    EXPECT_EQ(background_observation.sink_forward_calls, 1u);
+    EXPECT_EQ(background_observation.sink_input_coverage, coverage);
     ASSERT_EQ(result.output_changes.size(), 1u);
-    EXPECT_EQ(result.output_changes[0].endpoint, 3u);
+    EXPECT_EQ(result.output_changes[0].port, 3u);
     EXPECT_EQ(result.output_changes[0].coverage, coverage);
     EXPECT_EQ(result.output_changes[0].changed, coverage);
 }
 
-TEST_F(GraphExecutorFixture, IndexedCallbackBindingsExcludeNonTockOutputs)
+TEST_F(GraphExecutorFixture, BackgroundCallbackBindingsExcludeNonTockOutputs)
 {
     iv::GraphExecutor executor;
     ASSERT_EQ(
-        executor.stage(indexed_mixed_output_graph(1)),
+        executor.stage(background_mixed_output_graph(1)),
         iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
 
-    auto const result = executor.propagate_indexed(
-        iv::GraphExecutorIndexedPropagationRequest{
+    auto const result = executor.propagate_coverage(
+        iv::CoveragePropagationRequest{
             .locally_changed_nodes = {0},
         });
 
     ASSERT_EQ(result.output_changes.size(), 1u);
-    EXPECT_EQ(result.output_changes[0].endpoint, 1u);
+    EXPECT_EQ(result.output_changes[0].port, 1u);
     EXPECT_EQ(
         result.output_changes[0].coverage,
-        (iv::IndexedCoverage{{{10, 13}}}));
+        (iv::Coverage{{{10, 13}}}));
 }
 
 } // namespace

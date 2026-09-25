@@ -203,20 +203,20 @@ namespace {
         }
     };
 
-    struct IndexedStatePayload {
+    struct BackgroundStatePayload {
         std::uint64_t epoch = 3;
         float gain = 0.25f;
     };
 
-    struct IndexedStateNode {
-        using IndexedState = IndexedStatePayload;
+    struct BackgroundStateNode {
+        using TockState = BackgroundStatePayload;
 
         static constexpr auto outputs()
         {
             return std::array<iv::OutputConfig, 1>{};
         }
 
-        void tick(iv::TickSampleContext<IndexedStateNode> const& ctx) const
+        void tick(iv::TickSampleContext<BackgroundStateNode> const& ctx) const
         {
             ctx.outputs[0].push(0.0f);
         }
@@ -228,12 +228,12 @@ namespace {
         auto const direct = details::configure_concrete_node<AliasedStateNode>(g);
         auto const inherited = details::configure_concrete_node<InheritedStateNode>(g);
         auto const scalar = details::configure_concrete_node<ScalarStateNode>(g);
-        auto const indexed = details::configure_concrete_node<IndexedStateNode>(g);
+        auto const background = details::configure_concrete_node<BackgroundStateNode>(g);
         g.outputs(
             "direct"_P = direct,
             "inherited"_P = inherited,
             "scalar"_P = scalar,
-            "indexed"_P = indexed);
+            "background"_P = background);
     }
 }
 )");
@@ -244,7 +244,7 @@ namespace {
 
     auto structural_state_nodes = 0u;
     auto scalar_state_nodes = 0u;
-    auto indexed_state_nodes = 0u;
+    auto background_state_nodes = 0u;
     definition.configured_graph->node_bundles.for_each_configured_bundle(
         [&](iv::ConfiguredNodeBundleView const& bundle) {
         if (!bundle.state_structures_storage
@@ -270,24 +270,24 @@ namespace {
             && structures.state->fields.empty()) {
             ++scalar_state_nodes;
         }
-        if (!structures.indexed_state) return;
+        if (!structures.tock_state) return;
         auto const has_epoch = std::ranges::any_of(
-            structures.indexed_state->fields,
+            structures.tock_state->fields,
             [](iv::NodeStateFieldStructure const& field) {
                 return field.name == "epoch";
             });
         if (!has_epoch) return;
-        ++indexed_state_nodes;
-        EXPECT_TRUE(structures.indexed_state->type_identity.valid());
+        ++background_state_nodes;
+        EXPECT_TRUE(structures.tock_state->type_identity.valid());
         EXPECT_FALSE(
-            structures.indexed_state->type_identity.display_name.empty());
-        ASSERT_EQ(structures.indexed_state->fields.size(), 2u);
+            structures.tock_state->type_identity.display_name.empty());
+        ASSERT_EQ(structures.tock_state->fields.size(), 2u);
     });
     // NodeState<Node>::Type accepts both a direct alias and an alias found by
     // normal base-class lookup. Both must survive in ConfiguredGraph metadata.
     EXPECT_EQ(structural_state_nodes, 2u);
     EXPECT_EQ(scalar_state_nodes, 1u);
-    EXPECT_EQ(indexed_state_nodes, 1u);
+    EXPECT_EQ(background_state_nodes, 1u);
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
@@ -845,10 +845,10 @@ namespace {
     ASSERT_NE(sum, split_nodes.end());
     ASSERT_NE(difference, split_nodes.end());
     ASSERT_EQ((*sum)->members.size(), 2u);
-    EXPECT_EQ((*sum)->members[0].ordinal, 0u);
-    EXPECT_EQ((*sum)->members[1].ordinal, 1u);
+    EXPECT_EQ((*sum)->members[0].index, 0u);
+    EXPECT_EQ((*sum)->members[1].index, 1u);
     ASSERT_EQ((*difference)->members.size(), 1u);
-    EXPECT_EQ((*difference)->members[0].ordinal, 0u);
+    EXPECT_EQ((*difference)->members[0].index, 0u);
 
 
 }
@@ -1046,8 +1046,8 @@ void polyphonic_module(iv::GraphBuilder& g)
     EXPECT_EQ(virtual_node.kind, "iv::SawOscillator");
     EXPECT_EQ(virtual_node.member_count, 2u);
     ASSERT_EQ(virtual_node.members.size(), 2u);
-    EXPECT_EQ(virtual_node.members[0].ordinal, 0u);
-    EXPECT_EQ(virtual_node.members[1].ordinal, 1u);
+    EXPECT_EQ(virtual_node.members[0].index, 0u);
+    EXPECT_EQ(virtual_node.members[1].index, 1u);
     EXPECT_EQ(virtual_node.members[0].kind, "iv::SawOscillator");
     EXPECT_EQ(virtual_node.members[1].kind, "iv::SawOscillator");
     ASSERT_EQ(virtual_node.sample_inputs.size(), 2u);

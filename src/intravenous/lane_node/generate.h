@@ -441,7 +441,7 @@ namespace iv {
         std::uint64_t source_lane_value = 0;
         LanePortDomain source_output_domain = LanePortDomain::realtime;
         PortKind kind = PortKind::sample;
-        size_t input_ordinal = 0;
+        size_t input_index = 0;
         std::span<CompiledSupportRange const> compiled_support_ranges {};
     };
 

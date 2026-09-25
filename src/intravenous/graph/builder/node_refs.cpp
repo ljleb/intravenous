@@ -232,20 +232,20 @@ void NodeRef::apply_node_call(
         case details::NodeCallInputTarget::positional:
             {
                 auto const port = _graph_builder->input_port_at(
-                    _index, input.input_ordinal);
+                    _index, input.input_index);
                 if (port.port_kind != PortKind::sample) {
                     details::error(
                         "positional sample argument does not match the declared input order");
                 }
-                input_port = port.port_ordinal;
+                input_port = port.port_index;
             }
             break;
         case details::NodeCallInputTarget::named:
             input_port = _graph_builder->sample_port_index(
                 _index, true, input.name);
             break;
-        case details::NodeCallInputTarget::explicit_ordinal:
-            input_port = input.input_ordinal;
+        case details::NodeCallInputTarget::explicit_index:
+            input_port = input.input_index;
             break;
         }
         if (input_port >= sample_input_count()) {
@@ -265,20 +265,20 @@ void NodeRef::apply_node_call(
         case details::NodeCallInputTarget::positional:
             {
                 auto const port = _graph_builder->input_port_at(
-                    _index, input.input_ordinal);
+                    _index, input.input_index);
                 if (port.port_kind != PortKind::event) {
                     details::error(
                         "positional event argument does not match the declared input order");
                 }
-                input_port = port.port_ordinal;
+                input_port = port.port_index;
             }
             break;
         case details::NodeCallInputTarget::named:
             input_port = _graph_builder->event_port_index(
                 _index, true, input.name);
             break;
-        case details::NodeCallInputTarget::explicit_ordinal:
-            input_port = input.input_ordinal;
+        case details::NodeCallInputTarget::explicit_index:
+            input_port = input.input_index;
             break;
         }
         if (input_port >= event_input_count()) {

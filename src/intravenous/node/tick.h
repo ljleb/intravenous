@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/node/indexed_port_context.h>
+#include <intravenous/node/coverage_port_context.h>
 #include <intravenous/node/traits.h>
 #include <intravenous/node/resources.h>
 #include <intravenous/node/static_port_access.h>
@@ -13,16 +13,16 @@ namespace iv {
     struct TickContext {
         std::span<InputPort> inputs = {};
         // Output spans contain only realtime-declared ports, in declaration
-        // order within each payload kind. Indexed outputs belong to tock.
+        // order within each payload kind. Background outputs belong to tock.
         std::span<OutputPort> outputs = {};
         std::span<EventInputPort> event_inputs = {};
         std::span<EventOutputPort> event_outputs = {};
-        // Compact indexed-input views parallel the compact ordinals used by
-        // TockCoverageContext. They are additive capabilities for indexed
+        // Compact background-input views parallel the compact indices used by
+        // TockCoverageContext. They are additive capabilities for background
         // declarations; ordinary current-block access still uses the realtime
         // port spans above.
-        std::span<IndexedSampleInputPort const> indexed_inputs = {};
-        std::span<IndexedEventInputPort const> indexed_event_inputs = {};
+        std::span<RandomAccessSampleInputPort const> random_access_inputs = {};
+        std::span<RandomAccessEventInputPort const> random_access_event_inputs = {};
         size_t sample_rate = 48000;
         size_t scc_feedback_latency = 0;
         std::span<std::byte> buffer = {};
@@ -40,78 +40,78 @@ namespace iv {
 
     namespace details {
         template<ChannelTypeId Type>
-        class StaticIndexedInputSampleTickAccess
+        class StaticBackgroundInputSampleTickAccess
             : public StaticInputSamplePortAccess<Type> {
-            IndexedSampleInputPort const* _indexed = nullptr;
+            RandomAccessSampleInputPort const* _background = nullptr;
 
         public:
-            StaticIndexedInputSampleTickAccess(
-                InputPort const& current, IndexedSampleInputPort const* indexed)
+            StaticBackgroundInputSampleTickAccess(
+                InputPort const& current, RandomAccessSampleInputPort const* background)
                 : StaticInputSamplePortAccess<Type>(current)
-                , _indexed(indexed)
+                , _background(background)
             {}
 
-            [[nodiscard]] IndexedCoverage const& coverage() const noexcept
+            [[nodiscard]] Coverage const& coverage() const noexcept
             {
-                IV_ASSERT(_indexed != nullptr,
-                    "indexed sample input has no arbitrary-access binding");
-                return _indexed->coverage();
+                IV_ASSERT(_background != nullptr,
+                    "background sample input has no arbitrary-access binding");
+                return _background->coverage();
             }
 
             [[nodiscard]] Sample at(SampleIndex index) const noexcept
             requires (Type == ChannelTypeId::mono)
             {
-                IV_ASSERT(_indexed != nullptr,
-                    "indexed sample input has no arbitrary-access binding");
-                return _indexed->at(index);
+                IV_ASSERT(_background != nullptr,
+                    "background sample input has no arbitrary-access binding");
+                return _background->at(index);
             }
 
             template<class Channel>
             [[nodiscard]] Sample at(Channel, SampleIndex index) const noexcept
             requires (Type != ChannelTypeId::mono)
             {
-                IV_ASSERT(_indexed != nullptr,
-                    "indexed sample input has no arbitrary-access binding");
-                return _indexed->at(index, static_channel_ordinal<Type, Channel>());
+                IV_ASSERT(_background != nullptr,
+                    "background sample input has no arbitrary-access binding");
+                return _background->at(index, static_channel_index<Type, Channel>());
             }
         };
 
         template<ChannelTypeId Type, SampleStreamLayout Layout>
-        class StaticIndexedInputBlockTickAccess
+        class StaticBackgroundInputBlockTickAccess
             : public StaticInputBlockPortAccess<Type, Layout> {
-            IndexedSampleInputPort const* _indexed = nullptr;
+            RandomAccessSampleInputPort const* _background = nullptr;
 
         public:
-            StaticIndexedInputBlockTickAccess(
+            StaticBackgroundInputBlockTickAccess(
                 InputPort const& current,
                 std::size_t block_size,
-                IndexedSampleInputPort const* indexed)
+                RandomAccessSampleInputPort const* background)
                 : StaticInputBlockPortAccess<Type, Layout>(current, block_size)
-                , _indexed(indexed)
+                , _background(background)
             {}
 
-            [[nodiscard]] IndexedCoverage const& coverage() const noexcept
+            [[nodiscard]] Coverage const& coverage() const noexcept
             {
-                IV_ASSERT(_indexed != nullptr,
-                    "indexed sample input has no arbitrary-access binding");
-                return _indexed->coverage();
+                IV_ASSERT(_background != nullptr,
+                    "background sample input has no arbitrary-access binding");
+                return _background->coverage();
             }
 
             [[nodiscard]] Sample at(SampleIndex index) const noexcept
             requires (Type == ChannelTypeId::mono)
             {
-                IV_ASSERT(_indexed != nullptr,
-                    "indexed sample input has no arbitrary-access binding");
-                return _indexed->at(index);
+                IV_ASSERT(_background != nullptr,
+                    "background sample input has no arbitrary-access binding");
+                return _background->at(index);
             }
 
             template<class Channel>
             [[nodiscard]] Sample at(Channel, SampleIndex index) const noexcept
             requires (Type != ChannelTypeId::mono)
             {
-                IV_ASSERT(_indexed != nullptr,
-                    "indexed sample input has no arbitrary-access binding");
-                return _indexed->at(index, static_channel_ordinal<Type, Channel>());
+                IV_ASSERT(_background != nullptr,
+                    "background sample input has no arbitrary-access binding");
+                return _background->at(index, static_channel_index<Type, Channel>());
             }
         };
 
@@ -146,43 +146,43 @@ namespace iv {
             operator EventInputPort const&() const { return _port; }
         };
 
-        class StaticIndexedEventInputBlockTickAccess
+        class StaticBackgroundEventInputBlockTickAccess
             : public StaticEventInputBlockTickAccess {
-            IndexedEventInputPort const* _indexed = nullptr;
+            RandomAccessEventInputPort const* _background = nullptr;
 
         public:
             using StaticEventInputBlockTickAccess::for_each;
 
-            StaticIndexedEventInputBlockTickAccess(
+            StaticBackgroundEventInputBlockTickAccess(
                 EventInputPort const& current,
                 SampleIndex index,
                 std::size_t block_size,
-                IndexedEventInputPort const* indexed)
+                RandomAccessEventInputPort const* background)
                 : StaticEventInputBlockTickAccess(current, index, block_size)
-                , _indexed(indexed)
+                , _background(background)
             {}
 
-            [[nodiscard]] IndexedCoverage const& coverage() const noexcept
+            [[nodiscard]] Coverage const& coverage() const noexcept
             {
-                IV_ASSERT(_indexed != nullptr,
-                    "indexed event input has no arbitrary-access binding");
-                return _indexed->coverage();
+                IV_ASSERT(_background != nullptr,
+                    "background event input has no arbitrary-access binding");
+                return _background->coverage();
             }
 
             template<typename Fn>
-            void for_each(IndexedRegion region, Fn&& fn) const
+            void for_each(IndexRegion region, Fn&& fn) const
             {
-                IV_ASSERT(_indexed != nullptr,
-                    "indexed event input has no arbitrary-access binding");
-                _indexed->for_each(region, std::forward<Fn>(fn));
+                IV_ASSERT(_background != nullptr,
+                    "background event input has no arbitrary-access binding");
+                _background->for_each(region, std::forward<Fn>(fn));
             }
 
             template<typename Fn>
             void for_each(SampleIndex begin, SampleIndex end, Fn&& fn) const
             {
-                IV_ASSERT(_indexed != nullptr,
-                    "indexed event input has no arbitrary-access binding");
-                _indexed->for_each(begin, end, std::forward<Fn>(fn));
+                IV_ASSERT(_background != nullptr,
+                    "background event input has no arbitrary-access binding");
+                _background->for_each(begin, end, std::forward<Fn>(fn));
             }
         };
 
@@ -237,15 +237,15 @@ namespace iv {
                 constexpr auto port_index = details::static_input_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->inputs.size(), "static input port is absent from execution context");
                 IV_ASSERT(this->inputs[port_index].channel_layout() == layout, "static input port layout does not match execution context");
-                constexpr bool indexed =
+                constexpr bool background =
                     details::static_input_port_is_random_access<Node, Name>();
-                if constexpr (indexed) {
-                    constexpr auto indexed_index =
+                if constexpr (background) {
+                    constexpr auto background_index =
                         details::static_random_access_input_port_index<Node, Name>();
-                    auto const* indexed_port = indexed_index < this->indexed_inputs.size()
-                        ? &this->indexed_inputs[indexed_index] : nullptr;
-                    return details::StaticIndexedInputSampleTickAccess<layout.channel_type>(
-                        this->inputs[port_index], indexed_port);
+                    auto const* background_port = background_index < this->random_access_inputs.size()
+                        ? &this->random_access_inputs[background_index] : nullptr;
+                    return details::StaticBackgroundInputSampleTickAccess<layout.channel_type>(
+                        this->inputs[port_index], background_port);
                 } else {
                     return details::StaticInputSamplePortAccess<layout.channel_type>(
                         this->inputs[port_index]);
@@ -255,16 +255,16 @@ namespace iv {
                     details::static_event_input_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->event_inputs.size(),
                     "static event input port is absent from execution context");
-                constexpr bool indexed =
+                constexpr bool background =
                     details::static_event_input_port_is_random_access<Node, Name>();
-                if constexpr (indexed) {
-                    constexpr auto indexed_index =
+                if constexpr (background) {
+                    constexpr auto background_index =
                         details::static_random_access_event_input_port_index<Node, Name>();
-                    auto const* indexed_port =
-                        indexed_index < this->indexed_event_inputs.size()
-                        ? &this->indexed_event_inputs[indexed_index] : nullptr;
-                    return details::StaticIndexedEventInputBlockTickAccess(
-                        this->event_inputs[port_index], this->index, 1, indexed_port);
+                    auto const* background_port =
+                        background_index < this->random_access_event_inputs.size()
+                        ? &this->random_access_event_inputs[background_index] : nullptr;
+                    return details::StaticBackgroundEventInputBlockTickAccess(
+                        this->event_inputs[port_index], this->index, 1, background_port);
                 } else {
                     return details::StaticEventInputBlockTickAccess(
                         this->event_inputs[port_index], this->index, 1);
@@ -279,7 +279,7 @@ namespace iv {
             constexpr auto port_kind = details::static_output_port_kind<Node, Name>();
             if constexpr (port_kind == PortKind::sample) {
                 static_assert(!details::static_output_port_is_tock<Node, Name>(),
-                    "tick() cannot write an indexed sample output; produce it from tock_coverage()");
+                    "tick() cannot write a Tock sample output; produce it from tock_coverage()");
                 constexpr auto layout = details::static_output_port_layout<Node, Name>();
                 constexpr auto port_index =
                     details::static_realtime_output_port_index<Node, Name>();
@@ -288,7 +288,7 @@ namespace iv {
                 return details::StaticOutputSamplePortAccess<layout.channel_type>(this->outputs[port_index]);
             } else {
                 static_assert(!details::static_event_output_port_is_tock<Node, Name>(),
-                    "tick() cannot write an indexed event output; produce it from tock_coverage()");
+                    "tick() cannot write a Tock event output; produce it from tock_coverage()");
                 constexpr auto port_index =
                     details::static_realtime_event_output_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->event_outputs.size(),
@@ -320,16 +320,16 @@ namespace iv {
                 constexpr auto port_index = details::static_input_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->inputs.size(), "static input port is absent from execution context");
                 IV_ASSERT(this->inputs[port_index].channel_layout() == layout, "static input port layout does not match execution context");
-                constexpr bool indexed =
+                constexpr bool background =
                     details::static_input_port_is_random_access<Node, Name>();
-                if constexpr (indexed) {
-                    constexpr auto indexed_index =
+                if constexpr (background) {
+                    constexpr auto background_index =
                         details::static_random_access_input_port_index<Node, Name>();
-                    auto const* indexed_port = indexed_index < this->indexed_inputs.size()
-                        ? &this->indexed_inputs[indexed_index] : nullptr;
-                    return details::StaticIndexedInputBlockTickAccess<
+                    auto const* background_port = background_index < this->random_access_inputs.size()
+                        ? &this->random_access_inputs[background_index] : nullptr;
+                    return details::StaticBackgroundInputBlockTickAccess<
                         layout.channel_type, layout.sample_layout>(
-                            this->inputs[port_index], this->block_size, indexed_port);
+                            this->inputs[port_index], this->block_size, background_port);
                 } else {
                     return details::StaticInputBlockPortAccess<
                         layout.channel_type, layout.sample_layout>(
@@ -340,19 +340,19 @@ namespace iv {
                     details::static_event_input_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->event_inputs.size(),
                     "static event input port is absent from execution context");
-                constexpr bool indexed =
+                constexpr bool background =
                     details::static_event_input_port_is_random_access<Node, Name>();
-                if constexpr (indexed) {
-                    constexpr auto indexed_index =
+                if constexpr (background) {
+                    constexpr auto background_index =
                         details::static_random_access_event_input_port_index<Node, Name>();
-                    auto const* indexed_port =
-                        indexed_index < this->indexed_event_inputs.size()
-                        ? &this->indexed_event_inputs[indexed_index] : nullptr;
-                    return details::StaticIndexedEventInputBlockTickAccess(
+                    auto const* background_port =
+                        background_index < this->random_access_event_inputs.size()
+                        ? &this->random_access_event_inputs[background_index] : nullptr;
+                    return details::StaticBackgroundEventInputBlockTickAccess(
                         this->event_inputs[port_index],
                         this->index,
                         this->block_size,
-                        indexed_port);
+                        background_port);
                 } else {
                     return details::StaticEventInputBlockTickAccess(
                         this->event_inputs[port_index],
@@ -371,7 +371,7 @@ namespace iv {
                 constexpr auto layout = details::static_output_port_layout<Node, Name>();
                 static_assert(
                     !details::static_output_port_is_tock<Node, Name>(),
-                    "tick_block() cannot write an indexed sample output; produce it from tock_coverage()");
+                    "tick_block() cannot write a Tock sample output; produce it from tock_coverage()");
                 constexpr auto port_index =
                     details::static_realtime_output_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->outputs.size(),
@@ -384,7 +384,7 @@ namespace iv {
             } else {
                 static_assert(
                     !details::static_event_output_port_is_tock<Node, Name>(),
-                    "tick_block() cannot write an indexed event output; produce it from tock_coverage()");
+                    "tick_block() cannot write a Tock event output; produce it from tock_coverage()");
                 constexpr auto port_index =
                     details::static_realtime_event_output_port_index<Node, Name>();
                 IV_ASSERT(port_index < this->event_outputs.size(),
@@ -415,11 +415,11 @@ namespace iv {
             if constexpr (port_kind == PortKind::sample) {
                 static_assert(
                     !details::static_output_port_is_tock<Node, Name>(),
-                    "skip_block() cannot write an indexed output");
+                    "skip_block() cannot write a Tock output");
             } else {
                 static_assert(
                     !details::static_event_output_port_is_tock<Node, Name>(),
-                    "skip_block() cannot write an indexed output");
+                    "skip_block() cannot write a Tock output");
             }
             return TickBlockContext<Node>::template output<Name>();
         }
@@ -475,8 +475,8 @@ namespace iv {
             .outputs = outputs,
             .event_inputs = event_inputs,
             .event_outputs = event_outputs,
-            .indexed_inputs = {},
-            .indexed_event_inputs = {},
+            .random_access_inputs = {},
+            .random_access_event_inputs = {},
             .sample_rate = outer.sample_rate,
             .scc_feedback_latency = outer.scc_feedback_latency,
             .buffer = remaining_buffer(outer.buffer, nested_state),

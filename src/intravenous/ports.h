@@ -456,9 +456,9 @@ namespace iv {
 
     // Static event-buffer sizing rule. For a representation whose relevant
     // temporal span is W samples, reserve ceil(max_events_per_index * W)
-    // event slots before any physical power-of-two sequence rounding. This is
+    // event slots before any storage power-of-two sequence rounding. This is
     // sizing metadata, not a runtime producer quota. Runtime writers are bounded
-    // only by the physical representation capacity; overflow clipping is not a
+    // only by the storage representation capacity; overflow clipping is not a
     // semantic guarantee.
     [[nodiscard]] inline std::optional<size_t> event_count_for_sample_span(
         double max_events_per_index,
@@ -475,7 +475,7 @@ namespace iv {
         return static_cast<size_t>(std::ceil(product));
     }
 
-    // EventSharedPortData uses a power-of-two ring mask. Physical bounded
+    // EventSharedPortData uses a power-of-two ring mask. Storage bounded
     // sequences therefore round the requested event count upward while
     // preserving zero-capacity declarations exactly.
     [[nodiscard]] inline std::optional<size_t> event_sequence_capacity_for_sample_span(
@@ -1620,7 +1620,7 @@ namespace iv {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        // The total-read value for an unavailable or out-of-range indexed
+        // The total-read value for an unavailable or out-of-range background
         // input. This is deliberately separate from default_value, which is
         // the value used for an ordinary disconnected sequential input.
         Sample neutral_value = 0.0;
@@ -1961,7 +1961,7 @@ namespace iv {
             std::move(name), std::move(properties), std::move(production), retention);
     }
 
-    // The configured graph keeps physical sample/event lists because lowering
+    // The configured graph keeps storage sample/event lists because lowering
     // uses separate sample and event collections. Production and retention
     // remain independent; Tock output configs have no Tick history/latency.
     struct EventInputConfig {

@@ -29,7 +29,7 @@ struct NodeCompilerOperations {
     void (*skip_block)(
         void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
 
-    // Compiler-facing one-node indexed callback anchors. Reflected contexts use
+    // Compiler-facing one-node background callback anchors. Reflected contexts use
     // explicit pointer/count spans; wrappers reconstruct the Node-specialized
     // public contexts before entering authored code. Whole-project batching is
     // a separate root ABI.
@@ -56,10 +56,10 @@ struct NodeCompilerRecord {
     // received from Clang before publishing it to the graph compiler.
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
-    // IndexedState is non-semantic acceleration state available only to
+    // TockState is non-semantic acceleration state available only to
     // tock_coverage(). It is allocated independently from sequential State.
-    std::size_t indexed_state_size = 0;
-    std::size_t indexed_state_alignment = 1;
+    std::size_t background_state_size = 0;
+    std::size_t background_state_alignment = 1;
     // Authored and statically validated; the project planner must separately
     // prove that a specific instance can replay its transitive dependencies.
     bool intrinsically_replayable = false;

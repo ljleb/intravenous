@@ -25,7 +25,7 @@ struct TransientArenaAllocationPlan {
 };
 
 struct TransientArenaPlan {
-    // Indexed exactly like the request span supplied to plan_transient_arena().
+    // Background exactly like the request span supplied to plan_transient_arena().
     std::vector<TransientArenaAllocationPlan> allocations{};
     std::size_t size_bytes = 0;
     std::size_t alignment = 1;

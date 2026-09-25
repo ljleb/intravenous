@@ -3,7 +3,7 @@
 // Compiler-selected operations and binding records for one concrete node.
 
 #include <intravenous/node/compiler_record.h>
-#include <intravenous/node/indexed_port_context.h>
+#include <intravenous/node/coverage_port_context.h>
 #include <intravenous/ports.h>
 
 #include <array>
@@ -163,16 +163,16 @@ struct ReflectedNodeTickContext {
     // persistent façade/cursor state and makes implementation constants visible
     // to whole-project O3 after inlining.
     ReflectedSpan<ReflectedSampleInputPortBinding const> sample_input_bindings {};
-    // Output spans are compact realtime-only ordinals. Indexed outputs are
-    // bound only by indexed callback contexts.
+    // Output spans are compact realtime-only indices. Background outputs are
+    // bound only by background callback contexts.
     ReflectedSpan<ReflectedSampleOutputPortBinding const> sample_output_bindings {};
 
     // GraphJit event bindings mirror the sample binding architecture.
     ReflectedSpan<ReflectedEventInputPortBinding const> event_input_bindings {};
     // Like sample outputs, this span contains realtime outputs only.
     ReflectedSpan<ReflectedEventOutputPortBinding const> event_output_bindings {};
-    ReflectedSpan<IndexedSampleInputPort const> indexed_inputs {};
-    ReflectedSpan<IndexedEventInputPort const> indexed_event_inputs {};
+    ReflectedSpan<RandomAccessSampleInputPort const> random_access_inputs {};
+    ReflectedSpan<RandomAccessEventInputPort const> random_access_event_inputs {};
     std::size_t sample_rate = 48000;
     std::size_t scc_feedback_latency = 0;
     ReflectedSpan<std::byte> state {};
@@ -181,32 +181,32 @@ struct ReflectedNodeTickContext {
 static_assert(std::is_standard_layout_v<ReflectedNodeTickContext>);
 static_assert(std::is_trivially_copyable_v<ReflectedNodeTickContext>);
 
-// Stable compiler-facing indexed callback contexts. These mirror the public
+// Stable compiler-facing background callback contexts. These mirror the public
 // Node-specialized contexts without exposing std::span's implementation-defined
 // representation to package LLVM or whole-graph lowering.
 struct ReflectedNodeTockCoverageContext {
-    ReflectedSpan<IndexedSampleInputPort const> inputs {};
-    ReflectedSpan<IndexedSampleOutputPort> outputs {};
-    ReflectedSpan<IndexedEventInputPort const> event_inputs {};
-    ReflectedSpan<IndexedEventOutputPort> event_outputs {};
-    ReflectedSpan<std::byte> indexed_state_storage {};
+    ReflectedSpan<RandomAccessSampleInputPort const> inputs {};
+    ReflectedSpan<TockSampleOutputPort> outputs {};
+    ReflectedSpan<RandomAccessEventInputPort const> event_inputs {};
+    ReflectedSpan<TockEventOutputPort> event_outputs {};
+    ReflectedSpan<std::byte> background_state_storage {};
     std::size_t sample_rate = 48000;
 };
 
 struct ReflectedNodeForwardCoverageContext {
-    ReflectedSpan<IndexedInputChange const> inputs {};
-    ReflectedSpan<IndexedOutputChange> outputs {};
-    ReflectedSpan<IndexedInputChange const> event_inputs {};
-    ReflectedSpan<IndexedOutputChange> event_outputs {};
+    ReflectedSpan<InputCoverageChange const> inputs {};
+    ReflectedSpan<OutputCoverageChange> outputs {};
+    ReflectedSpan<InputCoverageChange const> event_inputs {};
+    ReflectedSpan<OutputCoverageChange> event_outputs {};
     bool local_state_changed = false;
     std::size_t sample_rate = 48000;
 };
 
 struct ReflectedNodeReverseCoverageContext {
-    ReflectedSpan<IndexedInputRequirement> inputs {};
-    ReflectedSpan<IndexedOutputRequirement const> outputs {};
-    ReflectedSpan<IndexedInputRequirement> event_inputs {};
-    ReflectedSpan<IndexedOutputRequirement const> event_outputs {};
+    ReflectedSpan<InputCoverageRequirement> inputs {};
+    ReflectedSpan<OutputCoverageRequirement const> outputs {};
+    ReflectedSpan<InputCoverageRequirement> event_inputs {};
+    ReflectedSpan<OutputCoverageRequirement const> event_outputs {};
     std::size_t sample_rate = 48000;
 };
 

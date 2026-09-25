@@ -470,7 +470,7 @@ auto make_node_call_requests(GraphBuilder& builder, Args&&... args)
             .source = builder.lift_to_sample_port(
                 std::forward<Arg>(arg).value),
             .name = Value::name.view(),
-            .input_ordinal = 0,
+            .input_index = 0,
             .target = NodeCallInputTarget::named,
         };
       } else {
@@ -478,7 +478,7 @@ auto make_node_call_requests(GraphBuilder& builder, Args&&... args)
             .source = lift_node_call_event_operand(
                 std::forward<Arg>(arg).value),
             .name = Value::name.view(),
-            .input_ordinal = 0,
+            .input_index = 0,
             .target = NodeCallInputTarget::named,
         };
       }
@@ -486,14 +486,14 @@ auto make_node_call_requests(GraphBuilder& builder, Args&&... args)
       requests.event_inputs[event_index++] = {
         .source = static_cast<EventPortRef>(std::forward<Arg>(arg)),
         .name = {},
-        .input_ordinal = positional_index++,
+        .input_index = positional_index++,
         .target = NodeCallInputTarget::positional,
       };
     } else {
       requests.sample_inputs[sample_index++] = {
         .source = builder.lift_to_sample_port(std::forward<Arg>(arg)),
         .name = {},
-        .input_ordinal = positional_index++,
+        .input_index = positional_index++,
         .target = NodeCallInputTarget::positional,
       };
     }
@@ -519,7 +519,7 @@ inline auto make_sample_output_requests(
         .sample_layout = SampleStreamLayout::planar};
       request.family_name = Value::name.view();
       request.family_channel_type = ChannelTypeTraits<Channel>::id;
-      request.target_channel_ordinal = Value::channel_ordinal;
+      request.target_channel_index = Value::channel_index;
     } else if constexpr (is_default_channel_named_arg_v<Value>) {
       using Channel = typename Value::channel_type;
       request.ref = builder.lift_to_sample_port(ref.value);
@@ -528,7 +528,7 @@ inline auto make_sample_output_requests(
         .sample_layout = SampleStreamLayout::planar};
       request.family_name = "main";
       request.family_channel_type = ChannelTypeTraits<Channel>::id;
-      request.target_channel_ordinal = Value::channel_ordinal;
+      request.target_channel_index = Value::channel_index;
     } else if constexpr (is_named_arg_v<Value>) {
       request.ref = builder.lift_to_sample_port(ref.value);
       request.name = Value::name.view();

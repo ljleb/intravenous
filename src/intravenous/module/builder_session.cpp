@@ -489,7 +489,7 @@ NodeConfigRelocations capture_node_config(
         relocations.push_back({
             .byte_offset = offset,
             .package_root = global_package.package_root,
-            .retained_global_ordinal = found_global->global->ordinal,
+            .retained_global_index = found_global->global->index,
             .addend = static_cast<std::size_t>(
                 value_address
                 - reinterpret_cast<std::uintptr_t>(found_global->global->address)),

@@ -2,7 +2,7 @@
 
 #include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/graph_jit/connection_plan.h>
-#include <intravenous/graph_jit/sample_physical_plan.h>
+#include <intravenous/graph_jit/sample_storage_plan.h>
 #include <intravenous/graph_jit/lowering.h>
 
 #include <cstddef>
@@ -20,14 +20,14 @@ struct PrimitiveStoragePlan {
     bool has_state = false;
     std::size_t state_offset = 0;
     std::size_t state_size = 0;
-    bool has_indexed_state = false;
-    std::size_t indexed_state_offset = 0;
-    std::size_t indexed_state_size = 0;
+    bool has_background_state = false;
+    std::size_t background_state_offset = 0;
+    std::size_t background_state_size = 0;
 };
 
 struct DeclarationPlan {
     NodeLayout node_layout{};
-    // Indexed independently from NodeLayout::nodes so later lowering can add
+    // Background independently from NodeLayout::nodes so later lowering can add
     // synthetic/layout-only nodes without coupling execution-step identity to
     // canonical layout record order.
     std::vector<PrimitiveStoragePlan> primitive_storage{};
@@ -35,7 +35,7 @@ struct DeclarationPlan {
 
 enum class CallbackImportAbi : std::uint8_t {
     block,
-    indexed,
+    background,
 };
 
 struct CallbackImportPlan {
@@ -70,7 +70,7 @@ struct PackageImportPlan {
     // One group per compile-local package module. All selected callback and
     // retained-global roots must be known before that module is consumed once.
     std::vector<PackageImportGroup> packages{};
-    // Indexed by analyzed concrete primitive. Several primitives may share one
+    // Background by analyzed concrete primitive. Several primitives may share one
     // imported callback when they select the same package-local implementation.
     std::vector<PrimitiveCallbackPlan> primitive_callbacks{};
 };
@@ -78,7 +78,7 @@ struct PackageImportPlan {
 struct NodeConfigurationRelocationPlan {
     std::size_t byte_offset = 0;
     std::size_t addend = 0;
-    // Empty means an explicit null pointer slot. Non-empty names the imported
+    // Empty means an explicit null pointer index. Non-empty names the imported
     // retained LLVM global whose byte-address plus addend reconstructs the
     // configured pointer value.
     std::string retained_global_symbol{};
@@ -87,7 +87,7 @@ struct NodeConfigurationRelocationPlan {
 struct NodeConfigurationPlan {
     // Own the configured bytes so LLVM emission does not depend on native
     // configured-object addresses after host-side planning completes. Pointer
-    // slots are zeroed here and reconstructed symbolically during LLVM
+    // indices are zeroed here and reconstructed symbolically during LLVM
     // emission; native process addresses must never enter project IR.
     std::vector<std::byte> bytes{};
     std::vector<NodeConfigurationRelocationPlan> relocations{};
@@ -103,16 +103,16 @@ struct ConfigurationPlan {
 
 
 struct PrimitiveSampleInputChannelBindingPlan {
-    std::size_t representation = no_sample_representation;
+    std::size_t storage = no_sample_representation;
     std::size_t representation_channel = 0;
     std::size_t frame_delay = 0;
 };
 
 struct PrimitiveSampleInputBindingPlan {
     // Canonical target-channel order. Each semantic channel may resolve to a
-    // different physical representation/capacity/timing. Materialized inputs
+    // different storage storage/capacity/timing. Materialized inputs
     // simply bind every channel to the corresponding channel of one target
-    // representation.
+    // storage.
     std::vector<PrimitiveSampleInputChannelBindingPlan> channels{};
     ChannelLayout channel_layout{};
     std::size_t history = 0;
@@ -121,40 +121,40 @@ struct PrimitiveSampleInputBindingPlan {
 
 struct PrimitiveSampleOutputBindingPlan {
     bool realtime = true;
-    std::optional<std::size_t> representation{};
+    std::optional<std::size_t> storage{};
     std::size_t history = 0;
     std::size_t latency = 0;
 };
 
 struct PrimitiveSamplePortPlan {
-    // Planning remains indexed by declared physical sample-port ordinal.
-    // Lowering compacts realtime outputs into the tick ABI; indexed outputs
-    // instead receive bindings from the indexed executor.
+    // Planning remains background by declared storage sample-port index.
+    // Lowering compacts realtime outputs into the tick ABI; background outputs
+    // instead receive bindings from the background executor.
     std::vector<PrimitiveSampleInputBindingPlan> inputs{};
     std::vector<PrimitiveSampleOutputBindingPlan> outputs{};
 };
 
 struct SamplePortBindingPlan {
-    SamplePhysicalPlan physical{};
-    // Indexed by analyzed concrete primitive.
+    SampleStoragePlan storage{};
+    // Background by analyzed concrete primitive.
     std::vector<PrimitiveSamplePortPlan> primitives{};
 
     [[nodiscard]] bool empty() const noexcept
     {
-        return physical.empty();
+        return storage.empty();
     }
 };
 
 // Points 10-11 realize direct/transient realtime event flow plus bounded
-// compact carry and persistent retained rings. Ordinary representations store a
+// compact carry and persistent retained rings. Ordinary ports store a
 // count plus a bounded TimedEvent sequence. Large retained windows bind producer
 // and identity consumers directly to one migration-identified persistent ring
 // carrying monotonic read/write indices, so retained events are expired
 // incrementally rather than copied through a compact tail each root call.
-// Retained canonical representations may also feed windowed transient
+// Retained canonical ports may also feed windowed transient
 // materializations for sliced/converted consumer branches. The canonical
-// producer representation reserves one overflow counter per logical event
-// output; derived fanout representations never duplicate producer telemetry.
+// producer storage reserves one overflow counter per logical event
+// output; derived fanout ports never duplicate producer telemetry.
 // Primitive callbacks receive only immutable bindings and reconstruct
 // invocation-local EventInputPort/EventOutputPort facades.
 inline constexpr std::size_t no_event_transient_allocation =
@@ -173,18 +173,18 @@ struct EventRepresentationPlan {
     std::size_t write_index_relative_offset = 0;
     std::size_t events_relative_offset = 0;
     // Staged fan-in may merge semantic sources in execution-region order rather
-    // than source order. Its canonical representation carries one compiler-only
-    // source ordinal beside each TimedEvent so later stages can preserve stable
+    // than source order. Its canonical storage carries one compiler-only
+    // source index beside each TimedEvent so later stages can preserve stable
     // equal-time ordering. Authored port facades still see only TimedEvent.
-    bool has_source_ordinals = false;
-    std::size_t source_ordinals_relative_offset = 0;
+    bool has_source_indices = false;
+    std::size_t source_indices_relative_offset = 0;
     std::size_t size_bytes = 0;
     std::size_t alignment = 1;
     std::size_t transient_allocation = no_event_transient_allocation;
     NodeLayout::RegionHandle region{};
     NodeLayout::RegionHandle overflow_region{};
-    // Canonical NodeStorage offsets exist only for persistent representations
-    // and producer telemetry. Transient representation addresses come from the
+    // Canonical NodeStorage offsets exist only for persistent ports
+    // and producer telemetry. Transient storage addresses come from the
     // generated root's event arena plus region_relative_offset.
     std::size_t storage_offset = 0;
     std::size_t overflow_count_storage_offset = 0;
@@ -201,14 +201,14 @@ struct EventTransientAllocationPlan {
 };
 
 struct PrimitiveEventInputBindingPlan {
-    std::optional<std::size_t> representation{};
+    std::optional<std::size_t> storage{};
 };
 
 struct PrimitiveEventOutputBindingPlan {
-    // Planning remains indexed by declared physical event-port ordinal. Only
+    // Planning remains background by declared storage event-port index. Only
     // realtime entries are emitted into ReflectedNodeTickContext.
     bool realtime = true;
-    std::optional<std::size_t> representation{};
+    std::optional<std::size_t> storage{};
     EventTypeId source_type = EventTypeId::empty;
     std::size_t history = 0;
     std::size_t latency = 0;
@@ -228,7 +228,7 @@ enum class EventOperationPhase : std::uint8_t {
 // Event operations are planned against the invocation whose index/block-size
 // define their semantic window. A primitive scope executes for every SCC slice;
 // a region scope executes once around the complete root-call region. Keeping
-// this in the physical plan prevents execution planning from rediscovering a
+// this in the storage plan prevents execution planning from rediscovering a
 // materialization's consumers and guessing which window it meant.
 struct EventOperationScope {
     EventOperationScopeKind kind = EventOperationScopeKind::primitive;
@@ -276,13 +276,13 @@ struct EventCarryPlan {
 };
 
 struct EventPersistentRingPlan {
-    std::size_t representation = 0;
+    std::size_t storage = 0;
     EventOperationScope prune_scope{};
     std::size_t retained_history_samples = 0;
 };
 
 struct EventSequenceResetPlan {
-    std::size_t representation = 0;
+    std::size_t storage = 0;
     EventOperationScope scope{};
 };
 
@@ -296,9 +296,9 @@ struct EventMergePlan {
     // the remaining producer-local streams.
     std::vector<std::size_t> source_representations{};
     // Empty for ordinary stable merges. Staged fan-in supplies one semantic
-    // source ordinal per source representation; the target representation then
-    // owns a parallel ordinal sidecar used only by compiler runtime helpers.
-    std::vector<std::size_t> source_ordinals{};
+    // source index per source storage; the target storage then
+    // owns a parallel index sidecar used only by compiler runtime helpers.
+    std::vector<std::size_t> source_indices{};
     std::size_t target_representation = 0;
     EventOperationScope scope{};
     bool target_is_semantic_source = false;
@@ -316,7 +316,7 @@ struct EventFeedbackPlan {
     EventConnectionStoragePlan storage_plan{};
     // Exact unrounded bounds for producer -> delayed-stream writes and the
     // retained tail. Compact carry restore/commit work is derived from the
-    // latter by the shared residence cost model.
+    // latter by the shared storage cost model.
     std::size_t authored_event_count = 0;
     std::size_t retained_event_count = 0;
     std::size_t retained_window_samples = 0;
@@ -329,14 +329,14 @@ struct PrimitiveEventPortPlan {
 };
 
 struct EventPortBindingPlan {
-    // Indexed by ConnectionAnalysisPlan::event_producer_groups. These are the
+    // Background by ConnectionAnalysisPlan::event_producer_groups. These are the
     // final lowering decisions after concrete producer buffers and operations
     // are known; connection analysis carries only the temporal requirements.
     std::vector<std::optional<EventConnectionStoragePlan>>
         producer_group_storage_plans{};
     std::vector<std::optional<std::size_t>> producer_home_source_indices{};
     std::vector<std::optional<std::size_t>> producer_group_representations{};
-    std::vector<EventRepresentationPlan> representations{};
+    std::vector<EventRepresentationPlan> ports{};
     std::vector<EventMaterializationPlan> materializations{};
     std::vector<EventCarryPlan> carry_operations{};
     std::vector<EventPersistentRingPlan> persistent_rings{};
@@ -346,7 +346,7 @@ struct EventPortBindingPlan {
     std::vector<EventTransientAllocationPlan> transient_allocations{};
     std::size_t transient_arena_size = 0;
     std::size_t transient_arena_alignment = 1;
-    // Indexed by analyzed concrete primitive.
+    // Background by analyzed concrete primitive.
     std::vector<PrimitiveEventPortPlan> primitives{};
 };
 
@@ -374,8 +374,8 @@ struct PrimitiveExecutionStep {
     std::string tick_callback_symbol{};
     std::string skip_callback_symbol{};
 
-    // Explicit sample physical operations surrounding this producer. These are
-    // physical-plan indices, not OutputPort behavior or runtime objects.
+    // Explicit sample storage operations surrounding this producer. These are
+    // storage-plan indices, not OutputPort behavior or runtime objects.
     std::vector<std::size_t> sample_carry_restores_before{};
     std::vector<std::size_t> sample_materializations_before{};
     std::vector<std::size_t> sample_feedback_writes_after{};
@@ -414,7 +414,7 @@ struct RootStackBufferPlan {
 
 struct LoweringPlan {
     // Pure graph/topology analysis remains part of the stable lowering plan;
-    // sample physical realization consumes it without introducing a parallel
+    // sample storage realization consumes it without introducing a parallel
     // topology or policy model.
     ConnectionAnalysisPlan connections{};
     DeclarationPlan declarations{};

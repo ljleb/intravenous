@@ -25,7 +25,7 @@ struct ConfiguredPublicPortsRecord {
   std::vector<std::vector<SourceInfo>> sample_input_source_infos{};
   std::vector<std::vector<SourceInfo>> event_input_source_infos{};
   std::vector<PublicSamplePortMember> sample_output_members{};
-  std::vector<size_t> last_sample_output_port_ordinals{};
+  std::vector<size_t> last_sample_output_port_indices{};
   std::vector<std::vector<SourceInfo>> sample_output_source_infos{};
   std::vector<std::vector<SourceInfo>> event_output_source_infos{};
   bool sample_outputs_defined = false;
@@ -92,7 +92,7 @@ private:
   std::vector<std::vector<SourceInfo>> _sample_input_source_infos{};
   std::vector<std::vector<SourceInfo>> _event_input_source_infos{};
   std::vector<PublicSamplePortMember> _sample_output_members{};
-  std::vector<size_t> _last_sample_output_port_ordinals{};
+  std::vector<size_t> _last_sample_output_port_indices{};
   std::vector<std::vector<SourceInfo>> _sample_output_source_infos{};
   std::vector<std::vector<SourceInfo>> _event_output_source_infos{};
   bool _sample_outputs_defined = false;
@@ -135,13 +135,13 @@ constexpr GraphBuilderPublicSamplePortFamilies collect_sample_port_families(
     bool input) {
   IV_ASSERT(configs.size() == members.size(), "public sample port metadata must align with configs");
   GraphBuilderPublicSamplePortFamilies result;
-  for (size_t ordinal = 0; ordinal < configs.size(); ++ordinal) {
-    auto const& config = configs[ordinal]; auto const& member = members[ordinal];
+  for (size_t index = 0; index < configs.size(); ++index) {
+    auto const& config = configs[index]; auto const& member = members[index];
     auto family = std::find_if(result.families.begin(), result.families.end(),
         [&](auto const& f) { return !member.family_name.empty() && f.family_name == member.family_name; });
     if (family == result.families.end()) {
       GraphBuilderPublicSamplePortFamily f{
-          .family_ordinal = ordinal,
+          .family_index = index,
           .family_name = member.family_name.empty() ? config.name : member.family_name,
           .channel_type = member.channel_type,
           .channels = std::vector<GraphBuilderPublicSamplePortChannel>(channel_count(member.channel_type))};
@@ -152,11 +152,11 @@ constexpr GraphBuilderPublicSamplePortFamilies collect_sample_port_families(
     if (family->channel_type != member.channel_type)
       details::error(input ? "conflicting public sample input channel types" : "conflicting public sample output channel types");
     if (member.whole_stream) {
-      for (auto& channel : family->channels) channel.port_ordinals.push_back(ordinal);
+      for (auto& channel : family->channels) channel.port_indices.push_back(index);
     } else {
-      if (member.channel_index >= family->channels.size()) details::error("public sample channel ordinal out of bounds");
-      if (input && !family->channels[member.channel_index].port_ordinals.empty()) details::error("duplicate public sample input channel contributor");
-      family->channels[member.channel_index].port_ordinals.push_back(ordinal);
+      if (member.channel_index >= family->channels.size()) details::error("public sample channel index out of bounds");
+      if (input && !family->channels[member.channel_index].port_indices.empty()) details::error("duplicate public sample input channel contributor");
+      family->channels[member.channel_index].port_indices.push_back(index);
     }
   }
   return result;
@@ -199,8 +199,8 @@ constexpr GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_i
   auto result = collect_sample_port_families(
       std::span<SampleInputConfig const>{configs},
       std::span<PublicSamplePortMember const>{members}, true);
-  for (auto& family : result.families) for (auto& channel : family.channels) for (auto ordinal : channel.port_ordinals)
-    for (auto const& info : sample_input_source_infos(ordinal)) if (!std::ranges::contains(family.source_infos, info)) family.source_infos.push_back(info);
+  for (auto& family : result.families) for (auto& channel : family.channels) for (auto index : channel.port_indices)
+    for (auto const& info : sample_input_source_infos(index)) if (!std::ranges::contains(family.source_infos, info)) family.source_infos.push_back(info);
   return result;
 }
 constexpr GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_output_families(GraphBuilderNodeBundles const& b) const {
@@ -208,8 +208,8 @@ constexpr GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_o
   auto result = collect_sample_port_families(
       std::span<SampleOutputConfig const>{configs},
       std::span<PublicSamplePortMember const>{_sample_output_members}, false);
-  for (auto& family : result.families) for (auto& channel : family.channels) for (auto ordinal : channel.port_ordinals)
-    for (auto const& info : _sample_output_source_infos[ordinal]) { if (!std::ranges::contains(channel.source_infos, info)) channel.source_infos.push_back(info); if (!std::ranges::contains(family.source_infos, info)) family.source_infos.push_back(info); }
+  for (auto& family : result.families) for (auto& channel : family.channels) for (auto index : channel.port_indices)
+    for (auto const& info : _sample_output_source_infos[index]) { if (!std::ranges::contains(channel.source_infos, info)) channel.source_infos.push_back(info); if (!std::ranges::contains(family.source_infos, info)) family.source_infos.push_back(info); }
   return result;
 }
 constexpr std::vector<GraphBuilderPublicEventInput> GraphBuilderPublicPorts::collected_event_inputs(GraphBuilderNodeBundles const& b) const {
@@ -218,7 +218,7 @@ constexpr std::vector<GraphBuilderPublicEventInput> GraphBuilderPublicPorts::col
   for (size_t i = 0; i < configs.size(); ++i) {
     auto infos = event_input_source_infos(i);
     r.push_back({
-        .port_ordinal = i,
+        .port_index = i,
         .config = configs[i],
         .source_infos = {infos.begin(), infos.end()},
     });
@@ -228,7 +228,7 @@ constexpr std::vector<GraphBuilderPublicEventInput> GraphBuilderPublicPorts::col
 constexpr std::vector<GraphBuilderPublicEventOutput> GraphBuilderPublicPorts::collected_event_outputs(GraphBuilderNodeBundles const& b) const {
   std::vector<GraphBuilderPublicEventOutput> r; auto c = event_outputs(b); for (size_t i=0;i<c.size();++i) r.push_back({i,c[i], i<_event_output_source_infos.size()?_event_output_source_infos[i]:std::vector<SourceInfo>{}}); return r;
 }
-constexpr void GraphBuilderPublicPorts::annotate_sample_output_source_info(size_t i, SourceInfo info) { if (i>=_last_sample_output_port_ordinals.size()) return; auto& v=_sample_output_source_infos[_last_sample_output_port_ordinals[i]]; if(!std::ranges::contains(v,info))v.push_back(std::move(info)); }
+constexpr void GraphBuilderPublicPorts::annotate_sample_output_source_info(size_t i, SourceInfo info) { if (i>=_last_sample_output_port_indices.size()) return; auto& v=_sample_output_source_infos[_last_sample_output_port_indices[i]]; if(!std::ranges::contains(v,info))v.push_back(std::move(info)); }
 constexpr void GraphBuilderPublicPorts::annotate_event_output_source_info(size_t i, SourceInfo info) { if(i>=_event_output_source_infos.size())return; auto&v=_event_output_source_infos[i]; if(!std::ranges::contains(v,info))v.push_back(std::move(info)); }
 constexpr ConfiguredPublicPortsRecord
 GraphBuilderPublicPorts::configured_record() const {
@@ -237,7 +237,7 @@ GraphBuilderPublicPorts::configured_record() const {
       .sample_input_source_infos = _sample_input_source_infos,
       .event_input_source_infos = _event_input_source_infos,
       .sample_output_members = _sample_output_members,
-      .last_sample_output_port_ordinals = _last_sample_output_port_ordinals,
+      .last_sample_output_port_indices = _last_sample_output_port_indices,
       .sample_output_source_infos = _sample_output_source_infos,
       .event_output_source_infos = _event_output_source_infos,
       .sample_outputs_defined = _sample_outputs_defined,
@@ -250,8 +250,8 @@ GraphBuilderPublicPorts::from_configured_record(
   result._sample_input_source_infos = record.sample_input_source_infos;
   result._event_input_source_infos = record.event_input_source_infos;
   result._sample_output_members = record.sample_output_members;
-  result._last_sample_output_port_ordinals =
-      record.last_sample_output_port_ordinals;
+  result._last_sample_output_port_indices =
+      record.last_sample_output_port_indices;
   result._sample_output_source_infos = record.sample_output_source_infos;
   result._event_output_source_infos = record.event_output_source_infos;
   result._sample_outputs_defined = record.sample_outputs_defined;

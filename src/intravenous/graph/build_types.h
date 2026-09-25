@@ -20,7 +20,7 @@ namespace iv {
         std::string name {};
         std::string type {};
         VirtualPortConnectivity connectivity = VirtualPortConnectivity::disconnected;
-        size_t ordinal = 0;
+        size_t index = 0;
         Sample default_value = 0.0f;
         std::optional<Sample> min {};
         std::optional<Sample> max {};
@@ -36,7 +36,7 @@ namespace iv {
         std::string name {};
         std::string type {};
         VirtualPortConnectivity connectivity = VirtualPortConnectivity::disconnected;
-        size_t ordinal = 0;
+        size_t index = 0;
         Sample default_value = 0.0f;
         std::optional<Sample> min {};
         std::optional<Sample> max {};
@@ -50,7 +50,7 @@ namespace iv {
 
     struct IntrospectionVirtualNode {
         struct Member {
-            size_t ordinal = 0;
+            size_t index = 0;
             std::string backing_node_id {};
             std::string kind {};
             std::string type_identity {};
@@ -74,12 +74,12 @@ namespace iv {
     };
 
     struct GraphBuilderPublicSamplePortChannel {
-        std::vector<size_t> port_ordinals {};
+        std::vector<size_t> port_indices {};
         std::vector<SourceInfo> source_infos {};
     };
 
     struct GraphBuilderPublicSamplePortFamily {
-        size_t family_ordinal = 0;
+        size_t family_index = 0;
         std::string family_name {};
         SampleInputConfig input_config {};
         SampleOutputConfig output_config {};
@@ -94,14 +94,14 @@ namespace iv {
     };
 
     struct GraphBuilderPublicEventInput {
-        size_t port_ordinal = 0;
+        size_t port_index = 0;
         EventInputConfig config {};
         std::vector<SourceInfo> source_infos {};
         bool graph_connected = false;
     };
 
     struct GraphBuilderPublicEventOutput {
-        size_t port_ordinal = 0;
+        size_t port_index = 0;
         EventOutputConfig config {};
         std::vector<SourceInfo> source_infos {};
     };

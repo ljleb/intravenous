@@ -112,38 +112,38 @@ extern "C" std::size_t iv_graph_jit_commit_event_carry(
 
 extern "C" std::size_t iv_graph_jit_restore_ordered_event_carry(
     void const* carry_events,
-    std::size_t const* carry_source_ordinals,
+    std::size_t const* carry_source_indices,
     std::size_t carry_count,
     void* working_events,
-    std::size_t* working_source_ordinals,
+    std::size_t* working_source_indices,
     std::size_t working_capacity) noexcept
 {
-    if (carry_events == nullptr || carry_source_ordinals == nullptr
-        || working_events == nullptr || working_source_ordinals == nullptr) {
+    if (carry_events == nullptr || carry_source_indices == nullptr
+        || working_events == nullptr || working_source_indices == nullptr) {
         return 0;
     }
     auto const bounded = std::min(carry_count, working_capacity);
     auto const* source = static_cast<TimedEvent const*>(carry_events);
     auto* target = static_cast<TimedEvent*>(working_events);
     std::copy_n(source, bounded, target);
-    std::copy_n(carry_source_ordinals, bounded, working_source_ordinals);
+    std::copy_n(carry_source_indices, bounded, working_source_indices);
     return bounded;
 }
 
 extern "C" std::size_t iv_graph_jit_commit_ordered_event_carry(
     void const* working_events,
-    std::size_t const* working_source_ordinals,
+    std::size_t const* working_source_indices,
     std::size_t working_count,
     std::size_t sample_index,
     std::size_t block_size,
     std::size_t retained_history_samples,
     std::size_t retained_latency_samples,
     void* carry_events,
-    std::size_t* carry_source_ordinals,
+    std::size_t* carry_source_indices,
     std::size_t carry_capacity) noexcept
 {
-    if (working_events == nullptr || working_source_ordinals == nullptr
-        || carry_events == nullptr || carry_source_ordinals == nullptr) {
+    if (working_events == nullptr || working_source_indices == nullptr
+        || carry_events == nullptr || carry_source_indices == nullptr) {
         return 0;
     }
 
@@ -164,7 +164,7 @@ extern "C" std::size_t iv_graph_jit_commit_ordered_event_carry(
         if (time < window_begin || time >= window_end) continue;
         if (written == carry_capacity) break;
         target[written] = source[i];
-        carry_source_ordinals[written] = working_source_ordinals[i];
+        carry_source_indices[written] = working_source_indices[i];
         ++written;
     }
     return written;

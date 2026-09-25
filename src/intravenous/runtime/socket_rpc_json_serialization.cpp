@@ -208,7 +208,7 @@ SocketRpcJson iv_package_definitions_json(std::vector<IvPackageInfo> const &pack
 SocketRpcJson virtual_port_json(VirtualPortInfo const &port)
 {
     SocketRpcJson json = SocketRpcJson::object();
-    json["ordinal"] = port.ordinal;
+    json["index"] = port.index;
     json["name"] = port.name;
     json["type"] = port.type;
     json["connectivity"] = std::string(virtual_port_connectivity_json(port.connectivity));
@@ -240,7 +240,7 @@ SocketRpcJson virtual_ports_json(std::vector<VirtualPortInfo> const &ports)
 SocketRpcJson virtual_node_member_json(VirtualNodeMemberInfo const &member)
 {
     return SocketRpcJson{
-        {"ordinal", member.ordinal},
+        {"index", member.index},
         {"backingNodeId", member.backing_node_id},
         {"kind", member.kind},
         {"typeIdentity", member.type_identity},
@@ -326,7 +326,7 @@ SocketRpcJson lane_query_result_json(LaneQueryResult const &result)
             json_inputs.push_back(SocketRpcJson{
                 {"domain", input.domain == LanePortDomain::compiled ? "compiled" : "realtime"},
                 {"kind", std::string(port_kind_json(input.kind))},
-                {"ordinal", input.ordinal},
+                {"index", input.index},
                 {"name", input.name},
             });
         }
@@ -341,7 +341,7 @@ SocketRpcJson lane_query_result_json(LaneQueryResult const &result)
             {"targetLaneId", connection.target_lane_id.str()},
             {"portDomain", connection.port_domain == LanePortDomain::compiled ? "compiled" : "realtime"},
             {"portKind", std::string(port_kind_json(connection.port_kind))},
-            {"portOrdinal", connection.port_ordinal},
+            {"portIndex", connection.port_index},
         });
     }
 

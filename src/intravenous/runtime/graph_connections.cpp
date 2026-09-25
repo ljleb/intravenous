@@ -135,12 +135,12 @@ std::vector<PathCursor> apply_path_selector(
             for (auto const& cursor : current) {
                 if (cursor.kind != PathCursor::Kind::virtual_node) continue;
                 auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
-                if (step.ordinal >= record.node_bundle_handles.size()) continue;
+                if (step.index >= record.node_bundle_handles.size()) continue;
                 auto ancestry = cursor.virtual_ancestry;
                 ancestry.push_back(cursor.virtual_node);
                 next.push_back(PathCursor{
                     .kind = PathCursor::Kind::bundle,
-                    .bundle = record.node_bundle_handles[step.ordinal],
+                    .bundle = record.node_bundle_handles[step.index],
                     .virtual_ancestry = std::move(ancestry),
                 });
             }
@@ -150,10 +150,10 @@ std::vector<PathCursor> apply_path_selector(
                 auto const& bundle = graph.node_bundles.bundle(cursor.bundle);
                 if (!bundle.is_tiled()) continue;
                 auto const members = bundle.tiled_members();
-                if (step.ordinal >= members.size()) continue;
+                if (step.index >= members.size()) continue;
                 next.push_back(PathCursor{
                     .kind = PathCursor::Kind::bundle,
-                    .bundle = members[step.ordinal],
+                    .bundle = members[step.index],
                     .virtual_ancestry = cursor.virtual_ancestry,
                 });
             }
@@ -167,10 +167,10 @@ std::vector<PathCursor> apply_path_selector(
                             return graph.node_bundles.bundle(handle).subgraph_kind() != *step.kind;
                         });
                     }
-                    if (step.ordinal >= subgraphs.size()) continue;
+                    if (step.index >= subgraphs.size()) continue;
                     next.push_back(PathCursor{
                         .kind = PathCursor::Kind::bundle,
-                        .bundle = subgraphs[step.ordinal],
+                        .bundle = subgraphs[step.index],
                         .virtual_ancestry = cursor.virtual_ancestry,
                     });
                 }
@@ -200,10 +200,10 @@ std::vector<PathCursor> resolve_path(
 bool port_matches(
     ProjectPortMatcher const& matcher,
     std::string_view name,
-    std::size_t ordinal)
+    std::size_t index)
 {
     if (matcher.name.has_value() && name != *matcher.name) return false;
-    if (matcher.ordinal.has_value() && ordinal != *matcher.ordinal) return false;
+    if (matcher.index.has_value() && index != *matcher.index) return false;
     return true;
 }
 
@@ -246,7 +246,7 @@ std::vector<ResolvedSampleOutput> sample_outputs_for_cursor(
     if (cursor.kind == PathCursor::Kind::virtual_node) {
         auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
         for (auto const& mapping : record.sample_outputs) {
-            if (!port_matches(matcher, mapping.name, mapping.ordinal)) continue;
+            if (!port_matches(matcher, mapping.name, mapping.index)) continue;
             for (auto const& member_channels : mapping.member_channels) {
                 if (matcher.channel.has_value()) {
                     if (*matcher.channel >= member_channels.size()) continue;
@@ -266,12 +266,12 @@ std::vector<ResolvedSampleOutput> sample_outputs_for_cursor(
     }
 
     auto const& bundle = graph.node_bundles.bundle(cursor.bundle);
-    for (std::size_t ordinal = 0; ordinal < bundle.sample_output_count(); ++ordinal) {
+    for (std::size_t index = 0; index < bundle.sample_output_count(); ++index) {
         auto const config = graph.node_bundles.resolve_sample_output(
-            {cursor.bundle, PortKind::sample, ordinal}).config;
-        if (!port_matches(matcher, config.name, ordinal)) continue;
+            {cursor.bundle, PortKind::sample, index}).config;
+        if (!port_matches(matcher, config.name, index)) continue;
         auto channels = graph.node_bundles.sample_output_channels(
-            {cursor.bundle, PortKind::sample, ordinal});
+            {cursor.bundle, PortKind::sample, index});
         if (matcher.channel.has_value()) {
             if (*matcher.channel >= channels.size()) continue;
             append_unique(result, ResolvedSampleOutput{
@@ -297,7 +297,7 @@ std::vector<ResolvedSampleInput> sample_inputs_for_cursor(
     if (cursor.kind == PathCursor::Kind::virtual_node) {
         auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
         for (auto const& mapping : record.sample_inputs) {
-            if (!port_matches(matcher, mapping.name, mapping.ordinal)) continue;
+            if (!port_matches(matcher, mapping.name, mapping.index)) continue;
             for (auto const& member_channels : mapping.member_channels) {
                 if (member_channels.empty()) continue;
                 if (matcher.channel.has_value()) {
@@ -328,12 +328,12 @@ std::vector<ResolvedSampleInput> sample_inputs_for_cursor(
     }
 
     auto const& bundle = graph.node_bundles.bundle(cursor.bundle);
-    for (std::size_t ordinal = 0; ordinal < bundle.sample_input_count(); ++ordinal) {
+    for (std::size_t index = 0; index < bundle.sample_input_count(); ++index) {
         auto const config = graph.node_bundles.resolve_sample_input(
-            {cursor.bundle, PortKind::sample, ordinal}).config;
-        if (!port_matches(matcher, config.name, ordinal)) continue;
+            {cursor.bundle, PortKind::sample, index}).config;
+        if (!port_matches(matcher, config.name, index)) continue;
         auto channels = graph.node_bundles.sample_input_channels(
-            {cursor.bundle, PortKind::sample, ordinal});
+            {cursor.bundle, PortKind::sample, index});
         if (matcher.channel.has_value()) {
             if (*matcher.channel >= channels.size()) continue;
             append_unique(result, ResolvedSampleInput{
@@ -343,7 +343,7 @@ std::vector<ResolvedSampleInput> sample_inputs_for_cursor(
         } else {
             append_unique(result, ResolvedSampleInput{
                 .type = config.channel_layout.channel_type,
-                .target = NodeBundlePortId{cursor.bundle, PortKind::sample, ordinal},
+                .target = NodeBundlePortId{cursor.bundle, PortKind::sample, index},
             });
         }
     }
@@ -360,7 +360,7 @@ std::vector<ResolvedEventOutput> event_outputs_for_cursor(
     if (cursor.kind == PathCursor::Kind::virtual_node) {
         auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
         for (auto const& mapping : record.event_outputs) {
-            if (!port_matches(matcher, mapping.name, mapping.ordinal)) continue;
+            if (!port_matches(matcher, mapping.name, mapping.index)) continue;
             for (auto const port : mapping.node_bundle_ports) {
                 append_unique(result, ResolvedEventOutput{
                     .type = mapping.type,
@@ -372,14 +372,14 @@ std::vector<ResolvedEventOutput> event_outputs_for_cursor(
     }
 
     auto const& bundle = graph.node_bundles.bundle(cursor.bundle);
-    for (std::size_t ordinal = 0; ordinal < bundle.event_output_count(); ++ordinal) {
+    for (std::size_t index = 0; index < bundle.event_output_count(); ++index) {
         auto const config = graph.node_bundles.resolve_event_output(
-            {cursor.bundle, PortKind::event, ordinal}).config;
-        if (!port_matches(matcher, config.name, ordinal)) continue;
+            {cursor.bundle, PortKind::event, index}).config;
+        if (!port_matches(matcher, config.name, index)) continue;
         append_unique(result, ResolvedEventOutput{
             .type = config.type,
             .sources = graph.node_bundles.event_output_ports(
-                {cursor.bundle, PortKind::event, ordinal}),
+                {cursor.bundle, PortKind::event, index}),
         });
     }
     return result;
@@ -395,7 +395,7 @@ std::vector<ResolvedEventInput> event_inputs_for_cursor(
     if (cursor.kind == PathCursor::Kind::virtual_node) {
         auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
         for (auto const& mapping : record.event_inputs) {
-            if (!port_matches(matcher, mapping.name, mapping.ordinal)) continue;
+            if (!port_matches(matcher, mapping.name, mapping.index)) continue;
             for (auto const port : mapping.node_bundle_ports) {
                 append_unique(result, ResolvedEventInput{
                     .type = mapping.type,
@@ -407,13 +407,13 @@ std::vector<ResolvedEventInput> event_inputs_for_cursor(
     }
 
     auto const& bundle = graph.node_bundles.bundle(cursor.bundle);
-    for (std::size_t ordinal = 0; ordinal < bundle.event_input_count(); ++ordinal) {
+    for (std::size_t index = 0; index < bundle.event_input_count(); ++index) {
         auto const config = graph.node_bundles.resolve_event_input(
-            {cursor.bundle, PortKind::event, ordinal}).config;
-        if (!port_matches(matcher, config.name, ordinal)) continue;
+            {cursor.bundle, PortKind::event, index}).config;
+        if (!port_matches(matcher, config.name, index)) continue;
         append_unique(result, ResolvedEventInput{
             .type = config.type,
-            .target = {cursor.bundle, PortKind::event, ordinal},
+            .target = {cursor.bundle, PortKind::event, index},
         });
     }
     return result;

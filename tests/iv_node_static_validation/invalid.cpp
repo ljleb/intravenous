@@ -34,16 +34,16 @@ struct DynamicPortCountNode {
     void tick_block(iv::TickBlockContext<DynamicPortCountNode> const&) const {}
 };
 
-struct MissingIndexedTockNode {
+struct MissingBackgroundTockNode {
     static constexpr auto outputs()
     {
         return std::array {iv::tock_sample_output("output")};
     }
 
-    void tick_block(iv::TickBlockContext<MissingIndexedTockNode> const&) const {}
+    void tick_block(iv::TickBlockContext<MissingBackgroundTockNode> const&) const {}
 };
 
-struct MissingIndexedEventTockNode {
+struct MissingBackgroundEventTockNode {
     static constexpr auto outputs()
     {
         return std::array {
@@ -51,17 +51,17 @@ struct MissingIndexedEventTockNode {
         };
     }
 
-    void tick_block(iv::TickBlockContext<MissingIndexedEventTockNode> const&) const {}
+    void tick_block(iv::TickBlockContext<MissingBackgroundEventTockNode> const&) const {}
 };
 
-struct InvalidIndexedTockSignatureNode {
+struct InvalidBackgroundTockSignatureNode {
     static constexpr auto outputs()
     {
         return std::array {iv::tock_sample_output("output")};
     }
 
-    void tick_block(iv::TickBlockContext<InvalidIndexedTockSignatureNode> const&) const {}
-    int tock_coverage(iv::TockCoverageContext<InvalidIndexedTockSignatureNode>&) const
+    void tick_block(iv::TickBlockContext<InvalidBackgroundTockSignatureNode> const&) const {}
+    int tock_coverage(iv::TockCoverageContext<InvalidBackgroundTockSignatureNode>&) const
     {
         return 0;
     }
@@ -71,6 +71,6 @@ IV_NODE("iv.test.dynamic_sample_port_node", DynamicSamplePortNode);
 IV_NODE("iv.test.dynamic_event_port_node", DynamicEventPortNode);
 IV_NODE("iv.test.non_constexpr_port_node", NonConstexprPortNode);
 IV_NODE("iv.test.dynamic_port_count_node", DynamicPortCountNode);
-IV_NODE("iv.test.missing_indexed_tock", MissingIndexedTockNode);
-IV_NODE("iv.test.missing_indexed_event_tock", MissingIndexedEventTockNode);
-IV_NODE("iv.test.invalid_indexed_tock_signature", InvalidIndexedTockSignatureNode);
+IV_NODE("iv.test.missing_background_tock", MissingBackgroundTockNode);
+IV_NODE("iv.test.missing_background_event_tock", MissingBackgroundEventTockNode);
+IV_NODE("iv.test.invalid_background_tock_signature", InvalidBackgroundTockSignatureNode);

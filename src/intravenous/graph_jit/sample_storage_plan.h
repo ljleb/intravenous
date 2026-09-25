@@ -23,7 +23,7 @@ inline constexpr std::size_t no_sample_transient_allocation =
 inline constexpr std::size_t no_sample_persistent_allocation =
     std::numeric_limits<std::size_t>::max();
 
-// One compiler-visible physical sample representation. Node API facades are
+// One compiler-visible storage sample representation. Node API facades are
 // reconstructed from these immutable facts and never become persistent graph
 // objects. Storage residence is independent from the conversion, composition,
 // or feedback operations which read and write the representation.
@@ -47,10 +47,10 @@ struct SampleRepresentationPlan {
 };
 
 // A disconnected output still exposes its declared history/latency window to
-// its producer callback. It therefore needs an ordinary writable physical
+// its producer callback. It therefore needs an ordinary writable storage
 // representation even though no graph edge consumes it. These requests enter
 // the same residence/capacity planner as connected producer representations.
-struct SampleSinkPhysicalRequest {
+struct SampleSinkStorageRequest {
     ChannelLayout channel_layout{};
     std::size_t history = 0;
     std::size_t latency = 0;
@@ -67,18 +67,18 @@ struct SampleConstantInputRequest {
     std::size_t execution_position = 0;
 };
 
-struct SampleProducerPhysicalPlan {
+struct SampleProducerStoragePlan {
     std::size_t canonical_representation = no_sample_representation;
-    // Final storage choice made by sample physical planning after accounting for
+    // Final storage choice made by sample storage planning after accounting for
     // compiler-generated conversion/fanout/feedback work that reads this
     // producer buffer.
     SampleConnectionStoragePlan storage_plan{};
 };
 
 // One target semantic channel resolved directly to a channel of an existing
-// physical representation. frame_delay is an additional per-channel read
+// storage representation. frame_delay is an additional per-channel read
 // delay, in frames, applied by InputPort on top of its port-level read latency.
-// This is the physical binding form used by zero-copy projection, permutation,
+// This is the storage binding form used by zero-copy projection, permutation,
 // layout conversion, and channel duplication, as well as the final binding of a
 // selectively materialized conversion result.
 struct SampleChannelBindingPlan {
@@ -120,7 +120,7 @@ struct SampleCompositionInputPlan {
 
 // One normalized semantic conversion -> projection contribution. sources are
 // ordered by source_layout's semantic channels and may resolve to different
-// physical representations; conversion reads them directly without first
+// storage representations; conversion reads them directly without first
 // gathering a contiguous source buffer. target_channels map converted semantic
 // channels into this operation's target representation.
 struct SampleCompositionContributionPlan {
@@ -190,7 +190,7 @@ struct SamplePersistentAllocationPlan {
     std::size_t storage_offset = 0;
 };
 
-// stack_with_persistent_carry uses a transient absolute-indexed working ring
+// stack_with_persistent_carry uses a transient absolute-background working ring
 // while a minimal persistent tail crosses root invocations. Ordinary producer
 // storage restores/commits around the producer. Feedback storage may need to
 // restore before an earlier cyclic consumer while still committing after the
@@ -253,29 +253,29 @@ struct SampleFeedbackTimelinePlan {
     SampleFeedbackTimelineWriterPlan writer{};
 };
 
-struct SamplePhysicalPlan {
-    // Indexed by ConnectionAnalysisPlan::sample_producer_groups.
-    std::vector<std::optional<SampleProducerPhysicalPlan>> producer_groups{};
-    // Indexed by physical representation handle.
+struct SampleStoragePlan {
+    // Background by ConnectionAnalysisPlan::sample_producer_groups.
+    std::vector<std::optional<SampleProducerStoragePlan>> producer_groups{};
+    // Background by storage representation handle.
     std::vector<SampleRepresentationPlan> representations{};
-    // Indexed by ConnectionAnalysisPlan::sample_connections. Whole-port
-    // bindings resolve here when every target channel shares one physical
+    // Background by ConnectionAnalysisPlan::sample_connections. Whole-port
+    // bindings resolve here when every target channel shares one storage
     // representation. Arithmetic converted branches may resolve to a shared
     // derived representation when their static transformation is identical.
     std::vector<std::optional<std::size_t>> connection_representations{};
     // Channel-granular connections bind each target semantic channel to its
     // resolved source/result representation. This covers projection,
     // permutation, aliasable conversion, and mixed alias/computed composition.
-    // Indexed by sample connection; when present, entries are in canonical
+    // Background by sample connection; when present, entries are in canonical
     // target-channel order.
     std::vector<std::optional<std::vector<SampleChannelBindingPlan>>>
         connection_channel_bindings{};
 
-    // Indexed by the SampleSinkPhysicalRequest sequence supplied to
-    // build_sample_physical_plan().
+    // Background by the SampleSinkStorageRequest sequence supplied to
+    // build_sample_storage_plan().
     std::vector<std::size_t> sink_representations{};
-    // Indexed by the SampleConstantInputRequest sequence supplied to
-    // build_sample_physical_plan().
+    // Background by the SampleConstantInputRequest sequence supplied to
+    // build_sample_storage_plan().
     std::vector<std::size_t> constant_input_representations{};
 
     // Explicit conversion/materialization operations. These are scheduled after
@@ -311,15 +311,15 @@ struct SamplePhysicalPlan {
     }
 };
 
-// Pure host-side physical-representation planning. Producer-group decisions are
+// Pure host-side storage-representation planning. Producer-group decisions are
 // consumed from connection analysis; derived feedback requirements are fed back
 // through choose_sample_connection_storage_plan() rather than duplicating policy.
-// Carry and full persistent storage are realized as distinct physical
+// Carry and full persistent storage are realized as distinct storage
 // representations while conversion remains an explicit operation.
-std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
+std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     ConnectionAnalysisPlan const& connections,
     std::size_t kernel_block_size,
-    std::span<SampleSinkPhysicalRequest const> sinks = {},
+    std::span<SampleSinkStorageRequest const> sinks = {},
     std::span<SampleConstantInputRequest const> constant_inputs = {},
     RealtimeStorageCostModel const& cost_model = {});
 
@@ -327,12 +327,12 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
 // backing belongs to the generated root stack. Retained feedback state with
 // authored initial values installs raw-region initialization callbacks, so
 // realtime execution performs no setup/allocation.
-std::expected<void, std::string> declare_sample_physical_storage(
+std::expected<void, std::string> declare_sample_storage_storage(
     NodeLayoutBuilder& builder,
-    SamplePhysicalPlan& plan);
+    SampleStoragePlan& plan);
 
-std::expected<void, std::string> finalize_sample_physical_storage(
+std::expected<void, std::string> finalize_sample_storage_storage(
     NodeLayout const& layout,
-    SamplePhysicalPlan& plan);
+    SampleStoragePlan& plan);
 
 } // namespace iv::graph_jit::detail

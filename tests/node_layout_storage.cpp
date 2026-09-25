@@ -187,7 +187,7 @@ namespace {
             int marker = 17;
         };
 
-        struct IndexedState {
+        struct TockState {
             int marker = 23;
         };
     };
@@ -296,7 +296,7 @@ namespace {
     struct NestedParent {
         struct State {
             std::span<std::span<std::byte>> nested;
-            std::span<std::span<std::byte>> nested_indexed;
+            std::span<std::span<std::byte>> nested_background;
         };
 
         void declare(iv::DeclarationContext<NestedParent> const& ctx) const
@@ -307,14 +307,14 @@ namespace {
             do_declare(a, ctx);
             do_declare(b, ctx);
             ctx.nested_node_states(state.nested);
-            ctx.nested_node_indexed_states(state.nested_indexed);
+            ctx.nested_node_background_states(state.nested_background);
         }
     };
 
-    struct IndexedLifecycleNode {
+    struct BackgroundLifecycleNode {
         std::string id;
 
-        struct IndexedState {
+        struct TockState {
             static inline int live_instances = 0;
 
             int initialized = 0;
@@ -322,12 +322,12 @@ namespace {
             int released = 0;
             int value = 0;
 
-            IndexedState()
+            TockState()
             {
                 ++live_instances;
             }
 
-            ~IndexedState()
+            ~TockState()
             {
                 --live_instances;
             }
@@ -339,17 +339,17 @@ namespace {
         }
 
         void initialize(
-            iv::InitializationContext<IndexedLifecycleNode> const& ctx) const
+            iv::InitializationContext<BackgroundLifecycleNode> const& ctx) const
         {
-            auto& state = ctx.indexed_state();
+            auto& state = ctx.tock_state();
             ++state.initialized;
             state.value = 17;
         }
 
-        void move(iv::MoveContext<IndexedLifecycleNode> const& ctx) const
+        void move(iv::MoveContext<BackgroundLifecycleNode> const& ctx) const
         {
-            auto& state = ctx.indexed_state();
-            auto const& previous = ctx.previous_indexed_state();
+            auto& state = ctx.tock_state();
+            auto const& previous = ctx.previous_background_state();
             state.initialized = previous.initialized;
             state.moved = previous.moved + 1;
             state.released = previous.released;
@@ -357,9 +357,9 @@ namespace {
         }
 
         void release(
-            iv::ReleaseContext<IndexedLifecycleNode> const& ctx) const
+            iv::ReleaseContext<BackgroundLifecycleNode> const& ctx) const
         {
-            ++ctx.indexed_state().released;
+            ++ctx.tock_state().released;
         }
     };
 
@@ -369,7 +369,7 @@ namespace {
             int ticked = 0;
         };
 
-        struct IndexedState {
+        struct TockState {
             int initialized = 0;
             int ticked = 0;
         };
@@ -377,7 +377,7 @@ namespace {
         void initialize(iv::InitializationContext<StatefulTickingNode> const& ctx) const
         {
             ctx.state().initialized += 1;
-            ctx.indexed_state().initialized += 1;
+            ctx.tock_state().initialized += 1;
         }
 
         void tick_block(iv::TickBlockContext<StatefulTickingNode> const& ctx) const
@@ -386,44 +386,44 @@ namespace {
         }
     };
 
-    struct IndexedStorageProducer {
-        struct IndexedState {
+    struct BackgroundStorageProducer {
+        struct TockState {
             std::span<int> values;
         };
 
-        void declare(iv::DeclarationContext<IndexedStorageProducer> const& ctx) const
+        void declare(iv::DeclarationContext<BackgroundStorageProducer> const& ctx) const
         {
-            auto const& state = ctx.indexed_state();
+            auto const& state = ctx.tock_state();
             ctx.local_array(state.values, 3);
-            ctx.export_array("indexed-values", state.values);
+            ctx.export_array("background-values", state.values);
         }
 
         void initialize(
-            iv::InitializationContext<IndexedStorageProducer> const& ctx) const
+            iv::InitializationContext<BackgroundStorageProducer> const& ctx) const
         {
-            auto& state = ctx.indexed_state();
+            auto& state = ctx.tock_state();
             state.values[0] = 5;
             state.values[1] = 7;
             state.values[2] = 11;
         }
     };
 
-    struct IndexedStorageConsumer {
-        struct IndexedState {
+    struct BackgroundStorageConsumer {
+        struct TockState {
             std::span<int> imported;
             int observed_sum = 0;
         };
 
-        void declare(iv::DeclarationContext<IndexedStorageConsumer> const& ctx) const
+        void declare(iv::DeclarationContext<BackgroundStorageConsumer> const& ctx) const
         {
-            auto const& state = ctx.indexed_state();
-            ctx.import_array("indexed-values", state.imported);
+            auto const& state = ctx.tock_state();
+            ctx.import_array("background-values", state.imported);
         }
 
         void initialize(
-            iv::InitializationContext<IndexedStorageConsumer> const& ctx) const
+            iv::InitializationContext<BackgroundStorageConsumer> const& ctx) const
         {
-            auto& state = ctx.indexed_state();
+            auto& state = ctx.tock_state();
             for (auto const value : state.imported) {
                 state.observed_sum += value;
             }
@@ -794,8 +794,8 @@ int main()
 
     {
         iv::NodeLayoutBuilder builder(8);
-        IndexedStorageProducer producer;
-        IndexedStorageConsumer consumer;
+        BackgroundStorageProducer producer;
+        BackgroundStorageConsumer consumer;
         iv::do_declare(producer, builder);
         iv::do_declare(consumer, builder);
 
@@ -804,24 +804,24 @@ int main()
         auto storage = layout.create_storage(resources);
         storage.initialize();
 
-        auto& producer_state = *static_cast<IndexedStorageProducer::IndexedState*>(
-            storage.indexed_state_ptr(0));
-        auto& consumer_state = *static_cast<IndexedStorageConsumer::IndexedState*>(
-            storage.indexed_state_ptr(1));
+        auto& producer_state = *static_cast<BackgroundStorageProducer::TockState*>(
+            storage.background_state_ptr(0));
+        auto& consumer_state = *static_cast<BackgroundStorageConsumer::TockState*>(
+            storage.background_state_ptr(1));
         iv::test::require(
             producer_state.values.size() == 3,
-            "local_array declared from IndexedState should be patched");
+            "local_array declared from TockState should be patched");
         iv::test::require(
             consumer_state.imported.data() == producer_state.values.data(),
-            "IndexedState import/export bindings should resolve through IndexedState");
+            "TockState import/export bindings should resolve through TockState");
         auto const exported =
-            storage.resolve_exported_array_storage<int>("indexed-values");
+            storage.resolve_exported_array_storage<int>("background-values");
         iv::test::require(
             exported.data() == producer_state.values.data() && exported.size() == 3,
-            "host export resolution should read IndexedState span fields");
+            "host export resolution should read TockState span fields");
         iv::test::require(
             consumer_state.observed_sum == 23,
-            "IndexedState imports should be available during initialize");
+            "TockState imports should be available during initialize");
     }
 
     {
@@ -879,86 +879,86 @@ int main()
 
     {
         iv::test::require(
-            IndexedLifecycleNode::IndexedState::live_instances == 0,
-            "indexed-state lifecycle test should start without live objects");
+            BackgroundLifecycleNode::TockState::live_instances == 0,
+            "background-state lifecycle test should start without live objects");
 
         iv::NodeLayoutBuilder builder(4);
-        IndexedLifecycleNode node { .id = "indexed-state" };
+        BackgroundLifecycleNode node { .id = "background-state" };
         iv::do_declare(node, builder);
         iv::NodeLayout layout = std::move(builder).build();
         iv::test::require(
-            layout.nodes.front().indexed_state_structure.has_value(),
-            "indexed-state layout should carry ABI metadata");
-        layout.nodes.front().indexed_state_structure->type_identity = {
-            .nominal_id = "test.IndexedLifecycleNode.IndexedState",
+            layout.nodes.front().background_state_structure.has_value(),
+            "background-state layout should carry ABI metadata");
+        layout.nodes.front().background_state_structure->type_identity = {
+            .nominal_id = "test.BackgroundLifecycleNode.TockState",
             .definition_fingerprint = "v1",
-            .display_name = "IndexedLifecycleNode::IndexedState",
+            .display_name = "BackgroundLifecycleNode::TockState",
         };
         iv::NodeLayout reloaded_layout = layout;
         static int reloaded_node_type_token = 0;
         reloaded_layout.nodes.front().node_type = &reloaded_node_type_token;
 
-        iv::test::require(layout.nodes.size() == 1, "indexed-state layout should contain its node");
+        iv::test::require(layout.nodes.size() == 1, "background-state layout should contain its node");
         auto const& record = layout.nodes.front();
         iv::test::require(record.state_size == 0, "test node should have no sequential State");
         iv::test::require(
-            record.indexed_state_size == sizeof(IndexedLifecycleNode::IndexedState),
-            "layout should record IndexedState size");
+            record.background_state_size == sizeof(BackgroundLifecycleNode::TockState),
+            "layout should record TockState size");
         iv::test::require(
-            record.indexed_state_alignment == alignof(IndexedLifecycleNode::IndexedState),
-            "layout should record IndexedState alignment");
+            record.background_state_alignment == alignof(BackgroundLifecycleNode::TockState),
+            "layout should record TockState alignment");
         iv::test::require(
-            record.indexed_state_offset >= 0,
-            "layout should assign IndexedState storage");
+            record.background_state_offset >= 0,
+            "layout should assign TockState storage");
         iv::test::require(
-            static_cast<size_t>(record.indexed_state_offset) %
-                    alignof(IndexedLifecycleNode::IndexedState) ==
+            static_cast<size_t>(record.background_state_offset) %
+                    alignof(BackgroundLifecycleNode::TockState) ==
                 0,
-            "IndexedState offset should satisfy its alignment");
+            "TockState offset should satisfy its alignment");
 
         auto resources = make_resources();
         {
             iv::NodeStorage original = layout.create_storage(resources);
             original.initialize();
-            auto& original_indexed =
-                *static_cast<IndexedLifecycleNode::IndexedState*>(
-                    original.indexed_state_ptr(0));
+            auto& original_background =
+                *static_cast<BackgroundLifecycleNode::TockState*>(
+                    original.background_state_ptr(0));
             iv::test::require(
-                original_indexed.initialized == 1,
-                "initialize should receive the default-constructed IndexedState");
-            original_indexed.value = 91;
+                original_background.initialized == 1,
+                "initialize should receive the default-constructed TockState");
+            original_background.value = 91;
 
             iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
             iv::test::require(
                 reloaded.can_move_from(original, 0, 0),
-                "same reflected IndexedState definition should remain movable across package generations");
+                "same reflected TockState definition should remain movable across package generations");
             auto migration = reloaded.prepare_migration_from(original);
             migration.commit();
-            auto& reloaded_indexed =
-                *static_cast<IndexedLifecycleNode::IndexedState*>(
-                    reloaded.indexed_state_ptr(0));
+            auto& reloaded_background =
+                *static_cast<BackgroundLifecycleNode::TockState*>(
+                    reloaded.background_state_ptr(0));
             iv::test::require(
-                reloaded_indexed.initialized == 1,
-                "move should preserve IndexedState initialization data");
+                reloaded_background.initialized == 1,
+                "move should preserve TockState initialization data");
             iv::test::require(
-                reloaded_indexed.moved == 1,
-                "move should receive current and previous IndexedState objects");
+                reloaded_background.moved == 1,
+                "move should receive current and previous TockState objects");
             iv::test::require(
-                reloaded_indexed.value == 91,
-                "move should be able to transfer IndexedState contents");
+                reloaded_background.value == 91,
+                "move should be able to transfer TockState contents");
             iv::test::require(
                 original.initialized_nodes.empty(),
-                "successful indexed-state migration should transfer release ownership");
+                "successful background-state migration should transfer release ownership");
 
             reloaded.release();
             iv::test::require(
-                reloaded_indexed.released == 1,
-                "release should receive the same mutable IndexedState object");
+                reloaded_background.released == 1,
+                "release should receive the same mutable TockState object");
         }
 
         iv::test::require(
-            IndexedLifecycleNode::IndexedState::live_instances == 0,
-            "NodeStorage destruction should destroy every constructed IndexedState");
+            BackgroundLifecycleNode::TockState::live_instances == 0,
+            "NodeStorage destruction should destroy every constructed TockState");
     }
 
     {
@@ -973,19 +973,19 @@ int main()
 
         auto& state = *static_cast<NestedParent::State*>(storage.state_ptr(0));
         iv::test::require(state.nested.size() == 2, "nested_node_states should record directly declared child nodes");
-        iv::test::require(state.nested_indexed.size() == 2, "nested_node_indexed_states should record the same directly declared child nodes");
+        iv::test::require(state.nested_background.size() == 2, "nested_node_background_states should record the same directly declared child nodes");
         iv::test::require(state.nested[0].data() != nullptr, "first nested node state pointer should be patched");
         iv::test::require(state.nested[1].data() != nullptr, "second nested node state pointer should be patched");
-        iv::test::require(state.nested_indexed[0].size() == sizeof(NestedLeaf::IndexedState), "first nested indexed-state span should have the exact IndexedState size");
-        iv::test::require(state.nested_indexed[1].size() == sizeof(NestedLeaf::IndexedState), "second nested indexed-state span should have the exact IndexedState size");
+        iv::test::require(state.nested_background[0].size() == sizeof(NestedLeaf::TockState), "first nested background-state span should have the exact TockState size");
+        iv::test::require(state.nested_background[1].size() == sizeof(NestedLeaf::TockState), "second nested background-state span should have the exact TockState size");
         auto& first = *reinterpret_cast<NestedLeaf::State*>(state.nested[0].data());
         auto& second = *reinterpret_cast<NestedLeaf::State*>(state.nested[1].data());
-        auto& first_indexed = *reinterpret_cast<NestedLeaf::IndexedState*>(state.nested_indexed[0].data());
-        auto& second_indexed = *reinterpret_cast<NestedLeaf::IndexedState*>(state.nested_indexed[1].data());
+        auto& first_background = *reinterpret_cast<NestedLeaf::TockState*>(state.nested_background[0].data());
+        auto& second_background = *reinterpret_cast<NestedLeaf::TockState*>(state.nested_background[1].data());
         iv::test::require(first.marker == 17, "first nested node state should be addressable");
         iv::test::require(second.marker == 17, "second nested node state should be addressable");
-        iv::test::require(first_indexed.marker == 23, "first nested IndexedState should be addressable");
-        iv::test::require(second_indexed.marker == 23, "second nested IndexedState should be addressable");
+        iv::test::require(first_background.marker == 23, "first nested TockState should be addressable");
+        iv::test::require(second_background.marker == 23, "second nested TockState should be addressable");
     }
 
     return 0;

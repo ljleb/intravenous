@@ -1,6 +1,6 @@
 #include <intravenous/dsl.h>
 #include <intravenous/graph_jit/connection_plan.h>
-#include <intravenous/graph_jit/sample_physical_plan.h>
+#include <intravenous/graph_jit/sample_storage_plan.h>
 
 #include <gtest/gtest.h>
 
@@ -60,7 +60,7 @@ struct MixedAccessPass {
         return std::array{
             iv::tick_sample_output("realtime"),
             iv::tock_sample_output(
-                "indexed", {}, iv::OutputRetention::persisted),
+                "background", {}, iv::OutputRetention::persisted),
         };
     }
 
@@ -69,7 +69,7 @@ struct MixedAccessPass {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<MixedAccessPass>& context) const
     {
-        context.template output<"indexed">().publish_coverage({});
+        context.template output<"background">().publish_coverage({});
     }
 };
 
@@ -185,7 +185,7 @@ struct StereoSink {
     void tick_block(iv::TickBlockContext<StereoSink> const&) const {}
 };
 
-struct IndexedSource {
+struct BackgroundSource {
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 0>{};
@@ -196,16 +196,16 @@ struct IndexedSource {
         return std::array{iv::tock_sample_output("out")};
     }
 
-    void tick_block(iv::TickBlockContext<IndexedSource> const&) const {}
-    void tock_coverage(iv::TockCoverageContext<IndexedSource>&) const {}
+    void tick_block(iv::TickBlockContext<BackgroundSource> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<BackgroundSource>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<IndexedSource>& context) const
+        iv::PropagateForwardCoverageContext<BackgroundSource>& context) const
     {
         context.template output<"out">().publish_coverage({});
     }
 };
 
-struct IndexedStereoSource {
+struct BackgroundStereoSource {
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 0>{};
@@ -223,16 +223,16 @@ struct IndexedStereoSource {
             })};
     }
 
-    void tick_block(iv::TickBlockContext<IndexedStereoSource> const&) const {}
-    void tock_coverage(iv::TockCoverageContext<IndexedStereoSource>&) const {}
+    void tick_block(iv::TickBlockContext<BackgroundStereoSource> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<BackgroundStereoSource>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<IndexedStereoSource>& context) const
+        iv::PropagateForwardCoverageContext<BackgroundStereoSource>& context) const
     {
         context.template output<"out">().publish_coverage({});
     }
 };
 
-struct IndexedSamplePass {
+struct BackgroundSamplePass {
     static constexpr auto inputs()
     {
         return std::array{iv::random_access_sample_input("in")};
@@ -243,17 +243,17 @@ struct IndexedSamplePass {
         return std::array{iv::tock_sample_output("out")};
     }
 
-    void tick_block(iv::TickBlockContext<IndexedSamplePass> const&) const {}
-    void tock_coverage(iv::TockCoverageContext<IndexedSamplePass>&) const {}
+    void tick_block(iv::TickBlockContext<BackgroundSamplePass> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<BackgroundSamplePass>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<IndexedSamplePass>& context) const
+        iv::PropagateForwardCoverageContext<BackgroundSamplePass>& context) const
     {
         context.template output<"out">().publish_coverage(
             context.template input<"in">().coverage());
     }
 };
 
-struct IndexedEventPass {
+struct BackgroundEventPass {
     static constexpr auto inputs()
     {
         return std::array{
@@ -268,17 +268,17 @@ struct IndexedEventPass {
         };
     }
 
-    void tick_block(iv::TickBlockContext<IndexedEventPass> const&) const {}
-    void tock_coverage(iv::TockCoverageContext<IndexedEventPass>&) const {}
+    void tick_block(iv::TickBlockContext<BackgroundEventPass> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<BackgroundEventPass>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<IndexedEventPass>& context) const
+        iv::PropagateForwardCoverageContext<BackgroundEventPass>& context) const
     {
         context.template output<"out">().publish_coverage(
             context.template input<"in">().coverage());
     }
 };
 
-struct IndexedMidiSource {
+struct BackgroundMidiSource {
     static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 0>{};
@@ -291,10 +291,10 @@ struct IndexedMidiSource {
         };
     }
 
-    void tick_block(iv::TickBlockContext<IndexedMidiSource> const&) const {}
-    void tock_coverage(iv::TockCoverageContext<IndexedMidiSource>&) const {}
+    void tick_block(iv::TickBlockContext<BackgroundMidiSource> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<BackgroundMidiSource>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<IndexedMidiSource>&) const {}
+        iv::PropagateForwardCoverageContext<BackgroundMidiSource>&) const {}
 };
 
 struct TockTriggerSource {
@@ -319,7 +319,7 @@ struct TockTriggerSource {
         iv::PropagateForwardCoverageContext<TockTriggerSource>&) const {}
 };
 
-struct IndexedSink {
+struct BackgroundSink {
     static constexpr auto inputs()
     {
         return std::array{iv::random_access_sample_input("in")};
@@ -330,10 +330,10 @@ struct IndexedSink {
         return std::array<iv::OutputConfig, 0>{};
     }
 
-    void tick_block(iv::TickBlockContext<IndexedSink> const&) const {}
+    void tick_block(iv::TickBlockContext<BackgroundSink> const&) const {}
 };
 
-struct IndexedTwoInputPass {
+struct BackgroundTwoInputPass {
     static constexpr auto inputs()
     {
         return std::array{
@@ -347,10 +347,10 @@ struct IndexedTwoInputPass {
         return std::array{iv::tock_sample_output("out")};
     }
 
-    void tick_block(iv::TickBlockContext<IndexedTwoInputPass> const&) const {}
-    void tock_coverage(iv::TockCoverageContext<IndexedTwoInputPass>&) const {}
+    void tick_block(iv::TickBlockContext<BackgroundTwoInputPass> const&) const {}
+    void tock_coverage(iv::TockCoverageContext<BackgroundTwoInputPass>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<IndexedTwoInputPass>&) const {}
+        iv::PropagateForwardCoverageContext<BackgroundTwoInputPass>&) const {}
 };
 
 struct OutputAccessRetentionModes {
@@ -369,13 +369,13 @@ struct OutputAccessRetentionModes {
                 "realtime_persisted", {}, {},
                 iv::OutputRetention::persisted),
             iv::tock_sample_output(
-                "indexed_ephemeral", {},
+                "background_ephemeral", {},
                 iv::OutputRetention::ephemeral),
             iv::tock_sample_output(
-                "indexed_persisted", {},
+                "background_persisted", {},
                 iv::OutputRetention::persisted),
             iv::tock_event_output(
-                "indexed_persisted_events",
+                "background_persisted_events",
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::trigger,
                     .max_events_per_index = 0.25,
@@ -548,8 +548,8 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
     EXPECT_EQ(plan->dependencies[0].source_bundle, first_handle);
     EXPECT_EQ(plan->dependencies[0].target_bundle, second_handle);
     EXPECT_EQ(
-        plan->dependencies[0].payload,
-        graph_jit::detail::PlannedConnectionPayload::sample);
+        plan->dependencies[0].data,
+        graph_jit::detail::PlannedConnectionData::sample);
 
     ASSERT_EQ(plan->schedule.regions.size(), 2u);
     ASSERT_EQ(plan->schedule.region_order.size(), 2u);
@@ -604,8 +604,8 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
     EXPECT_TRUE(std::ranges::any_of(
         plan->storage.regions,
         [&](graph_jit::detail::ConnectionStorageRegionRequirement const& region) {
-            return region.payload
-                    == graph_jit::detail::PlannedConnectionPayload::sample
+            return region.data
+                    == graph_jit::detail::PlannedConnectionData::sample
                 && region.producer_group_index == group_index
                 && region.lifetime
                     == graph_jit::detail::ConnectionStorageLifetime::persistent
@@ -616,8 +616,8 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
     EXPECT_TRUE(std::ranges::any_of(
         plan->storage.regions,
         [&](graph_jit::detail::ConnectionStorageRegionRequirement const& region) {
-            return region.payload
-                    == graph_jit::detail::PlannedConnectionPayload::sample
+            return region.data
+                    == graph_jit::detail::PlannedConnectionData::sample
                 && region.producer_group_index == group_index
                 && region.lifetime
                     == graph_jit::detail::ConnectionStorageLifetime::transient
@@ -651,7 +651,7 @@ TEST(GraphJitConnectionPlan, EqualizesFeedForwardSamplePathsAtConvergence)
             plan->sample_connections,
             [&](graph_jit::detail::SampleConnectionPlan const& connection) {
                 return connection.target_port.node_bundle_handle == sink_handle
-                    && connection.target_port.port_ordinal == target_port
+                    && connection.target_port.port_index == target_port
                     && connection.canonical_source_port
                     && connection.canonical_source_port->node_bundle_handle
                         == source_bundle;
@@ -730,7 +730,7 @@ TEST(GraphJitConnectionPlan, EqualizesChannelsInsideComposedSampleInput)
     EXPECT_EQ(slow.read_latency, 2u);
 
     // The scalar is only a conservative compatibility value for the current
-    // whole-port storage planner. Physical channel composition must consume
+    // whole-port storage planner. Storage channel composition must consume
     // the per-channel timings above instead of applying this value uniformly.
     EXPECT_EQ(connection->source_latency, 2u);
     EXPECT_EQ(connection->read_latency, 7u);
@@ -752,34 +752,34 @@ TEST(GraphJitConnectionPlan, EqualizesChannelsInsideComposedSampleInput)
     EXPECT_EQ(source_group->storage_requirements.retained_frames, 7u);
     EXPECT_EQ(latent_group->storage_requirements.retained_frames, 2u);
 
-    auto physical = graph_jit::detail::build_sample_physical_plan(*plan, 64);
-    ASSERT_TRUE(physical.has_value())
-        << (physical ? std::string{} : physical.error());
-    EXPECT_TRUE(physical->compositions.empty());
+    auto storage = graph_jit::detail::build_sample_storage_plan(*plan, 64);
+    ASSERT_TRUE(storage.has_value())
+        << (storage ? std::string{} : storage.error());
+    EXPECT_TRUE(storage->compositions.empty());
     auto const connection_index = static_cast<std::size_t>(std::distance(
         plan->sample_connections.begin(), connection));
-    ASSERT_LT(connection_index, physical->connection_representations.size());
-    ASSERT_LT(connection_index, physical->connection_channel_bindings.size());
-    EXPECT_FALSE(physical->connection_representations[connection_index].has_value());
-    ASSERT_TRUE(physical->connection_channel_bindings[connection_index].has_value());
+    ASSERT_LT(connection_index, storage->connection_representations.size());
+    ASSERT_LT(connection_index, storage->connection_channel_bindings.size());
+    EXPECT_FALSE(storage->connection_representations[connection_index].has_value());
+    ASSERT_TRUE(storage->connection_channel_bindings[connection_index].has_value());
 
     auto const& aliases =
-        *physical->connection_channel_bindings[connection_index];
+        *storage->connection_channel_bindings[connection_index];
     ASSERT_EQ(aliases.size(), 2u);
     auto const source_group_index = static_cast<std::size_t>(std::distance(
         plan->sample_producer_groups.begin(), source_group));
     auto const latent_group_index = static_cast<std::size_t>(std::distance(
         plan->sample_producer_groups.begin(), latent_group));
-    ASSERT_TRUE(physical->producer_groups[source_group_index].has_value());
-    ASSERT_TRUE(physical->producer_groups[latent_group_index].has_value());
+    ASSERT_TRUE(storage->producer_groups[source_group_index].has_value());
+    ASSERT_TRUE(storage->producer_groups[latent_group_index].has_value());
     EXPECT_EQ(
         aliases[0].representation,
-        physical->producer_groups[source_group_index]->canonical_representation);
+        storage->producer_groups[source_group_index]->canonical_representation);
     EXPECT_EQ(aliases[0].representation_channel, 0u);
     EXPECT_EQ(aliases[0].frame_delay, 7u);
     EXPECT_EQ(
         aliases[1].representation,
-        physical->producer_groups[latent_group_index]->canonical_representation);
+        storage->producer_groups[latent_group_index]->canonical_representation);
     EXPECT_EQ(aliases[1].representation_channel, 0u);
     EXPECT_EQ(aliases[1].frame_delay, 2u);
 
@@ -788,10 +788,10 @@ TEST(GraphJitConnectionPlan, EqualizesChannelsInsideComposedSampleInput)
     auto const sink_position =
         *plan->schedule.bundle_execution_position[sink_handle];
     EXPECT_GE(
-        physical->representations[aliases[0].representation].live_interval.end,
+        storage->representations[aliases[0].representation].live_interval.end,
         sink_position);
     EXPECT_GE(
-        physical->representations[aliases[1].representation].live_interval.end,
+        storage->representations[aliases[1].representation].live_interval.end,
         sink_position);
 }
 
@@ -829,7 +829,7 @@ TEST(GraphJitConnectionPlan, PropagatesAlignedLatencyAcrossMultipleConvergences)
             plan->sample_connections,
             [&](graph_jit::detail::SampleConnectionPlan const& connection) {
                 return connection.target_port.node_bundle_handle == target_bundle
-                    && connection.target_port.port_ordinal == target_port
+                    && connection.target_port.port_index == target_port
                     && connection.canonical_source_port
                     && connection.canonical_source_port->node_bundle_handle
                         == source_bundle;
@@ -941,14 +941,14 @@ TEST(GraphJitConnectionPlan, RejectsDetachThatDoesNotBreakCycle)
         std::string::npos);
 }
 
-TEST(GraphJitConnectionPlan, RejectsIndexedEdgesInWholeSemanticScc)
+TEST(GraphJitConnectionPlan, RejectsBackgroundEdgesInWholeSemanticScc)
 {
     using namespace iv;
     GraphBuilder sample_graph;
     auto sample_first =
-        details::configure_concrete_node<IndexedSamplePass>(sample_graph);
+        details::configure_concrete_node<BackgroundSamplePass>(sample_graph);
     auto sample_second =
-        details::configure_concrete_node<IndexedSamplePass>(sample_graph);
+        details::configure_concrete_node<BackgroundSamplePass>(sample_graph);
     sample_first(sample_second);
     sample_second(static_cast<SamplePortRef>(sample_first).detach(5));
     sample_graph.outputs();
@@ -957,15 +957,15 @@ TEST(GraphJitConnectionPlan, RejectsIndexedEdgesInWholeSemanticScc)
     auto sample_plan = graph_jit::detail::build_connection_analysis_plan(
         sample_configured, 64);
     ASSERT_FALSE(sample_plan.has_value());
-    EXPECT_NE(sample_plan.error().find("indexed sample connection"),
+    EXPECT_NE(sample_plan.error().find("background sample connection"),
         std::string::npos);
     EXPECT_NE(sample_plan.error().find("semantic SCC"), std::string::npos);
 
     GraphBuilder event_graph;
     auto event_first =
-        details::configure_concrete_node<IndexedEventPass>(event_graph);
+        details::configure_concrete_node<BackgroundEventPass>(event_graph);
     auto event_second =
-        details::configure_concrete_node<IndexedEventPass>(event_graph);
+        details::configure_concrete_node<BackgroundEventPass>(event_graph);
     event_first.connect_event_input(0, event_second.event_port());
     event_second.connect_event_input(0, event_first.event_port().detach(7));
     event_graph.outputs();
@@ -974,40 +974,40 @@ TEST(GraphJitConnectionPlan, RejectsIndexedEdgesInWholeSemanticScc)
     auto event_plan = graph_jit::detail::build_connection_analysis_plan(
         event_configured, 64);
     ASSERT_FALSE(event_plan.has_value());
-    EXPECT_NE(event_plan.error().find("indexed event connection"),
+    EXPECT_NE(event_plan.error().find("background event connection"),
         std::string::npos);
     EXPECT_NE(event_plan.error().find("semantic SCC"), std::string::npos);
 }
 
-TEST(GraphJitConnectionPlan, RejectsIndexedSemanticSelfLoop)
+TEST(GraphJitConnectionPlan, RejectsBackgroundSemanticSelfLoop)
 {
     using namespace iv;
     GraphBuilder graph;
-    auto node = details::configure_concrete_node<IndexedSamplePass>(graph);
+    auto node = details::configure_concrete_node<BackgroundSamplePass>(graph);
     node(static_cast<SamplePortRef>(node).detach(3));
     graph.outputs();
 
     auto configured = std::move(graph).finish();
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_FALSE(plan.has_value());
-    EXPECT_NE(plan.error().find("indexed sample connection"),
+    EXPECT_NE(plan.error().find("background sample connection"),
         std::string::npos);
     EXPECT_NE(plan.error().find("semantic SCC"), std::string::npos);
 }
 
-TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportIndexedData)
+TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportBackgroundData)
 {
     using namespace iv;
     GraphBuilder graph;
     auto first = details::configure_concrete_node<MixedAccessPass>(graph);
     auto second = details::configure_concrete_node<PlainSamplePass>(graph);
-    auto indexed_sink = details::configure_concrete_node<IndexedSink>(graph);
+    auto background_sink = details::configure_concrete_node<BackgroundSink>(graph);
     auto const first_handle = first.node_bundle_handle();
     auto const second_handle = second.node_bundle_handle();
-    auto const indexed_sink_handle = indexed_sink.node_bundle_handle();
+    auto const background_sink_handle = background_sink.node_bundle_handle();
     first(second);
     second(first["realtime"].detach(5));
-    indexed_sink(first["indexed"]);
+    background_sink(first["background"]);
     graph.outputs();
 
     auto configured = std::move(graph).finish();
@@ -1023,26 +1023,26 @@ TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportIndexedData)
                         == graph_jit::PlannedDeliveryMechanism::tock_to_random_access;
                 });
         }));
-    ASSERT_TRUE(plan->indexed.bundle_to_semantic_node[first_handle]);
-    ASSERT_TRUE(plan->indexed.bundle_to_semantic_node[second_handle]);
-    ASSERT_TRUE(plan->indexed.bundle_to_semantic_node[indexed_sink_handle]);
+    ASSERT_TRUE(plan->background.bundle_to_semantic_node[first_handle]);
+    ASSERT_TRUE(plan->background.bundle_to_semantic_node[second_handle]);
+    ASSERT_TRUE(plan->background.bundle_to_semantic_node[background_sink_handle]);
     auto const first_semantic =
-        *plan->indexed.bundle_to_semantic_node[first_handle];
+        *plan->background.bundle_to_semantic_node[first_handle];
     auto const second_semantic =
-        *plan->indexed.bundle_to_semantic_node[second_handle];
+        *plan->background.bundle_to_semantic_node[second_handle];
     auto const sink_semantic =
-        *plan->indexed.bundle_to_semantic_node[indexed_sink_handle];
+        *plan->background.bundle_to_semantic_node[background_sink_handle];
     EXPECT_EQ(
-        plan->indexed.semantic_nodes[first_semantic].scc,
-        plan->indexed.semantic_nodes[second_semantic].scc);
+        plan->background.semantic_nodes[first_semantic].scc,
+        plan->background.semantic_nodes[second_semantic].scc);
     EXPECT_NE(
-        plan->indexed.semantic_nodes[first_semantic].scc,
-        plan->indexed.semantic_nodes[sink_semantic].scc);
+        plan->background.semantic_nodes[first_semantic].scc,
+        plan->background.semantic_nodes[sink_semantic].scc);
     EXPECT_LT(
-        plan->indexed.semantic_nodes[first_semantic].scc,
-        plan->indexed.semantic_nodes[sink_semantic].scc);
-    EXPECT_TRUE(plan->indexed.semantic_sccs[
-        plan->indexed.semantic_nodes[first_semantic].scc].cyclic);
+        plan->background.semantic_nodes[first_semantic].scc,
+        plan->background.semantic_nodes[sink_semantic].scc);
+    EXPECT_TRUE(plan->background.semantic_sccs[
+        plan->background.semantic_nodes[first_semantic].scc].cyclic);
 }
 
 TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)
@@ -1196,13 +1196,13 @@ TEST(GraphJitConnectionPlan, SimpleRealtimeSampleEdgeChoosesDirect)
         graph_jit::detail::ConnectionStorageLifetime::transient);
 }
 
-TEST(GraphJitConnectionPlan, PartitionsOverlappingSamplePortUsesIntoEndpointAtoms)
+TEST(GraphJitConnectionPlan, PartitionsOverlappingSamplePortUsesIntoPortAtoms)
 {
     using namespace iv;
     GraphBuilder graph;
     auto source = details::configure_concrete_node<PersistedStereoSource>(graph);
     auto sequential = details::configure_concrete_node<RealtimeSink>(graph);
-    auto random_access = details::configure_concrete_node<IndexedSink>(graph);
+    auto random_access = details::configure_concrete_node<BackgroundSink>(graph);
     auto const source_handle = source.node_bundle_handle();
     sequential(source[stereo::left]);
     random_access(source[stereo::right]);
@@ -1212,68 +1212,68 @@ TEST(GraphJitConnectionPlan, PartitionsOverlappingSamplePortUsesIntoEndpointAtom
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
-    auto const& atoms = plan->indexed.sample_source_atoms;
-    ASSERT_EQ(atoms.size(), 2u);
+    auto const& subsets = plan->background.sample_source_subsets;
+    ASSERT_EQ(subsets.size(), 2u);
     auto const atom_for_channel = [&](std::size_t channel)
-        -> graph_jit::SampleSourceEndpointAtomPlan const* {
+        -> graph_jit::SampleSourcePortSubsetPlan const* {
         auto const found = std::ranges::find_if(
-            atoms,
-            [&](graph_jit::SampleSourceEndpointAtomPlan const& atom) {
-                return atom.port.node_bundle_handle == source_handle
-                    && atom.channels.size() == 1
-                    && atom.channels.front().channel == channel;
+            subsets,
+            [&](graph_jit::SampleSourcePortSubsetPlan const& subset) {
+                return subset.port.node_bundle_handle == source_handle
+                    && subset.channels.size() == 1
+                    && subset.channels.front().channel == channel;
             });
-        return found == atoms.end() ? nullptr : &*found;
+        return found == subsets.end() ? nullptr : &*found;
     };
-    auto const* left = atom_for_channel(stereo::left.channel_ordinal);
-    auto const* right = atom_for_channel(stereo::right.channel_ordinal);
+    auto const* left = atom_for_channel(stereo::left.channel_index);
+    auto const* right = atom_for_channel(stereo::right.channel_index);
     ASSERT_NE(left, nullptr);
     ASSERT_NE(right, nullptr);
-    EXPECT_TRUE(left->capabilities.current_tick_readable);
-    EXPECT_FALSE(right->capabilities.current_tick_readable);
-    EXPECT_TRUE(left->capabilities.capture_backed_persistence);
-    EXPECT_TRUE(right->capabilities.capture_backed_persistence);
-    EXPECT_TRUE(left->capabilities.canonical_persisted_pages);
-    EXPECT_TRUE(right->capabilities.canonical_persisted_pages);
+    EXPECT_TRUE(left->storage.current_tick);
+    EXPECT_FALSE(right->storage.current_tick);
+    EXPECT_TRUE(left->storage.capture);
+    EXPECT_TRUE(right->storage.capture);
+    EXPECT_TRUE(left->storage.persisted_pages);
+    EXPECT_TRUE(right->storage.persisted_pages);
     EXPECT_EQ(left->connection_indices.size(), 1u);
     EXPECT_EQ(right->connection_indices.size(), 1u);
     EXPECT_NE(left->connection_indices, right->connection_indices);
 
     ASSERT_EQ(plan->sample_producer_groups.size(), 1u);
     EXPECT_EQ(plan->sample_producer_groups.front().source_atom_indices.size(), 2u);
-    ASSERT_EQ(plan->indexed.connections.size(), 1u);
-    ASSERT_EQ(plan->indexed.connections.front().source_atoms.size(), 1u);
+    ASSERT_EQ(plan->background.connections.size(), 1u);
+    ASSERT_EQ(plan->background.connections.front().source_subsets.size(), 1u);
     EXPECT_EQ(
-        plan->indexed.connections.front().source_atoms.front(),
-        static_cast<graph_jit::EndpointAtomOrdinal>(
-            right - atoms.data()));
+        plan->background.connections.front().source_subsets.front(),
+        static_cast<graph_jit::PortSubsetIndex>(
+            right - subsets.data()));
 
-    auto const& physical = plan->indexed.physical;
-    ASSERT_EQ(physical.sample_source_representations.size(), atoms.size());
-    auto const left_ordinal = static_cast<graph_jit::EndpointAtomOrdinal>(
-        left - atoms.data());
-    auto const right_ordinal = static_cast<graph_jit::EndpointAtomOrdinal>(
-        right - atoms.data());
-    auto canonical_for = [&](graph_jit::EndpointAtomOrdinal atom) {
+    auto const& storage = plan->background.storage;
+    ASSERT_EQ(storage.sample_source_storage.size(), subsets.size());
+    auto const left_index = static_cast<graph_jit::PortSubsetIndex>(
+        left - subsets.data());
+    auto const right_index = static_cast<graph_jit::PortSubsetIndex>(
+        right - subsets.data());
+    auto canonical_for = [&](graph_jit::PortSubsetIndex subset) {
         return std::ranges::find_if(
-            physical.sample_source_representations[atom],
-            [&](graph_jit::IndexedRepresentationOrdinal representation) {
-                return physical.representations[representation].residence
-                    == graph_jit::IndexedRepresentationResidence::
-                        canonical_persisted_pages;
+            storage.sample_source_storage[subset],
+            [&](graph_jit::PortStorageIndex port_index) {
+                return storage.ports[port_index].storage
+                    == graph_jit::PortStorageKind::
+                        persisted_pages;
             });
     };
-    auto const left_canonical = canonical_for(left_ordinal);
-    auto const right_canonical = canonical_for(right_ordinal);
+    auto const left_canonical = canonical_for(left_index);
+    auto const right_canonical = canonical_for(right_index);
     ASSERT_NE(
         left_canonical,
-        physical.sample_source_representations[left_ordinal].end());
+        storage.sample_source_storage[left_index].end());
     ASSERT_NE(
         right_canonical,
-        physical.sample_source_representations[right_ordinal].end());
+        storage.sample_source_storage[right_index].end());
     EXPECT_EQ(*left_canonical, *right_canonical);
     EXPECT_EQ(
-        physical.representations[*left_canonical].sample_channels,
+        storage.ports[*left_canonical].sample_channels,
         (std::vector<std::size_t>{0, 1}));
 }
 
@@ -1367,12 +1367,12 @@ TEST(GraphJitConnectionPlan, BlockSliceMismatchRequiresMaterialization)
         RealtimeBufferStorageKind::transient_stack);
 }
 
-TEST(GraphJitConnectionPlan, IndexedConnectionsDoNotUseRealtimeStoragePolicy)
+TEST(GraphJitConnectionPlan, BackgroundConnectionsDoNotUseRealtimeStoragePolicy)
 {
     using namespace iv;
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<IndexedSource>(graph);
-    auto sink = details::configure_concrete_node<IndexedSink>(graph);
+    auto source = details::configure_concrete_node<BackgroundSource>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
     sink(source);
     graph.outputs();
 
@@ -1392,33 +1392,33 @@ TEST(GraphJitConnectionPlan, IndexedConnectionsDoNotUseRealtimeStoragePolicy)
     EXPECT_TRUE(plan->sample_producer_groups[0].has_background_connections);
     EXPECT_FALSE(plan->sample_producer_groups[0].storage_plan.has_value());
     EXPECT_TRUE(plan->storage.regions.empty());
-    ASSERT_EQ(plan->indexed.sample_source_atoms.size(), 1u);
-    EXPECT_TRUE(plan->indexed.sample_source_atoms.front()
-        .capabilities.prepared_addressable_window);
-    EXPECT_TRUE(plan->indexed.sample_source_atoms.front()
-        .capabilities.transaction_local_addressable);
-    ASSERT_EQ(plan->indexed.requestable_outputs.size(), 1u);
-    EXPECT_FALSE(plan->indexed.endpoints[
-        plan->indexed.requestable_outputs.front()].stable_identity);
+    ASSERT_EQ(plan->background.sample_source_subsets.size(), 1u);
+    EXPECT_TRUE(plan->background.sample_source_subsets.front()
+        .storage.tick_random_access);
+    EXPECT_TRUE(plan->background.sample_source_subsets.front()
+        .storage.background_random_access);
+    ASSERT_EQ(plan->background.requestable_outputs.size(), 1u);
+    EXPECT_FALSE(plan->background.ports[
+        plan->background.requestable_outputs.front()].stable_identity);
 }
 
-TEST(GraphJitConnectionPlan, RetainsCompleteIndexedTopologyAndRetention)
+TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
 {
     using namespace iv;
     GraphBuilder graph;
     auto source =
         details::configure_concrete_node<OutputAccessRetentionModes>(graph);
-    auto left = details::configure_concrete_node<IndexedSamplePass>(graph);
-    auto right = details::configure_concrete_node<IndexedSamplePass>(graph);
-    auto join = details::configure_concrete_node<IndexedTwoInputPass>(graph);
+    auto left = details::configure_concrete_node<BackgroundSamplePass>(graph);
+    auto right = details::configure_concrete_node<BackgroundSamplePass>(graph);
+    auto join = details::configure_concrete_node<BackgroundTwoInputPass>(graph);
     auto const source_handle = source.node_bundle_handle();
     _annotate_node_source_info(source.node_ref(), "source");
     _annotate_node_source_info(left.node_ref(), "left");
     _annotate_node_source_info(right.node_ref(), "right");
     _annotate_node_source_info(join.node_ref(), "join");
 
-    left(source["indexed_ephemeral"]);
-    right(source["indexed_ephemeral"]);
+    left(source["background_ephemeral"]);
+    right(source["background_ephemeral"]);
     join("a"_P = left, "b"_P = right);
     graph.outputs();
 
@@ -1426,7 +1426,7 @@ TEST(GraphJitConnectionPlan, RetainsCompleteIndexedTopologyAndRetention)
     auto built = graph_jit::detail::build_connection_analysis_plan(
         configured, 64);
     ASSERT_TRUE(built.has_value()) << (built ? std::string{} : built.error());
-    auto const& plan = built->indexed;
+    auto const& plan = built->background;
 
     ASSERT_EQ(plan.nodes.size(), 4u);
     ASSERT_EQ(plan.connections.size(), 4u);
@@ -1446,61 +1446,61 @@ TEST(GraphJitConnectionPlan, RetainsCompleteIndexedTopologyAndRetention)
     EXPECT_EQ(plan.accumulators.output_requirement_count, 7u);
     EXPECT_EQ(plan.requestable_outputs.size(), 7u);
     EXPECT_TRUE(std::ranges::all_of(
-        plan.endpoints,
-        [](graph_jit::IndexedEndpointPlan const& endpoint) {
-            return endpoint.retention.has_value()
-                == (endpoint.direction
-                    == graph_jit::IndexedEndpointDirection::output);
+        plan.ports,
+        [](graph_jit::BackgroundPortPlan const& port) {
+            return port.retention.has_value()
+                == (port.direction
+                    == graph_jit::PortDirection::output);
         }));
 
-    auto endpoint_named = [&](std::string_view name)
-        -> graph_jit::IndexedEndpointPlan const* {
+    auto port_named = [&](std::string_view name)
+        -> graph_jit::BackgroundPortPlan const* {
         auto const found = std::ranges::find_if(
-            plan.endpoints,
-            [&](graph_jit::IndexedEndpointPlan const& endpoint) {
-                return endpoint.name == name;
+            plan.ports,
+            [&](graph_jit::BackgroundPortPlan const& port) {
+                return port.name == name;
             });
-        return found == plan.endpoints.end() ? nullptr : &*found;
+        return found == plan.ports.end() ? nullptr : &*found;
     };
-    auto const* indexed_ephemeral = endpoint_named("indexed_ephemeral");
-    auto const* indexed_persisted = endpoint_named("indexed_persisted");
-    auto const* indexed_persisted_events =
-        endpoint_named("indexed_persisted_events");
-    auto const* realtime_persisted = endpoint_named("realtime_persisted");
-    EXPECT_EQ(endpoint_named("realtime_ephemeral"), nullptr);
+    auto const* background_ephemeral = port_named("background_ephemeral");
+    auto const* background_persisted = port_named("background_persisted");
+    auto const* background_persisted_events =
+        port_named("background_persisted_events");
+    auto const* realtime_persisted = port_named("realtime_persisted");
+    EXPECT_EQ(port_named("realtime_ephemeral"), nullptr);
     ASSERT_NE(realtime_persisted, nullptr);
     EXPECT_TRUE(realtime_persisted->persisted_tick_output);
     ASSERT_TRUE(realtime_persisted->retention.has_value());
     EXPECT_EQ(*realtime_persisted->retention, OutputRetention::persisted);
-    ASSERT_NE(indexed_ephemeral, nullptr);
-    ASSERT_NE(indexed_persisted, nullptr);
-    ASSERT_NE(indexed_persisted_events, nullptr);
-    ASSERT_TRUE(indexed_ephemeral->retention.has_value());
-    ASSERT_TRUE(indexed_persisted->retention.has_value());
-    ASSERT_TRUE(indexed_persisted_events->retention.has_value());
+    ASSERT_NE(background_ephemeral, nullptr);
+    ASSERT_NE(background_persisted, nullptr);
+    ASSERT_NE(background_persisted_events, nullptr);
+    ASSERT_TRUE(background_ephemeral->retention.has_value());
+    ASSERT_TRUE(background_persisted->retention.has_value());
+    ASSERT_TRUE(background_persisted_events->retention.has_value());
     EXPECT_EQ(
-        *indexed_ephemeral->retention, OutputRetention::ephemeral);
+        *background_ephemeral->retention, OutputRetention::ephemeral);
     EXPECT_EQ(
-        *indexed_persisted->retention, OutputRetention::persisted);
+        *background_persisted->retention, OutputRetention::persisted);
     EXPECT_EQ(
-        *indexed_persisted_events->retention, OutputRetention::persisted);
-    ASSERT_TRUE(indexed_ephemeral->stable_identity);
-    EXPECT_EQ(indexed_ephemeral->stable_identity->node.graph, "root");
-    EXPECT_TRUE(indexed_ephemeral->stable_identity->node.virtual_node
+        *background_persisted_events->retention, OutputRetention::persisted);
+    ASSERT_TRUE(background_ephemeral->stable_identity);
+    EXPECT_EQ(background_ephemeral->stable_identity->node.graph, "root");
+    EXPECT_TRUE(background_ephemeral->stable_identity->node.virtual_node
         .starts_with("source#type:"));
     EXPECT_EQ(
-        indexed_ephemeral->stable_identity->port_name, "indexed_ephemeral");
-    EXPECT_EQ(indexed_ephemeral->outgoing_connections.size(), 2u);
+        background_ephemeral->stable_identity->port_name, "background_ephemeral");
+    EXPECT_EQ(background_ephemeral->outgoing_connections.size(), 2u);
 
     auto sample_atom_for_port = [&](std::size_t port)
-        -> graph_jit::SampleSourceEndpointAtomPlan const* {
+        -> graph_jit::SampleSourcePortSubsetPlan const* {
         auto const found = std::ranges::find_if(
-            plan.sample_source_atoms,
-            [&](graph_jit::SampleSourceEndpointAtomPlan const& atom) {
-                return atom.port.node_bundle_handle == source_handle
-                    && atom.port.port_ordinal == port;
+            plan.sample_source_subsets,
+            [&](graph_jit::SampleSourcePortSubsetPlan const& subset) {
+                return subset.port.node_bundle_handle == source_handle
+                    && subset.port.port_index == port;
             });
-        return found == plan.sample_source_atoms.end() ? nullptr : &*found;
+        return found == plan.sample_source_subsets.end() ? nullptr : &*found;
     };
     auto const* tick_ephemeral_atom = sample_atom_for_port(0);
     auto const* tick_persisted_atom = sample_atom_for_port(1);
@@ -1511,31 +1511,31 @@ TEST(GraphJitConnectionPlan, RetainsCompleteIndexedTopologyAndRetention)
     ASSERT_NE(tock_ephemeral_atom, nullptr);
     ASSERT_NE(tock_persisted_atom, nullptr);
     EXPECT_TRUE(tick_ephemeral_atom->connection_indices.empty());
-    EXPECT_TRUE(tick_persisted_atom->capabilities.capture_backed_persistence);
-    EXPECT_TRUE(tick_persisted_atom->capabilities.canonical_persisted_pages);
-    EXPECT_TRUE(tock_ephemeral_atom->capabilities.prepared_addressable_window);
-    EXPECT_TRUE(tock_ephemeral_atom->capabilities.transaction_local_addressable);
+    EXPECT_TRUE(tick_persisted_atom->storage.capture);
+    EXPECT_TRUE(tick_persisted_atom->storage.persisted_pages);
+    EXPECT_TRUE(tock_ephemeral_atom->storage.tick_random_access);
+    EXPECT_TRUE(tock_ephemeral_atom->storage.background_random_access);
     EXPECT_TRUE(tock_persisted_atom->connection_indices.empty());
-    EXPECT_FALSE(tock_persisted_atom->capabilities.capture_backed_persistence);
-    EXPECT_TRUE(tock_persisted_atom->capabilities.canonical_persisted_pages);
+    EXPECT_FALSE(tock_persisted_atom->storage.capture);
+    EXPECT_TRUE(tock_persisted_atom->storage.persisted_pages);
 
     auto const persisted_event_atom = std::ranges::find_if(
-        plan.event_source_atoms,
-        [&](graph_jit::EventSourceEndpointAtomPlan const& atom) {
-            return atom.port.bundle == source_handle && atom.port.port == 0;
+        plan.event_source_subsets,
+        [&](graph_jit::EventSourcePortSubsetPlan const& subset) {
+            return subset.port.bundle == source_handle && subset.port.port == 0;
         });
-    ASSERT_NE(persisted_event_atom, plan.event_source_atoms.end());
+    ASSERT_NE(persisted_event_atom, plan.event_source_subsets.end());
     EXPECT_TRUE(persisted_event_atom->connection_indices.empty());
     EXPECT_TRUE(
-        persisted_event_atom->capabilities.canonical_persisted_pages);
+        persisted_event_atom->storage.persisted_pages);
 }
 
-TEST(GraphJitConnectionPlan, RetainsIndexedEventConversion)
+TEST(GraphJitConnectionPlan, RetainsBackgroundEventConversion)
 {
     using namespace iv;
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<IndexedMidiSource>(graph);
-    auto target = details::configure_concrete_node<IndexedEventPass>(graph);
+    auto source = details::configure_concrete_node<BackgroundMidiSource>(graph);
+    auto target = details::configure_concrete_node<BackgroundEventPass>(graph);
     target.connect_event_input(0, source.event_port());
     graph.outputs();
 
@@ -1543,53 +1543,53 @@ TEST(GraphJitConnectionPlan, RetainsIndexedEventConversion)
     auto built = graph_jit::detail::build_connection_analysis_plan(
         configured, 64);
     ASSERT_TRUE(built.has_value()) << (built ? std::string{} : built.error());
-    ASSERT_EQ(built->indexed.connections.size(), 1u);
-    auto const& connection = built->indexed.connections.front();
+    ASSERT_EQ(built->background.connections.size(), 1u);
+    auto const& connection = built->background.connections.front();
     EXPECT_EQ(connection.kind, PortKind::event);
     EXPECT_EQ(connection.event_source_type, EventTypeId::midi);
     EXPECT_EQ(connection.event_target_type, EventTypeId::trigger);
     EXPECT_TRUE(connection.requires_conversion);
     EXPECT_GT(connection.event_conversion.size(), 0u);
-    ASSERT_EQ(connection.source_endpoints.size(), 1u);
-    ASSERT_EQ(connection.target_endpoints.size(), 1u);
+    ASSERT_EQ(connection.source_coverage_ports.size(), 1u);
+    ASSERT_EQ(connection.target_coverage_ports.size(), 1u);
     EXPECT_EQ(
-        built->indexed.endpoints[connection.source_endpoints.front()]
+        built->background.ports[connection.source_coverage_ports.front()]
             .outgoing_connections,
-        (std::vector<graph_jit::IndexedConnectionOrdinal>{0}));
+        (std::vector<graph_jit::BackgroundConnectionIndex>{0}));
     EXPECT_EQ(
-        built->indexed.endpoints[connection.target_endpoints.front()]
+        built->background.ports[connection.target_coverage_ports.front()]
             .incoming_connections,
-        (std::vector<graph_jit::IndexedConnectionOrdinal>{0}));
+        (std::vector<graph_jit::BackgroundConnectionIndex>{0}));
 
-    auto const& physical = built->indexed.physical;
-    ASSERT_EQ(physical.connections.size(), 1u);
-    EXPECT_TRUE(physical.connections.front().event_direct_bindings.empty());
+    auto const& storage = built->background.storage;
+    ASSERT_EQ(storage.connections.size(), 1u);
+    EXPECT_TRUE(storage.connections.front().direct_events.empty());
     ASSERT_EQ(
-        physical.connections.front().event_materializations.size(), 2u);
-    std::vector<graph_jit::IndexedRepresentationResidence> residences;
+        storage.connections.front().event_materializations.size(), 2u);
+    std::vector<graph_jit::PortStorageKind> storage_kinds;
     for (auto const materialization :
-         physical.connections.front().event_materializations) {
-        ASSERT_LT(materialization, physical.event_materializations.size());
-        residences.push_back(
-            physical.event_materializations[materialization].residence);
+         storage.connections.front().event_materializations) {
+        ASSERT_LT(materialization, storage.event_materializations.size());
+        storage_kinds.push_back(
+            storage.event_materializations[materialization].storage);
     }
     EXPECT_TRUE(std::ranges::contains(
-        residences,
-        graph_jit::IndexedRepresentationResidence::prepared_addressable_window));
+        storage_kinds,
+        graph_jit::PortStorageKind::tick_random_access));
     EXPECT_TRUE(std::ranges::contains(
-        residences,
-        graph_jit::IndexedRepresentationResidence::
-            transaction_local_addressable));
+        storage_kinds,
+        graph_jit::PortStorageKind::
+            background));
 }
 
-TEST(GraphJitConnectionPlan, SharesEquivalentIndexedEventMaterializations)
+TEST(GraphJitConnectionPlan, SharesEquivalentBackgroundEventMaterializations)
 {
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<IndexedMidiSource>(graph);
-    auto left = details::configure_concrete_node<IndexedEventPass>(graph);
-    auto right = details::configure_concrete_node<IndexedEventPass>(graph);
+    auto source = details::configure_concrete_node<BackgroundMidiSource>(graph);
+    auto left = details::configure_concrete_node<BackgroundEventPass>(graph);
+    auto right = details::configure_concrete_node<BackgroundEventPass>(graph);
     left.connect_event_input(0, source.event_port());
     right.connect_event_input(0, source.event_port());
     graph.outputs();
@@ -1597,22 +1597,22 @@ TEST(GraphJitConnectionPlan, SharesEquivalentIndexedEventMaterializations)
     auto configured = std::move(graph).finish();
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
-    ASSERT_EQ(plan->indexed.connections.size(), 2u);
+    ASSERT_EQ(plan->background.connections.size(), 2u);
 
-    auto const& physical = plan->indexed.physical;
-    ASSERT_EQ(physical.connections.size(), 2u);
-    ASSERT_EQ(physical.event_materializations.size(), 2u);
+    auto const& storage = plan->background.storage;
+    ASSERT_EQ(storage.connections.size(), 2u);
+    ASSERT_EQ(storage.event_materializations.size(), 2u);
     ASSERT_TRUE(std::ranges::all_of(
-        physical.connections,
-        [](graph_jit::IndexedConnectionPhysicalPlan const& connection) {
+        storage.connections,
+        [](graph_jit::ConnectionStoragePlan const& connection) {
             return connection.event_materializations.size() == 2;
         }));
     EXPECT_EQ(
-        physical.connections[0].event_materializations,
-        physical.connections[1].event_materializations);
-    for (auto const& materialization : physical.event_materializations) {
+        storage.connections[0].event_materializations,
+        storage.connections[1].event_materializations);
+    for (auto const& materialization : storage.event_materializations) {
         EXPECT_EQ(materialization.connections.size(), 2u);
-        EXPECT_EQ(materialization.target_atoms.size(), 2u);
+        EXPECT_EQ(materialization.target_subsets.size(), 2u);
     }
 }
 
@@ -1621,9 +1621,9 @@ TEST(GraphJitConnectionPlan, PreparedAddressableEventMaterializationSubsumesSequ
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<IndexedMidiSource>(graph);
+    auto source = details::configure_concrete_node<BackgroundMidiSource>(graph);
     auto sequential = details::configure_concrete_node<PlainEventPass>(graph);
-    auto random_access = details::configure_concrete_node<IndexedEventPass>(graph);
+    auto random_access = details::configure_concrete_node<BackgroundEventPass>(graph);
     sequential.connect_event_input(0, source.event_port());
     random_access.connect_event_input(0, source.event_port());
     graph.outputs();
@@ -1631,18 +1631,18 @@ TEST(GraphJitConnectionPlan, PreparedAddressableEventMaterializationSubsumesSequ
     auto configured = std::move(graph).finish();
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
-    ASSERT_EQ(plan->indexed.connections.size(), 2u);
+    ASSERT_EQ(plan->background.connections.size(), 2u);
 
-    auto const& physical = plan->indexed.physical;
-    ASSERT_EQ(physical.event_materializations.size(), 2u);
-    ASSERT_EQ(physical.connections[0].event_materializations.size(), 1u);
-    ASSERT_EQ(physical.connections[1].event_materializations.size(), 2u);
-    auto const prepared = physical.connections[0].event_materializations.front();
+    auto const& storage = plan->background.storage;
+    ASSERT_EQ(storage.event_materializations.size(), 2u);
+    ASSERT_EQ(storage.connections[0].event_materializations.size(), 1u);
+    ASSERT_EQ(storage.connections[1].event_materializations.size(), 2u);
+    auto const prepared = storage.connections[0].event_materializations.front();
     EXPECT_TRUE(std::ranges::contains(
-        physical.connections[1].event_materializations, prepared));
+        storage.connections[1].event_materializations, prepared));
     EXPECT_EQ(
-        physical.event_materializations[prepared].residence,
-        graph_jit::IndexedRepresentationResidence::prepared_addressable_window);
+        storage.event_materializations[prepared].storage,
+        graph_jit::PortStorageKind::tick_random_access);
 }
 
 TEST(GraphJitConnectionPlan, ExactEventFanoutAliasesPreparedRepresentations)
@@ -1652,7 +1652,7 @@ TEST(GraphJitConnectionPlan, ExactEventFanoutAliasesPreparedRepresentations)
     GraphBuilder graph;
     auto source = details::configure_concrete_node<TockTriggerSource>(graph);
     auto sequential = details::configure_concrete_node<PlainEventPass>(graph);
-    auto random_access = details::configure_concrete_node<IndexedEventPass>(graph);
+    auto random_access = details::configure_concrete_node<BackgroundEventPass>(graph);
     sequential.connect_event_input(0, source.event_port());
     random_access.connect_event_input(0, source.event_port());
     graph.outputs();
@@ -1660,23 +1660,23 @@ TEST(GraphJitConnectionPlan, ExactEventFanoutAliasesPreparedRepresentations)
     auto configured = std::move(graph).finish();
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
-    ASSERT_EQ(plan->indexed.connections.size(), 2u);
+    ASSERT_EQ(plan->background.connections.size(), 2u);
 
-    auto const& physical = plan->indexed.physical;
-    EXPECT_TRUE(physical.event_materializations.empty());
-    ASSERT_EQ(physical.connections[0].event_direct_bindings.size(), 1u);
-    ASSERT_EQ(physical.connections[1].event_direct_bindings.size(), 2u);
+    auto const& storage = plan->background.storage;
+    EXPECT_TRUE(storage.event_materializations.empty());
+    ASSERT_EQ(storage.connections[0].direct_events.size(), 1u);
+    ASSERT_EQ(storage.connections[1].direct_events.size(), 2u);
     auto const sequential_binding =
-        physical.connections[0].event_direct_bindings.front();
+        storage.connections[0].direct_events.front();
     auto const sequential_representation =
-        physical.event_direct_bindings[sequential_binding].representation;
+        storage.direct_events[sequential_binding].storage;
     EXPECT_EQ(
-        physical.representations[sequential_representation].residence,
-        graph_jit::IndexedRepresentationResidence::prepared_addressable_window);
+        storage.ports[sequential_representation].storage,
+        graph_jit::PortStorageKind::tick_random_access);
     EXPECT_TRUE(std::ranges::any_of(
-        physical.connections[1].event_direct_bindings,
-        [&](std::size_t binding) {
-            return physical.event_direct_bindings[binding].representation
+        storage.connections[1].direct_events,
+        [&](std::size_t direct_index) {
+            return storage.direct_events[direct_index].storage
                 == sequential_representation;
         }));
 }
@@ -1686,7 +1686,7 @@ TEST(GraphJitConnectionPlan, TockToSequentialUsesPreparedBackgroundDelivery)
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<IndexedSource>(graph);
+    auto source = details::configure_concrete_node<BackgroundSource>(graph);
     auto sink = details::configure_concrete_node<NeutralSamplePass>(graph);
     auto const source_handle = source.node_bundle_handle();
     sink(source);
@@ -1708,19 +1708,19 @@ TEST(GraphJitConnectionPlan, TockToSequentialUsesPreparedBackgroundDelivery)
     EXPECT_FALSE(plan->sample_producer_groups[0].storage_plan.has_value());
     EXPECT_TRUE(plan->storage.regions.empty());
 
-    auto const source_atom = std::ranges::find_if(
-        plan->indexed.sample_source_atoms,
-        [&](graph_jit::SampleSourceEndpointAtomPlan const& atom) {
-            return atom.port.node_bundle_handle == source_handle;
+    auto const source_subset = std::ranges::find_if(
+        plan->background.sample_source_subsets,
+        [&](graph_jit::SampleSourcePortSubsetPlan const& subset) {
+            return subset.port.node_bundle_handle == source_handle;
         });
-    ASSERT_NE(source_atom, plan->indexed.sample_source_atoms.end());
-    EXPECT_TRUE(source_atom->capabilities.prepared_sequential_window);
-    EXPECT_FALSE(source_atom->capabilities.prepared_addressable_window);
+    ASSERT_NE(source_subset, plan->background.sample_source_subsets.end());
+    EXPECT_TRUE(source_subset->storage.tick_sequential);
+    EXPECT_FALSE(source_subset->storage.tick_random_access);
 
-    ASSERT_EQ(plan->indexed.prepared_sequential_inputs.size(), 1u);
-    auto const& prepared = plan->indexed.endpoints[
-        plan->indexed.prepared_sequential_inputs.front()];
-    EXPECT_TRUE(prepared.prepared_sequential_input);
+    ASSERT_EQ(plan->background.tick_sequential_inputs.size(), 1u);
+    auto const& prepared = plan->background.ports[
+        plan->background.tick_sequential_inputs.front()];
+    EXPECT_TRUE(prepared.tick_sequential_input);
     EXPECT_FALSE(prepared.random_access_input);
     EXPECT_FLOAT_EQ(static_cast<float>(prepared.sample_neutral_value), 0.375f);
 }
@@ -1730,9 +1730,9 @@ TEST(GraphJitConnectionPlan, PreparedAddressableAtomSubsumesSequentialWindow)
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<IndexedSource>(graph);
+    auto source = details::configure_concrete_node<BackgroundSource>(graph);
     auto sequential = details::configure_concrete_node<RealtimeSink>(graph);
-    auto random_access = details::configure_concrete_node<IndexedSink>(graph);
+    auto random_access = details::configure_concrete_node<BackgroundSink>(graph);
     auto const source_handle = source.node_bundle_handle();
     sequential(source);
     random_access(source);
@@ -1742,51 +1742,51 @@ TEST(GraphJitConnectionPlan, PreparedAddressableAtomSubsumesSequentialWindow)
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
-    auto const atom = std::ranges::find_if(
-        plan->indexed.sample_source_atoms,
-        [&](graph_jit::SampleSourceEndpointAtomPlan const& candidate) {
+    auto const subset = std::ranges::find_if(
+        plan->background.sample_source_subsets,
+        [&](graph_jit::SampleSourcePortSubsetPlan const& candidate) {
             return candidate.port.node_bundle_handle == source_handle;
         });
-    ASSERT_NE(atom, plan->indexed.sample_source_atoms.end());
-    EXPECT_EQ(atom->connection_indices.size(), 2u);
-    EXPECT_TRUE(atom->capabilities.prepared_addressable_window);
-    EXPECT_TRUE(atom->capabilities.transaction_local_addressable);
-    EXPECT_FALSE(atom->capabilities.prepared_sequential_window);
+    ASSERT_NE(subset, plan->background.sample_source_subsets.end());
+    EXPECT_EQ(subset->connection_indices.size(), 2u);
+    EXPECT_TRUE(subset->storage.tick_random_access);
+    EXPECT_TRUE(subset->storage.background_random_access);
+    EXPECT_FALSE(subset->storage.tick_sequential);
 
-    auto const atom_ordinal = static_cast<graph_jit::EndpointAtomOrdinal>(
-        std::distance(plan->indexed.sample_source_atoms.begin(), atom));
-    auto const& physical = plan->indexed.physical;
-    ASSERT_EQ(physical.sample_source_representations[atom_ordinal].size(), 2u);
-    std::vector<graph_jit::IndexedRepresentationResidence> residences;
-    for (auto const representation :
-         physical.sample_source_representations[atom_ordinal]) {
-        residences.push_back(physical.representations[representation].residence);
+    auto const atom_index = static_cast<graph_jit::PortSubsetIndex>(
+        std::distance(plan->background.sample_source_subsets.begin(), subset));
+    auto const& storage = plan->background.storage;
+    ASSERT_EQ(storage.sample_source_storage[atom_index].size(), 2u);
+    std::vector<graph_jit::PortStorageKind> storage_kinds;
+    for (auto const port_index :
+         storage.sample_source_storage[atom_index]) {
+        storage_kinds.push_back(storage.ports[port_index].storage);
     }
     EXPECT_TRUE(std::ranges::contains(
-        residences,
-        graph_jit::IndexedRepresentationResidence::prepared_addressable_window));
+        storage_kinds,
+        graph_jit::PortStorageKind::tick_random_access));
     EXPECT_TRUE(std::ranges::contains(
-        residences,
-        graph_jit::IndexedRepresentationResidence::
-            transaction_local_addressable));
+        storage_kinds,
+        graph_jit::PortStorageKind::
+            background));
     EXPECT_FALSE(std::ranges::contains(
-        residences,
-        graph_jit::IndexedRepresentationResidence::prepared_sequential_window));
-    ASSERT_EQ(physical.connections.size(), 2u);
+        storage_kinds,
+        graph_jit::PortStorageKind::tick_sequential));
+    ASSERT_EQ(storage.connections.size(), 2u);
     EXPECT_TRUE(std::ranges::all_of(
-        physical.connections,
-        [](graph_jit::IndexedConnectionPhysicalPlan const& connection) {
-            return !connection.sample_direct_bindings.empty()
+        storage.connections,
+        [](graph_jit::ConnectionStoragePlan const& connection) {
+            return !connection.direct_samples.empty()
                 && connection.sample_materializations.empty();
         }));
 }
 
-TEST(GraphJitConnectionPlan, SharesEquivalentIndexedSampleMaterializations)
+TEST(GraphJitConnectionPlan, SharesEquivalentBackgroundSampleMaterializations)
 {
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<IndexedStereoSource>(graph);
+    auto source = details::configure_concrete_node<BackgroundStereoSource>(graph);
     auto left = details::configure_concrete_node<RealtimeSink>(graph);
     auto right = details::configure_concrete_node<RealtimeSink>(graph);
     left(source);
@@ -1796,26 +1796,26 @@ TEST(GraphJitConnectionPlan, SharesEquivalentIndexedSampleMaterializations)
     auto configured = std::move(graph).finish();
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
-    ASSERT_EQ(plan->indexed.connections.size(), 2u);
+    ASSERT_EQ(plan->background.connections.size(), 2u);
 
-    auto const& physical = plan->indexed.physical;
-    ASSERT_EQ(physical.connections.size(), 2u);
-    ASSERT_EQ(physical.sample_materializations.size(), 1u);
+    auto const& storage = plan->background.storage;
+    ASSERT_EQ(storage.connections.size(), 2u);
+    ASSERT_EQ(storage.sample_materializations.size(), 1u);
     ASSERT_TRUE(std::ranges::all_of(
-        physical.connections,
-        [](graph_jit::IndexedConnectionPhysicalPlan const& connection) {
-            return connection.sample_direct_bindings.empty()
+        storage.connections,
+        [](graph_jit::ConnectionStoragePlan const& connection) {
+            return connection.direct_samples.empty()
                 && connection.sample_materializations.size() == 1;
         }));
     EXPECT_EQ(
-        physical.connections[0].sample_materializations,
-        physical.connections[1].sample_materializations);
-    auto const& materialization = physical.sample_materializations.front();
+        storage.connections[0].sample_materializations,
+        storage.connections[1].sample_materializations);
+    auto const& materialization = storage.sample_materializations.front();
     EXPECT_EQ(
-        materialization.residence,
-        graph_jit::IndexedRepresentationResidence::prepared_sequential_window);
+        materialization.storage,
+        graph_jit::PortStorageKind::tick_sequential);
     EXPECT_EQ(materialization.connections.size(), 2u);
-    EXPECT_EQ(materialization.target_atoms.size(), 2u);
+    EXPECT_EQ(materialization.target_subsets.size(), 2u);
     EXPECT_EQ(materialization.source_channels.size(), 2u);
 }
 
@@ -1824,9 +1824,9 @@ TEST(GraphJitConnectionPlan, PreparedAddressableSampleMaterializationSubsumesSeq
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<IndexedStereoSource>(graph);
+    auto source = details::configure_concrete_node<BackgroundStereoSource>(graph);
     auto sequential = details::configure_concrete_node<RealtimeSink>(graph);
-    auto random_access = details::configure_concrete_node<IndexedSamplePass>(graph);
+    auto random_access = details::configure_concrete_node<BackgroundSamplePass>(graph);
     sequential(source);
     random_access(source);
     graph.outputs();
@@ -1834,28 +1834,28 @@ TEST(GraphJitConnectionPlan, PreparedAddressableSampleMaterializationSubsumesSeq
     auto configured = std::move(graph).finish();
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
-    ASSERT_EQ(plan->indexed.connections.size(), 2u);
+    ASSERT_EQ(plan->background.connections.size(), 2u);
 
-    auto const& physical = plan->indexed.physical;
-    ASSERT_EQ(physical.sample_materializations.size(), 2u);
-    ASSERT_EQ(physical.connections[0].sample_materializations.size(), 1u);
-    ASSERT_EQ(physical.connections[1].sample_materializations.size(), 2u);
-    auto const prepared = physical.connections[0].sample_materializations.front();
+    auto const& storage = plan->background.storage;
+    ASSERT_EQ(storage.sample_materializations.size(), 2u);
+    ASSERT_EQ(storage.connections[0].sample_materializations.size(), 1u);
+    ASSERT_EQ(storage.connections[1].sample_materializations.size(), 2u);
+    auto const prepared = storage.connections[0].sample_materializations.front();
     EXPECT_TRUE(std::ranges::contains(
-        physical.connections[1].sample_materializations, prepared));
+        storage.connections[1].sample_materializations, prepared));
     EXPECT_EQ(
-        physical.sample_materializations[prepared].residence,
-        graph_jit::IndexedRepresentationResidence::prepared_addressable_window);
+        storage.sample_materializations[prepared].storage,
+        graph_jit::PortStorageKind::tick_random_access);
 }
 
-TEST(GraphJitConnectionPlan, IndexedSampleMaterializationIsTargetAtomLocal)
+TEST(GraphJitConnectionPlan, BackgroundSampleMaterializationIsTargetAtomLocal)
 {
     using namespace iv;
 
     GraphBuilder graph;
     auto mono = details::configure_concrete_node<MonoSource>(graph);
     auto stereo_source =
-        details::configure_concrete_node<IndexedStereoSource>(graph);
+        details::configure_concrete_node<BackgroundStereoSource>(graph);
     auto sink = details::configure_concrete_node<StereoSink>(graph);
     auto const mono_handle = mono.node_bundle_handle();
     auto const stereo_handle = stereo_source.node_bundle_handle();
@@ -1899,26 +1899,26 @@ TEST(GraphJitConnectionPlan, IndexedSampleMaterializationIsTargetAtomLocal)
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->sample_connections.size(), 1u);
     ASSERT_EQ(plan->sample_connections.front().projection_contributions.size(), 2u);
-    ASSERT_EQ(plan->indexed.connections.size(), 1u);
+    ASSERT_EQ(plan->background.connections.size(), 1u);
 
-    auto const& physical = plan->indexed.physical;
-    ASSERT_EQ(physical.connections.size(), 1u);
-    ASSERT_EQ(physical.connections.front().sample_direct_bindings.size(), 1u);
-    ASSERT_EQ(physical.connections.front().sample_materializations.size(), 1u);
-    ASSERT_EQ(physical.sample_materializations.size(), 1u);
+    auto const& storage = plan->background.storage;
+    ASSERT_EQ(storage.connections.size(), 1u);
+    ASSERT_EQ(storage.connections.front().direct_samples.size(), 1u);
+    ASSERT_EQ(storage.connections.front().sample_materializations.size(), 1u);
+    ASSERT_EQ(storage.sample_materializations.size(), 1u);
 
-    auto const& direct = physical.sample_direct_bindings[
-        physical.connections.front().sample_direct_bindings.front()];
+    auto const& direct = storage.direct_samples[
+        storage.connections.front().direct_samples.front()];
     EXPECT_EQ(direct.target_channel, 0u);
     EXPECT_EQ(
-        physical.representations[direct.representation].residence,
-        graph_jit::IndexedRepresentationResidence::current_tick);
+        storage.ports[direct.storage].storage,
+        graph_jit::PortStorageKind::current_tick);
 
-    auto const& materialization = physical.sample_materializations[
-        physical.connections.front().sample_materializations.front()];
+    auto const& materialization = storage.sample_materializations[
+        storage.connections.front().sample_materializations.front()];
     EXPECT_EQ(
-        materialization.residence,
-        graph_jit::IndexedRepresentationResidence::prepared_sequential_window);
+        materialization.storage,
+        graph_jit::PortStorageKind::tick_sequential);
     EXPECT_EQ(materialization.target_channels, (std::vector<std::size_t>{1u}));
     ASSERT_EQ(materialization.source_channels.size(), 2u);
     EXPECT_TRUE(std::ranges::all_of(
@@ -1947,7 +1947,7 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockSampleTilePlansPerSourceChannel)
 
     GraphBuilder graph;
     auto tick = details::configure_concrete_node<MonoSource>(graph);
-    auto tock = details::configure_concrete_node<IndexedSource>(graph);
+    auto tock = details::configure_concrete_node<BackgroundSource>(graph);
     auto sink = details::configure_concrete_node<StereoSink>(graph);
     auto const tick_handle = tick.node_bundle_handle();
     auto const tock_handle = tock.node_bundle_handle();
@@ -1970,24 +1970,24 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockSampleTilePlansPerSourceChannel)
         connection.source_channel_timings[1].delivery,
         graph_jit::PlannedDeliveryMechanism::tock_to_sequential);
 
-    std::vector<graph_jit::SampleTargetEndpointAtomPlan const*> target_atoms;
-    for (auto const& atom : plan->indexed.sample_target_atoms) {
-        if (atom.port.node_bundle_handle == sink_handle) {
-            target_atoms.push_back(&atom);
+    std::vector<graph_jit::SampleTargetPortSubsetPlan const*> target_subsets;
+    for (auto const& subset : plan->background.sample_target_subsets) {
+        if (subset.port.node_bundle_handle == sink_handle) {
+            target_subsets.push_back(&subset);
         }
     }
-    ASSERT_EQ(target_atoms.size(), 2u);
+    ASSERT_EQ(target_subsets.size(), 2u);
     EXPECT_TRUE(std::ranges::any_of(
-        target_atoms,
-        [](graph_jit::SampleTargetEndpointAtomPlan const* atom) {
-            return atom->channels.size() == 1
-                && atom->capabilities.current_tick_readable;
+        target_subsets,
+        [](graph_jit::SampleTargetPortSubsetPlan const* subset) {
+            return subset->channels.size() == 1
+                && subset->storage.current_tick;
         }));
     EXPECT_TRUE(std::ranges::any_of(
-        target_atoms,
-        [](graph_jit::SampleTargetEndpointAtomPlan const* atom) {
-            return atom->channels.size() == 1
-                && atom->capabilities.prepared_sequential_window;
+        target_subsets,
+        [](graph_jit::SampleTargetPortSubsetPlan const* subset) {
+            return subset->channels.size() == 1
+                && subset->storage.tick_sequential;
         }));
 
     auto const tick_group = std::ranges::find_if(
@@ -2009,17 +2009,17 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockSampleTilePlansPerSourceChannel)
     EXPECT_FALSE(tock_group->has_realtime_connections);
     EXPECT_TRUE(tock_group->has_background_connections);
 
-    auto physical = graph_jit::detail::build_sample_physical_plan(*plan, 64);
-    ASSERT_TRUE(physical.has_value())
-        << (physical ? std::string{} : physical.error());
+    auto storage = graph_jit::detail::build_sample_storage_plan(*plan, 64);
+    ASSERT_TRUE(storage.has_value())
+        << (storage ? std::string{} : storage.error());
     auto const tick_group_index = static_cast<std::size_t>(
         std::distance(plan->sample_producer_groups.begin(), tick_group));
     auto const tock_group_index = static_cast<std::size_t>(
         std::distance(plan->sample_producer_groups.begin(), tock_group));
-    ASSERT_TRUE(physical->producer_groups[tick_group_index].has_value());
-    EXPECT_FALSE(physical->producer_groups[tock_group_index].has_value());
-    ASSERT_EQ(physical->connection_representations.size(), 1u);
-    EXPECT_FALSE(physical->connection_representations[0].has_value());
+    ASSERT_TRUE(storage->producer_groups[tick_group_index].has_value());
+    EXPECT_FALSE(storage->producer_groups[tock_group_index].has_value());
+    ASSERT_EQ(storage->connection_representations.size(), 1u);
+    EXPECT_FALSE(storage->connection_representations[0].has_value());
 }
 
 TEST(GraphJitConnectionPlan, MixedTickAndTockEventFanInPlansPerSource)
@@ -2077,70 +2077,70 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockEventFanInPlansPerSource)
     EXPECT_DOUBLE_EQ(group.max_events_per_index, 0.25);
     ASSERT_EQ(group.source_atom_indices.size(), 2u);
     ASSERT_EQ(group.target_atom_indices.size(), 1u);
-    ASSERT_GE(plan->indexed.event_source_atoms.size(), 2u);
-    ASSERT_GE(plan->indexed.event_target_atoms.size(), 2u);
+    ASSERT_GE(plan->background.event_source_subsets.size(), 2u);
+    ASSERT_GE(plan->background.event_target_subsets.size(), 2u);
     auto const sink_target_atom = std::ranges::find_if(
-        plan->indexed.event_target_atoms,
-        [&](graph_jit::EventTargetEndpointAtomPlan const& atom) {
-            return atom.port.bundle == sink_handle;
+        plan->background.event_target_subsets,
+        [&](graph_jit::EventTargetPortSubsetPlan const& subset) {
+            return subset.port.bundle == sink_handle;
         });
-    ASSERT_NE(sink_target_atom, plan->indexed.event_target_atoms.end());
-    EXPECT_EQ(sink_target_atom->source_atoms.size(), 2u);
-    EXPECT_TRUE(sink_target_atom->capabilities.current_tick_readable);
-    EXPECT_TRUE(sink_target_atom->capabilities.prepared_sequential_window);
+    ASSERT_NE(sink_target_atom, plan->background.event_target_subsets.end());
+    EXPECT_EQ(sink_target_atom->source_subsets.size(), 2u);
+    EXPECT_TRUE(sink_target_atom->storage.current_tick);
+    EXPECT_TRUE(sink_target_atom->storage.tick_sequential);
     auto const disconnected_tick_target_atom = std::ranges::find_if(
-        plan->indexed.event_target_atoms,
-        [&](graph_jit::EventTargetEndpointAtomPlan const& atom) {
-            return atom.port.bundle == tick_handle;
+        plan->background.event_target_subsets,
+        [&](graph_jit::EventTargetPortSubsetPlan const& subset) {
+            return subset.port.bundle == tick_handle;
         });
     ASSERT_NE(
         disconnected_tick_target_atom,
-        plan->indexed.event_target_atoms.end());
-    EXPECT_TRUE(disconnected_tick_target_atom->source_atoms.empty());
+        plan->background.event_target_subsets.end());
+    EXPECT_TRUE(disconnected_tick_target_atom->source_subsets.empty());
     EXPECT_TRUE(disconnected_tick_target_atom->connection_indices.empty());
     auto const tick_atom = std::ranges::find_if(
-        plan->indexed.event_source_atoms,
-        [&](graph_jit::EventSourceEndpointAtomPlan const& atom) {
-            return atom.port.bundle == tick_handle;
+        plan->background.event_source_subsets,
+        [&](graph_jit::EventSourcePortSubsetPlan const& subset) {
+            return subset.port.bundle == tick_handle;
         });
     auto const tock_atom = std::ranges::find_if(
-        plan->indexed.event_source_atoms,
-        [&](graph_jit::EventSourceEndpointAtomPlan const& atom) {
-            return atom.port.bundle == tock_handle;
+        plan->background.event_source_subsets,
+        [&](graph_jit::EventSourcePortSubsetPlan const& subset) {
+            return subset.port.bundle == tock_handle;
         });
-    ASSERT_NE(tick_atom, plan->indexed.event_source_atoms.end());
-    ASSERT_NE(tock_atom, plan->indexed.event_source_atoms.end());
-    EXPECT_TRUE(tick_atom->capabilities.current_tick_readable);
-    EXPECT_TRUE(tock_atom->capabilities.prepared_sequential_window);
+    ASSERT_NE(tick_atom, plan->background.event_source_subsets.end());
+    ASSERT_NE(tock_atom, plan->background.event_source_subsets.end());
+    EXPECT_TRUE(tick_atom->storage.current_tick);
+    EXPECT_TRUE(tock_atom->storage.tick_sequential);
 
-    auto const& physical = plan->indexed.physical;
-    ASSERT_EQ(physical.connections.size(), 1u);
-    EXPECT_TRUE(physical.connections.front().event_direct_bindings.empty());
+    auto const& storage = plan->background.storage;
+    ASSERT_EQ(storage.connections.size(), 1u);
+    EXPECT_TRUE(storage.connections.front().direct_events.empty());
     ASSERT_EQ(
-        physical.connections.front().event_materializations.size(), 1u);
-    auto const materialization_ordinal =
-        physical.connections.front().event_materializations.front();
+        storage.connections.front().event_materializations.size(), 1u);
+    auto const materialization_index =
+        storage.connections.front().event_materializations.front();
     ASSERT_LT(
-        materialization_ordinal, physical.event_materializations.size());
+        materialization_index, storage.event_materializations.size());
     auto const& materialization =
-        physical.event_materializations[materialization_ordinal];
+        storage.event_materializations[materialization_index];
     EXPECT_EQ(
-        materialization.residence,
-        graph_jit::IndexedRepresentationResidence::current_tick);
-    ASSERT_EQ(materialization.input_representations.size(), 2u);
-    std::vector<graph_jit::IndexedRepresentationResidence> input_residences;
-    for (auto const representation : materialization.input_representations) {
-        input_residences.push_back(
-            physical.representations[representation].residence);
+        materialization.storage,
+        graph_jit::PortStorageKind::current_tick);
+    ASSERT_EQ(materialization.inputs.size(), 2u);
+    std::vector<graph_jit::PortStorageKind> input_storage_kinds;
+    for (auto const port_index : materialization.inputs) {
+        input_storage_kinds.push_back(
+            storage.ports[port_index].storage);
     }
     EXPECT_TRUE(std::ranges::contains(
-        input_residences,
-        graph_jit::IndexedRepresentationResidence::current_tick));
+        input_storage_kinds,
+        graph_jit::PortStorageKind::current_tick));
     EXPECT_TRUE(std::ranges::contains(
-        input_residences,
-        graph_jit::IndexedRepresentationResidence::prepared_sequential_window));
+        input_storage_kinds,
+        graph_jit::PortStorageKind::tick_sequential));
     EXPECT_DOUBLE_EQ(
-        physical.representations[materialization.output_representation]
+        storage.ports[materialization.output]
             .max_events_per_index,
         0.75);
 }
@@ -2151,7 +2151,7 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
 
     GraphBuilder graph;
     auto source = details::configure_concrete_node<OutputAccessRetentionModes>(graph);
-    auto sink = details::configure_concrete_node<IndexedSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
     auto const source_handle = source.node_bundle_handle();
     auto const sink_handle = sink.node_bundle_handle();
     sink(source["realtime_persisted"]);
@@ -2165,36 +2165,36 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
     EXPECT_EQ(
         plan->sample_connections[0].source_channel_timings[0].delivery,
         graph_jit::PlannedDeliveryMechanism::persisted_tick_to_random_access);
-    ASSERT_TRUE(plan->indexed.bundle_to_indexed_node[source_handle]);
-    auto const source_node = *plan->indexed.bundle_to_indexed_node[source_handle];
-    auto const endpoint = std::ranges::find_if(
-        plan->indexed.endpoints,
-        [&](graph_jit::IndexedEndpointPlan const& candidate) {
+    ASSERT_TRUE(plan->background.bundle_to_background_node[source_handle]);
+    auto const source_node = *plan->background.bundle_to_background_node[source_handle];
+    auto const port = std::ranges::find_if(
+        plan->background.ports,
+        [&](graph_jit::BackgroundPortPlan const& candidate) {
             return candidate.node == source_node
                 && candidate.name == "realtime_persisted";
         });
-    ASSERT_NE(endpoint, plan->indexed.endpoints.end());
-    EXPECT_TRUE(endpoint->persisted_tick_output);
-    EXPECT_FALSE(endpoint->replayed_tick_output);
+    ASSERT_NE(port, plan->background.ports.end());
+    EXPECT_TRUE(port->persisted_tick_output);
+    EXPECT_FALSE(port->replayed_tick_output);
 
-    auto const source_atom = std::ranges::find_if(
-        plan->indexed.sample_source_atoms,
-        [&](graph_jit::SampleSourceEndpointAtomPlan const& atom) {
-            return atom.port.node_bundle_handle == source_handle
-                && atom.port.port_ordinal == 1;
+    auto const source_subset = std::ranges::find_if(
+        plan->background.sample_source_subsets,
+        [&](graph_jit::SampleSourcePortSubsetPlan const& subset) {
+            return subset.port.node_bundle_handle == source_handle
+                && subset.port.port_index == 1;
         });
-    ASSERT_NE(source_atom, plan->indexed.sample_source_atoms.end());
-    EXPECT_TRUE(source_atom->capabilities.capture_backed_persistence);
-    EXPECT_TRUE(source_atom->capabilities.canonical_persisted_pages);
-    EXPECT_FALSE(source_atom->capabilities.current_tick_readable);
-    auto const target_atom = std::ranges::find_if(
-        plan->indexed.sample_target_atoms,
-        [&](graph_jit::SampleTargetEndpointAtomPlan const& atom) {
-            return atom.port.node_bundle_handle == sink_handle;
+    ASSERT_NE(source_subset, plan->background.sample_source_subsets.end());
+    EXPECT_TRUE(source_subset->storage.capture);
+    EXPECT_TRUE(source_subset->storage.persisted_pages);
+    EXPECT_FALSE(source_subset->storage.current_tick);
+    auto const target_subset = std::ranges::find_if(
+        plan->background.sample_target_subsets,
+        [&](graph_jit::SampleTargetPortSubsetPlan const& subset) {
+            return subset.port.node_bundle_handle == sink_handle;
         });
-    ASSERT_NE(target_atom, plan->indexed.sample_target_atoms.end());
-    EXPECT_FALSE(target_atom->capabilities.capture_backed_persistence);
-    EXPECT_TRUE(target_atom->capabilities.canonical_persisted_pages);
+    ASSERT_NE(target_subset, plan->background.sample_target_subsets.end());
+    EXPECT_FALSE(target_subset->storage.capture);
+    EXPECT_TRUE(target_subset->storage.persisted_pages);
 }
 
 TEST(GraphJitConnectionPlan, IntrinsicTickReplaySuppliesRandomAccess)
@@ -2203,7 +2203,7 @@ TEST(GraphJitConnectionPlan, IntrinsicTickReplaySuppliesRandomAccess)
 
     GraphBuilder graph;
     auto source = details::configure_concrete_node<ReplayableSource>(graph);
-    auto sink = details::configure_concrete_node<IndexedSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
     auto const source_handle = source.node_bundle_handle();
     sink(source);
     graph.outputs();
@@ -2218,14 +2218,14 @@ TEST(GraphJitConnectionPlan, IntrinsicTickReplaySuppliesRandomAccess)
         graph_jit::PlannedDeliveryMechanism::replayed_tick_to_random_access);
     EXPECT_TRUE(timing.contextually_replayable);
     EXPECT_TRUE(std::ranges::contains(
-        plan->indexed.intrinsic_replay_candidates, source_handle));
+        plan->background.intrinsic_replay_candidates, source_handle));
 
-    ASSERT_TRUE(plan->indexed.bundle_to_indexed_node[source_handle]);
-    auto const source_node = *plan->indexed.bundle_to_indexed_node[source_handle];
-    EXPECT_TRUE(plan->indexed.nodes[source_node].synthesized_tick_replay);
-    EXPECT_TRUE(plan->indexed.nodes[source_node].synthesized_forward_coverage);
-    EXPECT_TRUE(plan->indexed.nodes[source_node].synthesized_reverse_coverage);
-    EXPECT_TRUE(plan->indexed.nodes[source_node].uses_imported_tick_block_for_replay);
+    ASSERT_TRUE(plan->background.bundle_to_background_node[source_handle]);
+    auto const source_node = *plan->background.bundle_to_background_node[source_handle];
+    EXPECT_TRUE(plan->background.nodes[source_node].replays_tick);
+    EXPECT_TRUE(plan->background.nodes[source_node].uses_replay_forward_coverage);
+    EXPECT_TRUE(plan->background.nodes[source_node].uses_replay_reverse_coverage);
+    EXPECT_TRUE(plan->background.nodes[source_node].uses_imported_tick_block_for_replay);
 }
 
 TEST(GraphJitConnectionPlan, ContextualReplayTraversesSequentialDependencies)
@@ -2235,7 +2235,7 @@ TEST(GraphJitConnectionPlan, ContextualReplayTraversesSequentialDependencies)
     GraphBuilder graph;
     auto source = details::configure_concrete_node<ReplayableSource>(graph);
     auto pass = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<IndexedSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
     auto const source_handle = source.node_bundle_handle();
     auto const pass_handle = pass.node_bundle_handle();
     pass(source);
@@ -2245,30 +2245,30 @@ TEST(GraphJitConnectionPlan, ContextualReplayTraversesSequentialDependencies)
     auto configured = std::move(graph).finish();
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
-    auto const source_node = *plan->indexed.bundle_to_indexed_node[source_handle];
-    auto const pass_node = *plan->indexed.bundle_to_indexed_node[pass_handle];
-    EXPECT_TRUE(plan->indexed.nodes[source_node].synthesized_tick_replay);
-    EXPECT_TRUE(plan->indexed.nodes[pass_node].synthesized_tick_replay);
-    ASSERT_EQ(plan->indexed.background_evaluation_order.size(), 2u);
+    auto const source_node = *plan->background.bundle_to_background_node[source_handle];
+    auto const pass_node = *plan->background.bundle_to_background_node[pass_handle];
+    EXPECT_TRUE(plan->background.nodes[source_node].replays_tick);
+    EXPECT_TRUE(plan->background.nodes[pass_node].replays_tick);
+    ASSERT_EQ(plan->background.background_evaluation_order.size(), 2u);
     auto const source_position = std::ranges::find(
-        plan->indexed.background_evaluation_order, source_node);
+        plan->background.background_evaluation_order, source_node);
     auto const pass_position = std::ranges::find(
-        plan->indexed.background_evaluation_order, pass_node);
-    ASSERT_NE(source_position, plan->indexed.background_evaluation_order.end());
-    ASSERT_NE(pass_position, plan->indexed.background_evaluation_order.end());
+        plan->background.background_evaluation_order, pass_node);
+    ASSERT_NE(source_position, plan->background.background_evaluation_order.end());
+    ASSERT_NE(pass_position, plan->background.background_evaluation_order.end());
     EXPECT_LT(source_position, pass_position);
     EXPECT_TRUE(std::ranges::any_of(
-        plan->indexed.background_dependencies,
-        [&](graph_jit::IndexedBackgroundDependencyPlan const& dependency) {
+        plan->background.background_dependencies,
+        [&](graph_jit::BackgroundDependencyPlan const& dependency) {
             return dependency.source_node == source_node
                 && dependency.target_node == pass_node
                 && dependency.kind
-                    == graph_jit::IndexedBackgroundDependencyKind::replay_sequential;
+                    == graph_jit::BackgroundDependencyKind::replay_sequential;
         }));
 
     auto const replay_connection = std::ranges::find_if(
-        plan->indexed.connections,
-        [&](graph_jit::IndexedConnectionPlan const& connection) {
+        plan->background.connections,
+        [&](graph_jit::BackgroundConnectionPlan const& connection) {
             return connection.kind == PortKind::sample
                 && std::ranges::any_of(
                     connection.sample_target_channels,
@@ -2276,27 +2276,27 @@ TEST(GraphJitConnectionPlan, ContextualReplayTraversesSequentialDependencies)
                         return channel.bundle == pass_handle;
                     });
         });
-    ASSERT_NE(replay_connection, plan->indexed.connections.end());
-    auto const replay_connection_ordinal = static_cast<std::size_t>(
-        std::distance(plan->indexed.connections.begin(), replay_connection));
-    auto const& physical = plan->indexed.physical;
-    ASSERT_LT(replay_connection_ordinal, physical.connections.size());
-    auto const& physical_connection =
-        physical.connections[replay_connection_ordinal];
-    ASSERT_EQ(physical_connection.sample_direct_bindings.size(), 2u);
-    std::vector<graph_jit::IndexedRepresentationResidence> residences;
-    for (auto const binding : physical_connection.sample_direct_bindings) {
-        ASSERT_LT(binding, physical.sample_direct_bindings.size());
-        residences.push_back(physical.representations[
-            physical.sample_direct_bindings[binding].representation].residence);
+    ASSERT_NE(replay_connection, plan->background.connections.end());
+    auto const replay_connection_index = static_cast<std::size_t>(
+        std::distance(plan->background.connections.begin(), replay_connection));
+    auto const& storage = plan->background.storage;
+    ASSERT_LT(replay_connection_index, storage.connections.size());
+    auto const& storage_connection =
+        storage.connections[replay_connection_index];
+    ASSERT_EQ(storage_connection.direct_samples.size(), 2u);
+    std::vector<graph_jit::PortStorageKind> storage_kinds;
+    for (auto const direct_index : storage_connection.direct_samples) {
+        ASSERT_LT(direct_index, storage.direct_samples.size());
+        storage_kinds.push_back(storage.ports[
+            storage.direct_samples[direct_index].storage].storage);
     }
     EXPECT_TRUE(std::ranges::contains(
-        residences,
-        graph_jit::IndexedRepresentationResidence::current_tick));
+        storage_kinds,
+        graph_jit::PortStorageKind::current_tick));
     EXPECT_TRUE(std::ranges::contains(
-        residences,
-        graph_jit::IndexedRepresentationResidence::
-            transaction_local_addressable));
+        storage_kinds,
+        graph_jit::PortStorageKind::
+            background));
 }
 
 TEST(GraphJitConnectionPlan, TockDependencyCanFeedSynthesizedReplay)
@@ -2304,9 +2304,9 @@ TEST(GraphJitConnectionPlan, TockDependencyCanFeedSynthesizedReplay)
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<IndexedSource>(graph);
+    auto source = details::configure_concrete_node<BackgroundSource>(graph);
     auto pass = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<IndexedSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
     auto const source_handle = source.node_bundle_handle();
     auto const pass_handle = pass.node_bundle_handle();
     pass(source);
@@ -2316,21 +2316,21 @@ TEST(GraphJitConnectionPlan, TockDependencyCanFeedSynthesizedReplay)
     auto configured = std::move(graph).finish();
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
-    auto const source_node = *plan->indexed.bundle_to_indexed_node[source_handle];
-    auto const pass_node = *plan->indexed.bundle_to_indexed_node[pass_handle];
-    EXPECT_TRUE(plan->indexed.nodes[source_node].authored_tock_execution);
-    EXPECT_TRUE(plan->indexed.nodes[pass_node].synthesized_tick_replay);
+    auto const source_node = *plan->background.bundle_to_background_node[source_handle];
+    auto const pass_node = *plan->background.bundle_to_background_node[pass_handle];
+    EXPECT_TRUE(plan->background.nodes[source_node].authored_tock_execution);
+    EXPECT_TRUE(plan->background.nodes[pass_node].replays_tick);
     auto const source_position = std::ranges::find(
-        plan->indexed.background_evaluation_order, source_node);
+        plan->background.background_evaluation_order, source_node);
     auto const pass_position = std::ranges::find(
-        plan->indexed.background_evaluation_order, pass_node);
-    ASSERT_NE(source_position, plan->indexed.background_evaluation_order.end());
-    ASSERT_NE(pass_position, plan->indexed.background_evaluation_order.end());
+        plan->background.background_evaluation_order, pass_node);
+    ASSERT_NE(source_position, plan->background.background_evaluation_order.end());
+    ASSERT_NE(pass_position, plan->background.background_evaluation_order.end());
     EXPECT_LT(source_position, pass_position);
 
     auto const replay_connection = std::ranges::find_if(
-        plan->indexed.connections,
-        [&](graph_jit::IndexedConnectionPlan const& connection) {
+        plan->background.connections,
+        [&](graph_jit::BackgroundConnectionPlan const& connection) {
             return connection.kind == PortKind::sample
                 && std::ranges::any_of(
                     connection.sample_target_channels,
@@ -2338,25 +2338,25 @@ TEST(GraphJitConnectionPlan, TockDependencyCanFeedSynthesizedReplay)
                         return channel.bundle == pass_handle;
                     });
         });
-    ASSERT_NE(replay_connection, plan->indexed.connections.end());
-    auto const replay_connection_ordinal = static_cast<std::size_t>(
-        std::distance(plan->indexed.connections.begin(), replay_connection));
-    auto const& physical = plan->indexed.physical;
-    auto const& physical_connection =
-        physical.connections[replay_connection_ordinal];
-    ASSERT_EQ(physical_connection.sample_direct_bindings.size(), 2u);
-    std::vector<graph_jit::IndexedRepresentationResidence> residences;
-    for (auto const binding : physical_connection.sample_direct_bindings) {
-        residences.push_back(physical.representations[
-            physical.sample_direct_bindings[binding].representation].residence);
+    ASSERT_NE(replay_connection, plan->background.connections.end());
+    auto const replay_connection_index = static_cast<std::size_t>(
+        std::distance(plan->background.connections.begin(), replay_connection));
+    auto const& storage = plan->background.storage;
+    auto const& storage_connection =
+        storage.connections[replay_connection_index];
+    ASSERT_EQ(storage_connection.direct_samples.size(), 2u);
+    std::vector<graph_jit::PortStorageKind> storage_kinds;
+    for (auto const direct_index : storage_connection.direct_samples) {
+        storage_kinds.push_back(storage.ports[
+            storage.direct_samples[direct_index].storage].storage);
     }
     EXPECT_TRUE(std::ranges::contains(
-        residences,
-        graph_jit::IndexedRepresentationResidence::prepared_sequential_window));
+        storage_kinds,
+        graph_jit::PortStorageKind::tick_sequential));
     EXPECT_TRUE(std::ranges::contains(
-        residences,
-        graph_jit::IndexedRepresentationResidence::
-            transaction_local_addressable));
+        storage_kinds,
+        graph_jit::PortStorageKind::
+            background));
 }
 
 TEST(GraphJitConnectionPlan, PersistedTickBoundaryStopsContextualReplayTraversal)
@@ -2367,7 +2367,7 @@ TEST(GraphJitConnectionPlan, PersistedTickBoundaryStopsContextualReplayTraversal
     auto live = details::configure_concrete_node<MonoSource>(graph);
     auto recorder = details::configure_concrete_node<PersistedTickPass>(graph);
     auto replay = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<IndexedSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
     auto const recorder_handle = recorder.node_bundle_handle();
     auto const replay_handle = replay.node_bundle_handle();
     recorder(live);
@@ -2378,13 +2378,13 @@ TEST(GraphJitConnectionPlan, PersistedTickBoundaryStopsContextualReplayTraversal
     auto configured = std::move(graph).finish();
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
-    auto const recorder_node = *plan->indexed.bundle_to_indexed_node[recorder_handle];
-    auto const replay_node = *plan->indexed.bundle_to_indexed_node[replay_handle];
-    EXPECT_FALSE(plan->indexed.nodes[recorder_node].synthesized_tick_replay);
-    EXPECT_TRUE(plan->indexed.nodes[replay_node].synthesized_tick_replay);
+    auto const recorder_node = *plan->background.bundle_to_background_node[recorder_handle];
+    auto const replay_node = *plan->background.bundle_to_background_node[replay_handle];
+    EXPECT_FALSE(plan->background.nodes[recorder_node].replays_tick);
+    EXPECT_TRUE(plan->background.nodes[replay_node].replays_tick);
     EXPECT_TRUE(std::ranges::any_of(
-        plan->indexed.background_dependencies,
-        [&](graph_jit::IndexedBackgroundDependencyPlan const& dependency) {
+        plan->background.background_dependencies,
+        [&](graph_jit::BackgroundDependencyPlan const& dependency) {
             return dependency.source_node == recorder_node
                 && dependency.target_node == replay_node
                 && dependency.source_is_stored_boundary;
@@ -2397,7 +2397,7 @@ TEST(GraphJitConnectionPlan, RejectsUnreproducibleTickEphemeralRandomAccess)
 
     GraphBuilder sample_graph;
     auto sample_source = details::configure_concrete_node<MonoSource>(sample_graph);
-    auto sample_sink = details::configure_concrete_node<IndexedSink>(sample_graph);
+    auto sample_sink = details::configure_concrete_node<BackgroundSink>(sample_graph);
     sample_sink(sample_source);
     sample_graph.outputs();
     auto sample_configured = std::move(sample_graph).finish();
@@ -2410,7 +2410,7 @@ TEST(GraphJitConnectionPlan, RejectsUnreproducibleTickEphemeralRandomAccess)
 
     GraphBuilder event_graph;
     auto event_source = details::configure_concrete_node<PlainEventPass>(event_graph);
-    auto event_sink = details::configure_concrete_node<IndexedEventPass>(event_graph);
+    auto event_sink = details::configure_concrete_node<BackgroundEventPass>(event_graph);
     event_sink.connect_event_input(0, event_source.event_port());
     event_graph.outputs();
     auto event_configured = std::move(event_graph).finish();
@@ -2429,7 +2429,7 @@ TEST(GraphJitConnectionPlan, RejectsUnreproducibleUpstreamDuringTransitiveReplay
     GraphBuilder graph;
     auto live = details::configure_concrete_node<MonoSource>(graph);
     auto replay = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<IndexedSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
     replay(live);
     sink(replay);
     graph.outputs();
@@ -2449,7 +2449,7 @@ TEST(GraphJitConnectionPlan, RejectsUnavailableBoundarySourceDuringTransitiveRep
     GraphBuilder graph;
     auto input = graph.input<"in">();
     auto replay = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<IndexedSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
     replay(input);
     sink(replay);
     graph.outputs();
@@ -2469,7 +2469,7 @@ TEST(GraphJitConnectionPlan, RejectsContextualReplayCycles)
     GraphBuilder graph;
     auto first = details::configure_concrete_node<ReplayablePass>(graph);
     auto second = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<IndexedSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
     first(second);
     second(static_cast<SamplePortRef>(first).detach(3));
     sink(first);

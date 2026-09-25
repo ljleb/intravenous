@@ -256,10 +256,10 @@ TEST(GraphConnections, VirtualNodeThenOrderedMemberPathResolvesConcretePort)
 
     auto source_matcher = named_matcher("source", "", std::nullopt);
     source_matcher.port.name.reset();
-    source_matcher.port.ordinal = 0;
+    source_matcher.port.index = 0;
     source_matcher.path = {
         iv::ProjectVirtualNodeSelector{.source_identity = "virtual-source"},
-        iv::ProjectVirtualMemberSelector{.ordinal = 1},
+        iv::ProjectVirtualMemberSelector{.index = 1},
     };
 
     iv::GraphConnections connections;
@@ -290,7 +290,7 @@ TEST(GraphConnections, SetValuedVirtualMatcherConnectsEveryResolvedMember)
 
     auto source_matcher = named_matcher("source", "");
     source_matcher.port.name.reset();
-    source_matcher.port.ordinal = 0;
+    source_matcher.port.index = 0;
     source_matcher.path = {
         iv::ProjectVirtualNodeSelector{.source_identity = "virtual-source"},
     };
@@ -435,8 +435,8 @@ TEST(GraphConnections, TiledChildPathSelectorChoosesNodeBeforePortResolution)
 
     auto source_matcher = named_matcher("source", "");
     source_matcher.port.name.reset();
-    source_matcher.port.ordinal = 0;
-    source_matcher.path = {iv::ProjectTiledChildSelector{.ordinal = 1}};
+    source_matcher.port.index = 0;
+    source_matcher.path = {iv::ProjectTiledChildSelector{.index = 1}};
 
     iv::GraphConnections connections;
     auto result = apply(connections, root, placements, iv::GraphConnectionUpsertMutation{
@@ -451,7 +451,7 @@ TEST(GraphConnections, TiledChildPathSelectorChoosesNodeBeforePortResolution)
     EXPECT_TRUE(result.diagnostics.empty());
 }
 
-TEST(GraphConnections, SubgraphPathSelectorDescendsByKindAndStableOrdinal)
+TEST(GraphConnections, SubgraphPathSelectorDescendsByKindAndStableIndex)
 {
     auto source_graph = make_nested_subgraph_source();
     auto sink_graph = make_sample_sink();
@@ -463,7 +463,7 @@ TEST(GraphConnections, SubgraphPathSelectorDescendsByKindAndStableOrdinal)
     auto source_matcher = named_matcher("source", "main");
     source_matcher.path = {iv::ProjectSubgraphSelector{
         .kind = "inner",
-        .ordinal = 0,
+        .index = 0,
     }};
 
     iv::GraphConnections connections;

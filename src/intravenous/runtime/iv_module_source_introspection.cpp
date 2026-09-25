@@ -79,7 +79,7 @@ VirtualPortInfo to_live_port(IntrospectionPortInfo const &port)
         .name = port.name,
         .type = port.type,
         .connectivity = port.connectivity,
-        .ordinal = port.ordinal,
+        .index = port.index,
         .default_value = port.default_value,
         .min = port.min,
         .max = port.max,
@@ -261,7 +261,7 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
     live.members.reserve(node.members.size());
     for (auto const &member : node.members) {
         VirtualNodeMemberInfo live_member;
-        live_member.ordinal = member.ordinal;
+        live_member.index = member.index;
         live_member.backing_node_id = member.backing_node_id;
         live_member.kind = member.kind;
         live_member.type_identity = member.type_identity;
@@ -459,8 +459,8 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
         std::string definition_id;
         size_t virtual_index = 0;
         bool full_node = false;
-        std::vector<size_t> sample_input_ordinals {};
-        std::vector<size_t> event_input_ordinals {};
+        std::vector<size_t> sample_input_indices {};
+        std::vector<size_t> event_input_indices {};
         std::vector<SourceSpan> selected_port_spans {};
         uint32_t best_span_size = std::numeric_limits<uint32_t>::max();
         uint32_t best_distance = std::numeric_limits<uint32_t>::max();
@@ -524,18 +524,18 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
                 ranked.full_node = true;
             });
 
-            auto collect_port_matches = [&](auto const &ports, auto &ordinals) {
+            auto collect_port_matches = [&](auto const &ports, auto &indices) {
                 for (auto const &port : ports) {
                     bool matched_port = false;
                     inspect_spans(port.source_spans, [&](SourceSpan const &span) {
                         matched_port = true;
                         ranked.selected_port_spans.push_back(span);
                     });
-                    if (matched_port) ordinals.push_back(port.ordinal);
+                    if (matched_port) indices.push_back(port.index);
                 }
             };
-            collect_port_matches(node.sample_inputs, ranked.sample_input_ordinals);
-            collect_port_matches(node.event_inputs, ranked.event_input_ordinals);
+            collect_port_matches(node.sample_inputs, ranked.sample_input_indices);
+            collect_port_matches(node.event_inputs, ranked.event_input_indices);
 
             auto const is_matched = [](bool value) { return value; };
             auto const matches = match_mode == SourceRangeMatchMode::union_
@@ -600,23 +600,23 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             }
             auto live = to_virtual_node(node, matching_instance_id);
             if (!ranked.full_node) {
-                auto keep_ordinal = [](auto const &ordinals, auto const &port) {
-                    return std::ranges::contains(ordinals, port.ordinal);
+                auto keep_index = [](auto const &indices, auto const &port) {
+                    return std::ranges::contains(indices, port.index);
                 };
                 std::erase_if(live.sample_inputs, [&](auto const &port) {
-                    return !keep_ordinal(ranked.sample_input_ordinals, port);
+                    return !keep_index(ranked.sample_input_indices, port);
                 });
                 std::erase_if(live.event_inputs, [&](auto const &port) {
-                    return !keep_ordinal(ranked.event_input_ordinals, port);
+                    return !keep_index(ranked.event_input_indices, port);
                 });
                 live.sample_outputs.clear();
                 live.event_outputs.clear();
                 for (auto &member : live.members) {
                     std::erase_if(member.sample_inputs, [&](auto const &port) {
-                        return !keep_ordinal(ranked.sample_input_ordinals, port);
+                        return !keep_index(ranked.sample_input_indices, port);
                     });
                     std::erase_if(member.event_inputs, [&](auto const &port) {
-                        return !keep_ordinal(ranked.event_input_ordinals, port);
+                        return !keep_index(ranked.event_input_indices, port);
                     });
                     member.sample_outputs.clear();
                     member.event_outputs.clear();

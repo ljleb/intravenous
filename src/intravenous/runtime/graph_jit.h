@@ -2,8 +2,8 @@
 
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/realtime_port_planning.h>
-#include <intravenous/graph_jit/indexed_execution.h>
-#include <intravenous/graph_jit/indexed_plan.h>
+#include <intravenous/graph_jit/background_evaluation_call.h>
+#include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/node/layout.h>
 #include <intravenous/runtime/node_definition_types.h>
 
@@ -69,14 +69,14 @@ struct CompiledGraphRootOperations {
 
 // Background roots consume one executor-owned logical batch. storage_base is
 // the same canonical NodeStorage allocation used by realtime execution and is
-// used only for IndexedState. Calling these roots is never audio-thread work.
-using CompiledGraphIndexedBatchFunction =
-    void (*)(std::byte* storage_base, graph_jit::IndexedBatchFrame* batch);
+// used only for TockState. Calling these roots is never audio-thread work.
+using CompiledGraphBackgroundFunction =
+    void (*)(std::byte* storage_base, graph_jit::BackgroundEvaluationCall* batch);
 
-struct CompiledGraphIndexedOperations {
-    CompiledGraphIndexedBatchFunction propagate_forward = nullptr;
-    CompiledGraphIndexedBatchFunction propagate_reverse = nullptr;
-    CompiledGraphIndexedBatchFunction evaluate = nullptr;
+struct CompiledGraphBackgroundOperations {
+    CompiledGraphBackgroundFunction propagate_forward = nullptr;
+    CompiledGraphBackgroundFunction propagate_reverse = nullptr;
+    CompiledGraphBackgroundFunction evaluate = nullptr;
 
     [[nodiscard]] bool valid() const noexcept
     {
@@ -97,9 +97,9 @@ struct CompiledGraph {
     std::shared_ptr<ConfiguredGraph const> configured_graph{};
     std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
     NodeLayout node_layout{};
-    graph_jit::IndexedPlan indexed_plan{};
+    graph_jit::BackgroundEvaluationPlan background_evaluation_plan{};
     CompiledGraphRootOperations root_operations{};
-    CompiledGraphIndexedOperations indexed_operations{};
+    CompiledGraphBackgroundOperations background_operations{};
     std::shared_ptr<void const> code_lifetime{};
 };
 

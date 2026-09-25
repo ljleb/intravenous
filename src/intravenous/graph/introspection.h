@@ -161,7 +161,7 @@ constexpr std::vector<IntrospectionPortInfo> project_introspection_sample_ports(
                 ? VirtualPortConnectivity::mixed
                 : any_connected ? VirtualPortConnectivity::connected
                                 : VirtualPortConnectivity::disconnected,
-            .ordinal = mapping.ordinal,
+            .index = mapping.index,
             .default_value = default_value,
             .min = min,
             .max = max,
@@ -212,16 +212,16 @@ constexpr std::vector<IntrospectionPortInfo> project_introspection_event_ports(
         for (auto const port : mapping.node_bundle_ports) {
             connected = connected || (inputs
                 ? connectivity.event_inputs.contains(EventInputPortId{
-                    port.node_bundle_handle, port.port_ordinal})
+                    port.node_bundle_handle, port.port_index})
                 : connectivity.event_outputs.contains(EventOutputPortId{
-                    port.node_bundle_handle, port.port_ordinal}));
+                    port.node_bundle_handle, port.port_index}));
         }
         result.push_back(IntrospectionPortInfo{
             .name = mapping.name,
             .type = event_type_name(mapping.type),
             .connectivity = connected ? VirtualPortConnectivity::connected
                                       : VirtualPortConnectivity::disconnected,
-            .ordinal = mapping.ordinal,
+            .index = mapping.index,
             .source_spans =
                 introspection_source_spans_for(mapping.source_infos),
         });
@@ -281,7 +281,7 @@ constexpr void append_configured_virtual_node_metadata(
             auto const backing_id = record.type_identity + ":" + record.id;
             node.backing_node_ids.push_back(backing_id);
             node.members.push_back(IntrospectionVirtualNode::Member{
-                .ordinal = 0,
+                .index = 0,
                 .backing_node_id = backing_id,
                 .kind = node.kind,
                 .type_identity = record.type_identity,
@@ -293,19 +293,19 @@ constexpr void append_configured_virtual_node_metadata(
             continue;
         }
 
-        for (std::size_t bundle_ordinal = 0;
-             bundle_ordinal < record.node_bundle_handles.size();
-             ++bundle_ordinal) {
-            auto const handle = record.node_bundle_handles[bundle_ordinal];
+        for (std::size_t bundle_index = 0;
+             bundle_index < record.node_bundle_handles.size();
+             ++bundle_index) {
+            auto const handle = record.node_bundle_handles[bundle_index];
             auto const& bundle = node_bundles.bundle(handle);
             auto const type = std::string(bundle.type_identity());
             if (node.kind.empty()) node.kind = type;
             if (node.type_identity.empty()) node.type_identity = type;
             auto const backing_id = "node-bundle:" + record.id + ":"
-                + introspection_decimal_string(bundle_ordinal);
+                + introspection_decimal_string(bundle_index);
             node.backing_node_ids.push_back(backing_id);
             node.members.push_back(IntrospectionVirtualNode::Member{
-                .ordinal = bundle_ordinal,
+                .index = bundle_index,
                 .backing_node_id = backing_id,
                 .kind = type,
                 .type_identity = type,
@@ -342,12 +342,12 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
         family.configured_connected = std::ranges::any_of(
             family.channels, [&](auto const& channel) {
                 return std::ranges::any_of(
-                    channel.port_ordinals, [&](auto const ordinal) {
+                    channel.port_indices, [&](auto const index) {
                         auto const channels =
                             configured.node_bundles.sample_output_channels({
                                 configured.public_ports.boundary_handle(),
                                 PortKind::sample,
-                                ordinal,
+                                index,
                             });
                         return std::ranges::any_of(
                             channels, [&](auto const source) {
@@ -365,7 +365,7 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
         auto const ports = configured.node_bundles.event_output_ports({
             configured.public_ports.boundary_handle(),
             PortKind::event,
-            input.port_ordinal,
+            input.port_index,
         });
         input.graph_connected = std::ranges::any_of(
             ports, [&](auto const source) {

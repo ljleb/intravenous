@@ -170,9 +170,9 @@ public:
   void annotate_public_sample_output_source_info(std::span<SourceInfo const> infos);
   void annotate_public_event_output_source_info(std::span<SourceInfo const> infos);
   void annotate_public_sample_output_source_info(
-      size_t ordinal, SourceInfo info);
+      size_t index, SourceInfo info);
   void annotate_public_event_output_source_info(
-      size_t ordinal, SourceInfo info);
+      size_t index, SourceInfo info);
 
   void event_outputs(std::span<EventOutputRequest const> refs);
   constexpr void outputs(std::initializer_list<NamedRef> refs);
@@ -203,9 +203,9 @@ public:
   VirtualSampleOutputFamilies virtual_sample_output_families() const;
   VirtualPorts virtual_ports() const;
   constexpr GraphBuilderPublicSamplePortFamilies public_sample_input_families() const;
-  constexpr bool public_sample_input_is_connected(size_t port_ordinal) const;
+  constexpr bool public_sample_input_is_connected(size_t port_index) const;
   constexpr std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
-  constexpr bool public_event_input_is_connected(size_t port_ordinal) const;
+  constexpr bool public_event_input_is_connected(size_t port_index) const;
   constexpr std::span<SourceInfo const> public_event_input_source_infos(size_t) const;
   constexpr GraphBuilderPublicSamplePortFamilies public_sample_output_families() const;
   constexpr std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
@@ -289,7 +289,7 @@ constexpr void GraphBuilderState::outputs(std::span<NamedRef const> refs) {
 constexpr void GraphBuilderPublicPorts::define_sample_outputs(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     GraphBuilderIdentity const& identity, std::span<OutputRefConfig const> refs) {
-  _last_sample_output_port_ordinals.clear();
+  _last_sample_output_port_indices.clear();
   bool require_names = refs.size() > 1;
   for (size_t i = 0; i < refs.size(); ++i) {
     auto const& ref = refs[i].ref; auto const& config = refs[i].config;
@@ -308,12 +308,12 @@ constexpr void GraphBuilderPublicPorts::define_sample_outputs(
       _sample_output_members.push_back(refs[i].public_member); _sample_output_source_infos.emplace_back();
     }
     NodeBundlePortId const target{_boundary, PortKind::sample, output};
-    if (refs[i].target_channel_ordinal) {
-      auto channels = bundles.sample_input_channels(target); auto channel = *refs[i].target_channel_ordinal;
-      if (channel >= channels.size()) details::error("public sample output channel ordinal is out of bounds");
+    if (refs[i].target_channel_index) {
+      auto channels = bundles.sample_input_channels(target); auto channel = *refs[i].target_channel_index;
+      if (channel >= channels.size()) details::error("public sample output channel index is out of bounds");
       builder.record_configured_sample_connection(channels[channel], ref);
     } else builder.record_configured_sample_connection(target, ref);
-    _last_sample_output_port_ordinals.push_back(output);
+    _last_sample_output_port_indices.push_back(output);
   }
   _sample_outputs_defined = true;
 }
@@ -422,15 +422,15 @@ constexpr void GraphBuilderState::populate_public_introspection_metadata(
     family.configured_connected = std::ranges::any_of(
         family.channels, [&](auto const& channel) {
           return std::ranges::any_of(
-              channel.port_ordinals, [&](auto ordinal) {
-                return public_sample_input_is_connected(ordinal);
+              channel.port_indices, [&](auto index) {
+                return public_sample_input_is_connected(index);
               });
         });
   }
   metadata.public_sample_inputs = std::move(sample_inputs.families);
   metadata.public_event_inputs = public_event_inputs();
   for (auto& input : metadata.public_event_inputs)
-    input.graph_connected = public_event_input_is_connected(input.port_ordinal);
+    input.graph_connected = public_event_input_is_connected(input.port_index);
   metadata.public_sample_outputs = public_sample_output_families().families;
   metadata.public_event_outputs = public_event_outputs();
 }

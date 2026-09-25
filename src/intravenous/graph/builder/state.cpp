@@ -41,8 +41,8 @@ std::vector<OutputRefConfig> make_sample_output_configs(
             .channel_type = ref.family_channel_type,
             .whole_stream = ref.whole_stream,
         },
-        .target_channel_ordinal = ref.targets_single_channel()
-            ? std::optional{ref.target_channel_ordinal}
+        .target_channel_index = ref.targets_single_channel()
+            ? std::optional{ref.target_channel_index}
             : std::nullopt,
     });
   }
@@ -175,7 +175,7 @@ SamplePortRef GraphBuilderPublicPorts::add_sample_input(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     std::string_view name, ChannelLayout channel_layout, Sample value,
     std::optional<Sample> min, std::optional<Sample> max) {
-  auto ordinal = bundles.bundle(_boundary).append_boundary_sample_input({
+  auto index = bundles.bundle(_boundary).append_boundary_sample_input({
       .name = std::string(name),
       .channel_layout = channel_layout,
       .default_value = value,
@@ -183,17 +183,17 @@ SamplePortRef GraphBuilderPublicPorts::add_sample_input(
       .max = max.value_or(std::numeric_limits<Sample::storage>::infinity())});
   _sample_input_source_infos.emplace_back();
   return SamplePortRef(
-      builder.facade(), NodeBundlePortId{_boundary, PortKind::sample, ordinal});
+      builder.facade(), NodeBundlePortId{_boundary, PortKind::sample, index});
 }
 
 EventPortRef GraphBuilderPublicPorts::add_event_input(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     std::string_view name, EventTypeId type) {
-  auto ordinal = bundles.bundle(_boundary).append_boundary_event_input(
+  auto index = bundles.bundle(_boundary).append_boundary_event_input(
       {.name = std::string(name), .type = type});
   _event_input_source_infos.emplace_back();
   return EventPortRef(
-      builder.facade(), NodeBundlePortId{_boundary, PortKind::event, ordinal});
+      builder.facade(), NodeBundlePortId{_boundary, PortKind::event, index});
 }
 
 SamplePortRef GraphBuilderState::make_sample_port(
@@ -258,7 +258,7 @@ SamplePortRef GraphBuilderState::select_sample_port_channel(
     details::error("sample port does not belong to this builder");
   auto const& expression = _sample_port_expressions[ref.handle];
   if (channel >= expression.channels.size())
-    details::error("sample channel ordinal is out of bounds");
+    details::error("sample channel index is out of bounds");
   std::array<SampleOutputChannelId, 1> channels{expression.channels[channel]};
   auto detach = expression.detach;
   auto result = make_sample_port(ChannelTypeId::mono, channels);
@@ -383,12 +383,12 @@ void GraphBuilderState::annotate_public_sample_input_source_info(
     details::error("PublicSampleInputRef has no logical boundary port");
   if (logical->node_bundle_handle == _public_ports.boundary_handle()) {
     _public_ports.annotate_sample_input_source_info(
-        logical->port_ordinal, id, file, begin, end);
+        logical->port_index, id, file, begin, end);
     return;
   }
   auto& boundary = _node_bundles.bundle(logical->node_bundle_handle);
   if (!boundary.is_boundary() ||
-      logical->port_ordinal >= boundary.boundary_sample_inputs().size())
+      logical->port_index >= boundary.boundary_sample_inputs().size())
     details::error(
         "PublicSampleInputRef does not belong to a valid boundary input");
   SourceInfo info{
@@ -460,15 +460,15 @@ void GraphBuilderState::annotate_public_event_output_source_info(
 }
 
 void GraphBuilderState::annotate_public_sample_output_source_info(
-    size_t ordinal, SourceInfo info) {
+    size_t index, SourceInfo info) {
   _public_ports.annotate_sample_output_source_info(
-      ordinal, std::move(info));
+      index, std::move(info));
 }
 
 void GraphBuilderState::annotate_public_event_output_source_info(
-    size_t ordinal, SourceInfo info) {
+    size_t index, SourceInfo info) {
   _public_ports.annotate_event_output_source_info(
-      ordinal, std::move(info));
+      index, std::move(info));
 }
 
 ConfiguredGraphEmbedding GraphBuilderState::embed_graph_components(
@@ -498,19 +498,19 @@ ConfiguredGraphEmbedding GraphBuilderState::embed_graph_components(
   // identities on those virtual ports so source introspection does not lose
   // provenance at the graph boundary.
   auto const sample_inputs = child_public_ports.sample_inputs(child_bundles);
-  for (size_t ordinal = 0; ordinal < sample_inputs.size(); ++ordinal) {
-    for (auto const& info : child_public_ports.sample_input_source_infos(ordinal)) {
+  for (size_t index = 0; index < sample_inputs.size(); ++index) {
+    for (auto const& info : child_public_ports.sample_input_source_infos(index)) {
       _virtual_nodes.annotate_input_source_info(
           _node_bundles, subgraph, info.declaration_identity,
-          PortKind::sample, sample_inputs[ordinal].name, info);
+          PortKind::sample, sample_inputs[index].name, info);
     }
   }
   auto const event_inputs = child_public_ports.event_inputs(child_bundles);
-  for (size_t ordinal = 0; ordinal < event_inputs.size(); ++ordinal) {
-    for (auto const& info : child_public_ports.event_input_source_infos(ordinal)) {
+  for (size_t index = 0; index < event_inputs.size(); ++index) {
+    for (auto const& info : child_public_ports.event_input_source_infos(index)) {
       _virtual_nodes.annotate_input_source_info(
           _node_bundles, subgraph, info.declaration_identity,
-          PortKind::event, event_inputs[ordinal].name, info);
+          PortKind::event, event_inputs[index].name, info);
     }
   }
 

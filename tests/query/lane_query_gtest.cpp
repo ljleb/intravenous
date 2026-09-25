@@ -97,17 +97,17 @@ TEST(LaneQuery, ExistsMatchesTypedProperties)
 {
     auto const schema = iv::query::LaneQuerySchema::from_entries({
         {"graph_input", iv::query::LaneQueryValueType::unit},
-        {"port_ordinal", iv::query::LaneQueryValueType::int_},
+        {"port_index", iv::query::LaneQueryValueType::int_},
     });
     FakeLaneQueryDataset dataset{
         schema,
         {
-            {.lane_id = 1, .unit_values = {{"graph_input", true}}, .int_values = {{"port_ordinal", 1}}},
+            {.lane_id = 1, .unit_values = {{"graph_input", true}}, .int_values = {{"port_index", 1}}},
             {.lane_id = 2, .unit_values = {}, .int_values = {}},
         }};
 
     EXPECT_EQ(execute("graph_input", schema, dataset), (std::vector<size_t>{0}));
-    EXPECT_EQ(execute("port_ordinal", schema, dataset), (std::vector<size_t>{0}));
+    EXPECT_EQ(execute("port_index", schema, dataset), (std::vector<size_t>{0}));
 }
 
 TEST(LaneQuery, AndOrAndNotCompose)
@@ -132,18 +132,18 @@ TEST(LaneQuery, AndOrAndNotCompose)
 TEST(LaneQuery, IntegerAndFloatRangesMatch)
 {
     auto const schema = iv::query::LaneQuerySchema::from_entries({
-        {"port_ordinal", iv::query::LaneQueryValueType::int_},
+        {"port_index", iv::query::LaneQueryValueType::int_},
         {"gain", iv::query::LaneQueryValueType::float_},
     });
     FakeLaneQueryDataset dataset{
         schema,
         {
-            {.lane_id = 1, .int_values = {{"port_ordinal", 1}}, .float_values = {{"gain", 0.25f}}},
-            {.lane_id = 2, .int_values = {{"port_ordinal", 3}}, .float_values = {{"gain", 0.75f}}},
-            {.lane_id = 3, .int_values = {{"port_ordinal", 5}}, .float_values = {{"gain", 1.25f}}},
+            {.lane_id = 1, .int_values = {{"port_index", 1}}, .float_values = {{"gain", 0.25f}}},
+            {.lane_id = 2, .int_values = {{"port_index", 3}}, .float_values = {{"gain", 0.75f}}},
+            {.lane_id = 3, .int_values = {{"port_index", 5}}, .float_values = {{"gain", 1.25f}}},
         }};
 
-    EXPECT_EQ(execute("port_ordinal=2..5", schema, dataset), (std::vector<size_t>{1, 2}));
+    EXPECT_EQ(execute("port_index=2..5", schema, dataset), (std::vector<size_t>{1, 2}));
     EXPECT_EQ(execute("gain=0.5..1.0", schema, dataset), (std::vector<size_t>{1}));
 }
 

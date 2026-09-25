@@ -61,39 +61,39 @@ namespace iv {
         using Type = typename Node::State;
     };
 
-    // IndexedState is optional non-semantic acceleration state visible only to
+    // TockState is optional non-semantic acceleration state visible only to
     // tock_coverage(). It is deliberately separate from sequential Node::State
-    // and from authoritative indexed-output storage.
+    // and from authoritative background-output storage.
     template<typename Node>
-    struct NodeIndexedState {
+    struct NodeBackgroundState {
         using Type = void;
     };
 
     namespace details {
         template<typename Node>
-        concept has_IndexedState = requires {
-            typename Node::IndexedState;
+        concept has_BackgroundState = requires {
+            typename Node::TockState;
         };
     }
 
     template<typename Node>
-    requires(details::has_IndexedState<Node>)
-    struct NodeIndexedState<Node> {
-        using Type = typename Node::IndexedState;
+    requires(details::has_BackgroundState<Node>)
+    struct NodeBackgroundState<Node> {
+        using Type = typename Node::TockState;
     };
 
     namespace details {
         template<typename Node>
-        inline constexpr bool indexed_state_type_is_valid_v = [] {
-            using IndexedState = typename NodeIndexedState<Node>::Type;
-            if constexpr (std::is_void_v<IndexedState>) {
+        inline constexpr bool background_state_type_is_valid_v = [] {
+            using TockState = typename NodeBackgroundState<Node>::Type;
+            if constexpr (std::is_void_v<TockState>) {
                 return true;
             } else {
-                return std::is_object_v<IndexedState>
-                    && !std::is_const_v<IndexedState>
-                    && !std::is_volatile_v<IndexedState>
-                    && std::is_default_constructible_v<IndexedState>
-                    && std::is_destructible_v<IndexedState>;
+                return std::is_object_v<TockState>
+                    && !std::is_const_v<TockState>
+                    && !std::is_volatile_v<TockState>
+                    && std::is_default_constructible_v<TockState>
+                    && std::is_destructible_v<TockState>;
             }
         }();
     }
@@ -324,8 +324,8 @@ namespace iv {
         };
 
         template<typename Node>
-        inline constexpr bool indexed_dsp_node_declaration_is_valid_v =
-            indexed_state_type_is_valid_v<Node>
+        inline constexpr bool background_dsp_node_declaration_is_valid_v =
+            background_state_type_is_valid_v<Node>
             && has_constexpr_port_configs<Node>
             && (!declares_tock_outputs_v<Node>
                 || has_tock_coverage<Node>)
@@ -386,7 +386,7 @@ namespace iv {
                 && has_tick<Node>
                 && !has_tick_block<Node>
                 && !has_State<Node>
-                && !has_IndexedState<Node>
+                && !has_BackgroundState<Node>
                 && replay_ports_are_pointwise<Node>());
 
         template <typename Node>

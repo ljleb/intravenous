@@ -61,7 +61,7 @@ struct SamplePortRef {
   auto operator[](Member) const
   requires requires {
     typename std::remove_cvref_t<Member>::channel_type;
-    std::remove_cvref_t<Member>::channel_ordinal;
+    std::remove_cvref_t<Member>::channel_index;
   };
   SamplePortRef detach(
       size_t loop_extra_latency = 1,
@@ -116,7 +116,7 @@ public:
   using member_type = Member;
   explicit TypedSamplePortChannelRef(
       TypedSamplePortRef<ChannelType> port)
-      : _port(port.erased().select_channel(Member::channel_ordinal)) {}
+      : _port(port.erased().select_channel(Member::channel_index)) {}
 
   constexpr operator SamplePortRef() const { return _port; }
   constexpr SamplePortRef const& erased() const { return _port; }
@@ -193,7 +193,7 @@ requires std::same_as<typename std::remove_cvref_t<Member>::channel_type,
                       ChannelType> {
   using MemberType = std::remove_cvref_t<Member>;
   return TypedSamplePortTileChannelRef<ChannelType, MemberType>{
-      _port.select_channel(MemberType::channel_ordinal)};
+      _port.select_channel(MemberType::channel_index)};
 }
 
 template<class ChannelType>
@@ -255,7 +255,7 @@ template<class Member>
 auto SamplePortRef::operator[](Member member) const
 requires requires {
   typename std::remove_cvref_t<Member>::channel_type;
-  std::remove_cvref_t<Member>::channel_ordinal;
+  std::remove_cvref_t<Member>::channel_index;
 } {
   using ChannelType = typename std::remove_cvref_t<Member>::channel_type;
   if (!graph_builder ||

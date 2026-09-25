@@ -1051,9 +1051,9 @@ public:
             auto const node_state_structures_fn =
                 symbol.template operator()<iv_package_node_state_structures_fn>(
                     "iv_package_node_state_structures");
-            auto const node_indexed_state_structures_fn =
-                symbol.template operator()<iv_package_node_indexed_state_structures_fn>(
-                    "iv_package_node_indexed_state_structures");
+            auto const node_background_state_structures_fn =
+                symbol.template operator()<iv_package_node_background_state_structures_fn>(
+                    "iv_package_node_background_state_structures");
 
             auto copy_table = [&](auto view, auto* type_tag, std::string_view name) {
                 using T = std::remove_pointer_t<decltype(type_tag)>;
@@ -1085,10 +1085,10 @@ public:
                 node_state_structures_fn(),
                 static_cast<NodeStateStructureData*>(nullptr),
                 "node-state structure");
-            auto const indexed_state_structures = copy_table(
-                node_indexed_state_structures_fn(),
+            auto const background_state_structures = copy_table(
+                node_background_state_structures_fn(),
                 static_cast<NodeStateStructureData*>(nullptr),
-                "node-indexed-state structure");
+                "node-background-state structure");
 
             auto copy_text = [](ModuleDataView view, std::string_view what) {
                 if (!view.data && view.size != 0) {
@@ -1149,7 +1149,7 @@ public:
             };
 
             package->node_state_structures.reserve(
-                state_structures.size() + indexed_state_structures.size());
+                state_structures.size() + background_state_structures.size());
             auto find_or_append = [&](NodeCodeKey key) -> details::BuilderNodeStateStructures& {
                 auto found = std::ranges::find(
                     package->node_state_structures,
@@ -1170,14 +1170,14 @@ public:
                 destination.structures.state =
                     copy_state_structure(state, "node-state structure");
             }
-            for (auto const& state : indexed_state_structures) {
+            for (auto const& state : background_state_structures) {
                 auto& destination = find_or_append(state.code_key);
-                if (destination.structures.indexed_state) {
+                if (destination.structures.tock_state) {
                     throw std::runtime_error(
-                        "IV package has duplicate Node::IndexedState structure record");
+                        "IV package has duplicate Node::TockState structure record");
                 }
-                destination.structures.indexed_state =
-                    copy_state_structure(state, "node-indexed-state structure");
+                destination.structures.tock_state =
+                    copy_state_structure(state, "node-background-state structure");
             }
 
 

@@ -39,7 +39,7 @@ namespace iv {
     };
 
     struct VirtualNodeMemberInfo {
-        size_t ordinal = 0;
+        size_t index = 0;
         std::string backing_node_id{};
         std::string kind{};
         std::string type_identity{};

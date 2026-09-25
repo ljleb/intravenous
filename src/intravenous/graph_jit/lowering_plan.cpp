@@ -1,5 +1,5 @@
 #include <intravenous/graph_jit/lowering_plan.h>
-#include <intravenous/graph_jit/sample_physical_plan.h>
+#include <intravenous/graph_jit/sample_storage_plan.h>
 #include <intravenous/graph_jit/transient_arena_plan.h>
 #include <intravenous/runtime/package_pipeline_types.h>
 
@@ -20,9 +20,9 @@ namespace iv::graph_jit::detail {
 namespace {
 void initialize_event_raw_region(
     std::span<std::byte> storage,
-    std::span<std::byte const> payload)
+    std::span<std::byte const> data)
 {
-    (void)payload;
+    (void)data;
     std::ranges::fill(storage, std::byte{});
 }
 
@@ -258,7 +258,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             }
         }
         for (auto const& binding : primitive.outputs) {
-            if (binding.realtime && !binding.representation) {
+            if (binding.realtime && !binding.storage) {
                 return std::unexpected(
                     "GraphJit sample runtime declaration has an unbound output port");
             }
@@ -267,21 +267,21 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
 
     for (auto const& primitive : event_ports.primitives) {
         for (auto const& binding : primitive.inputs) {
-            if (!binding.representation) {
+            if (!binding.storage) {
                 return std::unexpected(
                     "GraphJit event runtime declaration has an unbound input port");
             }
         }
         for (auto const& binding : primitive.outputs) {
-            if (binding.realtime && !binding.representation) {
+            if (binding.realtime && !binding.storage) {
                 return std::unexpected(
                     "GraphJit event runtime declaration has an unbound output port");
             }
         }
     }
 
-    auto declared_sample_storage = declare_sample_physical_storage(
-        layout_builder, sample_ports.physical);
+    auto declared_sample_storage = declare_sample_storage_storage(
+        layout_builder, sample_ports.storage);
     if (!declared_sample_storage) {
         return std::unexpected(std::move(declared_sample_storage.error()));
     }
@@ -297,7 +297,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     }
     for (auto const& allocation : event_ports.transient_allocations) {
         if (allocation.representation_index
-                >= event_ports.representations.size()
+                >= event_ports.ports.size()
             || allocation.size_bytes == 0
             || !is_power_of_two(allocation.alignment)
             || allocation.alignment > event_ports.transient_arena_alignment
@@ -311,27 +311,27 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 "GraphJit transient event allocation lies outside its stack arena");
         }
     }
-    for (auto& representation : event_ports.representations) {
-        if (representation.persistent) {
-            if (representation.transient_allocation
+    for (auto& storage : event_ports.ports) {
+        if (storage.persistent) {
+            if (storage.transient_allocation
                     != no_event_transient_allocation
-                || representation.migration_identity.empty()) {
+                || storage.migration_identity.empty()) {
                 return std::unexpected(
-                    "GraphJit persistent event representation has invalid ownership");
+                    "GraphJit persistent event storage has invalid ownership");
             }
-            representation.region = layout_builder.declare_raw_region(
-                representation.size_bytes,
-                representation.alignment,
-                representation.migration_identity,
+            storage.region = layout_builder.declare_raw_region(
+                storage.size_bytes,
+                storage.alignment,
+                storage.migration_identity,
                 initialize_event_raw_region);
-        } else if (representation.transient_allocation
+        } else if (storage.transient_allocation
                        >= event_ports.transient_allocations.size()
-            || !representation.migration_identity.empty()) {
+            || !storage.migration_identity.empty()) {
             return std::unexpected(
-                "GraphJit transient event representation has invalid ownership");
+                "GraphJit transient event storage has invalid ownership");
         }
-        if (representation.has_producer_overflow_counter) {
-            representation.overflow_region = layout_builder.declare_raw_region(
+        if (storage.has_producer_overflow_counter) {
+            storage.overflow_region = layout_builder.declare_raw_region(
                 sizeof(std::uint64_t),
                 alignof(std::uint64_t),
                 {},
@@ -354,11 +354,11 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         return std::unexpected(
             "GraphJit sample-edge slice does not yet support declared shared-array bindings");
     }
-    auto sample_physical_owns_region =
+    auto sample_storage_owns_region =
         [&](std::size_t region_index) {
             if (std::any_of(
-                    sample_ports.physical.persistent_allocations.begin(),
-                    sample_ports.physical.persistent_allocations.end(),
+                    sample_ports.storage.persistent_allocations.begin(),
+                    sample_ports.storage.persistent_allocations.end(),
                     [&](SamplePersistentAllocationPlan const& allocation) {
                         return allocation.region.valid()
                             && allocation.region.index == region_index;
@@ -373,64 +373,64 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
          ++region_index) {
         auto const& region = node_layout.regions[region_index];
         if (region.kind == NodeLayout::Region::Kind::state
-            || region.kind == NodeLayout::Region::Kind::indexed_state) {
+            || region.kind == NodeLayout::Region::Kind::tock_state) {
             continue;
         }
-        auto const event_physical_owns_region = std::ranges::any_of(
-            event_ports.representations,
-            [&](EventRepresentationPlan const& representation) {
-                return (representation.region.valid()
-                           && representation.region.index == region_index)
-                    || (representation.overflow_region.valid()
-                        && representation.overflow_region.index == region_index);
+        auto const event_storage_owns_region = std::ranges::any_of(
+            event_ports.ports,
+            [&](EventRepresentationPlan const& storage) {
+                return (storage.region.valid()
+                           && storage.region.index == region_index)
+                    || (storage.overflow_region.valid()
+                        && storage.overflow_region.index == region_index);
             });
         if (region.kind == NodeLayout::Region::Kind::raw
-            && (sample_physical_owns_region(region_index)
-                || event_physical_owns_region)) {
+            && (sample_storage_owns_region(region_index)
+                || event_storage_owns_region)) {
             continue;
         }
         return std::unexpected(
             "GraphJit lowering does not yet support declaration-owned auxiliary storage regions");
     }
 
-    auto finalized_sample_storage = finalize_sample_physical_storage(
-        node_layout, sample_ports.physical);
+    auto finalized_sample_storage = finalize_sample_storage_storage(
+        node_layout, sample_ports.storage);
     if (!finalized_sample_storage) {
         return std::unexpected(std::move(finalized_sample_storage.error()));
     }
     for (std::size_t representation_index = 0;
-         representation_index < event_ports.representations.size();
+         representation_index < event_ports.ports.size();
          ++representation_index) {
-        auto& representation = event_ports.representations[representation_index];
-        if (representation.persistent) {
-            if (!representation.region.valid()
-                || representation.region.index >= node_layout.regions.size()) {
+        auto& storage = event_ports.ports[representation_index];
+        if (storage.persistent) {
+            if (!storage.region.valid()
+                || storage.region.index >= node_layout.regions.size()) {
                 return std::unexpected(
                     "GraphJit persistent event storage lost its raw region");
             }
-            auto const& region = node_layout.regions[representation.region.index];
+            auto const& region = node_layout.regions[storage.region.index];
             if (region.kind != NodeLayout::Region::Kind::raw
-                || region.size != representation.size_bytes
-                || region.alignment != representation.alignment
-                || region.migration_identity != representation.migration_identity
+                || region.size != storage.size_bytes
+                || region.alignment != storage.alignment
+                || region.migration_identity != storage.migration_identity
                 || region.raw_initialize_fn != initialize_event_raw_region
                 || !region.raw_initialize_payload.empty()) {
                 return std::unexpected(
                     "GraphJit persistent event storage disagrees with finalized NodeLayout");
             }
-            representation.storage_offset = region.storage_offset;
+            storage.storage_offset = region.storage_offset;
         } else {
-            if (representation.region.valid()
-                || representation.transient_allocation
+            if (storage.region.valid()
+                || storage.transient_allocation
                     >= event_ports.transient_allocations.size()) {
                 return std::unexpected(
                     "GraphJit transient event storage lost its stack allocation");
             }
             auto const& allocation = event_ports.transient_allocations[
-                representation.transient_allocation];
+                storage.transient_allocation];
             if (allocation.representation_index != representation_index
-                || allocation.size_bytes != representation.size_bytes
-                || allocation.alignment != representation.alignment
+                || allocation.size_bytes != storage.size_bytes
+                || allocation.alignment != storage.alignment
                 || allocation.region_relative_offset
                     > event_ports.transient_arena_size
                 || allocation.size_bytes > event_ports.transient_arena_size
@@ -439,30 +439,30 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                     "GraphJit transient event storage disagrees with its stack arena");
             }
         }
-        if (representation.count_relative_offset > representation.size_bytes
-            || representation.read_index_relative_offset > representation.size_bytes
-            || representation.write_index_relative_offset > representation.size_bytes
-            || representation.events_relative_offset > representation.size_bytes
-            || (representation.has_source_ordinals
-                && representation.source_ordinals_relative_offset
-                    > representation.size_bytes)) {
+        if (storage.count_relative_offset > storage.size_bytes
+            || storage.read_index_relative_offset > storage.size_bytes
+            || storage.write_index_relative_offset > storage.size_bytes
+            || storage.events_relative_offset > storage.size_bytes
+            || (storage.has_source_indices
+                && storage.source_indices_relative_offset
+                    > storage.size_bytes)) {
             return std::unexpected(
                 "GraphJit event storage contains an invalid relative field offset");
         }
-        if (!representation.has_source_ordinals
-            && representation.source_ordinals_relative_offset != 0) {
+        if (!storage.has_source_indices
+            && storage.source_indices_relative_offset != 0) {
             return std::unexpected(
-                "GraphJit ordinary event storage unexpectedly has source ordinals");
+                "GraphJit ordinary event storage unexpectedly has source indices");
         }
-        if (representation.has_producer_overflow_counter) {
-            if (!representation.overflow_region.valid()
-                || representation.overflow_region.index
+        if (storage.has_producer_overflow_counter) {
+            if (!storage.overflow_region.valid()
+                || storage.overflow_region.index
                     >= node_layout.regions.size()) {
                 return std::unexpected(
                     "GraphJit event producer telemetry lost its persistent region");
             }
             auto const& overflow =
-                node_layout.regions[representation.overflow_region.index];
+                node_layout.regions[storage.overflow_region.index];
             if (overflow.kind != NodeLayout::Region::Kind::raw
                 || overflow.size != sizeof(std::uint64_t)
                 || overflow.alignment != alignof(std::uint64_t)
@@ -472,8 +472,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 return std::unexpected(
                     "GraphJit event producer telemetry disagrees with finalized NodeLayout");
             }
-            representation.overflow_count_storage_offset = overflow.storage_offset;
-        } else if (representation.overflow_region.valid()) {
+            storage.overflow_count_storage_offset = overflow.storage_offset;
+        } else if (storage.overflow_region.valid()) {
             return std::unexpected(
                 "GraphJit derived event storage unexpectedly owns producer telemetry");
         }
@@ -489,20 +489,20 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         auto const& node_record = plan.node_layout.nodes[i];
         if (node_record.state_size != implementation.state_size
             || node_record.state_alignment != implementation.state_alignment
-            || node_record.indexed_state_size != implementation.indexed_state_size
-            || node_record.indexed_state_alignment
-                != implementation.indexed_state_alignment) {
+            || node_record.background_state_size != implementation.background_state_size
+            || node_record.background_state_alignment
+                != implementation.background_state_alignment) {
             return std::unexpected(
-                "declared primitive State/IndexedState layout disagrees with finalized compiler metadata");
+                "declared primitive State/TockState layout disagrees with finalized compiler metadata");
         }
         if (node_record.state_size != 0 && node_record.state_offset < 0) {
             return std::unexpected(
                 "declared primitive State has no canonical NodeLayout storage offset");
         }
-        if (node_record.indexed_state_size != 0
-            && node_record.indexed_state_offset < 0) {
+        if (node_record.background_state_size != 0
+            && node_record.background_state_offset < 0) {
             return std::unexpected(
-                "declared primitive IndexedState has no canonical NodeLayout storage offset");
+                "declared primitive TockState has no canonical NodeLayout storage offset");
         }
 
         PrimitiveStoragePlan storage;
@@ -517,17 +517,17 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             }
             storage.state_size = node_record.state_size;
         }
-        if (node_record.indexed_state_size != 0) {
-            storage.has_indexed_state = true;
-            storage.indexed_state_offset =
-                static_cast<std::size_t>(node_record.indexed_state_offset);
-            if (storage.indexed_state_offset > plan.node_layout.storage_size
-                || node_record.indexed_state_size
-                    > plan.node_layout.storage_size - storage.indexed_state_offset) {
+        if (node_record.background_state_size != 0) {
+            storage.has_background_state = true;
+            storage.background_state_offset =
+                static_cast<std::size_t>(node_record.background_state_offset);
+            if (storage.background_state_offset > plan.node_layout.storage_size
+                || node_record.background_state_size
+                    > plan.node_layout.storage_size - storage.background_state_offset) {
                 return std::unexpected(
-                    "declared primitive IndexedState lies outside canonical NodeStorage");
+                    "declared primitive TockState lies outside canonical NodeStorage");
             }
-            storage.indexed_state_size = node_record.indexed_state_size;
+            storage.background_state_size = node_record.background_state_size;
         }
         plan.primitive_storage.push_back(storage);
     }
@@ -537,7 +537,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
 std::expected<PackageImportPlan, std::string> plan_package_imports(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
-    IndexedPlan const& indexed)
+    BackgroundEvaluationPlan const& background)
 {
     PackageImportPlan plan;
     if (analysis.empty && input.config_relocations.empty()) return plan;
@@ -648,38 +648,38 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
         }
 
         auto const bundle = primitive.bundle.node_bundle;
-        auto const indexed_node = bundle < indexed.bundle_to_indexed_node.size()
-            ? indexed.bundle_to_indexed_node[bundle]
-            : std::optional<IndexedNodeOrdinal>{};
-        if (indexed_node) {
-            if (*indexed_node >= indexed.nodes.size()) {
+        auto const background_node = bundle < background.bundle_to_background_node.size()
+            ? background.bundle_to_background_node[bundle]
+            : std::optional<BackgroundNodeIndex>{};
+        if (background_node) {
+            if (*background_node >= background.nodes.size()) {
                 return std::unexpected(
-                    "GraphJit indexed callback import references a missing indexed node");
+                    "GraphJit background callback import references a missing background node");
             }
-            auto const& node = indexed.nodes[*indexed_node];
+            auto const& node = background.nodes[*background_node];
             if (node.authored_tock_execution) {
                 if (!implementation.tock_coverage
                     || !implementation.propagate_forward_coverage) {
                     return std::unexpected(
-                        "GraphJit authored Tock node has incomplete indexed callbacks");
+                        "GraphJit authored Tock node has incomplete background callbacks");
                 }
                 callbacks.tock_coverage = add_callback(
                     package,
                     implementation.tock_coverage->getName().str(),
                     primitive_callback_import_symbol(i, "tock_coverage"),
                     "tock_coverage",
-                    CallbackImportAbi::indexed);
+                    CallbackImportAbi::background);
                 callbacks.propagate_forward_coverage = add_callback(
                     package,
                     implementation.propagate_forward_coverage->getName().str(),
                     primitive_callback_import_symbol(
                         i, "propagate_forward_coverage"),
                     "propagate_forward_coverage",
-                    CallbackImportAbi::indexed);
+                    CallbackImportAbi::background);
                 if (node.accumulators.input_requirement_count != 0) {
                     if (!implementation.propagate_reverse_coverage) {
                         return std::unexpected(
-                            "GraphJit authored Tock node with indexed inputs has no reverse callback");
+                            "GraphJit authored Tock node with background inputs has no reverse callback");
                     }
                     callbacks.propagate_reverse_coverage = add_callback(
                         package,
@@ -687,7 +687,7 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
                         primitive_callback_import_symbol(
                             i, "propagate_reverse_coverage"),
                         "propagate_reverse_coverage",
-                        CallbackImportAbi::indexed);
+                        CallbackImportAbi::background);
                 }
             }
         }
@@ -699,7 +699,7 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
             return std::unexpected(
                 "GraphJit lowering received an empty configuration relocation record");
         }
-        if (!relocation.relocation->retained_global_ordinal) {
+        if (!relocation.relocation->retained_global_index) {
             if (relocation.revision || relocation.retained_global) {
                 return std::unexpected(
                     "explicit-null configuration relocation unexpectedly names a retained global");
@@ -710,13 +710,13 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
             return std::unexpected(
                 "non-null configuration relocation has no retained package LLVM global");
         }
-        auto const ordinal = *relocation.relocation->retained_global_ordinal;
-        if (ordinal >= relocation.revision->retained_globals.size()) {
+        auto const index = *relocation.relocation->retained_global_index;
+        if (index >= relocation.revision->retained_globals.size()) {
             return std::unexpected(
-                "configuration relocation retained-global ordinal is out of range at lowering");
+                "configuration relocation retained-global index is out of range at lowering");
         }
-        auto const& accepted = relocation.revision->retained_globals[ordinal];
-        if (accepted.ordinal != ordinal || accepted.size == 0
+        auto const& accepted = relocation.revision->retained_globals[index];
+        if (accepted.index != index || accepted.size == 0
             || relocation.relocation->addend >= accepted.size) {
             return std::unexpected(
                 "configuration relocation retained-global metadata is invalid at lowering");
@@ -766,7 +766,7 @@ std::expected<ConfigurationPlan, std::string> plan_node_configurations(
 
     auto imported_global_symbol = [&](ConfigRelocation const& relocation)
         -> std::expected<std::string, std::string> {
-        if (!relocation.relocation->retained_global_ordinal) return std::string{};
+        if (!relocation.relocation->retained_global_index) return std::string{};
         if (!relocation.retained_global) {
             return std::unexpected(
                 "non-null configuration relocation lost its retained LLVM global");
@@ -1011,21 +1011,21 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         for (std::size_t channel = 0; channel < target_channel_total; ++channel) {
             auto const& target_channel = connection.target_channels[channel];
             if (target_channel.bundle != target_port.node_bundle_handle
-                || target_channel.port != target_port.port_ordinal
+                || target_channel.port != target_port.port_index
                 || target_channel.channel != channel) {
                 return std::unexpected(
                     "GraphJit normalized sample composition lost canonical target-port coverage");
             }
         }
-        if (target_port.port_ordinal
+        if (target_port.port_index
             >= plan.primitives[*target_primitive].inputs.size()) {
             return std::unexpected(
-                "GraphJit sample-edge target ordinal is outside primitive port metadata");
+                "GraphJit sample-edge target index is outside primitive port metadata");
         }
 
         // Validate every actual producer port independently. A composed input
         // can reference several producer groups even though it realizes one
-        // consumer-side physical representation.
+        // consumer-side storage storage.
         std::vector<NodeBundlePortId> source_ports_seen;
         for (std::size_t channel_index = 0;
              channel_index < connection.source_channel_timings.size();
@@ -1061,10 +1061,10 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 return std::unexpected(
                     "GraphJit sample producer channel disagrees with its declared output layout");
             }
-            if (source_port.port_ordinal
+            if (source_port.port_index
                 >= plan.primitives[*source_primitive].outputs.size()) {
                 return std::unexpected(
-                    "GraphJit sample-edge source ordinal is outside primitive port metadata");
+                    "GraphJit sample-edge source index is outside primitive port metadata");
             }
 
             if (std::ranges::find(source_ports_seen, source_port)
@@ -1073,7 +1073,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 validated_sources.push_back(ValidatedSampleSourceBinding{
                     .group_index = *group_index,
                     .source_primitive = *source_primitive,
-                    .source_port = source_port.port_ordinal,
+                    .source_port = source_port.port_index,
                     .source_history = timing.source_history,
                     .source_latency = timing.source_latency,
                 });
@@ -1103,7 +1103,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                  channel < source_channel_total; ++channel) {
                 auto const& source_channel = connection.source_channels[channel];
                 if (source_channel.bundle != source_port.node_bundle_handle
-                    || source_channel.port != source_port.port_ordinal
+                    || source_channel.port != source_port.port_index
                     || source_channel.channel != channel) {
                     return std::unexpected(
                         "GraphJit canonical sample source channels lost canonical ordering");
@@ -1205,7 +1205,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         validated_targets.push_back(ValidatedSampleTargetBinding{
             .connection_index = connection_index,
             .target_primitive = *target_primitive,
-            .target_port = target_port.port_ordinal,
+            .target_port = target_port.port_index,
             .target_layout = connection.target_layout,
             .target_history = connection.target_history,
             .read_latency = target_read_latency,
@@ -1225,7 +1225,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     std::vector<DisconnectedSampleInput> disconnected_inputs;
     std::vector<DisconnectedSampleOutput> disconnected_outputs;
     std::vector<SampleConstantInputRequest> constant_input_requests;
-    std::vector<SampleSinkPhysicalRequest> sink_requests;
+    std::vector<SampleSinkStorageRequest> sink_requests;
 
     auto execution_position_for_bundle = [&](NodeBundleHandle bundle)
         -> std::expected<std::size_t, std::string> {
@@ -1259,7 +1259,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 NodeBundlePortId{bundle, PortKind::sample, port}).config;
             if (!is_sequential(config.access)) {
                 return std::unexpected(
-                    "GraphJit disconnected indexed sample input is not supported");
+                    "GraphJit disconnected background sample input is not supported");
             }
             disconnected_inputs.push_back(DisconnectedSampleInput{
                 .primitive = primitive_index,
@@ -1291,7 +1291,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 .port = port,
                 .config = config,
             });
-            sink_requests.push_back(SampleSinkPhysicalRequest{
+            sink_requests.push_back(SampleSinkStorageRequest{
                 .channel_layout = config.channel_layout,
                 .history = port_history(config),
                 .latency = tick_latency(config),
@@ -1303,54 +1303,54 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
     }
 
-    auto physical = build_sample_physical_plan(
+    auto storage = build_sample_storage_plan(
         connections,
         input.specialization.block_size,
         sink_requests,
         constant_input_requests,
         cost_model);
-    if (!physical) return std::unexpected(std::move(physical.error()));
-    plan.physical = std::move(*physical);
+    if (!storage) return std::unexpected(std::move(storage.error()));
+    plan.storage = std::move(*storage);
 
     for (auto const& source : validated_sources) {
-        if (source.group_index >= plan.physical.producer_groups.size()
-            || !plan.physical.producer_groups[source.group_index]) {
+        if (source.group_index >= plan.storage.producer_groups.size()
+            || !plan.storage.producer_groups[source.group_index]) {
             return std::unexpected(
-                "GraphJit sample source lost its producer physical representation");
+                "GraphJit sample source lost its producer storage storage");
         }
-        auto const output_representation =
-            plan.physical.producer_groups[source.group_index]
+        auto const output =
+            plan.storage.producer_groups[source.group_index]
                 ->canonical_representation;
-        if (output_representation == no_sample_representation
-            || output_representation >= plan.physical.representations.size()) {
+        if (output == no_sample_representation
+            || output >= plan.storage.representations.size()) {
             return std::unexpected(
-                "GraphJit sample source references an invalid physical representation");
+                "GraphJit sample source references an invalid storage storage");
         }
         auto& source_binding =
             plan.primitives[source.source_primitive].outputs[source.source_port];
-        if (source_binding.representation
-            && *source_binding.representation != output_representation) {
+        if (source_binding.storage
+            && *source_binding.storage != output) {
             return std::unexpected(
-                "GraphJit sample output fanout resolved to conflicting canonical representations");
+                "GraphJit sample output fanout resolved to conflicting canonical ports");
         }
-        if (source_binding.representation
+        if (source_binding.storage
             && (source_binding.history != source.source_history
                 || source_binding.latency != source.source_latency)) {
             return std::unexpected(
                 "GraphJit sample output fanout disagrees on authored output timing");
         }
-        source_binding.representation = output_representation;
+        source_binding.storage = output;
         source_binding.history = source.source_history;
         source_binding.latency = source.source_latency;
     }
 
     for (auto const& target : validated_targets) {
         if (target.connection_index
-                >= plan.physical.connection_representations.size()
+                >= plan.storage.connection_representations.size()
             || target.connection_index
-                >= plan.physical.connection_channel_bindings.size()) {
+                >= plan.storage.connection_channel_bindings.size()) {
             return std::unexpected(
-                "GraphJit sample target lost its connection physical binding");
+                "GraphJit sample target lost its connection storage binding");
         }
 
         auto& target_binding =
@@ -1364,9 +1364,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         target_binding.read_latency = target.read_latency;
 
         auto const target_channel_count = channel_count(target.target_layout);
-        if (plan.physical.connection_channel_bindings[target.connection_index]) {
+        if (plan.storage.connection_channel_bindings[target.connection_index]) {
             auto const& channel_bindings =
-                *plan.physical.connection_channel_bindings[target.connection_index];
+                *plan.storage.connection_channel_bindings[target.connection_index];
             if (channel_bindings.size() != target_channel_count) {
                 return std::unexpected(
                     "GraphJit sample target channel binding count disagrees with its target layout");
@@ -1374,21 +1374,21 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             target_binding.channels.reserve(channel_bindings.size());
             for (auto const& channel : channel_bindings) {
                 if (channel.representation == no_sample_representation
-                    || channel.representation >= plan.physical.representations.size()) {
+                    || channel.representation >= plan.storage.representations.size()) {
                     return std::unexpected(
-                        "GraphJit sample target channel references an invalid physical representation");
+                        "GraphJit sample target channel references an invalid storage storage");
                 }
-                auto const& representation =
-                    plan.physical.representations[channel.representation];
+                auto const& storage =
+                    plan.storage.representations[channel.representation];
                 if (channel.representation_channel
-                        >= channel_count(representation.channel_layout)
-                    || channel.frame_delay >= representation.frame_capacity) {
+                        >= channel_count(storage.channel_layout)
+                    || channel.frame_delay >= storage.frame_capacity) {
                     return std::unexpected(
-                        "GraphJit sample target channel exceeds its physical representation");
+                        "GraphJit sample target channel exceeds its storage storage");
                 }
                 target_binding.channels.push_back(
                     PrimitiveSampleInputChannelBindingPlan{
-                        .representation = channel.representation,
+                        .storage = channel.representation,
                         .representation_channel = channel.representation_channel,
                         .frame_delay = channel.frame_delay,
                     });
@@ -1396,49 +1396,49 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             continue;
         }
 
-        if (!plan.physical.connection_representations[target.connection_index]) {
+        if (!plan.storage.connection_representations[target.connection_index]) {
             return std::unexpected(
-                "GraphJit sample target lost its connection physical representation");
+                "GraphJit sample target lost its connection storage storage");
         }
         auto const input_representation =
-            *plan.physical.connection_representations[target.connection_index];
-        if (input_representation >= plan.physical.representations.size()) {
+            *plan.storage.connection_representations[target.connection_index];
+        if (input_representation >= plan.storage.representations.size()) {
             return std::unexpected(
-                "GraphJit sample target references an invalid physical representation");
+                "GraphJit sample target references an invalid storage storage");
         }
-        auto const& representation =
-            plan.physical.representations[input_representation];
-        if (channel_count(representation.channel_layout) != target_channel_count) {
+        auto const& storage =
+            plan.storage.representations[input_representation];
+        if (channel_count(storage.channel_layout) != target_channel_count) {
             return std::unexpected(
-                "GraphJit sample target representation channel count disagrees with its target layout");
+                "GraphJit sample target storage channel count disagrees with its target layout");
         }
         target_binding.channels.reserve(target_channel_count);
         for (std::size_t channel = 0; channel < target_channel_count; ++channel) {
             target_binding.channels.push_back(
                 PrimitiveSampleInputChannelBindingPlan{
-                    .representation = input_representation,
+                    .storage = input_representation,
                     .representation_channel = channel,
                     .frame_delay = 0,
                 });
         }
     }
 
-    if (plan.physical.constant_input_representations.size()
+    if (plan.storage.constant_input_representations.size()
         != disconnected_inputs.size()) {
         return std::unexpected(
             "GraphJit disconnected sample input planning lost a constant buffer");
     }
     for (std::size_t i = 0; i < disconnected_inputs.size(); ++i) {
         auto const& disconnected = disconnected_inputs[i];
-        auto const representation =
-            plan.physical.constant_input_representations[i];
-        if (representation >= plan.physical.representations.size()) {
+        auto const representation_index =
+            plan.storage.constant_input_representations[i];
+        if (representation_index >= plan.storage.representations.size()) {
             return std::unexpected(
                 "GraphJit disconnected sample input references an invalid constant buffer");
         }
-        auto const& storage = plan.physical.representations[representation];
-        if (!storage.constant_value
-            || storage.channel_layout != disconnected.config.channel_layout) {
+        auto const& representation = plan.storage.representations[representation_index];
+        if (!representation.constant_value
+            || representation.channel_layout != disconnected.config.channel_layout) {
             return std::unexpected(
                 "GraphJit disconnected sample input lost its declared default buffer");
         }
@@ -1452,22 +1452,22 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         binding.channels.reserve(channels);
         for (std::size_t channel = 0; channel < channels; ++channel) {
             binding.channels.push_back(PrimitiveSampleInputChannelBindingPlan{
-                .representation = representation,
+                .storage = representation_index,
                 .representation_channel = channel,
                 .frame_delay = 0,
             });
         }
     }
 
-    if (plan.physical.sink_representations.size()
+    if (plan.storage.sink_representations.size()
         != disconnected_outputs.size()) {
         return std::unexpected(
             "GraphJit disconnected sample output planning lost a writable buffer");
     }
     for (std::size_t i = 0; i < disconnected_outputs.size(); ++i) {
         auto const& disconnected = disconnected_outputs[i];
-        auto const representation = plan.physical.sink_representations[i];
-        if (representation >= plan.physical.representations.size()) {
+        auto const storage = plan.storage.sink_representations[i];
+        if (storage >= plan.storage.representations.size()) {
             return std::unexpected(
                 "GraphJit disconnected sample output references an invalid buffer");
         }
@@ -1475,7 +1475,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             .outputs[disconnected.port];
         IV_ASSERT(binding.realtime,
             "realtime sample binding disagrees with its port declaration");
-        binding.representation = representation;
+        binding.storage = storage;
         binding.history = port_history(disconnected.config);
         binding.latency = tick_latency(disconnected.config);
     }
@@ -1492,7 +1492,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 primitive.outputs,
                 [](auto const& binding) {
                     return !binding.realtime
-                        || binding.representation.has_value();
+                        || binding.storage.has_value();
                 })) {
             return std::unexpected(
                 "GraphJit sample port planning left an unresolved primitive port");
@@ -1600,7 +1600,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         bool persistent = false,
         std::string migration_identity = {},
         bool persistent_ring = false,
-        bool source_ordinals = false)
+        bool source_indices = false)
         -> std::expected<std::size_t, std::string> {
         if (persistent_ring && !persistent) {
             return std::unexpected(
@@ -1623,24 +1623,24 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 "GraphJit event storage size overflows size_t");
         }
         auto const events_end = *events_relative + capacity * sizeof(TimedEvent);
-        std::size_t source_ordinals_relative = 0;
+        std::size_t source_indices_relative = 0;
         auto size_bytes = events_end;
-        if (source_ordinals) {
-            auto const ordinals_relative = align_up(
+        if (source_indices) {
+            auto const indices_relative = align_up(
                 events_end, alignof(std::size_t));
-            if (!ordinals_relative
+            if (!indices_relative
                 || capacity > (std::numeric_limits<std::size_t>::max()
-                        - *ordinals_relative) / sizeof(std::size_t)) {
+                        - *indices_relative) / sizeof(std::size_t)) {
                 return std::unexpected(
-                    "GraphJit event source-ordinal storage size overflows size_t");
+                    "GraphJit event source-index storage size overflows size_t");
             }
-            source_ordinals_relative = *ordinals_relative;
-            size_bytes = source_ordinals_relative
+            source_indices_relative = *indices_relative;
+            size_bytes = source_indices_relative
                 + capacity * sizeof(std::size_t);
             alignment = std::max(alignment, alignof(std::size_t));
         }
-        auto const representation_index = plan.representations.size();
-        plan.representations.push_back(EventRepresentationPlan{
+        auto const representation_index = plan.ports.size();
+        plan.ports.push_back(EventRepresentationPlan{
             .producer_group_index = group_index,
             .type = type,
             .event_capacity = capacity,
@@ -1652,8 +1652,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             .read_index_relative_offset = read_index_relative,
             .write_index_relative_offset = write_index_relative,
             .events_relative_offset = *events_relative,
-            .has_source_ordinals = source_ordinals,
-            .source_ordinals_relative_offset = source_ordinals_relative,
+            .has_source_indices = source_indices,
+            .source_indices_relative_offset = source_indices_relative,
             .size_bytes = size_bytes,
             .alignment = alignment,
         });
@@ -2274,13 +2274,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     });
                 } else if (persistent_ring) {
                     plan.persistent_rings.push_back(EventPersistentRingPlan{
-                        .representation = *canonical,
+                        .storage = *canonical,
                         .prune_scope = first_scope,
                         .retained_history_samples = retained_history,
                     });
                 } else {
                     plan.sequence_resets.push_back(EventSequenceResetPlan{
-                        .representation = *canonical,
+                        .storage = *canonical,
                         .scope = first_scope,
                     });
                 }
@@ -2296,7 +2296,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     };
                     merge.source_representations.reserve(
                         stage.source_indices.size());
-                    merge.source_ordinals.reserve(stage.source_indices.size());
+                    merge.source_indices.reserve(stage.source_indices.size());
                     for (auto const source_index : stage.source_indices) {
                         auto const& source = validated_sources[source_index];
                         auto const local_capacity = source.cyclic_region
@@ -2311,17 +2311,17 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                             return std::unexpected(std::move(local.error()));
                         }
                         merge.source_representations.push_back(*local);
-                        merge.source_ordinals.push_back(source_index);
+                        merge.source_indices.push_back(source_index);
 
                         auto& source_binding = plan.primitives[
                             source.primitive].outputs[source.id.port];
-                        if (source_binding.representation) {
+                        if (source_binding.storage) {
                             return std::unexpected(
                                 "GraphJit event output belongs to more than one producer group");
                         }
                         source_binding = PrimitiveEventOutputBindingPlan{
                             .realtime = true,
-                            .representation = *local,
+                            .storage = *local,
                             .source_type = group.source_type,
                             .history = port_history(source.config),
                             .latency = tick_latency(source.config),
@@ -2429,8 +2429,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                                             == connection.conversion
                                         && candidate.scope == scope
                                         && candidate.target_representation
-                                            < plan.representations.size()
-                                        && plan.representations[
+                                            < plan.ports.size()
+                                        && plan.ports[
                                                candidate.target_representation]
                                                .type
                                             == connection.target_type;
@@ -2451,7 +2451,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                                 auto derived = append_representation(
                                     group_index,
                                     connection.target_type,
-                                    plan.representations[*canonical]
+                                    plan.ports[*canonical]
                                         .event_capacity);
                                 if (!derived) {
                                     return std::unexpected(
@@ -2478,11 +2478,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         }
                         auto& target_binding = plan.primitives[
                             *target_primitive].inputs[target_id.port];
-                        if (target_binding.representation) {
+                        if (target_binding.storage) {
                             return std::unexpected(
                                 "GraphJit event input has more than one realized connection");
                         }
-                        target_binding.representation = target_representation;
+                        target_binding.storage = target_representation;
                     }
                 }
                 continue;
@@ -2824,7 +2824,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 });
             } else if (persistent_ring) {
                 plan.persistent_rings.push_back(EventPersistentRingPlan{
-                    .representation = *canonical,
+                    .storage = *canonical,
                     .prune_scope = cyclic_source_region
                         ? region_scope(
                             *cyclic_source_region,
@@ -2851,7 +2851,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             for (std::size_t source_index = 0;
                  source_index < validated_sources.size(); ++source_index) {
                 auto const& source = validated_sources[source_index];
-                std::size_t representation = *canonical;
+                std::size_t storage = *canonical;
                 if (!producer_home || source_index != 0) {
                     auto local = append_representation(
                         group_index,
@@ -2861,19 +2861,19 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     if (!local) {
                         return std::unexpected(std::move(local.error()));
                     }
-                    representation = *local;
-                    merge.source_representations.push_back(representation);
+                    storage = *local;
+                    merge.source_representations.push_back(storage);
                 }
 
                 auto& source_binding =
                     plan.primitives[source.primitive].outputs[source.id.port];
-                if (source_binding.representation) {
+                if (source_binding.storage) {
                     return std::unexpected(
                         "GraphJit event output belongs to more than one producer group");
                 }
                 source_binding = PrimitiveEventOutputBindingPlan{
                     .realtime = true,
-                    .representation = representation,
+                    .storage = storage,
                     .source_type = group.source_type,
                     .history = port_history(source.config),
                     .latency = tick_latency(source.config),
@@ -2886,7 +2886,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             }
             if (cyclic_source_region && !retained_storage) {
                 plan.sequence_resets.push_back(EventSequenceResetPlan{
-                    .representation = *canonical,
+                    .storage = *canonical,
                     .scope = region_scope(
                         *cyclic_source_region, EventOperationPhase::before),
                 });
@@ -2965,8 +2965,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                                     && candidate.conversion == connection.conversion
                                     && candidate.scope == *scope
                                     && candidate.target_representation
-                                        < plan.representations.size()
-                                    && plan.representations[
+                                        < plan.ports.size()
+                                    && plan.ports[
                                            candidate.target_representation].type
                                         == connection.target_type;
                             });
@@ -2986,7 +2986,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                             auto derived = append_representation(
                                 group_index,
                                 connection.target_type,
-                                plan.representations[*canonical].event_capacity);
+                                plan.ports[*canonical].event_capacity);
                             if (!derived) {
                                 return std::unexpected(
                                     std::move(derived.error()));
@@ -3010,11 +3010,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     }
                     auto& target_binding =
                         plan.primitives[*target_primitive].inputs[target_id.port];
-                    if (target_binding.representation) {
+                    if (target_binding.storage) {
                         return std::unexpected(
                             "GraphJit event input has more than one realized connection");
                     }
-                    target_binding.representation = target_representation;
+                    target_binding.storage = target_representation;
                 }
             }
             continue;
@@ -3047,7 +3047,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         }
         if (source_id.port >= plan.primitives[*source_primitive].outputs.size()) {
             return std::unexpected(
-                "GraphJit event producer ordinal is outside primitive metadata");
+                "GraphJit event producer index is outside primitive metadata");
         }
 
         if (source.max_events_per_index != group.max_events_per_index) {
@@ -3261,7 +3261,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             });
         } else if (persistent_ring) {
             plan.persistent_rings.push_back(EventPersistentRingPlan{
-                .representation = *source_representation,
+                .storage = *source_representation,
                 .prune_scope = source_before_scope,
                 .retained_history_samples = retained_history,
             });
@@ -3269,7 +3269,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
 
         auto& source_binding =
             plan.primitives[*source_primitive].outputs[source_id.port];
-        if (source_binding.representation) {
+        if (source_binding.storage) {
             return std::unexpected(
                 "GraphJit event output belongs to more than one producer group");
         }
@@ -3291,14 +3291,14 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             });
             if (!retained_storage) {
                 plan.sequence_resets.push_back(EventSequenceResetPlan{
-                    .representation = *source_representation,
+                    .storage = *source_representation,
                     .scope = source_before_scope,
                 });
             }
         }
         source_binding = PrimitiveEventOutputBindingPlan{
             .realtime = true,
-            .representation = producer_representation,
+            .storage = producer_representation,
             .source_type = group.source_type,
             .history = port_history(source),
             .latency = tick_latency(source),
@@ -3377,8 +3377,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                                 && candidate.conversion == connection.conversion
                                 && candidate.scope == *scope
                                 && candidate.target_representation
-                                    < plan.representations.size()
-                                && plan.representations[
+                                    < plan.ports.size()
+                                && plan.ports[
                                        candidate.target_representation].type
                                     == connection.target_type;
                         });
@@ -3397,7 +3397,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         auto derived = append_representation(
                             group_index,
                             connection.target_type,
-                            plan.representations[*source_representation]
+                            plan.ports[*source_representation]
                                 .event_capacity);
                         if (!derived) {
                             return std::unexpected(std::move(derived.error()));
@@ -3420,11 +3420,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 }
                 auto& target_binding =
                     plan.primitives[*target_primitive].inputs[target_id.port];
-                if (target_binding.representation) {
+                if (target_binding.storage) {
                     return std::unexpected(
                         "GraphJit event input has more than one realized connection");
                 }
-                target_binding.representation = target_representation;
+                target_binding.storage = target_representation;
             }
         }
     }
@@ -3475,13 +3475,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         if (source_group_index >= plan.producer_group_representations.size()
             || !plan.producer_group_representations[source_group_index]) {
             return std::unexpected(
-                "GraphJit event detach source has no realized event representation");
+                "GraphJit event detach source has no realized event storage");
         }
         auto const canonical_source_representation =
             *plan.producer_group_representations[source_group_index];
-        if (canonical_source_representation >= plan.representations.size()) {
+        if (canonical_source_representation >= plan.ports.size()) {
             return std::unexpected(
-                "GraphJit event detach source representation is invalid");
+                "GraphJit event detach source storage is invalid");
         }
         // Detached feedback must observe the producer group's canonical
         // root-call stream, not a producer-local per-slice buffer. Any local
@@ -3490,10 +3490,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         // the newly appended suffix, so retained events already present in a
         // carry buffer or persistent ring are not copied into feedback again.
         auto const source_representation = canonical_source_representation;
-        auto const& source_storage = plan.representations[source_representation];
+        auto const& source_storage = plan.ports[source_representation];
         if (source_storage.type != connection.source_type) {
             return std::unexpected(
-                "GraphJit event detach source representation disagrees with detach type");
+                "GraphJit event detach source storage disagrees with detach type");
         }
 
         auto const latency = connection.detach->loop_extra_latency;
@@ -3562,7 +3562,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 // the state retained between calls. History/latency may make a
                 // feedback producer author more than one root window while its
                 // SCC is sliced; that additional work belongs in the operation
-                // counts below, not in the current-footprint term. Physical
+                // counts below, not in the current-footprint term. Storage
                 // feedback buffers are still sized from authored_event_count.
                 .current_window_samples = input.specialization.block_size,
                 .retained_window_samples = retained_window_samples,
@@ -3582,8 +3582,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
 
         // Multiple detached branches from one source with the same authored
         // latency are the same delayed event stream. Share one planned delayed
-        // representation and one producer-side append operation across all such
-        // consumers, regardless of whether that representation is transient,
+        // storage and one producer-side append operation across all such
+        // consumers, regardless of whether that storage is transient,
         // compact carry, or a full persistent ring.
         auto existing_feedback = std::ranges::find_if(
             plan.feedback_operations,
@@ -3781,8 +3781,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                             && candidate.conversion == connection.conversion
                             && candidate.scope == scope
                             && candidate.target_representation
-                                < plan.representations.size()
-                            && plan.representations[
+                                < plan.ports.size()
+                            && plan.ports[
                                    candidate.target_representation].type
                                 == connection.target_type;
                     });
@@ -3800,7 +3800,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     auto derived = append_representation(
                         source_group_index,
                         connection.target_type,
-                        plan.representations[target_representation]
+                        plan.ports[target_representation]
                             .event_capacity);
                     if (!derived) {
                         return std::unexpected(std::move(derived.error()));
@@ -3822,11 +3822,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             }
             auto& target_binding =
                 plan.primitives[*target_primitive].inputs[target_id.port];
-            if (target_binding.representation) {
+            if (target_binding.storage) {
                 return std::unexpected(
                     "GraphJit event feedback consumer input is connected more than once");
             }
-            target_binding.representation = consumer_representation;
+            target_binding.storage = consumer_representation;
         }
     }
 
@@ -3841,11 +3841,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         feedback_requirements.reserve(plan.feedback_operations.size());
         for (auto const& feedback : plan.feedback_operations) {
             feedback_requirements.push_back(feedback.storage_requirements);
-            if (feedback.source_representation >= plan.representations.size()) {
+            if (feedback.source_representation >= plan.ports.size()) {
                 return std::unexpected(
                     "GraphJit event costing found an invalid feedback source");
             }
-            auto const source_group = plan.representations[
+            auto const source_group = plan.ports[
                 feedback.source_representation].producer_group_index;
             if (source_group >= group_operations.size()) {
                 return std::unexpected(
@@ -3881,11 +3881,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             }
 
             if (materialization.source_representation
-                >= plan.representations.size()) {
+                >= plan.ports.size()) {
                 return std::unexpected(
                     "GraphJit event costing found an invalid materialization source");
             }
-            auto const source_group = plan.representations[
+            auto const source_group = plan.ports[
                 materialization.source_representation].producer_group_index;
             if (source_group >= group_operations.size()) {
                 return std::unexpected(
@@ -4021,20 +4021,20 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         for (std::size_t port = 0;
              port < plan.primitives[primitive_index].inputs.size(); ++port) {
             auto& binding = plan.primitives[primitive_index].inputs[port];
-            if (binding.representation) continue;
+            if (binding.storage) continue;
             NodeBundlePortId const port_id{bundle, PortKind::event, port};
             auto const config = input.graph.node_bundles
                 .resolve_event_input(port_id).config;
             if (!is_sequential(config.access)) {
                 return std::unexpected(
-                    "GraphJit disconnected indexed event inputs are not yet supported");
+                    "GraphJit disconnected background event inputs are not yet supported");
             }
             auto empty = append_representation(
                 connections.event_producer_groups.size(), config.type, 0);
             if (!empty) return std::unexpected(std::move(empty.error()));
-            binding.representation = *empty;
+            binding.storage = *empty;
             plan.sequence_resets.push_back(EventSequenceResetPlan{
-                .representation = *empty,
+                .storage = *empty,
                 .scope = primitive_scope(
                     position, EventOperationPhase::before),
             });
@@ -4044,7 +4044,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
              port < plan.primitives[primitive_index].outputs.size(); ++port) {
             auto& binding = plan.primitives[primitive_index].outputs[port];
             if (!binding.realtime) continue;
-            if (binding.representation) continue;
+            if (binding.storage) continue;
             NodeBundlePortId const port_id{bundle, PortKind::event, port};
             auto const config = input.graph.node_bundles
                 .resolve_event_output(port_id).config;
@@ -4075,7 +4075,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             if (!sink) return std::unexpected(std::move(sink.error()));
             binding = PrimitiveEventOutputBindingPlan{
                 .realtime = true,
-                .representation = *sink,
+                .storage = *sink,
                 .source_type = config.type,
                 .history = history,
                 .latency = latency,
@@ -4089,7 +4089,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
     // here: a conversion result, merge input, or feedback working buffer often
     // exists for only a small suffix of the producer group's full interval.
     std::vector<std::optional<ConnectionLiveIntervalPlan>> stack_buffer_lifetimes(
-        plan.representations.size());
+        plan.ports.size());
 
     std::vector<std::size_t> primitive_execution_positions(
         analysis.primitives.size());
@@ -4147,7 +4147,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                                     std::size_t begin,
                                     std::size_t end)
         -> std::expected<void, std::string> {
-        if (representation_index >= plan.representations.size()) {
+        if (representation_index >= plan.ports.size()) {
             return std::unexpected(
                 "GraphJit event stack lifetime references an invalid buffer");
         }
@@ -4155,7 +4155,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             return std::unexpected(
                 "GraphJit event stack lifetime has an inverted schedule interval");
         }
-        if (plan.representations[representation_index].persistent) return {};
+        if (plan.ports[representation_index].persistent) return {};
         auto& live = stack_buffer_lifetimes[representation_index];
         if (!live) {
             live = ConnectionLiveIntervalPlan{
@@ -4200,7 +4200,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
          primitive_index < plan.primitives.size(); ++primitive_index) {
         auto const position = primitive_execution_positions[primitive_index];
         for (auto const& output : plan.primitives[primitive_index].outputs) {
-            if (!output.representation) continue;
+            if (!output.storage) continue;
             auto begin = position;
             auto end = position;
             // An append-existing output in an SCC accumulates one sequence
@@ -4218,14 +4218,14 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 }
             }
             if (auto touched = touch_buffer(
-                    *output.representation, begin, end);
+                    *output.storage, begin, end);
                 !touched) {
                 return std::unexpected(std::move(touched.error()));
             }
         }
         for (auto const& input_binding : plan.primitives[primitive_index].inputs) {
-            if (!input_binding.representation) continue;
-            if (auto touched = touch_at(*input_binding.representation, position);
+            if (!input_binding.storage) continue;
+            if (auto touched = touch_at(*input_binding.storage, position);
                 !touched) {
                 return std::unexpected(std::move(touched.error()));
             }
@@ -4271,9 +4271,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         }
     }
 
-    // Scope is part of the physical operation. Lifetime planning therefore
+    // Scope is part of the storage operation. Lifetime planning therefore
     // consumes the selected slice/root-call boundary directly and never has to
-    // reverse-engineer it from representation consumers.
+    // reverse-engineer it from storage consumers.
     for (auto const& materialization : plan.materializations) {
         auto const operation_position = scope_position(materialization.scope);
         if (!operation_position) {
@@ -4341,20 +4341,20 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
 
     std::vector<TransientArenaAllocationRequest> transient_requests;
     std::vector<std::size_t> transient_representations;
-    transient_requests.reserve(plan.representations.size());
-    transient_representations.reserve(plan.representations.size());
+    transient_requests.reserve(plan.ports.size());
+    transient_representations.reserve(plan.ports.size());
     for (std::size_t representation_index = 0;
-         representation_index < plan.representations.size();
+         representation_index < plan.ports.size();
          ++representation_index) {
-        auto const& representation = plan.representations[representation_index];
-        if (representation.persistent) continue;
+        auto const& storage = plan.ports[representation_index];
+        if (storage.persistent) continue;
         if (!stack_buffer_lifetimes[representation_index]) {
             return std::unexpected(
                 "GraphJit transient event buffer has no scheduled reader or writer");
         }
         transient_requests.push_back(TransientArenaAllocationRequest{
-            .size_bytes = representation.size_bytes,
-            .alignment = representation.alignment,
+            .size_bytes = storage.size_bytes,
+            .alignment = storage.alignment,
             .live_interval = *stack_buffer_lifetimes[representation_index],
         });
         transient_representations.push_back(representation_index);
@@ -4377,7 +4377,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             .region_relative_offset = allocation.offset,
             .live_interval = transient_requests[request_index].live_interval,
         });
-        plan.representations[representation_index].transient_allocation =
+        plan.ports[representation_index].transient_allocation =
             allocation_index;
     }
 
@@ -4420,7 +4420,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     std::vector<std::optional<std::size_t>> schedule_region_execution_region(
         connections.schedule.regions.size());
 
-    // Keep one flattened primitive-step namespace because all physical plans
+    // Keep one flattened primitive-step namespace because all storage plans
     // refer to producer execution positions in that namespace. Execution regions
     // add the information LLVM realization needs to switch cyclic SCCs from the
     // ordinary primitive-major traversal to slice-major traversal. Detach is
@@ -4482,7 +4482,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     }
 
     // Map flattened execution positions back to their region before assigning
-    // physical event operations. Operations whose semantic lifetime is one
+    // storage event operations. Operations whose semantic lifetime is one
     // complete cyclic root invocation belong to the region boundary rather
     // than to an individual primitive slice.
     std::vector<std::optional<std::size_t>> step_regions(
@@ -4508,9 +4508,9 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     }
 
     for (std::size_t carry_index = 0;
-         carry_index < sample_ports.physical.carry_operations.size();
+         carry_index < sample_ports.storage.carry_operations.size();
          ++carry_index) {
-        auto const& carry = sample_ports.physical.carry_operations[carry_index];
+        auto const& carry = sample_ports.storage.carry_operations[carry_index];
         if (carry.restore_execution_position >= plan.primitive_steps.size()
             || carry.commit_execution_position >= plan.primitive_steps.size()) {
             return std::unexpected(
@@ -4523,9 +4523,9 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     }
 
     for (std::size_t timeline_index = 0;
-         timeline_index < sample_ports.physical.feedback_timelines.size();
+         timeline_index < sample_ports.storage.feedback_timelines.size();
          ++timeline_index) {
-        auto const& timeline = sample_ports.physical.feedback_timelines[timeline_index];
+        auto const& timeline = sample_ports.storage.feedback_timelines[timeline_index];
         if (timeline.writer.kind
             == SampleFeedbackTimelineWriterKind::producer_home) {
             continue;
@@ -4540,10 +4540,10 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     }
 
     for (std::size_t materialization_index = 0;
-         materialization_index < sample_ports.physical.materializations.size();
+         materialization_index < sample_ports.storage.materializations.size();
          ++materialization_index) {
         auto const& materialization =
-            sample_ports.physical.materializations[materialization_index];
+            sample_ports.storage.materializations[materialization_index];
         if (materialization.before_execution_position) {
             if (*materialization.before_execution_position
                 >= plan.primitive_steps.size()) {
@@ -4563,10 +4563,10 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     }
 
     for (std::size_t composition_index = 0;
-         composition_index < sample_ports.physical.compositions.size();
+         composition_index < sample_ports.storage.compositions.size();
          ++composition_index) {
         auto const& composition =
-            sample_ports.physical.compositions[composition_index];
+            sample_ports.storage.compositions[composition_index];
         if (composition.after_execution_position >= plan.primitive_steps.size()) {
             return std::unexpected(
                 "GraphJit sample composition references an invalid execution position");
@@ -4614,7 +4614,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     for (auto const& reset : event_ports.sequence_resets) {
         auto scheduled = append_event_operation(
             reset.scope,
-            {EventOperationKind::sequence_reset, reset.representation});
+            {EventOperationKind::sequence_reset, reset.storage});
         if (!scheduled) return std::unexpected(std::move(scheduled.error()));
     }
     for (std::size_t carry_index = 0;
@@ -4672,17 +4672,17 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         }
         auto const step_index = *configuration_steps[primitive_index];
         for (auto const& output : event_ports.primitives[primitive_index].outputs) {
-            if (!output.append_existing || !output.representation) continue;
-            auto const representation = *output.representation;
-            if (representation >= event_ports.representations.size()) {
+            if (!output.append_existing || !output.storage) continue;
+            auto const storage = *output.storage;
+            if (storage >= event_ports.ports.size()) {
                 return std::unexpected(
-                    "GraphJit event output reset references an invalid representation");
+                    "GraphJit event output reset references an invalid storage");
             }
             auto const initialized_elsewhere = std::ranges::any_of(
                 event_ports.carry_operations,
                 [&](EventCarryPlan const& carry) {
-                    return carry.working_representation == representation;
-                }) || event_ports.representations[representation].persistent_ring;
+                    return carry.working_representation == storage;
+                }) || event_ports.ports[storage].persistent_ring;
             if (initialized_elsewhere) continue;
             EventOperationScope reset_scope{
                 .kind = EventOperationScopeKind::primitive,
@@ -4705,7 +4705,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 operations,
                 [&](EventOperationRef operation) {
                     return operation.kind == EventOperationKind::sequence_reset
-                        && operation.index == representation;
+                        && operation.index == storage;
                 });
             if (!already_scheduled) {
                 // reset_scope is constructed from step_regions above, so a
@@ -4713,11 +4713,11 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 // rather than a ConnectionAnalysisPlan schedule-region index.
                 if (reset_scope.kind == EventOperationScopeKind::region) {
                     plan.regions[reset_scope.index].event_operations_before.push_back(
-                        {EventOperationKind::sequence_reset, representation});
+                        {EventOperationKind::sequence_reset, storage});
                 } else {
                     plan.primitive_steps[reset_scope.index]
                         .event_operations_before.push_back(
-                            {EventOperationKind::sequence_reset, representation});
+                            {EventOperationKind::sequence_reset, storage});
                 }
             }
         }
@@ -4777,9 +4777,9 @@ std::expected<RootStackBufferPlan, std::string> plan_root_stack_buffers(
         return offset + size;
     };
 
-    auto const sample_size = sample_ports.physical.transient_arena_size;
+    auto const sample_size = sample_ports.storage.transient_arena_size;
     auto const sample_alignment = std::max(
-        std::size_t{1}, sample_ports.physical.transient_arena_alignment);
+        std::size_t{1}, sample_ports.storage.transient_arena_alignment);
     auto const event_size = event_ports.transient_arena_size;
     auto const event_alignment = std::max(
         std::size_t{1}, event_ports.transient_arena_alignment);
@@ -4827,7 +4827,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         RootStackBufferPlan root_stack{};
     };
 
-    std::optional<IndexedPlan> retained_indexed_plan;
+    std::optional<BackgroundEvaluationPlan> retained_background_plan;
 
     auto plan_realtime_ports = [&](RealtimeStorageCostModel const& cost_model)
         -> std::expected<RealtimePortPlans, std::string> {
@@ -4835,12 +4835,12 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             input.graph,
             input.specialization.block_size,
             cost_model,
-            retained_indexed_plan ? &*retained_indexed_plan : nullptr);
+            retained_background_plan ? &*retained_background_plan : nullptr);
         if (!connections) {
             return std::unexpected(std::move(connections.error()));
         }
-        if (!retained_indexed_plan) {
-            retained_indexed_plan = connections->indexed;
+        if (!retained_background_plan) {
+            retained_background_plan = connections->background;
         }
         if (connections->boundary_bundle < input.graph.node_bundles.size()) {
             auto const& boundary = input.graph.node_bundles.bundle(
@@ -4978,7 +4978,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     if (!declarations) return std::unexpected(std::move(declarations.error()));
 
     auto imports = plan_package_imports(
-        input, *analysis, realtime_ports->connections.indexed);
+        input, *analysis, realtime_ports->connections.background);
     if (!imports) return std::unexpected(std::move(imports.error()));
 
     auto configurations = plan_node_configurations(

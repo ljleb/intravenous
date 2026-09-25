@@ -155,7 +155,7 @@ IntrospectionRegressionSnapshot introspection_regression_snapshot()
         && metadata.public_sample_outputs.front().family_name == "out";
 
     result.event_ports_are_preserved = metadata.public_event_inputs.size() == 1
-        && metadata.public_event_inputs.front().port_ordinal == 0
+        && metadata.public_event_inputs.front().port_index == 0
         && !metadata.public_event_inputs.front().graph_connected
         && metadata.public_event_outputs.empty();
     return result;
@@ -239,12 +239,12 @@ TEST(GraphModules, BuilderCapturesPointerConfigurationAsSymbolicRelocations)
         RetainedGlobalData{
             .address = cstring_title,
             .size = sizeof(cstring_title),
-            .ordinal = 0,
+            .index = 0,
         },
         RetainedGlobalData{
             .address = cstring_detail,
             .size = sizeof(cstring_detail),
-            .ordinal = 1,
+            .index = 1,
         },
     };
     configure_pointer_metadata_package(session.get(), fields, globals);
@@ -264,17 +264,17 @@ TEST(GraphModules, BuilderCapturesPointerConfigurationAsSymbolicRelocations)
     ASSERT_EQ(relocations.size(), 3u);
     EXPECT_EQ(relocations[0].byte_offset, offsetof(CStringConfigNode, title));
     EXPECT_EQ(relocations[0].package_root, "test.pointer-metadata-package");
-    ASSERT_TRUE(relocations[0].retained_global_ordinal.has_value());
-    EXPECT_EQ(*relocations[0].retained_global_ordinal, 0u);
+    ASSERT_TRUE(relocations[0].retained_global_index.has_value());
+    EXPECT_EQ(*relocations[0].retained_global_index, 0u);
     EXPECT_EQ(relocations[0].addend, 0u);
     EXPECT_EQ(relocations[1].byte_offset, offsetof(CStringConfigNode, detail));
     EXPECT_EQ(relocations[1].package_root, "test.pointer-metadata-package");
-    ASSERT_TRUE(relocations[1].retained_global_ordinal.has_value());
-    EXPECT_EQ(*relocations[1].retained_global_ordinal, 1u);
+    ASSERT_TRUE(relocations[1].retained_global_index.has_value());
+    EXPECT_EQ(*relocations[1].retained_global_index, 1u);
     EXPECT_EQ(relocations[1].addend, 0u);
     EXPECT_EQ(relocations[2].byte_offset, offsetof(CStringConfigNode, optional));
     EXPECT_TRUE(relocations[2].package_root.empty());
-    EXPECT_FALSE(relocations[2].retained_global_ordinal.has_value());
+    EXPECT_FALSE(relocations[2].retained_global_index.has_value());
 }
 
 TEST(GraphModules, BuilderRelocatesProviderNodePointerToCallerPackageGlobal)
@@ -293,7 +293,7 @@ TEST(GraphModules, BuilderRelocatesProviderNodePointerToCallerPackageGlobal)
         RetainedGlobalData{
             .address = cstring_title,
             .size = sizeof(cstring_title),
-            .ordinal = 7,
+            .index = 7,
         },
     };
     std::array packages{
@@ -320,8 +320,8 @@ TEST(GraphModules, BuilderRelocatesProviderNodePointerToCallerPackageGlobal)
     auto const& relocations = archive.node_configs.front().relocations;
     ASSERT_EQ(relocations.size(), 1u);
     EXPECT_EQ(relocations.front().package_root, "test.caller-package");
-    ASSERT_TRUE(relocations.front().retained_global_ordinal.has_value());
-    EXPECT_EQ(*relocations.front().retained_global_ordinal, 7u);
+    ASSERT_TRUE(relocations.front().retained_global_index.has_value());
+    EXPECT_EQ(*relocations.front().retained_global_index, 7u);
 
     auto const used_packages = details::builder_used_packages(session.get());
     EXPECT_EQ(used_packages, (std::vector<std::size_t>{0, 1}));
@@ -355,22 +355,22 @@ TEST(GraphModules, BuilderCapturesNestedAndArrayPointerConfiguration)
         RetainedGlobalData{
             .address = cstring_left,
             .size = sizeof(cstring_left),
-            .ordinal = 0,
+            .index = 0,
         },
         RetainedGlobalData{
             .address = cstring_right,
             .size = sizeof(cstring_right),
-            .ordinal = 1,
+            .index = 1,
         },
         RetainedGlobalData{
             .address = cstring_first,
             .size = sizeof(cstring_first),
-            .ordinal = 2,
+            .index = 2,
         },
         RetainedGlobalData{
             .address = cstring_second,
             .size = sizeof(cstring_second),
-            .ordinal = 3,
+            .index = 3,
         },
     };
     configure_pointer_metadata_package(session.get(), fields, globals);
@@ -391,8 +391,8 @@ TEST(GraphModules, BuilderCapturesNestedAndArrayPointerConfiguration)
     for (size_t index = 0; index < fields.size(); ++index) {
         EXPECT_EQ(relocations[index].byte_offset, fields[index].byte_offset);
         EXPECT_EQ(relocations[index].package_root, "test.pointer-metadata-package");
-        ASSERT_TRUE(relocations[index].retained_global_ordinal.has_value());
-        EXPECT_EQ(*relocations[index].retained_global_ordinal, index);
+        ASSERT_TRUE(relocations[index].retained_global_index.has_value());
+        EXPECT_EQ(*relocations[index].retained_global_index, index);
         EXPECT_EQ(relocations[index].addend, 0u);
     }
 }
@@ -412,7 +412,7 @@ TEST(GraphModules, BuilderRejectsInvalidPointerMetadataPackages)
     std::array invalid_globals{RetainedGlobalData{
         .address = nullptr,
         .size = 1,
-        .ordinal = 0,
+        .index = 0,
     }};
     std::array invalid_global_package{details::BuilderPackageView{
         .package_root = "test.invalid-pointer-metadata",

@@ -3,7 +3,7 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/realtime_port_planning.h>
-#include <intravenous/graph_jit/indexed_plan.h>
+#include <intravenous/graph_jit/background_evaluation_plan.h>
 
 #include <cstddef>
 #include <expected>
@@ -14,7 +14,7 @@
 
 namespace iv::graph_jit::detail {
 
-enum class PlannedConnectionPayload {
+enum class PlannedConnectionData {
     sample,
     event,
 };
@@ -38,7 +38,7 @@ struct PlannedGraphNode {
 struct DependencyEdgePlan {
     NodeBundleHandle source_bundle = 0;
     NodeBundleHandle target_bundle = 0;
-    PlannedConnectionPayload payload = PlannedConnectionPayload::sample;
+    PlannedConnectionData data = PlannedConnectionData::sample;
     PlannedSourceProduction source_production = PlannedSourceProduction::tick;
     OutputRetention source_retention = OutputRetention::ephemeral;
     PlannedDestinationAccess destination_access = PlannedDestinationAccess::sequential;
@@ -47,7 +47,7 @@ struct DependencyEdgePlan {
 
     // Only Tick -> Sequential transport imposes ordinary same-slice ordering.
     // Background materialization and replay dependencies are retained
-    // separately by IndexedPlan.
+    // separately by BackgroundEvaluationPlan.
     bool sequential_tick_dependency = true;
 };
 
@@ -69,10 +69,10 @@ struct SccRegionPlan {
 struct SchedulePlan {
     std::vector<SccRegionPlan> regions{};
     std::vector<std::size_t> region_order{};
-    // Indexed by configured NodeBundleHandle. Boundary/non-concrete bundles
+    // Background by configured NodeBundleHandle. Boundary/non-concrete bundles
     // have no region.
     std::vector<std::optional<std::size_t>> bundle_to_region{};
-    // Indexed by configured NodeBundleHandle. Values are positions in the
+    // Background by configured NodeBundleHandle. Values are positions in the
     // flattened provisional execution schedule.
     std::vector<std::optional<std::size_t>> bundle_execution_position{};
 };
@@ -97,7 +97,7 @@ struct SampleSourceChannelTimingPlan {
 // One semantic contribution to a normalized target-port composition. Source
 // indices name entries in SampleConnectionPlan::source_channel_timings in the
 // semantic source-channel order expected by source_type. target_channels are
-// canonical target-port channel ordinals in the semantic target-channel order
+// canonical target-port channel indices in the semantic target-channel order
 // produced by target_type. Keeping only indices here leaves the central timing
 // vector authoritative when latency compensation later adjusts read_latency.
 struct SampleProjectionContributionPlan {
@@ -134,7 +134,7 @@ struct SampleConnectionPlan {
     std::size_t source_latency = 0;
     // For a canonical whole-port source this is the common effective InputPort
     // latency. For a composed source it is the maximum per-channel read
-    // latency until physical channel composition is lowered explicitly.
+    // latency until storage channel composition is lowered explicitly.
     std::size_t read_latency = 0;
     std::size_t target_history = 0;
     PlannedDestinationAccess destination_access = PlannedDestinationAccess::sequential;
@@ -249,14 +249,14 @@ struct ConnectionLiveIntervalPlan {
 };
 
 struct SampleProducerGroupPlan {
-    // Physical producer identity is the declared output port, not the
+    // Storage producer identity is the declared output port, not the
     // connection's possibly-composed semantic source channel set.
     std::optional<NodeBundlePortId> source_port{};
     ChannelTypeId source_type = ChannelTypeId::mono;
     std::vector<SampleOutputChannelId> source_channels{};
-    // Endpoint atoms are the correctness units. This group is a later physical
-    // coalescing decision for the node-facing Tick representation.
-    std::vector<EndpointAtomOrdinal> source_atom_indices{};
+    // Port atoms are the correctness units. This group is a later storage
+    // coalescing decision for the node-facing Tick storage.
+    std::vector<PortSubsetIndex> source_atom_indices{};
     std::optional<ChannelLayout> canonical_source_layout{};
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
@@ -269,9 +269,9 @@ struct SampleProducerGroupPlan {
 struct EventProducerGroupPlan {
     EventTypeId source_type = EventTypeId::empty;
     std::vector<EventOutputPortId> sources{};
-    std::vector<EndpointAtomOrdinal> source_atom_indices{};
-    std::vector<EndpointAtomOrdinal> target_atom_indices{};
-    // The semantic fan-in source set is retained above. Realtime physical
+    std::vector<PortSubsetIndex> source_atom_indices{};
+    std::vector<PortSubsetIndex> target_atom_indices{};
+    // The semantic fan-in source set is retained above. Realtime storage
     // planning uses only Tick -> Sequential contributors; background-only
     // sources are tracked separately so mixed fan-in is representable without
     // allocating realtime storage for Tock/replay materialization.
@@ -295,11 +295,11 @@ enum class ConnectionStorageLifetime {
     external,
 };
 
-// This is a semantic storage request, not an allocated region. Sample physical
+// This is a semantic storage request, not an allocated region. Sample storage
 // realization consumes these requirements after storage-plan selection;
 // transient byte-range arena allocation is a separate concern from policy choice.
 struct ConnectionStorageRegionRequirement {
-    PlannedConnectionPayload payload = PlannedConnectionPayload::sample;
+    PlannedConnectionData data = PlannedConnectionData::sample;
     std::size_t producer_group_index = 0;
     ConnectionStorageLifetime lifetime = ConnectionStorageLifetime::transient;
     ConnectionLiveIntervalPlan live_interval{};
@@ -323,10 +323,10 @@ struct ConnectionAnalysisPlan {
     std::vector<SampleProducerGroupPlan> sample_producer_groups{};
     std::vector<EventProducerGroupPlan> event_producer_groups{};
     ConnectionStoragePlan storage{};
-    // The indexed plan owns the complete semantic SCC decomposition as well as
-    // the background/indexed topology. Later lowering/runtime stages retain and
+    // The background plan owns the complete semantic SCC decomposition as well as
+    // the background/background topology. Later lowering/runtime stages retain and
     // reuse it instead of rediscovering either graph view.
-    IndexedPlan indexed{};
+    BackgroundEvaluationPlan background{};
 };
 
 // Pure host-side topology/temporal/storage-requirement analysis. It does not
@@ -337,9 +337,9 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     ConfiguredGraph const& graph,
     std::size_t kernel_block_size,
     RealtimeStorageCostModel const& cost_model = {},
-    // Stack-pressure retries change only realtime physical policy. Supplying
+    // Stack-pressure retries change only realtime storage policy. Supplying
     // the immutable plan retained from the first analysis avoids repeating
-    // semantic SCC/indexed topology work for the same graph specialization.
-    IndexedPlan const* retained_indexed_plan = nullptr);
+    // semantic SCC/background topology work for the same graph specialization.
+    BackgroundEvaluationPlan const* retained_background_plan = nullptr);
 
 } // namespace iv::graph_jit::detail

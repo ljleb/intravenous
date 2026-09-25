@@ -8,7 +8,7 @@
 
 #include <intravenous/basic_nodes/constant.h>
 #include <intravenous/graph/reflected_node_operations.h>
-#include <intravenous/node/indexed_port_context.h>
+#include <intravenous/node/coverage_port_context.h>
 #include <intravenous/node/compiler_record.h>
 #include <intravenous/node/lifecycle.h>
 
@@ -411,8 +411,8 @@ IV_FORCEINLINE void tick_node_block(
                             .outputs = outputs,
                             .event_inputs = event_inputs,
                             .event_outputs = event_outputs,
-                            .indexed_inputs = ctx.indexed_inputs,
-                            .indexed_event_inputs = ctx.indexed_event_inputs,
+                            .random_access_inputs = ctx.random_access_inputs,
+                            .random_access_event_inputs = ctx.random_access_event_inputs,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = ctx.state,
@@ -448,8 +448,8 @@ IV_FORCEINLINE void skip_node_block(
                             .outputs = outputs,
                             .event_inputs = event_inputs,
                             .event_outputs = event_outputs,
-                            .indexed_inputs = ctx.indexed_inputs,
-                            .indexed_event_inputs = ctx.indexed_event_inputs,
+                            .random_access_inputs = ctx.random_access_inputs,
+                            .random_access_event_inputs = ctx.random_access_event_inputs,
                             .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = ctx.state,
@@ -471,7 +471,7 @@ IV_FORCEINLINE void tock_node_coverage(
         .outputs = reflected.outputs,
         .event_inputs = reflected.event_inputs,
         .event_outputs = reflected.event_outputs,
-        .indexed_state_storage = reflected.indexed_state_storage,
+        .background_state_storage = reflected.background_state_storage,
         .sample_rate = reflected.sample_rate,
     };
     do_tock_coverage(node, context);
@@ -513,7 +513,7 @@ consteval auto node_tock_coverage_operation()
 {
     if constexpr (details::declares_tock_outputs_v<Node>) {
         static_assert(details::has_tock_coverage<Node>,
-            "indexed-output node has no valid tock_coverage implementation");
+            "background-output node has no valid tock_coverage implementation");
         return &tock_node_coverage<Node>;
     } else {
         return static_cast<void (*)(
@@ -526,7 +526,7 @@ consteval auto node_propagate_forward_coverage_operation()
 {
     if constexpr (details::declares_tock_outputs_v<Node>) {
         static_assert(details::has_propagate_forward_coverage<Node>,
-            "indexed-output node has no exact propagate_forward_coverage implementation");
+            "background-output node has no exact propagate_forward_coverage implementation");
         return &propagate_node_forward_coverage<Node>;
     } else {
         return static_cast<void (*)(
@@ -584,24 +584,24 @@ consteval std::size_t node_state_alignment()
 }
 
 template<class Node>
-consteval std::size_t node_indexed_state_size()
+consteval std::size_t node_background_state_size()
 {
-    using IndexedState = typename NodeIndexedState<Node>::Type;
-    if constexpr (std::is_void_v<IndexedState>) {
+    using TockState = typename NodeBackgroundState<Node>::Type;
+    if constexpr (std::is_void_v<TockState>) {
         return 0;
     } else {
-        return sizeof(IndexedState);
+        return sizeof(TockState);
     }
 }
 
 template<class Node>
-consteval std::size_t node_indexed_state_alignment()
+consteval std::size_t node_background_state_alignment()
 {
-    using IndexedState = typename NodeIndexedState<Node>::Type;
-    if constexpr (std::is_void_v<IndexedState>) {
+    using TockState = typename NodeBackgroundState<Node>::Type;
+    if constexpr (std::is_void_v<TockState>) {
         return 1;
     } else {
-        return alignof(IndexedState);
+        return alignof(TockState);
     }
 }
 
@@ -622,8 +622,8 @@ IV_NODE_COMPILER_RECORD_ATTR inline const NodeCompilerRecord
         .type_name_size = clang_type_name<Node>().size(),
         .state_size = node_state_size<Node>(),
         .state_alignment = node_state_alignment<Node>(),
-        .indexed_state_size = node_indexed_state_size<Node>(),
-        .indexed_state_alignment = node_indexed_state_alignment<Node>(),
+        .background_state_size = node_background_state_size<Node>(),
+        .background_state_alignment = node_background_state_alignment<Node>(),
         .intrinsically_replayable = intrinsically_replayable_v<Node>,
     };
 
@@ -647,7 +647,7 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     }
     static_assert(replay_declaration_is_valid_v<Node>,
         "intrinsically replayable nodes must author tick() (not tick_block()), "
-        "have no State/IndexedState or RandomAccess inputs, and declare only "
+        "have no State/TockState or RandomAccess inputs, and declare only "
         "pointwise Sequential inputs and Tick outputs with zero history/latency");
     sink.set_internal_latency(get_internal_latency(node));
     sink.set_intrinsically_replayable(intrinsically_replayable_v<Node>);
@@ -667,7 +667,7 @@ NodeBuildRequest make_node_build_request(Node const& node)
         "concrete node ports must be declared by static constexpr inputs() and outputs()");
     static_assert(replay_declaration_is_valid_v<Value>,
         "intrinsically replayable nodes must author tick() (not tick_block()), "
-        "have no State/IndexedState or RandomAccess inputs, and declare only "
+        "have no State/TockState or RandomAccess inputs, and declare only "
         "pointwise Sequential inputs and Tick outputs with zero history/latency");
     // Emit the build-local record in the LLVM module.  The builder consumes
     // it synchronously and retains only copied data and the NodeCodeKey.

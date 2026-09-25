@@ -3,6 +3,7 @@
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/builder/host.hpp>
+#include <intravenous/graph/node_ports.h>
 
 #include <gtest/gtest.h>
 
@@ -18,8 +19,8 @@ using iv::operator""_P;
 
 static_assert(iv::channel_count(iv::ChannelTypeId::mono) == 1);
 static_assert(iv::channel_count(iv::ChannelTypeId::stereo) == 2);
-static_assert(iv::stereo::left.channel_ordinal == 0);
-static_assert(iv::stereo::right.channel_ordinal == 1);
+static_assert(iv::stereo::left.channel_index == 0);
+static_assert(iv::stereo::right.channel_index == 1);
 static_assert(iv::details::has_constexpr_port_configs<
     iv::ChannelPack<iv::stereo>>);
 static_assert(iv::details::has_constexpr_port_configs<
@@ -63,6 +64,26 @@ struct MonoPass {
         ctx.outputs[0].push_block(ctx.inputs[0].get_block(ctx.block_size));
     }
 };
+
+TEST(Channels, PositionalInputsUseSeparateSampleAndEventIndexes)
+{
+    iv::NodePorts ports;
+    ports.input_configs = {
+        iv::sequential_sample_input("first"),
+        iv::sequential_event_input("first-event", iv::EventTypeId::trigger),
+        iv::sequential_sample_input("second"),
+        iv::sequential_event_input("second-event", iv::EventTypeId::trigger),
+    };
+
+    EXPECT_EQ(ports.input_port_at(7, 0),
+        (iv::NodeBundlePortId{7, iv::PortKind::sample, 0}));
+    EXPECT_EQ(ports.input_port_at(7, 1),
+        (iv::NodeBundlePortId{7, iv::PortKind::event, 0}));
+    EXPECT_EQ(ports.input_port_at(7, 2),
+        (iv::NodeBundlePortId{7, iv::PortKind::sample, 1}));
+    EXPECT_EQ(ports.input_port_at(7, 3),
+        (iv::NodeBundlePortId{7, iv::PortKind::event, 1}));
+}
 
 TEST(Channels, SamplePortStorageViewConstructsInvocationLocalFacades)
 {
@@ -115,7 +136,7 @@ TEST(Channels, SamplePortStorageViewSupportsIndependentChannelStorage)
         },
         left.size(),
     };
-    // This is an input projection: each channel has its own physical ring
+    // This is an input projection: each channel has its own storage ring
     // capacity and read delay. OutputPort writes producer storage without
     // applying an input's per-channel frame_delay.
     iv::InputPort input(storage, 0, 0, 10);

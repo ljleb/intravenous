@@ -121,12 +121,12 @@ namespace iv {
                     output_kinds[lane.value] = lane_output_kind(output);
                     auto &lane_inputs = inputs[lane.value];
                     auto append_inputs = [&lane_inputs](auto const &configs, LanePortDomain domain, PortKind kind) {
-                        for (size_t ordinal = 0; ordinal < configs.size(); ++ordinal) {
+                        for (size_t index = 0; index < configs.size(); ++index) {
                             lane_inputs.push_back(LaneInputInfo{
                                 .domain = domain,
                                 .kind = kind,
-                                .ordinal = ordinal,
-                                .name = configs[ordinal].name,
+                                .index = index,
+                                .name = configs[index].name,
                             });
                         }
                     };
@@ -171,7 +171,7 @@ namespace iv {
                             : InternedString::from_string(std::to_string(output.target.value)),
                         .port_domain = output.input.domain,
                         .port_kind = output.input.kind,
-                        .port_ordinal = output.input.ordinal,
+                        .port_index = output.input.index,
                     });
                 }
             }

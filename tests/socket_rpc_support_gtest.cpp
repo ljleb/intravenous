@@ -298,7 +298,7 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
             iv::VirtualPortInfo {
                 .name = "frequency",
                 .type = "sample",
-                .ordinal = 1,
+                .index = 1,
             },
         },
         .member_count = 0,
@@ -334,8 +334,8 @@ TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewPayload)
                     .metadata = iv::LaneMetadata{
                         .unit_values = {"graph_input"},
                         .int_values = {
-                            {"port_ordinal", 7},
-                            {"member_ordinal", 1},
+                            {"port_index", 7},
+                            {"member_index", 1},
                         },
                     },
                 },
@@ -345,7 +345,7 @@ TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewPayload)
                     .source_lane_id = intern("lane-42"),
                     .target_lane_id = intern("lane-99"),
                     .port_kind = iv::PortKind::sample,
-                    .port_ordinal = 7,
+                    .port_index = 7,
                 },
             },
         },
@@ -363,7 +363,7 @@ TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewPayload)
     EXPECT_EQ(response["result"]["lanes"][0]["domain"], "realtime");
     EXPECT_EQ(response["result"]["lanes"][0]["sampleChannelType"], "stereo");
     EXPECT_TRUE(response["result"]["lanes"][0].contains("metadata"));
-    EXPECT_EQ(response["result"]["lanes"][0]["metadata"]["member_ordinal"], 1);
+    EXPECT_EQ(response["result"]["lanes"][0]["metadata"]["member_index"], 1);
     EXPECT_EQ(response["result"]["connections"][0]["targetLaneId"], "lane-99");
 }
 

@@ -9,7 +9,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval InputConfig static_input_config()
     {
-        static constexpr auto configs = Node::inputs();
+        auto const configs = Node::inputs();
         InputConfig const* found = nullptr;
         for (InputConfig const& config : configs) {
             if (config.name != Name.view()) continue;
@@ -23,7 +23,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval OutputConfig static_output_config()
     {
-        static constexpr auto configs = Node::outputs();
+        auto const configs = Node::outputs();
         OutputConfig const* found = nullptr;
         for (OutputConfig const& config : configs) {
             if (config.name != Name.view()) continue;
@@ -60,7 +60,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval size_t static_input_port_index()
     {
-        static constexpr auto configs = Node::inputs();
+        auto const configs = Node::inputs();
         size_t found = static_cast<size_t>(-1);
         size_t sample_index = 0;
         for (size_t i = 0; i < configs.size(); ++i) {
@@ -83,7 +83,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval SampleInputProperties static_input_port_properties()
     {
-        static constexpr auto configs = Node::inputs();
+        auto const configs = Node::inputs();
         for (InputConfig const& config : configs) {
             if (auto const* properties =
                     std::get_if<SampleInputProperties>(&config.kind);
@@ -97,7 +97,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval size_t static_output_port_index()
     {
-        static constexpr auto configs = Node::outputs();
+        auto const configs = Node::outputs();
         size_t found = static_cast<size_t>(-1);
         size_t sample_index = 0;
         for (size_t i = 0; i < configs.size(); ++i) {
@@ -120,7 +120,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval SampleOutputProperties static_output_port_properties()
     {
-        static constexpr auto configs = Node::outputs();
+        auto const configs = Node::outputs();
         for (OutputConfig const& config : configs) {
             if (auto const* properties =
                     std::get_if<SampleOutputProperties>(&config.kind);
@@ -145,22 +145,22 @@ namespace iv::details {
         return is_random_access(config);
     }
 
-    // Indexed callback contexts contain only indexed ports. Convert a declaration's
-    // physical sample-port ordinal to its compact indexed-port ordinal so
+    // Background callback contexts contain only background ports. Convert a declaration's
+    // storage sample-port index to its compact background-port index so
     // access callbacks never receive fake realtime placeholders.
     template<typename Node, fixed_string Name>
     consteval size_t static_random_access_input_port_index()
     {
-        static constexpr auto configs = Node::inputs();
+        auto const configs = Node::inputs();
         constexpr size_t port_index = static_input_port_index<Node, Name>();
         static_assert(static_input_port_is_random_access<Node, Name>(),
-            "requested static input is not declared indexed");
-        size_t indexed_index = 0;
+            "requested static input is not declared background");
+        size_t background_index = 0;
         size_t sample_index = 0;
         for (InputConfig const& config : configs) {
             if (!is_sample(config)) continue;
-            if (sample_index == port_index) return indexed_index;
-            if (is_random_access(config)) ++indexed_index;
+            if (sample_index == port_index) return background_index;
+            if (is_random_access(config)) ++background_index;
             ++sample_index;
         }
         throw "unknown static sample input port name";
@@ -182,7 +182,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval size_t static_realtime_output_port_index()
     {
-        static constexpr auto configs = Node::outputs();
+        auto const configs = Node::outputs();
         constexpr size_t port_index = static_output_port_index<Node, Name>();
         static_assert(!static_output_port_is_tock<Node, Name>(),
             "requested static sample output is not produced by tick execution");
@@ -200,7 +200,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval size_t static_tock_output_port_index()
     {
-        static constexpr auto configs = Node::outputs();
+        auto const configs = Node::outputs();
         constexpr size_t port_index = static_output_port_index<Node, Name>();
         static_assert(static_output_port_is_tock<Node, Name>(),
             "requested static output is not produced by tock_coverage");
@@ -218,7 +218,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval size_t static_event_input_port_index()
     {
-        static constexpr auto configs = Node::inputs();
+        auto const configs = Node::inputs();
         size_t found = static_cast<size_t>(-1);
         size_t event_index = 0;
         for (InputConfig const& config : configs) {
@@ -240,7 +240,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval size_t static_event_output_port_index()
     {
-        static constexpr auto configs = Node::outputs();
+        auto const configs = Node::outputs();
         size_t found = static_cast<size_t>(-1);
         size_t event_index = 0;
         for (OutputConfig const& config : configs) {
@@ -278,7 +278,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval size_t static_realtime_event_output_port_index()
     {
-        static constexpr auto configs = Node::outputs();
+        auto const configs = Node::outputs();
         constexpr size_t port_index = static_event_output_port_index<Node, Name>();
         static_assert(!static_event_output_port_is_tock<Node, Name>(),
             "requested static event output is not produced by tick execution");
@@ -296,16 +296,16 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval size_t static_random_access_event_input_port_index()
     {
-        static constexpr auto configs = Node::inputs();
+        auto const configs = Node::inputs();
         constexpr size_t port_index = static_event_input_port_index<Node, Name>();
         static_assert(static_event_input_port_is_random_access<Node, Name>(),
-            "requested static event input is not declared indexed");
-        size_t indexed_index = 0;
+            "requested static event input is not declared background");
+        size_t background_index = 0;
         size_t event_index = 0;
         for (InputConfig const& config : configs) {
             if (is_sample(config)) continue;
-            if (event_index == port_index) return indexed_index;
-            if (is_random_access(config)) ++indexed_index;
+            if (event_index == port_index) return background_index;
+            if (is_random_access(config)) ++background_index;
             ++event_index;
         }
         throw "unknown static event input port name";
@@ -314,7 +314,7 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval size_t static_tock_event_output_port_index()
     {
-        static constexpr auto configs = Node::outputs();
+        auto const configs = Node::outputs();
         constexpr size_t port_index = static_event_output_port_index<Node, Name>();
         static_assert(static_event_output_port_is_tock<Node, Name>(),
             "requested static event output is not produced by tock_coverage");
@@ -332,7 +332,7 @@ namespace iv::details {
     template<typename Node, size_t Index>
     consteval ChannelLayout static_output_port_layout_at()
     {
-        static constexpr auto configs = Node::outputs();
+        auto const configs = Node::outputs();
         size_t sample_index = 0;
         for (OutputConfig const& config : configs) {
             if (auto const* properties =
@@ -348,26 +348,26 @@ namespace iv::details {
     }
 
 /*
- * The access wrappers below operate on the graph's physical sample-port
- * ordinals. Event entries live in the same authored config array, but never
+ * The access wrappers below operate on the graph's storage sample-port
+ * indices. Event entries live in the same authored config array, but never
  * acquire a sample-buffer accessor.
  */
     template<class Channel>
-    constexpr size_t channel_ordinal(Channel)
+    constexpr size_t channel_index(Channel)
     {
         using ChannelT = std::remove_cvref_t<Channel>;
-        return ChannelT::channel_ordinal;
+        return ChannelT::channel_index;
     }
 
     template<ChannelTypeId Type, class Channel>
-    consteval size_t static_channel_ordinal()
+    consteval size_t static_channel_index()
     {
         using ChannelT = std::remove_cvref_t<Channel>;
         static_assert(
             std::same_as<typename ChannelT::channel_type, typename RuntimeChannelTypeTraits<Type>::type>,
             "named channel does not belong to the static port channel type"
         );
-        return ChannelT::channel_ordinal;
+        return ChannelT::channel_index;
     }
 
     template<ChannelTypeId Type>
@@ -387,7 +387,7 @@ namespace iv::details {
         constexpr Sample operator()(Channel, size_t history = 0) const
         requires (Type != ChannelTypeId::mono)
         {
-            return _port.get(history, static_channel_ordinal<Type, Channel>());
+            return _port.get(history, static_channel_index<Type, Channel>());
         }
     };
 
@@ -422,7 +422,7 @@ namespace iv::details {
         constexpr Cell operator()(Channel) const
         requires (Type != ChannelTypeId::mono)
         {
-            return Cell(_port, static_channel_ordinal<Type, Channel>());
+            return Cell(_port, static_channel_index<Type, Channel>());
         }
     };
 
@@ -443,7 +443,7 @@ namespace iv::details {
             requires (Layout == SampleStreamLayout::interleaved)
             {
                 IV_ASSERT(_outer < _block_size, "sample frame index out of bounds");
-                return _port.get_frame(_outer, static_channel_ordinal<Type, Channel>());
+                return _port.get_frame(_outer, static_channel_index<Type, Channel>());
             }
             constexpr Sample operator[](size_t frame) const
             requires (Layout == SampleStreamLayout::planar)
@@ -463,8 +463,8 @@ namespace iv::details {
         template<class Channel>
         constexpr Axis operator[](Channel) const requires (Type != ChannelTypeId::mono && Layout == SampleStreamLayout::planar)
         {
-            auto const ordinal = static_channel_ordinal<Type, Channel>();
-            return Axis(_port, ordinal, _block_size);
+            auto const index = static_channel_index<Type, Channel>();
+            return Axis(_port, index, _block_size);
         }
         constexpr Axis operator[](size_t frame) const requires (Type != ChannelTypeId::mono && Layout == SampleStreamLayout::interleaved)
         {
@@ -505,7 +505,7 @@ namespace iv::details {
             constexpr Cell operator[](Channel) const requires (Layout == SampleStreamLayout::interleaved)
             {
                 IV_ASSERT(_outer < _block_size, "sample frame index out of bounds");
-                return Cell(_port, _outer, static_channel_ordinal<Type, Channel>());
+                return Cell(_port, _outer, static_channel_index<Type, Channel>());
             }
             constexpr Cell operator[](size_t frame) const requires (Layout == SampleStreamLayout::planar)
             {
@@ -528,8 +528,8 @@ namespace iv::details {
         template<class Channel>
         constexpr Axis operator[](Channel) const requires (Type != ChannelTypeId::mono && Layout == SampleStreamLayout::planar)
         {
-            auto const ordinal = static_channel_ordinal<Type, Channel>();
-            return Axis(_port, ordinal, _block_size);
+            auto const index = static_channel_index<Type, Channel>();
+            return Axis(_port, index, _block_size);
         }
         constexpr Axis operator[](size_t frame) const requires (Type != ChannelTypeId::mono && Layout == SampleStreamLayout::interleaved)
         {

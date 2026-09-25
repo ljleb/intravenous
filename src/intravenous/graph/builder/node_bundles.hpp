@@ -496,7 +496,7 @@ constexpr NodeBundlePortId GraphBuilderNodeBundles::input_port_at(
   auto const& candidate = bundle(handle);
   if (auto const boundary = candidate.subgraph_boundary_handle()) {
     auto const resolved = input_port_at(*boundary, position);
-    return {handle, resolved.port_kind, resolved.port_ordinal};
+    return {handle, resolved.port_kind, resolved.port_index};
   }
   return candidate.input_port_at(handle, position);
 }
@@ -533,9 +533,9 @@ constexpr size_t NodeBundle::append_boundary_sample_output(
       ? std::get_if<BoundaryNodeBundle>(&*_payload)
       : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  auto const ordinal = boundary->ports.sample_output_count();
+  auto const index = boundary->ports.sample_output_count();
   boundary->ports.output_configs.push_back(make_output_config(config));
-  return ordinal;
+  return index;
 }
 
 constexpr std::vector<SampleInputConfig>
@@ -548,13 +548,13 @@ NodeBundle::boundary_sample_inputs() const {
 }
 
 constexpr SampleInputPortDescriptor
-NodeBundle::sample_input_descriptor(size_t ordinal) const {
+NodeBundle::sample_input_descriptor(size_t index) const {
   if (!_payload) details::error("empty NodeBundle");
   return std::visit(
       [&](auto const &payload) -> SampleInputPortDescriptor {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) {
-          auto const output = payload.ports.sample_output(ordinal);
+          auto const output = payload.ports.sample_output(index);
           return {.config = SampleInputConfig{
               .name = output.name,
               .channel_layout = output.channel_layout,
@@ -563,9 +563,9 @@ NodeBundle::sample_input_descriptor(size_t ordinal) const {
                   : InputAccessConfig{RandomAccessInputConfig{}},
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
-          return {.config = payload.ports.sample_input(ordinal)};
+          return {.config = payload.ports.sample_input(index)};
         } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
-          return {.config = payload.ports.sample_input(ordinal)};
+          return {.config = payload.ports.sample_input(index)};
         } else {
           details::error(
               "SubgraphNodeBundle port configs must be resolved through its boundary");
@@ -575,13 +575,13 @@ NodeBundle::sample_input_descriptor(size_t ordinal) const {
 }
 
 constexpr SampleOutputPortDescriptor
-NodeBundle::sample_output_descriptor(size_t ordinal) const {
+NodeBundle::sample_output_descriptor(size_t index) const {
   if (!_payload) details::error("empty NodeBundle");
   return std::visit(
       [&](auto const &payload) -> SampleOutputPortDescriptor {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) {
-          auto const input = payload.ports.sample_input(ordinal);
+          auto const input = payload.ports.sample_input(index);
           return {.config = SampleOutputConfig{
               .name = input.name,
               .channel_layout = input.channel_layout,
@@ -590,9 +590,9 @@ NodeBundle::sample_output_descriptor(size_t ordinal) const {
                   : OutputProductionConfig{TockOutputConfig{}},
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
-          return {.config = payload.ports.sample_output(ordinal)};
+          return {.config = payload.ports.sample_output(index)};
         } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
-          return {.config = payload.ports.sample_output(ordinal)};
+          return {.config = payload.ports.sample_output(index)};
         } else {
           details::error(
               "SubgraphNodeBundle port configs must be resolved through its boundary");
@@ -608,11 +608,11 @@ GraphBuilderNodeBundles::resolve_sample_output(NodeBundlePortId id) const {
   auto const &candidate = bundle(id.node_bundle_handle);
   if (auto boundary = candidate.subgraph_boundary_handle()) {
     auto const configs = bundle(*boundary).boundary_sample_outputs();
-    if (id.port_ordinal >= configs.size())
-      details::error("NodeBundle port ordinal is out of bounds");
-    return {.config = configs[id.port_ordinal]};
+    if (id.port_index >= configs.size())
+      details::error("NodeBundle port index is out of bounds");
+    return {.config = configs[id.port_index]};
   }
-  return candidate.sample_output_descriptor(id.port_ordinal);
+  return candidate.sample_output_descriptor(id.port_index);
 }
 
 constexpr SampleInputPortDescriptor
@@ -622,11 +622,11 @@ GraphBuilderNodeBundles::resolve_sample_input(NodeBundlePortId id) const {
   auto const &candidate = bundle(id.node_bundle_handle);
   if (auto boundary = candidate.subgraph_boundary_handle()) {
     auto const configs = bundle(*boundary).boundary_sample_inputs();
-    if (id.port_ordinal >= configs.size())
-      details::error("NodeBundle port ordinal is out of bounds");
-    return {.config = configs[id.port_ordinal]};
+    if (id.port_index >= configs.size())
+      details::error("NodeBundle port index is out of bounds");
+    return {.config = configs[id.port_index]};
   }
-  return candidate.sample_input_descriptor(id.port_ordinal);
+  return candidate.sample_input_descriptor(id.port_index);
 }
 
 constexpr std::vector<SampleOutputChannelId>
@@ -637,7 +637,7 @@ GraphBuilderNodeBundles::sample_output_channels(NodeBundlePortId id) const {
   for (size_t channel = 0; channel < channel_count(type); ++channel) {
     result.push_back({
         id.node_bundle_handle,
-        id.port_ordinal,
+        id.port_index,
         channel,
     });
   }
@@ -651,7 +651,7 @@ GraphBuilderNodeBundles::sample_input_channels(NodeBundlePortId id) const {
   for (size_t channel = 0; channel < channel_count(type); ++channel) {
     result.push_back({
         id.node_bundle_handle,
-        id.port_ordinal,
+        id.port_index,
         channel,
     });
   }
@@ -704,13 +704,13 @@ template <class MatchesName>
 constexpr size_t index_for_name(
     size_t count, MatchesName matches_name, std::string_view name) {
   std::optional<size_t> result;
-  for (size_t ordinal = 0; ordinal < count; ++ordinal) {
-    if (!matches_name(ordinal)) continue;
+  for (size_t index = 0; index < count; ++index) {
+    if (!matches_name(index)) continue;
     if (result) {
       details::error("NodeBundle port name '" + std::string(name) +
                      "' is ambiguous");
     }
-    result = ordinal;
+    result = index;
   }
   if (!result) {
     details::error("NodeBundle port name '" + std::string(name) +
@@ -720,11 +720,11 @@ constexpr size_t index_for_name(
 }
 
 template <class Descriptor, class Configs>
-constexpr Descriptor descriptor(Configs const &configs, size_t ordinal) {
-  if (ordinal >= configs.size()) {
-    details::error("NodeBundle port ordinal is out of bounds");
+constexpr Descriptor descriptor(Configs const &configs, size_t index) {
+  if (index >= configs.size()) {
+    details::error("NodeBundle port index is out of bounds");
   }
-  return Descriptor{.config = configs[ordinal]};
+  return Descriptor{.config = configs[index]};
 }
 } // namespace
 
@@ -809,25 +809,25 @@ NodeBundle::boundary_event_outputs() const {
 constexpr size_t NodeBundle::append_boundary_sample_input(SampleInputConfig config) {
   auto *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  auto const ordinal = boundary->ports.sample_input_count();
+  auto const index = boundary->ports.sample_input_count();
   boundary->ports.input_configs.push_back(make_input_config(config));
-  return ordinal;
+  return index;
 }
 constexpr size_t NodeBundle::append_boundary_event_input(
     EventInputConfig config) {
   auto *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  auto const ordinal = boundary->ports.event_input_count();
+  auto const index = boundary->ports.event_input_count();
   boundary->ports.input_configs.push_back(make_input_config(config));
-  return ordinal;
+  return index;
 }
 constexpr size_t NodeBundle::append_boundary_event_output(
     EventOutputConfig config) {
   auto *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
-  auto const ordinal = boundary->ports.event_output_count();
+  auto const index = boundary->ports.event_output_count();
   boundary->ports.output_configs.push_back(make_output_config(config));
-  return ordinal;
+  return index;
 }
 constexpr void NodeBundle::clear_boundary_event_outputs() {
   auto *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
@@ -1114,9 +1114,9 @@ GraphBuilderNodeBundles::resolve_event_input(NodeBundlePortId id) const {
   auto const &candidate = bundle(id.node_bundle_handle);
   if (auto boundary = candidate.subgraph_boundary_handle()) {
     return descriptor<EventInputPortDescriptor>(
-        bundle(*boundary).boundary_event_inputs(), id.port_ordinal);
+        bundle(*boundary).boundary_event_inputs(), id.port_index);
   }
-  return candidate.event_input_descriptor(id.port_ordinal);
+  return candidate.event_input_descriptor(id.port_index);
 }
 constexpr EventOutputPortDescriptor
 GraphBuilderNodeBundles::resolve_event_output(NodeBundlePortId id) const {
@@ -1124,20 +1124,20 @@ GraphBuilderNodeBundles::resolve_event_output(NodeBundlePortId id) const {
   auto const &candidate = bundle(id.node_bundle_handle);
   if (auto boundary = candidate.subgraph_boundary_handle()) {
     return descriptor<EventOutputPortDescriptor>(
-        bundle(*boundary).boundary_event_outputs(), id.port_ordinal);
+        bundle(*boundary).boundary_event_outputs(), id.port_index);
   }
-  return candidate.event_output_descriptor(id.port_ordinal);
+  return candidate.event_output_descriptor(id.port_index);
 }
 
 constexpr std::vector<EventInputPortId>
 GraphBuilderNodeBundles::event_input_ports(NodeBundlePortId id) const {
   (void)resolve_event_input(id);
-  return {{id.node_bundle_handle, id.port_ordinal}};
+  return {{id.node_bundle_handle, id.port_index}};
 }
 constexpr std::vector<EventOutputPortId>
 GraphBuilderNodeBundles::event_output_ports(NodeBundlePortId id) const {
   (void)resolve_event_output(id);
-  return {{id.node_bundle_handle, id.port_ordinal}};
+  return {{id.node_bundle_handle, id.port_index}};
 }
 
 constexpr NodeBundleHandle GraphBuilderNodeBundles::tiled_member(

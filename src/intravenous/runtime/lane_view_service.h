@@ -16,7 +16,7 @@ namespace iv {
     struct LaneInputInfo {
         LanePortDomain domain = LanePortDomain::realtime;
         PortKind kind = PortKind::sample;
-        size_t ordinal = 0;
+        size_t index = 0;
         std::string name {};
     };
 
@@ -36,7 +36,7 @@ namespace iv {
         InternedString target_lane_id {};
         LanePortDomain port_domain = LanePortDomain::realtime;
         PortKind port_kind = PortKind::sample;
-        size_t port_ordinal = 0;
+        size_t port_index = 0;
     };
 
     struct LaneQueryFilter {

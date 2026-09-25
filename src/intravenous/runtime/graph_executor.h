@@ -1,9 +1,10 @@
 #pragma once
 
-#include <intravenous/indexed_coverage.h>
+#include <intravenous/coverage.h>
 #include <intravenous/node/resources.h>
 #include <intravenous/runtime/graph_jit.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -17,66 +18,61 @@ enum class GraphExecutorStageResult : std::uint8_t {
     ignored_stale,
 };
 
-// Generation-local roots for one exact indexed propagation batch. Endpoint and
-// node ordinals are the immutable ordinals carried by the active CompiledGraph's
-// IndexedPlan. Input/output-change roots carry the complete new coverage plus
-// exact changed regions; an input root represents connection-set replacement,
-// while node-local roots represent semantic changes with no changed random-access
-// input. Output demands are background materialization roots; input demands are
-// advance-preparation roots for compiler-planned prepared inputs.
-struct GraphExecutorIndexedOutputChangeRoot {
-    graph_jit::IndexedEndpointOrdinal endpoint = 0;
-    IndexedCoverage coverage{};
-    IndexedCoverage changed{};
+// Generation-local requests for one exact coverage-propagation operation. Port
+// and node indices come from the active CompiledGraph's BackgroundEvaluationPlan.
+struct OutputCoverageChangeRequest {
+    graph_jit::BackgroundPortIndex port = 0;
+    Coverage coverage{};
+    Coverage changed{};
 };
 
-struct GraphExecutorIndexedOutputDemandRoot {
-    graph_jit::IndexedEndpointOrdinal endpoint = 0;
-    IndexedCoverage required{};
+struct OutputCoverageRequest {
+    graph_jit::BackgroundPortIndex port = 0;
+    Coverage required{};
 };
 
-struct GraphExecutorIndexedInputChangeRoot {
-    graph_jit::IndexedEndpointOrdinal endpoint = 0;
-    IndexedCoverage coverage{};
-    IndexedCoverage changed{};
+struct InputCoverageChangeRequest {
+    graph_jit::BackgroundPortIndex port = 0;
+    Coverage coverage{};
+    Coverage changed{};
 };
 
-struct GraphExecutorIndexedInputDemandRoot {
-    graph_jit::IndexedEndpointOrdinal endpoint = 0;
-    IndexedCoverage required{};
+struct InputCoverageRequest {
+    graph_jit::BackgroundPortIndex port = 0;
+    Coverage required{};
 };
 
-struct GraphExecutorIndexedPropagationRequest {
-    std::vector<graph_jit::IndexedNodeOrdinal> locally_changed_nodes{};
-    std::vector<GraphExecutorIndexedInputChangeRoot> input_changes{};
-    std::vector<GraphExecutorIndexedOutputChangeRoot> output_changes{};
-    std::vector<GraphExecutorIndexedInputDemandRoot> input_demands{};
-    std::vector<GraphExecutorIndexedOutputDemandRoot> output_demands{};
+struct CoveragePropagationRequest {
+    std::vector<graph_jit::BackgroundNodeIndex> locally_changed_nodes{};
+    std::vector<InputCoverageChangeRequest> input_changes{};
+    std::vector<OutputCoverageChangeRequest> output_changes{};
+    std::vector<InputCoverageRequest> input_demands{};
+    std::vector<OutputCoverageRequest> output_demands{};
 };
 
-struct GraphExecutorIndexedOutputChange {
-    graph_jit::IndexedEndpointOrdinal endpoint = 0;
-    IndexedCoverage coverage{};
-    IndexedCoverage changed{};
+struct PropagatedOutputChange {
+    graph_jit::BackgroundPortIndex port = 0;
+    Coverage coverage{};
+    Coverage changed{};
 };
 
-struct GraphExecutorIndexedOutputRequirement {
-    graph_jit::IndexedEndpointOrdinal endpoint = 0;
-    IndexedCoverage required{};
+struct RequiredOutputCoverage {
+    graph_jit::BackgroundPortIndex port = 0;
+    Coverage required{};
 };
 
-struct GraphExecutorIndexedInputRequirement {
-    graph_jit::IndexedEndpointOrdinal endpoint = 0;
-    IndexedCoverage required{};
+struct RequiredInputCoverage {
+    graph_jit::BackgroundPortIndex port = 0;
+    Coverage required{};
 };
 
-// Propagation deliberately returns planning state, not payloads. A later
-// materialization pass consumes these exact requirements through the physical
-// indexed plan before any candidate page/version can be published.
-struct GraphExecutorIndexedPropagationResult {
-    std::vector<GraphExecutorIndexedOutputChange> output_changes{};
-    std::vector<GraphExecutorIndexedInputRequirement> input_requirements{};
-    std::vector<GraphExecutorIndexedOutputRequirement> output_requirements{};
+// Propagation deliberately returns coverage changes and requirements, not sample
+// or event data. Background evaluation consumes these requirements before a
+// candidate page version can be published.
+struct CoveragePropagationResult {
+    std::vector<PropagatedOutputChange> output_changes{};
+    std::vector<RequiredInputCoverage> input_requirements{};
+    std::vector<RequiredOutputCoverage> output_requirements{};
 };
 
 // Mutable runtime owner for immutable CompiledGraph generations. Staging and
@@ -84,17 +80,152 @@ struct GraphExecutorIndexedPropagationResult {
 // whole-root boundary with no concurrent tick_block() invocation. The realtime
 // call itself performs no generation selection, allocation, or lifecycle work.
 class GraphExecutor {
-    class Impl;
-    std::unique_ptr<Impl> impl_;
+    class CoveragePropagationState;
+
+    struct InputChangeAccumulator {
+        Coverage coverage{};
+        Coverage changed{};
+    };
+
+    struct OutputChangeAccumulator {
+        CoveragePropagationState* owner = nullptr;
+        graph_jit::BackgroundPortIndex port = 0;
+        Coverage previous_coverage{};
+        Coverage changed{};
+        bool touched = false;
+    };
+
+    struct InputRequirementAccumulator {
+        CoveragePropagationState* owner = nullptr;
+        graph_jit::BackgroundPortIndex port = 0;
+        Coverage coverage{};
+    };
+
+    struct OutputRequirementAccumulator {
+        Coverage required{};
+    };
+
+    struct NodeCoverageCallData {
+        std::vector<InputCoverageChange> sample_input_changes{};
+        std::vector<InputCoverageChange> event_input_changes{};
+        std::vector<OutputCoverageChange> sample_output_changes{};
+        std::vector<OutputCoverageChange> event_output_changes{};
+        std::vector<InputCoverageRequirement> sample_input_requirements{};
+        std::vector<InputCoverageRequirement> event_input_requirements{};
+        std::vector<OutputCoverageRequirement> sample_output_requirements{};
+        std::vector<OutputCoverageRequirement> event_output_requirements{};
+    };
+
+    class CoveragePropagationState {
+        graph_jit::BackgroundEvaluationPlan const* plan_ = nullptr;
+        std::size_t sample_rate_ = 0;
+        std::vector<Coverage> propagated_output_coverages_{};
+        std::vector<Coverage> candidate_output_coverages_{};
+        std::vector<InputChangeAccumulator> input_changes_{};
+        std::vector<OutputChangeAccumulator> output_changes_{};
+        std::vector<InputRequirementAccumulator> input_requirements_{};
+        std::vector<OutputRequirementAccumulator> output_requirements_{};
+        std::vector<Coverage> input_requirements_by_port_{};
+        std::vector<InputCoverageChange> callback_input_changes_{};
+        std::vector<OutputCoverageChange> callback_output_changes_{};
+        std::vector<InputCoverageRequirement> callback_input_requirements_{};
+        std::vector<OutputCoverageRequirement> callback_output_requirements_{};
+        std::vector<NodeCoverageCallData> node_call_data_{};
+        std::vector<graph_jit::BackgroundNodeCall> node_calls_{};
+        graph_jit::BackgroundEvaluationCall call_{};
+
+        [[nodiscard]] graph_jit::BackgroundPortPlan const& port(
+            graph_jit::BackgroundPortIndex index) const;
+        [[nodiscard]] std::size_t output_index(
+            graph_jit::BackgroundPortIndex index) const;
+        [[nodiscard]] std::size_t input_index(
+            graph_jit::BackgroundPortIndex index) const;
+        [[nodiscard]] Coverage input_coverage(
+            graph_jit::BackgroundPortIndex input) const;
+        void activate_node(
+            graph_jit::BackgroundNodeIndex node,
+            graph_jit::BackgroundNodeActivity activity);
+        void add_input_change(
+            graph_jit::BackgroundPortIndex input,
+            Coverage const& changed,
+            bool coverage_changed);
+        void route_output_change(
+            graph_jit::BackgroundPortIndex output,
+            Coverage const& changed,
+            bool coverage_changed);
+        void set_input_change(
+            graph_jit::BackgroundPortIndex input,
+            Coverage const& coverage,
+            Coverage const& changed);
+        void publish_output_coverage(
+            graph_jit::BackgroundPortIndex output,
+            Coverage const& coverage);
+        void publish_output_change(
+            graph_jit::BackgroundPortIndex output,
+            Coverage const& changed);
+        void require_output(
+            graph_jit::BackgroundPortIndex output,
+            Coverage const& requested,
+            bool activate_producer);
+        void require_input(
+            graph_jit::BackgroundPortIndex input,
+            Coverage const& requested);
+        void initialize_calls();
+        void reset();
+
+        static void publish_output_coverage_callback(
+            void* accumulator,
+            Coverage const& coverage);
+        static void publish_output_change_callback(
+            void* accumulator,
+            Coverage const& changed);
+        static void publish_input_requirement_callback(
+            void* accumulator,
+            Coverage const& required);
+        static void replay_forward_coverage(
+            void*, ReflectedNodeForwardCoverageContext const& context);
+        static void replay_reverse_coverage(
+            void*, ReflectedNodeReverseCoverageContext const& context);
+
+    public:
+        CoveragePropagationState() = default;
+        CoveragePropagationState(
+            graph_jit::BackgroundEvaluationPlan const& plan,
+            std::size_t sample_rate);
+
+        [[nodiscard]] CoveragePropagationResult propagate(
+            CompiledGraphBackgroundOperations const& operations,
+            std::byte* storage,
+            CoveragePropagationRequest const& request);
+    };
+
+    struct Realization {
+        std::shared_ptr<CompiledGraph const> graph{};
+        NodeStorage storage{};
+        CoveragePropagationState coverage{};
+        bool initialized = false;
+
+        Realization(
+            std::shared_ptr<CompiledGraph const> graph,
+            ResourceContext const& resources);
+    };
+
+    ResourceContext resources_{};
+    std::array<std::optional<Realization>, 2> realizations_{};
+    std::optional<std::size_t> active_{};
+    std::optional<std::size_t> pending_{};
+
+    [[nodiscard]] Realization& active_realization();
+    [[nodiscard]] Realization const& active_realization() const;
 
 public:
     explicit GraphExecutor(ResourceContext resources = {});
-    ~GraphExecutor();
-    GraphExecutor(GraphExecutor&&) noexcept;
-    GraphExecutor& operator=(GraphExecutor&&) noexcept;
+    ~GraphExecutor() = default;
 
     GraphExecutor(GraphExecutor const&) = delete;
     GraphExecutor& operator=(GraphExecutor const&) = delete;
+    GraphExecutor(GraphExecutor&&) = delete;
+    GraphExecutor& operator=(GraphExecutor&&) = delete;
 
     // Builds a pending runtime realization without reading mutable active
     // storage. A newer pending generation supersedes an older pending generation
@@ -114,10 +245,10 @@ public:
     // Runs one background-only exact F/R batch against the active generation.
     // Calls are serialized by the owner and must not overlap activation. The
     // propagated semantic-coverage baseline advances only after both generated
-    // traversals return successfully; no Tock/replay payload evaluation happens
+    // traversals return successfully; no Tock/replay data evaluation happens
     // here and no published page version advances.
-    [[nodiscard]] GraphExecutorIndexedPropagationResult propagate_indexed(
-        GraphExecutorIndexedPropagationRequest const& request);
+    [[nodiscard]] CoveragePropagationResult propagate_coverage(
+        CoveragePropagationRequest const& request);
 
     // Executes only the already-active realization. Generation activation is
     // deliberately never hidden in this audio-thread entry point.

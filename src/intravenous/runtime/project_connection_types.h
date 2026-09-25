@@ -20,21 +20,21 @@ struct ProjectVirtualNodeSelector {
 };
 
 struct ProjectVirtualMemberSelector {
-    std::size_t ordinal = 0;
+    std::size_t index = 0;
     bool operator==(ProjectVirtualMemberSelector const&) const = default;
 };
 
 struct ProjectTiledChildSelector {
-    std::size_t ordinal = 0;
+    std::size_t index = 0;
     bool operator==(ProjectTiledChildSelector const&) const = default;
 };
 
-// Select one direct nested subgraph scope. `ordinal` is counted after applying
+// Select one direct nested subgraph scope. `index` is counted after applying
 // the optional kind filter and therefore remains distinct from a tiled-child
-// ordinal or a port-channel ordinal.
+// index or a port-channel index.
 struct ProjectSubgraphSelector {
     std::optional<std::string> kind{};
-    std::size_t ordinal = 0;
+    std::size_t index = 0;
     bool operator==(ProjectSubgraphSelector const&) const = default;
 };
 
@@ -44,13 +44,13 @@ using ProjectNodePathSelector = std::variant<
     ProjectTiledChildSelector,
     ProjectSubgraphSelector>;
 
-// Omitting name and ordinal means "all ports" of the requested kind/direction.
+// Omitting name and index means "all ports" of the requested kind/direction.
 // Supplying both requires both predicates to match. `channel` is a semantic
 // sample-channel selector and is deliberately separate from tiled-child path
 // selection.
 struct ProjectPortMatcher {
     std::optional<std::string> name{};
-    std::optional<std::size_t> ordinal{};
+    std::optional<std::size_t> index{};
     std::optional<std::size_t> channel{};
     bool operator==(ProjectPortMatcher const&) const = default;
 };

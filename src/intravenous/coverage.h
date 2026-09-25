@@ -13,7 +13,7 @@
 
 namespace iv {
 
-struct IndexedRegion {
+struct IndexRegion {
     SampleIndex begin = 0;
     SampleIndex end = 0;
 
@@ -32,28 +32,28 @@ struct IndexedRegion {
         return begin <= index && index < end;
     }
 
-    [[nodiscard]] constexpr bool contains(IndexedRegion other) const noexcept
+    [[nodiscard]] constexpr bool contains(IndexRegion other) const noexcept
     {
         return other.empty()
             ? other.valid()
             : begin <= other.begin && other.end <= end;
     }
 
-    constexpr auto operator<=>(IndexedRegion const&) const = default;
+    constexpr auto operator<=>(IndexRegion const&) const = default;
 };
 
-class IndexedCoverage {
-    std::vector<IndexedRegion> regions_;
+class Coverage {
+    std::vector<IndexRegion> regions_;
 
     void canonicalize()
     {
-        std::erase_if(regions_, [](IndexedRegion region) {
+        std::erase_if(regions_, [](IndexRegion region) {
             return !region.valid() || region.empty();
         });
         std::ranges::sort(regions_);
 
         std::size_t write = 0;
-        for (IndexedRegion region : regions_) {
+        for (IndexRegion region : regions_) {
             if (write != 0 && region.begin <= regions_[write - 1].end) {
                 regions_[write - 1].end =
                     std::max(regions_[write - 1].end, region.end);
@@ -65,24 +65,24 @@ class IndexedCoverage {
     }
 
 public:
-    using Region = IndexedRegion;
+    using Region = IndexRegion;
     using const_iterator = std::vector<Region>::const_iterator;
 
-    IndexedCoverage() = default;
+    Coverage() = default;
 
-    explicit IndexedCoverage(Region region)
+    explicit Coverage(Region region)
     {
         if (region.valid() && !region.empty()) regions_.push_back(region);
     }
 
-    explicit IndexedCoverage(std::span<Region const> regions)
+    explicit Coverage(std::span<Region const> regions)
         : regions_(regions.begin(), regions.end())
     {
         canonicalize();
     }
 
-    IndexedCoverage(std::initializer_list<Region> regions)
-        : IndexedCoverage(std::span<Region const>{regions.begin(), regions.size()})
+    Coverage(std::initializer_list<Region> regions)
+        : Coverage(std::span<Region const>{regions.begin(), regions.size()})
     {}
 
     [[nodiscard]] bool empty() const noexcept { return regions_.empty(); }
@@ -137,7 +137,7 @@ public:
             region);
     }
 
-    void include(IndexedCoverage const& other)
+    void include(Coverage const& other)
     {
         if (other.empty()) return;
         std::vector<Region> combined;
@@ -167,15 +167,15 @@ public:
         regions_ = std::move(result);
     }
 
-    void exclude(IndexedCoverage const& other)
+    void exclude(Coverage const& other)
     {
         for (Region region : other) exclude(region);
     }
 
-    [[nodiscard]] IndexedCoverage intersection(
-        IndexedCoverage const& other) const
+    [[nodiscard]] Coverage intersection(
+        Coverage const& other) const
     {
-        IndexedCoverage result;
+        Coverage result;
         auto left = begin();
         auto right = other.begin();
         while (left != end() && right != other.end()) {
@@ -190,9 +190,9 @@ public:
         return result;
     }
 
-    [[nodiscard]] IndexedCoverage difference(IndexedCoverage const& other) const
+    [[nodiscard]] Coverage difference(Coverage const& other) const
     {
-        IndexedCoverage result = *this;
+        Coverage result = *this;
         result.exclude(other);
         return result;
     }
@@ -200,44 +200,44 @@ public:
     [[nodiscard]] const_iterator begin() const noexcept { return regions_.begin(); }
     [[nodiscard]] const_iterator end() const noexcept { return regions_.end(); }
 
-    bool operator==(IndexedCoverage const&) const = default;
+    bool operator==(Coverage const&) const = default;
 };
 
-inline IndexedCoverage operator|(
-    IndexedCoverage left, IndexedCoverage const& right)
+inline Coverage operator|(
+    Coverage left, Coverage const& right)
 {
     left.include(right);
     return left;
 }
 
-inline IndexedCoverage operator|(
-    IndexedCoverage left, IndexedRegion const& right)
+inline Coverage operator|(
+    Coverage left, IndexRegion const& right)
 {
     left.include(right);
     return left;
 }
 
-inline IndexedCoverage operator|(
-    IndexedRegion const& left, IndexedCoverage right)
+inline Coverage operator|(
+    IndexRegion const& left, Coverage right)
 {
     right.include(left);
     return right;
 }
 
-inline IndexedCoverage operator&(
-    IndexedCoverage const& left, IndexedCoverage const& right)
+inline Coverage operator&(
+    Coverage const& left, Coverage const& right)
 {
     return left.intersection(right);
 }
 
-inline IndexedCoverage operator-(
-    IndexedCoverage const& left, IndexedCoverage const& right)
+inline Coverage operator-(
+    Coverage const& left, Coverage const& right)
 {
     return left.difference(right);
 }
 
-inline IndexedCoverage operator-(
-    IndexedCoverage left, IndexedRegion const& right)
+inline Coverage operator-(
+    Coverage left, IndexRegion const& right)
 {
     left.exclude(right);
     return left;

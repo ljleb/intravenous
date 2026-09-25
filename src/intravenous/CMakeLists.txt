@@ -310,10 +310,10 @@ add_library(intravenous_graph_jit OBJECT
     runtime/graph_executor.cpp
     runtime/graph_jit.cpp
     graph_jit/connection_plan.cpp
-    graph_jit/indexed_physical_plan.cpp
+    graph_jit/background_storage_plan.cpp
     graph_jit/lowering.cpp
     graph_jit/lowering_plan.cpp
-    graph_jit/sample_physical_plan.cpp
+    graph_jit/sample_storage_plan.cpp
     graph_jit/transient_arena_plan.cpp
 )
 iv_configure_intravenous_target(intravenous_graph_jit PUBLIC)

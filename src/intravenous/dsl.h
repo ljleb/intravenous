@@ -163,13 +163,13 @@ namespace iv {
     constexpr void _annotate_public_output_after_statement(
         GraphBuilder* builder,
         bool event,
-        size_t ordinal,
+        size_t index,
         char const* file_path,
         uint32_t begin,
         uint32_t end)
     {
         details::iv_builder_annotate_public_output_source_span(
-            builder, event, ordinal, file_path, begin, end);
+            builder, event, index, file_path, begin, end);
     }
 
     template<fixed_string Name>

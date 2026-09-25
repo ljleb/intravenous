@@ -32,13 +32,13 @@ struct NodeImplementation {
 
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
-    std::size_t indexed_state_size = 0;
-    std::size_t indexed_state_alignment = 1;
+    std::size_t background_state_size = 0;
+    std::size_t background_state_alignment = 1;
     bool intrinsically_replayable = false;
 
     // Host declaration data is part of lowering because the canonical
     // NodeLayout must be finalized before final LLVM is emitted. That lets
-    // generated code embed State/IndexedState/raw-region offsets as constants
+    // generated code embed State/TockState/raw-region offsets as constants
     // and gives O3 the opportunity to optimize through those addresses.
     void const* node_data = nullptr;
     NodeStateStructures const* state_structures = nullptr;
@@ -56,7 +56,7 @@ struct NodeImplementation {
 struct ConfigRelocation {
     std::size_t node_bundle = 0;
     NodeConfigRelocation const* relocation = nullptr;
-    // Empty for an explicit null pointer slot. Non-null relocations identify
+    // Empty for an explicit null pointer index. Non-null relocations identify
     // the exact retained package global that replaces the native pointer bytes.
     std::shared_ptr<PackageRevision const> revision{};
     llvm::GlobalVariable* retained_global = nullptr;
@@ -75,7 +75,7 @@ struct LoweringInput {
     // One entry for each registered concrete primitive. Synthetic/host graph
     // nodes remain represented by ConfiguredGraph and are lowered structurally.
     std::span<NodeImplementation const> node_implementations{};
-    // Includes explicit-null pointer slots as entries with no revision/global.
+    // Includes explicit-null pointer indices as entries with no revision/global.
     // The lowerer must reconstruct pointer fields from this symbolic data rather
     // than embedding the native pointer bytes stored in configured node objects.
     std::span<ConfigRelocation const> config_relocations{};
@@ -86,22 +86,22 @@ struct LoweringInput {
 // details and are never exposed as a root skip_block ABI.
 struct LoweredGraphRootSymbols {
     std::string tick_block{};
-    std::string propagate_indexed_forward{};
-    std::string propagate_indexed_reverse{};
-    std::string evaluate_indexed{};
+    std::string propagate_background_forward{};
+    std::string propagate_background_reverse{};
+    std::string evaluate_background{};
 };
 
 // The lowerer owns graph analysis and canonical storage planning as well as
 // selected primitive-LLVM import/inlining and construction of the complete
 // project module. It must finish node_layout before emitting final storage
-// accesses into output_module. State, IndexedState, graph-persistent arrays,
+// accesses into output_module. State, TockState, graph-persistent arrays,
 // and bounded compiler workspaces therefore share one NodeStorage allocation,
 // and generated accesses may use final NodeLayout offsets as constants.
 // Immutable lowering-shared tables should be emitted as LLVM globals so their
 // lifetime is exactly the materialized ORC generation.
 struct LoweringOutput {
     NodeLayout node_layout{};
-    IndexedPlan indexed_plan{};
+    BackgroundEvaluationPlan background_evaluation_plan{};
     LoweredGraphRootSymbols root_symbols{};
 };
 

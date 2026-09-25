@@ -1,4 +1,4 @@
-#include <intravenous/graph_jit/sample_physical_plan.h>
+#include <intravenous/graph_jit/sample_storage_plan.h>
 
 #include <intravenous/graph_jit/transient_arena_plan.h>
 #include <intravenous/ports.h>
@@ -54,18 +54,18 @@ std::expected<std::size_t, std::string> sample_bytes(
         || frames == 0
         || (require_power_of_two && !is_power_of_2(frames))) {
         return std::unexpected(
-            "GraphJit sample physical plan has an invalid bounded representation");
+            "GraphJit sample storage plan has an invalid bounded representation");
     }
     auto const channels = channel_count(layout);
     if (channels == 0
         || frames > std::numeric_limits<std::size_t>::max() / channels) {
         return std::unexpected(
-            "GraphJit sample physical sample count overflows size_t");
+            "GraphJit sample storage sample count overflows size_t");
     }
     auto const count = sample_storage_size(layout, frames);
     if (count > std::numeric_limits<std::size_t>::max() / sizeof(Sample)) {
         return std::unexpected(
-            "GraphJit sample physical storage size overflows size_t");
+            "GraphJit sample storage storage size overflows size_t");
     }
     return count * sizeof(Sample);
 }
@@ -122,14 +122,14 @@ std::string feedback_identity(
     out << "graphjit.sample.feedback:source=";
     if (group.source_port) {
         out << group.source_port->node_bundle_handle << '.'
-            << group.source_port->port_ordinal;
+            << group.source_port->port_index;
     } else {
         for (auto const source : group.source_channels) {
             out << source.bundle << '.' << source.port << '.' << source.channel << ',';
         }
     }
     out << ":target=" << connection.target_port.node_bundle_handle << '.'
-        << connection.target_port.port_ordinal
+        << connection.target_port.port_index
         << ":source_layout=";
     if (group.canonical_source_layout) {
         out << static_cast<unsigned>(group.canonical_source_layout->channel_type)
@@ -156,7 +156,7 @@ std::string composition_feedback_identity(
     std::ostringstream out;
     out << "graphjit.sample.composed_feedback:target="
         << connection.target_port.node_bundle_handle << '.'
-        << connection.target_port.port_ordinal
+        << connection.target_port.port_index
         << ":layout="
         << static_cast<unsigned>(connection.target_layout.channel_type) << '.'
         << static_cast<unsigned>(connection.target_layout.sample_layout)
@@ -273,7 +273,7 @@ bool composition_group_has_direct_alias(
             if (timing_index >= connection.source_channel_timings.size()) continue;
             auto const& source = connection.source_channel_timings[timing_index].source;
             if (source.bundle == source_port.node_bundle_handle
-                && source.port == source_port.port_ordinal) {
+                && source.port == source_port.port_index) {
                 return true;
             }
         }
@@ -295,7 +295,7 @@ bool source_channel_belongs_to_group(
 {
     return !group.source_port
         || (timing.source.bundle == group.source_port->node_bundle_handle
-            && timing.source.port == group.source_port->port_ordinal);
+            && timing.source.port == group.source_port->port_index);
 }
 
 bool connection_has_realtime_source_for_group(
@@ -538,7 +538,7 @@ std::string composition_feedback_alignment_identity(
     std::ostringstream out;
     out << "graphjit.sample.composed_feedback_alignment:target="
         << connection.target_port.node_bundle_handle << '.'
-        << connection.target_port.port_ordinal
+        << connection.target_port.port_index
         << ":contribution=" << contribution_index
         << ":layout=" << static_cast<unsigned>(source_layout.channel_type) << '.'
         << static_cast<unsigned>(source_layout.sample_layout)
@@ -552,19 +552,19 @@ std::string composition_feedback_alignment_identity(
 
 } // namespace
 
-std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
+std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     ConnectionAnalysisPlan const& connections,
     std::size_t kernel_block_size,
-    std::span<SampleSinkPhysicalRequest const> sinks,
+    std::span<SampleSinkStorageRequest const> sinks,
     std::span<SampleConstantInputRequest const> constant_inputs,
     RealtimeStorageCostModel const& cost_model)
 {
     if (kernel_block_size == 0 || !is_power_of_2(kernel_block_size)) {
         return std::unexpected(
-            "GraphJit sample physical plan requires a non-zero power-of-two kernel block size");
+            "GraphJit sample storage plan requires a non-zero power-of-two kernel block size");
     }
 
-    SamplePhysicalPlan plan;
+    SampleStoragePlan plan;
     plan.producer_groups.resize(connections.sample_producer_groups.size());
     plan.connection_representations.resize(connections.sample_connections.size());
     plan.connection_channel_bindings.resize(connections.sample_connections.size());
@@ -729,11 +729,11 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         if (!group.has_realtime_connections) continue;
         if (!group.storage_plan) {
             return std::unexpected(
-                "GraphJit sample physical plan has no internal realtime storage plan");
+                "GraphJit sample storage plan has no internal realtime storage plan");
         }
         if (!group.canonical_source_layout) {
             return std::unexpected(
-                "GraphJit sample physical plan requires a canonical realtime source layout");
+                "GraphJit sample storage plan requires a canonical realtime source layout");
         }
 
         auto const has_feedback_branch = std::ranges::any_of(
@@ -1042,7 +1042,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             return std::unexpected(
                 "GraphJit sample producer lost its canonical representation");
         }
-        plan.producer_groups[group_index] = SampleProducerPhysicalPlan{
+        plan.producer_groups[group_index] = SampleProducerStoragePlan{
             .canonical_representation = canonical,
             .storage_plan = producer_storage_plan,
         };
@@ -1093,7 +1093,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                     *group.canonical_source_layout, connection.target_layout);
             } catch (std::exception const& e) {
                 return std::unexpected(
-                    "GraphJit sample physical plan could not resolve a channel conversion: "
+                    "GraphJit sample storage plan could not resolve a channel conversion: "
                     + std::string(e.what()));
             }
 
@@ -1208,7 +1208,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         }
 
         // Detach transport is branch-local. Keep the producer's canonical
-        // representation ordinary, then allocate one persistent absolute-indexed
+        // representation ordinary, then allocate one persistent absolute-background
         // ring in the canonical source layout. Converted consumers derive
         // transient target-layout windows from that ring immediately before they
         // execute, so persistent feedback state stays producer-format and stable.
@@ -1220,7 +1220,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
             }
             if (plan.connection_representations[connection_index]) {
                 return std::unexpected(
-                    "GraphJit detached sample connection already owns a physical representation");
+                    "GraphJit detached sample connection already owns a storage representation");
             }
             // Non-canonical projected/permuted feedback is realized once,
             // after every contributing producer group has been planned, by the
@@ -1468,7 +1468,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     }
 
     // Connections that do not resolve to one canonical whole output port are
-    // physical channel compositions. Each actual producer owns its own
+    // storage channel compositions. Each actual producer owns its own
     // canonical representation and retention; this synthetic transient value
     // gathers those channels only after all contributing producers have run.
     for (std::size_t connection_index = 0;
@@ -1483,7 +1483,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
         }
         if (plan.connection_representations[connection_index]) {
             return std::unexpected(
-                "GraphJit composed sample connection already owns a physical representation");
+                "GraphJit composed sample connection already owns a storage representation");
         }
         if (connection.external_boundary) {
             return std::unexpected(
@@ -1498,7 +1498,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
              channel < connection.target_channels.size(); ++channel) {
             auto const& target = connection.target_channels[channel];
             if (target.bundle != connection.target_port.node_bundle_handle
-                || target.port != connection.target_port.port_ordinal
+                || target.port != connection.target_port.port_index
                 || target.channel != channel) {
                 return std::unexpected(
                     "GraphJit normalized sample composition lost canonical target-port coverage");
@@ -1557,7 +1557,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 if (group_index >= plan.producer_groups.size()
                     || !plan.producer_groups[group_index]) {
                     return std::unexpected(
-                        "GraphJit channel-granular sample conversion lost a source physical representation");
+                        "GraphJit channel-granular sample conversion lost a source storage representation");
                 }
                 auto const source_representation =
                     plan.producer_groups[group_index]->canonical_representation;
@@ -1954,7 +1954,7 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
                 if (group_index >= plan.producer_groups.size()
                     || !plan.producer_groups[group_index]) {
                     return std::unexpected(
-                        "GraphJit sample composition lost a source physical representation");
+                        "GraphJit sample composition lost a source storage representation");
                 }
                 auto const source_representation =
                     plan.producer_groups[group_index]->canonical_representation;
@@ -2245,9 +2245,9 @@ std::expected<SamplePhysicalPlan, std::string> build_sample_physical_plan(
     return plan;
 }
 
-std::expected<void, std::string> declare_sample_physical_storage(
+std::expected<void, std::string> declare_sample_storage_storage(
     NodeLayoutBuilder& builder,
-    SamplePhysicalPlan& plan)
+    SampleStoragePlan& plan)
 {
     try {
         if (plan.transient_allocations.empty()) {
@@ -2298,14 +2298,14 @@ std::expected<void, std::string> declare_sample_physical_storage(
         return {};
     } catch (std::exception const& e) {
         return std::unexpected(
-            "GraphJit sample physical storage declaration failed: "
+            "GraphJit sample storage storage declaration failed: "
             + std::string(e.what()));
     }
 }
 
-std::expected<void, std::string> finalize_sample_physical_storage(
+std::expected<void, std::string> finalize_sample_storage_storage(
     NodeLayout const& layout,
-    SamplePhysicalPlan& plan)
+    SampleStoragePlan& plan)
 {
     if (plan.transient_allocations.empty()) {
         if (plan.transient_arena_size != 0) {

@@ -24,7 +24,7 @@ namespace iv {
     struct LanePortId {
         LanePortDomain domain = LanePortDomain::compiled;
         PortKind kind = PortKind::sample;
-        size_t ordinal = 0;
+        size_t index = 0;
 
         bool operator==(LanePortId const&) const = default;
     };
@@ -323,8 +323,8 @@ namespace iv {
                         && input.domain == LanePortDomain::realtime))) {
                 throw std::runtime_error("lane connection domain mismatch");
             }
-            if (input.ordinal >= input_count(*target_record.node, input)) {
-                throw std::runtime_error("lane connection target input ordinal out of range");
+            if (input.index >= input_count(*target_record.node, input)) {
+                throw std::runtime_error("lane connection target input index out of range");
             }
             if (would_create_cycle(source, target)) {
                 throw std::runtime_error("lane connection would create a cycle");
