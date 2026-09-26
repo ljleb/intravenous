@@ -2,6 +2,7 @@
 #include <intravenous/module/watcher.h>
 
 #include <gtest/gtest.h>
+#include <poll.h>
 
 TEST(ModuleWatcher, ObservesDependencyEdits)
 {
@@ -126,4 +127,98 @@ TEST(ModuleWatcher, WatchSetReplacementPreservesDescriptorAndClosesPreinstallCha
     watcher.update({dependency});
     EXPECT_EQ(watcher.native_handle(), descriptor);
     EXPECT_TRUE(watcher.changed_dependencies().empty());
+}
+
+TEST(ModuleWatcher, NewDependencySubdirectoryIsWatchedBeforeLaterFilesAppear)
+{
+    auto const root = iv::test::fresh_module_fixture_workspace(
+        "module_watcher_new_subdirectory_coverage");
+    auto const source = root / "module.cpp";
+    iv::test::write_text(source, "int root_value = 1;\n");
+
+    iv::ModuleDependency const dependency{
+        .id = "iv.test.new_subdirectory_coverage",
+        .module_dir = root,
+        .entry_file = source,
+        .package_stamp = iv::test::write_time(source),
+    };
+
+    auto watcher = iv::make_dependency_watcher();
+    watcher.update({dependency});
+    EXPECT_TRUE(watcher.changed_dependencies().empty());
+
+    auto const late_directory = root / "created_after_watch_install";
+    std::filesystem::create_directory(late_directory);
+
+    pollfd topology_poll{
+        .fd = watcher.native_handle(),
+        .events = POLLIN,
+        .revents = 0,
+    };
+    ASSERT_EQ(::poll(&topology_poll, 1, 1000), 1);
+    ASSERT_NE(topology_poll.revents & POLLIN, 0);
+
+    // Creating an empty directory does not advance the dependency's package
+    // stamp because an existing source remains the maximum mtime. Processing
+    // this event must nevertheless install recursive inotify coverage there.
+    EXPECT_EQ(iv::test::write_time(source), dependency.package_stamp);
+    (void)watcher.changed_dependencies();
+
+    auto const late_source = late_directory / "late.cpp";
+    iv::test::write_text(late_source, "int late_value = 2;\n");
+
+    pollfd source_poll{
+        .fd = watcher.native_handle(),
+        .events = POLLIN,
+        .revents = 0,
+    };
+    ASSERT_EQ(::poll(&source_poll, 1, 1000), 1)
+        << "newly created dependency subdirectory was left unwatched";
+    ASSERT_NE(source_poll.revents & POLLIN, 0);
+
+    auto const changed = watcher.changed_dependencies();
+    ASSERT_EQ(changed.size(), 1u);
+    EXPECT_EQ(changed.front().id, dependency.id);
+}
+
+TEST(ModuleWatcher, RelevantInotifyEventIsNotVetoedByUnchangedMaximumTimestamp)
+{
+    auto const root = iv::test::fresh_module_fixture_workspace(
+        "module_watcher_event_beats_max_timestamp");
+    auto const older_source = root / "older.cpp";
+    auto const newest_source = root / "newest.cpp";
+    iv::test::write_text(older_source, "int older_value = 1;\n");
+    iv::test::write_text(newest_source, "int newest_value = 2;\n");
+
+    auto const now = std::filesystem::file_time_type::clock::now();
+    std::filesystem::last_write_time(older_source, now - std::chrono::hours(2));
+    std::filesystem::last_write_time(newest_source, now - std::chrono::hours(1));
+    auto const package_stamp = iv::test::write_time(newest_source);
+
+    iv::ModuleDependency const dependency{
+        .id = "iv.test.event_beats_max_timestamp",
+        .module_dir = root,
+        .entry_file = newest_source,
+        .package_stamp = package_stamp,
+    };
+
+    auto watcher = iv::make_dependency_watcher();
+    watcher.update({dependency});
+    EXPECT_TRUE(watcher.changed_dependencies().empty());
+
+    ASSERT_TRUE(std::filesystem::remove(older_source));
+    ASSERT_EQ(iv::test::write_time(newest_source), package_stamp)
+        << "test precondition failed: deleting the older file changed the max mtime";
+
+    pollfd event_poll{
+        .fd = watcher.native_handle(),
+        .events = POLLIN,
+        .revents = 0,
+    };
+    ASSERT_EQ(::poll(&event_poll, 1, 1000), 1);
+    ASSERT_NE(event_poll.revents & POLLIN, 0);
+
+    auto const changed = watcher.changed_dependencies();
+    ASSERT_EQ(changed.size(), 1u);
+    EXPECT_EQ(changed.front().id, dependency.id);
 }
