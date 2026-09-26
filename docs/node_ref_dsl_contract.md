@@ -45,8 +45,8 @@ must not inspect a bundle kind or call `single_concrete_node()`. The erased
 bundle API supplies counts, name lookup, layouts, lowering to concrete ports,
 topology/concrete-member traversal, import/remap, and annotation storage.
 
-All node refs support ordinal and named sample/event input wiring, sample/event
-connection state, ordinal and named output lookup, event-output access, TTL,
+All node refs support index and named sample/event input wiring, sample/event
+connection state, index and named output lookup, event-output access, TTL,
 source annotation, and diagnostics. A subgraph bundle supports the same common
 operations.
 
@@ -74,7 +74,7 @@ ref.
 
 GraphBuilder lowers bundle ports to concrete ports only when creating concrete
 edges, detach nodes, public outputs, or execution metadata. Native/tiled
-boundaries use pack/unpack adapters. Matching tiled endpoints may lower to
+boundaries use pack/unpack adapters. Matching tiled ports may lower to
 matching mono edges only when their channel types, not merely their widths,
 match.
 
@@ -114,7 +114,7 @@ match.
 - Arithmetic creates ordinary builder nodes. Typed ports preserve channel type
   and layout; incompatible channel representations fail rather than silently
   flattening or selecting channels.
-- `~port` detaches a sample stream. Bundle outputs are lowered first.
+- `port.detach(loop_extra_latency)` detaches a sample or event stream with the declared extra feedback latency; `~port` uses the default latency of one sample. Sample detach also accepts an optional initial sample value. When omitted, lowering chooses the neutral value of one connected downstream sample input (if several differ, either is valid); when supplied, the override is the initial value for the detached sample storage. Bundle outputs are lowered first.
 - Public outputs accept ports or nodes under the same exactly-one-output rule;
   their virtual/bundle identity never becomes a tile identity.
 
@@ -129,3 +129,17 @@ match.
 - Internal conversion, pack, and unpack nodes are not configured virtual nodes.
 - Runtime execution consumes lowered concrete graphs; it does not consume C++
   node-ref types or virtual-node metadata.
+
+## Planned post-runtime ownership migration
+
+The contracts above describe the current implementation, where a live ref is tied
+to one `GraphBuilder` façade. After GraphJit and GraphExecutor are complete and the
+planned optimization/profiling pass has established the builder-performance
+baseline, live-reference ownership is planned to move from `GraphBuilder*` to
+`BuilderSession*`. See
+[scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md).
+
+That change preserves the source-facing DSL but changes the live compatibility
+rule: different `GraphBuilder`/`SubgraphBuilder` views over one session become
+compatible, while refs from different sessions remain invalid. `ConfiguredGraph`
+continues to contain no live refs.

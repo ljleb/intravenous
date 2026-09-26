@@ -16,7 +16,7 @@ Three axes describe an interaction between two units of the application:
 3. **Dependency flow** — which unit knows about the other.
 
 The bridged-module architecture deliberately separates the first axis from the
-third. Bridges make dependency flow static and explicit (both endpoints are
+third. Bridges make dependency flow static and explicit (both participants are
 named in one declaration), while control flow is carried dynamically by events.
 Data flow rides along the same edges as control flow.
 
@@ -129,30 +129,37 @@ over-approximates and will flag some propagations that cannot actually happen
 at runtime; the architecture accepts this and treats flagged collisions as
 review items rather than proof of a bug.
 
-## Source modules
+## Source invocations, not permanently source-only modules
 
-A source module is a module designated as an origin of control: all of its
-externally visible events are initially triggered by it, never by a
-propagation arriving at it.
+The tree is rooted at a **control-source invocation**, not at a permanent class
+of source-only app modules.
 
-Designating modules rather than individual events is the workable option: it
-keeps the analysis well-defined, since a source's *whole* event surface is
-root-level. The restriction that comes with designation is deliberate:
+For example, one incoming client message can start a tree at `SocketRpcServer`,
+while a later independent presentation-update cause may reach `SocketRpcServer`
+as a notification sink. Those are different causes and therefore different
+trees.
 
-> **A source module does not subscribe to events.** It only raises.
+The hard rule is local to one cause:
 
-If a source module also subscribed, it would have two kinds of causes — its own
-originations and arriving propagations — and the tree rooted at "its own
-origination" would no longer be a pure tree from a single source. Where a
-module needs both roles, split it: the subscribing half delegates internally to
-the raising half, and only the raising half is declared a source.
+> An application module may appear at most once in the propagation tree rooted
+> at one source invocation.
 
-Typical source modules in this application:
+A module may therefore be a root in one procedure and a child in another. What
+is forbidden is a procedure that starts at a module, takes some path through
+other modules, and then re-enters that same module before the original cause has
+unwound.
 
-- `SocketRpcServer` (client messages);
-- `ProjectPersistence` (project file load/save);
-- the module watcher's reload service (filesystem changes);
-- the audio device boundary.
+Typical external source invocations include:
+
+- a client message arriving in `SocketRpcServer`;
+- project-file replay initiated by `ProjectPersistence`;
+- Linux package filesystem/discovery activity entering `PackageWatcher`;
+- hardware/audio callbacks entering the device domain;
+- future presentation/user-interface events.
+
+When an asynchronous operation is scheduled by one cause and completes later,
+its completion starts a new source invocation/tree. This is often the correct
+way to avoid re-entry through long-running compile/reload work.
 
 ## Cost and what it buys
 
@@ -234,7 +241,7 @@ leave `D` off the stack by the time `C` raises into it; the visited set still
 contains it, so the violation is caught.
 
 The context travels via the invocation mechanism: `IV_INVOKE_LINKER_EVENT` and
-its variants seed or inherit the context around subscriber dispatch, and
+its variants initialize or inherit the context around subscriber dispatch, and
 `IV_INVOKE_LINKER_EVENT_SOURCE` marks a member as a propagation root. A
 thread-local current context is sufficient for synchronous propagation and
 adds no cost in release builds, where all of this compiles out.
@@ -249,22 +256,22 @@ Recording the causal edge that led to each visit makes the failure
 self-explanatory — not "module entered twice" but the two concrete paths:
 
 ```
-invalid event propagation: module Timeline reached twice
+invalid event propagation: module ProjectGraph reached twice
 
 root:
-    graph_changed
+    source_changed
 
 first path:
-    graph_changed
-      -> Foo::handle_graph_changed
-      -> timeline_changed
-      -> Timeline::handle_timeline_changed
+    source_changed
+      -> PackageDefinitions::handle_source_changed
+      -> definitions_changed
+      -> ProjectGraph::handle_definitions_changed
 
 second path:
-    graph_changed
-      -> Bar::handle_graph_changed
-      -> refresh_requested
-      -> Timeline::handle_refresh_requested
+    source_changed
+      -> NodeDefinitions::handle_source_changed
+      -> nodes_changed
+      -> ProjectGraph::handle_nodes_changed
 ```
 
 Each path is exactly the subscriber -> call chain -> raise sequence that
@@ -331,7 +338,7 @@ parameter; that would infect every module API with an execution concern.
 
 `IV_DECLARE_LINKER_EVENT`, `IV_DEFINE_LINKER_EVENT`, and the linker-section
 representation are unchanged. The section still holds subscriber function
-pointers; the templated bridge thunk already knows the concrete subscriber
+pointers; the templated bridge function already knows the concrete subscriber
 type at exactly the point where module identity is needed, so there is no
 reason to widen the section's ABI with metadata.
 
@@ -404,23 +411,22 @@ On a violation, the first visit's retained path snapshot plus the current path
 yield a full two-path report:
 
 ```
-event propagation re-entered module Timeline
+event propagation re-entered module ProjectGraph
 
 source:
-    iv_project_loaded_event
-    project_persistence.cpp:143
+    project mutation source
 
 first entry:
-    iv_project_loaded_event
-      -> Graph::handle_project_loaded
-      -> iv_timeline_changed_event
-      -> Timeline::handle_timeline_changed
+    source event
+      -> ProjectGraph::handle_first_change
+      -> derived event A
+      -> ConsumerA::handle_change
 
 second entry:
-    iv_project_loaded_event
-      -> GraphInputLanes::handle_project_loaded
-      -> iv_lane_batch_changed_event
-      -> Timeline::handle_lane_batch_changed
+    source event
+      -> ConsumerB::handle_change
+      -> derived event B
+      -> ProjectGraph::handle_second_change
 ```
 
 The runtime checker therefore doubles as an architecture debugger: every

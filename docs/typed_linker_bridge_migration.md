@@ -28,8 +28,8 @@ bridge at a time. Attempting to bind it again is a runtime error; nesting and
 replacement are not supported. Destroying the active scope disconnects the
 bridge.
 
-The subscriber thunk dispatches directly to the named member on the matching
-bridge participant. It does not adapt arguments, construct responses, invoke
+The generated subscriber function dispatches directly to the named member on the
+matching bridge participant. It does not adapt arguments, construct responses, invoke
 further events, or apply policy.
 
 Modules own connectables. An event and the member it connects to have exactly
@@ -41,7 +41,7 @@ without depending on the reason another module makes that connection.
 Bridge files must not contain:
 
 - forwarding handler functions or lambdas;
-- endpoint globals or manual bind/unbind APIs;
+- participant globals or manual bind/unbind APIs;
 - argument conversion, validation, response-builder completion, or error
   translation;
 - follow-on event invocation, notifications, or state-change publication;
@@ -54,7 +54,7 @@ downstream concerns into a producer; that would turn the app into connection
 spaghetti.
 
 Bridges with more than two participants must be split into two-party links.
-An event subscription with no pair of concrete module endpoints is not a
+An event subscription with no pair of concrete module participants is not a
 bridge: delete it, fold it into its owning module, or replace the event with a
 direct call. Do not invent a nominal participant just to fit the bridge API.
 
@@ -80,7 +80,7 @@ direct call. Do not invent a nominal participant just to fit the bridge API.
 
 ## Completion checks
 
-- No bridge has custom endpoint globals, bind/unbind functions, handlers,
+- No bridge has custom participant globals, bind/unbind functions, handlers,
   lambdas, or event invocation.
 - Every bridge is a two-party typed connection with an exclusive RAII scope.
 - Every event-to-member connection has an exact signature match.

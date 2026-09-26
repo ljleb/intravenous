@@ -21,7 +21,7 @@ struct ReflectedNodeDescription {
     NodePorts ports {};
     ReflectedNodeOperations operations {};
     std::shared_ptr<void const> node_storage {};
-    std::shared_ptr<NodeStateStructure const> state_structure_storage {};
+    std::shared_ptr<NodeStateStructures const> state_structures_storage {};
     NodeConfigRelocations config_relocations {};
     NodeCodeKey code_key {};
     std::optional<RegisteredNodeTypeIdentity> registered_node_type_identity {};
@@ -32,6 +32,7 @@ struct ReflectedNodeDescription {
     std::size_t maximum_block_size = MAX_BLOCK_SIZE;
     std::optional<std::size_t> default_ttl_samples {};
     bool block_skippable = false;
+    bool intrinsically_replayable = false;
     std::optional<Sample> static_sample_value {};
 
     constexpr std::vector<InputConfig> const& inputs() const

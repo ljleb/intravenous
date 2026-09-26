@@ -1,6 +1,7 @@
 #pragma once
 
-#include <intravenous/lane_node/generate.h>
+#include <intravenous/channel_layout.h>
+#include <intravenous/sample_block_view.h>
 
 #include <vector>
 

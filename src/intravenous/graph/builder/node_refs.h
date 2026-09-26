@@ -35,20 +35,20 @@ namespace iv {
         enum class NodeCallInputTarget : uint8_t {
             positional,
             named,
-            explicit_ordinal,
+            explicit_index,
         };
 
         struct NodeCallSampleInput {
             SamplePortRef source;
             std::string_view name;
-            size_t input_ordinal;
+            size_t input_index;
             NodeCallInputTarget target;
         };
 
         struct NodeCallEventInput {
             EventPortRef source;
             std::string_view name;
-            size_t input_ordinal;
+            size_t input_index;
             NodeCallInputTarget target;
         };
 
@@ -122,7 +122,7 @@ namespace iv {
         auto operator[](Member member) const
         requires requires {
             typename std::remove_cvref_t<Member>::channel_type;
-            std::remove_cvref_t<Member>::channel_ordinal;
+            std::remove_cvref_t<Member>::channel_index;
         }
         {
             // An erased node only knows its output layout at build time.  Its
@@ -305,7 +305,9 @@ namespace iv {
         TypedNodeRef connect_event_input(size_t input_port, EventPortRef value) const;
         TypedNodeRef connect_event_input(std::string_view input_name, EventPortRef value) const;
 
-        SamplePortRef detach(size_t loop_extra_latency = 1) const;
+        SamplePortRef detach(
+            size_t loop_extra_latency = 1,
+            std::optional<Sample> initial_value = std::nullopt) const;
 
         template<size_t I>
         auto static_output() const
@@ -400,7 +402,7 @@ namespace iv {
             return ConcreteRef(
                 *this->_graph_builder,
                 this->_graph_builder->tiled_member(
-                    this->_index, MemberType::channel_ordinal));
+                    this->_index, MemberType::channel_index));
         }
 
         template<size_t I>
@@ -428,9 +430,9 @@ namespace iv {
             return static_output<I>();
         }
 
-        EventPortRef event_port(size_t output_ordinal) const
+        EventPortRef event_port(size_t output_index) const
         {
-            return NodeRef::event_port(output_ordinal);
+            return NodeRef::event_port(output_index);
         }
 
         EventPortRef event_port(std::string_view name) const
@@ -438,9 +440,9 @@ namespace iv {
             return NodeRef::event_port(name);
         }
 
-        Self connect_event_input(size_t input_ordinal, EventPortRef source) const
+        Self connect_event_input(size_t input_index, EventPortRef source) const
         {
-            return Base::connect_event_input(input_ordinal, std::move(source));
+            return Base::connect_event_input(input_index, std::move(source));
         }
 
         Self connect_event_input(std::string_view name, EventPortRef source) const
@@ -474,9 +476,9 @@ namespace iv {
             TypedNodeRef<std::remove_cvref_t<Node>>, NodeRef>;
     }
 
-    template<fixed_string Name, class ChannelType, size_t ChannelOrdinal>
+    template<fixed_string Name, class ChannelType, size_t ChannelIndex>
     template<class T>
-    constexpr auto ChannelPortName<Name, ChannelType, ChannelOrdinal>::operator=(T&& value) const
+    constexpr auto ChannelPortName<Name, ChannelType, ChannelIndex>::operator=(T&& value) const
     {
         using Value = std::remove_cvref_t<T>;
         // Channel qualification carries the static information needed for a
@@ -485,20 +487,20 @@ namespace iv {
         // keeps variadic node/output call instantiations independent of the
         // particular typed-ref facade that produced the sample expression.
         if constexpr (std::convertible_to<Value, SamplePortRef>) {
-            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, SamplePortRef>{
+            return ChannelNamedArg<Name, ChannelType, ChannelIndex, SamplePortRef>{
                 .value = static_cast<SamplePortRef>(std::forward<T>(value)),
             };
         } else if constexpr (std::same_as<Value, EventPortRef>) {
-            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, EventPortRef>{
+            return ChannelNamedArg<Name, ChannelType, ChannelIndex, EventPortRef>{
                 .value = std::forward<T>(value),
             };
         } else if constexpr (requires(Value const& ref) { ref._clone_handle(); }) {
             using Handle = decltype(value._clone_handle());
-            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, Handle>{
+            return ChannelNamedArg<Name, ChannelType, ChannelIndex, Handle>{
                 .value = value._clone_handle(),
             };
         } else {
-            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, Value>{
+            return ChannelNamedArg<Name, ChannelType, ChannelIndex, Value>{
                 .value = std::forward<T>(value),
             };
         }

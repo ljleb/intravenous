@@ -93,7 +93,7 @@ public:
         }
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
         if (!output) fail("cannot write timing report '" + path.string() + "'");
-        output << "version=1\n";
+        output << "version=0\n";
         for (auto const& [name, duration] : stages_) {
             output << name << "_us=" << duration.count() << '\n';
         }
@@ -282,6 +282,8 @@ struct IrNodeRecord {
     std::string type_name{};
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
+    std::size_t background_state_size = 0;
+    std::size_t background_state_alignment = 1;
     Constant* initializer = nullptr;
 };
 
@@ -308,14 +310,22 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
         auto const section = global.getSection();
         if (section != "iv_node_types" && !section.ends_with("__iv_node_types")) continue;
         auto* record = dyn_cast_or_null<ConstantStruct>(global.getInitializer());
-        if (!record || record->getNumOperands() != 6) fail("malformed iv_node_types record");
+        if (!record || record->getNumOperands() != 9) fail("malformed iv_node_types record");
         auto* key = dyn_cast<ConstantStruct>(record->getOperand(0));
         if (!key || key->getNumOperands() != 2) fail("malformed iv_node_types key");
+        auto* operations = dyn_cast<ConstantStruct>(record->getOperand(1));
+        if (!operations || operations->getNumOperands() != 6) {
+            fail("malformed iv_node_types operations ABI");
+        }
         StringRef name;
         if (!getConstantStringInfo(record->getOperand(2), name, false))
             fail("node compiler record does not contain a constant type name");
         auto const name_size = constant_size(record->getOperand(3), "type name size");
         if (name_size > name.size()) fail("node compiler record type name length is invalid");
+        auto const replay_marker = constant_u64(record->getOperand(8));
+        if (replay_marker > 1) {
+            fail("malformed iv_node_types intrinsic replayability flag");
+        }
         result.push_back({
             .key = {
                 .low = constant_u64(key->getOperand(0)),
@@ -324,6 +334,10 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
             .type_name = name.substr(0, name_size).str(),
             .state_size = constant_size(record->getOperand(4), "state size"),
             .state_alignment = constant_size(record->getOperand(5), "state alignment"),
+            .background_state_size = constant_size(
+                record->getOperand(6), "background state size"),
+            .background_state_alignment = constant_size(
+                record->getOperand(7), "background state alignment"),
             .initializer = record,
         });
     }
@@ -369,7 +383,6 @@ std::size_t metadata_size(
 struct StateMetadata {
     iv::NodeCodeKey key{};
     std::string node_type_usr{};
-    std::string state_type_usr{};
     iv::NodeStateStructure structure{};
 };
 
@@ -395,6 +408,7 @@ struct PackageDefinitionMetadata {
 
 struct CompilerMetadata {
     std::vector<StateMetadata> states;
+    std::vector<StateMetadata> background_states;
     std::vector<ConfigPointerMetadata> config_pointers;
     std::vector<ConfigurationTypeMetadata> configuration_types;
     std::vector<PackageDefinitionMetadata> package_definitions;
@@ -417,13 +431,13 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         if (!parsed) fail("invalid metadata JSON in '" + entry.path().string() + "': " + error_string(parsed.takeError()));
         auto* object = parsed->getAsObject();
         if (!object) fail("metadata root is not an object in '" + entry.path().string() + "'");
-        auto version = object->getInteger("version");
-        if (!version || *version != 8) {
-            fail("unsupported compiler metadata version in '" + entry.path().string() + "'");
-        }
         auto* states = object->getArray("states");
         if (!states) {
             fail("metadata has no state array in '" + entry.path().string() + "'");
+        }
+        auto* background_states = object->getArray("background_states");
+        if (!background_states) {
+            fail("metadata has no background-state array in '" + entry.path().string() + "'");
         }
         auto* config_pointers = object->getArray("config_pointers");
         if (!config_pointers) {
@@ -529,75 +543,106 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
                 result.package_definitions.push_back(std::move(metadata_definition));
             }
         }
-        for (auto const& state_value : *states) {
-            auto* state = state_value.getAsObject();
-            if (!state) fail("state metadata entry is not an object in '" + entry.path().string() + "'");
-            auto* key = state->getObject("node_code_key");
-            auto node_type_usr = state->getString("node_type_usr");
-            auto state_type_usr = state->getString("state_type_usr");
-            auto size_bits = state->getInteger("size_bits");
-            auto alignment_bits = state->getInteger("alignment_bits");
-            auto* fields = state->getArray("fields");
-            if (!key || !node_type_usr || !state_type_usr || !size_bits
-                || !alignment_bits || !fields) {
-                fail("incomplete state metadata entry in '" + entry.path().string() + "'");
-            }
-            auto low = key->getString("low");
-            auto high = key->getString("high");
-            if (!low || !high) {
-                fail("state metadata has no NodeCodeKey in '" + entry.path().string() + "'");
-            }
-            StateMetadata metadata{
-                .key = {
-                    .low = parse_hex_u64(*low, entry.path(), "node_code_key.low"),
-                    .high = parse_hex_u64(*high, entry.path(), "node_code_key.high"),
-                },
-                .node_type_usr = node_type_usr->str(),
-                .state_type_usr = state_type_usr->str(),
-                .structure = {
-                    .size_bits = metadata_size(*size_bits, entry.path(), "state size_bits"),
-                    .alignment_bits = metadata_size(*alignment_bits, entry.path(), "state alignment_bits"),
-                },
-            };
-            for (auto const& field_value : *fields) {
-                auto* field = field_value.getAsObject();
-                if (!field) fail("state field metadata is not an object in '" + entry.path().string() + "'");
-                auto name = field->getString("name");
-                auto type_usr = field->getString("type_usr");
-                auto bit_offset = field->getInteger("bit_offset");
-                auto field_size = field->getInteger("size_bits");
-                auto field_alignment = field->getInteger("alignment_bits");
-                if (!name || !type_usr || !bit_offset || !field_size || !field_alignment) {
-                    fail("incomplete state field metadata in '" + entry.path().string() + "'");
+        auto append_state_metadata = [&](llvm::json::Array const& source,
+                                         std::vector<StateMetadata>& destination,
+                                         std::string_view label) {
+            for (auto const& state_value : source) {
+                auto* state = state_value.getAsObject();
+                if (!state) {
+                    fail(std::string(label) + " metadata entry is not an object in '"
+                         + entry.path().string() + "'");
                 }
-                iv::NodeStateFieldStructure item{
-                    .name = name->str(),
-                    .type_name = type_usr->str(),
-                    .bit_offset = metadata_size(*bit_offset, entry.path(), "field bit_offset"),
-                    .size_bits = metadata_size(*field_size, entry.path(), "field size_bits"),
-                    .alignment_bits = metadata_size(*field_alignment, entry.path(), "field alignment_bits"),
+                auto* key = state->getObject("node_code_key");
+                auto node_type_usr = state->getString("node_type_usr");
+                auto type_usr_value = state->getString("type_usr");
+                auto type_name = state->getString("type");
+                auto fingerprint = state->getString("definition_fingerprint");
+                auto size_bits = state->getInteger("size_bits");
+                auto alignment_bits = state->getInteger("alignment_bits");
+                auto* fields = state->getArray("fields");
+                if (!key || !node_type_usr || !type_usr_value
+                    || type_usr_value->empty() || !type_name || type_name->empty()
+                    || !fingerprint || fingerprint->empty() || !size_bits
+                    || !alignment_bits || !fields) {
+                    fail("incomplete " + std::string(label) + " metadata entry in '"
+                         + entry.path().string() + "'");
+                }
+                auto low = key->getString("low");
+                auto high = key->getString("high");
+                if (!low || !high) {
+                    fail(std::string(label) + " metadata has no NodeCodeKey in '"
+                         + entry.path().string() + "'");
+                }
+                StateMetadata metadata{
+                    .key = {
+                        .low = parse_hex_u64(*low, entry.path(), "node_code_key.low"),
+                        .high = parse_hex_u64(*high, entry.path(), "node_code_key.high"),
+                    },
+                    .node_type_usr = node_type_usr->str(),
+                    .structure = {
+                        .type_identity = {
+                            .nominal_id = type_usr_value->str(),
+                            .definition_fingerprint = fingerprint->str(),
+                            .display_name = type_name->str(),
+                        },
+                        .size_bits = metadata_size(
+                            *size_bits, entry.path(), std::string(label) + " size_bits"),
+                        .alignment_bits = metadata_size(
+                            *alignment_bits, entry.path(), std::string(label) + " alignment_bits"),
+                    },
                 };
-                if (auto width = field->getInteger("bit_width")) {
-                    item.bit_width = metadata_size(*width, entry.path(), "field bit_width");
+                for (auto const& field_value : *fields) {
+                    auto* field = field_value.getAsObject();
+                    if (!field) {
+                        fail(std::string(label) + " field metadata is not an object in '"
+                             + entry.path().string() + "'");
+                    }
+                    auto name = field->getString("name");
+                    auto field_type_usr = field->getString("type_usr");
+                    auto bit_offset = field->getInteger("bit_offset");
+                    auto field_size = field->getInteger("size_bits");
+                    auto field_alignment = field->getInteger("alignment_bits");
+                    if (!name || !field_type_usr || !bit_offset || !field_size
+                        || !field_alignment) {
+                        fail("incomplete " + std::string(label)
+                             + " field metadata in '" + entry.path().string() + "'");
+                    }
+                    iv::NodeStateFieldStructure item{
+                        .name = name->str(),
+                        .type_name = field_type_usr->str(),
+                        .bit_offset = metadata_size(
+                            *bit_offset, entry.path(), "field bit_offset"),
+                        .size_bits = metadata_size(
+                            *field_size, entry.path(), "field size_bits"),
+                        .alignment_bits = metadata_size(
+                            *field_alignment, entry.path(), "field alignment_bits"),
+                    };
+                    if (auto width = field->getInteger("bit_width")) {
+                        item.bit_width = metadata_size(
+                            *width, entry.path(), "field bit_width");
+                    }
+                    metadata.structure.fields.push_back(std::move(item));
                 }
-                metadata.structure.fields.push_back(std::move(item));
-            }
-            auto const duplicate = std::find_if(
-                result.states.begin(), result.states.end(),
-                [&](StateMetadata const& existing) {
-                    return existing.key == metadata.key;
-                });
-            if (duplicate != result.states.end()) {
-                if (duplicate->node_type_usr != metadata.node_type_usr
-                    || duplicate->state_type_usr != metadata.state_type_usr
-                    || duplicate->structure != metadata.structure) {
-                    fail("conflicting state metadata for one NodeCodeKey in '" +
-                         entry.path().string() + "'");
+                auto const duplicate = std::find_if(
+                    destination.begin(), destination.end(),
+                    [&](StateMetadata const& existing) {
+                        return existing.key == metadata.key;
+                    });
+                if (duplicate != destination.end()) {
+                    if (duplicate->node_type_usr != metadata.node_type_usr
+                        || duplicate->structure != metadata.structure) {
+                        fail("conflicting " + std::string(label)
+                             + " metadata for one NodeCodeKey in '"
+                             + entry.path().string() + "'");
+                    }
+                    continue;
                 }
-                continue;
+                destination.push_back(std::move(metadata));
             }
-            result.states.push_back(std::move(metadata));
-        }
+        };
+        append_state_metadata(*states, result.states, "state");
+        append_state_metadata(
+            *background_states, result.background_states, "background-state");
         for (auto const& field_value : *config_pointers) {
             auto* field = field_value.getAsObject();
             if (!field) fail("config-pointer metadata entry is not an object in '" + entry.path().string() + "'");
@@ -694,7 +739,7 @@ void reject_node_runtime_mutable_globals(std::span<IrNodeRecord const> records)
     };
     for (auto const& record : records) {
         auto const* initializer = dyn_cast_or_null<ConstantStruct>(record.initializer);
-        if (!initializer || initializer->getNumOperands() != 6) {
+        if (!initializer || initializer->getNumOperands() != 9) {
             fail("malformed compiler record while validating node runtime globals");
         }
         SmallPtrSet<GlobalValue const*, 32> reachable;
@@ -710,7 +755,7 @@ void reject_node_runtime_mutable_globals(std::span<IrNodeRecord const> records)
                 "node type '" + record.type_name
                 + "' runtime/compiler operations reference mutable package global '"
                 + global->getName().str()
-                + "'; persistent mutable runtime data must be Node::State");
+                + "'; persistent mutable runtime data must be Node::State or Node::TockState");
         }
     }
 }
@@ -759,7 +804,7 @@ iv::NodeCodeKey compiler_record_key(Constant* pointer)
         fail("node type definition does not reference a compiler record global");
     }
     auto const* record = dyn_cast<ConstantStruct>(global->getInitializer());
-    if (!record || record->getNumOperands() != 6) {
+    if (!record || record->getNumOperands() != 9) {
         fail("node type definition references a malformed compiler record");
     }
     auto const* key = dyn_cast<ConstantStruct>(record->getOperand(0));
@@ -903,32 +948,46 @@ std::vector<RetainedGlobal> collect_retained_globals(
 
 std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> bind_state_metadata(
     std::span<IrNodeRecord const> records,
-    CompilerMetadata const& metadata)
+    std::span<StateMetadata const> metadata,
+    bool background_state)
 {
     std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> result;
+    auto const label = background_state ? "Node::TockState" : "Node::State";
     for (auto const& record : records) {
-        auto const state = std::find_if(metadata.states.begin(), metadata.states.end(), [&](auto const& item) {
+        auto const state = std::find_if(metadata.begin(), metadata.end(), [&](auto const& item) {
             return item.key == record.key;
         });
-        if (record.state_size == 0) {
-            if (state != metadata.states.end()) {
-                fail("state metadata names a node without Node::State: '" +
-                     record.type_name + "'");
+        auto const state_size = background_state
+            ? record.background_state_size
+            : record.state_size;
+        auto const state_alignment = background_state
+            ? record.background_state_alignment
+            : record.state_alignment;
+        if (state_size == 0) {
+            if (state != metadata.end()) {
+                fail(std::string(label) + " metadata names a node without "
+                     + label + ": '" + record.type_name + "'");
             }
             continue;
         }
-        if (record.state_size > std::numeric_limits<std::size_t>::max() / 8
-            || record.state_alignment > std::numeric_limits<std::size_t>::max() / 8) {
-            fail("Node::State ABI size overflows for '" + record.type_name + "'");
+        if (state_size > std::numeric_limits<std::size_t>::max() / 8
+            || state_alignment > std::numeric_limits<std::size_t>::max() / 8) {
+            fail(std::string(label) + " ABI size overflows for '"
+                 + record.type_name + "'");
         }
-        if (state == metadata.states.end()) {
-            fail("missing NodeCodeKey-bound state metadata for '" +
-                 record.type_name + "'");
+        if (state == metadata.end()) {
+            fail("missing NodeCodeKey-bound " + std::string(label)
+                 + " metadata for '" + record.type_name + "'");
         }
-        if (state->structure.size_bits != record.state_size * 8
-            || state->structure.alignment_bits != record.state_alignment * 8) {
-            fail("Node::State layout metadata does not match compiler ABI for '" +
-                 record.type_name + "'");
+        if (!state->structure.type_identity.valid()) {
+            fail(std::string(label) + " type identity is incomplete for '"
+                 + record.type_name + "'");
+        }
+        if (state->structure.size_bits != state_size * 8
+            || state->structure.alignment_bits != state_alignment * 8) {
+            fail(std::string(label)
+                 + " layout metadata does not match compiler ABI for '"
+                 + record.type_name + "'");
         }
         result.emplace_back(record.key, state->structure);
     }
@@ -1150,6 +1209,7 @@ void inject_package_configuration_metadata(
     Module& module,
     CompilerMetadata const& metadata,
     std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> state_structures,
+    std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> background_state_structures,
     std::span<RetainedGlobal const> retained_globals)
 {
     auto& context = module.getContext();
@@ -1207,12 +1267,12 @@ void inject_package_configuration_metadata(
     }
     std::vector<Constant*> globals;
     globals.reserve(retained_globals.size());
-    for (std::size_t ordinal = 0; ordinal < retained_globals.size(); ++ordinal) {
+    for (std::size_t index = 0; index < retained_globals.size(); ++index) {
         globals.push_back(ConstantStruct::get(
             retained_global_type,
-            ConstantExpr::getPointerCast(retained_globals[ordinal].global, pointer_type),
-            ConstantInt::get(size_type, retained_globals[ordinal].size),
-            ConstantInt::get(size_type, ordinal)));
+            ConstantExpr::getPointerCast(retained_globals[index].global, pointer_type),
+            ConstantInt::get(size_type, retained_globals[index].size),
+            ConstantInt::get(size_type, index)));
     }
     if (globals.empty()) {
         emit_view_accessor(
@@ -1238,83 +1298,120 @@ void inject_package_configuration_metadata(
         fail("node-state field ABI does not match NodeStateFieldData");
     }
     auto* state_structure_type = StructType::get(
-        code_key_type, size_type, size_type, view_type);
+        code_key_type,
+        view_type,
+        view_type,
+        view_type,
+        size_type,
+        size_type,
+        view_type);
     auto const state_structure_size = module.getDataLayout().getTypeAllocSize(state_structure_type);
     if (state_structure_size.isScalable()
         || state_structure_size.getFixedValue() != sizeof(iv::NodeStateStructureData)) {
         fail("node-state structure ABI does not match NodeStateStructureData");
     }
 
-    std::vector<Constant*> structures;
-    structures.reserve(state_structures.size());
-    for (std::size_t structure_index = 0;
-         structure_index < state_structures.size(); ++structure_index) {
-        auto const& [key, state] = state_structures[structure_index];
-        std::vector<Constant*> fields;
-        fields.reserve(state.fields.size());
-        for (std::size_t field_index = 0; field_index < state.fields.size(); ++field_index) {
-            auto const& field = state.fields[field_index];
-            auto const prefix = "iv.package_state." + std::to_string(structure_index)
-                + ".field." + std::to_string(field_index);
-            fields.push_back(ConstantStruct::get(
-                state_field_type,
-                string_view_constant(module, view_type, prefix + ".name", field.name),
-                string_view_constant(module, view_type, prefix + ".type", field.type_name),
-                ConstantInt::get(size_type, field.bit_offset),
-                ConstantInt::get(size_type, field.size_bits),
-                ConstantInt::get(size_type, field.alignment_bits),
-                ConstantInt::get(size_type, field.bit_width.value_or(0)),
-                ConstantInt::get(i8, field.bit_width.has_value() ? 1 : 0)));
-        }
+    auto emit_state_structures = [&](StringRef accessor_name,
+                                     StringRef global_name,
+                                     StringRef value_prefix,
+                                     std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> values) {
+        std::vector<Constant*> structures;
+        structures.reserve(values.size());
+        for (std::size_t structure_index = 0;
+             structure_index < values.size(); ++structure_index) {
+            auto const& [key, state] = values[structure_index];
+            if (!state.type_identity.valid()) {
+                fail("node-state structure has incomplete type definition identity");
+            }
+            std::vector<Constant*> fields;
+            fields.reserve(state.fields.size());
+            for (std::size_t field_index = 0; field_index < state.fields.size(); ++field_index) {
+                auto const& field = state.fields[field_index];
+                auto const prefix = value_prefix.str() + "." + std::to_string(structure_index)
+                    + ".field." + std::to_string(field_index);
+                fields.push_back(ConstantStruct::get(
+                    state_field_type,
+                    string_view_constant(module, view_type, prefix + ".name", field.name),
+                    string_view_constant(module, view_type, prefix + ".type", field.type_name),
+                    ConstantInt::get(size_type, field.bit_offset),
+                    ConstantInt::get(size_type, field.size_bits),
+                    ConstantInt::get(size_type, field.alignment_bits),
+                    ConstantInt::get(size_type, field.bit_width.value_or(0)),
+                    ConstantInt::get(i8, field.bit_width.has_value() ? 1 : 0)));
+            }
 
-        Constant* fields_view = ConstantStruct::get(
-            view_type,
-            ConstantPointerNull::get(pointer_type),
-            ConstantInt::get(size_type, 0));
-        if (!fields.empty()) {
-            auto* fields_type = ArrayType::get(state_field_type, fields.size());
-            auto* fields_global = new GlobalVariable(
-                module, fields_type, true, GlobalValue::PrivateLinkage,
-                ConstantArray::get(fields_type, fields),
-                "iv.package_state_fields." + std::to_string(structure_index));
-            fields_view = ConstantStruct::get(
+            Constant* fields_view = ConstantStruct::get(
                 view_type,
-                ConstantExpr::getPointerCast(fields_global, pointer_type),
-                ConstantInt::get(
-                    size_type, fields.size() * state_field_size.getFixedValue()));
+                ConstantPointerNull::get(pointer_type),
+                ConstantInt::get(size_type, 0));
+            if (!fields.empty()) {
+                auto* fields_type = ArrayType::get(state_field_type, fields.size());
+                auto* fields_global = new GlobalVariable(
+                    module, fields_type, true, GlobalValue::PrivateLinkage,
+                    ConstantArray::get(fields_type, fields),
+                    value_prefix.str() + "_fields." + std::to_string(structure_index));
+                fields_view = ConstantStruct::get(
+                    view_type,
+                    ConstantExpr::getPointerCast(fields_global, pointer_type),
+                    ConstantInt::get(
+                        size_type, fields.size() * state_field_size.getFixedValue()));
+            }
+            auto const identity_prefix = value_prefix.str() + "."
+                + std::to_string(structure_index) + ".identity";
+            structures.push_back(ConstantStruct::get(
+                state_structure_type,
+                code_key(key),
+                string_view_constant(
+                    module, view_type, identity_prefix + ".nominal",
+                    state.type_identity.nominal_id),
+                string_view_constant(
+                    module, view_type, identity_prefix + ".fingerprint",
+                    state.type_identity.definition_fingerprint),
+                string_view_constant(
+                    module, view_type, identity_prefix + ".display",
+                    state.type_identity.display_name),
+                ConstantInt::get(size_type, state.size_bits),
+                ConstantInt::get(size_type, state.alignment_bits),
+                fields_view));
         }
-        structures.push_back(ConstantStruct::get(
-            state_structure_type,
-            code_key(key),
-            ConstantInt::get(size_type, state.size_bits),
-            ConstantInt::get(size_type, state.alignment_bits),
-            fields_view));
-    }
-    if (structures.empty()) {
-        emit_view_accessor(
-            module, "iv_package_node_state_structures",
-            ConstantPointerNull::get(pointer_type), 0);
-    } else {
+        if (structures.empty()) {
+            emit_view_accessor(
+                module, accessor_name,
+                ConstantPointerNull::get(pointer_type), 0);
+            return;
+        }
         auto* array_type = ArrayType::get(state_structure_type, structures.size());
         auto* table = new GlobalVariable(
             module, array_type, true, GlobalValue::PrivateLinkage,
-            ConstantArray::get(array_type, structures),
-            "iv.package_node_state_structures");
+            ConstantArray::get(array_type, structures), global_name);
         emit_view_accessor(
-            module, "iv_package_node_state_structures",
+            module, accessor_name,
             ConstantExpr::getPointerCast(table, pointer_type),
             structures.size() * state_structure_size.getFixedValue());
-    }
+    };
+
+    emit_state_structures(
+        "iv_package_node_state_structures",
+        "iv.package_node_state_structures",
+        "iv.package_state",
+        state_structures);
+    emit_state_structures(
+        "iv_package_node_background_state_structures",
+        "iv.package_node_background_state_structures",
+        "iv.package_background_state",
+        background_state_structures);
+
 }
 
 void preserve_package_code(Module& module)
 {
-    static constexpr std::array<StringRef, 5> entry_points{
+    static constexpr std::array<StringRef, 6> entry_points{
         "iv_package_abi_version",
         "iv_package_definitions",
         "iv_package_node_config_pointer_fields",
         "iv_package_retained_globals",
         "iv_package_node_state_structures",
+        "iv_package_node_background_state_structures",
     };
     SmallPtrSet<GlobalValue const*, 32> reachable;
     for (auto const name : entry_points) {
@@ -1417,7 +1514,10 @@ int finalize(Options options)
     auto node_records = scan_node_records(package);
     auto metadata = load_metadata(options.metadata_dir);
     reject_node_runtime_mutable_globals(node_records);
-    auto state_structures = bind_state_metadata(node_records, metadata);
+    auto state_structures = bind_state_metadata(
+        node_records, metadata.states, false);
+    auto background_state_structures = bind_state_metadata(
+        node_records, metadata.background_states, true);
     require_node_config_metadata(node_records, metadata);
     auto definitions = package_definition_globals(package);
     validate_package_definitions(definitions, metadata);
@@ -1429,7 +1529,11 @@ int finalize(Options options)
     inject_configuration_type_identities(package, metadata);
     inject_package_definition_table(package, definitions);
     inject_package_configuration_metadata(
-        package, metadata, state_structures, retained_globals);
+        package,
+        metadata,
+        state_structures,
+        background_state_structures,
+        retained_globals);
     preserve_package_code(package);
     verify_finalized_package(package);
     timings.finish_stage("package_metadata_inject", stage_started_at);

@@ -33,24 +33,22 @@ measurement, diagnostics, and a conservative fallback.
 
 ## Why This Fits The Current Runtime
 
-The current module lifecycle already provides most of the structural seams:
+The current package/graph lifecycle already provides the structural seams a PGO
+experiment would need:
 
-- `ModuleLoader` compiles a root definition and its reachable module closure
-  into a shared library.
-- Every load is copied to a unique generation path before `dlopen` /
-  `LoadLibrary`, so an optimized sibling can coexist with its trainer.
-- `IvModuleReload` already compiles away from the task-runner workers and
-  publishes a completed definition later.
-- `BlockNodeExecutor::prepare_reload()` constructs replacement graph state and
-  prepares state migration before activation.
-- task-runner bridges commit replacement graphs only at a pass boundary.
-- `IvModuleInstancesExecution` retains `ModuleRef`s until the graph revision
-  that used their callbacks is no longer reachable. The same lifetime rule can
-  prevent a profiling runtime from being unloaded before its last profile is
-  captured.
+- `PackageJit` performs package compilation away from graph execution and returns
+  immutable package revision results;
+- `PackageDefinitions` and `NodeDefinitions` publish immutable accepted revisions;
+- `GraphJit` owns independently releasable compiled project generations and their
+  ORC lifetime;
+- `GraphExecutor` owns pending/active generations, state migration, and explicit
+  safe-boundary activation;
+- an older package/compiled generation remains alive while any retained graph state
+  can still call into it.
 
-PGO should use those seams. It should not add compilation, profile file I/O, or
-profile merging to a DSP task.
+PGO should use those existing boundaries. Profile capture, profile merging, and
+profile-use compilation must remain outside execution callbacks and safe-boundary
+activation itself.
 
 ## Proposed First Scope
 
@@ -137,11 +135,11 @@ For an eligible fresh identity:
    residency is insufficient because a paused, disconnected, or silent module
    may provide little representative training.
 4. Once the training policy says the profile is useful, capture the raw
-   profile at a quiescent task-runner boundary.
+   profile at a quiescent `GraphExecutor` safe boundary.
 5. Perform raw-profile file I/O, `llvm-profdata merge`, and the profile-use
    build on the module build service, never on a task worker.
-6. Load and prepare the candidate exactly like a source-triggered reload.
-7. At a task-runner boundary, migrate state and activate the candidate.
+6. Load and validate the candidate through the ordinary source-triggered reload path.
+7. At a `GraphExecutor` safe boundary, migrate state and activate the candidate.
 8. Retain the training binary until both graph retirement and any final
    profile capture are complete.
 
@@ -190,8 +188,8 @@ profile pages is a poor default for a real-time DSP process.
 
 ## Concurrent Counter Updates
 
-Different instances of one definition may execute concurrently on task-runner
-workers while sharing the counters in their DSO.
+Different instances of one definition may execute concurrently while sharing the
+counters in their DSO.
 
 Clang's default `-fprofile-update=single` counters can be inaccurate under
 thread contention. `-fprofile-update=atomic` is accurate but adds overhead to
@@ -204,49 +202,24 @@ Training overhead must be evaluated against underruns and tail block latency,
 not just total throughput. The profiler is not useful if its temporary cost
 breaks real-time execution.
 
-## Suggested Ownership
+## Ownership Boundaries
 
-PGO policy should not be embedded in `ModuleLoader` or
-`IvModuleInstancesExecution`.
+The exact application-level policy owner is intentionally unspecified. The existing
+modules already establish the boundaries that a future PGO experiment must respect:
 
-### `IvModuleOptimization` (future application module)
+- `PackageJit` owns package compilation and is the natural place for explicit
+  ordinary/training/profile-use build variants and toolchain inputs;
+- `PackageDefinitions` and `NodeDefinitions` own accepted immutable definition
+  revisions and must reject results for obsolete source identities;
+- `GraphJit` consumes one exact accepted definition world and produces an
+  independently releasable compiled project generation;
+- `GraphExecutor` owns safe generation activation, state migration, and retirement
+  timing; it must not run compilers, merge profiles, or own profile-cache policy.
 
-Owns:
-
-- opt-in and eligibility policy;
-- per-build-identity state (`training`, `profile-ready`, `optimizing`,
-  `optimized`, `backoff`);
-- training budgets and promotion cooldowns;
-- raw and merged profile cache/retention;
-- promotion requests and status diagnostics.
-
-Consumes:
-
-- definition generation activation/retirement events;
-- rendered-sample or rendered-block progress;
-- profile snapshot completion;
-- variant build results.
-
-### `IvModuleReload`
-
-Continues to own build scheduling and reload results. It will eventually need
-variant-aware build requests and must reject results whose build identity is
-no longer current. Source-triggered and optimization-triggered work should be
-serialized or coalesced by explicit priority, not by timing.
-
-### `ModuleLoader`
-
-Remains the build/load mechanism. It will eventually need a build request that
-selects `ordinary`, `training`, or `profile-use`, isolated workspaces for each
-variant, and an explicit matching `llvm-profdata` tool path. It should not
-decide when a module has trained long enough.
-
-### `IvModuleInstancesExecution`
-
-Continues to own safe generation lifetime and instance execution. It may emit
-cheap generation activity and retirement facts and participate in a
-quiescent snapshot handshake. It must not run compilers, merge profiles, or
-own profile cache policy.
+Any future policy object should remain outside those modules unless its responsibility
+is already part of their contract. In particular, training budgets, cooldowns,
+profile retention, and promotion decisions do not belong in `GraphExecutor` or the
+definition stores.
 
 ## Custom CMake Contract
 
@@ -267,14 +240,14 @@ make performance results difficult to interpret.
 ## Required Invariants
 
 - No profile file access, subprocess launch, profile merge, or compilation on
-  a task-runner worker or activation boundary.
+  an execution thread or safe-boundary activation path.
 - A generation is never unloaded while executable graph state or profile
   capture can still call into it.
 - Profile-use compilation never consumes data from a different build identity
   or incompatible LLVM toolchain.
 - A source edit cannot be overwritten by a late optimization result.
 - Failed training or promotion never removes the last working generation.
-- Promotion uses the existing graph preparation, state migration, and
+- Promotion uses the existing graph compilation, state migration, and
   revision-safe activation flow.
 - Writes under the profile/build cache never look like module source changes
   to `DependencyWatcher`.
@@ -333,7 +306,7 @@ intact.
 - Can the LLVM runtime's buffer snapshot be wrapped per DSO without symbol
   interposition surprises on Linux, macOS, and Windows?
 - How long does a quiescent in-memory snapshot take for realistic IV module
-  binaries, and can all storage be prepared beforehand?
+  binaries, and can all required storage be allocated beforehand?
 - Is approximate non-atomic profiling good enough, or is atomic counter cost
   acceptable during a bounded training phase?
 - Which activity measure best identifies representative training: rendered
@@ -344,7 +317,7 @@ intact.
   source?
 - Should persisted profiles be local to a project, global for global-module
   roots, or always ephemeral at first?
-- What retention limit should apply to raw profiles, indexed profiles,
+- What retention limit should apply to raw profiles, merged profiles,
   ordinary/training/optimized workspaces, and copied generation libraries?
 - How should custom CMake targets declare that all relevant code participates
   in the same PGO build?

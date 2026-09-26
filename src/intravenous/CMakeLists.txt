@@ -154,23 +154,15 @@ function(iv_add_host_runtime_objects target)
         iv_builder
         intravenous_module_loader
         intravenous_module_watcher
+        intravenous_graph_jit
         intravenous_runtime_iv_module_instances_events
-        intravenous_runtime_iv_module_definitions_events
-        intravenous_runtime_iv_module_reload_events
+        intravenous_runtime_node_definitions_events
+        intravenous_runtime_project_graph_events
+        intravenous_runtime_package_pipeline_events
         intravenous_runtime_iv_module_source_introspection_events
-        intravenous_runtime_graph_input_lanes_events
-        intravenous_runtime_audio_device_lanes_events
-        intravenous_runtime_lane_filters_events
-        intravenous_runtime_lane_views_events
-        intravenous_runtime_lanes_visualization_events
         intravenous_runtime_runtime_project_events
         intravenous_runtime_project_persistence_events
         intravenous_runtime_socket_rpc_events
-        intravenous_runtime_task_runner_events
-        intravenous_runtime_timeline_events
-        intravenous_runtime_configured_lanes_events
-        intravenous_runtime_timeline_execution_events
-        intravenous_runtime_iv_module_instances_execution_events
         intravenous_tooling_runtime_objects
         nlohmann_json::nlohmann_json
     )
@@ -191,26 +183,34 @@ function(iv_add_host_runtime_objects target)
 endfunction()
 
 # Built-ins are a single shipped IV package rather than code linked directly
-# into iv_builder.  Copy the source package into the build layout so the
-# application discovers it through the normal global-package path.
+# into iv_builder. Stage only the package inputs in the build tree: copying the
+# whole source directory would also copy any old compile database or build/ tree
+# left behind by an earlier direct-loader invocation.
 set(IV_BUILTIN_PACKAGE_SOURCE_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}/builtin_packages")
 set(IV_BUILTIN_PACKAGE_SEARCH_ROOT
     "${CMAKE_CURRENT_BINARY_DIR}/builtin_packages")
 set(_iv_builtin_package_manifest
     "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin/iv_package.json")
+set(_iv_builtin_package_entry
+    "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin/module.cpp")
 add_custom_command(
-    OUTPUT "${_iv_builtin_package_manifest}"
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory
-        "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}"
-        "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}"
+    OUTPUT "${_iv_builtin_package_manifest}" "${_iv_builtin_package_entry}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/iv_package.json"
+        "${_iv_builtin_package_manifest}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/module.cpp"
+        "${_iv_builtin_package_entry}"
     DEPENDS
         "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/iv_package.json"
         "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/module.cpp"
     VERBATIM
 )
 add_custom_target(intravenous_builtin_package_assets
-    DEPENDS "${_iv_builtin_package_manifest}")
+    DEPENDS "${_iv_builtin_package_manifest}" "${_iv_builtin_package_entry}")
 
 add_library(intravenous_graph_builder OBJECT
     basic_nodes/debug_probe.cpp
@@ -219,6 +219,8 @@ add_library(intravenous_graph_builder OBJECT
     graph/builder/node_refs.cpp
     graph/builder/state.cpp
     graph/reflected_node_description.cpp
+    graph_jit/event_conversion_runtime.cpp
+    graph_jit/event_retention_runtime.cpp
     module/builder_session.cpp
     module/package_definitions.cpp
     module/source_annotations.cpp
@@ -301,41 +303,57 @@ add_library(intravenous_module_watcher OBJECT
 )
 iv_configure_intravenous_target(intravenous_module_watcher PUBLIC)
 
+add_library(intravenous_graph_jit OBJECT
+    runtime/graph_executor.cpp
+    runtime/graph_jit.cpp
+    graph_jit/connection_plan.cpp
+    graph_jit/background_storage_plan.cpp
+    graph_jit/lowering.cpp
+    graph_jit/lowering_plan.cpp
+    graph_jit/sample_storage_plan.cpp
+    graph_jit/transient_arena_plan.cpp
+)
+iv_configure_intravenous_target(intravenous_graph_jit PUBLIC)
+target_include_directories(intravenous_graph_jit PRIVATE ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(intravenous_graph_jit PRIVATE
+    ${LLVM_DEFINITIONS}
+    IV_CONFIGURED_IV_BUILDER_LIBRARY="$<TARGET_FILE:iv_builder>"
+)
+llvm_map_components_to_libnames(IV_GRAPH_JIT_LLVM_LIBS
+    bitreader
+    core
+    executionengine
+    linker
+    native
+    nativecodegen
+    orcjit
+    passes
+    support
+    target)
+target_link_libraries(intravenous_graph_jit PRIVATE
+    ${IV_GRAPH_JIT_LLVM_LIBS}
+)
+add_dependencies(intravenous_graph_jit iv_builder)
+
 iv_add_linker_event_object(
     intravenous_runtime_iv_module_instances_events
     runtime/iv_module_instances_events.cpp
 )
 iv_add_linker_event_object(
-    intravenous_runtime_iv_module_definitions_events
-    runtime/iv_module_definitions_events.cpp
+    intravenous_runtime_node_definitions_events
+    runtime/node_definitions_events.cpp
 )
 iv_add_linker_event_object(
-    intravenous_runtime_iv_module_reload_events
-    runtime/iv_module_reload_events.cpp
+    intravenous_runtime_package_pipeline_events
+    runtime/package_pipeline_events.cpp
+)
+iv_add_linker_event_object(
+    intravenous_runtime_project_graph_events
+    runtime/project_graph_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_iv_module_source_introspection_events
     runtime/iv_module_source_introspection_linker_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_graph_input_lanes_events
-    runtime/graph_input_lanes_linker_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_audio_device_lanes_events
-    runtime/audio_device_lanes_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_lane_filters_events
-    runtime/lane_filters_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_lane_views_events
-    runtime/lane_views_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_lanes_visualization_events
-    runtime/lanes_visualization_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_runtime_project_events
@@ -352,120 +370,57 @@ iv_add_linker_event_object(
     intravenous_runtime_socket_rpc_events
     runtime/socket_rpc_linker_events.cpp
 )
-iv_add_linker_event_object(
-    intravenous_runtime_task_runner_events
-    runtime/task_runner_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_timeline_events
-    runtime/timeline_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_configured_lanes_events
-    runtime/configured_lanes_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_timeline_execution_events
-    runtime/timeline_execution_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_iv_module_instances_execution_events
-    runtime/iv_module_instances_execution_events.cpp
-)
 target_link_libraries(intravenous_runtime_runtime_project_events PRIVATE
     nlohmann_json::nlohmann_json
 )
 
 add_library(intravenous_tooling_runtime_objects OBJECT
-    runtime/configured_lanes.cpp
-    runtime/configured_lanes_timeline_bridge.cpp
-    runtime/audio_device_lanes.cpp
-    runtime/audio_device_lanes_iv_module_instances_execution_bridge.cpp
-    runtime/audio_device_lanes_timeline_bridge.cpp
-    runtime/audio_device_lanes_timeline_execution_bridge.cpp
+    runtime/system_audio_devices.cpp
     runtime/audio_input_synchronizer.cpp
     runtime/config.cpp
-    runtime/graph_input_lanes.cpp
-    runtime/graph_input_lanes/block_store.cpp
-    runtime/graph_input_lanes/configured_state.cpp
-    runtime/graph_input_lanes/builder_completion.cpp
-    runtime/graph_input_lanes/lane_reconciler.cpp
-    runtime/graph_input_lanes/port_catalog.cpp
-    runtime/graph_input_lanes_events.cpp
-    runtime/graph_input_lanes_iv_module_instances_execution_bridge.cpp
-    runtime/graph_input_lanes_timeline_bridge.cpp
-    runtime/iv_module_definitions.cpp
-    runtime/iv_module_definitions_iv_module_instances_bridge.cpp
-    runtime/iv_module_definitions_iv_module_reload_bridge.cpp
-    runtime/iv_module_instances.cpp
-    runtime/iv_module_instances_execution.cpp
-    runtime/iv_module_instances_execution_task_runner_bridge.cpp
-    runtime/iv_module_instances_iv_module_instances_execution_bridge.cpp
-    runtime/iv_module_instances_graph_input_lanes_bridge.cpp
-    runtime/iv_module_instances_iv_module_source_introspection_bridge.cpp
-    runtime/iv_module_reload.cpp
-    runtime/iv_package_reload_service.cpp
-    runtime/lane_filters.cpp
-    runtime/lane_filters_lane_views_bridge.cpp
-    runtime/lane_views_lanes_visualization_bridge.cpp
-    runtime/lane_views.cpp
-    runtime/lanes_visualization.cpp
-    runtime/lanes_visualization_timeline_bridge.cpp
-    runtime/task_runner_lanes_visualization_bridge.cpp
-    runtime/lane_view_service.cpp
-    runtime/lane_query_schema_service.cpp
-    runtime/lane_query_schema_events.cpp
+    runtime/node_definitions.cpp
+    runtime/node_definitions_project_graph_bridge.cpp
+    runtime/node_definitions_iv_module_source_introspection_bridge.cpp
+    runtime/package_definitions_node_definitions_bridge.cpp
+    runtime/package_watcher_package_definitions_bridge.cpp
+    runtime/package_watcher_package_jit_bridge.cpp
+    runtime/package_watcher_node_instances_bridge.cpp
+    runtime/package_watcher_service_bridge.cpp
+    runtime/node_instances.cpp
+    runtime/node_instances_iv_module_source_introspection_bridge.cpp
+    runtime/graph_connections.cpp
+    runtime/project_graph.cpp
+    runtime/project_graph_graph_connections_bridge.cpp
+    runtime/project_graph_graph_jit_bridge.cpp
+    runtime/project_graph_node_instances_bridge.cpp
+    runtime/package_definitions.cpp
+    runtime/package_jit.cpp
+    runtime/package_watcher.cpp
+    runtime/package_watcher_service.cpp
     runtime/iv_module_source_introspection.cpp
-    runtime/iv_packages.cpp
     runtime/iv_module_source_introspection_events.cpp
-    runtime/iv_module_source_introspection_graph_input_lanes_bridge.cpp
     runtime/project_persistence.cpp
     runtime/project_persistence_builder.cpp
-    runtime/runtime_graph_bindings.cpp
     runtime/project_autosave.cpp
     runtime/runtime_project_events.cpp
-    runtime/project_persistence_audio_device_lanes_bridge.cpp
+    runtime/project_persistence_system_audio_devices_bridge.cpp
     runtime/project_persistence_project_autosave_bridge.cpp
-    runtime/project_persistence_graph_input_lanes_bridge.cpp
-    runtime/project_persistence_iv_module_instances_bridge.cpp
-    runtime/project_persistence_iv_module_reload_bridge.cpp
-    runtime/project_persistence_configured_lanes_bridge.cpp
-    runtime/project_persistence_timeline_bridge.cpp
-    runtime/project_persistence_timeline_execution_bridge.cpp
-    runtime/socket_rpc_lane_views_bridge.cpp
-    runtime/socket_rpc_lane_query_schema_bridge.cpp
-    runtime/socket_rpc_lane_query_completion_bridge.cpp
-    runtime/socket_rpc_audio_device_lanes_bridge.cpp
+    runtime/project_persistence_node_instances_bridge.cpp
+    runtime/project_persistence_project_graph_bridge.cpp
+    runtime/project_persistence_package_jit_bridge.cpp
+    runtime/socket_rpc_system_audio_devices_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
-    runtime/socket_rpc_iv_module_instances_bridge.cpp
-    runtime/socket_rpc_iv_packages_bridge.cpp
+    runtime/socket_rpc_node_instances_bridge.cpp
+    runtime/socket_rpc_project_graph_bridge.cpp
+    runtime/socket_rpc_package_definitions_bridge.cpp
     runtime/socket_rpc_project_autosave_bridge.cpp
     runtime/socket_rpc_project_persistence_bridge.cpp
-    runtime/socket_rpc_timeline_execution_bridge.cpp
-    runtime/iv_module_definitions_socket_rpc_packages_bridge.cpp
-    runtime/lanes_visualization_socket_rpc_notification_bridge.cpp
     runtime/socket_rpc_json_serialization.cpp
     runtime/socket_rpc_requests.cpp
     runtime/socket_rpc_response_builders.cpp
     runtime/socket_rpc_server.cpp
     runtime/startup_config.cpp
     runtime/uuid.cpp
-    runtime/task_runner.cpp
-    runtime/task_runner_audio_device_lanes_bridge.cpp
-    runtime/task_runner_graph_input_lanes_bridge.cpp
-    runtime/timeline_execution.cpp
-    runtime/timeline_execution_iv_module_instances_execution_bridge.cpp
-    runtime/timeline_execution_lanes_visualization_bridge.cpp
-    runtime/timeline_execution_task_runner_bridge.cpp
-    runtime/timeline_lane_filters_bridge.cpp
-    runtime/timeline.cpp
-    runtime/timeline_lane_query_schema_bridge.cpp
-    runtime/timeline_timeline_execution_bridge.cpp
-    query/lane_query_engine.cpp
-    query/lane_query_completion.cpp
-    query/lane_query_parser.cpp
-    query/lane_query_program.cpp
-    query/lane_query_tokenizer.cpp
 )
 iv_configure_intravenous_target(intravenous_tooling_runtime_objects PUBLIC)
 target_compile_definitions(intravenous_tooling_runtime_objects PRIVATE
@@ -490,6 +445,13 @@ if(JUCE_FOUND)
         POSITION_INDEPENDENT_CODE ON
     )
     iv_configure_intravenous_target(intravenous_juce_runtime PUBLIC)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(intravenous_juce_runtime PRIVATE
+            -Wno-array-bounds
+            -Wno-unnecessary-virtual-specifier
+            -Wno-unused-template
+        )
+    endif()
     target_compile_definitions(intravenous_juce_runtime PRIVATE
         IV_ENABLE_JUCE_VST=1
         JUCE_PLUGINHOST_VST3=1
@@ -575,5 +537,4 @@ iv_package_pch=${IV_DSL_PCH}
 iv_package_search_root=${IV_BUILTIN_PACKAGE_SEARCH_ROOT}
 sample_rate=48000
 block_size=256
-compiled_sample_cache_chunk_size_multiplier=16
 ")

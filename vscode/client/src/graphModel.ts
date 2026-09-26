@@ -20,7 +20,7 @@ export type VirtualPortConnectivity =
     | "mixed";
 
 export type VirtualPort = {
-    ordinal?: number;
+    index?: number;
     name?: string;
     type?: string;
     connectivity?: VirtualPortConnectivity | string;
@@ -33,7 +33,7 @@ export type VirtualPort = {
 };
 
 export type VirtualNodeMember = {
-    ordinal?: number;
+    index?: number;
     backingNodeId?: string;
     kind?: string;
     typeIdentity?: string;

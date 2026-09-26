@@ -24,7 +24,7 @@ namespace iv {
         using channel_type = Type;
         using tag_type = Tag;
 
-        static consteval size_t ordinal()
+        static consteval size_t index()
         {
             for (size_t i = 0; i < Type::channel_names.size(); ++i) {
                 if (Type::channel_names[i] == Tag::name) return i;
@@ -32,7 +32,7 @@ namespace iv {
             throw "channel member is not registered by its channel type";
         }
 
-        static constexpr size_t channel_ordinal = ordinal();
+        static constexpr size_t channel_index = index();
 
         template<class T>
         constexpr auto operator=(T&& value) const

@@ -76,12 +76,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { event_input("midi", EventTypeId::midi) };
+            return std::array { sequential_event_input("midi", EventTypeId::midi) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output("frequency") };
+            return std::array { tick_sample_output("frequency") };
         }
 
         void declare(DeclarationContext<MidiPitch> const& ctx) const
@@ -173,12 +173,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { event_input("midi", EventTypeId::midi) };
+            return std::array { sequential_event_input("midi", EventTypeId::midi) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output("gate") };
+            return std::array { tick_sample_output("gate") };
         }
 
         void declare(DeclarationContext<MidiGate> const& ctx) const
@@ -288,19 +288,19 @@ namespace iv {
             pitch_bend_range_semitones(pitch_bend_range_semitones)
         {}
 
-        constexpr auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array {
-                event_input("midi", EventTypeId::midi),
+                sequential_event_input("midi", EventTypeId::midi),
             };
         }
 
-        constexpr auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array {
-                sample_output("amplitude"),
-                sample_output("frequency"),
-                event_output("trigger", EventTypeId::trigger),
+                tick_sample_output("amplitude"),
+                tick_sample_output("frequency"),
+                tick_event_output("trigger", EventTypeId::trigger),
             };
         }
 
@@ -393,7 +393,7 @@ namespace iv {
         static_assert(voice_count > 0, "iv::polyphonic requires at least one voice");
 
         auto const midi = g.event_input<"midi">(EventTypeId::midi);
-        auto process_lane = [&]<size_t VoiceIndex>() {
+        auto process_voice = [&]<size_t VoiceIndex>() {
             auto voice = g.subgraph([&](auto& s){
                 auto const voice_midi = s.template event_input<"midi">(EventTypeId::midi);
                 auto midi_driver = details::configure_concrete_node<
@@ -408,7 +408,7 @@ namespace iv {
         };
 
         [&]<size_t... VoiceIndices>(std::index_sequence<VoiceIndices...>) {
-            (process_lane.template operator()<VoiceIndices>(), ...);
+            (process_voice.template operator()<VoiceIndices>(), ...);
         }(std::make_index_sequence<voice_count>{});
     }
 }

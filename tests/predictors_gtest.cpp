@@ -18,14 +18,14 @@ namespace {
         static_assert(details::has_constexpr_port_configs<ResidualAr2>);
         static_assert(details::has_constexpr_port_configs<Poly>);
 
-        static_assert(sample_properties(Nlms::inputs()[0]).history == 7);
-        static_assert(sample_properties(Nlms::outputs()[0]).history == 3);
-        static_assert(sample_properties(Residual::inputs()[0]).history == 6);
-        static_assert(sample_properties(Residual::outputs()[0]).history == 5);
-        static_assert(sample_properties(ResidualAr2::inputs()[0]).history == 8);
-        static_assert(sample_properties(ResidualAr2::outputs()[0]).history == 6);
-        static_assert(sample_properties(Poly::inputs()[0]).history == 3);
-        static_assert(sample_properties(Poly::outputs()[0]).history == 1);
+        static_assert(port_history(Nlms::inputs()[0]) == 7);
+        static_assert(port_history(Nlms::outputs()[0]) == 3);
+        static_assert(port_history(Residual::inputs()[0]) == 6);
+        static_assert(port_history(Residual::outputs()[0]) == 5);
+        static_assert(port_history(ResidualAr2::inputs()[0]) == 8);
+        static_assert(port_history(ResidualAr2::outputs()[0]) == 6);
+        static_assert(port_history(Poly::inputs()[0]) == 3);
+        static_assert(port_history(Poly::outputs()[0]) == 1);
 
         [[maybe_unused]] Nlms nlms { 0.1f, 0.9f };
         [[maybe_unused]] Residual residual { 0.1f };

@@ -5,6 +5,7 @@
 #include <concepts>
 #include <functional>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 // Declare a bridge's two concrete participants and its move-only binding
@@ -114,36 +115,64 @@
 template <class Bridge, auto Member>
 struct iv_bridge_subscriber;
 
-template <class Bridge, class C, class... Parameters,
-          void (C::*Member)(Parameters...)>
+template <class Bridge, class R, class C, class... Parameters,
+          R (C::*Member)(Parameters...)>
 struct iv_bridge_subscriber<Bridge, Member> {
-    static void invoke(Parameters... parameters)
+    static R invoke(Parameters... parameters)
     {
         static_assert(
             std::same_as<C, typename Bridge::left_type>
                 || std::same_as<C, typename Bridge::right_type>,
             "bridge subscriber owner must be one of the bridge's participants");
         if (auto* instance = Bridge::template get<C>()) {
-            ::iv::details::invoke_linker_event_module<C>([&] {
-                std::invoke(Member, *instance, std::forward<Parameters>(parameters)...);
-            });
+            if constexpr (std::is_void_v<R>) {
+                ::iv::details::invoke_linker_event_module<C>([&] {
+                    std::invoke(Member, *instance, std::forward<Parameters>(parameters)...);
+                });
+                return;
+            } else {
+                return ::iv::details::invoke_linker_event_module<C>([&]() -> R {
+                    return std::invoke(
+                        Member, *instance, std::forward<Parameters>(parameters)...);
+                });
+            }
+        }
+        if constexpr (!std::is_void_v<R>) {
+            static_assert(
+                std::default_initializable<R>,
+                "unbound value-returning bridge subscribers require a default-initializable result");
+            return R{};
         }
     }
 };
 
-template <class Bridge, class C, class... Parameters,
-          void (C::*Member)(Parameters...) const>
+template <class Bridge, class R, class C, class... Parameters,
+          R (C::*Member)(Parameters...) const>
 struct iv_bridge_subscriber<Bridge, Member> {
-    static void invoke(Parameters... parameters)
+    static R invoke(Parameters... parameters)
     {
         static_assert(
             std::same_as<C, typename Bridge::left_type>
                 || std::same_as<C, typename Bridge::right_type>,
             "bridge subscriber owner must be one of the bridge's participants");
         if (auto* instance = Bridge::template get<C>()) {
-            ::iv::details::invoke_linker_event_module<C>([&] {
-                std::invoke(Member, *instance, std::forward<Parameters>(parameters)...);
-            });
+            if constexpr (std::is_void_v<R>) {
+                ::iv::details::invoke_linker_event_module<C>([&] {
+                    std::invoke(Member, *instance, std::forward<Parameters>(parameters)...);
+                });
+                return;
+            } else {
+                return ::iv::details::invoke_linker_event_module<C>([&]() -> R {
+                    return std::invoke(
+                        Member, *instance, std::forward<Parameters>(parameters)...);
+                });
+            }
+        }
+        if constexpr (!std::is_void_v<R>) {
+            static_assert(
+                std::default_initializable<R>,
+                "unbound value-returning bridge subscribers require a default-initializable result");
+            return R{};
         }
     }
 };

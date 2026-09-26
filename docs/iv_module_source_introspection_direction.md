@@ -1,6 +1,14 @@
 # Iv Module Source Introspection Direction
 
-`IvModuleSourceIntrospection` is a read model for tooling and UI queries.
+> **Naming/status:** `IvModuleSourceIntrospection` remains the appropriate name.
+> Only module nodes expose source graph structure for this read model; leaf nodes
+> do not. Its internal event path may change as the project-graph pipeline is
+> rebuilt, but the responsibility should not be generalized merely because leaf
+> and module definitions share the `NodeDefinitions` namespace. It remains a read
+> model and must not participate in root graph construction. See
+> [project_graph_application_architecture.md](./project_graph_application_architecture.md).
+
+`IvModuleSourceIntrospection` is the current read model for tooling and UI queries.
 
 Its job is to:
 - map source spans to logical nodes
@@ -21,7 +29,7 @@ Direction:
 Implications:
 - `app.cpp` should only instantiate modules, wire bridges, and start event sources
 - query methods should not fail because introspection has not been manually initialized
-- `IvModuleDefinitionsChanged` remains the event that updates the introspection index
+- the current compatibility `IvPackageDefinitionsChanged` diff published by `NodeDefinitions` updates the introspection index; this direct bridge is temporary until `ProjectGraph` becomes the single execution/read-model join described in the project-graph architecture
 - live port values continue to come from the existing snapshot request event
 
 Behavior:

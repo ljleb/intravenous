@@ -4,9 +4,11 @@
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/node/config_relocations.h>
 #include <intravenous/node/node_state_structure.h>
+#include <intravenous/graph/configured_graph.hpp>
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -14,6 +16,7 @@
 namespace iv {
 class GraphBuilder;
 class GraphBuilderState;
+class NodeRef;
 struct ConfiguredGraph;
 
 namespace details {
@@ -21,9 +24,9 @@ namespace details {
 // these views from the IV packages that are loaded for the configuration; the
 // BuilderSession copies the records so nested iv-module calls use one stable
 // lookup set even if other packages are reloaded concurrently.
-struct BuilderNodeStateStructure {
+struct BuilderNodeStateStructures {
     NodeCodeKey code_key{};
-    NodeStateStructure structure{};
+    NodeStateStructures structures{};
 };
 
 struct BuilderPackageView {
@@ -31,7 +34,7 @@ struct BuilderPackageView {
     std::span<PackageDefinition const> definitions{};
     std::span<NodeConfigPointerFieldData const> config_pointer_fields{};
     std::span<RetainedGlobalData const> retained_globals{};
-    std::span<BuilderNodeStateStructure const> node_state_structures{};
+    std::span<BuilderNodeStateStructures const> node_state_structures{};
 };
 
 struct BuilderDefinition {
@@ -40,6 +43,18 @@ struct BuilderDefinition {
 };
 
 struct BuilderSession;
+
+using BuilderDefinitionResolver = NodeRef (*)(
+    void* context,
+    GraphBuilder&,
+    std::string_view id,
+    std::optional<ChannelLayout> tiled_layout,
+    std::span<ConfigurationArgument> arguments);
+
+void set_builder_definition_resolver(
+    BuilderSession*, void* context, BuilderDefinitionResolver resolver) noexcept;
+BuilderDefinitionResolver builder_definition_resolver(BuilderSession const*) noexcept;
+void* builder_definition_resolver_context(BuilderSession const*) noexcept;
 
 extern "C" BuilderSession* iv_builder_session_create();
 extern "C" void iv_builder_session_destroy(BuilderSession*) noexcept;
@@ -66,7 +81,7 @@ void end_builder_module(BuilderSession*) noexcept;
 
 NodeConfigRelocations capture_node_config(
     BuilderSession*, NodeCodeKey, void const*, std::size_t);
-std::shared_ptr<NodeStateStructure const> copy_builder_node_state_structure(
+std::shared_ptr<NodeStateStructures const> copy_builder_node_state_structures(
     BuilderSession*, NodeCodeKey);
 
 // Module-side node constructors request storage from the shared builder and

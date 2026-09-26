@@ -1,15 +1,15 @@
 #include <intravenous/node/lifecycle.h>
 #include <intravenous/node/layout.h>
 #include "module_test_utils.h"
-#include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/dsl.h>
-#include <intravenous/graph/node.h>
-#include <intravenous/graph/node_wrapper.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -186,6 +186,10 @@ namespace {
         struct State {
             int marker = 17;
         };
+
+        struct TockState {
+            int marker = 23;
+        };
     };
 
     struct IdentifiedMovable {
@@ -292,6 +296,7 @@ namespace {
     struct NestedParent {
         struct State {
             std::span<std::span<std::byte>> nested;
+            std::span<std::span<std::byte>> nested_background;
         };
 
         void declare(iv::DeclarationContext<NestedParent> const& ctx) const
@@ -302,6 +307,59 @@ namespace {
             do_declare(a, ctx);
             do_declare(b, ctx);
             ctx.nested_node_states(state.nested);
+            ctx.nested_node_background_states(state.nested_background);
+        }
+    };
+
+    struct BackgroundLifecycleNode {
+        std::string id;
+
+        struct TockState {
+            static inline int live_instances = 0;
+
+            int initialized = 0;
+            int moved = 0;
+            int released = 0;
+            int value = 0;
+
+            TockState()
+            {
+                ++live_instances;
+            }
+
+            ~TockState()
+            {
+                --live_instances;
+            }
+        };
+
+        std::string identity() const
+        {
+            return id;
+        }
+
+        void initialize(
+            iv::InitializationContext<BackgroundLifecycleNode> const& ctx) const
+        {
+            auto& state = ctx.tock_state();
+            ++state.initialized;
+            state.value = 17;
+        }
+
+        void move(iv::MoveContext<BackgroundLifecycleNode> const& ctx) const
+        {
+            auto& state = ctx.tock_state();
+            auto const& previous = ctx.previous_background_state();
+            state.initialized = previous.initialized;
+            state.moved = previous.moved + 1;
+            state.released = previous.released;
+            state.value = previous.value;
+        }
+
+        void release(
+            iv::ReleaseContext<BackgroundLifecycleNode> const& ctx) const
+        {
+            ++ctx.tock_state().released;
         }
     };
 
@@ -311,9 +369,15 @@ namespace {
             int ticked = 0;
         };
 
+        struct TockState {
+            int initialized = 0;
+            int ticked = 0;
+        };
+
         void initialize(iv::InitializationContext<StatefulTickingNode> const& ctx) const
         {
             ctx.state().initialized += 1;
+            ctx.tock_state().initialized += 1;
         }
 
         void tick_block(iv::TickBlockContext<StatefulTickingNode> const& ctx) const
@@ -321,11 +385,229 @@ namespace {
             ctx.state().ticked += static_cast<int>(ctx.block_size);
         }
     };
+
+    struct BackgroundStorageProducer {
+        struct TockState {
+            std::span<int> values;
+        };
+
+        void declare(iv::DeclarationContext<BackgroundStorageProducer> const& ctx) const
+        {
+            auto const& state = ctx.tock_state();
+            ctx.local_array(state.values, 3);
+            ctx.export_array("background-values", state.values);
+        }
+
+        void initialize(
+            iv::InitializationContext<BackgroundStorageProducer> const& ctx) const
+        {
+            auto& state = ctx.tock_state();
+            state.values[0] = 5;
+            state.values[1] = 7;
+            state.values[2] = 11;
+        }
+    };
+
+    struct BackgroundStorageConsumer {
+        struct TockState {
+            std::span<int> imported;
+            int observed_sum = 0;
+        };
+
+        void declare(iv::DeclarationContext<BackgroundStorageConsumer> const& ctx) const
+        {
+            auto const& state = ctx.tock_state();
+            ctx.import_array("background-values", state.imported);
+        }
+
+        void initialize(
+            iv::InitializationContext<BackgroundStorageConsumer> const& ctx) const
+        {
+            auto& state = ctx.tock_state();
+            for (auto const value : state.imported) {
+                state.observed_sum += value;
+            }
+        }
+    };
 }
 
 int main()
 {
     iv::test::install_crash_handlers();
+
+    {
+        // Compiler-owned persistent raw regions migrate by stable identity, not
+        // by incidental region order/offset. Transient raw storage stays fresh.
+        iv::NodeLayoutBuilder previous_builder(8);
+        auto previous_persistent = previous_builder.declare_raw_region(
+            16, 8, "graphjit.test.persistent");
+        auto previous_transient = previous_builder.declare_raw_region(16, 8);
+        auto previous_layout = std::move(previous_builder).build();
+        auto resources = make_resources();
+        auto previous = previous_layout.create_storage(resources);
+        previous.initialize();
+        std::memset(
+            previous.region_bytes(previous_persistent).data(),
+            0x5a,
+            previous.region_bytes(previous_persistent).size());
+        std::memset(
+            previous.region_bytes(previous_transient).data(),
+            0x33,
+            previous.region_bytes(previous_transient).size());
+
+        iv::NodeLayoutBuilder current_builder(8);
+        auto leading_transient = current_builder.declare_raw_region(7, 1);
+        auto current_persistent = current_builder.declare_raw_region(
+            16, 8, "graphjit.test.persistent");
+        auto current_transient = current_builder.declare_raw_region(16, 8);
+        auto current_layout = std::move(current_builder).build();
+        auto current = current_layout.create_storage(resources);
+        current.initialize(&previous);
+
+        for (auto const byte : current.region_bytes(current_persistent)) {
+            iv::test::require(
+                byte == std::byte{0x5a},
+                "stable persistent raw region should migrate by identity");
+        }
+        for (auto const byte : current.region_bytes(current_transient)) {
+            iv::test::require(
+                byte == std::byte{0},
+                "unidentified transient raw region must not migrate");
+        }
+        for (auto const byte : current.region_bytes(leading_transient)) {
+            iv::test::require(
+                byte == std::byte{0},
+                "new raw storage should remain zero initialized");
+        }
+    }
+
+    {
+        // Compiler-owned raw-region initialization runs as part of
+        // NodeStorage::initialize(). Exact-shape migration wins over a new
+        // initializer so persistent graph state is never reset during a
+        // generation swap; shape changes run the new initializer.
+        auto fill_raw_region = +[](
+            std::span<std::byte> storage,
+            std::span<std::byte const> data) {
+            iv::test::require(
+                data.size() == 1,
+                "raw-region initializer should receive its declared data");
+            std::fill(storage.begin(), storage.end(), data.front());
+        };
+        auto initialize_data = [](std::byte value) {
+            return std::vector<std::byte>{value};
+        };
+
+        iv::NodeLayoutBuilder previous_builder(8);
+        auto previous_region = previous_builder.declare_raw_region(
+            8,
+            4,
+            "graphjit.test.initialized",
+            fill_raw_region,
+            initialize_data(std::byte{0x11}));
+        auto previous_layout = std::move(previous_builder).build();
+        auto resources = make_resources();
+        auto previous = previous_layout.create_storage(resources);
+        previous.initialize();
+        for (auto const byte : previous.region_bytes(previous_region)) {
+            iv::test::require(
+                byte == std::byte{0x11},
+                "fresh raw storage should run its initialize callback");
+        }
+        std::fill(
+            previous.region_bytes(previous_region).begin(),
+            previous.region_bytes(previous_region).end(),
+            std::byte{0x5a});
+
+        iv::NodeLayoutBuilder current_builder(8);
+        auto current_region = current_builder.declare_raw_region(
+            8,
+            4,
+            "graphjit.test.initialized",
+            fill_raw_region,
+            initialize_data(std::byte{0x22}));
+        auto current_layout = std::move(current_builder).build();
+        auto current = current_layout.create_storage(resources);
+        current.initialize(&previous);
+        for (auto const byte : current.region_bytes(current_region)) {
+            iv::test::require(
+                byte == std::byte{0x5a},
+                "migrated raw storage must not rerun its initialize callback");
+        }
+
+        iv::NodeLayoutBuilder reshaped_builder(8);
+        auto reshaped_region = reshaped_builder.declare_raw_region(
+            12,
+            4,
+            "graphjit.test.initialized",
+            fill_raw_region,
+            initialize_data(std::byte{0x33}));
+        auto reshaped_layout = std::move(reshaped_builder).build();
+        auto reshaped = reshaped_layout.create_storage(resources);
+        reshaped.initialize(&current);
+        for (auto const byte : reshaped.region_bytes(reshaped_region)) {
+            iv::test::require(
+                byte == std::byte{0x33},
+                "shape-mismatched raw storage should run its initialize callback");
+        }
+    }
+
+    {
+        // Exact shape is part of the migration contract. Reusing an identity
+        // with a different byte extent must conservatively start from zero.
+        iv::NodeLayoutBuilder previous_builder(8);
+        auto previous_region = previous_builder.declare_raw_region(
+            16, 8, "graphjit.test.shape");
+        auto previous_layout = std::move(previous_builder).build();
+        auto resources = make_resources();
+        auto previous = previous_layout.create_storage(resources);
+        previous.initialize();
+        std::memset(
+            previous.region_bytes(previous_region).data(),
+            0x6b,
+            previous.region_bytes(previous_region).size());
+
+        iv::NodeLayoutBuilder current_builder(8);
+        auto current_region = current_builder.declare_raw_region(
+            24, 8, "graphjit.test.shape");
+        auto current_layout = std::move(current_builder).build();
+        auto current = current_layout.create_storage(resources);
+        current.initialize(&previous);
+        for (auto const byte : current.region_bytes(current_region)) {
+            iv::test::require(
+                byte == std::byte{0},
+                "shape-mismatched persistent raw region must not migrate");
+        }
+    }
+
+    {
+        // The migration path used for safe-point generation swaps must
+        // preserve the same compiler-owned persistent raw storage contract.
+        iv::NodeLayoutBuilder previous_builder(8);
+        auto previous_region = previous_builder.declare_raw_region(
+            8, 4, "graphjit.test.migration");
+        auto previous_layout = std::move(previous_builder).build();
+        auto resources = make_resources();
+        auto previous = previous_layout.create_storage(resources);
+        previous.initialize();
+        std::memset(
+            previous.region_bytes(previous_region).data(),
+            0x7c,
+            previous.region_bytes(previous_region).size());
+
+        iv::NodeLayoutBuilder current_builder(8);
+        auto current_region = current_builder.declare_raw_region(
+            8, 4, "graphjit.test.migration");
+        auto current_layout = std::move(current_builder).build();
+        auto current = current_layout.create_storage(resources);
+        auto migration = current.migration_from(previous);
+        migration.commit();
+        for (auto const byte : current.region_bytes(current_region)) {
+            iv::test::require(
+                byte == std::byte{0x7c},
+                "migration should preserve persistent raw storage");
+        }
+    }
 
     {
         iv::NodeLayoutBuilder builder(8);
@@ -511,6 +793,175 @@ int main()
     }
 
     {
+        iv::NodeLayoutBuilder builder(8);
+        BackgroundStorageProducer producer;
+        BackgroundStorageConsumer consumer;
+        iv::do_declare(producer, builder);
+        iv::do_declare(consumer, builder);
+
+        auto layout = std::move(builder).build();
+        auto resources = make_resources();
+        auto storage = layout.create_storage(resources);
+        storage.initialize();
+
+        auto& producer_state = *static_cast<BackgroundStorageProducer::TockState*>(
+            storage.background_state_ptr(0));
+        auto& consumer_state = *static_cast<BackgroundStorageConsumer::TockState*>(
+            storage.background_state_ptr(1));
+        iv::test::require(
+            producer_state.values.size() == 3,
+            "local_array declared from TockState should be patched");
+        iv::test::require(
+            consumer_state.imported.data() == producer_state.values.data(),
+            "TockState import/export bindings should resolve through TockState");
+        auto const exported =
+            storage.resolve_exported_array_storage<int>("background-values");
+        iv::test::require(
+            exported.data() == producer_state.values.data() && exported.size() == 3,
+            "host export resolution should read TockState span fields");
+        iv::test::require(
+            consumer_state.observed_sum == 23,
+            "TockState imports should be available during initialize");
+    }
+
+    {
+        iv::NodeLayoutBuilder builder(4);
+        auto const leading = builder.declare_raw_region(13, 32);
+        LocalOnly node;
+        iv::do_declare(node, builder);
+        auto const trailing = builder.declare_raw_region(7, 8);
+
+        iv::NodeLayout layout = std::move(builder).build();
+        iv::test::require(leading.valid(), "raw region handle should be valid");
+        iv::test::require(trailing.valid(), "second raw region handle should be valid");
+        iv::test::require(
+            layout.regions[leading.index].kind == iv::NodeLayout::Region::Kind::raw,
+            "raw region should remain part of the canonical node layout");
+        iv::test::require(
+            layout.regions[leading.index].owner_node == iv::NodeLayout::no_owner_node,
+            "raw region should not require a node owner");
+        iv::test::require(
+            layout.regions[leading.index].storage_offset % 32 == 0,
+            "raw region storage should honor requested alignment");
+        iv::test::require(
+            layout.regions[trailing.index].storage_offset >
+                layout.regions[leading.index].storage_offset,
+            "raw regions should participate in declaration-order packing");
+
+        auto resources = make_resources();
+        iv::NodeStorage storage = layout.create_storage(resources);
+        auto leading_bytes = storage.region_bytes(leading);
+        auto trailing_bytes = storage.region_bytes(trailing);
+        iv::test::require(leading_bytes.size() == 13, "raw region size should survive layout");
+        iv::test::require(trailing_bytes.size() == 7, "second raw region size should survive layout");
+        iv::test::require(
+            reinterpret_cast<std::uintptr_t>(leading_bytes.data()) % 32 == 0,
+            "raw region address should satisfy requested alignment");
+        leading_bytes[3] = std::byte { 0x5a };
+        iv::test::require(
+            storage.buffer()[layout.regions[leading.index].storage_offset + 3] ==
+                std::byte { 0x5a },
+            "raw region should be backed by the same NodeStorage allocation");
+    }
+
+    {
+        bool rejected = false;
+        try {
+            iv::NodeLayoutBuilder builder(4);
+            (void)builder.declare_raw_region(8, 3);
+        } catch (std::invalid_argument const&) {
+            rejected = true;
+        }
+        iv::test::require(
+            rejected,
+            "raw region declarations should reject non-power-of-two alignment");
+    }
+
+    {
+        iv::test::require(
+            BackgroundLifecycleNode::TockState::live_instances == 0,
+            "background-state lifecycle test should start without live objects");
+
+        iv::NodeLayoutBuilder builder(4);
+        BackgroundLifecycleNode node { .id = "background-state" };
+        iv::do_declare(node, builder);
+        iv::NodeLayout layout = std::move(builder).build();
+        iv::test::require(
+            layout.nodes.front().background_state_structure.has_value(),
+            "background-state layout should carry ABI metadata");
+        layout.nodes.front().background_state_structure->type_identity = {
+            .nominal_id = "test.BackgroundLifecycleNode.TockState",
+            .definition_fingerprint = "v1",
+            .display_name = "BackgroundLifecycleNode::TockState",
+        };
+        iv::NodeLayout reloaded_layout = layout;
+        static int reloaded_node_type_token = 0;
+        reloaded_layout.nodes.front().node_type = &reloaded_node_type_token;
+
+        iv::test::require(layout.nodes.size() == 1, "background-state layout should contain its node");
+        auto const& record = layout.nodes.front();
+        iv::test::require(record.state_size == 0, "test node should have no sequential State");
+        iv::test::require(
+            record.background_state_size == sizeof(BackgroundLifecycleNode::TockState),
+            "layout should record TockState size");
+        iv::test::require(
+            record.background_state_alignment == alignof(BackgroundLifecycleNode::TockState),
+            "layout should record TockState alignment");
+        iv::test::require(
+            record.background_state_offset >= 0,
+            "layout should assign TockState storage");
+        iv::test::require(
+            static_cast<size_t>(record.background_state_offset) %
+                    alignof(BackgroundLifecycleNode::TockState) ==
+                0,
+            "TockState offset should satisfy its alignment");
+
+        auto resources = make_resources();
+        {
+            iv::NodeStorage original = layout.create_storage(resources);
+            original.initialize();
+            auto& original_background =
+                *static_cast<BackgroundLifecycleNode::TockState*>(
+                    original.background_state_ptr(0));
+            iv::test::require(
+                original_background.initialized == 1,
+                "initialize should receive the default-constructed TockState");
+            original_background.value = 91;
+
+            iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
+            iv::test::require(
+                reloaded.can_move_from(original, 0, 0),
+                "same reflected TockState definition should remain movable across package generations");
+            auto migration = reloaded.migration_from(original);
+            migration.commit();
+            auto& reloaded_background =
+                *static_cast<BackgroundLifecycleNode::TockState*>(
+                    reloaded.background_state_ptr(0));
+            iv::test::require(
+                reloaded_background.initialized == 1,
+                "move should preserve TockState initialization data");
+            iv::test::require(
+                reloaded_background.moved == 1,
+                "move should receive current and previous TockState objects");
+            iv::test::require(
+                reloaded_background.value == 91,
+                "move should be able to transfer TockState contents");
+            iv::test::require(
+                original.initialized_nodes.empty(),
+                "successful background-state migration should transfer release ownership");
+
+            reloaded.release();
+            iv::test::require(
+                reloaded_background.released == 1,
+                "release should receive the same mutable TockState object");
+        }
+
+        iv::test::require(
+            BackgroundLifecycleNode::TockState::live_instances == 0,
+            "NodeStorage destruction should destroy every constructed TockState");
+    }
+
+    {
         iv::NodeLayoutBuilder builder(4);
         NestedParent node;
         iv::do_declare(node, builder);
@@ -522,63 +973,19 @@ int main()
 
         auto& state = *static_cast<NestedParent::State*>(storage.state_ptr(0));
         iv::test::require(state.nested.size() == 2, "nested_node_states should record directly declared child nodes");
+        iv::test::require(state.nested_background.size() == 2, "nested_node_background_states should record the same directly declared child nodes");
         iv::test::require(state.nested[0].data() != nullptr, "first nested node state pointer should be patched");
         iv::test::require(state.nested[1].data() != nullptr, "second nested node state pointer should be patched");
+        iv::test::require(state.nested_background[0].size() == sizeof(NestedLeaf::TockState), "first nested background-state span should have the exact TockState size");
+        iv::test::require(state.nested_background[1].size() == sizeof(NestedLeaf::TockState), "second nested background-state span should have the exact TockState size");
         auto& first = *reinterpret_cast<NestedLeaf::State*>(state.nested[0].data());
         auto& second = *reinterpret_cast<NestedLeaf::State*>(state.nested[1].data());
+        auto& first_background = *reinterpret_cast<NestedLeaf::TockState*>(state.nested_background[0].data());
+        auto& second_background = *reinterpret_cast<NestedLeaf::TockState*>(state.nested_background[1].data());
         iv::test::require(first.marker == 17, "first nested node state should be addressable");
         iv::test::require(second.marker == 17, "second nested node state should be addressable");
-    }
-
-    {
-        iv::NodeLayoutBuilder builder(8);
-        iv::TypeErasedNode node = StatefulTickingNode {};
-        iv::do_declare(node, builder);
-
-        iv::NodeLayout layout = std::move(builder).build();
-        auto resources = make_resources();
-        iv::NodeStorage storage = layout.create_storage(resources);
-        storage.initialize();
-
-        auto& erased_state = *static_cast<iv::TypeErasedNode::State*>(storage.state_ptr(0));
-        iv::test::require(erased_state.nested_node_states.size() == 1, "type-erased node should record exactly one nested child");
-        iv::test::require(erased_state.nested_node_states[0].data() != nullptr, "type-erased nested child state pointer should be patched");
-
-        node.tick_block({
-            iv::TickContext<iv::TypeErasedNode> {
-                .inputs = {},
-                .outputs = {},
-                .event_inputs = {},
-                .event_outputs = {},
-                .buffer = storage.buffer(),
-            },
-            0,
-            8,
-        });
-
-        auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(erased_state.nested_node_states[0].data());
-        iv::test::require(nested_state.initialized == 1, "type-erased nested child should initialize once");
-        iv::test::require(nested_state.ticked == 8, "type-erased nested child should tick through nested state");
-    }
-
-    {
-        const iv::GraphNodeWrapper wrapper(
-            iv::details::reflect_node(StatefulTickingNode {}),
-            std::vector<iv::InputPortPlan>{},
-            "standalone",
-            std::vector<iv::SampleOutputBinding>{}
-        );
-
-        iv::NodeLayoutBuilder builder(8);
-        iv::do_declare(wrapper, builder);
-        iv::NodeLayout layout = std::move(builder).build();
-        auto resources = make_resources();
-        iv::NodeStorage storage = layout.create_storage(resources);
-        storage.initialize();
-
-        auto& wrapper_state = *static_cast<iv::GraphNodeWrapper::State*>(storage.state_ptr(0));
-        iv::test::require(wrapper_state.nested_node_states.size() == 1, "standalone wrapper without inputs should expose one nested executable child");
-        iv::test::require(wrapper_state.nested_node_states[0].data() != nullptr, "standalone wrapper nested executable child state should be patched");
+        iv::test::require(first_background.marker == 23, "first nested TockState should be addressable");
+        iv::test::require(second_background.marker == 23, "second nested TockState should be addressable");
     }
 
     return 0;

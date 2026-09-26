@@ -3,12 +3,10 @@
 #include <intravenous/devices/audio_device.h>
 #include "fake_audio_device.h"
 #include <intravenous/module/loader.h>
-#include <intravenous/node/block_executor.h>
 #include <intravenous/runtime/handlers.h>
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_reload.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/package_pipeline_types.h>
 #include <intravenous/runtime/startup_config.h>
-#include <intravenous/runtime/timeline.h>
 #include <intravenous/juce/vst_runtime.h>
 
 #include <algorithm>
@@ -55,6 +53,11 @@ namespace iv::test {
         return IV_CONFIGURED_BINARY_DIR;
     }
 
+    inline std::filesystem::path staged_builtin_package_root()
+    {
+        return configured_build_root() / "src/intravenous/builtin_packages/builtin";
+    }
+
     inline std::filesystem::path duplicate_modules_root()
     {
         return repo_root() / "tests" / "test_modules_duplicate";
@@ -62,11 +65,11 @@ namespace iv::test {
 
     inline void load_test_default_package_catalog(iv::ModuleLoader& loader)
     {
-        // Direct-loader tests have no IvPackageReloadService. Seed the same
-        // catalog state it would provide, using the source package available
-        // to the test build rather than a loader-internal fallback.
+        // Direct-loader tests have no PackageWatcherService. Initialize the same
+        // catalog state it would provide from the package staged in the active
+        // CMake build tree, never from the checkout's source directory.
         auto defaults = loader.load_packages({
-            repo_root() / "src/intravenous/builtin_packages/builtin"});
+            staged_builtin_package_root()});
         if (defaults.size() != 1 || !defaults.front()) {
             throw std::runtime_error(
                 defaults.empty() ? "test default IV package load produced no result"
@@ -478,7 +481,7 @@ namespace iv::test {
         }
     };
 
-    inline iv::IvModuleReloadedDefinition load_runtime_iv_module_definition(
+    inline iv::PackageModuleDefinition load_runtime_iv_module_definition(
         iv::StartupConfigState const& config,
         std::filesystem::path package_root)
     {
@@ -490,11 +493,10 @@ namespace iv::test {
             config.discovery_start,
             config.search_roots,
             config.toolchain,
-            {},
-            iv::ModuleLoader::OptimizationLevel::O0);
+            {});
         load_test_default_package_catalog(loader);
         auto loaded_graph = loader.load_package_definitions(package_root).front();
-        return iv::IvModuleReloadedDefinition{
+        return iv::PackageModuleDefinition{
             .package_id = normalized_package_root.generic_string(),
             .definition_id = loaded_graph.module_id,
             .package_root = normalized_package_root,
@@ -502,21 +504,11 @@ namespace iv::test {
             .introspection = loaded_graph.introspection,
             .dependencies = loaded_graph.dependencies,
             .module_refs = loaded_graph.module_refs,
-            .root = loaded_graph.root,
+            .configured_graph = loaded_graph.configured_graph,
         };
     }
 
-    // Synthetic "loaded" definitions model a usable, zero-argument IV module
-    // unless a test explicitly asks for a rootless definition.  Production
-    // rootless definitions remain valid registry entries, but cannot realize a
-    // persisted project instance because there is no execution root to hand to
-    // the instance runtime.
-    struct LoadedDefinitionTestRoot {
-        void tick_block(auto const&) const {}
-    };
-    inline LoadedDefinitionTestRoot const loaded_definition_test_root{};
-
-    inline iv::IvModuleReloadedDefinition make_loaded_definition(
+    inline iv::PackageModuleDefinition make_loaded_definition(
         std::filesystem::path package_root,
         std::string module_id = "iv.test.module",
         iv::GraphIntrospectionMetadata introspection = {},
@@ -524,7 +516,7 @@ namespace iv::test {
     {
         auto const normalized_package_root =
             std::filesystem::weakly_canonical(package_root).lexically_normal();
-        return iv::IvModuleReloadedDefinition{
+        return iv::PackageModuleDefinition{
             .package_id = normalized_package_root.generic_string(),
             .definition_id = module_id,
             .package_root = normalized_package_root,
@@ -532,7 +524,6 @@ namespace iv::test {
             .introspection = std::move(introspection),
             .dependencies = std::move(dependencies),
             .module_refs = {},
-            .root = iv::WeakTypeErasedNode(loaded_definition_test_root),
         };
     }
 
@@ -618,8 +609,7 @@ namespace iv::test {
             repo_root(),
             std::move(extra_roots),
             {},
-            {},
-            iv::ModuleLoader::OptimizationLevel::O0);
+            {});
         load_test_default_package_catalog(loader);
         return loader;
     }

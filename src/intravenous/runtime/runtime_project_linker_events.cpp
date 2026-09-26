@@ -1,15 +1,9 @@
 #include <intravenous/runtime/runtime_project_events.h>
 
 namespace iv {
-IV_DEFINE_LINKER_EVENT(
-    ProjectNotificationEvent,
-    iv_runtime_project_notification_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectStateChangedEvent,
-    iv_runtime_project_state_changed_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectLoadedEvent,
-    iv_runtime_project_loaded_event)
+IV_DEFINE_LINKER_EVENT(ProjectNotificationEvent, iv_runtime_project_notification_event)
+IV_DEFINE_LINKER_EVENT(ProjectStateChangedEvent, iv_runtime_project_state_changed_event)
+IV_DEFINE_LINKER_EVENT(ProjectLoadedEvent, iv_runtime_project_loaded_event)
 IV_DEFINE_LINKER_EVENT(
     ProjectSetAutosaveEnabledRequestedEvent,
     iv_runtime_project_set_autosave_enabled_requested_event)
@@ -26,60 +20,12 @@ IV_DEFINE_LINKER_EVENT(
     ProjectUpdateIvModuleInstancesRequestedEvent,
     iv_runtime_project_update_iv_module_instances_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequestedEvent,
-    iv_runtime_project_set_timeline_compiled_sample_cache_chunk_size_multiplier_requested_event)
+    ProjectUpsertGraphConnectionRequestedEvent,
+    iv_runtime_project_upsert_graph_connection_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    ProjectSetTimelineLaneSampleChannelTypeRequestedEvent,
-    iv_runtime_project_set_timeline_lane_sample_channel_type_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectSetTimelineLaneUiStateRequestedEvent,
-    iv_runtime_project_set_timeline_lane_ui_state_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectGetTimelineLaneTypesRequestedEvent,
-    iv_runtime_project_get_timeline_lane_types_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectCreateTimelineLaneRequestedEvent,
-    iv_runtime_project_create_timeline_lane_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectDeleteTimelineLaneRequestedEvent,
-    iv_runtime_project_delete_timeline_lane_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectDuplicateTimelineLaneRequestedEvent,
-    iv_runtime_project_duplicate_timeline_lane_requested_event)
+    ProjectDeleteGraphConnectionRequestedEvent,
+    iv_runtime_project_delete_graph_connection_requested_event)
 IV_DEFINE_LINKER_EVENT(
     ProjectSetAudioDevicesRequestedEvent,
     iv_runtime_project_set_audio_devices_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectSetAudioDeviceLaneIdsRequestedEvent,
-    iv_runtime_project_set_audio_device_lane_ids_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectGraphInputLaneBindingsEnsuredEvent,
-    iv_runtime_project_graph_input_lane_bindings_ensured_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectConnectTimelineLanesRequestedEvent,
-    iv_runtime_project_connect_timeline_lanes_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectDisconnectTimelineLanesRequestedEvent,
-    iv_runtime_project_disconnect_timeline_lanes_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectSetSampleInputValueRequestedEvent,
-    iv_runtime_project_set_sample_input_value_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectSetSampleInputStateRequestedEvent,
-    iv_runtime_project_set_sample_input_state_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectSetPublicSampleInputStateRequestedEvent,
-    iv_runtime_project_set_public_sample_input_state_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectSetPublicSampleInputValueRequestedEvent,
-    iv_runtime_project_set_public_sample_input_value_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectSetEventInputStateRequestedEvent,
-    iv_runtime_project_set_event_input_state_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectSetSampleOutputStateRequestedEvent,
-    iv_runtime_project_set_sample_output_state_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectSetEventOutputStateRequestedEvent,
-    iv_runtime_project_set_event_output_state_requested_event)
 } // namespace iv

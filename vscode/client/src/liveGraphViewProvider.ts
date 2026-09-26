@@ -515,10 +515,6 @@ export class LiveGraphViewProvider {
             stroke-linejoin: round;
         }
 
-        .port-row[data-state="timelineLane"] .port-state-icon {
-            color: var(--vscode-errorForeground);
-        }
-
         .port-row[data-state="virtualFollow"] .port-state-icon,
         .port-row[data-state="virtual"] .port-state-icon {
             color: var(--vscode-charts-blue);
@@ -677,9 +673,6 @@ export class LiveGraphViewProvider {
             ) {
                 return "";
             }
-            if (port.stateValue === "timelineLane") {
-                return '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3 9h10"/><path d="m10 5 4 4-4 4"/></svg>';
-            }
             if (port.stateValue === "virtualFollow" || port.stateValue === "virtual") {
                 return '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3 5.5h7.5a2 2 0 0 1 0 4H7.5a2 2 0 0 0 0 4H15"/><path d="m12.5 3 2.5 2.5-2.5 2.5"/></svg>';
             }
@@ -696,8 +689,7 @@ export class LiveGraphViewProvider {
             if (port.stateValue === "disconnected") {
                 return false;
             }
-            return port.stateValue === "timelineLane"
-                || port.stateValue === "virtualFollow"
+            return port.stateValue === "virtualFollow"
                 || port.stateValue === "virtual"
                 || port.stateValue === "overridden";
         }
@@ -810,8 +802,8 @@ export class LiveGraphViewProvider {
                 '</svg>';
         }
 
-        function queueControlUpdate(nodeId, memberOrdinal, ordinal, value) {
-            const key = String(nodeId) + ":" + String(memberOrdinal == null ? "" : memberOrdinal) + ":" + String(ordinal);
+        function queueControlUpdate(nodeId, memberIndex, index, value) {
+            const key = String(nodeId) + ":" + String(memberIndex == null ? "" : memberIndex) + ":" + String(index);
             const now = Date.now();
             const existing = state.pendingUpdates.get(key) || {
                 lastSentAt: 0,
@@ -838,8 +830,8 @@ export class LiveGraphViewProvider {
                 vscode.postMessage({
                     type: "setSampleInputValue",
                     nodeId,
-                    memberOrdinal,
-                    inputOrdinal: ordinal,
+                    memberIndex,
+                    inputIndex: index,
                     value: existing.pendingValue,
                 });
             };
@@ -866,8 +858,8 @@ export class LiveGraphViewProvider {
             state.pendingUpdates.set(key, existing);
         }
 
-        function clearPendingUpdate(nodeId, memberOrdinal, ordinal) {
-            const key = String(nodeId) + ":" + String(memberOrdinal == null ? "" : memberOrdinal) + ":" + String(ordinal);
+        function clearPendingUpdate(nodeId, memberIndex, index) {
+            const key = String(nodeId) + ":" + String(memberIndex == null ? "" : memberIndex) + ":" + String(index);
             const existing = state.pendingUpdates.get(key);
             if (existing && existing.timeoutId) {
                 clearTimeout(existing.timeoutId);
@@ -907,17 +899,17 @@ export class LiveGraphViewProvider {
             if (!type || !action) {
                 return;
             }
-            clearPendingUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal);
+            clearPendingUpdate(portRef.nodeId, portRef.memberIndex, portRef.index);
             const message = {
                 nodeId: portRef.nodeId,
-                memberOrdinal: portRef.memberOrdinal,
+                memberIndex: portRef.memberIndex,
                 state: action.state,
                 type,
             };
             if (portRef.stateFamily === "sampleOutput" || portRef.stateFamily === "eventOutput") {
-                message.outputOrdinal = portRef.ordinal;
+                message.outputIndex = portRef.index;
             } else {
-                message.inputOrdinal = portRef.ordinal;
+                message.inputIndex = portRef.index;
             }
             vscode.postMessage(message);
             hideContextMenu();
@@ -931,9 +923,9 @@ export class LiveGraphViewProvider {
             if (!Number.isFinite(value)) {
                 return;
             }
-            clearPendingUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal);
-            applyLocalControlValue(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal, value);
-            queueControlUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal, value);
+            clearPendingUpdate(portRef.nodeId, portRef.memberIndex, portRef.index);
+            applyLocalControlValue(portRef.nodeId, portRef.memberIndex, portRef.index, value);
+            queueControlUpdate(portRef.nodeId, portRef.memberIndex, portRef.index, value);
             hideContextMenu();
         }
 
@@ -975,15 +967,15 @@ export class LiveGraphViewProvider {
                 return null;
             }
             portRow.__statePortRef.nodeId = portRow.__knobDrag ? portRow.__knobDrag.nodeId : portRow.__statePortRef.nodeId;
-            portRow.__statePortRef.memberOrdinal = portRow.__knobDrag ? portRow.__knobDrag.memberOrdinal : portRow.__statePortRef.memberOrdinal;
+            portRow.__statePortRef.memberIndex = portRow.__knobDrag ? portRow.__knobDrag.memberIndex : portRow.__statePortRef.memberIndex;
             if (portRow.__knobDrag && portRow.__knobDrag.port) {
-                portRow.__statePortRef.ordinal = portRow.__knobDrag.port.ordinal;
+                portRow.__statePortRef.index = portRow.__knobDrag.port.index;
                 portRow.__statePortRef.hasConcreteOverride = Boolean(portRow.__knobDrag.port.hasConcreteOverride);
             }
             return portRow.__statePortRef;
         }
 
-        function applyLocalControlValue(nodeId, memberOrdinal, ordinal, value) {
+        function applyLocalControlValue(nodeId, memberIndex, index, value) {
             const currentValue = Number(value);
             for (const node of state.nodes) {
                 if (node.id !== nodeId) {
@@ -994,7 +986,7 @@ export class LiveGraphViewProvider {
                         return;
                     }
                     for (const input of inputs) {
-                        if (Number(input.ordinal) === Number(ordinal)) {
+                        if (Number(input.index) === Number(index)) {
                             input.currentValue = currentValue;
                             if (markOverride != null) {
                                 input.hasConcreteOverride = markOverride;
@@ -1002,18 +994,18 @@ export class LiveGraphViewProvider {
                         }
                     }
                 };
-                if (memberOrdinal == null) {
+                if (memberIndex == null) {
                     updateInputs(node.sampleInputs, null);
                     for (const member of node.members || []) {
                         const memberInputs = Array.isArray(member.sampleInputs) ? member.sampleInputs : [];
                         for (const input of memberInputs) {
-                            if (Number(input.ordinal) === Number(ordinal) && !input.hasConcreteOverride) {
+                            if (Number(input.index) === Number(index) && !input.hasConcreteOverride) {
                                 input.currentValue = currentValue;
                             }
                         }
                     }
                 } else {
-                    const member = (node.members || []).find((candidate) => Number(candidate.ordinal) === Number(memberOrdinal));
+                    const member = (node.members || []).find((candidate) => Number(candidate.index) === Number(memberIndex));
                     updateInputs(member && member.sampleInputs, true);
                 }
             }
@@ -1023,11 +1015,11 @@ export class LiveGraphViewProvider {
                     continue;
                 }
                 const port = portRow.__knobDrag.port;
-                if (!port || Number(port.ordinal) !== Number(ordinal)) {
+                if (!port || Number(port.index) !== Number(index)) {
                     continue;
                 }
-                if (memberOrdinal == null) {
-                    if (portRow.__knobDrag.memberOrdinal == null) {
+                if (memberIndex == null) {
+                    if (portRow.__knobDrag.memberIndex == null) {
                         updatePortRowValue(portRow, currentValue);
                         continue;
                     }
@@ -1038,8 +1030,8 @@ export class LiveGraphViewProvider {
                     continue;
                 }
                 if (
-                    portRow.__knobDrag.memberOrdinal != null
-                    && Number(portRow.__knobDrag.memberOrdinal) === Number(memberOrdinal)
+                    portRow.__knobDrag.memberIndex != null
+                    && Number(portRow.__knobDrag.memberIndex) === Number(memberIndex)
                 ) {
                     updatePortRowValue(portRow, currentValue);
                     updateConcreteOverrideVisual(portRow, true);
@@ -1103,12 +1095,12 @@ export class LiveGraphViewProvider {
             return portRow;
         }
 
-        function beginKnobDrag(lockEl, knob, valueEl, nodeId, memberOrdinal, port, event) {
+        function beginKnobDrag(lockEl, knob, valueEl, nodeId, memberIndex, port, event) {
             if (event.button !== 0) {
                 return;
             }
             event.preventDefault();
-            knobDrag.active = { lockEl, knob, valueEl, nodeId, memberOrdinal, port };
+            knobDrag.active = { lockEl, knob, valueEl, nodeId, memberIndex, port };
             knobDrag.currentValue = knobPositionForValue(port.currentValue, port);
             knobDrag.lastClientX = event.clientX;
             knobDrag.lastClientY = event.clientY;
@@ -1163,11 +1155,11 @@ export class LiveGraphViewProvider {
             if (!knobDrag.active || delta === 0) {
                 return;
             }
-            const { nodeId, memberOrdinal, port } = knobDrag.active;
+            const { nodeId, memberIndex, port } = knobDrag.active;
             knobDrag.currentValue = clampKnobPosition(knobDrag.currentValue + delta, port);
             const value = valueForKnobPosition(knobDrag.currentValue, port);
-            applyLocalControlValue(nodeId, memberOrdinal, port.ordinal, value);
-            queueControlUpdate(nodeId, memberOrdinal, port.ordinal, value);
+            applyLocalControlValue(nodeId, memberIndex, port.index, value);
+            queueControlUpdate(nodeId, memberIndex, port.index, value);
         }
 
         function applyDraggedKnobEvent(event) {
@@ -1251,8 +1243,8 @@ export class LiveGraphViewProvider {
             if (!portRow.__knobDrag) {
                 return;
             }
-            const { knob, valueEl, nodeId, memberOrdinal, port } = portRow.__knobDrag;
-            beginKnobDrag(portRow, knob, valueEl, nodeId, memberOrdinal, port, event);
+            const { knob, valueEl, nodeId, memberIndex, port } = portRow.__knobDrag;
+            beginKnobDrag(portRow, knob, valueEl, nodeId, memberIndex, port, event);
         }, true);
 
         function attachKnobBehavior(knob, valueEl, portRow) {
@@ -1263,8 +1255,8 @@ export class LiveGraphViewProvider {
                 }
                 const position = clampKnobPosition(nextPosition, binding.port);
                 const value = valueForKnobPosition(position, binding.port);
-                applyLocalControlValue(binding.nodeId, binding.memberOrdinal, binding.port.ordinal, value);
-                queueControlUpdate(binding.nodeId, binding.memberOrdinal, binding.port.ordinal, value);
+                applyLocalControlValue(binding.nodeId, binding.memberIndex, binding.port.index, value);
+                queueControlUpdate(binding.nodeId, binding.memberIndex, binding.port.index, value);
                 if (knobDrag.active && knobDrag.active.knob === knob) {
                     knobDrag.currentValue = position;
                 }
@@ -1304,8 +1296,8 @@ export class LiveGraphViewProvider {
             });
         }
 
-        function renderPort(parent, nodeId, memberOrdinal, group, port, index) {
-            const memberKeyPart = memberOrdinal == null ? "" : \`/member:\${memberOrdinal}\`;
+        function renderPort(parent, nodeId, memberIndex, group, port, index) {
+            const memberKeyPart = memberIndex == null ? "" : \`/member:\${memberIndex}\`;
             const portKey = \`node:\${nodeId}\${memberKeyPart}/group:\${group.label}/port:\${index}\`;
             const portDescription = port.stateSummary || port.connectivity;
             state.renderedPortRows.add(portKey);
@@ -1335,7 +1327,7 @@ export class LiveGraphViewProvider {
             descriptionEl.textContent = "";
 
             portRow.className = "tree-row port-row";
-            if (memberOrdinal != null) {
+            if (memberIndex != null) {
                 portRow.classList.add("member-port-row");
                 if (port.tweakable) {
                     portRow.classList.add(port.hasConcreteOverride ? "concrete-override" : "concrete-inherited");
@@ -1384,11 +1376,11 @@ export class LiveGraphViewProvider {
                     knobWrap.appendChild(valueEl);
                     portRow.appendChild(knobWrap);
                     portRow.__knobWrap = knobWrap;
-                    portRow.__knobDrag = { knob, valueEl, nodeId, memberOrdinal, port };
+                    portRow.__knobDrag = { knob, valueEl, nodeId, memberIndex, port };
                     attachKnobBehavior(knob, valueEl, portRow);
                 } else {
                     portRow.__knobDrag.nodeId = nodeId;
-                    portRow.__knobDrag.memberOrdinal = memberOrdinal;
+                    portRow.__knobDrag.memberIndex = memberIndex;
                     portRow.__knobDrag.port = port;
                     const position = knobPositionForValue(port.currentValue, port);
                     portRow.__knobDrag.knob.innerHTML = knobSvg(position);
@@ -1416,8 +1408,8 @@ export class LiveGraphViewProvider {
                     portRow.__statePortRef = {};
                 }
                 portRow.__statePortRef.nodeId = nodeId;
-                portRow.__statePortRef.memberOrdinal = memberOrdinal;
-                portRow.__statePortRef.ordinal = port.ordinal;
+                portRow.__statePortRef.memberIndex = memberIndex;
+                portRow.__statePortRef.index = port.index;
                 portRow.__statePortRef.hasConcreteOverride = Boolean(port.hasConcreteOverride);
                 portRow.__statePortRef.hasKnob = Boolean(port.tweakable);
                 portRow.__statePortRef.defaultValue = port.defaultValue;
@@ -1434,8 +1426,8 @@ export class LiveGraphViewProvider {
             return portKey;
         }
 
-        function renderGroup(parent, nodeId, memberOrdinal, group) {
-            const memberKeyPart = memberOrdinal == null ? "" : \`/member:\${memberOrdinal}\`;
+        function renderGroup(parent, nodeId, memberIndex, group) {
+            const memberKeyPart = memberIndex == null ? "" : \`/member:\${memberIndex}\`;
             const groupKey = \`node:\${nodeId}\${memberKeyPart}/group:\${group.label}\`;
             const isExpanded = expandedValue(groupKey, true);
 
@@ -1444,7 +1436,7 @@ export class LiveGraphViewProvider {
 
             const header = row(group.label, String(group.count));
             header.classList.add("group-header");
-            if (memberOrdinal != null) {
+            if (memberIndex != null) {
                 header.classList.add("member-group-header");
             }
             header.prepend(disclosure(isExpanded));
@@ -1454,20 +1446,20 @@ export class LiveGraphViewProvider {
             const ports = document.createElement("div");
             ports.className = "group-ports";
             for (let i = 0; i < group.ports.length; ++i) {
-                renderPort(ports, nodeId, memberOrdinal, group, group.ports[i], i);
+                renderPort(ports, nodeId, memberIndex, group, group.ports[i], i);
             }
             groupEl.appendChild(ports);
             parent.appendChild(groupEl);
         }
 
         function renderMember(parent, node, member) {
-            const memberKey = \`node:\${node.id}/member:\${member.ordinal}\`;
+            const memberKey = \`node:\${node.id}/member:\${member.index}\`;
             const isExpanded = expandedValue(memberKey, false);
 
             const memberEl = document.createElement("div");
             memberEl.className = isExpanded ? "group" : "group collapsed";
 
-            const header = row(member.kind || "concrete", member.description || \`concrete \${member.ordinal}\`);
+            const header = row(member.kind || "concrete", member.description || \`concrete \${member.index}\`);
             header.classList.add("member-header");
             header.prepend(disclosure(isExpanded));
             header.addEventListener("click", () => toggleExpanded(memberKey, false));
@@ -1476,7 +1468,7 @@ export class LiveGraphViewProvider {
             const groupsEl = document.createElement("div");
             groupsEl.className = "group-ports";
             for (const group of member.groups) {
-                renderGroup(groupsEl, node.id, member.ordinal, group);
+                renderGroup(groupsEl, node.id, member.index, group);
             }
             memberEl.appendChild(groupsEl);
             parent.appendChild(memberEl);

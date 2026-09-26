@@ -41,8 +41,8 @@ std::vector<OutputRefConfig> make_sample_output_configs(
             .channel_type = ref.family_channel_type,
             .whole_stream = ref.whole_stream,
         },
-        .target_channel_ordinal = ref.targets_single_channel()
-            ? std::optional{ref.target_channel_ordinal}
+        .target_channel_index = ref.targets_single_channel()
+            ? std::optional{ref.target_channel_index}
             : std::nullopt,
     });
   }
@@ -99,19 +99,21 @@ void GraphBuilderState::validate_tiled_module_interfaces(
   }
   auto same_sample_input = [](SampleInputConfig const& lhs, SampleInputConfig const& rhs) {
     return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
-        && lhs.compiled == rhs.compiled
-        && lhs.history == rhs.history
+        && lhs.access == rhs.access
         && lhs.neutral_value.value == rhs.neutral_value.value
         && lhs.default_value.value == rhs.default_value.value
         && lhs.min.value == rhs.min.value && lhs.max.value == rhs.max.value;
   };
   auto same_sample_output = [](SampleOutputConfig const& lhs, SampleOutputConfig const& rhs) {
     return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
-        && lhs.compiled == rhs.compiled
-        && lhs.latency == rhs.latency && lhs.history == rhs.history;
+        && lhs.production == rhs.production && lhs.retention == rhs.retention;
   };
-  auto same_event_port = [](auto const& lhs, auto const& rhs) {
-    return lhs.name == rhs.name && lhs.type == rhs.type && lhs.compiled == rhs.compiled;
+  auto same_event_input = [](EventInputConfig const& lhs, EventInputConfig const& rhs) {
+    return lhs.name == rhs.name && lhs.type == rhs.type && lhs.access == rhs.access;
+  };
+  auto same_event_output = [](EventOutputConfig const& lhs, EventOutputConfig const& rhs) {
+    return lhs.name == rhs.name && lhs.type == rhs.type
+        && lhs.production == rhs.production && lhs.retention == rhs.retention;
   };
 
   auto const& first = *members.front();
@@ -148,8 +150,8 @@ void GraphBuilderState::validate_tiled_module_interfaces(
     }
     if (!std::ranges::equal(first_inputs, inputs, same_sample_input)
         || !std::ranges::equal(first_outputs, outputs, same_sample_output)
-        || !std::ranges::equal(first_event_inputs, event_inputs, same_event_port)
-        || !std::ranges::equal(first_event_outputs, event_outputs, same_event_port)) {
+        || !std::ranges::equal(first_event_inputs, event_inputs, same_event_input)
+        || !std::ranges::equal(first_event_outputs, event_outputs, same_event_output)) {
       details::error(
           "tiled IV module members do not expose equivalent port configurations");
     }
@@ -173,7 +175,7 @@ SamplePortRef GraphBuilderPublicPorts::add_sample_input(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     std::string_view name, ChannelLayout channel_layout, Sample value,
     std::optional<Sample> min, std::optional<Sample> max) {
-  auto ordinal = bundles.bundle(_boundary).append_boundary_sample_input({
+  auto index = bundles.bundle(_boundary).append_boundary_sample_input({
       .name = std::string(name),
       .channel_layout = channel_layout,
       .default_value = value,
@@ -181,17 +183,17 @@ SamplePortRef GraphBuilderPublicPorts::add_sample_input(
       .max = max.value_or(std::numeric_limits<Sample::storage>::infinity())});
   _sample_input_source_infos.emplace_back();
   return SamplePortRef(
-      builder.facade(), NodeBundlePortId{_boundary, PortKind::sample, ordinal});
+      builder.facade(), NodeBundlePortId{_boundary, PortKind::sample, index});
 }
 
 EventPortRef GraphBuilderPublicPorts::add_event_input(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     std::string_view name, EventTypeId type) {
-  auto ordinal = bundles.bundle(_boundary).append_boundary_event_input(
+  auto index = bundles.bundle(_boundary).append_boundary_event_input(
       {.name = std::string(name), .type = type});
   _event_input_source_infos.emplace_back();
   return EventPortRef(
-      builder.facade(), NodeBundlePortId{_boundary, PortKind::event, ordinal});
+      builder.facade(), NodeBundlePortId{_boundary, PortKind::event, index});
 }
 
 SamplePortRef GraphBuilderState::make_sample_port(
@@ -216,6 +218,51 @@ SamplePortRef GraphBuilderState::make_sample_port(
   result.graph_builder = &facade();
   result.channel_type = type;
   result.handle = handle;
+  return result;
+}
+
+SamplePortRef GraphBuilderState::make_tiled_sample_port(
+    ChannelTypeId type, std::span<SamplePortRef const> members)
+{
+  if (members.empty()) details::error("cannot tile an empty sample output");
+  std::vector<SampleOutputChannelId> channels;
+  channels.reserve(members.size());
+  std::optional<ConfiguredSampleConnectionDetach> detach;
+  bool detach_initialized = false;
+  for (auto const& member : members) {
+    if (member.graph_builder != &facade()
+        || member.handle >= _sample_port_expressions.size())
+      details::error("cannot tile sample outputs from different builders");
+    auto const& expression = _sample_port_expressions[member.handle];
+    if (member.channel_type != ChannelTypeId::mono
+        || expression.channels.size() != 1)
+      details::error("each g.tile channel must be a scalar sample expression");
+    if (!detach_initialized) {
+      detach = expression.detach;
+      detach_initialized = true;
+    } else if (detach != expression.detach) {
+      details::error("g.tile cannot mix different detach semantics");
+    }
+    channels.push_back(expression.channels.front());
+  }
+  auto result = make_sample_port(type, channels);
+  _sample_port_expressions[result.handle].detach = detach;
+  return result;
+}
+
+SamplePortRef GraphBuilderState::select_sample_port_channel(
+    SamplePortRef const& ref, size_t channel)
+{
+  if (ref.graph_builder != &facade()
+      || ref.handle >= _sample_port_expressions.size())
+    details::error("sample port does not belong to this builder");
+  auto const& expression = _sample_port_expressions[ref.handle];
+  if (channel >= expression.channels.size())
+    details::error("sample channel index is out of bounds");
+  std::array<SampleOutputChannelId, 1> channels{expression.channels[channel]};
+  auto detach = expression.detach;
+  auto result = make_sample_port(ChannelTypeId::mono, channels);
+  _sample_port_expressions[result.handle].detach = std::move(detach);
   return result;
 }
 
@@ -336,12 +383,12 @@ void GraphBuilderState::annotate_public_sample_input_source_info(
     details::error("PublicSampleInputRef has no logical boundary port");
   if (logical->node_bundle_handle == _public_ports.boundary_handle()) {
     _public_ports.annotate_sample_input_source_info(
-        logical->port_ordinal, id, file, begin, end);
+        logical->port_index, id, file, begin, end);
     return;
   }
   auto& boundary = _node_bundles.bundle(logical->node_bundle_handle);
   if (!boundary.is_boundary() ||
-      logical->port_ordinal >= boundary.boundary_sample_inputs().size())
+      logical->port_index >= boundary.boundary_sample_inputs().size())
     details::error(
         "PublicSampleInputRef does not belong to a valid boundary input");
   SourceInfo info{
@@ -413,60 +460,93 @@ void GraphBuilderState::annotate_public_event_output_source_info(
 }
 
 void GraphBuilderState::annotate_public_sample_output_source_info(
-    size_t ordinal, SourceInfo info) {
+    size_t index, SourceInfo info) {
   _public_ports.annotate_sample_output_source_info(
-      ordinal, std::move(info));
+      index, std::move(info));
 }
 
 void GraphBuilderState::annotate_public_event_output_source_info(
-    size_t ordinal, SourceInfo info) {
+    size_t index, SourceInfo info) {
   _public_ports.annotate_event_output_source_info(
-      ordinal, std::move(info));
+      index, std::move(info));
 }
 
-NodeRef GraphBuilderState::embed_subgraph(
+ConfiguredGraphEmbedding GraphBuilderState::embed_graph_components(
+    GraphBuilderPublicPorts const& child_public_ports,
+    GraphBuilderNodeBundles const& child_bundles,
+    GraphBuilderConnections const& child_connections,
+    GraphBuilderVirtualNodes const& child_virtual_nodes,
+    std::string_view kind) {
+  if (!child_public_ports.sample_outputs_defined())
+    details::error("embedded graph must call g.outputs(...) before insertion");
+
+  auto const begin = _node_bundles.size();
+  auto imported = GraphBuilderChildEmbedder::import(
+      _node_bundles, _connections, _virtual_nodes,
+      child_bundles, child_connections, child_virtual_nodes);
+  IV_ASSERT(
+      imported.bundle_offset == begin,
+      "embedded child bundle offset changed unexpectedly");
+
+  auto const boundary = imported.bundle_offset
+      + child_public_ports.boundary_handle();
+  auto const subgraph = _node_bundles.append_subgraph(
+      boundary, begin, child_bundles.size(), kind);
+
+  // Once a child graph is embedded, its public inputs become input ports of
+  // the surrounding subgraph. Keep child declaration/reference source
+  // identities on those virtual ports so source introspection does not lose
+  // provenance at the graph boundary.
+  auto const sample_inputs = child_public_ports.sample_inputs(child_bundles);
+  for (size_t index = 0; index < sample_inputs.size(); ++index) {
+    for (auto const& info : child_public_ports.sample_input_source_infos(index)) {
+      _virtual_nodes.annotate_input_source_info(
+          _node_bundles, subgraph, info.declaration_identity,
+          PortKind::sample, sample_inputs[index].name, info);
+    }
+  }
+  auto const event_inputs = child_public_ports.event_inputs(child_bundles);
+  for (size_t index = 0; index < event_inputs.size(); ++index) {
+    for (auto const& info : child_public_ports.event_input_source_infos(index)) {
+      _virtual_nodes.annotate_input_source_info(
+          _node_bundles, subgraph, info.declaration_identity,
+          PortKind::event, event_inputs[index].name, info);
+    }
+  }
+
+  return ConfiguredGraphEmbedding{
+      .root_scope = subgraph,
+      .node_bundles = std::move(imported.node_bundles),
+      .virtual_nodes = std::move(imported.virtual_nodes),
+  };
+}
+
+ConfiguredGraphEmbedding GraphBuilderState::embed_subgraph(
     GraphBuilderState const& child, std::string_view kind) {
   if (!child._public_ports.sample_outputs_defined())
     details::error(
-        "builder " + child._identity.value +
-        ": g.outputs(...) must be called before insertion");
-  auto const begin = _node_bundles.size();
-  auto const offset = GraphBuilderChildEmbedder::embed(
-      _node_bundles, _connections, _detach, _virtual_nodes,
-      child._public_ports, child._node_bundles, child._connections,
-      child._detach, child._virtual_nodes);
-  IV_ASSERT(offset == begin, "embedded child bundle offset changed unexpectedly");
-  auto const boundary = offset + child._public_ports.boundary_handle();
-  auto const count = child._node_bundles.size();
-  auto const subgraph = _node_bundles.append_subgraph(
-      boundary, begin, count, kind);
+        "builder " + child._identity.value
+        + ": g.outputs(...) must be called before insertion");
+  return embed_graph_components(
+      child._public_ports,
+      child._node_bundles,
+      child._connections,
+      child._virtual_nodes,
+      kind);
+}
 
-  // Once a child module is embedded, its public inputs become input ports of
-  // the surrounding subgraph. Keep the child declaration/reference source
-  // identities on those virtual ports so source introspection does not lose
-  // `auto x = g.input<...>()` provenance at the module boundary.
-  auto const sample_inputs =
-      child._public_ports.sample_inputs(child._node_bundles);
-  for (size_t ordinal = 0; ordinal < sample_inputs.size(); ++ordinal) {
-    for (auto const& info :
-         child._public_ports.sample_input_source_infos(ordinal)) {
-      _virtual_nodes.annotate_input_source_info(
-          _node_bundles, subgraph, info.declaration_identity,
-          PortKind::sample, sample_inputs[ordinal].name, info);
-    }
-  }
-  auto const event_inputs =
-      child._public_ports.event_inputs(child._node_bundles);
-  for (size_t ordinal = 0; ordinal < event_inputs.size(); ++ordinal) {
-    for (auto const& info :
-         child._public_ports.event_input_source_infos(ordinal)) {
-      _virtual_nodes.annotate_input_source_info(
-          _node_bundles, subgraph, info.declaration_identity,
-          PortKind::event, event_inputs[ordinal].name, info);
-    }
-  }
-
-  return NodeRef(facade(), subgraph);
+ConfiguredGraphEmbedding GraphBuilderState::embed_configured_graph(
+    ConfiguredGraph const& child, std::string_view kind) {
+  if (!child.public_ports.sample_outputs_defined())
+    details::error(
+        "configured graph " + child.identity.value
+        + ": g.outputs(...) must be called before insertion");
+  return embed_graph_components(
+      child.public_ports,
+      child.node_bundles,
+      child.connections,
+      child.virtual_nodes,
+      kind);
 }
 
 void GraphBuilderState::event_outputs(
@@ -564,20 +644,34 @@ void GraphBuilderState::record_configured_sample_connection(
     details::error(
         "sample channel source count does not match NodeBundle port layout");
   std::vector<SampleOutputChannelId> channels;
+  std::optional<ConfiguredSampleConnectionDetach> detach;
+  bool detach_initialized = false;
   for (auto const& source : sources) {
     if (source.graph_builder != &facade() ||
         source.channel_type != ChannelTypeId::mono ||
         source.handle >= _sample_port_expressions.size())
       details::error(
           "channel-wise sample connection requires scalar sources");
-    auto const source_channels = source.channels();
-    if (source_channels.size() != 1)
+    auto const& expression = _sample_port_expressions[source.handle];
+    if (expression.channels.size() != 1)
       details::error(
           "channel-wise sample connection requires scalar sources");
-    channels.push_back(source_channels.front());
+    if (!detach_initialized) {
+      detach = expression.detach;
+      detach_initialized = true;
+    } else if (detach != expression.detach) {
+      details::error(
+          "channel-wise sample connection cannot mix different detach semantics");
+    }
+    channels.push_back(expression.channels.front());
   }
-  _connections.record_configured_sample_connection(
-      {type, std::move(channels), type, std::move(targets)});
+  _connections.record_configured_sample_connection({
+      .source_type = type,
+      .source_channels = std::move(channels),
+      .target_type = type,
+      .target_channels = std::move(targets),
+      .detach = detach,
+  });
 }
 
 void GraphBuilderState::record_configured_event_connection(
@@ -589,9 +683,14 @@ void GraphBuilderState::record_configured_event_connection(
   if (sources.empty())
     details::error("invalid configured event connection");
   auto target_type = _node_bundles.resolve_event_input(target).config.type;
+  auto const& expression = _event_port_expressions[source.handle];
   _connections.record_configured_event_connection({
-      source.type, {sources.begin(), sources.end()}, target_type,
-      _node_bundles.event_input_ports(target)});
+      .source_type = source.type,
+      .sources = {expression.sources.begin(), expression.sources.end()},
+      .target_type = target_type,
+      .targets = _node_bundles.event_input_ports(target),
+      .detach = expression.detach,
+  });
 }
 
 void GraphBuilderState::connect_sample_input(

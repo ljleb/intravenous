@@ -20,7 +20,7 @@
 namespace iv {
     struct NodeLayoutBuilder;
     struct NodeStorage;
-    struct NodeStateStructure;
+    struct NodeStateStructures;
 
     struct NodeLifecycleCallbacks {
         void (*move_fn)(
@@ -29,6 +29,8 @@ namespace iv {
         void (*release_fn)(void const*, size_t, NodeStorage&) = nullptr;
         void (*default_construct_state_fn)(void*) = nullptr;
         void (*destroy_state_fn)(void*) = nullptr;
+        void (*default_construct_background_state_fn)(void*) = nullptr;
+        void (*destroy_background_state_fn)(void*) = nullptr;
         std::string (*identity_fn)(void const*) = nullptr;
     };
 
@@ -47,11 +49,15 @@ namespace iv {
             size_t state_size = 0;
             size_t state_alignment = 1;
             bool has_state = false;
+            size_t background_state_size = 0;
+            size_t background_state_alignment = 1;
+            bool has_background_state = false;
             NodeLifecycleCallbacks lifecycle {};
         };
 
         struct NodeLayoutArrayDeclaration {
             size_t owner_node = 0;
+            bool background_state_field = false;
             ptrdiff_t state_field_offset = 0;
             void const* element_type = nullptr;
             char const* element_type_name = nullptr;
@@ -88,9 +94,13 @@ namespace iv {
             NodeLayoutBuilder&, NodeLayoutNodeRegistration const&);
         void allocate_node_state(
             NodeLayoutBuilder&, size_t node_index, size_t size, size_t alignment);
+        void allocate_node_background_state(
+            NodeLayoutBuilder&, size_t node_index, size_t size, size_t alignment);
         void declare_local_array(
             NodeLayoutBuilder&, NodeLayoutArrayDeclaration const&);
         size_t declare_nested_node_states(
+            NodeLayoutBuilder&, size_t node_index, ptrdiff_t state_field_offset);
+        size_t declare_nested_node_background_states(
             NodeLayoutBuilder&, size_t node_index, ptrdiff_t state_field_offset);
         void finalize_nested_node_states(
             NodeLayoutBuilder&, size_t region_index,
@@ -108,13 +118,15 @@ namespace iv {
             NodeLayoutBuilder const&, std::string const&, void const* element_type);
         bool has_export_array(
             NodeLayoutBuilder const&, std::string const&, void const* element_type);
-        void override_node_state_structure(
-            NodeLayoutBuilder&, size_t node_index, NodeStateStructure const&);
+        void override_node_state_structures(
+            NodeLayoutBuilder&, size_t node_index, NodeStateStructures const&);
         size_t node_layout_max_block_size(NodeLayoutBuilder const&);
         size_t node_layout_event_port_buffer_base_multiplier(
             NodeLayoutBuilder const&);
 
         void* node_storage_state_ptr(NodeStorage const&, size_t node_index);
+        void* node_storage_background_state_ptr(
+            NodeStorage const&, size_t node_index);
         ResourceContext const& node_storage_resources(NodeStorage const&);
         size_t node_storage_max_block_size(NodeStorage const&);
         size_t node_storage_default_silence_ttl_samples(NodeStorage const&);
@@ -183,6 +195,13 @@ namespace iv {
                 registration.state_size = sizeof(State);
                 registration.state_alignment = alignof(State);
             }
+            registration.has_background_state =
+                !std::is_void_v<typename NodeBackgroundState<Node>::Type>;
+            if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
+                using TockState = typename NodeBackgroundState<Node>::Type;
+                registration.background_state_size = sizeof(TockState);
+                registration.background_state_alignment = alignof(TockState);
+            }
             registration.lifecycle = make_lifecycle_callbacks<Node>();
             return registration;
         }
@@ -199,6 +218,13 @@ namespace iv {
                 using State = typename NodeState<Node>::Type;
                 registration.state_size = sizeof(State);
                 registration.state_alignment = alignof(State);
+            }
+            registration.has_background_state =
+                !std::is_void_v<typename NodeBackgroundState<Node>::Type>;
+            if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
+                using TockState = typename NodeBackgroundState<Node>::Type;
+                registration.background_state_size = sizeof(TockState);
+                registration.background_state_alignment = alignof(TockState);
             }
             registration.lifecycle = make_reflected_lifecycle_callbacks<NodeValue>();
             return registration;
@@ -220,13 +246,49 @@ namespace iv {
         friend struct DeclarationContext;
 
         using State = typename NodeState<Node>::Type;
+        using TockState = typename NodeBackgroundState<Node>::Type;
 
     private:
+        struct FieldLocation {
+            bool tock_state = false;
+            ptrdiff_t offset = 0;
+        };
+
         NodeLayoutBuilder* _builder = nullptr;
         size_t _node_index = 0;
         State const* _state_marker = nullptr;
+        TockState const* _background_state_marker = nullptr;
         mutable std::vector<size_t> _direct_nested_node_indices;
         mutable std::optional<size_t> _nested_nodes_region_index;
+        mutable std::optional<size_t> _nested_background_nodes_region_index;
+
+        FieldLocation field_location(void const* field) const
+        {
+            auto const address = reinterpret_cast<uintptr_t>(field);
+            if constexpr (!std::is_void_v<State>) {
+                auto const base = reinterpret_cast<uintptr_t>(_state_marker);
+                if (address >= base && address < base + sizeof(State)) {
+                    return {
+                        .tock_state = false,
+                        .offset = static_cast<ptrdiff_t>(address - base),
+                    };
+                }
+            }
+            if constexpr (!std::is_void_v<TockState>) {
+                auto const base =
+                    reinterpret_cast<uintptr_t>(_background_state_marker);
+                if (address >= base && address < base + sizeof(TockState)) {
+                    return {
+                        .tock_state = true,
+                        .offset = static_cast<ptrdiff_t>(address - base),
+                    };
+                }
+            }
+            IV_ASSERT(
+                false,
+                "declared storage field must belong to State or TockState");
+            return {};
+        }
 
     public:
         explicit DeclarationContext(NodeLayoutBuilder& builder, Node const& node)
@@ -238,6 +300,15 @@ namespace iv {
                 details::allocate_node_state(
                     builder, _node_index, sizeof(State), alignof(State));
                 _state_marker = reinterpret_cast<State const*>(uintptr_t { 0x10000 });
+            }
+            if constexpr (!std::is_void_v<TockState>) {
+                details::allocate_node_background_state(
+                    builder,
+                    _node_index,
+                    sizeof(TockState),
+                    alignof(TockState));
+                _background_state_marker = reinterpret_cast<TockState const*>(
+                    uintptr_t { 0x10000000 });
             }
         }
 
@@ -257,6 +328,15 @@ namespace iv {
                     builder, _node_index, sizeof(State), alignof(State));
                 _state_marker = reinterpret_cast<State const*>(uintptr_t { 0x10000 });
             }
+            if constexpr (!std::is_void_v<TockState>) {
+                details::allocate_node_background_state(
+                    builder,
+                    _node_index,
+                    sizeof(TockState),
+                    alignof(TockState));
+                _background_state_marker = reinterpret_cast<TockState const*>(
+                    uintptr_t { 0x10000000 });
+            }
         }
 
         ~DeclarationContext()
@@ -265,6 +345,12 @@ namespace iv {
                 details::finalize_nested_node_states(
                     *_builder,
                     *_nested_nodes_region_index,
+                    _direct_nested_node_indices);
+            }
+            if (_nested_background_nodes_region_index) {
+                details::finalize_nested_node_states(
+                    *_builder,
+                    *_nested_background_nodes_region_index,
                     std::move(_direct_nested_node_indices));
             }
         }
@@ -283,13 +369,21 @@ namespace iv {
             return reinterpret_cast<NoCopy<State> const&>(*_state_marker);
         }
 
+        NoCopy<TockState> const& tock_state() const
+        requires(!std::is_void_v<TockState>)
+        {
+            return reinterpret_cast<NoCopy<TockState> const&>(
+                *_background_state_marker);
+        }
+
         template<typename A>
         void local_array(std::span<A> const& span, size_t count) const
         {
+            auto const location = field_location(&span);
             details::declare_local_array(*_builder, {
                 .owner_node = _node_index,
-                .state_field_offset =
-                    details::node_layout_field_offset(_state_marker, &span),
+                .background_state_field = location.tock_state,
+                .state_field_offset = location.offset,
                 .element_type = details::node_layout_type_token<A>(),
                 .element_type_name = typeid(A).name(),
                 .element_size = sizeof(A),
@@ -307,10 +401,11 @@ namespace iv {
         template<typename A>
         void export_array(std::string id, std::span<A> const& span) const
         {
+            auto const location = field_location(&span);
             details::declare_export_array(*_builder, std::move(id), {
                 .owner_node = _node_index,
-                .state_field_offset = details::node_layout_field_offset(
-                    reinterpret_cast<void const*>(uintptr_t { 0x10000 }), &span),
+                .background_state_field = location.tock_state,
+                .state_field_offset = location.offset,
                 .element_type = details::node_layout_type_token<A>(),
                 .element_type_name = typeid(A).name(),
                 .element_size = sizeof(A),
@@ -329,10 +424,11 @@ namespace iv {
         template<typename A>
         void import_array(std::string id, std::span<A> const& span) const
         {
+            auto const location = field_location(&span);
             details::declare_import_array(*_builder, std::move(id), {
                 .owner_node = _node_index,
-                .state_field_offset = details::node_layout_field_offset(
-                    reinterpret_cast<void const*>(uintptr_t { 0x10000 }), &span),
+                .background_state_field = location.tock_state,
+                .state_field_offset = location.offset,
                 .element_type = details::node_layout_type_token<A>(),
                 .element_type_name = typeid(A).name(),
                 .element_size = sizeof(A),
@@ -383,17 +479,30 @@ namespace iv {
                 details::node_layout_field_offset(_state_marker, &nodes));
         }
 
+        void nested_node_background_states(
+            std::span<std::span<std::byte>> const& nodes) const
+        {
+            IV_ASSERT(
+                !_nested_background_nodes_region_index.has_value(),
+                "nested_node_background_states must only be declared once per node");
+            _nested_background_nodes_region_index =
+                details::declare_nested_node_background_states(
+                    *_builder,
+                    _node_index,
+                    details::node_layout_field_offset(_state_marker, &nodes));
+        }
+
         void declare_reflected_child(
             void const* node_data,
-            NodeStateStructure const* state_structure,
+            NodeStateStructures const* state_structures,
             size_t (*declare)(
-                void const*, NodeStateStructure const*, NodeLayoutBuilder&)) const
+                void const*, NodeStateStructures const*, NodeLayoutBuilder&)) const
         {
             IV_ASSERT(node_data, "reflected child node data cannot be null");
             IV_ASSERT(
                 declare, "reflected child declaration callback cannot be null");
             _direct_nested_node_indices.push_back(
-                declare(node_data, state_structure, *_builder));
+                declare(node_data, state_structures, *_builder));
         }
 
         size_t max_block_size() const
@@ -424,18 +533,24 @@ namespace iv {
         friend struct InitializationContext;
 
         using State = typename NodeState<Node>::Type;
+        using TockState = typename NodeBackgroundState<Node>::Type;
 
     private:
         NodeStorage* _storage = nullptr;
         void* _state = nullptr;
+        void* _background_state = nullptr;
 
     public:
         ResourceContext const& resources;
 
         explicit InitializationContext(
-            NodeStorage& storage, void* state, ResourceContext const& resources_)
+            NodeStorage& storage,
+            void* state,
+            void* tock_state,
+            ResourceContext const& resources_)
             : _storage(&storage)
             , _state(state)
+            , _background_state(tock_state)
             , resources(resources_)
         {}
 
@@ -443,6 +558,7 @@ namespace iv {
         InitializationContext(InitializationContext<Node2> const& ctx)
             : _storage(ctx._storage)
             , _state(ctx._state)
+            , _background_state(ctx._background_state)
             , resources(ctx.resources)
         {}
 
@@ -450,6 +566,12 @@ namespace iv {
         requires(!std::is_void_v<State>)
         {
             return *static_cast<State*>(_state);
+        }
+
+        std::add_lvalue_reference_t<TockState> tock_state() const
+        requires(!std::is_void_v<TockState>)
+        {
+            return *static_cast<TockState*>(_background_state);
         }
 
         NodeStorage& storage() const
@@ -483,18 +605,24 @@ namespace iv {
         friend struct ReleaseContext;
 
         using State = typename NodeState<Node>::Type;
+        using TockState = typename NodeBackgroundState<Node>::Type;
 
     private:
         NodeStorage* _storage = nullptr;
         void* _state = nullptr;
+        void* _background_state = nullptr;
 
     public:
         ResourceContext const& resources;
 
         explicit ReleaseContext(
-            NodeStorage& storage, void* state, ResourceContext const& resources_)
+            NodeStorage& storage,
+            void* state,
+            void* tock_state,
+            ResourceContext const& resources_)
             : _storage(&storage)
             , _state(state)
+            , _background_state(tock_state)
             , resources(resources_)
         {}
 
@@ -502,6 +630,7 @@ namespace iv {
         ReleaseContext(ReleaseContext<Node2> const& ctx)
             : _storage(ctx._storage)
             , _state(ctx._state)
+            , _background_state(ctx._background_state)
             , resources(ctx.resources)
         {}
 
@@ -509,6 +638,12 @@ namespace iv {
         requires(!std::is_void_v<State>)
         {
             return *static_cast<State*>(_state);
+        }
+
+        std::add_lvalue_reference_t<TockState> tock_state() const
+        requires(!std::is_void_v<TockState>)
+        {
+            return *static_cast<TockState*>(_background_state);
         }
     };
 
@@ -518,12 +653,15 @@ namespace iv {
         friend struct MoveContext;
 
         using State = typename NodeState<Node>::Type;
+        using TockState = typename NodeBackgroundState<Node>::Type;
 
     private:
         NodeStorage* _storage = nullptr;
         void* _state = nullptr;
+        void* _background_state = nullptr;
         NodeStorage const* _previous_storage = nullptr;
         void* _previous_state = nullptr;
+        void* _previous_background_state = nullptr;
 
     public:
         ResourceContext const& resources;
@@ -531,13 +669,17 @@ namespace iv {
         explicit MoveContext(
             NodeStorage& storage,
             void* state,
+            void* tock_state,
             NodeStorage const& previous_storage,
             void* previous_state,
+            void* previous_background_state,
             ResourceContext const& resources_)
             : _storage(&storage)
             , _state(state)
+            , _background_state(tock_state)
             , _previous_storage(&previous_storage)
             , _previous_state(previous_state)
+            , _previous_background_state(previous_background_state)
             , resources(resources_)
         {}
 
@@ -545,8 +687,10 @@ namespace iv {
         MoveContext(MoveContext<Node2> const& ctx)
             : _storage(ctx._storage)
             , _state(ctx._state)
+            , _background_state(ctx._background_state)
             , _previous_storage(ctx._previous_storage)
             , _previous_state(ctx._previous_state)
+            , _previous_background_state(ctx._previous_background_state)
             , resources(ctx.resources)
         {}
 
@@ -560,6 +704,18 @@ namespace iv {
         requires(!std::is_void_v<State>)
         {
             return *static_cast<State*>(_previous_state);
+        }
+
+        std::add_lvalue_reference_t<TockState> tock_state() const
+        requires(!std::is_void_v<TockState>)
+        {
+            return *static_cast<TockState*>(_background_state);
+        }
+
+        std::add_lvalue_reference_t<TockState> previous_background_state() const
+        requires(!std::is_void_v<TockState>)
+        {
+            return *static_cast<TockState*>(_previous_background_state);
         }
     };
 
@@ -582,6 +738,19 @@ namespace iv {
                 };
             }
 
+            if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
+                using TockState = typename NodeBackgroundState<Node>::Type;
+                static_assert(
+                    std::is_default_constructible_v<TockState>,
+                    "Node::TockState must be default constructible");
+                callbacks.default_construct_background_state_fn = [](void* ptr) {
+                    new (ptr) TockState();
+                };
+                callbacks.destroy_background_state_fn = [](void* ptr) {
+                    std::destroy_at(static_cast<TockState*>(ptr));
+                };
+            }
+
             if constexpr (has_move<Node>) {
                 callbacks.move_fn = [](
                     void const* node_ptr,
@@ -590,24 +759,33 @@ namespace iv {
                     NodeStorage& storage,
                     NodeStorage const& previous_storage) {
                     void* state = node_storage_state_ptr(storage, node_index);
+                    void* tock_state =
+                        node_storage_background_state_ptr(storage, node_index);
                     void* previous_state =
                         node_storage_state_ptr(previous_storage, previous_node_index);
+                    void* previous_background_state =
+                        node_storage_background_state_ptr(
+                            previous_storage, previous_node_index);
                     if constexpr (std::is_empty_v<Node>) {
                         (void)node_ptr;
                         Node node {};
                         node.move(MoveContext<Node>(
                             storage,
                             state,
+                            tock_state,
                             previous_storage,
                             previous_state,
+                            previous_background_state,
                             node_storage_resources(storage)));
                     } else {
                         auto const& node = *static_cast<Node const*>(node_ptr);
                         node.move(MoveContext<Node>(
                             storage,
                             state,
+                            tock_state,
                             previous_storage,
                             previous_state,
+                            previous_background_state,
                             node_storage_resources(storage)));
                     }
                 };
@@ -632,15 +810,23 @@ namespace iv {
                 callbacks.initialize_fn = [](
                     void const* node_ptr, size_t node_index, NodeStorage& storage) {
                     void* state = node_storage_state_ptr(storage, node_index);
+                    void* tock_state =
+                        node_storage_background_state_ptr(storage, node_index);
                     if constexpr (std::is_empty_v<Node>) {
                         (void)node_ptr;
                         Node node {};
                         node.initialize(InitializationContext<Node>(
-                            storage, state, node_storage_resources(storage)));
+                            storage,
+                            state,
+                            tock_state,
+                            node_storage_resources(storage)));
                     } else {
                         static_cast<Node const*>(node_ptr)->initialize(
                             InitializationContext<Node>(
-                                storage, state, node_storage_resources(storage)));
+                                storage,
+                            state,
+                            tock_state,
+                            node_storage_resources(storage)));
                     }
                 };
             }
@@ -649,15 +835,23 @@ namespace iv {
                 callbacks.release_fn = [](
                     void const* node_ptr, size_t node_index, NodeStorage& storage) {
                     void* state = node_storage_state_ptr(storage, node_index);
+                    void* tock_state =
+                        node_storage_background_state_ptr(storage, node_index);
                     if constexpr (std::is_empty_v<Node>) {
                         (void)node_ptr;
                         Node node {};
                         node.release(ReleaseContext<Node>(
-                            storage, state, node_storage_resources(storage)));
+                            storage,
+                            state,
+                            tock_state,
+                            node_storage_resources(storage)));
                     } else {
                         static_cast<Node const*>(node_ptr)->release(
                             ReleaseContext<Node>(
-                                storage, state, node_storage_resources(storage)));
+                                storage,
+                            state,
+                            tock_state,
+                            node_storage_resources(storage)));
                     }
                 };
             }
@@ -684,6 +878,19 @@ namespace iv {
                 };
             }
 
+            if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
+                using TockState = typename NodeBackgroundState<Node>::Type;
+                static_assert(
+                    std::is_default_constructible_v<TockState>,
+                    "Node::TockState must be default constructible");
+                callbacks.default_construct_background_state_fn = [](void* ptr) {
+                    new (ptr) TockState();
+                };
+                callbacks.destroy_background_state_fn = [](void* ptr) {
+                    std::destroy_at(static_cast<TockState*>(ptr));
+                };
+            }
+
             if constexpr (requires(MoveContext<Node> ctx) {
                 NodeValue.move(ctx);
             }) {
@@ -696,8 +903,11 @@ namespace iv {
                     NodeValue.move(MoveContext<Node>(
                         storage,
                         node_storage_state_ptr(storage, node_index),
+                        node_storage_background_state_ptr(storage, node_index),
                         previous_storage,
                         node_storage_state_ptr(
+                            previous_storage, previous_node_index),
+                        node_storage_background_state_ptr(
                             previous_storage, previous_node_index),
                         node_storage_resources(storage)));
                 };
@@ -719,6 +929,7 @@ namespace iv {
                     NodeValue.initialize(InitializationContext<Node>(
                         storage,
                         node_storage_state_ptr(storage, node_index),
+                        node_storage_background_state_ptr(storage, node_index),
                         node_storage_resources(storage)));
                 };
             }
@@ -731,6 +942,7 @@ namespace iv {
                     NodeValue.release(ReleaseContext<Node>(
                         storage,
                         node_storage_state_ptr(storage, node_index),
+                        node_storage_background_state_ptr(storage, node_index),
                         node_storage_resources(storage)));
                 };
             }

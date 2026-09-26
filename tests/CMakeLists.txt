@@ -8,6 +8,9 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(googletest)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(gtest PRIVATE -Wno-character-conversion)
+endif()
 
 function(add_iv_gtest target source)
     set(options ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION NO_HOST_RUNTIME_OBJECTS)
@@ -16,6 +19,10 @@ function(add_iv_gtest target source)
     cmake_parse_arguments(IVGT "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     add_executable(${target} ${source})
+    # Direct-loader tests use the same staged built-in package as the server.
+    # Building a single test executable must stage it even if the server target
+    # was not built in this build directory.
+    add_dependencies(${target} intravenous_builtin_package_assets)
 
     if(NOT IVGT_NO_HOST_RUNTIME_OBJECTS)
         target_sources(${target} PRIVATE
@@ -77,16 +84,15 @@ add_iv_gtest(
     module_loader_failures_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
-    intravenous_module_build_behavior_tests
-    module_build_behavior_gtest.cpp
-    ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
-add_iv_gtest(
     intravenous_module_package_dependencies_tests
     module_package_dependencies_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
     intravenous_configured_graph_binary_archive_tests
     configured_graph_binary_archive_gtest.cpp)
+add_iv_gtest(
+    intravenous_configured_graph_embedding_tests
+    configured_graph_embedding_gtest.cpp)
 add_iv_gtest(
     intravenous_node_build_request_tests
     node_build_request_gtest.cpp)
@@ -105,10 +111,6 @@ add_iv_gtest(
     module_watcher_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
-    intravenous_module_state_reload_tests
-    module_state_reload_gtest.cpp
-    ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
-add_iv_gtest(
     intravenous_module_context_boundary_tests
     module_context_boundary_gtest.cpp)
 add_iv_gtest(intravenous_compat_tests compat_gtest.cpp)
@@ -118,47 +120,66 @@ add_iv_gtest(
     NO_HOST_RUNTIME_OBJECTS)
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_channels_tests channels_gtest.cpp)
-add_iv_gtest(
-    intravenous_graph_compiler_consteval_tests
-    graph_compiler_consteval_gtest.cpp)
 add_iv_gtest(intravenous_graph_modules_tests graph_modules_gtest.cpp)
 add_iv_gtest(intravenous_predictors_tests predictors_gtest.cpp)
-add_iv_gtest(intravenous_detach_regression_tests detach_regression_gtest.cpp)
-add_iv_gtest(intravenous_block_node_executor_tests node_block_executor_gtest.cpp)
-add_iv_gtest(intravenous_timeline_lanes_tests modules/timeline_lanes_gtest.cpp)
-add_iv_gtest(intravenous_timeline_execution_tests modules/timeline_execution_gtest.cpp)
-add_iv_gtest(intravenous_lane_filters_tests modules/lane_filters_gtest.cpp)
-add_iv_gtest(intravenous_lane_views_tests modules/lane_views_gtest.cpp)
-add_iv_gtest(intravenous_lanes_visualization_tests modules/lanes_visualization_gtest.cpp)
-add_iv_gtest(intravenous_audio_device_lanes_tests modules/audio_device_lanes_gtest.cpp)
-add_iv_gtest(intravenous_lane_query_tests query/lane_query_gtest.cpp)
+add_iv_gtest(intravenous_system_audio_devices_tests modules/system_audio_devices_gtest.cpp)
 add_iv_gtest(intravenous_startup_config_tests modules/startup_config_gtest.cpp)
-add_iv_gtest(intravenous_iv_module_definitions_tests modules/iv_module_definitions_gtest.cpp)
-add_iv_gtest(intravenous_iv_module_instances_tests modules/iv_module_instances_gtest.cpp)
+add_iv_gtest(intravenous_node_definitions_tests modules/node_definitions_gtest.cpp)
+add_iv_gtest(intravenous_node_instances_tests modules/node_instances_gtest.cpp)
+add_iv_gtest(intravenous_project_graph_tests modules/project_graph_gtest.cpp)
+add_iv_gtest(intravenous_graph_connections_tests modules/graph_connections_gtest.cpp)
 add_iv_gtest(
-    intravenous_iv_module_instances_execution_tests
-    modules/iv_module_instances_execution_gtest.cpp)
+    intravenous_graph_jit_connection_plan_tests
+    graph_jit_connection_plan_gtest.cpp)
 add_iv_gtest(
-    intravenous_iv_module_reload_tests
-    modules/iv_module_reload_gtest.cpp
+    intravenous_graph_executor_tests
+    graph_executor_gtest.cpp)
+add_iv_gtest(
+    intravenous_graph_jit_tests
+    modules/graph_jit_gtest.cpp
+    IV_MODULE_COMPILATION_TESTS
+        GraphJitSharedRuntimeFixture.BuildPackage)
+
+# The runtime GraphJIT regression package is expensive to compile, while the
+# individual graph compilation/execution scenarios are independent. Build the
+# shared package once, then allow CTest to schedule all scenario tests in
+# parallel against the stable on-disk package artifact.
+get_property(iv_graph_jit_ctests DIRECTORY PROPERTY TESTS)
+foreach(test_name IN LISTS iv_graph_jit_ctests)
+    if(test_name STREQUAL "GraphJitSharedRuntimeFixture.BuildPackage")
+        set_tests_properties(${test_name} PROPERTIES
+            FIXTURES_SETUP graph_jit_runtime_package
+            LABELS "heavy")
+    elseif(test_name MATCHES "^GraphJitRuntimeFixture\\.")
+        set_tests_properties(${test_name} PROPERTIES
+            FIXTURES_REQUIRED graph_jit_runtime_package
+            LABELS "heavy")
+    endif()
+endforeach()
+add_iv_gtest(
+    intravenous_node_instances_configuration_tests
+    modules/node_instances_configuration_gtest.cpp)
+add_iv_gtest(intravenous_package_watcher_tests modules/package_watcher_gtest.cpp)
+add_iv_gtest(intravenous_package_definitions_tests modules/package_definitions_gtest.cpp)
+add_iv_gtest(intravenous_package_pipeline_logic_tests modules/package_pipeline_logic_gtest.cpp)
+add_iv_gtest(
+    intravenous_package_jit_tests
+    modules/package_jit_gtest.cpp
+    IV_MODULE_COMPILATION_TESTS
+        PackageJit.MixedBatchIsolatesFailuresAndSuccessfulRevisionsAdvanceMonotonically)
+add_iv_gtest(
+    intravenous_package_pipeline_tests
+    modules/package_pipeline_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
     intravenous_iv_module_source_introspection_tests
     modules/iv_module_source_introspection_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
-add_iv_gtest(intravenous_graph_input_lanes_tests modules/graph_input_lanes_gtest.cpp)
 add_iv_gtest(intravenous_project_persistence_tests project_persistence_gtest.cpp)
 add_iv_gtest(
     intravenous_project_autosave_tests
     modules/project_autosave_gtest.cpp)
-add_iv_gtest(intravenous_graph_virtual_outputs_tests graph_virtual_outputs_gtest.cpp)
-add_iv_gtest(intravenous_task_runner_tests modules/task_runner_gtest.cpp)
-add_iv_gtest(intravenous_lane_filters_bridges_tests bridges/lane_filters_bridges_gtest.cpp)
 add_iv_gtest(intravenous_runtime_module_bridges_tests bridges/runtime_module_bridges_gtest.cpp)
-add_iv_gtest(
-    intravenous_runtime_integration_tests
-    integration_gtest.cpp
-    ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(intravenous_socket_rpc_server_tests socket_rpc_server_gtest.cpp)
 add_iv_gtest(intravenous_socket_rpc_support_tests socket_rpc_support_gtest.cpp)
 add_iv_gtest(
@@ -167,11 +188,8 @@ add_iv_gtest(
     IV_MODULE_COMPILATION_TESTS
         SocketRpcIvModuleSourceIntrospectionBridge.BoundQueryEventPopulatesBuilderFromOwners)
 add_iv_gtest(
-    intravenous_socket_rpc_iv_module_instances_bridge_tests
-    bridges/socket_rpc_iv_module_instances_bridge_gtest.cpp)
-add_iv_gtest(
-    intravenous_socket_rpc_timeline_execution_bridge_tests
-    bridges/socket_rpc_timeline_execution_bridge_gtest.cpp)
+    intravenous_socket_rpc_node_instances_bridge_tests
+    bridges/socket_rpc_node_instances_bridge_gtest.cpp)
 add_iv_gtest(
     intravenous_socket_rpc_notification_bridge_tests
     bridges/socket_rpc_notification_bridge_gtest.cpp)

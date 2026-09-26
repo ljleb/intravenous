@@ -2,10 +2,8 @@
 #include <intravenous/basic_nodes/debug_probe.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/dsl.h>
-#include <configured_graph_test_view.h>
 #include <intravenous/graph/builder.h>
-#include <intravenous/graph/builder/lowering.hpp>
-#include <intravenous/graph/compiler.h>
+#include <intravenous/graph/introspection.h>
 #include <intravenous/module/configured_graph_wire.h>
 #include <intravenous/module/builder_session.h>
 
@@ -45,7 +43,7 @@ struct NodeCallEventSource {
     static constexpr auto outputs()
     {
         return std::array<OutputConfig, 1>{
-            event_output("trigger", EventTypeId::trigger),
+            tick_event_output("trigger", EventTypeId::trigger),
         };
     }
 
@@ -56,9 +54,9 @@ struct NodeCallMixedSink {
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 3>{
-            sample_input("left"),
-            sample_input("right"),
-            event_input("trigger", EventTypeId::trigger),
+            sequential_sample_input("left"),
+            sequential_sample_input("right"),
+            sequential_event_input("trigger", EventTypeId::trigger),
         };
     }
 
@@ -111,58 +109,15 @@ void configure_pointer_metadata_package(
     details::select_builder_package(session, 0);
 }
 
-iv::RuntimeGraphPlan compile_graph(
-    iv::ConfiguredGraphTestView view,
-    bool execution_root = false)
-{
-    auto configured = iv::thaw_configured_graph_for_test(view);
-    auto executable = iv::GraphLowerer::lower(
-        std::move(configured), {.execution_root = execution_root});
-    return iv::GraphCompiler::compile(std::move(executable));
-}
-
-ConfiguredGraphTestView configure_functional_subgraph()
-{
-    GraphBuilder g;
-    auto nested = g.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = boundary.input<"in">(0.0f);
-        auto pass = details::configure_concrete_node<
-            Sum<mono, SampleStreamLayout::planar, 1>>(g);
-        pass(input);
-        boundary.outputs("out"_P = pass);
-    });
-
-    nested("in"_P = 0.25f);
-    g.outputs("main"_P = nested["out"]);
-    return freeze_configured_graph_for_test(std::move(g).finish());
-}
-
-bool functional_subgraph_compiles()
-{
-    (void)compile_graph(configure_functional_subgraph());
-    return true;
-}
-
-ConfiguredGraphTestView configure_direct_public_sample_passthrough()
+ConfiguredGraph configure_direct_public_sample_passthrough()
 {
     GraphBuilder g;
     auto input = g.input<"in">(0.0f);
     g.outputs("out"_P = input);
-    return freeze_configured_graph_for_test(std::move(g).finish());
+    return std::move(g).finish();
 }
 
-bool direct_public_sample_passthrough_compiles()
-{
-    auto const built = compile_graph(configure_direct_public_sample_passthrough());
-    return built.graph.inputs().size() == 1
-        && built.graph.outputs().size() == 1;
-}
-
-struct IntrospectionRegressionConfiguration {
-    ConfiguredGraphTestView view;
-};
-
-IntrospectionRegressionConfiguration configure_introspection_regression()
+ConfiguredGraph configure_introspection_regression()
 {
     GraphBuilder g;
     auto input = g.input<"in">(0.25f);
@@ -173,22 +128,19 @@ IntrospectionRegressionConfiguration configure_introspection_regression()
     g.outputs("out"_P = sum);
     (void)annotated;
     (void)event;
-    return {.view = freeze_configured_graph_for_test(std::move(g).finish())};
+    return std::move(g).finish();
 }
 
 struct IntrospectionRegressionSnapshot {
     bool virtual_node_is_preserved = false;
     bool sample_ports_are_preserved = false;
     bool event_ports_are_preserved = false;
-    bool shared_lowering_matches_canonical_metadata = false;
 };
 
 IntrospectionRegressionSnapshot introspection_regression_snapshot()
 {
     auto const configured = configure_introspection_regression();
-    auto const compiled = compile_graph(configured.view, true);
-    auto const& metadata = compiled.introspection;
-    auto const& execution = compiled.introspection;
+    auto const metadata = build_graph_introspection_metadata(configured);
     IntrospectionRegressionSnapshot result;
 
     result.virtual_node_is_preserved = metadata.virtual_nodes.size() == 1
@@ -203,26 +155,9 @@ IntrospectionRegressionSnapshot introspection_regression_snapshot()
         && metadata.public_sample_outputs.front().family_name == "out";
 
     result.event_ports_are_preserved = metadata.public_event_inputs.size() == 1
-        && metadata.public_event_inputs.front().port_ordinal == 0
+        && metadata.public_event_inputs.front().port_index == 0
         && !metadata.public_event_inputs.front().graph_connected
         && metadata.public_event_outputs.empty();
-    result.shared_lowering_matches_canonical_metadata = metadata.virtual_nodes.size()
-            == execution.virtual_nodes.size()
-        && metadata.public_sample_inputs.size()
-            == execution.public_sample_inputs.size()
-        && metadata.public_event_inputs.size()
-            == execution.public_event_inputs.size()
-        && metadata.public_sample_outputs.size()
-            == execution.public_sample_outputs.size()
-        && metadata.public_event_outputs.size()
-            == execution.public_event_outputs.size()
-        && metadata.virtual_nodes.front().id == execution.virtual_nodes.front().id
-        && metadata.virtual_nodes.front().source_identity
-            == execution.virtual_nodes.front().source_identity
-        && metadata.public_sample_inputs.front().configured_connected
-            == execution.public_sample_inputs.front().configured_connected
-        && metadata.public_event_inputs.front().graph_connected
-            == execution.public_event_inputs.front().graph_connected;
     return result;
 }
 
@@ -244,16 +179,16 @@ TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
     pass(input);
     builder.outputs("out"_P = pass);
 
-    auto view = freeze_configured_graph_for_test(
-        details::take_built_graph(session.get()));
+    auto configured = details::take_built_graph(session.get());
     EXPECT_THROW(
         (void)details::take_built_graph(session.get()),
         std::logic_error);
     session.reset();
 
-    auto const plan = compile_graph(view);
-    ASSERT_EQ(plan.graph.outputs().size(), 1u);
-    EXPECT_EQ(plan.graph.outputs().front().name, "out");
+    auto const outputs = configured.public_ports.sample_outputs(
+        configured.node_bundles);
+    ASSERT_EQ(outputs.size(), 1u);
+    EXPECT_EQ(outputs.front().name, "out");
 }
 
 TEST(GraphModules, TypedNodeCallsForwardNormalizedSampleAndEventRequests)
@@ -304,12 +239,12 @@ TEST(GraphModules, BuilderCapturesPointerConfigurationAsSymbolicRelocations)
         RetainedGlobalData{
             .address = cstring_title,
             .size = sizeof(cstring_title),
-            .ordinal = 0,
+            .index = 0,
         },
         RetainedGlobalData{
             .address = cstring_detail,
             .size = sizeof(cstring_detail),
-            .ordinal = 1,
+            .index = 1,
         },
     };
     configure_pointer_metadata_package(session.get(), fields, globals);
@@ -329,17 +264,17 @@ TEST(GraphModules, BuilderCapturesPointerConfigurationAsSymbolicRelocations)
     ASSERT_EQ(relocations.size(), 3u);
     EXPECT_EQ(relocations[0].byte_offset, offsetof(CStringConfigNode, title));
     EXPECT_EQ(relocations[0].package_root, "test.pointer-metadata-package");
-    ASSERT_TRUE(relocations[0].retained_global_ordinal.has_value());
-    EXPECT_EQ(*relocations[0].retained_global_ordinal, 0u);
+    ASSERT_TRUE(relocations[0].retained_global_index.has_value());
+    EXPECT_EQ(*relocations[0].retained_global_index, 0u);
     EXPECT_EQ(relocations[0].addend, 0u);
     EXPECT_EQ(relocations[1].byte_offset, offsetof(CStringConfigNode, detail));
     EXPECT_EQ(relocations[1].package_root, "test.pointer-metadata-package");
-    ASSERT_TRUE(relocations[1].retained_global_ordinal.has_value());
-    EXPECT_EQ(*relocations[1].retained_global_ordinal, 1u);
+    ASSERT_TRUE(relocations[1].retained_global_index.has_value());
+    EXPECT_EQ(*relocations[1].retained_global_index, 1u);
     EXPECT_EQ(relocations[1].addend, 0u);
     EXPECT_EQ(relocations[2].byte_offset, offsetof(CStringConfigNode, optional));
     EXPECT_TRUE(relocations[2].package_root.empty());
-    EXPECT_FALSE(relocations[2].retained_global_ordinal.has_value());
+    EXPECT_FALSE(relocations[2].retained_global_index.has_value());
 }
 
 TEST(GraphModules, BuilderRelocatesProviderNodePointerToCallerPackageGlobal)
@@ -358,7 +293,7 @@ TEST(GraphModules, BuilderRelocatesProviderNodePointerToCallerPackageGlobal)
         RetainedGlobalData{
             .address = cstring_title,
             .size = sizeof(cstring_title),
-            .ordinal = 7,
+            .index = 7,
         },
     };
     std::array packages{
@@ -385,8 +320,8 @@ TEST(GraphModules, BuilderRelocatesProviderNodePointerToCallerPackageGlobal)
     auto const& relocations = archive.node_configs.front().relocations;
     ASSERT_EQ(relocations.size(), 1u);
     EXPECT_EQ(relocations.front().package_root, "test.caller-package");
-    ASSERT_TRUE(relocations.front().retained_global_ordinal.has_value());
-    EXPECT_EQ(*relocations.front().retained_global_ordinal, 7u);
+    ASSERT_TRUE(relocations.front().retained_global_index.has_value());
+    EXPECT_EQ(*relocations.front().retained_global_index, 7u);
 
     auto const used_packages = details::builder_used_packages(session.get());
     EXPECT_EQ(used_packages, (std::vector<std::size_t>{0, 1}));
@@ -420,22 +355,22 @@ TEST(GraphModules, BuilderCapturesNestedAndArrayPointerConfiguration)
         RetainedGlobalData{
             .address = cstring_left,
             .size = sizeof(cstring_left),
-            .ordinal = 0,
+            .index = 0,
         },
         RetainedGlobalData{
             .address = cstring_right,
             .size = sizeof(cstring_right),
-            .ordinal = 1,
+            .index = 1,
         },
         RetainedGlobalData{
             .address = cstring_first,
             .size = sizeof(cstring_first),
-            .ordinal = 2,
+            .index = 2,
         },
         RetainedGlobalData{
             .address = cstring_second,
             .size = sizeof(cstring_second),
-            .ordinal = 3,
+            .index = 3,
         },
     };
     configure_pointer_metadata_package(session.get(), fields, globals);
@@ -456,8 +391,8 @@ TEST(GraphModules, BuilderCapturesNestedAndArrayPointerConfiguration)
     for (size_t index = 0; index < fields.size(); ++index) {
         EXPECT_EQ(relocations[index].byte_offset, fields[index].byte_offset);
         EXPECT_EQ(relocations[index].package_root, "test.pointer-metadata-package");
-        ASSERT_TRUE(relocations[index].retained_global_ordinal.has_value());
-        EXPECT_EQ(*relocations[index].retained_global_ordinal, index);
+        ASSERT_TRUE(relocations[index].retained_global_index.has_value());
+        EXPECT_EQ(*relocations[index].retained_global_index, index);
         EXPECT_EQ(relocations[index].addend, 0u);
     }
 }
@@ -477,7 +412,7 @@ TEST(GraphModules, BuilderRejectsInvalidPointerMetadataPackages)
     std::array invalid_globals{RetainedGlobalData{
         .address = nullptr,
         .size = 1,
-        .ordinal = 0,
+        .index = 0,
     }};
     std::array invalid_global_package{details::BuilderPackageView{
         .package_root = "test.invalid-pointer-metadata",
@@ -506,15 +441,20 @@ TEST(GraphModules, OutputRequestCopiesBorrowedStringsIntoTheSession)
     builder.outputs(std::span<SampleOutputRequest const>(&request, 1));
     name[0] = 'x';
 
-    auto plan = compile_graph(
-        freeze_configured_graph_for_test(std::move(builder).finish()));
-    ASSERT_EQ(plan.graph.outputs().size(), 1u);
-    EXPECT_EQ(plan.graph.outputs().front().name, "main");
+    auto configured = std::move(builder).finish();
+    auto const outputs = configured.public_ports.sample_outputs(
+        configured.node_bundles);
+    ASSERT_EQ(outputs.size(), 1u);
+    EXPECT_EQ(outputs.front().name, "main");
 }
 
 TEST(GraphModules, PublicInputCanFeedPublicOutputWithoutAnInternalNode)
 {
-    EXPECT_TRUE(direct_public_sample_passthrough_compiles());
+    auto const configured = configure_direct_public_sample_passthrough();
+    EXPECT_EQ(configured.public_ports.sample_inputs(
+                  configured.node_bundles).size(), 1u);
+    EXPECT_EQ(configured.public_ports.sample_outputs(
+                  configured.node_bundles).size(), 1u);
 }
 
 TEST(GraphModules, RuntimeIntrospectionPreservesVirtualAndPublicPorts)
@@ -523,50 +463,6 @@ TEST(GraphModules, RuntimeIntrospectionPreservesVirtualAndPublicPorts)
     EXPECT_TRUE(snapshot.virtual_node_is_preserved);
     EXPECT_TRUE(snapshot.sample_ports_are_preserved);
     EXPECT_TRUE(snapshot.event_ports_are_preserved);
-    EXPECT_TRUE(snapshot.shared_lowering_matches_canonical_metadata);
-}
-
-TEST(GraphModules, FunctionalSubgraphRemainsAnExplicitBoundaryFacade)
-{
-    EXPECT_TRUE(functional_subgraph_compiles());
-
-    auto const built = compile_graph(configure_functional_subgraph());
-    ASSERT_EQ(built.metadata.lowered_subgraphs.size(), 1u);
-    auto const& scope = built.metadata.lowered_subgraphs.front();
-    EXPECT_EQ(scope.parent_scope, GRAPH_ID);
-    ASSERT_EQ(scope.sample_inputs.size(), 1u);
-    EXPECT_EQ(scope.sample_inputs.front().name, "in");
-    ASSERT_EQ(scope.sample_outputs.size(), 1u);
-    EXPECT_EQ(scope.sample_outputs.front().name, "out");
-    ASSERT_EQ(scope.sample_output_sources.size(), 1u);
-    EXPECT_TRUE(std::ranges::contains(
-        scope.member_nodes, scope.sample_output_sources.front().node));
-}
-
-TEST(GraphModules, EventOnlyFunctionalSubgraphDoesNotRequireSampleOutputs)
-{
-    GraphBuilder g;
-    auto const source = g.event_input<"event">(EventTypeId::empty);
-    auto const scope = g.subgraph([&](SubgraphBuilder& boundary) {
-        auto const input = boundary.event_input<"event">(EventTypeId::empty);
-        auto const relay = details::configure_concrete_node<EventConcatenation>(
-            g, 1, EventTypeId::empty);
-        relay.connect_event_input(0, input);
-        g.event_outputs("event"_P = relay.event_port());
-    });
-    scope.connect_event_input("event", source);
-    g.outputs();
-
-    auto const built = compile_graph(
-        freeze_configured_graph_for_test(std::move(g).finish()));
-    ASSERT_EQ(built.metadata.lowered_subgraphs.size(), 1u);
-    auto const& lowered_scope = built.metadata.lowered_subgraphs.front();
-    EXPECT_TRUE(lowered_scope.sample_outputs.empty());
-    ASSERT_EQ(lowered_scope.event_inputs.size(), 1u);
-    EXPECT_EQ(lowered_scope.event_inputs.front().name, "event");
-    ASSERT_EQ(built.graph.outputs().size(), 1u);
-    EXPECT_FALSE(is_sample(built.graph.outputs().front()));
-    EXPECT_EQ(built.graph.outputs().front().name, "event");
 }
 
 } // namespace iv

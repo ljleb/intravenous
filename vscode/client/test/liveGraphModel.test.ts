@@ -14,7 +14,7 @@ function sampleNode(): VirtualNode {
         packageIdentity: "module@Oscillator",
         memberCount: 2,
         sampleInputs: [{
-            ordinal: 1,
+            index: 1,
             name: "frequency",
             connectivity: "disconnected",
             defaultValue: 0.5,
@@ -22,29 +22,29 @@ function sampleNode(): VirtualNode {
             stateValue: "overridden",
         }],
         sampleOutputs: [{
-            ordinal: 2,
+            index: 2,
             name: "out",
             connectivity: "connected",
             stateValue: "disconnected",
         }],
         eventInputs: [{
-            ordinal: 3,
+            index: 3,
             name: "gate",
             connectivity: "mixed",
             stateValue: "default",
         }],
         eventOutputs: [{
-            ordinal: 4,
+            index: 4,
             name: "trig",
             connectivity: "connected",
             stateValue: "disconnected",
         }],
         members: [{
-            ordinal: 7,
+            index: 7,
             backingNodeId: "backing-1",
             kind: "Oscillator",
             sampleInputs: [{
-                ordinal: 1,
+                index: 1,
                 name: "frequency",
                 connectivity: "disconnected",
                 defaultValue: 0.5,
@@ -53,19 +53,19 @@ function sampleNode(): VirtualNode {
                 stateValue: "virtualFollow",
             }],
             sampleOutputs: [{
-                ordinal: 2,
+                index: 2,
                 name: "out",
                 connectivity: "connected",
                 stateValue: "disconnected",
             }],
             eventInputs: [{
-                ordinal: 3,
+                index: 3,
                 name: "gate",
                 connectivity: "mixed",
                 stateValue: "virtualFollow",
             }],
             eventOutputs: [{
-                ordinal: 4,
+                index: 4,
                 name: "trig",
                 connectivity: "connected",
                 stateValue: "disconnected",
@@ -74,7 +74,7 @@ function sampleNode(): VirtualNode {
     };
 }
 
-test("serializeLiveGraphNodes exposes all supported port state families", () => {
+test("serializeLiveGraphNodes exposes port state as read-only introspection", () => {
     const serialized = serializeLiveGraphNodes([sampleNode()]);
     assert.equal(serialized.length, 1);
 
@@ -85,29 +85,34 @@ test("serializeLiveGraphNodes exposes all supported port state families", () => 
     const virtualEventOutput = node.groups[3].ports[0];
     const memberSampleInput = node.members[0].groups[0].ports[0];
 
+    assert.equal(virtualSampleInput.index, 1);
+    assert.equal(virtualSampleOutput.index, 2);
+    assert.equal(virtualEventInput.index, 3);
+    assert.equal(virtualEventOutput.index, 4);
+    assert.equal(node.members[0].index, 7);
+    assert.equal(memberSampleInput.index, 1);
+
     assert.equal(virtualSampleInput.stateFamily, "sampleInput");
     assert.equal(virtualSampleInput.stateSummary, "knob value");
-    assert.deepEqual(virtualSampleInput.stateActions.map((action) => action.state), ["timelineLane"]);
+    assert.equal(virtualSampleInput.tweakable, false);
+    assert.deepEqual(virtualSampleInput.stateActions, []);
 
     assert.equal(virtualEventInput.stateFamily, "eventInput");
     assert.equal(virtualEventInput.stateSummary, "default");
-    assert.deepEqual(virtualEventInput.stateActions.map((action) => action.state), ["timelineLane"]);
+    assert.deepEqual(virtualEventInput.stateActions, []);
 
     assert.equal(virtualSampleOutput.stateFamily, "sampleOutput");
     assert.equal(virtualSampleOutput.stateSummary, "disconnected");
-    assert.deepEqual(virtualSampleOutput.stateActions.map((action) => action.state), ["timelineLane"]);
+    assert.deepEqual(virtualSampleOutput.stateActions, []);
 
     assert.equal(virtualEventOutput.stateFamily, "eventOutput");
     assert.equal(virtualEventOutput.stateSummary, "disconnected");
-    assert.deepEqual(virtualEventOutput.stateActions.map((action) => action.state), ["timelineLane"]);
+    assert.deepEqual(virtualEventOutput.stateActions, []);
 
     assert.equal(memberSampleInput.stateSummary, "follow virtual value");
+    assert.equal(memberSampleInput.tweakable, false);
     assert.equal(memberSampleInput.resetState, null);
-    assert.deepEqual(memberSampleInput.stateActions.map((action) => action.state), [
-        "overridden",
-        "timelineLane",
-        "disconnected",
-    ]);
+    assert.deepEqual(memberSampleInput.stateActions, []);
 });
 
 test("serializeLiveGraphNodes treats default-connected concrete ports as connected", () => {
@@ -115,23 +120,23 @@ test("serializeLiveGraphNodes treats default-connected concrete ports as connect
         id: "node-1",
         kind: "Module",
         sampleOutputs: [{
-            ordinal: 2,
+            index: 2,
             name: "mix",
             connectivity: "connected",
-            stateValue: "timelineLane",
+            stateValue: "disconnected",
         }],
         members: [{
-            ordinal: 1,
+            index: 1,
             backingNodeId: "backing-1",
             kind: "Member",
             sampleInputs: [{
-                ordinal: 3,
+                index: 3,
                 name: "in",
                 connectivity: "connected",
                 stateValue: "disconnected",
             }],
             sampleOutputs: [{
-                ordinal: 2,
+                index: 2,
                 name: "mix",
                 connectivity: "connected",
                 stateValue: "virtual",
@@ -145,18 +150,11 @@ test("serializeLiveGraphNodes treats default-connected concrete ports as connect
 
     assert.equal(memberSampleInput.stateSummary, "built-in connection");
     assert.equal(memberSampleInput.resetState, null);
-    assert.deepEqual(memberSampleInput.stateActions.map((action) => action.state), [
-        "overridden",
-        "virtualFollow",
-        "timelineLane",
-    ]);
+    assert.deepEqual(memberSampleInput.stateActions, []);
 
     assert.equal(memberSampleOutput.stateSummary, "virtual output");
     assert.equal(memberSampleOutput.resetState, null);
-    assert.deepEqual(memberSampleOutput.stateActions.map((action) => action.state), [
-        "timelineLane",
-        "disconnected",
-    ]);
+    assert.deepEqual(memberSampleOutput.stateActions, []);
 });
 
 test("serializeLiveGraphInstances builds stable dropdown labels", () => {

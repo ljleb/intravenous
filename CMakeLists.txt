@@ -78,3 +78,11 @@ function(iv_force_cxx23 directory)
     endforeach()
 endfunction()
 iv_force_cxx23("${CMAKE_SOURCE_DIR}")
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+configure_file(
+    "${CMAKE_SOURCE_DIR}/.clangd.in"
+    "${CMAKE_SOURCE_DIR}/.clangd"
+    @ONLY
+)

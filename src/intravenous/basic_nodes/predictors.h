@@ -27,12 +27,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sample_input({}, {.history = Order - 1}) };
+            return std::array { sequential_sample_input({}, {}, {.history = Order - 1}) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output({}, {.history = LookAhead}) };
+            return std::array { tick_sample_output({}, {}, {.history = LookAhead}) };
         }
 
         void declare(DeclarationContext<NlmsPredictor> const& ctx) const
@@ -97,12 +97,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sample_input({}, {.history = Order - 1}) };
+            return std::array { sequential_sample_input({}, {}, {.history = Order - 1}) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output({}, {.history = LookAhead + ArOrder}) };
+            return std::array { tick_sample_output({}, {}, {.history = LookAhead + ArOrder}) };
         }
 
         void declare(DeclarationContext<TanhResidualPredictor> const& ctx) const
@@ -195,12 +195,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sample_input({}, {.history = Order - 1}) };
+            return std::array { sequential_sample_input({}, {}, {.history = Order - 1}) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output({}, {.latency = 0, .history = LookAhead + ArOrder}) };
+            return std::array { tick_sample_output({}, {}, {.history = LookAhead + ArOrder, .latency = 0}) };
         }
 
         void declare(DeclarationContext<TanhResidualAR2Predictor> const& ctx) const
@@ -326,12 +326,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sample_input({}, {.history = Order - 1}) };
+            return std::array { sequential_sample_input({}, {}, {.history = Order - 1}) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output({}, {.history = LookAhead}) };
+            return std::array { tick_sample_output({}, {}, {.history = LookAhead}) };
         }
 
         template<typename A>
