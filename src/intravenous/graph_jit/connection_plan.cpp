@@ -1258,7 +1258,8 @@ std::expected<BackgroundEvaluationPlan, std::string> build_semantic_background_p
 std::expected<void, std::string> populate_background_topology(
     ConfiguredGraph const& graph,
     ConnectionAnalysisPlan const& connections,
-    BackgroundEvaluationPlan& plan)
+    BackgroundEvaluationPlan& plan,
+    std::size_t kernel_block_size)
 {
     auto stable_node_identity = [&](NodeBundleHandle bundle)
         -> std::optional<StableConcreteNodeId> {
@@ -1377,6 +1378,9 @@ std::expected<void, std::string> populate_background_topology(
             .uses_replay_forward_coverage = node.contextually_replayable,
             .uses_replay_reverse_coverage = node.contextually_replayable,
             .uses_imported_tick_block_for_replay = node.contextually_replayable,
+            .replay_maximum_block_size = node.contextually_replayable
+                ? std::min(kernel_block_size, node.maximum_block_size)
+                : 0,
         });
     }
 
@@ -3805,7 +3809,8 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         return std::unexpected(std::move(detaches.error()));
     }
     if (!retained_background_plan) {
-        if (auto populated = populate_background_topology(graph, plan, plan.background);
+        if (auto populated = populate_background_topology(
+                graph, plan, plan.background, kernel_block_size);
             !populated) {
             return std::unexpected(std::move(populated.error()));
         }
@@ -3836,6 +3841,10 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         return std::unexpected(std::move(background_storage.error()));
     }
     plan.background.storage = std::move(*background_storage);
+    if (auto runtime = finalize_background_runtime_plan(plan.background);
+        !runtime) {
+        return std::unexpected(std::move(runtime.error()));
+    }
     return plan;
 }
 

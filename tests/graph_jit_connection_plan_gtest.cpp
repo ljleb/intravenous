@@ -1,4 +1,5 @@
 #include <intravenous/dsl.h>
+#include <intravenous/graph_jit/background_storage_plan.h>
 #include <intravenous/graph_jit/connection_plan.h>
 #include <intravenous/graph_jit/sample_storage_plan.h>
 
@@ -1536,6 +1537,8 @@ TEST(GraphJitConnectionPlan, RetainsBackgroundEventConversion)
     GraphBuilder graph;
     auto source = details::configure_concrete_node<BackgroundMidiSource>(graph);
     auto target = details::configure_concrete_node<BackgroundEventPass>(graph);
+    auto const source_handle = source.node_bundle_handle();
+    auto const target_handle = target.node_bundle_handle();
     target.connect_event_input(0, source.event_port());
     graph.outputs();
 
@@ -1580,6 +1583,21 @@ TEST(GraphJitConnectionPlan, RetainsBackgroundEventConversion)
         storage_kinds,
         graph_jit::PortStorageKind::
             background));
+
+    auto const source_node =
+        *built->background.bundle_to_background_node[source_handle];
+    auto const target_node =
+        *built->background.bundle_to_background_node[target_handle];
+    auto const& runtime = built->background.runtime;
+    ASSERT_EQ(runtime.node_operations.size(), built->background.nodes.size());
+    EXPECT_TRUE(runtime.node_operations[source_node].before.empty());
+    ASSERT_EQ(runtime.node_operations[target_node].before.size(), 1u);
+    auto const operation =
+        runtime.node_operations[target_node].before.front();
+    ASSERT_LT(operation, runtime.operations.size());
+    EXPECT_EQ(
+        runtime.operations[operation].kind,
+        graph_jit::BackgroundRuntimeOperationKind::event_materialization);
 }
 
 TEST(GraphJitConnectionPlan, SharesEquivalentBackgroundEventMaterializations)
@@ -2297,6 +2315,87 @@ TEST(GraphJitConnectionPlan, ContextualReplayTraversesSequentialDependencies)
         storage_kinds,
         graph_jit::PortStorageKind::
             background));
+
+    auto const& runtime = plan->background.runtime;
+    ASSERT_EQ(runtime.replay_invocations.size(), 2u);
+    ASSERT_TRUE(runtime.node_replay_invocations[source_node]);
+    ASSERT_TRUE(runtime.node_replay_invocations[pass_node]);
+    auto const& source_replay = runtime.replay_invocations[
+        *runtime.node_replay_invocations[source_node]];
+    auto const& pass_replay = runtime.replay_invocations[
+        *runtime.node_replay_invocations[pass_node]];
+    EXPECT_EQ(source_replay.maximum_block_size, 64u);
+    EXPECT_EQ(pass_replay.maximum_block_size, 64u);
+    EXPECT_TRUE(source_replay.input_bindings.empty());
+    EXPECT_FALSE(source_replay.output_bindings.empty());
+    EXPECT_FALSE(pass_replay.input_bindings.empty());
+    EXPECT_FALSE(pass_replay.output_bindings.empty());
+    ASSERT_FALSE(runtime.node_operations[pass_node].before.empty());
+    EXPECT_TRUE(std::ranges::any_of(
+        runtime.node_operations[pass_node].before,
+        [&](graph_jit::BackgroundRuntimeOperationIndex operation) {
+            return operation < runtime.operations.size()
+                && runtime.operations[operation].kind
+                    == graph_jit::BackgroundRuntimeOperationKind::direct_sample;
+        }));
+}
+
+TEST(GraphJitConnectionPlan, RejectsInvalidBackgroundRuntimeIndicesAndPlacement)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<ReplayableSource>(graph);
+    auto pass = details::configure_concrete_node<ReplayablePass>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    auto const source_handle = source.node_bundle_handle();
+    auto const pass_handle = pass.node_bundle_handle();
+    pass(source);
+    sink(pass);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    auto const source_node =
+        *plan->background.bundle_to_background_node[source_handle];
+    auto const pass_node =
+        *plan->background.bundle_to_background_node[pass_handle];
+
+    auto invalid_binding = plan->background;
+    ASSERT_FALSE(invalid_binding.runtime.bindings.empty());
+    ASSERT_FALSE(invalid_binding.runtime.bindings.front().storage.empty());
+    invalid_binding.runtime.bindings.front().storage.front() =
+        invalid_binding.storage.ports.size();
+    auto binding_validation =
+        graph_jit::detail::validate_background_runtime_plan(invalid_binding);
+    ASSERT_FALSE(binding_validation.has_value());
+    EXPECT_NE(binding_validation.error().find("incompatible storage"),
+        std::string::npos);
+
+    auto invalid_replay = plan->background;
+    ASSERT_FALSE(invalid_replay.runtime.replay_invocations.empty());
+    invalid_replay.runtime.replay_invocations.front().maximum_block_size = 0;
+    auto replay_validation =
+        graph_jit::detail::validate_background_runtime_plan(invalid_replay);
+    ASSERT_FALSE(replay_validation.has_value());
+    EXPECT_NE(replay_validation.error().find("block constraint"),
+        std::string::npos);
+
+    auto invalid_placement = plan->background;
+    ASSERT_FALSE(
+        invalid_placement.runtime.node_operations[pass_node].before.empty());
+    auto const operation =
+        invalid_placement.runtime.node_operations[pass_node].before.front();
+    invalid_placement.runtime.node_operations[pass_node].before.erase(
+        invalid_placement.runtime.node_operations[pass_node].before.begin());
+    invalid_placement.runtime.node_operations[source_node].before.push_back(
+        operation);
+    auto placement_validation =
+        graph_jit::detail::validate_background_runtime_plan(invalid_placement);
+    ASSERT_FALSE(placement_validation.has_value());
+    EXPECT_NE(placement_validation.error().find("before its producer"),
+        std::string::npos);
 }
 
 TEST(GraphJitConnectionPlan, TockDependencyCanFeedSynthesizedReplay)

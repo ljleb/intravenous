@@ -816,9 +816,9 @@ The implementation checkpoints now stand as follows:
    schema and replayability/connection planning;
 10. complete ordinary background evaluation in the normative dependency order from
     [coverage_and_background_evaluation.md §32](./coverage_and_background_evaluation.md#32-implementation-landing-order):
-    the committed-coverage/propagation-workspace split has landed; next retain
-    compiler-owned binding/materialization schedules, add the canonical sample/event
-    page store and audio-safe pins, make the generated root invoke narrow
+    the committed-coverage/propagation-workspace split and compiler-owned runtime
+    binding/materialization/replay schedules have landed; next add the canonical
+    sample/event page store and audio-safe pins, make the generated root invoke narrow
     transaction-local prepare/finalize hooks, implement transaction-wide atomic commit,
     then add the Tick binding frame, `TickMaterializationSnapshot`, stale-page playback
     and per-input missing-page neutrality. Do this before enabling transactional

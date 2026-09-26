@@ -13,4 +13,12 @@ namespace iv::graph_jit::detail {
 std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
     ConnectionAnalysisPlan const& connections);
 
+// Retain the compact runtime binding/operation/replay schedule over the
+// already-selected storage plan, then validate every retained index and order.
+std::expected<void, std::string> finalize_background_runtime_plan(
+    BackgroundEvaluationPlan& plan);
+
+std::expected<void, std::string> validate_background_runtime_plan(
+    BackgroundEvaluationPlan const& plan);
+
 } // namespace iv::graph_jit::detail

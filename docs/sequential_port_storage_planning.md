@@ -603,12 +603,14 @@ The storage-model and storage-placement refactors have landed:
 
 ### Background runtime realization and operation placement
 
-The immutable background storage plan is not only a catalog of representations.
-Before runtime realization lands, it must also retain the compact binding slots and
-the before-node/after-node placement of every direct-view, conversion, projection,
-fan-in and deterministic event-merge operation. That schedule is a compiler fact.
-`GraphExecutor` and its storage realization must not rebuild it by walking
-`ConfiguredGraph`, compiler objects, or connection topology.
+The immutable background storage plan is not only a catalog of representations. It
+now retains compact binding slots and the before-node/after-node placement of every
+direct-view, conversion, projection, fan-in and deterministic event-merge operation,
+plus dense replay invocation slots and compiled maximum-block constraints. Those
+records are validated for storage-index compatibility, unique operation placement,
+dependency order, persisted identity and replay binding/block constraints. The
+schedule is a compiler fact. `GraphExecutor` and its storage realization must not
+rebuild it by walking `ConfiguredGraph`, compiler objects, or connection topology.
 
 The generated background evaluation root remains responsible for the static node
 order. Around each applicable node it invokes narrow prepare/finalize hooks carried in

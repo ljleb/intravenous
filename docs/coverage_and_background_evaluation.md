@@ -2106,9 +2106,9 @@ recording merely because that planning metadata exists.
    1. **Landed:** extract committed coverage state from the reusable propagation
       workspace and introduce prepare/commit/discard semantics while preserving the
       temporary propagation-only wrapper;
-   2. retain immutable per-node materialization placement, runtime binding-slot maps
-      plus replay invocation constraints/schedule slots in the compiled plan, with
-      validation;
+   2. **Landed:** retain immutable per-node materialization placement, runtime
+      binding-slot maps plus replay invocation constraints/schedule slots in the
+      compiled plan, with validation;
    3. add the executor-level canonical sample/event persisted-page store with private
       candidates, one immutable published snapshot root, stale-base checks and
       audio-safe reader pins;

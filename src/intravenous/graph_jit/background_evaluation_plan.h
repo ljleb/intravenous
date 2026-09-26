@@ -21,6 +21,9 @@ using PortSubsetIndex = std::size_t;
 using PortStorageIndex = std::size_t;
 using SampleMaterializationIndex = std::size_t;
 using EventMaterializationIndex = std::size_t;
+using BackgroundBindingSlot = std::size_t;
+using BackgroundRuntimeOperationIndex = std::size_t;
+using BackgroundReplayInvocationSlot = std::size_t;
 
 enum class PlannedSourceProduction : std::uint8_t {
     tick,
@@ -236,6 +239,9 @@ struct BackgroundNodePlan {
     bool uses_replay_forward_coverage = false;
     bool uses_replay_reverse_coverage = false;
     bool uses_imported_tick_block_for_replay = false;
+    // Zero for non-replay nodes. Replay transactions split dynamic Coverage
+    // into invocations no larger than this compiled constraint.
+    std::size_t replay_maximum_block_size = 0;
 
     std::vector<BackgroundPortIndex> inputs{};
     std::vector<BackgroundPortIndex> outputs{};
@@ -417,6 +423,61 @@ struct BackgroundStoragePlan {
     std::vector<ConnectionStoragePlan> connections{};
 };
 
+// One compact transaction-frame slot for a node-facing dynamic port. Storage
+// indices are already-selected compatible views; runtime realization resolves
+// them without walking compiler topology.
+struct BackgroundRuntimeBindingPlan {
+    BackgroundNodeIndex node = 0;
+    BackgroundPortIndex port = 0;
+    PortKind kind = PortKind::sample;
+    PortDirection direction = PortDirection::input;
+    std::vector<PortStorageIndex> storage{};
+};
+
+enum class BackgroundRuntimeOperationKind : std::uint8_t {
+    direct_sample,
+    direct_event,
+    sample_materialization,
+    event_materialization,
+};
+
+// Refers to one operation already retained by BackgroundStoragePlan. The
+// operation is placed exactly once in a node's before/after list.
+struct BackgroundRuntimeOperationPlan {
+    BackgroundRuntimeOperationKind kind =
+        BackgroundRuntimeOperationKind::direct_sample;
+    std::size_t operation = 0;
+    std::vector<BackgroundConnectionIndex> connections{};
+};
+
+struct BackgroundNodeOperationPlacementPlan {
+    std::vector<BackgroundRuntimeOperationIndex> before{};
+    std::vector<BackgroundRuntimeOperationIndex> after{};
+};
+
+// One dense transaction schedule slot for a replay node. Dynamic invocation
+// regions are supplied later, but the binding set and legal maximum size are
+// immutable compile-time facts.
+struct BackgroundReplayInvocationPlan {
+    BackgroundNodeIndex node = 0;
+    std::size_t maximum_block_size = 0;
+    std::vector<BackgroundBindingSlot> input_bindings{};
+    std::vector<BackgroundBindingSlot> output_bindings{};
+};
+
+struct BackgroundRuntimePlan {
+    std::vector<BackgroundRuntimeBindingPlan> bindings{};
+    // Aligned with BackgroundEvaluationPlan::ports.
+    std::vector<std::optional<BackgroundBindingSlot>> port_bindings{};
+    std::vector<BackgroundRuntimeOperationPlan> operations{};
+    // Aligned with BackgroundEvaluationPlan::nodes.
+    std::vector<BackgroundNodeOperationPlacementPlan> node_operations{};
+    std::vector<BackgroundReplayInvocationPlan> replay_invocations{};
+    // Aligned with BackgroundEvaluationPlan::nodes.
+    std::vector<std::optional<BackgroundReplayInvocationSlot>>
+        node_replay_invocations{};
+};
+
 struct BackgroundDependencyPlan {
     BackgroundNodeIndex source_node = 0;
     BackgroundNodeIndex target_node = 0;
@@ -471,6 +532,7 @@ struct BackgroundEvaluationPlan {
     std::vector<EventSourcePortSubsetPlan> event_source_subsets{};
     std::vector<EventTargetPortSubsetPlan> event_target_subsets{};
     BackgroundStoragePlan storage{};
+    BackgroundRuntimePlan runtime{};
     std::vector<BackgroundComponentPlan> components{};
     std::vector<std::size_t> component_order{};
     // Intrinsic replayability is an authored candidate fact. A candidate enters

@@ -667,11 +667,12 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     complete transaction will retain that prepared result and promote it only at final
     transaction commit, together with page publication when a candidate is present.
 
-    Next add immutable before/after-node materialization placement, compact runtime
-    binding slots and replay schedule constraints/slots; implement the executor-level
-    canonical sample/event page store and address-stable runtime views; and extend the
-    generated background root to invoke narrow transaction-local prepare/finalize hooks
-    around node calls.
+    Immutable before/after-node materialization placement, compact runtime binding
+    slots and replay schedule constraints/slots now live in the compiled background
+    plan and are validated without LLVM. Next implement the executor-level canonical
+    sample/event page store and address-stable runtime views, and extend the generated
+    background root to invoke narrow transaction-local prepare/finalize hooks around
+    node calls.
     Then add the complete transaction coordinator and the Tick invocation frame with
     pinned published pages plus `TickMaterializationSnapshot` bindings. Final commit
     advances prepared coverage, page publication and any capture frontier together;

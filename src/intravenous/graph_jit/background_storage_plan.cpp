@@ -1137,4 +1137,523 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
     return result;
 }
 
+std::expected<void, std::string> validate_background_runtime_plan(
+    BackgroundEvaluationPlan const& plan)
+{
+    auto const& runtime = plan.runtime;
+    if (runtime.port_bindings.size() != plan.ports.size()
+        || runtime.node_operations.size() != plan.nodes.size()
+        || runtime.node_replay_invocations.size() != plan.nodes.size()) {
+        return std::unexpected(
+            "GraphJit background runtime maps are not aligned with the evaluation plan");
+    }
+
+    auto binding_required = [&](BackgroundPortIndex port_index) {
+        auto const& port = plan.ports[port_index];
+        if (port.node >= plan.nodes.size()) return false;
+        auto const& node = plan.nodes[port.node];
+        return port.direction == PortDirection::input
+            ? node.authored_tock_execution
+                ? port.random_access_input
+                : node.replays_tick && port.replay_sequential_input
+            : node.authored_tock_execution
+                ? port.authored_tock_output
+                : node.replays_tick && port.replayed_tick_output;
+    };
+    std::vector<bool> seen_bindings(runtime.bindings.size(), false);
+    for (BackgroundPortIndex port_index = 0;
+         port_index < plan.ports.size(); ++port_index) {
+        auto const slot = runtime.port_bindings[port_index];
+        if (binding_required(port_index) != slot.has_value()) {
+            return std::unexpected(
+                "GraphJit background runtime binding map is incomplete");
+        }
+        if (!slot) continue;
+        if (*slot >= runtime.bindings.size() || seen_bindings[*slot]) {
+            return std::unexpected(
+                "GraphJit background runtime binding slot is invalid or duplicated");
+        }
+        seen_bindings[*slot] = true;
+        auto const& binding = runtime.bindings[*slot];
+        auto const& port = plan.ports[port_index];
+        if (binding.port != port_index
+            || binding.node != port.node
+            || binding.kind != port.kind
+            || binding.direction != port.direction
+            || binding.storage.empty()) {
+            return std::unexpected(
+                "GraphJit background runtime binding does not match its logical port");
+        }
+        for (auto const storage_index : binding.storage) {
+            if (storage_index >= plan.storage.ports.size()
+                || plan.storage.ports[storage_index].kind != binding.kind
+                || (binding.direction == PortDirection::input
+                    && plan.storage.ports[storage_index].storage
+                        != PortStorageKind::background
+                    && plan.storage.ports[storage_index].storage
+                        != PortStorageKind::persisted_pages)
+                || (binding.direction == PortDirection::output
+                    && plan.storage.ports[storage_index].storage
+                        == PortStorageKind::current_tick)) {
+                return std::unexpected(
+                    "GraphJit background runtime binding references incompatible storage");
+            }
+        }
+    }
+    if (!std::ranges::all_of(seen_bindings, [](bool seen) { return seen; })) {
+        return std::unexpected(
+            "GraphJit background runtime has an unreachable binding slot");
+    }
+
+    for (auto const& storage : plan.storage.ports) {
+        if (std::ranges::any_of(
+                storage.inputs,
+                [&](PortStorageIndex input) {
+                    return input >= plan.storage.ports.size();
+                })) {
+            return std::unexpected(
+                "GraphJit background storage input index is out of range");
+        }
+        if (storage.storage != PortStorageKind::persisted_pages) continue;
+        if (!storage.output_port || *storage.output_port >= plan.ports.size()) {
+            return std::unexpected(
+                "GraphJit persisted background storage has no output identity");
+        }
+        auto const& port = plan.ports[*storage.output_port];
+        if (port.direction != PortDirection::output) {
+            return std::unexpected(
+                "GraphJit persisted background storage identity is not an output");
+        }
+        // stable_identity is preferred across generations; output_port is the
+        // explicit generation-local identity for anonymous concrete outputs.
+    }
+    for (auto const& materialization : plan.storage.sample_materializations) {
+        if (materialization.output >= plan.storage.ports.size()
+            || std::ranges::any_of(
+                materialization.inputs,
+                [&](PortStorageIndex input) {
+                    return input >= plan.storage.ports.size();
+                })) {
+            return std::unexpected(
+                "GraphJit sample materialization references storage out of range");
+        }
+    }
+    for (auto const& materialization : plan.storage.event_materializations) {
+        if (materialization.output >= plan.storage.ports.size()
+            || std::ranges::any_of(
+                materialization.inputs,
+                [&](PortStorageIndex input) {
+                    return input >= plan.storage.ports.size();
+                })) {
+            return std::unexpected(
+                "GraphJit event materialization references storage out of range");
+        }
+    }
+    for (auto const& direct : plan.storage.direct_samples) {
+        if (direct.storage >= plan.storage.ports.size()
+            || direct.connection >= plan.connections.size()) {
+            return std::unexpected(
+                "GraphJit direct sample operation references an invalid plan index");
+        }
+    }
+    for (auto const& direct : plan.storage.direct_events) {
+        if (direct.storage >= plan.storage.ports.size()
+            || direct.connection >= plan.connections.size()) {
+            return std::unexpected(
+                "GraphJit direct event operation references an invalid plan index");
+        }
+    }
+
+    std::vector<std::optional<std::size_t>> execution_position(
+        plan.nodes.size());
+    for (std::size_t position = 0;
+         position < plan.background_evaluation_order.size(); ++position) {
+        auto const node = plan.background_evaluation_order[position];
+        if (node >= plan.nodes.size() || execution_position[node]) {
+            return std::unexpected(
+                "GraphJit background evaluation order contains an invalid node");
+        }
+        execution_position[node] = position;
+    }
+    auto operation_connections = [&](BackgroundRuntimeOperationPlan const& operation)
+        -> std::span<BackgroundConnectionIndex const> {
+        return operation.connections;
+    };
+    std::vector<std::size_t> placement_count(runtime.operations.size(), 0);
+    for (BackgroundNodeIndex node = 0;
+         node < runtime.node_operations.size(); ++node) {
+        auto validate_placements = [&](std::span<BackgroundRuntimeOperationIndex const> placed,
+                                       bool before)
+            -> std::expected<void, std::string> {
+            if (!execution_position[node] && !placed.empty()) {
+                return std::unexpected(
+                    "GraphJit runtime operation is placed around a non-executable node");
+            }
+            for (auto const operation_index : placed) {
+                if (operation_index >= runtime.operations.size()) {
+                    return std::unexpected(
+                        "GraphJit runtime operation placement is out of range");
+                }
+                ++placement_count[operation_index];
+                auto const position = *execution_position[node];
+                for (auto const connection_index :
+                     operation_connections(runtime.operations[operation_index])) {
+                    if (connection_index >= plan.connections.size()) {
+                        return std::unexpected(
+                            "GraphJit runtime operation references a missing connection");
+                    }
+                    auto const& connection = plan.connections[connection_index];
+                    for (auto const port_index : connection.source_coverage_ports) {
+                        if (port_index >= plan.ports.size()) {
+                            return std::unexpected(
+                                "GraphJit runtime operation source port is out of range");
+                        }
+                        auto const source = plan.ports[port_index].node;
+                        if (source >= execution_position.size()
+                            || !execution_position[source]) continue;
+                        if ((before && *execution_position[source] >= position)
+                            || (!before && *execution_position[source] > position)) {
+                            return std::unexpected(
+                                "GraphJit runtime operation is placed before its producer");
+                        }
+                    }
+                    for (auto const port_index : connection.target_coverage_ports) {
+                        if (port_index >= plan.ports.size()) {
+                            return std::unexpected(
+                                "GraphJit runtime operation target port is out of range");
+                        }
+                        auto const target = plan.ports[port_index].node;
+                        if (target >= execution_position.size()
+                            || !execution_position[target]) continue;
+                        if ((before && *execution_position[target] < position)
+                            || (!before && *execution_position[target] <= position)) {
+                            return std::unexpected(
+                                "GraphJit runtime operation is placed after its consumer");
+                        }
+                    }
+                }
+            }
+            return {};
+        };
+        if (auto valid = validate_placements(
+                runtime.node_operations[node].before, true); !valid) {
+            return valid;
+        }
+        if (auto valid = validate_placements(
+                runtime.node_operations[node].after, false); !valid) {
+            return valid;
+        }
+    }
+    if (std::ranges::any_of(
+            placement_count, [](std::size_t count) { return count != 1; })) {
+        return std::unexpected(
+            "GraphJit runtime operation does not have exactly one placement");
+    }
+    for (auto const& operation : runtime.operations) {
+        auto valid_index = [&] {
+            switch (operation.kind) {
+            case BackgroundRuntimeOperationKind::direct_sample:
+                return operation.operation < plan.storage.direct_samples.size()
+                    && operation.connections
+                        == std::vector<BackgroundConnectionIndex>{
+                            plan.storage.direct_samples[operation.operation]
+                                .connection};
+            case BackgroundRuntimeOperationKind::direct_event:
+                return operation.operation < plan.storage.direct_events.size()
+                    && operation.connections
+                        == std::vector<BackgroundConnectionIndex>{
+                            plan.storage.direct_events[operation.operation]
+                                .connection};
+            case BackgroundRuntimeOperationKind::sample_materialization:
+                return operation.operation
+                        < plan.storage.sample_materializations.size()
+                    && operation.connections
+                        == plan.storage.sample_materializations[
+                            operation.operation].connections;
+            case BackgroundRuntimeOperationKind::event_materialization:
+                return operation.operation
+                        < plan.storage.event_materializations.size()
+                    && operation.connections
+                        == plan.storage.event_materializations[
+                            operation.operation].connections;
+            }
+            return false;
+        }();
+        if (!valid_index) {
+            return std::unexpected(
+                "GraphJit runtime operation references a missing storage operation");
+        }
+    }
+
+    std::vector<bool> seen_replay(runtime.replay_invocations.size(), false);
+    for (BackgroundNodeIndex node = 0; node < plan.nodes.size(); ++node) {
+        auto const slot = runtime.node_replay_invocations[node];
+        if (plan.nodes[node].replays_tick != slot.has_value()) {
+            return std::unexpected(
+                "GraphJit replay invocation map is incomplete");
+        }
+        if (!slot) continue;
+        if (*slot >= runtime.replay_invocations.size() || seen_replay[*slot]) {
+            return std::unexpected(
+                "GraphJit replay invocation slot is invalid or duplicated");
+        }
+        seen_replay[*slot] = true;
+        auto const& replay = runtime.replay_invocations[*slot];
+        if (replay.node != node
+            || replay.maximum_block_size == 0
+            || replay.maximum_block_size
+                != plan.nodes[node].replay_maximum_block_size) {
+            return std::unexpected(
+                "GraphJit replay invocation has an invalid block constraint");
+        }
+        auto validate_replay_bindings = [&](std::span<BackgroundBindingSlot const> slots,
+                                            PortDirection direction) {
+            return std::ranges::all_of(slots, [&](BackgroundBindingSlot binding) {
+                return binding < runtime.bindings.size()
+                    && runtime.bindings[binding].node == node
+                    && runtime.bindings[binding].direction == direction;
+            });
+        };
+        if (!validate_replay_bindings(
+                replay.input_bindings, PortDirection::input)
+            || !validate_replay_bindings(
+                replay.output_bindings, PortDirection::output)) {
+            return std::unexpected(
+                "GraphJit replay invocation references an incompatible binding slot");
+        }
+    }
+    if (!std::ranges::all_of(seen_replay, [](bool seen) { return seen; })) {
+        return std::unexpected(
+            "GraphJit background runtime has an unreachable replay slot");
+    }
+    return {};
+}
+
+std::expected<void, std::string> finalize_background_runtime_plan(
+    BackgroundEvaluationPlan& plan)
+{
+    auto& runtime = plan.runtime;
+    runtime = {};
+    runtime.port_bindings.resize(plan.ports.size());
+    runtime.node_operations.resize(plan.nodes.size());
+    runtime.node_replay_invocations.resize(plan.nodes.size());
+
+    auto append_unique_storage = [](std::vector<PortStorageIndex>& target,
+                                    std::span<PortStorageIndex const> source,
+                                    PortDirection direction,
+                                    BackgroundStoragePlan const& storage) {
+        for (auto const index : source) {
+            if (index >= storage.ports.size()) continue;
+            auto const kind = storage.ports[index].storage;
+            auto const compatible = direction == PortDirection::input
+                ? kind == PortStorageKind::background
+                    || kind == PortStorageKind::persisted_pages
+                : kind != PortStorageKind::current_tick;
+            if (compatible && !std::ranges::contains(target, index)) {
+                target.push_back(index);
+            }
+        }
+    };
+    auto binding_required = [&](BackgroundPortPlan const& port) {
+        if (port.node >= plan.nodes.size()) return false;
+        auto const& node = plan.nodes[port.node];
+        return port.direction == PortDirection::input
+            ? node.authored_tock_execution
+                ? port.random_access_input
+                : node.replays_tick && port.replay_sequential_input
+            : node.authored_tock_execution
+                ? port.authored_tock_output
+                : node.replays_tick && port.replayed_tick_output;
+    };
+    for (BackgroundPortIndex port_index = 0;
+         port_index < plan.ports.size(); ++port_index) {
+        auto const& port = plan.ports[port_index];
+        if (!binding_required(port)) continue;
+        BackgroundRuntimeBindingPlan binding{
+            .node = port.node,
+            .port = port_index,
+            .kind = port.kind,
+            .direction = port.direction,
+        };
+        if (port.kind == PortKind::sample) {
+            if (port.direction == PortDirection::output) {
+                for (PortSubsetIndex subset = 0;
+                     subset < plan.sample_source_subsets.size(); ++subset) {
+                    if (plan.sample_source_subsets[subset].port
+                        != port.configured_port) continue;
+                    append_unique_storage(
+                        binding.storage,
+                        plan.storage.sample_source_storage[subset],
+                        port.direction,
+                        plan.storage);
+                }
+            } else {
+                for (PortSubsetIndex subset = 0;
+                     subset < plan.sample_target_subsets.size(); ++subset) {
+                    if (plan.sample_target_subsets[subset].port
+                        != port.configured_port) continue;
+                    append_unique_storage(
+                        binding.storage,
+                        plan.storage.sample_target_storage[subset],
+                        port.direction,
+                        plan.storage);
+                }
+            }
+        } else if (port.direction == PortDirection::output) {
+            for (PortSubsetIndex subset = 0;
+                 subset < plan.event_source_subsets.size(); ++subset) {
+                auto const& source = plan.event_source_subsets[subset];
+                if (source.port.bundle != port.configured_port.node_bundle_handle
+                    || source.port.port != port.configured_port.port_index) continue;
+                append_unique_storage(
+                    binding.storage,
+                    plan.storage.event_source_storage[subset],
+                    port.direction,
+                    plan.storage);
+            }
+        } else {
+            for (PortSubsetIndex subset = 0;
+                 subset < plan.event_target_subsets.size(); ++subset) {
+                auto const& target = plan.event_target_subsets[subset];
+                if (target.port.bundle != port.configured_port.node_bundle_handle
+                    || target.port.port != port.configured_port.port_index) continue;
+                append_unique_storage(
+                    binding.storage,
+                    plan.storage.event_target_storage[subset],
+                    port.direction,
+                    plan.storage);
+            }
+        }
+        std::ranges::sort(binding.storage);
+        auto const slot = runtime.bindings.size();
+        runtime.port_bindings[port_index] = slot;
+        runtime.bindings.push_back(std::move(binding));
+    }
+
+    std::vector<std::optional<std::size_t>> execution_position(
+        plan.nodes.size());
+    for (std::size_t position = 0;
+         position < plan.background_evaluation_order.size(); ++position) {
+        auto const node = plan.background_evaluation_order[position];
+        if (node < execution_position.size()) execution_position[node] = position;
+    }
+    auto source_and_target_positions = [&](std::span<BackgroundConnectionIndex const> connections) {
+        std::optional<std::pair<std::size_t, BackgroundNodeIndex>> latest_source;
+        std::optional<std::pair<std::size_t, BackgroundNodeIndex>> earliest_target;
+        for (auto const connection_index : connections) {
+            if (connection_index >= plan.connections.size()) continue;
+            auto const& connection = plan.connections[connection_index];
+            for (auto const port_index : connection.source_coverage_ports) {
+                if (port_index >= plan.ports.size()) continue;
+                auto const node = plan.ports[port_index].node;
+                if (node >= execution_position.size()
+                    || !execution_position[node]) continue;
+                auto const candidate = std::pair{*execution_position[node], node};
+                if (!latest_source || candidate.first > latest_source->first) {
+                    latest_source = candidate;
+                }
+            }
+            for (auto const port_index : connection.target_coverage_ports) {
+                if (port_index >= plan.ports.size()) continue;
+                auto const node = plan.ports[port_index].node;
+                if (node >= execution_position.size()
+                    || !execution_position[node]) continue;
+                auto const candidate = std::pair{*execution_position[node], node};
+                if (!earliest_target || candidate.first < earliest_target->first) {
+                    earliest_target = candidate;
+                }
+            }
+        }
+        return std::pair{latest_source, earliest_target};
+    };
+    auto append_operation = [&](BackgroundRuntimeOperationKind kind,
+                                std::size_t operation,
+                                PortStorageKind storage_kind,
+                                std::vector<BackgroundConnectionIndex> connections) {
+        if (storage_kind == PortStorageKind::current_tick) return;
+        auto const [latest_source, earliest_target] =
+            source_and_target_positions(connections);
+        auto const place_before = storage_kind == PortStorageKind::background
+                || storage_kind == PortStorageKind::persisted_pages
+            ? earliest_target
+            : std::optional<std::pair<std::size_t, BackgroundNodeIndex>>{};
+        if (!place_before && !latest_source) return;
+        auto const index = runtime.operations.size();
+        runtime.operations.push_back(BackgroundRuntimeOperationPlan{
+            .kind = kind,
+            .operation = operation,
+            .connections = std::move(connections),
+        });
+        if (place_before) {
+            runtime.node_operations[place_before->second].before.push_back(index);
+        } else {
+            runtime.node_operations[latest_source->second].after.push_back(index);
+        }
+    };
+    for (std::size_t index = 0;
+         index < plan.storage.direct_samples.size(); ++index) {
+        auto const& direct = plan.storage.direct_samples[index];
+        if (direct.storage >= plan.storage.ports.size()) continue;
+        append_operation(
+            BackgroundRuntimeOperationKind::direct_sample,
+            index,
+            plan.storage.ports[direct.storage].storage,
+            {direct.connection});
+    }
+    for (std::size_t index = 0;
+         index < plan.storage.direct_events.size(); ++index) {
+        auto const& direct = plan.storage.direct_events[index];
+        if (direct.storage >= plan.storage.ports.size()) continue;
+        append_operation(
+            BackgroundRuntimeOperationKind::direct_event,
+            index,
+            plan.storage.ports[direct.storage].storage,
+            {direct.connection});
+    }
+    for (std::size_t index = 0;
+         index < plan.storage.sample_materializations.size(); ++index) {
+        auto const& materialization = plan.storage.sample_materializations[index];
+        append_operation(
+            BackgroundRuntimeOperationKind::sample_materialization,
+            index,
+            materialization.storage,
+            materialization.connections);
+    }
+    for (std::size_t index = 0;
+         index < plan.storage.event_materializations.size(); ++index) {
+        auto const& materialization = plan.storage.event_materializations[index];
+        append_operation(
+            BackgroundRuntimeOperationKind::event_materialization,
+            index,
+            materialization.storage,
+            materialization.connections);
+    }
+
+    for (BackgroundNodeIndex node = 0; node < plan.nodes.size(); ++node) {
+        if (!plan.nodes[node].replays_tick) continue;
+        BackgroundReplayInvocationPlan replay{
+            .node = node,
+            .maximum_block_size = plan.nodes[node].replay_maximum_block_size,
+        };
+        for (auto const port_index : plan.nodes[node].inputs) {
+            if (port_index < runtime.port_bindings.size()
+                && runtime.port_bindings[port_index]) {
+                replay.input_bindings.push_back(
+                    *runtime.port_bindings[port_index]);
+            }
+        }
+        for (auto const port_index : plan.nodes[node].outputs) {
+            if (port_index < runtime.port_bindings.size()
+                && runtime.port_bindings[port_index]) {
+                replay.output_bindings.push_back(
+                    *runtime.port_bindings[port_index]);
+            }
+        }
+        auto const slot = runtime.replay_invocations.size();
+        runtime.node_replay_invocations[node] = slot;
+        runtime.replay_invocations.push_back(std::move(replay));
+    }
+    return validate_background_runtime_plan(plan);
+}
+
 } // namespace iv::graph_jit::detail
