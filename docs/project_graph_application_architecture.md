@@ -817,12 +817,15 @@ The implementation checkpoints now stand as follows:
 10. complete ordinary background evaluation in the normative dependency order from
     [coverage_and_background_evaluation.md §32](./coverage_and_background_evaluation.md#32-implementation-landing-order):
     the committed-coverage/propagation-workspace split and compiler-owned runtime
-    binding/materialization/replay schedules have landed; next add the canonical
-    sample/event page store and audio-safe pins, make the generated root invoke narrow
-    transaction-local prepare/finalize hooks, implement transaction-wide atomic commit,
-    then add the Tick binding frame, `TickMaterializationSnapshot`, stale-page playback
-    and per-input missing-page neutrality. Do this before enabling transactional
-    recording consumption;
+    binding/materialization/replay schedules have landed. The executor-level canonical
+    sample/event page store has also landed with private structurally shared candidates,
+    semantic/page coordinates, whole-root stale-base publication, pre-registered
+    non-owning reader pins and explicit non-audio retired-root reclamation. Next add
+    address-stable runtime views and execute the planned storage operations, make the
+    generated root invoke narrow transaction-local prepare/finalize hooks, implement
+    transaction-wide atomic commit, then add the Tick binding frame,
+    `TickMaterializationSnapshot`, stale-page playback and per-input missing-page
+    neutrality. Do this before enabling transactional recording consumption;
 11. integrate stable logical `SystemAudioDevices` bindings with ordinary system
     audio leaf node definitions;
 12. once GraphJit and GraphExecutor have fully landed as the normal execution

@@ -669,10 +669,13 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
 
     Immutable before/after-node materialization placement, compact runtime binding
     slots and replay schedule constraints/slots now live in the compiled background
-    plan and are validated without LLVM. Next implement the executor-level canonical
-    sample/event page store and address-stable runtime views, and extend the generated
-    background root to invoke narrow transaction-local prepare/finalize hooks around
-    node calls.
+    plan and are validated without LLVM. The executor-level canonical sample/event
+    page store now owns one immutable published root, private structurally shared
+    candidates, semantic/page versions, stale-base rejection, pre-registered
+    non-owning reader pins and deferred non-audio reclamation. Next implement
+    address-stable runtime views over that store and transaction-local storage, then
+    extend the generated background root to invoke narrow transaction-local
+    prepare/finalize hooks around node calls.
     Then add the complete transaction coordinator and the Tick invocation frame with
     pinned published pages plus `TickMaterializationSnapshot` bindings. Final commit
     advances prepared coverage, page publication and any capture frontier together;

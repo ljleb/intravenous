@@ -2109,9 +2109,20 @@ recording merely because that planning metadata exists.
    2. **Landed:** retain immutable per-node materialization placement, runtime
       binding-slot maps plus replay invocation constraints/schedule slots in the
       compiled plan, with validation;
-   3. add the executor-level canonical sample/event persisted-page store with private
-      candidates, one immutable published snapshot root, stale-base checks and
-      audio-safe reader pins;
+   3. **Landed:** add the executor-level canonical sample/event persisted-page store
+      with private candidates, one immutable published snapshot root, stale-base
+      checks and audio-safe reader pins. `PersistedPageStore` owns a single atomic
+      root containing both typed sample and event page handles. Candidates
+      structurally share unchanged immutable pages, remain private until whole-root
+      publication, and carry both semantic/page coordinates; a second candidate
+      from a superseded root is rejected without changing the publication. Stable
+      output identities and explicit generation-local identities use the same store.
+      Reader slots are registered off the audio thread; pin acquire/release performs
+      only bounded atomic operations and holds a non-owning root pointer. Superseded
+      owning roots enter a retired list and are destroyed only by an explicit
+      non-audio reclamation pass after no slot pins them. Existing retained pages
+      currently reject a page-width change until the later explicit repaging/
+      generation-transition stage is implemented;
    4. add address-stable runtime views and small sample/event direct, conversion,
       projection, fan-in and merge operations, then realize the complete
       `BackgroundStoragePlan` for transaction-local and persisted storage;

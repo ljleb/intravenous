@@ -135,6 +135,9 @@ add_iv_gtest(
     intravenous_graph_executor_tests
     graph_executor_gtest.cpp)
 add_iv_gtest(
+    intravenous_persisted_page_store_tests
+    persisted_page_store_gtest.cpp)
+add_iv_gtest(
     intravenous_graph_jit_tests
     modules/graph_jit_gtest.cpp
     IV_MODULE_COMPILATION_TESTS

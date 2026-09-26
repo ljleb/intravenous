@@ -3,6 +3,7 @@
 #include <intravenous/coverage.h>
 #include <intravenous/node/resources.h>
 #include <intravenous/runtime/graph_jit.h>
+#include <intravenous/runtime/persisted_page_store.h>
 
 #include <array>
 #include <cstddef>
@@ -236,6 +237,10 @@ class GraphExecutor {
     };
 
     ResourceContext resources_{};
+    // Executor-level and deliberately outside either generation realization.
+    // Compatible generations will rebind their persisted ports into this one
+    // canonical sample/event authority rather than migrate page ownership.
+    PersistedPageStore persisted_pages_{};
     std::array<std::optional<Realization>, 2> realizations_{};
     std::optional<std::size_t> active_{};
     std::optional<std::size_t> pending_{};

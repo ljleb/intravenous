@@ -543,6 +543,13 @@ The storage-model and storage-placement refactors have landed:
   match. A materialized addressable result also subsumes an otherwise-identical
   materialized sequential result, independent of configured connection order.
   Runtime range/page-version selection remains executor state;
+- the executor now owns one canonical `PersistedPageStore` outside its compiled
+  generation realizations. Its private candidates share unchanged immutable typed
+  pages, publish one combined sample/event root only after a stale-base check, and
+  retain superseded roots until an explicit non-audio reclamation scan observes no
+  pre-registered reader pin. Pin acquire/release is a bounded atomic-only operation;
+  address-stable node-facing views and execution of the planned storage operations
+  remain the next runtime step;
 - sample and event producer groups now select the shared three-kind storage
   model, while event invocation aggregation is a separate operation fact;
 - ordinary event capacities start from
