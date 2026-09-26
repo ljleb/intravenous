@@ -1,6 +1,16 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(intravenous-dsp LANGUAGES C CXX)
+
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "Intravenous requires Linux inotify for package watching")
+endif()
+include(CheckIncludeFileCXX)
+check_include_file_cxx("sys/inotify.h" IV_HAVE_SYS_INOTIFY_H)
+if(NOT IV_HAVE_SYS_INOTIFY_H)
+    message(FATAL_ERROR "Intravenous requires sys/inotify.h")
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
 

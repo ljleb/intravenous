@@ -16,4 +16,7 @@ IV_DEFINE_LINKER_EVENT(
 IV_DEFINE_LINKER_EVENT(
     IvPackageCatalogChangedEvent,
     iv_runtime_iv_package_catalog_changed_event);
+IV_DEFINE_LINKER_EVENT(
+    PackageWatcherWorkAvailableEvent,
+    iv_runtime_package_watcher_work_available_event);
 } // namespace iv

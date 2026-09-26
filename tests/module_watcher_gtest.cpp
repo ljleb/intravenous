@@ -86,3 +86,44 @@ TEST(ModuleWatcher, MissingDependencyDirectoryIsReportedAsChangeWithoutThrowing)
 
     EXPECT_TRUE(watcher.has_changes());
 }
+
+TEST(ModuleWatcher, WatchSetReplacementPreservesDescriptorAndClosesPreinstallChangeRace)
+{
+    auto const root = iv::test::fresh_module_fixture_workspace(
+        "module_watcher_watch_set_replacement");
+    auto const source = root / "module.cpp";
+    iv::test::write_text(source, "int value = 1;\n");
+
+    iv::ModuleDependency dependency{
+        .id = "iv.test.watch_set_replacement",
+        .module_dir = root,
+        .entry_file = source,
+        .package_stamp = iv::test::write_time(source),
+    };
+
+    auto watcher = iv::make_dependency_watcher();
+    auto const descriptor = watcher.native_handle();
+    watcher.update({dependency});
+    EXPECT_EQ(watcher.native_handle(), descriptor);
+    EXPECT_TRUE(watcher.changed_dependencies().empty());
+
+    // The source changes before the watch set is replaced. update() removes the
+    // old watches and drains their queued events, so correctness cannot depend
+    // on that inotify notification surviving. The post-install stamp rescan is
+    // what must preserve this change.
+    iv::test::write_text_advancing_timestamp(source, "int value = 2;\n");
+    watcher.update({dependency});
+    EXPECT_EQ(watcher.native_handle(), descriptor);
+
+    auto const changed = watcher.changed_dependencies();
+    ASSERT_EQ(changed.size(), 1u);
+    EXPECT_EQ(changed.front().id, dependency.id);
+
+    // Reinstalling with a current stamp must not turn IN_IGNORED from removed
+    // watches into a false dependency change, and the pollable descriptor must
+    // remain stable for PackageWatcherService across repeated updates.
+    dependency.package_stamp = iv::test::write_time(source);
+    watcher.update({dependency});
+    EXPECT_EQ(watcher.native_handle(), descriptor);
+    EXPECT_TRUE(watcher.changed_dependencies().empty());
+}

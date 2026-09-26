@@ -4,12 +4,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
+#include <cstdint>
 #include <utility>
 
-#if defined(__linux__)
-#include <poll.h>
 #include <sys/inotify.h>
-#endif
+#include <unistd.h>
 
 namespace iv {
     namespace {
@@ -62,45 +62,51 @@ namespace iv {
 
             return latest;
         }
+
+        UniqueFileDescriptor open_inotify()
+        {
+            auto const fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+            if (fd == -1) throw_errno("inotify_init1(dependency watcher)");
+            return UniqueFileDescriptor(fd);
+        }
     }
 
-    DependencyWatcher::DependencyWatcher() = default;
-
-    DependencyWatcher::~DependencyWatcher()
-    {
-#if defined(__linux__)
-        reset();
-#endif
-    }
-
-    DependencyWatcher::DependencyWatcher(DependencyWatcher&& other) noexcept :
-        _dependencies(std::move(other._dependencies))
-#if defined(__linux__)
-        , _fd(std::exchange(other._fd, -1))
-#endif
+    DependencyWatcher::DependencyWatcher()
+        : _fd(open_inotify())
     {}
 
-    DependencyWatcher& DependencyWatcher::operator=(DependencyWatcher&& other) noexcept
+    bool DependencyWatcher::consume_events()
     {
-        if (this == &other) {
-            return *this;
+        std::array<char, 16 * 1024> buffer {};
+        bool saw_event = false;
+        for (;;) {
+            auto const count = read(_fd.get(), buffer.data(), buffer.size());
+            if (count > 0) {
+                saw_event = true;
+                continue;
+            }
+            if (count == -1 && errno == EINTR) {
+                continue;
+            }
+            if (count == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                return saw_event;
+            }
+            if (count == 0) {
+                return saw_event;
+            }
+            throw_errno("read(dependency watcher inotify)");
         }
-
-#if defined(__linux__)
-        reset();
-        _fd = std::exchange(other._fd, -1);
-#endif
-        _dependencies = std::move(other._dependencies);
-        return *this;
     }
 
-#if defined(__linux__)
-    void DependencyWatcher::reset()
+    void DependencyWatcher::clear_watches()
     {
-        if (_fd != -1) {
-            close(_fd);
-            _fd = -1;
+        for (auto const descriptor : _watch_descriptors) {
+            if (inotify_rm_watch(_fd.get(), descriptor) == -1 && errno != EINVAL) {
+                throw_errno("inotify_rm_watch(dependency watcher)");
+            }
         }
+        _watch_descriptors.clear();
+        (void)consume_events();
     }
 
     void DependencyWatcher::add_directory_recursive(std::filesystem::path const& dir)
@@ -110,10 +116,17 @@ namespace iv {
             return;
         }
 
-        (void)inotify_add_watch(
-            _fd,
+        constexpr std::uint32_t mask =
+            IN_ATTRIB | IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_DELETE_SELF
+            | IN_MOVE_SELF | IN_MOVED_FROM | IN_MOVED_TO;
+        auto const root_descriptor = inotify_add_watch(
+            _fd.get(),
             dir.string().c_str(),
-            IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
+            mask | IN_ONLYDIR);
+        if (root_descriptor == -1) {
+            throw_errno("inotify_add_watch(dependency watcher)");
+        }
+        _watch_descriptors.insert(root_descriptor);
 
         auto const options = std::filesystem::directory_options::skip_permission_denied;
         for (std::filesystem::recursive_directory_iterator it(dir, options, ec), end;
@@ -130,58 +143,52 @@ namespace iv {
                 it.disable_recursion_pending();
                 continue;
             }
-            (void)inotify_add_watch(
-                _fd,
+            auto const descriptor = inotify_add_watch(
+                _fd.get(),
                 entry.path().string().c_str(),
-                IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
+                mask | IN_ONLYDIR);
+            if (descriptor == -1) {
+                throw_errno("inotify_add_watch(dependency watcher)");
+            }
+            _watch_descriptors.insert(descriptor);
         }
     }
-#endif
+
+    std::vector<ModuleDependency> DependencyWatcher::scan_changed_dependencies() const
+    {
+        std::vector<ModuleDependency> result;
+        for (auto const& dependency : _dependencies) {
+            if (compute_directory_stamp(dependency.module_dir) != dependency.package_stamp) {
+                result.push_back(dependency);
+            }
+        }
+        return result;
+    }
 
     void DependencyWatcher::update(std::vector<ModuleDependency> dependencies)
     {
         _dependencies = std::move(dependencies);
-
-#if defined(__linux__)
-        reset();
-        _fd = inotify_init1(IN_NONBLOCK);
-        if (_fd == -1) {
-            return;
-        }
+        clear_watches();
 
         for (auto const& dependency : _dependencies) {
             add_directory_recursive(dependency.module_dir);
         }
-#endif
+
+        // Close the stamp-to-watch installation race once per watch-set update.
+        // Steady-state scans only happen after an inotify event.
+        _rescan_pending = true;
     }
 
     std::vector<ModuleDependency> DependencyWatcher::changed_dependencies()
     {
-        auto changed = [&] {
-            std::vector<ModuleDependency> result;
-            for (auto const& dependency : _dependencies) {
-                if (compute_directory_stamp(dependency.module_dir) != dependency.package_stamp) {
-                    result.push_back(dependency);
-                }
-            }
-            return result;
-        };
-
-#if defined(__linux__)
-        if (_fd == -1) {
-            return changed();
+        if (_rescan_pending) {
+            _rescan_pending = false;
+            return scan_changed_dependencies();
         }
-
-        pollfd fd { .fd = _fd, .events = POLLIN, .revents = 0 };
-        if (poll(&fd, 1, 0) > 0) {
-            std::array<char, 4096> buffer {};
-            (void)read(_fd, buffer.data(), buffer.size());
+        if (!consume_events()) {
+            return {};
         }
-
-        return changed();
-#else
-        return changed();
-#endif
+        return scan_changed_dependencies();
     }
 
     bool DependencyWatcher::has_changes()

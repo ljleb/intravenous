@@ -397,6 +397,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/package_definitions.cpp
     runtime/package_jit.cpp
     runtime/package_watcher.cpp
+    runtime/package_discovery_watcher.cpp
     runtime/package_watcher_service.cpp
     runtime/iv_module_source_introspection.cpp
     runtime/iv_module_source_introspection_events.cpp

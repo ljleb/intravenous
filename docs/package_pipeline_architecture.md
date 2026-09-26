@@ -131,12 +131,15 @@ A small non-app-module service/support object may own the blocking filesystem
 thread and process lifecycle. The app module owns the package-source state and
 refresh semantics.
 
-On Linux, steady-state filesystem detection should be event-driven. Existing
-known-package dependency watching already uses `inotify`; the remaining periodic
-package-root discovery scan is a migration TODO and should also become
-`inotify`-driven. Blocking on an `inotify` descriptor with `poll`/`epoll`, and
-using an optional one-shot `timerfd` to coalesce bursts, is event-driven and is
-not filesystem polling.
+Linux `inotify` is a runtime requirement for package watching. Steady-state
+filesystem detection is event-driven for both known-package dependencies and
+package-root discovery. `PackageWatcherService` blocks in `poll` on the discovery
+inotify descriptor, the dependency inotify descriptor, and service-owned work and
+shutdown eventfds; there is no timer-based filesystem scan. `PackageWatcher`
+publishes a work-available event rather than owning a wakeup descriptor itself.
+Discovery installs/reconciles recursive coverage before rescanning after topology
+changes, prunes obsolete ancestor/subtree watches, and ignores ordinary writes to
+existing non-manifest source files.
 
 ### One refresh transaction
 
@@ -457,11 +460,12 @@ as a temporary compatibility projection from `NodeDefinitions` to module-source
 introspection. `NodeInstances` has moved to the immutable
 `NodeDefinitionsSnapshot` edge and no longer consumes that legacy diff.
 
-The remaining package-side migration item is package-root discovery.
-`PackageWatcherService` still performs the temporary periodic discovery scan; the
-dependency watcher itself is event-driven on Linux. Replace the root scan with
-event-driven Linux discovery without changing the app-module ownership or event
-topology above.
+Package-root discovery is now event-driven. `PackageWatcherService` owns the
+blocking Linux inotify loop while `PackageWatcher` retains package/dependency
+state and refresh semantics. Non-filesystem package work is published through the
+package watcher/service bridge and converted to a service-owned eventfd wakeup,
+preserving the app-module ownership and event topology above without a periodic
+fallback.
 
 With this package pipeline coherent, later graph-side app modules can depend on
 its final event topology.

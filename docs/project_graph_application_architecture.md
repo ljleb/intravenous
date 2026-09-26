@@ -103,10 +103,10 @@ projection to module-source introspection, not as package-state ownership.
 `ProjectGraph` now consumes the immutable `NodeDefinitionsSnapshot` and passes
 the pinned snapshot synchronously to `NodeInstances` during each root transaction.
 
-The dependency watcher already uses `inotify`. The remaining periodic
-package-root discovery scan in `PackageWatcherService` is explicitly temporary
-and should be replaced by event-driven Linux discovery rather than preserved as a
-portability fallback.
+Package dependency watching and package-root discovery both use Linux `inotify`.
+`PackageWatcherService` blocks on filesystem descriptors plus explicit work and
+shutdown eventfds; there is no periodic package-root discovery scan and no
+portability polling fallback. Linux inotify is therefore a runtime requirement.
 
 Direct frozen `ConfiguredGraph` embedding has also landed. Live child builders
 and frozen graphs now share one importer/remapper; each placement returns an

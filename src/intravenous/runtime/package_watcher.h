@@ -49,12 +49,14 @@ class PackageWatcher {
 
 public:
     PackageWatcher();
+    ~PackageWatcher() = default;
 
     void handle_required_definitions_changed(
         IvModuleRequiredDefinitionsChanged const& diff);
     void synchronize_discovered_packages(
         std::vector<std::pair<std::string, std::filesystem::path>> declarations);
     void poll_dependency_changes();
+    [[nodiscard]] int dependency_watch_descriptor() const noexcept;
     [[nodiscard]] bool has_pending_refresh() const;
     void handle_refresh_requested(PackageWatcherRefreshRequest& request);
 };

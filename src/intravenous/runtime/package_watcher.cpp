@@ -13,8 +13,8 @@
 #include <optional>
 #include <ranges>
 #include <stdexcept>
-#include <system_error>
 #include <utility>
+
 
 namespace iv {
 namespace {
@@ -118,8 +118,7 @@ discover_iv_package_declarations(
              it.increment(error)) {
             auto const& entry = *it;
             if (entry.is_directory()) {
-                auto const name = entry.path().filename();
-                if (name == ".git" || name == "build" || name == ".cache") {
+                if (is_package_tree_ignored_directory(entry.path())) {
                     it.disable_recursion_pending();
                 }
                 continue;
@@ -211,20 +210,26 @@ void PackageWatcher::refresh_watched_dependencies_locked()
 void PackageWatcher::handle_required_definitions_changed(
     IvModuleRequiredDefinitionsChanged const& diff)
 {
-    std::scoped_lock lock(mutex_);
-    auto retain = [&](IvModuleRequiredDefinition const& required) {
-        auto package_root = normalize_path(required.package_root);
-        auto package_id = package_root.generic_string();
-        retained_package_declarations_by_id_.insert_or_assign(
-            package_id,
-            IvPackageDeclaration{
-                .package_id = package_id,
-                .package_root = std::move(package_root),
-            });
-    };
-    for (auto const& required : diff.created) retain(required);
-    for (auto const& required : diff.updated) retain(required);
-    install_effective_declarations_locked(merge_declaration_sources_locked());
+    {
+        std::scoped_lock lock(mutex_);
+        auto retain = [&](IvModuleRequiredDefinition const& required) {
+            auto package_root = normalize_path(required.package_root);
+            auto package_id = package_root.generic_string();
+            retained_package_declarations_by_id_.insert_or_assign(
+                package_id,
+                IvPackageDeclaration{
+                    .package_id = package_id,
+                    .package_root = std::move(package_root),
+                });
+        };
+        for (auto const& required : diff.created) retain(required);
+        for (auto const& required : diff.updated) retain(required);
+        install_effective_declarations_locked(merge_declaration_sources_locked());
+    }
+
+    IV_INVOKE_LINKER_EVENT_SOURCE(
+        iv_runtime_package_watcher_work_available_event,
+        PackageWatcherWorkAvailable{});
 }
 
 void PackageWatcher::synchronize_discovered_packages(
@@ -283,6 +288,13 @@ void PackageWatcher::poll_dependency_changes()
             dirty_package_ids_.insert(package_id);
         }
     }
+}
+
+int PackageWatcher::dependency_watch_descriptor() const noexcept
+{
+    // DependencyWatcher keeps one inotify descriptor for its entire lifetime;
+    // update() replaces only the installed watches.
+    return dependency_watcher_.native_handle();
 }
 
 bool PackageWatcher::has_pending_refresh() const
