@@ -304,6 +304,7 @@ add_library(intravenous_module_watcher OBJECT
 iv_configure_intravenous_target(intravenous_module_watcher PUBLIC)
 
 add_library(intravenous_graph_jit OBJECT
+    runtime/background_storage_realization.cpp
     runtime/graph_executor.cpp
     runtime/graph_jit.cpp
     runtime/persisted_page_store.cpp

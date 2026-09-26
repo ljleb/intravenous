@@ -138,6 +138,9 @@ add_iv_gtest(
     intravenous_persisted_page_store_tests
     persisted_page_store_gtest.cpp)
 add_iv_gtest(
+    intravenous_background_storage_realization_tests
+    background_storage_realization_gtest.cpp)
+add_iv_gtest(
     intravenous_graph_jit_tests
     modules/graph_jit_gtest.cpp
     IV_MODULE_COMPILATION_TESTS

@@ -548,8 +548,14 @@ The storage-model and storage-placement refactors have landed:
   pages, publish one combined sample/event root only after a stale-base check, and
   retain superseded roots until an explicit non-audio reclamation scan observes no
   pre-registered reader pin. Pin acquire/release is a bounded atomic-only operation;
-  address-stable node-facing views and execution of the planned storage operations
-  remain the next runtime step;
+  retired-root destruction remains explicit non-audio work;
+- `BackgroundStorageRealization` now turns immutable port-storage indices into
+  address-stable opaque sample/event read/write views. It owns sparse transaction
+  buffers, binds published pages without acquiring another owner, distinguishes
+  stable from generation-local persisted identity outside the page store, accepts
+  external current-Tick/materialized views before sealing, and validates every view
+  required by retained bindings and operations. Execution of the small planned
+  direct/conversion/projection/fan-in operations is the next runtime step;
 - sample and event producer groups now select the shared three-kind storage
   model, while event invocation aggregation is a separate operation fact;
 - ordinary event capacities start from

@@ -820,9 +820,12 @@ The implementation checkpoints now stand as follows:
     binding/materialization/replay schedules have landed. The executor-level canonical
     sample/event page store has also landed with private structurally shared candidates,
     semantic/page coordinates, whole-root stale-base publication, pre-registered
-    non-owning reader pins and explicit non-audio retired-root reclamation. Next add
-    address-stable runtime views and execute the planned storage operations, make the
-    generated root invoke narrow transaction-local prepare/finalize hooks, implement
+    non-owning reader pins and explicit non-audio retired-root reclamation.
+    `BackgroundStorageRealization` now owns address-stable sparse transaction buffers,
+    binds published pages through the transaction's non-owning pinned view, resolves
+    stable/generation-local persisted identity and validates explicit views before
+    sealing. Next execute the compiler-planned storage operations, make the generated
+    root invoke narrow transaction-local prepare/finalize hooks, implement
     transaction-wide atomic commit, then add the Tick binding frame,
     `TickMaterializationSnapshot`, stale-page playback and per-input missing-page
     neutrality. Do this before enabling transactional recording consumption;

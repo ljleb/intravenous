@@ -2123,9 +2123,18 @@ recording merely because that planning metadata exists.
       non-audio reclamation pass after no slot pins them. Existing retained pages
       currently reject a page-width change until the later explicit repaging/
       generation-transition stage is implemented;
-   4. add address-stable runtime views and small sample/event direct, conversion,
-      projection, fan-in and merge operations, then realize the complete
-      `BackgroundStoragePlan` for transaction-local and persisted storage;
+   4. **In progress:** add address-stable runtime views and small sample/event
+      direct, conversion, projection, fan-in and merge operations, then realize
+      the complete `BackgroundStoragePlan` for transaction-local and persisted
+      storage. The ownership/view half has landed: `BackgroundStorageRealization`
+      resolves plan storage indices into stable opaque sample/event read/write views,
+      owns sparse transaction-local and future materialized-window buffers, binds
+      non-owning published-page readers under the surrounding transaction's pin,
+      derives stable or generation-local persisted identities outside the page store,
+      and seals only after required views are compatible. It does not traverse nodes,
+      decide demand, execute the retained operations or publish. Next implement the
+      small operations and execute the compiler-owned placement schedule against
+      these views;
    5. extend the generated background root to call narrow transaction-supplied
       prepare/finalize hooks around its statically ordered node invocations, populate
       the existing Tock/replay frames, and implement the complete transaction

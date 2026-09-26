@@ -672,10 +672,13 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     plan and are validated without LLVM. The executor-level canonical sample/event
     page store now owns one immutable published root, private structurally shared
     candidates, semantic/page versions, stale-base rejection, pre-registered
-    non-owning reader pins and deferred non-audio reclamation. Next implement
-    address-stable runtime views over that store and transaction-local storage, then
-    extend the generated background root to invoke narrow transaction-local
-    prepare/finalize hooks around node calls.
+    non-owning reader pins and deferred non-audio reclamation. Address-stable runtime
+    sample/event views and sparse transaction-owned backing now interpret each
+    `PortStoragePlan` index, bind non-owning published-page readers, preserve the
+    stable/generation-local identity boundary and validate required views before the
+    realization is sealed. Next execute the retained direct/conversion/projection/
+    fan-in operations against those views, then extend the generated background root
+    to invoke narrow transaction-local prepare/finalize hooks around node calls.
     Then add the complete transaction coordinator and the Tick invocation frame with
     pinned published pages plus `TickMaterializationSnapshot` bindings. Final commit
     advances prepared coverage, page publication and any capture frontier together;
