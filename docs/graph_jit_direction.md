@@ -661,15 +661,24 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     The executor now also realizes compiler-planned background-evaluation accumulator records as a
     reusable `BackgroundEvaluationCall`, runs exact transactional forward/reverse propagation
     through the generated roots, accumulates fan-in/fan-out before the one-call-per-node
-    callbacks, and advances its propagated semantic-coverage baseline only when both
-    traversals succeed. It
-    does not yet bind Tock/replay data ports or publish pages. Next add runtime
-    realization of the storage plan, canonical persisted-page completion for Tick
-    and Tock persisted outputs, atomic publication, and preliminary
-    published/materialized-snapshot-only Random Access reads. Background ephemeral Random
-    Access may use transaction-local page-backed materialization; Tick-time ephemeral
-    Random Access must be materialized before the callback. Playback never blocks or
-    invokes Tock.
+    callbacks. Committed semantic coverage is now separate from the reusable
+    propagation workspace: F/R produces an owned prepared result, and the current
+    propagation-only seam immediately commits it after both traversals succeed. The
+    complete transaction will retain that prepared result and promote it only at final
+    transaction commit, together with page publication when a candidate is present.
+
+    Next add immutable before/after-node materialization placement, compact runtime
+    binding slots and replay schedule constraints/slots; implement the executor-level
+    canonical sample/event page store and address-stable runtime views; and extend the
+    generated background root to invoke narrow transaction-local prepare/finalize hooks
+    around node calls.
+    Then add the complete transaction coordinator and the Tick invocation frame with
+    pinned published pages plus `TickMaterializationSnapshot` bindings. Final commit
+    advances prepared coverage, page publication and any capture frontier together;
+    every failure advances none. Background ephemeral Random Access may use
+    transaction-local page-backed materialization; Tick-time ephemeral Random Access
+    must be materialized before the callback. Playback never blocks, reclaims retired
+    storage or invokes Tock.
 18. **Enable shared Tick capture and explicit recording.** Define the shared capture
     metadata/pool, provision slabs off the audio thread, and capture Tick/persisted or
     explicit-recorder blocks at production/finalization time. Consume fixed capture
@@ -855,6 +864,14 @@ compile time: declare/layout planning
 runtime:      NodeStorage initialize()/move()/release()
 runtime:      generated tick_block() (owns child tick/skip decisions)
 ```
+
+The root remains zero-port at the project graph boundary, but its native Tick ABI
+also receives one narrow invocation frame for dynamic background-derived bindings.
+That frame contains only compact immutable views selected for this callback: pinned
+published-page inputs and any `TickMaterializationSnapshot` bindings. It contains no
+`GraphExecutor*`, page-store pointer, transaction object, or storage-discovery API.
+GraphJit retains the compile-time node-port-to-slot mapping; the executor fills the
+slots before entering the generated root.
 
 The constituent nodes retain their own declaration and lifecycle semantics.
 Declaration is performed during lowering, before final LLVM emission: the compiler
@@ -1172,6 +1189,23 @@ The page version advances on commit, not capture insertion. A page candidate may
 or adopt compatible capture data, but consumers see the canonical persisted-page
 abstraction rather than a separate capture-storage read path.
 
+Background evaluation keeps one generated statically ordered root rather than
+returning node scheduling to `GraphExecutor`. `BackgroundEvaluationPlan` retains
+compact runtime binding slots plus each direct/materialization operation's placement
+before or after the relevant node. Around an applicable node invocation, generated
+code calls narrow transaction-supplied prepare/finalize hooks carried by
+`BackgroundEvaluationCall`. The hook receives only an opaque transaction-local
+operation frame; it may realize already-planned views and execute conversion,
+projection, fan-in or deterministic merge operations, but it receives no executor,
+page-store or transaction-owner pointer. Runtime code must not reconstruct this
+schedule by walking `ConfiguredGraph` or lowering internals.
+
+The immutable plan retains the replay binding slot and applicable root/primitive
+maximum block size. The transaction lowers its dynamic replay requirements to an
+explicit invocation schedule split to that limit. The imported generated
+`tick_block()` wrapper is never called once with an arbitrarily coalesced coverage
+region that exceeds its compiled block contract.
+
 ### Value specialization over immutable temporal data
 
 GraphJit may later generate several code specializations inside one structural
@@ -1231,6 +1265,11 @@ metadata it needs, as applicable:
 - generated batched forward/reverse/tock traversal entrypoints and constant
   context-layout facts;
 - background evaluation component/order information;
+- compact runtime binding-slot maps for background and Tick invocation frames;
+- explicit before-node/after-node placement of direct-view, conversion,
+  projection, fan-in and deterministic event-merge operations;
+- replay invocation binding slots and applicable compiled maximum block sizes used
+  to build legal transaction-local schedules;
 - per-node/per-port background evaluation transaction accumulator offsets/layout;
 - semantic SCC IDs/validation products;
 - canonical persisted-page store bindings for Tick/persisted and Tock/persisted outputs;
@@ -1279,7 +1318,10 @@ persisted outputs:
 - candidate/published semantic versions plus immutable page versions;
 - the shared Tick-capture log/pool, processed-sequence frontiers, callback-boundary
   ownership, slab allocation/reclamation state, and page-version reader pins;
-- reusable background evaluation transaction workspaces/accumulators;
+- committed per-generation background coverage state, kept separate from reusable
+  background propagation workspaces/accumulators;
+- prepared propagation results and transaction-local invocation/materialization
+  frames whose failure cannot mutate committed state;
 - closed invalidation-root and demand-root normalization;
 - exact batched forward invalidation and reverse-demand/tock transactions, with
   each node callback invoked at most once per applicable phase of a batch;
@@ -1287,6 +1329,18 @@ persisted outputs:
   of Tick/persisted capture records;
 - external random-access request/result/change-notification lifetimes; and
 - safe whole-root-block executable/snapshot publication.
+
+F/R completion alone does not commit the candidate coverage baseline. Final
+transaction commit atomically promotes prepared semantic coverage, the successor
+published page snapshot and any processed capture frontier after Tock/replay,
+materialization, completeness and stale-base validation all succeed. Failure in any
+phase promotes none of them.
+
+Published sample and event pages share one immutable snapshot root and page version,
+although their typed payload implementations may differ. Tick pin acquisition/release
+and `TickMaterializationSnapshot` lifetime management must not allocate, block or
+reclaim the final retired owner on the audio thread; reclamation is deferred through
+the selected callback-boundary/epoch mechanism.
 
 A semantic edit may build a complete candidate page version while audio-thread
 execution continues against an older immutable published base. Playback reads those

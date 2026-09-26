@@ -80,7 +80,7 @@ struct CoveragePropagationResult {
 // whole-root boundary with no concurrent tick_block() invocation. The realtime
 // call itself performs no generation selection, allocation, or lifecycle work.
 class GraphExecutor {
-    class CoveragePropagationState;
+    class BackgroundPropagationWorkspace;
 
     struct InputChangeAccumulator {
         Coverage coverage{};
@@ -88,7 +88,7 @@ class GraphExecutor {
     };
 
     struct OutputChangeAccumulator {
-        CoveragePropagationState* owner = nullptr;
+        BackgroundPropagationWorkspace* owner = nullptr;
         graph_jit::BackgroundPortIndex port = 0;
         Coverage previous_coverage{};
         Coverage changed{};
@@ -96,7 +96,7 @@ class GraphExecutor {
     };
 
     struct InputRequirementAccumulator {
-        CoveragePropagationState* owner = nullptr;
+        BackgroundPropagationWorkspace* owner = nullptr;
         graph_jit::BackgroundPortIndex port = 0;
         Coverage coverage{};
     };
@@ -116,10 +116,29 @@ class GraphExecutor {
         std::vector<OutputCoverageRequirement> event_output_requirements{};
     };
 
-    class CoveragePropagationState {
+    // Owns one successful F/R candidate until the surrounding operation either
+    // promotes it or abandons it. It never aliases the committed baseline.
+    struct PreparedCoveragePropagation {
+        CoveragePropagationResult result{};
+        std::vector<Coverage> output_coverages{};
+    };
+
+    // Long-lived semantic coverage committed for one compiled realization.
+    class BackgroundCoverageState {
+        std::vector<Coverage> output_coverages_{};
+
+        friend class BackgroundPropagationWorkspace;
+
+    public:
+        BackgroundCoverageState() = default;
+        explicit BackgroundCoverageState(std::size_t output_count);
+    };
+
+    // Reusable propagation scratch and callback frames. Each preparation starts
+    // from BackgroundCoverageState and may mutate only its private candidate.
+    class BackgroundPropagationWorkspace {
         graph_jit::BackgroundEvaluationPlan const* plan_ = nullptr;
         std::size_t sample_rate_ = 0;
-        std::vector<Coverage> propagated_output_coverages_{};
         std::vector<Coverage> candidate_output_coverages_{};
         std::vector<InputChangeAccumulator> input_changes_{};
         std::vector<OutputChangeAccumulator> output_changes_{};
@@ -171,7 +190,7 @@ class GraphExecutor {
             graph_jit::BackgroundPortIndex input,
             Coverage const& requested);
         void initialize_calls();
-        void reset();
+        void reset(BackgroundCoverageState const& coverage);
 
         static void publish_output_coverage_callback(
             void* accumulator,
@@ -188,21 +207,27 @@ class GraphExecutor {
             void*, ReflectedNodeReverseCoverageContext const& context);
 
     public:
-        CoveragePropagationState() = default;
-        CoveragePropagationState(
+        BackgroundPropagationWorkspace() = default;
+        BackgroundPropagationWorkspace(
             graph_jit::BackgroundEvaluationPlan const& plan,
             std::size_t sample_rate);
 
-        [[nodiscard]] CoveragePropagationResult propagate(
+        [[nodiscard]] PreparedCoveragePropagation prepare(
             CompiledGraphBackgroundOperations const& operations,
             std::byte* storage,
+            BackgroundCoverageState const& coverage,
             CoveragePropagationRequest const& request);
+        [[nodiscard]] CoveragePropagationResult commit(
+            BackgroundCoverageState& coverage,
+            PreparedCoveragePropagation&& prepared) noexcept;
+        void discard(PreparedCoveragePropagation&& prepared) noexcept;
     };
 
     struct Realization {
         std::shared_ptr<CompiledGraph const> graph{};
         NodeStorage storage{};
-        CoveragePropagationState coverage{};
+        BackgroundCoverageState coverage{};
+        BackgroundPropagationWorkspace propagation{};
         bool initialized = false;
 
         Realization(
@@ -244,9 +269,9 @@ public:
 
     // Runs one background-only exact F/R batch against the active generation.
     // Calls are serialized by the owner and must not overlap activation. The
-    // propagated semantic-coverage baseline advances only after both generated
-    // traversals return successfully; no Tock/replay data evaluation happens
-    // here and no published page version advances.
+    // temporary wrapper prepares coverage and immediately commits it only after
+    // both generated traversals return successfully; no Tock/replay data
+    // evaluation happens here and no published page version advances.
     [[nodiscard]] CoveragePropagationResult propagate_coverage(
         CoveragePropagationRequest const& request);
 

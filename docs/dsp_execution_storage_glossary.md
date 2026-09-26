@@ -247,6 +247,11 @@ and demand-root collection, forward/reverse propagation, and required Tock/repla
 evaluation against one coherent semantic/page-version view. When persisted state is
 changed, the same transaction completes and publishes the corresponding candidate.
 
+Forward/reverse propagation produces **prepared coverage**. It is not authoritative
+until final commit atomically promotes that coverage together with the successor page
+snapshot and any processed capture frontier. Failure, cancellation, or stale-base
+rejection promotes none of them.
+
 This term describes atomic evaluation/publication semantics; it does not imply a
 database transaction implementation.
 
@@ -279,6 +284,9 @@ outputs.
 
 A **reader pin** keeps an immutable published representation alive while a reader
 uses it. Superseded storage versions may be reclaimed after their pins disappear.
+For Tick readers, pin acquisition/release and final retired-version reclamation must
+be audio safe: no allocation, blocking, unbounded locking, or synchronous final-owner
+destruction occurs on the audio thread.
 
 ## Storage representations and lifetimes
 
@@ -317,7 +325,7 @@ For a Tock/ephemeral or replayed Tick/ephemeral result feeding a background-only
 Random Access consumer, the preliminary implementation may use a
 **transaction-local page-backed materialization** so the consumer receives the
 required addressable representation. If Random Access occurs during Tick execution,
-the addressable representation must instead be materialized and published before the
+the addressable representation must instead be materialized and selected before the
 callback. Replayable Tick work may avoid or fuse materialization where the consumer
 contract permits it. A transaction-local page-backed materialization is not a
 persisted page and carries no retention guarantee beyond the transaction/readers
@@ -336,6 +344,15 @@ requires Random Access, the materialization must instead provide an immutable
 one addressable materialization may satisfy both uses for the same source subset.
 Persisted sources normally need no separate playback copy: Sequential consumers can
 view the appropriate pinned persisted pages directly.
+
+### Tick materialization snapshot
+
+A **`TickMaterializationSnapshot`** is the immutable callback-lifetime owner/view set
+for Tick-visible ephemeral advance materialization. It is selected at the root
+boundary and remains alive through every callback reader. It is not a published
+persisted-page version, has no persisted retention guarantee, and must not be called a
+"published materialization." Its lifetime uses the same audio-safe boundary discipline
+as the published-page reader pin.
 
 ### Current Tick representation
 

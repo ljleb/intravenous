@@ -601,6 +601,39 @@ The storage-model and storage-placement refactors have landed:
   expose only the ordinary `TimedEvent` data buffer and require no storage
   dispatch.
 
+### Background runtime realization and operation placement
+
+The immutable background storage plan is not only a catalog of representations.
+Before runtime realization lands, it must also retain the compact binding slots and
+the before-node/after-node placement of every direct-view, conversion, projection,
+fan-in and deterministic event-merge operation. That schedule is a compiler fact.
+`GraphExecutor` and its storage realization must not rebuild it by walking
+`ConfiguredGraph`, compiler objects, or connection topology.
+
+The generated background evaluation root remains responsible for the static node
+order. Around each applicable node it invokes narrow prepare/finalize hooks carried in
+the executor-owned `BackgroundEvaluationCall`. A hook receives only an opaque,
+address-stable transaction-local operation frame. It may execute the operations
+already assigned to that point and install/validate explicit source and destination
+views; it never receives `GraphExecutor*`, a page-store pointer, or the transaction
+coordinator itself. This keeps materialization implementation in small reusable
+runtime operations without turning generated code into a route to executor internals.
+Background realization reuses/factors the existing event conversion and stable merge
+primitives; it must not introduce a second equal-time ordering implementation.
+
+Transaction-local addressable storage and Tick-visible materialized storage are
+different lifetimes. The former dies with its background transaction. The latter is
+selected and pinned at the Tick root boundary in one immutable
+`TickMaterializationSnapshot`, remains alive through the complete callback, and does
+not acquire canonical persisted-page version/retention semantics. Published persisted
+pages remain a separate canonical snapshot selected at the same boundary.
+
+All backing owners become address-stable before callback frames are built. The
+immutable plan retains the replay slot and applicable maximum block size; the
+transaction converts dynamic requirements to an explicit schedule of legal-sized
+invocations. Merged `Coverage` regions are not passed directly to the imported Tick
+wrapper.
+
 The remaining cost-model work is primarily alias-versus-materialize comparison,
 weight calibration, and making stack-pressure promotion choose more selectively
 when several different storage moves can satisfy the same budget.
@@ -1122,6 +1155,17 @@ consumer retention requirements
 Target/cost-model facts may include cache-line size, stack budget, preferred
 scratch budget, copy/ring/conversion cost estimates, and target vector features.
 
+For background/Tick dynamic realization the immutable plan also carries:
+
+```text
+compact runtime binding slot per node-facing dynamic port
+before-node and after-node materialization operation indices
+direct source/destination view bindings
+stable or explicit generation-local persisted-output identity
+replay binding slot and compiled maximum block-size constraint
+TickMaterializationSnapshot slot/lifetime requirements
+```
+
 ## Test requirements
 
 The planner should be testable with synthetic facts and no LLVM dependency.
@@ -1152,7 +1196,14 @@ At minimum cover:
   one invocation capacity by a callback count;
 - Tick event identity fanout can share an immutable event representation;
 - random-access event/sample consumption remains independent from sequential-consumption storage
-  planning.
+  planning;
+- every dynamic binding slot has exactly one compatible planned source;
+- materialization inputs are available before their scheduled operation and each
+  result remains alive through its last planned consumer;
+- equal-time event ordering survives transaction-local and persisted-page
+  materialization; and
+- replay requirements spanning several pages/coverage regions are split into legal
+  imported-callback block sizes without evaluating uncovered gaps.
 
 ## Graph-revision transition planning precedes optimization
 

@@ -34,6 +34,7 @@ struct BackgroundPropagationObservation {
     iv::Coverage sink_input_changed{};
     iv::Coverage sink_output_required{};
     bool throw_from_sink = false;
+    bool throw_from_reverse = false;
 };
 
 BackgroundPropagationObservation background_observation;
@@ -127,6 +128,9 @@ void propagate_background_reverse(
         return;
     }
     ++background_observation.sink_reverse_calls;
+    if (background_observation.throw_from_reverse) {
+        throw std::runtime_error("background reverse propagation probe failure");
+    }
     auto const outputs = static_cast<
         std::span<iv::OutputCoverageRequirement const>>(sink.reverse.outputs);
     auto inputs = static_cast<std::span<iv::InputCoverageRequirement>>(
@@ -552,7 +556,7 @@ TEST_F(
     EXPECT_EQ(propagation_result.output_requirements[1].port, 1u);
 }
 
-TEST_F(GraphExecutorFixture, FailedBackgroundPropagationDoesNotCommitCoverage)
+TEST_F(GraphExecutorFixture, FailedForwardPropagationDoesNotCommitCoverage)
 {
     iv::GraphExecutor executor;
     ASSERT_EQ(
@@ -565,6 +569,42 @@ TEST_F(GraphExecutorFixture, FailedBackgroundPropagationDoesNotCommitCoverage)
         static_cast<void>(executor.propagate_coverage(
             iv::CoveragePropagationRequest{
                 .locally_changed_nodes = {0, 1},
+            })),
+        std::runtime_error);
+
+    background_observation = {};
+    auto const result = executor.propagate_coverage(
+        iv::CoveragePropagationRequest{
+            .output_demands = {
+                iv::OutputCoverageRequest{
+                    .port = 3,
+                    .required = iv::Coverage{{{10, 22}}},
+                },
+            },
+        });
+    EXPECT_TRUE(result.output_requirements.empty());
+    EXPECT_EQ(background_observation.sink_reverse_calls, 0u);
+}
+
+TEST_F(GraphExecutorFixture, FailedReversePropagationDoesNotCommitPreparedCoverage)
+{
+    iv::GraphExecutor executor;
+    ASSERT_EQ(
+        executor.stage(background_compiled_graph(1)),
+        iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending());
+
+    background_observation.throw_from_reverse = true;
+    EXPECT_THROW(
+        static_cast<void>(executor.propagate_coverage(
+            iv::CoveragePropagationRequest{
+                .locally_changed_nodes = {0, 1},
+                .output_demands = {
+                    iv::OutputCoverageRequest{
+                        .port = 3,
+                        .required = iv::Coverage{{{10, 22}}},
+                    },
+                },
             })),
         std::runtime_error);
 

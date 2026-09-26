@@ -19,27 +19,27 @@ Coverage coverage_difference(
 
 } // namespace
 
-[[nodiscard]] graph_jit::BackgroundPortPlan const& GraphExecutor::CoveragePropagationState::port(
+[[nodiscard]] graph_jit::BackgroundPortPlan const& GraphExecutor::BackgroundPropagationWorkspace::port(
         graph_jit::BackgroundPortIndex index) const
     {
         return plan_->ports[index];
     }
 
-[[nodiscard]] std::size_t GraphExecutor::CoveragePropagationState::output_index(
+[[nodiscard]] std::size_t GraphExecutor::BackgroundPropagationWorkspace::output_index(
         graph_jit::BackgroundPortIndex index) const
     {
         auto const& planned = port(index);
         return *planned.accumulators.output_change;
     }
 
-[[nodiscard]] std::size_t GraphExecutor::CoveragePropagationState::input_index(
+[[nodiscard]] std::size_t GraphExecutor::BackgroundPropagationWorkspace::input_index(
         graph_jit::BackgroundPortIndex index) const
     {
         auto const& planned = port(index);
         return *planned.accumulators.input_change;
     }
 
-[[nodiscard]] Coverage GraphExecutor::CoveragePropagationState::input_coverage(
+[[nodiscard]] Coverage GraphExecutor::BackgroundPropagationWorkspace::input_coverage(
         graph_jit::BackgroundPortIndex input) const
     {
         Coverage result;
@@ -54,14 +54,14 @@ Coverage coverage_difference(
         return result;
     }
 
-void GraphExecutor::CoveragePropagationState::activate_node(
+void GraphExecutor::BackgroundPropagationWorkspace::activate_node(
         graph_jit::BackgroundNodeIndex node,
         graph_jit::BackgroundNodeActivity activity)
     {
         node_calls_[node].activity = node_calls_[node].activity | activity;
     }
 
-void GraphExecutor::CoveragePropagationState::add_input_change(
+void GraphExecutor::BackgroundPropagationWorkspace::add_input_change(
         graph_jit::BackgroundPortIndex input,
         Coverage const& changed,
         bool recompute_coverage)
@@ -87,7 +87,7 @@ void GraphExecutor::CoveragePropagationState::add_input_change(
         }
     }
 
-void GraphExecutor::CoveragePropagationState::route_output_change(
+void GraphExecutor::BackgroundPropagationWorkspace::route_output_change(
         graph_jit::BackgroundPortIndex output,
         Coverage const& changed,
         bool coverage_changed)
@@ -101,7 +101,7 @@ void GraphExecutor::CoveragePropagationState::route_output_change(
         }
     }
 
-void GraphExecutor::CoveragePropagationState::set_input_change(
+void GraphExecutor::BackgroundPropagationWorkspace::set_input_change(
         graph_jit::BackgroundPortIndex input,
         Coverage const& coverage,
         Coverage const& changed)
@@ -123,7 +123,7 @@ void GraphExecutor::CoveragePropagationState::set_input_change(
         }
     }
 
-void GraphExecutor::CoveragePropagationState::publish_output_coverage(
+void GraphExecutor::BackgroundPropagationWorkspace::publish_output_coverage(
         graph_jit::BackgroundPortIndex output,
         Coverage const& coverage)
     {
@@ -137,7 +137,7 @@ void GraphExecutor::CoveragePropagationState::publish_output_coverage(
         route_output_change(output, changed, true);
     }
 
-void GraphExecutor::CoveragePropagationState::publish_output_change(
+void GraphExecutor::BackgroundPropagationWorkspace::publish_output_change(
         graph_jit::BackgroundPortIndex output,
         Coverage const& changed)
     {
@@ -149,7 +149,7 @@ void GraphExecutor::CoveragePropagationState::publish_output_change(
         route_output_change(output, changed, false);
     }
 
-void GraphExecutor::CoveragePropagationState::publish_output_coverage_callback(
+void GraphExecutor::BackgroundPropagationWorkspace::publish_output_coverage_callback(
         void* opaque,
         Coverage const& coverage)
     {
@@ -158,7 +158,7 @@ void GraphExecutor::CoveragePropagationState::publish_output_coverage_callback(
             accumulator.port, coverage);
     }
 
-void GraphExecutor::CoveragePropagationState::publish_output_change_callback(
+void GraphExecutor::BackgroundPropagationWorkspace::publish_output_change_callback(
         void* opaque,
         Coverage const& changed)
     {
@@ -167,7 +167,7 @@ void GraphExecutor::CoveragePropagationState::publish_output_change_callback(
             accumulator.port, changed);
     }
 
-void GraphExecutor::CoveragePropagationState::require_output(
+void GraphExecutor::BackgroundPropagationWorkspace::require_output(
         graph_jit::BackgroundPortIndex output,
         Coverage const& requested,
         bool activate_producer)
@@ -185,7 +185,7 @@ void GraphExecutor::CoveragePropagationState::require_output(
         }
     }
 
-void GraphExecutor::CoveragePropagationState::require_input(
+void GraphExecutor::BackgroundPropagationWorkspace::require_input(
         graph_jit::BackgroundPortIndex input,
         Coverage const& requested)
     {
@@ -214,7 +214,7 @@ void GraphExecutor::CoveragePropagationState::require_input(
         }
     }
 
-void GraphExecutor::CoveragePropagationState::publish_input_requirement_callback(
+void GraphExecutor::BackgroundPropagationWorkspace::publish_input_requirement_callback(
         void* opaque,
         Coverage const& required)
     {
@@ -222,7 +222,7 @@ void GraphExecutor::CoveragePropagationState::publish_input_requirement_callback
         accumulator.owner->require_input(accumulator.port, required);
     }
 
-void GraphExecutor::CoveragePropagationState::replay_forward_coverage(
+void GraphExecutor::BackgroundPropagationWorkspace::replay_forward_coverage(
         void*,
         ReflectedNodeForwardCoverageContext const& context)
     {
@@ -252,7 +252,7 @@ void GraphExecutor::CoveragePropagationState::replay_forward_coverage(
         }
     }
 
-void GraphExecutor::CoveragePropagationState::replay_reverse_coverage(
+void GraphExecutor::BackgroundPropagationWorkspace::replay_reverse_coverage(
         void*,
         ReflectedNodeReverseCoverageContext const& context)
     {
@@ -278,7 +278,7 @@ void GraphExecutor::CoveragePropagationState::replay_reverse_coverage(
         }
     }
 
-void GraphExecutor::CoveragePropagationState::initialize_calls()
+void GraphExecutor::BackgroundPropagationWorkspace::initialize_calls()
     {
         for (graph_jit::BackgroundPortIndex index = 0;
              index < plan_->ports.size(); ++index) {
@@ -402,14 +402,19 @@ void GraphExecutor::CoveragePropagationState::initialize_calls()
         call_.nodes = node_calls_;
     }
 
-void GraphExecutor::CoveragePropagationState::reset()
+GraphExecutor::BackgroundCoverageState::BackgroundCoverageState(
+        std::size_t output_count)
+        : output_coverages_(output_count)
+    {}
+
+void GraphExecutor::BackgroundPropagationWorkspace::reset(
+        BackgroundCoverageState const& coverage)
     {
+        candidate_output_coverages_ = coverage.output_coverages_;
         for (std::size_t index = 0;
              index < candidate_output_coverages_.size(); ++index) {
-            candidate_output_coverages_[index] =
-                propagated_output_coverages_[index];
             output_changes_[index].previous_coverage =
-                propagated_output_coverages_[index];
+                coverage.output_coverages_[index];
         }
         for (auto& value : input_changes_) value = {};
         for (auto& value : output_changes_) {
@@ -441,12 +446,11 @@ void GraphExecutor::CoveragePropagationState::reset()
         }
     }
 
-GraphExecutor::CoveragePropagationState::CoveragePropagationState(
+GraphExecutor::BackgroundPropagationWorkspace::BackgroundPropagationWorkspace(
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::size_t sample_rate)
         : plan_(&plan)
         , sample_rate_(sample_rate)
-        , propagated_output_coverages_(plan.accumulators.output_change_count)
         , candidate_output_coverages_(plan.accumulators.output_change_count)
         , input_changes_(plan.accumulators.input_change_count)
         , output_changes_(plan.accumulators.output_change_count)
@@ -461,12 +465,13 @@ GraphExecutor::CoveragePropagationState::CoveragePropagationState(
         , node_calls_(plan.nodes.size())
     {
         initialize_calls();
-        reset();
     }
 
-[[nodiscard]] CoveragePropagationResult GraphExecutor::CoveragePropagationState::propagate(
+[[nodiscard]] GraphExecutor::PreparedCoveragePropagation
+GraphExecutor::BackgroundPropagationWorkspace::prepare(
         CompiledGraphBackgroundOperations const& operations,
         std::byte* storage,
+        BackgroundCoverageState const& coverage,
         CoveragePropagationRequest const& request)
     {
         auto const check_port = [this](
@@ -496,7 +501,7 @@ GraphExecutor::CoveragePropagationState::CoveragePropagationState(
         for (auto const& demand : request.output_demands) {
             check_port(demand.port, graph_jit::PortDirection::output);
         }
-        reset();
+        reset(coverage);
         for (auto const node : request.locally_changed_nodes) {
             node_calls_[node].forward.local_state_changed = true;
             activate_node(
@@ -560,8 +565,25 @@ GraphExecutor::CoveragePropagationState::CoveragePropagationState(
                 });
         }
 
-        propagated_output_coverages_.swap(candidate_output_coverages_);
-        return result;
+        return PreparedCoveragePropagation{
+            .result = std::move(result),
+            .output_coverages = std::move(candidate_output_coverages_),
+        };
+    }
+
+CoveragePropagationResult GraphExecutor::BackgroundPropagationWorkspace::commit(
+        BackgroundCoverageState& coverage,
+        PreparedCoveragePropagation&& prepared) noexcept
+    {
+        coverage.output_coverages_.swap(prepared.output_coverages);
+        candidate_output_coverages_.swap(prepared.output_coverages);
+        return std::move(prepared.result);
+    }
+
+void GraphExecutor::BackgroundPropagationWorkspace::discard(
+        PreparedCoveragePropagation&& prepared) noexcept
+    {
+        candidate_output_coverages_.swap(prepared.output_coverages);
     }
 
 
@@ -572,7 +594,10 @@ GraphExecutor::Realization::Realization(
     ResourceContext const& resources)
     : graph(std::move(compiled_graph))
     , storage(graph->node_layout.create_storage(resources))
-    , coverage(graph->background_evaluation_plan, graph->specialization.sample_rate)
+    , coverage(graph->background_evaluation_plan.accumulators.output_change_count)
+    , propagation(
+        graph->background_evaluation_plan,
+        graph->specialization.sample_rate)
 {}
 
 GraphExecutor::GraphExecutor(ResourceContext resources)
@@ -670,9 +695,13 @@ CoveragePropagationResult GraphExecutor::propagate_coverage(
         }
         return {};
     }
-    return realization.coverage.propagate(
+    auto prepared = realization.propagation.prepare(
         realization.graph->background_operations,
-        realization.storage.buffer().data(), request);
+        realization.storage.buffer().data(),
+        realization.coverage,
+        request);
+    return realization.propagation.commit(
+        realization.coverage, std::move(prepared));
 }
 
 void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)

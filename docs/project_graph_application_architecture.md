@@ -563,12 +563,16 @@ executor-owned `NodeStorage` without reading mutable active state, and an explic
 quiescent whole-root-boundary operation migrates the final active state and publishes
 it. `tick_block()` dispatches only the already-active generation and never performs
 activation, allocation, or lifecycle work. Project-transaction wiring and background
-page/data realization remain the next layer. The executor now also owns the
-reusable background-evaluation propagation workspace for the active realization: it binds the
-compiler-planned port accumulators into `BackgroundEvaluationCall`, executes exact
-generated forward/reverse traversals once per implicated node, and advances the
-propagated coverage baseline only after successful propagation. That checkpoint returns materialization
-requirements; it does not yet run Tock/replay data evaluation or publish pages.
+page/data realization remain the next layer. The executor now also owns separate
+committed per-generation semantic coverage and a reusable background-evaluation
+propagation workspace for the active realization. The workspace binds compiler-planned
+port accumulators into `BackgroundEvaluationCall`, executes exact generated
+forward/reverse traversals once per implicated node, and returns an owned prepared
+coverage result without mutating the committed baseline. The temporary
+propagation-only wrapper immediately commits that result after successful propagation;
+it does not yet run Tock/replay data evaluation or publish pages. The complete
+transaction instead retains the prepared result until final transaction commit,
+alongside successful page publication when a candidate is present.
 
 `GraphExecutor` keeps at least:
 
@@ -579,8 +583,11 @@ requirements; it does not yet run Tock/replay data evaluation or publish pages.
   `TockState`;
 - stable canonical persisted-page stores/immutable roots for identifiable
   Tick/persisted and Tock/persisted outputs, with per-generation port mappings;
-- reusable background-evaluation transaction workspace for reverse/forward planning and
-  transaction-local `tock/ephemeral` materialization;
+- committed per-generation background coverage state separated from a reusable
+  propagation workspace and its prepared results;
+- reusable background-evaluation transaction workspace for reverse/forward planning,
+  narrow generated-root prepare/finalize frames and transaction-local
+  `tock/ephemeral` materialization;
 - semantic versions plus monotonically advancing immutable page versions
   and candidate/published snapshots;
 - the shared Tick-capture pool/log used by Tick/persisted staging and explicit
@@ -640,6 +647,18 @@ required by that version pair is complete; callers may continue displaying an ol
 completed pair rather than observe partial/default data. `tock/ephemeral`
 requests evaluate exact requested coverage against one selected immutable version
 pair.
+
+Final background commit is one logical publication boundary: prepared semantic
+coverage and, when present, the successor immutable page snapshot and processed
+capture frontier advance together, or none advances. The generated background root
+owns static node order and calls only narrow transaction-local prepare/finalize hooks
+selected by the compiled plan; generated code never receives `GraphExecutor*`, the
+page store or a transaction-owner pointer.
+
+The Tick root receives a compact invocation frame containing already-selected
+published-page views and any `TickMaterializationSnapshot` bindings. Reader pin and
+retired-snapshot reclamation use an audio-safe callback-boundary/epoch mechanism: the
+audio thread does not allocate, block, or synchronously destroy a final retired owner.
 
 Changing project sample rate invalidates/repropagates background-computed output semantics.
 Tick/persisted samples are not automatically resampled or remapped to new sample indices;
@@ -795,9 +814,15 @@ The implementation checkpoints now stand as follows:
    execution path and non-constexpr concrete-port fallbacks are deleted, and
    source introspection is derived from `ConfiguredGraph`; next migrate the port
    schema and replayability/connection planning;
-10. build the reusable background-evaluation batch ABI, generated F/R/background evaluation,
-    and `GraphExecutor` publication before enabling transactional recording
-    consumption; add stale-page playback and per-input missing-page neutrality;
+10. complete ordinary background evaluation in the normative dependency order from
+    [coverage_and_background_evaluation.md §32](./coverage_and_background_evaluation.md#32-implementation-landing-order):
+    the committed-coverage/propagation-workspace split has landed; next retain
+    compiler-owned binding/materialization schedules, add the canonical sample/event
+    page store and audio-safe pins, make the generated root invoke narrow
+    transaction-local prepare/finalize hooks, implement transaction-wide atomic commit,
+    then add the Tick binding frame, `TickMaterializationSnapshot`, stale-page playback
+    and per-input missing-page neutrality. Do this before enabling transactional
+    recording consumption;
 11. integrate stable logical `SystemAudioDevices` bindings with ordinary system
     audio leaf node definitions;
 12. once GraphJit and GraphExecutor have fully landed as the normal execution
