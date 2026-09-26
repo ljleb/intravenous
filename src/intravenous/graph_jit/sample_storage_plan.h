@@ -25,7 +25,7 @@ inline constexpr std::size_t no_sample_persistent_allocation =
 
 // One compiler-visible storage sample representation. Node API facades are
 // reconstructed from these immutable facts and never become persistent graph
-// objects. Storage residence is independent from the conversion, composition,
+// objects. Storage placement is independent from the conversion, composition,
 // or feedback operations which read and write the representation.
 struct SampleRepresentationPlan {
     std::size_t producer_group_index = 0;
@@ -49,7 +49,7 @@ struct SampleRepresentationPlan {
 // A disconnected output still exposes its declared history/latency window to
 // its producer callback. It therefore needs an ordinary writable storage
 // representation even though no graph edge consumes it. These requests enter
-// the same residence/capacity planner as connected producer representations.
+// the same placement/capacity planner as connected producer representations.
 struct SampleSinkStorageRequest {
     ChannelLayout channel_layout{};
     std::size_t history = 0;
@@ -157,7 +157,7 @@ struct SampleCompositionPlan {
 
 // Exact transient byte range assigned to one representation. Ranges may overlap
 // iff their inclusive schedule live intervals do not overlap. There is no
-// runtime slot object or allocator metadata.
+// separate runtime allocation object or allocator metadata.
 struct SampleTransientAllocationPlan {
     std::size_t representation_index = no_sample_representation;
     std::size_t size_bytes = 0;
@@ -254,27 +254,27 @@ struct SampleFeedbackTimelinePlan {
 };
 
 struct SampleStoragePlan {
-    // Background by ConnectionAnalysisPlan::sample_producer_groups.
+    // Entry positions correspond to ConnectionAnalysisPlan::sample_producer_groups.
     std::vector<std::optional<SampleProducerStoragePlan>> producer_groups{};
-    // Background by storage representation handle.
+    // Each storage representation handle identifies its entry here.
     std::vector<SampleRepresentationPlan> representations{};
-    // Background by ConnectionAnalysisPlan::sample_connections. Whole-port
-    // bindings resolve here when every target channel shares one storage
+    // Entry positions correspond to ConnectionAnalysisPlan::sample_connections.
+    // Whole-port bindings resolve here when every target channel shares one storage
     // representation. Arithmetic converted branches may resolve to a shared
     // derived representation when their static transformation is identical.
     std::vector<std::optional<std::size_t>> connection_representations{};
     // Channel-granular connections bind each target semantic channel to its
     // resolved source/result representation. This covers projection,
     // permutation, aliasable conversion, and mixed alias/computed composition.
-    // Background by sample connection; when present, entries are in canonical
-    // target-channel order.
+    // One entry per sample connection; when present, channel entries are in
+    // canonical target-channel order.
     std::vector<std::optional<std::vector<SampleChannelBindingPlan>>>
         connection_channel_bindings{};
 
-    // Background by the SampleSinkStorageRequest sequence supplied to
+    // One entry per SampleSinkStorageRequest supplied to
     // build_sample_storage_plan().
     std::vector<std::size_t> sink_representations{};
-    // Background by the SampleConstantInputRequest sequence supplied to
+    // One entry per SampleConstantInputRequest supplied to
     // build_sample_storage_plan().
     std::vector<std::size_t> constant_input_representations{};
 
@@ -327,11 +327,11 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
 // backing belongs to the generated root stack. Retained feedback state with
 // authored initial values installs raw-region initialization callbacks, so
 // realtime execution performs no setup/allocation.
-std::expected<void, std::string> declare_sample_storage_storage(
+std::expected<void, std::string> declare_sample_storage(
     NodeLayoutBuilder& builder,
     SampleStoragePlan& plan);
 
-std::expected<void, std::string> finalize_sample_storage_storage(
+std::expected<void, std::string> finalize_sample_storage(
     NodeLayout const& layout,
     SampleStoragePlan& plan);
 

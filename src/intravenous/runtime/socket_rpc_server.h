@@ -2,11 +2,8 @@
 
 #include <intravenous/graph/build_types.h>
 #include <intravenous/linker_event.h>
-#include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/node_instances.h>
-#include <intravenous/runtime/lanes_visualization_api_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
-#include <intravenous/query/lane_query_schema.h>
 #include <intravenous/runtime/socket_rpc_requests.h>
 #include <intravenous/runtime/socket_rpc_response_builders.h>
 #include <intravenous/sample.h>
@@ -23,7 +20,6 @@
 #include <vector>
 
 namespace iv {
-    struct LaneQuerySchemaChanged;
     struct IvPackageCatalogChanged;
 
     using SocketRpcGraphQueryResult = ProjectQueryResult;
@@ -55,16 +51,6 @@ namespace iv {
         void (*)(GetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
     using SocketRpcSetAudioDevicesEvent =
         void (*)(SetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
-    using SocketRpcOpenLaneViewEvent =
-        void (*)(LaneViewRequest const &, SocketRpcLaneViewResultBuilder &);
-    using SocketRpcUpdateLaneViewEvent =
-        void (*)(LaneViewRequest const &, SocketRpcLaneViewResultBuilder &);
-    using SocketRpcCloseLaneViewEvent =
-        void (*)(std::string const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcGetLaneQuerySchemaEvent =
-        void (*)(GetLaneQuerySchemaRequest const &, SocketRpcLaneQuerySchemaResultBuilder &);
-    using SocketRpcCompleteLaneQueryEvent =
-        void (*)(CompleteLaneQueryRequest const &, SocketRpcLaneQueryCompletionResultBuilder &);
     using SocketRpcSaveProjectEvent =
         void (*)(SaveProjectRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcEnableProjectAutosaveEvent =
@@ -84,11 +70,6 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcUpdateIvModuleInstancesEvent, iv_socket_rpc_update_iv_module_instances_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_devices_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcOpenLaneViewEvent, iv_socket_rpc_open_lane_view_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcUpdateLaneViewEvent, iv_socket_rpc_update_lane_view_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcCloseLaneViewEvent, iv_socket_rpc_close_lane_view_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcGetLaneQuerySchemaEvent, iv_socket_rpc_get_lane_query_schema_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcCompleteLaneQueryEvent, iv_socket_rpc_complete_lane_query_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcEnableProjectAutosaveEvent, iv_socket_rpc_enable_project_autosave_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDisableProjectAutosaveEvent, iv_socket_rpc_disable_project_autosave_event);
@@ -134,9 +115,6 @@ namespace iv {
 
         void send_server_message(SocketRpcServerMessage const &notification);
         void send_server_status(SocketRpcServerStatus const &notification);
-        void send_lane_view_updated(LaneViewResult const &notification);
-        void send_lane_view_content_updated(LaneViewContentUpdate const &notification);
-        void send_lane_query_schema_changed(query::LaneQuerySchemaChange const &notification);
         void send_iv_module_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
         void send_iv_package_definitions_updated();
@@ -145,10 +123,6 @@ namespace iv {
         void handle_project_notification(ProjectNotification const &notification);
         void handle_iv_package_catalog_changed(
             IvPackageCatalogChanged const &changed);
-        void handle_lane_views_updated(LaneViewResult const &lane_view);
-        void handle_lane_view_content_updated(LaneViewContentUpdate const &update);
-        void handle_lane_query_schema_changed(
-            LaneQuerySchemaChanged const &notification);
         void handle_iv_module_instances_list_changed(
             std::vector<IvModuleInstanceInfo> const &instances);
         void handle_iv_module_source_introspection_nodes_updated(

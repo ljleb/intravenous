@@ -11,7 +11,7 @@
 
 _Status: historical migration inventory. `Timeline` ownership and lane/DSP
 execution-partition decisions are superseded by
-[unified_graph_direction.md](../unified_graph_direction.md). Compiled-data
+[unified_graph_direction.md](./unified_graph_direction.md). Compiled-data
 execution semantics are superseded by
 [coverage_and_background_evaluation.md](../coverage_and_background_evaluation.md). Preserve useful product,
 transport, and device behavior described here; do not preserve the requirement

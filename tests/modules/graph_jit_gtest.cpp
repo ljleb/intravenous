@@ -216,8 +216,8 @@ struct MultiBranchSampleFeedbackStateMirror {
     std::array<float, 24> last_fast{};
     std::array<float, 24> first_slow{};
     std::array<float, 24> last_slow{};
-    std::array<float, 24> first_initializeed{};
-    std::array<float, 24> last_initializeed{};
+    std::array<float, 24> first_initialized{};
+    std::array<float, 24> last_initialized{};
     std::uint32_t marker = 0;
 };
 
@@ -1146,11 +1146,11 @@ TEST(GraphJitSampleStoragePlan, PacksExactTransientByteRangesAcrossLifetimes)
     EXPECT_EQ(storage->transient_arena_size, stereo_bytes);
 
     iv::NodeLayoutBuilder builder(64);
-    auto declared = declare_sample_storage_storage(builder, *storage);
+    auto declared = declare_sample_storage(builder, *storage);
     ASSERT_TRUE(declared.has_value())
         << (declared ? std::string{} : declared.error());
     auto layout = std::move(builder).build();
-    auto finalized = finalize_sample_storage_storage(layout, *storage);
+    auto finalized = finalize_sample_storage(layout, *storage);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
     EXPECT_TRUE(layout.regions.empty());
@@ -1359,11 +1359,11 @@ TEST(GraphJitSampleStoragePlan, RealizesCompactPersistentCarryExactly)
     EXPECT_EQ(storage->carry_operations[0].retained_frames, 7u);
 
     iv::NodeLayoutBuilder builder(64);
-    auto declared = declare_sample_storage_storage(builder, *storage);
+    auto declared = declare_sample_storage(builder, *storage);
     ASSERT_TRUE(declared.has_value())
         << (declared ? std::string{} : declared.error());
     auto layout = std::move(builder).build();
-    auto finalized = finalize_sample_storage_storage(layout, *storage);
+    auto finalized = finalize_sample_storage(layout, *storage);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
     ASSERT_EQ(layout.regions.size(), 1u);
@@ -1431,11 +1431,11 @@ TEST(GraphJitSampleStoragePlan, RealizesLargeRetentionAsPersistentRing)
         second->persistent_allocations[0].migration_identity);
 
     iv::NodeLayoutBuilder builder(64);
-    auto declared = declare_sample_storage_storage(builder, *first);
+    auto declared = declare_sample_storage(builder, *first);
     ASSERT_TRUE(declared.has_value())
         << (declared ? std::string{} : declared.error());
     auto layout = std::move(builder).build();
-    auto finalized = finalize_sample_storage_storage(layout, *first);
+    auto finalized = finalize_sample_storage(layout, *first);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
     ASSERT_EQ(layout.regions.size(), 1u);
@@ -1568,11 +1568,11 @@ TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
         10u * sizeof(iv::Sample));
 
     iv::NodeLayoutBuilder builder(8);
-    auto declared = declare_sample_storage_storage(builder, *storage);
+    auto declared = declare_sample_storage(builder, *storage);
     ASSERT_TRUE(declared.has_value())
         << (declared ? std::string{} : declared.error());
     auto layout = std::move(builder).build();
-    auto finalized = finalize_sample_storage_storage(layout, *storage);
+    auto finalized = finalize_sample_storage(layout, *storage);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
     ASSERT_EQ(layout.regions.size(), 1u);
@@ -1582,7 +1582,7 @@ TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
         persistent_region.migration_identity,
         persistent.migration_identity);
     ASSERT_NE(persistent_region.raw_initialize_fn, nullptr);
-    EXPECT_EQ(persistent_region.raw_initialize_payload.size(), sizeof(iv::Sample));
+    EXPECT_EQ(persistent_region.raw_initialize_data.size(), sizeof(iv::Sample));
 
     iv::ResourceContext resources;
     auto node_storage = layout.create_storage(resources);
@@ -1741,17 +1741,17 @@ TEST(GraphJitSampleStoragePlan, ZeroInitializedFeedbackUsesProducerHomeAndCopies
         std::string::npos);
 
     iv::NodeLayoutBuilder builder(8);
-    auto declared = declare_sample_storage_storage(builder, *storage);
+    auto declared = declare_sample_storage(builder, *storage);
     ASSERT_TRUE(declared.has_value())
         << (declared ? std::string{} : declared.error());
     auto layout = std::move(builder).build();
-    auto finalized = finalize_sample_storage_storage(layout, *storage);
+    auto finalized = finalize_sample_storage(layout, *storage);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
     auto const& home_region = layout.regions[
         storage->persistent_allocations[home_persistent_index].region.index];
     ASSERT_NE(home_region.raw_initialize_fn, nullptr);
-    EXPECT_EQ(home_region.raw_initialize_payload.size(), sizeof(iv::Sample));
+    EXPECT_EQ(home_region.raw_initialize_data.size(), sizeof(iv::Sample));
 }
 
 TEST(GraphJitSampleStoragePlan, DetachedCompositionUsesPersistentShiftedTimeline)
@@ -1923,11 +1923,11 @@ TEST(GraphJitSampleStoragePlan, DetachedCompositionUsesPersistentShiftedTimeline
     EXPECT_EQ(right.target_channels, std::vector<std::size_t>{1u});
 
     iv::NodeLayoutBuilder builder(8);
-    auto declared = declare_sample_storage_storage(builder, *storage);
+    auto declared = declare_sample_storage(builder, *storage);
     ASSERT_TRUE(declared.has_value())
         << (declared ? std::string{} : declared.error());
     auto layout = std::move(builder).build();
-    auto finalized = finalize_sample_storage_storage(layout, *storage);
+    auto finalized = finalize_sample_storage(layout, *storage);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
     auto const& region = layout.regions[persistent.region.index];
@@ -2068,11 +2068,11 @@ TEST(GraphJitSampleStoragePlan, DetachedMixingAlignsUnequalSourceLatencies)
         static_cast<float>(*alignment_allocation.initialize_value), 0.25f);
 
     iv::NodeLayoutBuilder builder(8);
-    auto declared = declare_sample_storage_storage(builder, *storage);
+    auto declared = declare_sample_storage(builder, *storage);
     ASSERT_TRUE(declared.has_value())
         << (declared ? std::string{} : declared.error());
     auto layout = std::move(builder).build();
-    auto finalized = finalize_sample_storage_storage(layout, *storage);
+    auto finalized = finalize_sample_storage(layout, *storage);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
 
@@ -2080,7 +2080,7 @@ TEST(GraphJitSampleStoragePlan, DetachedMixingAlignsUnequalSourceLatencies)
         layout.regions[alignment_allocation.region.index];
     ASSERT_NE(alignment_region.raw_initialize_fn, nullptr);
     EXPECT_EQ(
-        alignment_region.raw_initialize_payload.size(), sizeof(iv::Sample));
+        alignment_region.raw_initialize_data.size(), sizeof(iv::Sample));
 
     iv::ResourceContext resources;
     auto node_storage = layout.create_storage(resources);
@@ -3051,8 +3051,8 @@ struct MultiBranchSampleFeedback {
         std::array<float, 24> last_fast{};
         std::array<float, 24> first_slow{};
         std::array<float, 24> last_slow{};
-        std::array<float, 24> first_initializeed{};
-        std::array<float, 24> last_initializeed{};
+        std::array<float, 24> first_initialized{};
+        std::array<float, 24> last_initialized{};
         std::uint32_t marker = 0;
     };
 
@@ -3061,7 +3061,7 @@ struct MultiBranchSampleFeedback {
         return std::array{
             iv::sequential_sample_input("fast"),
             iv::sequential_sample_input("slow"),
-            iv::sequential_sample_input("initializeed"),
+            iv::sequential_sample_input("initialized"),
         };
     }
 
@@ -3075,7 +3075,7 @@ struct MultiBranchSampleFeedback {
         auto& state = ctx.state();
         auto const fast = ctx.inputs[0].get_block(ctx.block_size);
         auto const slow = ctx.inputs[1].get_block(ctx.block_size);
-        auto const initializeed = ctx.inputs[2].get_block(ctx.block_size);
+        auto const initialized = ctx.inputs[2].get_block(ctx.block_size);
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
@@ -3085,8 +3085,8 @@ struct MultiBranchSampleFeedback {
                 state.last_fast[index] = static_cast<float>(fast[fast.size() - 1]);
                 state.first_slow[index] = static_cast<float>(slow[0]);
                 state.last_slow[index] = static_cast<float>(slow[slow.size() - 1]);
-                state.first_initializeed[index] = static_cast<float>(initializeed[0]);
-                state.last_initializeed[index] = static_cast<float>(initializeed[initializeed.size() - 1]);
+                state.first_initialized[index] = static_cast<float>(initialized[0]);
+                state.last_initialized[index] = static_cast<float>(initialized[initialized.size() - 1]);
             }
         }
         ++state.calls;
@@ -8684,10 +8684,10 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndF
             : std::addressof(*it);
     };
     auto const* fast = timeline_for_latency(4);
-    auto const* initializeed = timeline_for_latency(6);
+    auto const* initialized = timeline_for_latency(6);
     auto const* slow = timeline_for_latency(8);
     ASSERT_NE(fast, nullptr);
-    ASSERT_NE(initializeed, nullptr);
+    ASSERT_NE(initialized, nullptr);
     ASSERT_NE(slow, nullptr);
 
     EXPECT_EQ(
@@ -8702,11 +8702,11 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndF
     EXPECT_FLOAT_EQ(static_cast<float>(slow->initial_value), 0.0f);
 
     EXPECT_EQ(
-        initializeed->writer.kind,
+        initialized->writer.kind,
         iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::copy);
-    EXPECT_NE(initializeed->timeline_representation, canonical);
-    EXPECT_EQ(initializeed->writer.source_representation, canonical);
-    EXPECT_FLOAT_EQ(static_cast<float>(initializeed->initial_value), -2.0f);
+    EXPECT_NE(initialized->timeline_representation, canonical);
+    EXPECT_EQ(initialized->writer.source_representation, canonical);
+    EXPECT_FLOAT_EQ(static_cast<float>(initialized->initial_value), -2.0f);
 
     auto compiled = compile_graph(feedback_graph, 135);
     ASSERT_TRUE(compiled.succeeded())
@@ -8734,8 +8734,8 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndF
     std::array<float, 4> const expected_last_fast{0.0f, 1.0f, 2.0f, 3.0f};
     std::array<float, 4> const expected_first_slow{0.0f, 0.0f, 1.0f, 2.0f};
     std::array<float, 4> const expected_last_slow{0.0f, 0.0f, 1.0f, 2.0f};
-    std::array<float, 4> const expected_first_initializeed{-2.0f, -2.0f, 1.0f, 2.0f};
-    std::array<float, 4> const expected_last_initializeed{-2.0f, 1.0f, 2.0f, 2.0f};
+    std::array<float, 4> const expected_first_initialized{-2.0f, -2.0f, 1.0f, 2.0f};
+    std::array<float, 4> const expected_last_initialized{-2.0f, 1.0f, 2.0f, 2.0f};
     for (std::size_t slice = 0; slice < expected_indices.size(); ++slice) {
         EXPECT_EQ(state->indices[slice], expected_indices[slice]);
         EXPECT_EQ(state->block_sizes[slice], expected_sizes[slice]);
@@ -8744,9 +8744,9 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndF
         EXPECT_FLOAT_EQ(state->first_slow[slice], expected_first_slow[slice]);
         EXPECT_FLOAT_EQ(state->last_slow[slice], expected_last_slow[slice]);
         EXPECT_FLOAT_EQ(
-            state->first_initializeed[slice], expected_first_initializeed[slice]);
+            state->first_initialized[slice], expected_first_initialized[slice]);
         EXPECT_FLOAT_EQ(
-            state->last_initializeed[slice], expected_last_initializeed[slice]);
+            state->last_initialized[slice], expected_last_initialized[slice]);
     }
 }
 
@@ -8832,7 +8832,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesMigrateSharedHomeAndF
 
     // Resume at an awkward absolute index. The shared producer-home timeline
     // must continue both zero-initialized branches, while the independently
-    // migrated initializeed timeline must continue without replaying its -2 pre-roll.
+    // migrated initialized timeline must continue without replaying its -2 pre-roll.
     migrated.compiled_graph->root_operations.tick_block(
         migrated_storage.buffer().data(), 13, 6);
 
@@ -8846,8 +8846,8 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesMigrateSharedHomeAndF
     EXPECT_FLOAT_EQ(state->last_fast[0], 4.0f);
     EXPECT_FLOAT_EQ(state->first_slow[0], 2.0f);
     EXPECT_FLOAT_EQ(state->last_slow[0], 3.0f);
-    EXPECT_FLOAT_EQ(state->first_initializeed[0], 2.0f);
-    EXPECT_FLOAT_EQ(state->last_initializeed[0], 3.0f);
+    EXPECT_FLOAT_EQ(state->first_initialized[0], 2.0f);
+    EXPECT_FLOAT_EQ(state->last_initialized[0], 3.0f);
 
     EXPECT_EQ(state->indices[1], 17u);
     EXPECT_EQ(state->block_sizes[1], 2u);
@@ -8855,8 +8855,8 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesMigrateSharedHomeAndF
     EXPECT_FLOAT_EQ(state->last_fast[1], 4.0f);
     EXPECT_FLOAT_EQ(state->first_slow[1], 3.0f);
     EXPECT_FLOAT_EQ(state->last_slow[1], 3.0f);
-    EXPECT_FLOAT_EQ(state->first_initializeed[1], 3.0f);
-    EXPECT_FLOAT_EQ(state->last_initializeed[1], 4.0f);
+    EXPECT_FLOAT_EQ(state->first_initialized[1], 3.0f);
+    EXPECT_FLOAT_EQ(state->last_initialized[1], 4.0f);
 }
 
 TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTargetHistory)
@@ -9745,9 +9745,9 @@ TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesPopulatedAlig
                 : migrated.diagnostics.front().message);
     auto migrated_storage =
         migrated.compiled_graph->node_layout.create_storage(resources);
-    auto prepared = migrated_storage.prepare_migration_from(storage);
+    auto migration = migrated_storage.migration_from(storage);
 
-    // Raw compiler-owned state migrates during preparation, before activation
+    // Raw compiler-owned state migrates before activation
     // and before any realtime callback can observe the new generation.
     auto const migrated_regions =
         sample_feedback_alignment_region(migrated_storage);
@@ -9756,7 +9756,7 @@ TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesPopulatedAlig
         migrated_storage.region_bytes(*migrated_regions);
     ASSERT_EQ(staged_after.size(), staged_snapshot.size());
     EXPECT_TRUE(std::ranges::equal(staged_after, staged_snapshot));
-    prepared.commit();
+    migration.commit();
 
     auto* reference_state_before =
         converted_sample_feedback_state(reference_storage);
@@ -10156,7 +10156,7 @@ TEST_F(GraphJitRuntimeFixture, EventRawStorageIsInitializedByNodeStorageLifecycl
         auto const& region = compiled.compiled_graph->node_layout.regions[i];
         if (region.kind != iv::NodeLayout::Region::Kind::raw) continue;
         EXPECT_NE(region.raw_initialize_fn, nullptr);
-        EXPECT_TRUE(region.raw_initialize_payload.empty());
+        EXPECT_TRUE(region.raw_initialize_data.empty());
         raw_regions.push_back(iv::NodeLayout::RegionHandle{.index = i});
         std::ranges::fill(
             storage.region_bytes(raw_regions.back()), std::byte{0xa5});

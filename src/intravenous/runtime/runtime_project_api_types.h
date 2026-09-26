@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/graph/build_types.h>
-#include <intravenous/runtime/lane_view_service.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -87,10 +86,6 @@ namespace iv {
         std::vector<std::string> deleted_node_ids{};
     };
 
-    struct ProjectLaneViewNotification {
-        LaneViewResult lane_view{};
-    };
-
     struct ProjectVirtualNodesNotification {
         std::vector<VirtualNodeInfo> nodes{};
         std::vector<std::string> replace_instance_ids{};
@@ -99,6 +94,5 @@ namespace iv {
     using ProjectNotification = std::variant<
         ProjectMessageNotification,
         ProjectStatusNotification,
-        ProjectLaneViewNotification,
         ProjectVirtualNodesNotification>;
 } // namespace iv

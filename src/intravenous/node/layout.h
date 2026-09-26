@@ -55,9 +55,9 @@ namespace iv {
             std::string migration_identity{};
             using RawInitializeFn = void (*)(
                 std::span<std::byte> storage,
-                std::span<std::byte const> payload);
+                std::span<std::byte const> data);
             RawInitializeFn raw_initialize_fn = nullptr;
-            std::vector<std::byte> raw_initialize_payload{};
+            std::vector<std::byte> raw_initialize_data{};
             void const* element_type = nullptr;
             char const* element_type_name = nullptr;
             void (*assign_span_fn)(
@@ -128,7 +128,7 @@ namespace iv {
             size_t alignment = 1,
             std::string migration_identity = {},
             NodeLayout::Region::RawInitializeFn initialize_fn = nullptr,
-            std::vector<std::byte> initialize_payload = {});
+            std::vector<std::byte> initialize_data = {});
 
         template<typename A>
         static void const* array_type_token()
@@ -206,7 +206,7 @@ namespace iv {
     };
 
     struct NodeStorage {
-        struct PreparedMigration;
+        struct Migration;
 
         struct StorageDeleter {
             size_t alignment = alignof(std::max_align_t);
@@ -253,13 +253,13 @@ namespace iv {
             NodeStorage const& previous,
             size_t node_index,
             size_t previous_node_index) const;
-        PreparedMigration prepare_migration_from(NodeStorage& previous);
+        Migration migration_from(NodeStorage& previous);
         void initialize(NodeStorage const* previous = nullptr);
         void release();
         void destroy_constructed_states();
     };
 
-    struct NodeStorage::PreparedMigration {
+    struct NodeStorage::Migration {
         static constexpr size_t no_node = std::numeric_limits<size_t>::max();
 
         NodeStorage* current = nullptr;
@@ -270,11 +270,11 @@ namespace iv {
         std::vector<size_t> previous_release_nodes;
         bool committed = false;
 
-        PreparedMigration() = default;
-        PreparedMigration(PreparedMigration&&) noexcept = default;
-        PreparedMigration& operator=(PreparedMigration&&) noexcept = default;
-        PreparedMigration(PreparedMigration const&) = delete;
-        PreparedMigration& operator=(PreparedMigration const&) = delete;
+        Migration() = default;
+        Migration(Migration&&) noexcept = default;
+        Migration& operator=(Migration&&) noexcept = default;
+        Migration(Migration const&) = delete;
+        Migration& operator=(Migration const&) = delete;
 
         void commit();
     };

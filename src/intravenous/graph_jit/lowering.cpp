@@ -220,7 +220,7 @@ llvm::GlobalVariable* immutable_bytes_global(
     return global;
 }
 
-std::expected<llvm::Function*, std::string> prepare_primitive_callback_import(
+std::expected<llvm::Function*, std::string> import_primitive_callback(
     llvm::Module& output_module,
     llvm::Module& source_module,
     llvm::StringRef source_name,
@@ -274,7 +274,7 @@ std::expected<llvm::Function*, std::string> prepare_primitive_callback_import(
     return declaration;
 }
 
-std::expected<llvm::GlobalVariable*, std::string> prepare_retained_global_import(
+std::expected<llvm::GlobalVariable*, std::string> import_retained_global(
     llvm::Module& output_module,
     llvm::Module& source_module,
     detail::RetainedGlobalImportPlan const& plan)
@@ -356,7 +356,7 @@ std::expected<void, std::string> emit_package_imports(
             auto* callback_type = callback.abi == detail::CallbackImportAbi::block
                 ? block_type
                 : background_type;
-            auto imported = prepare_primitive_callback_import(
+            auto imported = import_primitive_callback(
                 output_module,
                 *source_module,
                 callback.source_symbol,
@@ -366,7 +366,7 @@ std::expected<void, std::string> emit_package_imports(
             if (!imported) return std::unexpected(std::move(imported.error()));
         }
         for (auto const& global : package_plan.retained_globals) {
-            auto imported = prepare_retained_global_import(
+            auto imported = import_retained_global(
                 output_module, *source_module, global);
             if (!imported) return std::unexpected(std::move(imported.error()));
         }
@@ -531,7 +531,7 @@ sample_storage_binding(
 {
     if (representation_index >= plan.representations.size()) {
         return std::unexpected(
-            "GraphJit sample binding references a missing storage storage");
+            "GraphJit sample port references missing storage");
     }
     auto const& storage = plan.representations[representation_index];
 
@@ -573,7 +573,7 @@ sample_storage_binding(
         }
     } else {
         return std::unexpected(
-            "GraphJit sample storage has no realized storage storage");
+            "GraphJit sample storage has no realized storage");
     }
     ReflectedSamplePortStorageBinding binding{
         .frame_capacity = storage.frame_capacity,
@@ -600,7 +600,7 @@ sample_input_storage_binding(
     auto const target_channels = channel_count(input.channel_layout);
     if (input.channels.size() != target_channels || target_channels == 0) {
         return std::unexpected(
-            "GraphJit sample input binding has an invalid channel count");
+            "GraphJit sample input storage has an invalid channel count");
     }
 
     ReflectedSamplePortStorageBinding binding{
@@ -612,7 +612,7 @@ sample_input_storage_binding(
         auto const& channel = input.channels[target_channel];
         if (channel.storage == detail::no_sample_representation) {
             return std::unexpected(
-                "GraphJit sample input channel has no storage storage");
+                "GraphJit sample input channel has no storage");
         }
         auto source = sample_storage_binding(
             storage, channel.storage);
@@ -620,7 +620,7 @@ sample_input_storage_binding(
         auto const source_channel_count = channel_count(source->channel_layout);
         if (channel.representation_channel >= source_channel_count) {
             return std::unexpected(
-                "GraphJit sample input channel is outside its storage storage");
+                "GraphJit sample input channel is outside its storage");
         }
         binding.channels[target_channel] =
             source->channels[channel.representation_channel];
@@ -678,7 +678,7 @@ void store_sample_binding_channel_pointer(
     auto const channels = channel_count(storage.channel_layout);
     IV_ASSERT(
         representation_channel < channels,
-        "sample binding source channel is outside its storage");
+        "sample source channel is outside its storage");
     auto const sample_offset = storage.channel_layout.sample_layout
             == SampleStreamLayout::planar
         ? representation_channel * storage.frame_capacity
@@ -768,7 +768,7 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                     if (storage >= realtime_storage.sample_representations.size()
                         || storage >= plan.storage.representations.size()) {
                         return std::unexpected(
-                            "GraphJit sample input binding lost its resolved storage");
+                            "GraphJit sample input lost its resolved storage");
                     }
                     store_sample_binding_channel_pointer(
                         builder,
@@ -790,7 +790,7 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                 if (!output.realtime) continue;
                 if (!output.storage) {
                     return std::unexpected(
-                        "GraphJit sample output binding has no storage storage");
+                        "GraphJit sample output has no storage");
                 }
                 auto storage = sample_storage_binding(
                     plan.storage, *output.storage);
@@ -813,7 +813,7 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                 auto const storage = *output.storage;
                 if (storage >= realtime_storage.sample_representations.size()) {
                     return std::unexpected(
-                        "GraphJit sample output binding lost its resolved storage");
+                        "GraphJit sample output lost its resolved storage");
                 }
                 store_sample_binding_channel_pointers(
                     builder,
@@ -842,7 +842,7 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
         -> std::expected<ReflectedEventPortStorageBinding, std::string> {
         if (representation_index >= plan.ports.size()) {
             return std::unexpected(
-                "GraphJit event binding references a missing storage storage");
+                "GraphJit event port references missing storage");
         }
         auto const& storage = plan.ports[representation_index];
         return ReflectedEventPortStorageBinding{
@@ -873,7 +873,7 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
             for (auto const& input : primitive.inputs) {
                 if (!input.storage) {
                     return std::unexpected(
-                        "GraphJit event input binding has no storage storage");
+                        "GraphJit event input has no storage");
                 }
                 auto storage = storage_binding(*input.storage);
                 if (!storage) return std::unexpected(std::move(storage.error()));
@@ -891,7 +891,7 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                 auto const storage = *primitive.inputs[i].storage;
                 if (storage >= realtime_storage.event_representations.size()) {
                     return std::unexpected(
-                        "GraphJit event input binding lost its resolved storage");
+                        "GraphJit event input lost its resolved storage");
                 }
                 store_runtime_pointer(
                     builder,
@@ -910,7 +910,7 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                 if (!output.realtime) continue;
                 if (!output.storage) {
                     return std::unexpected(
-                        "GraphJit event output binding has no storage storage");
+                        "GraphJit event output has no storage");
                 }
                 auto binding = storage_binding(*output.storage);
                 if (!binding) return std::unexpected(std::move(binding.error()));
@@ -945,7 +945,7 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                     || realtime_storage.event_overflow_counts[storage]
                         == nullptr) {
                     return std::unexpected(
-                        "GraphJit event output binding lost its resolved storage or telemetry");
+                        "GraphJit event output lost its resolved storage or telemetry");
                 }
                 store_runtime_pointer(
                     builder,
@@ -1223,7 +1223,7 @@ std::expected<void, std::string> emit_sample_materialization(
         || materialization.target_representation
             >= realtime_storage.sample_representations.size()) {
         return std::unexpected(
-            "GraphJit sample materialization lost resolved storage storage");
+            "GraphJit sample materialization lost resolved storage");
     }
     auto* source_base = realtime_storage.sample_representations[
         materialization.source_representation];
@@ -2017,7 +2017,7 @@ compact_carry_allocation(
         || operation.retained_frames == 0
         || operation.future_frames >= operation.retained_frames) {
         return std::unexpected(
-            "GraphJit sample carry plan is inconsistent with its storage storage");
+            "GraphJit sample carry plan is inconsistent with its storage");
     }
     return &allocation;
 }
@@ -2424,7 +2424,7 @@ std::expected<void, std::string> emit_event_persistent_ring_prune(
         || !storage.persistent
         || !storage.persistent_ring) {
         return std::unexpected(
-            "GraphJit persistent event ring has inconsistent storage storage");
+            "GraphJit persistent event ring has inconsistent storage");
     }
 
     auto& context = builder.getContext();
@@ -2725,7 +2725,7 @@ std::expected<void, std::string> emit_event_merge(
     if ((target.event_capacity != 0
             && !is_power_of_2(target.event_capacity))) {
         return std::unexpected(
-            "GraphJit event merge target has invalid storage storage");
+            "GraphJit event merge target has invalid storage");
     }
     if (target.persistent_ring && !merge.preserve_existing_target) {
         return std::unexpected(
@@ -2803,7 +2803,7 @@ std::expected<void, std::string> emit_event_merge(
         if (source.persistent_ring || source.type != target.type
             || source.has_source_indices) {
             return std::unexpected(
-                "GraphJit event merge source has inconsistent storage storage");
+                "GraphJit event merge source has inconsistent storage");
         }
         return &source;
     };
@@ -3201,13 +3201,13 @@ std::expected<void, std::string> emit_event_operations(
                 restore);
             if (!emitted) return std::unexpected(std::move(emitted.error()));
             if (restore) {
-                auto initializeed = initialize_event_feedback_cursors_after_carry_restore(
+                auto initialized = initialize_event_feedback_cursors_after_carry_restore(
                     builder,
                     plan.event_ports,
                     carry,
                     event_feedback_cursors,
                     realtime_storage);
-                if (!initializeed) return std::unexpected(std::move(initializeed.error()));
+                if (!initialized) return std::unexpected(std::move(initialized.error()));
             }
             break;
         }
@@ -3926,7 +3926,7 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
         builder.SetInsertPoint(invoke);
         emit(node_frame);
         // Every emitter deliberately leaves its current tail open. Authored and
-        // synthesized callbacks leave `invoke` open; replay leaves its loop's
+        // generated callbacks leave `invoke` open; replay leaves its loop's
         // `replay.done` block open. Close that exact tail unconditionally before
         // continuing the statically generated traversal instead of making the
         // control-flow contract depend on inspection of its last instruction.
@@ -3947,22 +3947,22 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                  builder, node_frame, context_offset, "background.context")});
     };
 
-    auto emit_synthesized = [&](llvm::Value* node_frame,
+    auto emit_generated = [&](llvm::Value* node_frame,
                                 std::size_t callback_offset,
                                 std::size_t context_offset) {
         auto* callback = builder.CreateLoad(
             pointer_type,
             byte_offset_pointer(
-                builder, node_frame, callback_offset, "synthesized.callback.index"),
-            "synthesized.callback");
+                builder, node_frame, callback_offset, "generated.callback.index"),
+            "generated.callback");
         auto* opaque = builder.CreateLoad(
             pointer_type,
             byte_offset_pointer(
                 builder,
                 node_frame,
                 offsets.replay_context,
-                "synthesized.context.index"),
-            "synthesized.context");
+                "generated.context.index"),
+            "generated.context");
         builder.CreateCall(
             background_operation_type(context),
             callback,
@@ -4014,7 +4014,7 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                     node,
                     BackgroundNodeActivity::forward,
                     [&](llvm::Value* node_frame) {
-                        emit_synthesized(
+                        emit_generated(
                             node_frame,
                             offsets.replay_forward,
                             offsets.forward_context);
@@ -4045,7 +4045,7 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                     node,
                     BackgroundNodeActivity::reverse,
                     [&](llvm::Value* node_frame) {
-                        emit_synthesized(
+                        emit_generated(
                             node_frame,
                             offsets.replay_reverse,
                             offsets.reverse_context);

@@ -32,7 +32,7 @@ Use **sequential consumption** when the sentence is about the consumer behavior,
 not the output that happens to feed it.
 
 Sequential consumption does not imply Tick production. A Tock output may feed a
-Sequential input when its data has been prepared before the consuming pass.
+Sequential input when its data has been materialized before the consuming pass.
 
 ### Random-access input / random access
 
@@ -74,7 +74,7 @@ Random Access inputs.
 ### Ephemeral output
 
 An **ephemeral** output has no authored retention obligation after the evaluation
-or prepared use that requires its value.
+or materialized use that requires its value.
 
 Ephemeral does not mean stack-allocated, contiguous, unpaged, or recomputed for
 every consumer. Background evaluation may create a transaction-local materialization
@@ -86,11 +86,11 @@ A **persisted** output has the runtime retention guarantee defined by
 `OutputRetention::persisted`: generated/finalized values remain retained while they
 remain in output coverage, subject to version replacement and reader lifetime.
 
-**Persisted does not mean serialized to disk.** Physical backing may be memory,
+**Persisted does not mean serialized to disk.** Backing storage may be memory,
 file-backed storage, mmap, or another representation that preserves the retention
 contract.
 
-Use **persistent** separately for ordinary physical lifetime or placement, such as
+Use **persistent** separately for ordinary storage lifetime or placement, such as
 persistent `NodeStorage`, a persistent ring, or a persistent compiler service.
 Do not use **persistent** as a synonym for the authored `persisted` output-retention
 contract.
@@ -119,7 +119,7 @@ Use **same-Tick dependency**, **Tick schedule**, or **same-Tick scheduling graph
 when scheduling order is the property that matters. Under the preliminary
 published-snapshot Random Access implementation, a Tick-to-Random-Access connection
 does **not** create a same-Tick dependency: the consumer sees its callback-pinned
-published/prepared snapshot, not the producer's current block. A future recent-capture
+published snapshot available at callback entry, not the producer's current block. A future recent-capture
 overlay that promises same-Tick Random Access visibility would add such a dependency
 explicitly.
 
@@ -127,7 +127,7 @@ explicitly.
 
 The **background evaluation DAG** contains the dependencies required to satisfy
 coverage demand outside the ordinary same-Tick schedule. It can contain authored
-Tock execution, synthesized Tick replay, and dependencies traversed while proving or
+Tock execution, generated Tick replay, and dependencies traversed while proving or
 executing replay. Valid persisted outputs may terminate traversal as stored
 boundaries.
 
@@ -138,7 +138,7 @@ second audio-thread scheduler.
 
 A **background evaluation component** is a statically planned component of the
 background evaluation DAG with retained forward/reverse/evaluation ordering and
-endpoint metadata.
+port metadata.
 
 ## Scheduling contexts
 
@@ -180,10 +180,10 @@ integer sample coordinate is specifically meant.
 ### Coverage
 
 **Coverage** is the exact set of global positions for which an output semantically
-exists and may legally be requested. `IndexedCoverage` is the current C++ type name
+exists and may legally be requested. `Coverage` is the current C++ type name
 for this concept.
 
-Coverage is independent of page boundaries and physical residency.
+Coverage is independent of page boundaries and storage placement.
 
 ### Requested coverage
 
@@ -193,7 +193,7 @@ completion operation requires to be available or computed.
 ### Changed region
 
 A **changed region** is an exact region whose semantic value or coverage may have
-changed. Forward propagation preserves exact changed regions; physical page
+changed. Forward propagation preserves exact changed regions; stored page
 invalidation must not widen downstream semantic change merely because a whole page
 becomes locally invalid.
 
@@ -203,7 +203,7 @@ becomes locally invalid.
 version. It does not imply immediate destruction of the currently published readable
 representation.
 
-Use **semantic invalidation** when distinguishing semantic staleness from physical
+Use **semantic invalidation** when distinguishing semantic staleness from storage
 layout or allocation changes.
 
 ### Forward coverage propagation
@@ -213,7 +213,7 @@ regions, and semantic/configuration change causes to output coverage and exact
 changed output regions.
 
 For authored Tock nodes this is provided by `propagate_forward_coverage()`; eligible
-Tick replay uses compiler-synthesized propagation where the mapping is statically
+Tick replay uses compiler-generated propagation where the mapping is statically
 known.
 
 ### Reverse coverage propagation
@@ -222,7 +222,7 @@ known.
 coverage. It is value-blind under the current design.
 
 For authored Tock nodes this is provided by `propagate_reverse_coverage()`; eligible
-Tick replay uses compiler-synthesized propagation.
+Tick replay uses compiler-generated propagation.
 
 ### Replay
 
@@ -278,9 +278,9 @@ outputs.
 ### Reader pin
 
 A **reader pin** keeps an immutable published representation alive while a reader
-uses it. Superseded physical versions may be reclaimed after their pins disappear.
+uses it. Superseded storage versions may be reclaimed after their pins disappear.
 
-## Physical representations and lifetimes
+## Storage representations and lifetimes
 
 ### `NodeStorage`
 
@@ -293,14 +293,14 @@ capture backlogs.
 
 ### Persisted page / persisted-page store
 
-A **persisted page** is the canonical retained/versioned physical unit for persisted
+A **persisted page** is the canonical retained/versioned storage unit for persisted
 sample or event output data. **All persisted outputs use the same persisted-page
 store abstraction regardless of whether their producer is Tick or Tock.** Production
 mode changes how pages are filled; it does not create another retained-data read
 path.
 
 Page validity is version-specific. An older readable persisted page may remain pinned
-while a successor candidate is incomplete or invalid. Physical backing may still be
+while a successor candidate is incomplete or invalid. Backing storage may still be
 RAM, mmap/file-backed storage, immutable chunks, compression, or another page-store
 backend, but those are implementations of the same persisted-page abstraction rather
 than distinct semantic representations.
@@ -317,23 +317,23 @@ For a Tock/ephemeral or replayed Tick/ephemeral result feeding a background-only
 Random Access consumer, the preliminary implementation may use a
 **transaction-local page-backed materialization** so the consumer receives the
 required addressable representation. If Random Access occurs during Tick execution,
-the addressable representation must instead be prepared and published before the
+the addressable representation must instead be materialized and published before the
 callback. Replayable Tick work may avoid or fuse materialization where the consumer
 contract permits it. A transaction-local page-backed materialization is not a
 persisted page and carries no retention guarantee beyond the transaction/readers
 that require it.
 
-### Prepared sequential data / prepared addressable window
+### Materialized sequential data / materialized addressable window
 
-**Prepared sequential data** is background-produced data made available before a
+**Materialized sequential data** is background-produced data made available before a
 future Sequential consumer runs. It is a delivery/materialization role, not an
 output-retention mode; the source may be ephemeral or persisted.
 
-For a Tock/ephemeral source, a bounded rolling **prepared sequential window** may be
+For a Tock/ephemeral source, a bounded rolling **materialized sequential window** may be
 sufficient when all Tick-time consumers are Sequential. If any Tick-time consumer
-requires Random Access, the preparation must instead provide an immutable
-**prepared addressable window**. The latter can also provide sequential slices, so
-one addressable preparation may satisfy both uses for the same source subset.
+requires Random Access, the materialization must instead provide an immutable
+**materialized addressable window**. The latter can also provide sequential slices, so
+one addressable materialization may satisfy both uses for the same source subset.
 Persisted sources normally need no separate playback copy: Sequential consumers can
 view the appropriate pinned persisted pages directly.
 
@@ -351,13 +351,13 @@ ordinary current-block lifetime without request-sized audio-thread allocation. T
 same allocator-managed block mechanism serves explicit recording and Tick/persisted
 staging. When layout permits and the captured region is already final under the Tick
 history/latency contract, the capture block may simultaneously be the producer's
-current Tick payload: Tick writes it once, same-Tick Sequential consumers read it
+current Tick data: Tick writes it once, same-Tick Sequential consumers read it
 after the producer executes, and background persistence later consumes/adopts it.
 Otherwise the generated path performs a bounded copy into a capture block when the
 region becomes final.
 
 A sealed capture block is immutable. A block that was acquired, written, or exposed
-during one root `tick_block()` callback remains physically stable until that callback
+during one root `tick_block()` callback remains stable until that callback
 boundary; it may be marked reclaimable earlier by another thread, but it is not
 returned to the audio-thread free-block pool during the callback.
 
@@ -365,8 +365,8 @@ The **capture log** is the append-only sequence of sealed capture records awaiti
 background consumption/publication. In the preliminary implementation, Random Access
 reads do **not** consult this log: persisted data becomes Random-Access-visible only
 through a published persisted-page version. After commit, copied capture blocks may
-become reclaimable once callback/background ownership is gone; a payload adopted by
-the page store instead transfers physical ownership to the published page version.
+become reclaimable once callback/background ownership is gone; a data adopted by
+the page store instead transfers ownership to the published page version.
 
 ### Published-snapshot Random Access
 
@@ -385,16 +385,16 @@ same-Tick producer-to-consumer dependency, a source-selection branch (published 
 versus recent capture block; ordered merge for events), and callback-boundary-safe
 reclamation. It is deliberately not part of the preliminary implementation.
 
-### Endpoint atom / incidence partition
+### Port atom / incidence partition
 
-An **endpoint atom** is a maximal source or target subset whose members have identical
+A **port atom** is a maximal source or target subset whose members have identical
 connection incidence and therefore identical correctness requirements before
-physical coalescing. Sample channels are the natural initial source elements; event
+storage coalescing. Sample channels are the natural initial source elements; event
 ports may remain whole-port atoms unless routing semantics introduce a finer split.
 
-An **incidence partition** splits overlapping fan-in/fan-out selections into endpoint
+An **incidence partition** splits overlapping fan-in/fan-out selections into port
 atoms before storage is chosen. Storage requirements are then joined across every
-use of each atom. Equivalent atoms may later share a physical policy or allocation;
+use of each atom. Equivalent atoms may later share a storage policy or allocation;
 partitioning for correctness and coalescing for efficiency are separate stages.
 
 ### Node-owned port state
@@ -402,23 +402,23 @@ partitioning for correctness and coalescing for efficiency are separate stages.
 **Node-owned port state** is the semantic history/latency state of a surviving
 concrete node's ports across graph revisions. A Sequential input owns its resolved
 history; a Tick output owns its authored history and latency/future window. This is
-an **as-if private state** rule: physical lowering may alias or share the data with
+an **as-if private state** rule: storage lowering may alias or share the data with
 producer timelines or other representations, but graph replacement must preserve the
 same observable state that private node-local storage would have preserved.
 
 Connection topology is not the identity of this state. Rewiring changes future
 routing while still-visible destination history remains unchanged until it ages out.
 A stable identity is rooted in user-instance/concrete-node/virtual-member and
-port/channel-or-event-stream identity plus the state role. Physical representation,
+port/channel-or-event-stream identity plus the state role. Storage representation,
 capacity, offset, incidence partition and ordinary connection identity are not part of
 that semantic identity.
 
 ### Transition realization / steady realization
 
-A **transition realization** is a temporary compiled physical realization of a new
+A **transition realization** is a temporary compiled realization of a new
 logical graph revision that contains extra bounded state needed to preserve inherited
 node-owned port state which the steady representation cannot directly expose.
-A **steady realization** is the physical realization used after all transition-only
+A **steady realization** is the compiled realization used after all transition-only
 state has expired.
 
 Both represent the same logical graph revision. GraphJit should compile both in the
@@ -440,48 +440,6 @@ satisfy historical Random Access demand.
 
 Do not use **live** as a synonym for Tick, Sequential, or audio-thread execution.
 
-## Legacy source identifiers
-
-Some current C++ identifiers retain older names, including `IndexedCoverage`,
-`IndexedState`, `IndexedPlan`, `IndexedEndpointOrdinal`, and related structures.
-Historical documents and older revisions also contain `Realtime*`/`Indexed*` port
-configuration names.
-
-When referring to an exact source identifier, preserve its spelling. Do not extend
-that spelling into architectural prose. For example:
-
-- `IndexedCoverage` is the source type; the concept is **coverage**.
-- `IndexedState` is the source type; the concept is **Tock-only non-semantic
-  acceleration state**.
-- `IndexedPlan` is the source type; its contents describe semantic dependencies,
-  coverage planning, background evaluation, persisted boundaries, and connection
-  delivery facts rather than one architectural "indexed domain."
-
-## Preferred replacements for ambiguous umbrella language
-
-Do not mechanically replace an old umbrella word with one new umbrella word. Choose
-by meaning:
-
-| Avoid as an architectural category | Use when that is the actual meaning |
-| --- | --- |
-| realtime graph | same-Tick scheduling graph; semantic dependency graph; or audio-thread execution |
-| realtime dependency | same-Tick dependency |
-| realtime storage | sequential-consumption storage; persistent temporal state; or audio-thread-safe storage, as applicable |
-| realtime path | audio-thread path, when the thread constraint is the point |
-| indexed graph | background evaluation DAG or semantic dependency graph |
-| indexed input | random-access input |
-| indexed output | Tock output, persisted output, background-requestable output, or another narrower description |
-| indexed access | random access |
-| indexed execution | background evaluation |
-| indexed transaction / indexed batch | background evaluation transaction |
-| indexed semantic version | semantic version |
-| indexed page/version | persisted page / page version |
-| indexed result | random-access result, only when the external access mode is the point |
-| temporary page | transaction-local materialization; transaction-local page-backed materialization when page addressing is specifically required |
-
-If none of the right-hand descriptions is relevant, remove the old qualifier rather
-than inventing a replacement.
-
 ## Style conventions
 
 - Prefer **Tick** and **Tock** when naming the production contracts in prose.
@@ -490,7 +448,7 @@ than inventing a replacement.
   surrounding document intentionally mirrors source/config notation.
 - Use **random access** as a noun and **random-access** as an adjective.
 - Use **persisted** for the authored output-retention contract and **persistent**
-  for unrelated physical/process lifetime.
+  for unrelated storage/process lifetime.
 - Use **page version**, not "pages version."
 - Prefer **global position/range** when discussing coordinate semantics; use
   **sample index** when the integer sample coordinate itself matters.

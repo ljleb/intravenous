@@ -6,15 +6,6 @@ export type SourceQueryRange = {
     end: { line: number; column: number };
 };
 
-type LaneViewParams = {
-    viewId: string;
-    filter: { query?: string; kind?: string };
-    startIndex: number;
-    visibleLaneCount: number;
-    firstSampleIndex?: number;
-    lastSampleIndex?: number;
-    displaySampleCount?: number;
-};
 
 export class WorkspaceRpc {
     constructor(private readonly client: JsonRpcSocketClient) {}
@@ -83,31 +74,7 @@ export class WorkspaceRpc {
     }
 
 
-    openLaneView(params: LaneViewParams): Promise<Record<string, unknown>> {
-        return this.client.request("timeline.openLaneView", params);
-    }
 
-    updateLaneView(params: LaneViewParams): Promise<Record<string, unknown>> {
-        return this.client.request("timeline.updateLaneView", params);
-    }
 
-    closeLaneView(viewId: string): Promise<void> {
-        return this.client.request("timeline.closeLaneView", { viewId });
-    }
 
-    getLaneQuerySchema(): Promise<{ revision?: number; entries?: Array<{ key?: string; type?: string }> }> {
-        return this.client.request("timeline.getLaneQuerySchema", {});
-    }
-
-    completeLaneQuery(
-        source: string,
-        cursorOffset: number,
-        schemaRevision: number,
-    ): Promise<Record<string, unknown>> {
-        return this.client.request("timeline.completeLaneQuery", {
-            source,
-            cursorOffset,
-            schemaRevision,
-        });
-    }
 }

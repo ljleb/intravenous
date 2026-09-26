@@ -35,7 +35,7 @@ std::string source_text(iv::LiveSourceSpan const& span)
     return map.text.substr(begin, end - begin);
 }
 
-struct SeededIvModuleSourceIntrospectionApp {
+struct InitializedIvModuleSourceIntrospectionApp {
     iv::NodeInstances instances;
     iv::NodeDefinitions definitions;
     iv::GraphConnections graph_connections;
@@ -53,7 +53,7 @@ struct SeededIvModuleSourceIntrospectionApp {
     iv::node_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
 
-    SeededIvModuleSourceIntrospectionApp(
+    InitializedIvModuleSourceIntrospectionApp(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots)
@@ -81,7 +81,7 @@ struct SeededIvModuleSourceIntrospectionApp {
             definition.module_id,
             module_root,
             "instance:1");
-        definitions.seed_loaded_definition(std::move(definition));
+        definitions.initialize_loaded_definition(std::move(definition));
     }
 
     auto query_by_spans(
@@ -113,7 +113,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
 {
     auto const workspace = read_only_module_fixture_workspace("local_cmake");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -315,7 +315,7 @@ namespace {
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -433,7 +433,7 @@ namespace {
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -505,7 +505,6 @@ namespace {
     EXPECT_TRUE(has_kind(
         query_at("\"gate\"_F", std::string_view("\"gate\"").size()),
         "TriggerSink"));
-    // Public graph bindings belonged to the deleted graph-input-lane projection.
     EXPECT_TRUE(query_at("frequency);", 2).nodes.empty());
     EXPECT_TRUE(query_at("\"main\"_P", 2).nodes.empty());
     EXPECT_TRUE(query_at("\"trigger\"_F", 2).nodes.empty());
@@ -531,7 +530,7 @@ namespace {
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -582,7 +581,7 @@ namespace {
 
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -630,7 +629,7 @@ namespace {
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(
+    InitializedIvModuleSourceIntrospectionApp app(
         workspace, iv::test::repo_root(), {});
     app.initialize();
 
@@ -707,7 +706,7 @@ namespace {
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -740,7 +739,7 @@ namespace {
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     EXPECT_THROW((void)app.initialize(), std::exception);
 }
 
@@ -770,7 +769,7 @@ namespace {
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -816,7 +815,7 @@ namespace {
 )"
     );
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -883,7 +882,7 @@ namespace {
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -910,7 +909,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansIntersectsMultipleSelections)
     auto const workspace = read_only_module_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const tone_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
@@ -944,7 +943,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansUnionsMultipleSelections)
     auto const workspace = read_only_module_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const tone_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
@@ -975,7 +974,7 @@ TEST(IvModuleSourceIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
     auto const workspace = read_only_module_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const nodes = app.query_by_spans(
@@ -1034,7 +1033,7 @@ void polyphonic_module(iv::GraphBuilder& g)
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -1097,7 +1096,7 @@ void polyphonic_module(iv::GraphBuilder& g)
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -1120,7 +1119,7 @@ TEST(IvModuleSourceIntrospection, ReloadKeepsVirtualNodeIdsAddressable)
     auto const module_cpp = workspace / "module.cpp";
     iv::test_support::write_text(workspace / "iv_project.jsonl", "");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const initial = app.query_by_spans(

@@ -21,13 +21,13 @@ NodePresentation
 ```
 
 Do not create parallel extension families for root nodes, module nodes, compact
-nodes, lane nodes, or editable nodes. A host selects which registered presentation
+nodes, or editable nodes. A host selects which registered presentation
 is active for the current context.
 
 The project root is not a special presentation concept. It is one node being
 presented and may use the same host/presentation mechanism as any other node.
 
-A presentation may be generic (for example, a standard subgraph/lane
+A presentation may be generic (for example, a standard subgraph/member
 presentation) or provider-specific. Selection policy belongs to the presentation
 host, not to the execution graph.
 
@@ -100,9 +100,9 @@ The sidebar/presentation host can therefore open the authored module instance an
 focus its generic subgraph presentation on that virtual node.
 
 If the virtual node currently has several concrete members, the presentation may
-show those members as lanes/rows/children. If a later realization changes the
+show those members as rows/children. If a later realization changes the
 member count, the source-level focus may survive because it addresses the virtual
-identity rather than one concrete ordinal. If the virtual node disappears, the
+identity rather than one concrete index. If the virtual node disappears, the
 enclosing module presentation remains valid and only the focused child target is
 lost.
 

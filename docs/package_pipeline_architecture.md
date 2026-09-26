@@ -70,7 +70,7 @@ uses the same package compilation/finalization contract for all of them, and
 project's definition snapshot. Scope/provenance must remain explicit; a built-in
 package is not reclassified as project-local simply because its source directory
 is not in a user-configured common root. Overlapping search roots must not cause
-one physical package to be discovered or compiled twice. Definition-ID
+one package to be discovered or compiled twice. Definition-ID
 collisions across distinct packages remain an explicit namespace/publication
 matter, not an implicit source-directory precedence rule.
 

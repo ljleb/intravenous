@@ -298,7 +298,7 @@ void NodeDefinitions::handle_package_definitions_publication(
         });
 }
 
-void NodeDefinitions::seed_loaded_definition(PackageModuleDefinition loaded_definition)
+void NodeDefinitions::initialize_loaded_definition(PackageModuleDefinition loaded_definition)
 {
     auto package_id = loaded_definition.package_id;
     if (package_id.empty()) {

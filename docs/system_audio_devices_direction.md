@@ -1,10 +1,9 @@
 # System Audio Devices Direction
 
-_Status: current device-domain design after deletion of audio-device lane
+_Status: current device-domain design after deletion of the old device-execution
 integration._
 
-This document supersedes the lane/task-runner integration in
-[audio_device_lanes_direction.md](./historical/audio_device_lanes_direction.md).
+This document supersedes the historical automatic device/execution integration.
 
 ## Responsibility
 
@@ -12,7 +11,7 @@ This document supersedes the lane/task-runner integration in
 
 - device enumeration and stable-id discovery;
 - logical device bindings;
-- physical device open/close/reopen lifetime;
+- hardware-device open/close/reopen lifetime;
 - callback buffering;
 - clock/synchronization/resampling policy;
 - mapping the stable logical identity `default` to the implementation-defined
@@ -37,7 +36,7 @@ for example:
 
 `default` is a stable logical identity and may be persisted like any other
 requested id. No caller outside `SystemAudioDevices` needs to branch on whether
-an id is physical, missing, or dynamically changes its backing hardware.
+an id resolves to hardware, is missing, or dynamically changes its backing hardware.
 
 Automatic creation/removal of one graph node per detected device is an optional
 future convenience service. It is explicitly not the foundation of device
@@ -46,7 +45,7 @@ support.
 ## Binding resolution never fails because hardware is absent
 
 For every syntactically valid requested device id, `SystemAudioDevices` should
-be able to provide a stable logical binding even if no physical device currently
+be able to provide a stable logical binding even if no hardware device currently
 resolves to that id.
 
 The unavailable behavior is deterministic:
@@ -54,7 +53,7 @@ The unavailable behavior is deterministic:
 - input binding: produce silence;
 - output binding: accept and discard provided samples.
 
-The binding object remains valid while a physical device disappears, appears,
+The binding object remains valid while a hardware device disappears, appears,
 is reopened, or while the implementation's `default` mapping changes.
 
 This lets a persisted project configure an unavailable device successfully and
@@ -69,21 +68,21 @@ using the stable id value object.
 
 The resolution may be a direct service query or an indirect linker-set event,
 but it must ultimately ask for the binding by stable id. The node must not retain
-a fragile raw reference to a current physical miniaudio/device object.
+a fragile raw reference to a current miniaudio device object.
 
-The binding interface itself must be safe if physical availability changes at
+The binding interface itself must be safe if hardware availability changes at
 any point during graph execution.
 
 ## Synchronization remains device-domain policy
 
-The useful synchronization work from the old audio-lane design remains
+The useful synchronization work from the historical audio-device design remains
 applicable as an internal `SystemAudioDevices` concern:
 
 - one or more device clocks may differ from the graph execution clock;
 - buffering and adaptive resampling may be required;
-- physical callback sizes may not equal project graph block size;
+- hardware callback sizes may not equal project graph block size;
 - device disappearance/reappearance must not corrupt graph state.
 
 How `GraphExecutor` chooses its pacing policy is an execution design detail, but
-physical-device synchronization should not leak into `ProjectGraph`,
+hardware-device synchronization should not leak into `ProjectGraph`,
 `NodeInstances`, or `GraphConnections`.

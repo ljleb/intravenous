@@ -318,7 +318,7 @@ std::string package_key_for(std::filesystem::path const& directory)
     auto const name = normalized.filename().generic_string();
     if (name.empty() || name == "." || name == "..") {
         throw std::runtime_error(
-            "cannot derive IV package package key from '" + normalized.string() + "'");
+            "cannot derive IV package key from '" + normalized.string() + "'");
     }
     return name;
 }
@@ -342,7 +342,7 @@ std::filesystem::file_time_type directory_stamp(std::filesystem::path const &dir
             } else if (it->path() != dir
                        && std::filesystem::exists(
                            it->path() / std::string(IV_PACKAGE_MANIFEST_FILE))) {
-                // A nested IV package package owns a distinct artifact and
+                // A nested IV package owns a distinct artifact and
                 // source stamp. Its edits must not cause this package's C++
                 // compilation signature to change.
                 it.disable_recursion_pending();

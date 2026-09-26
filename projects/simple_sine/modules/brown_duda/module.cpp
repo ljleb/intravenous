@@ -71,7 +71,7 @@ inline Sample read_fractional_delay(
 // 1. StereoSourceGeometry
 //
 // center_azimuth : interaural-polar azimuth, degrees
-// width          : physical lateral source width, metres
+// width          : lateral source width, metres
 // distance       : listener -> each source channel, metres, stereo
 //
 // output:

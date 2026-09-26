@@ -73,7 +73,7 @@ TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
 
 TEST(ModuleLoaderPackages, StagedBuiltinBuildStaysInsideCurrentCmakeBuildTree)
 {
-    // make_loader() seeds the shipped package before loading project packages.
+    // make_loader() loads the shipped package before loading project packages.
     // It must not make the source checkout's builtin directory a build owner.
     auto loader = iv::test::make_loader();
     auto const staged = iv::test::staged_builtin_package_root();

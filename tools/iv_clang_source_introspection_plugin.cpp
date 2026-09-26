@@ -255,9 +255,9 @@ std::string mangled_global_name(ASTContext& context, VarDecl const* declaration)
 
 std::uint64_t node_code_key_hash(
     std::string_view value,
-    std::uint64_t seed)
+    std::uint64_t initial_hash)
 {
-    std::uint64_t hash = seed;
+    std::uint64_t hash = initial_hash;
     for (auto const ch : value) {
         hash ^= static_cast<unsigned char>(ch);
         hash *= 1099511628211ull;
@@ -466,7 +466,7 @@ struct NodeInputPortAnnotation {
 struct PublicOutputAnnotation {
     Expr* builder = nullptr;
     bool event = false;
-    std::size_t ordinal = 0;
+    std::size_t index = 0;
     SourceSpanRecord span;
 };
 
@@ -605,7 +605,7 @@ public:
                 result_.public_outputs.push_back({
                     .builder = builder,
                     .event = method_name == "event_outputs",
-                    .ordinal = i,
+                    .index = i,
                     .span = binding->span,
                 });
             }
@@ -873,7 +873,7 @@ public:
         instrumented_.insert(function);
         // ASTConsumer callbacks run after the parser has restored Sema's
         // translation-unit context.  Re-enter the owning function while
-        // synthesizing the annotations so Sema performs ordinary local-name
+        // generating the annotations so Sema performs ordinary local-name
         // lookup and builds a well-formed call expression for CodeGen.
         Sema::ContextRAII function_context(sema(), function);
         function->setBody(transform_statement(function->getBody()));
@@ -1115,7 +1115,7 @@ private:
         llvm::SmallVector<Expr*, 6> arguments{
             pointer,
             new (context_) CXXBoolLiteralExpr(output.event, context_.BoolTy, location),
-            make_size(output.ordinal, location),
+            make_size(output.index, location),
             make_string(output.span.file, location),
             make_u32(output.span.begin, location),
             make_u32(output.span.end, location),
@@ -1625,7 +1625,7 @@ private:
         }
         auto id = compiler_.getDiagnostics().getCustomDiagID(
             DiagnosticsEngine::Error,
-            "cannot synthesize IV_NODE constructor adapter");
+            "cannot generate IV_NODE constructor adapter");
         compiler_.getDiagnostics().Report(location, id);
         return nullptr;
     }
@@ -1780,7 +1780,6 @@ void write_state_metadata(
     }
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
-            {"version", 1},
             {"states", state_collector.take_states()},
             {"background_states", state_collector.take_background_states()},
             {"config_pointers", std::move(node_config_collector).take_fields()},

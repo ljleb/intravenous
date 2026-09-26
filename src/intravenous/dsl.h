@@ -319,7 +319,7 @@ namespace iv {
         std::floating_point<std::remove_cvref_t<T>> ||
         std::is_same_v<std::remove_cvref_t<T>, Sample>;
 
-    // Binary operators synthesize connection-aware, runtime-tiled nodes. They
+    // Binary operators generate connection-aware, runtime-tiled nodes. They
     // are compiler/DSL internals rather than a second public node-creation
     // API: the registered-ID API deliberately accepts construction arguments,
     // while these operands are graph connections. Once package definitions can

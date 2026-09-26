@@ -741,7 +741,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                         }
                         if (selected.empty()) {
                             return std::unexpected(
-                                "GraphJit background sample direct direct_index has no legal source storage");
+                                "GraphJit background sample direct source has no legal storage");
                         }
                         for (auto const storage : selected) {
                             auto const direct_index = result.direct_samples.size();
@@ -953,7 +953,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                     background, background_connection, delivery.source);
                 if (!source_subset) {
                     return std::unexpected(
-                        "GraphJit background event direct direct_index lost its source subset");
+                        "GraphJit background event direct source lost its source subset");
                 }
                 auto const& subset = background.event_source_subsets[*source_subset];
                 std::vector<PortStorageIndex> selected;
@@ -1007,7 +1007,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 }
                 if (selected.empty()) {
                     return std::unexpected(
-                        "GraphJit background event direct direct_index has no legal source storage");
+                        "GraphJit background event direct source has no legal storage");
                 }
                 auto const target_plan = std::ranges::find_if(
                     connection->target_plans,

@@ -9,12 +9,6 @@
 #include <intravenous/runtime/package_pipeline_events.h>
 #include <intravenous/runtime/socket_rpc_package_definitions_bridge.h>
 #include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
-#include <intravenous/runtime/lane_query_schema_events.h>
-#include <intravenous/runtime/lane_query_schema_service.h>
-#include <intravenous/runtime/socket_rpc_lane_query_schema_bridge.h>
-#include <intravenous/runtime/lanes_visualization_events.h>
-#include <intravenous/runtime/lanes_visualization.h>
-#include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/runtime_project_events.h>
@@ -40,10 +34,6 @@ namespace {
 using namespace std::chrono_literals;
 using Json = nlohmann::ordered_json;
 
-InternedString intern(std::string_view value)
-{
-    return InternedString::from_view(value);
-}
 
 constexpr auto socket_rpc_notification_startup_timeout = 30s;
 
@@ -211,66 +201,10 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
     EXPECT_EQ(status_json["params"]["code"], "rebuildFinished");
     EXPECT_EQ(status_json["params"]["message"], "done");
 
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_project_notification_event,
-        ProjectNotification(ProjectLaneViewNotification{
-            .lane_view = LaneViewResult{
-                .view_id = intern("view-1"),
-                .lanes = LaneQueryResult{
-                    .start_index = 0,
-                    .visible_lane_count = 1,
-                    .total_lane_count = 1,
-                },
-            },
-        }));
-    auto const lane_line = harness.read_line();
-    ASSERT_FALSE(lane_line.empty());
-    auto const lane_json = parse_json_line(lane_line);
-    EXPECT_EQ(lane_json["method"], "timeline.laneViewUpdated");
-    EXPECT_EQ(lane_json["params"]["viewId"], "view-1");
 
 }
 
-TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneQuerySchemaChanges)
-{
-    auto harness = NotificationServerHarness(
-        iv::test::fresh_module_fixture_workspace("socket_rpc_lane_query_schema_notification_server"));
-    LaneQuerySchemaService lane_query_schema;
-    auto notification_scope =
-        socket_rpc_lane_query_schema_bridge::bind(
-            harness.server,
-            lane_query_schema);
 
-    LaneQuerySchemaChanged notification{
-        .change = query::LaneQuerySchemaChange{
-            .changed = true,
-            .old_revision = 3,
-            .new_revision = 4,
-            .added = {
-                query::LaneQuerySchemaChange::Added{
-                    .entry = query::LaneQuerySchemaEntry{
-                        .key = "gain",
-                        .type = query::LaneQueryValueType::float_,
-                    },
-                },
-            },
-        },
-    };
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_lane_query_schema_changed_event,
-        notification);
-
-    auto const line = harness.read_line();
-    ASSERT_FALSE(line.empty());
-    auto const json = parse_json_line(line);
-    EXPECT_EQ(json["method"], "timeline.laneQuerySchemaChanged");
-    EXPECT_EQ(json["params"]["oldRevision"], 3);
-    EXPECT_EQ(json["params"]["revision"], 4);
-    ASSERT_EQ(json["params"]["added"].size(), 1u);
-    EXPECT_EQ(json["params"]["added"][0]["key"], "gain");
-    EXPECT_EQ(json["params"]["added"][0]["type"], "float");
-
-}
 
 TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
 {
@@ -349,80 +283,6 @@ TEST(SocketRpcNotificationBridge, PublishedPackageDefinitionsRefreshThePackageCa
     auto const json = parse_json_line(line);
     EXPECT_EQ(json["method"], "ivPackages.updated");
     EXPECT_EQ(json["params"], Json::object());
-}
-
-TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
-{
-    auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_lane_view_content_notification_server"));
-    LanesVisualization lanes_visualization;
-    auto notification_scope =
-        lanes_visualization_socket_rpc_notification_bridge::bind(
-            lanes_visualization,
-            harness.server);
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_lane_view_content_updated_event,
-        iv::LaneViewContentUpdate{
-            .view_id = intern("view-1"),
-            .lanes = {
-                iv::LaneVisualizationSeries{
-                    .lane_id = intern("lane-42"),
-                    .adapter_type = "level",
-                    .sample_channel_type = iv::ChannelTypeId::stereo,
-                    .peak_level = 4.0f,
-                },
-            },
-        });
-
-    auto const line = harness.read_line();
-    ASSERT_FALSE(line.empty());
-    auto const json = parse_json_line(line);
-    EXPECT_EQ(json["method"], "timeline.laneViewContentUpdated");
-    EXPECT_EQ(json["params"]["viewId"], "view-1");
-    ASSERT_EQ(json["params"]["lanes"].size(), 1u);
-    EXPECT_EQ(json["params"]["lanes"][0]["laneId"], "lane-42");
-    EXPECT_EQ(json["params"]["lanes"][0]["adapterType"], "level");
-    EXPECT_EQ(json["params"]["lanes"][0]["sampleChannelType"], "stereo");
-    EXPECT_EQ(json["params"]["lanes"][0]["peakLevel"], 4.0f);
-    EXPECT_FALSE(json["params"]["lanes"][0].contains("samples"));
-
-}
-
-TEST(SocketRpcNotificationBridge, LaneViewContentSerializesCompiledSampleWindows)
-{
-    auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_compiled_sample_window_notification_server"));
-    LanesVisualization lanes_visualization;
-    auto notification_scope =
-        lanes_visualization_socket_rpc_notification_bridge::bind(
-            lanes_visualization,
-            harness.server);
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_lane_view_content_updated_event,
-        iv::LaneViewContentUpdate{
-            .view_id = intern("view-1"),
-            .lanes = {
-                iv::LaneVisualizationSeries{
-                    .lane_id = intern("lane-42"),
-                    .adapter_type = "samples",
-                    .compiled_sample_window = iv::CompiledSampleWindow{
-                        .primary = {1.0f, 2.0f, 3.0f},
-                        .secondary = {10.0f, 20.0f, 30.0f},
-                    },
-                    .compiled_window_first_sample_index = 100,
-                    .compiled_window_last_sample_index = 300,
-                },
-            },
-        });
-
-    auto const json = parse_json_line(harness.read_line());
-    auto const& lane = json["params"]["lanes"][0];
-    EXPECT_EQ(lane["adapterType"], "samples");
-    EXPECT_EQ(lane["samples"], nlohmann::json::array({1.0f, 2.0f, 3.0f}));
-    EXPECT_EQ(lane["secondarySamples"], nlohmann::json::array({10.0f, 20.0f, 30.0f}));
-    EXPECT_EQ(lane["sampleWindowFirstIndex"], 100);
-    EXPECT_EQ(lane["sampleWindowLastIndex"], 300);
-
 }
 
 } // namespace iv

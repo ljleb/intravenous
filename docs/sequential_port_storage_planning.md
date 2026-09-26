@@ -6,26 +6,26 @@ Related documents:
 
 - [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)
 - [graph_jit_direction.md](./graph_jit_direction.md)
-- [builder_lowering_pipeline_design.md](./builder_lowering_pipeline_design.md)
+- [builder_lowering_pipeline_design.md](./historical/builder_lowering_pipeline_design.md)
 - [coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md)
-- [intravenous-llvm-hot-reload-and-whole-graph-design.md](./intravenous-llvm-hot-reload-and-whole-graph-design.md)
+- [intravenous-llvm-hot-reload-and-whole-graph-design.md](./historical/intravenous-llvm-hot-reload-and-whole-graph-design.md)
 
 ## Core rule: a connection is not a buffer
 
 `ConfiguredGraph` describes the graph that should exist. A sample/event
-connection is logical dataflow semantics, not a declaration that a physical
+connection is logical dataflow semantics, not a declaration that a storage
 buffer must be allocated.
 
-At the physical buffer level there are only two storage locations: the generated
+At the buffer level there are only two storage locations: the generated
 root's fixed stack frame and persistent `NodeStorage`. They produce three useful
-plans: an entirely stack-resident buffer, a stack working buffer plus exactly the
+plans: a buffer stored entirely on the stack, a stack working buffer plus exactly the
 history/latency carry that must persist in `NodeStorage`, or an entire persistent
 buffer in `NodeStorage`. This applies to an event stream and, independently, to
 each sample channel group.
 
 Aliasing, direct forwarding, fan-in, conversion, feedback delay, and SCC work
 placement are operations over those buffers, not additional storage plans. LLVM
-may subsequently eliminate a buffer or scalarize it, but physical planning does
+may subsequently eliminate a buffer or scalarize it, but storage planning does
 not depend on that optimization.
 
 The compatibility runtime may continue to use ring-buffer-backed
@@ -36,7 +36,7 @@ kernel.
 ## Node-facing Tick APIs express logical access
 
 A node author should use the same `tick_block()` port API regardless of the
-chosen physical representation.
+chosen storage representation.
 
 Conceptually:
 
@@ -74,7 +74,7 @@ temporaries belong to the generated root's fixed stack frame.
 
 Any project-owned data that must survive from one execution call to another
 belongs in that layout. This includes history/latency carry, full fixed persistent port buffers,
-feedback state, `State`, optional tock-only non-semantic `IndexedState`, and
+feedback state, `State`, optional tock-only non-semantic `TockState`, and
 activity state.
 Invocation-local port temporaries do not acquire persistent ownership merely
 because their maximum size is known: the generated root should reserve them in
@@ -88,7 +88,7 @@ correspond to a typed `std::span` field; generated LLVM may address it by the
 constant offset fixed by the completed layout. It is still an ordinary
 `NodeLayout` region and participates in the same one-allocation ownership model.
 
-Physical region order is a compiler choice and may be selected for locality of
+Storage region order is a compiler choice and may be selected for locality of
 the optimized tick/access programs. Lifecycle order remains a separate
 `NodeLayout` concern derived from declaration dependencies. Compiler-owned raw
 regions that require a defined fresh value must declare a raw-region initializer
@@ -136,7 +136,7 @@ port windows were ordinary state owned beside its nested `State`:
 - a Tick output owns the values in its declared history window; and
 - a Tick output owns its already-authored latency/future window.
 
-This is an effect requirement, not a physical-allocation requirement. The steady
+This is an effect requirement, not a allocation requirement. The steady
 storage planner may satisfy several conceptual port states using one producer ring,
 may let a consumer history view alias producer storage, and may eliminate dedicated
 state entirely when the required values are directly addressable. Those are valid
@@ -153,7 +153,7 @@ A graph-version transition may temporarily duplicate data that steady execution 
 shared. For example, if old C history was merely a view into A's producer ring while
 new steady C history can be a view into B's ring, the transition realization may copy
 C's still-visible old history into a small carry. That copy is allowed to coexist with
-other copies of the same physical source data; avoiding steady-state copies is the
+other copies of the same source data; avoiding steady-state copies is the
 optimization objective, not avoiding migration-time copies.
 
 For a surviving port whose required extent changes, preserve the overlapping valid
@@ -163,24 +163,24 @@ exposed portion according to ordinary fresh-state semantics; do not fabricate ol
 consumer history from unrelated source persistence merely because source data happens
 to exist.
 
-The stable migration identity belongs to the concrete node endpoint, not the
+The stable migration identity belongs to the concrete node port, not the
 connection or storage plan: user-instantiated node/module identity, virtual-node and
-concrete-member path, port direction/ordinal, channel index or event stream, and a
-state-role discriminator. Endpoint incidence classes, connection IDs, allocation
-indices, compact/ring kind, capacity and offsets are generation-local physical facts.
-Any physical plan that aliases/elides one of these conceptual state pieces must retain
+concrete-member path, port direction/index, channel index or event stream, and a
+state-role discriminator. Port incidence classes, connection IDs, allocation
+indices, compact/ring kind, capacity and offsets are generation-local storage facts.
+Any storage plan that aliases/elides one of these conceptual state pieces must retain
 cold metadata capable of reading that semantic window again during a later graph
 transition.
 
-## Partition overlapping endpoint subsets before choosing storage
+## Partition overlapping port subsets before choosing storage
 
 Storage is not selected edge by edge and is not selected once for an entire authored
 port. Fanout/fan-in selections may overlap only on subsets of channels, and those
 subsets can participate in different connections elsewhere. The correctness unit is
-therefore an **endpoint atom**: a maximal source or target subset with identical
+therefore a **port atom**: a maximal source or target subset with identical
 connection incidence and identical semantic requirements.
 
-Start from atomic payload elements (sample channels, or an event port/source unless
+Start from atomic data elements (sample channels, or an event port/source unless
 its routing semantics provide a finer partition) and partition them by incidence.
 For example:
 
@@ -203,7 +203,7 @@ d : I3
 
 `b` must be separated because its uses differ from both neighbors. `a` and `d` may
 have equivalent storage requirements even though they are not the same connection
-subset; physical coalescing is a later choice. Conversely, if `{a,b}` participates
+subset; storage coalescing is a later choice. Conversely, if `{a,b}` participates
 in exactly the same connections with the same conversion/timing facts, it may remain
 one atom.
 
@@ -226,7 +226,7 @@ join correctness capabilities for every atom
         ↓
 derive/deduplicate converted or composed representations
         ↓
-physically coalesce equivalent storage where profitable
+coalesce equivalent storage where profitable
 ```
 
 Partitioning is semantic and exact. Coalescing is an optimization. Do not merge atoms
@@ -254,13 +254,13 @@ target_requirements(T) =
     + composition/conversion/timing requirements(incoming(T))
 ```
 
-Some capabilities subsume others. A prepared immutable addressable window can also
+Some capabilities subsume others. A materialized immutable addressable window can also
 provide sequential slices for the same range. Other capabilities are orthogonal and
 must coexist: a Tick/persisted source with a same-Tick Sequential consumer requires
 a current Tick representation, capture/persistence staging, and canonical persisted
 pages because current visibility and published snapshot visibility are different
-contracts. These are logical capabilities, not necessarily separate payload buffers:
-when geometry permits, the current Tick payload may itself be the allocator-managed
+contracts. These are logical capabilities, not necessarily separate data buffers:
+when geometry permits, the current Tick data may itself be the allocator-managed
 capture block later consumed/adopted by the page-publication path.
 
 Useful monotone implications include:
@@ -278,10 +278,10 @@ if output.production == Tick and any same-Tick Sequential consumer exists:
 
 if output.production == Tock and output.retention == ephemeral
    and any Tick-time Sequential consumer exists:
-    require prepared sequential window
+    require materialized sequential window
 
 if any Tick-time Random Access consumer requires an ephemeral Tock/replay result:
-    require prepared immutable addressable window
+    require materialized immutable addressable window
 
 if any background-only Random Access consumer requires an ephemeral Tock/replay result:
     require transaction-local addressable materialization
@@ -290,28 +290,28 @@ if Tick/ephemeral is unreproducible and any Random Access demand reaches it:
     reject the implicit connection; require authored persistence/recording
 ```
 
-The corresponding baseline payload decisions per source atom/use are:
+The corresponding baseline data decisions per source atom/use are:
 
 | Source atom / use | Minimum baseline representation |
 | --- | --- |
 | Tick/ephemeral -> same-Tick Sequential | current Tick representation |
 | replayable Tick/ephemeral -> background Random Access | transaction-local addressable replay materialization |
-| replayable Tick/ephemeral -> Tick-time Random Access | prepared immutable addressable replay window |
+| replayable Tick/ephemeral -> Tick-time Random Access | materialized immutable addressable replay window |
 | unreproducible Tick/ephemeral -> any Random Access | disallowed implicitly; authored persistence or recorder required |
 | Tick/persisted -> same-Tick Sequential | current Tick representation + capture-backed persistence staging + canonical persisted pages |
 | Tick/persisted -> Random Access | canonical published persisted pages; capture staging is intrinsic to persistence, but the current capture is not a baseline read source |
-| Tock/ephemeral -> Tick-time Sequential | prepared sequential window |
+| Tock/ephemeral -> Tick-time Sequential | materialized sequential window |
 | Tock/ephemeral -> background Random Access | transaction-local addressable materialization |
-| Tock/ephemeral -> Tick-time Random Access | prepared immutable addressable window |
+| Tock/ephemeral -> Tick-time Random Access | materialized immutable addressable window |
 | Tock/persisted -> Tick-time Sequential | canonical published persisted pages generated sufficiently ahead of playback |
 | Tock/persisted -> Random Access | canonical published persisted pages |
 
 For several outgoing uses, take the capability union of the applicable rows and then
-remove payload representations subsumed by another requirement for the same atom/range.
-For example, a prepared addressable window subsumes a prepared sequential-only window,
+remove data representations subsumed by another requirement for the same atom/range.
+For example, a materialized addressable window subsumes a materialized sequential-only window,
 while current Tick visibility and a published persisted snapshot do not subsume one
-another. This table describes logical capabilities; physical planning may alias the
-current Tick payload with a capture block when the payload is already final under the
+another. This table describes logical capabilities; storage planning may alias the
+current Tick data with a capture block when the data is already final under the
 Tick history/latency contract and page/capture geometry permits it.
 
 `RandomAccessInputConfig` alone does not state whether node code reads that input
@@ -336,8 +336,8 @@ Access contract reads only the callback-pinned published snapshot, while the
 Sequential edge may consume the new current block immediately after the producer
 executes. The Random Access edge therefore adds no same-Tick dependency in this
 baseline implementation; only the Tick-to-Sequential edge orders the producer and
-consumer. If layout permits, the producer's current payload and capture block may be
-the same physical block, so the extra capabilities do not imply an extra copy.
+consumer. If layout permits, the producer's current data and capture block may be
+the same storage block, so the extra capabilities do not imply an extra copy.
 
 For a Tock/ephemeral source:
 
@@ -347,7 +347,7 @@ source
    +--> Random Access Tick consumer
 ```
 
-a prepared addressable window may satisfy both uses; there is no reason to allocate
+a materialized addressable window may satisfy both uses; there is no reason to allocate
 a second sequential-only copy for the same atom/range.
 
 Fan-in is different. If independent source channels merely fill distinct target
@@ -355,7 +355,7 @@ channels, the target can often remain a set of direct views. If several sources
 arithmetically contribute to the same target channel, materialize the derived value
 with the lifetime/access required by the target: current-block for same-Tick
 Sequential use, transaction-local addressable for background Random Access, or
-prepared immutable addressable for Tick-time Random Access. Event fan-in follows the
+materialized immutable addressable for Tick-time Random Access. Event fan-in follows the
 same lifetime rule but must additionally preserve deterministic event ordering.
 
 A derived representation can be shared only when its source-atom set,
@@ -389,8 +389,8 @@ This stage answers correctness questions such as:
 - what temporal window is legal for Tick event production and sequential event consumption?
 
 Then choose among the legal storage plans using two explicit pure policy
-functions, one per payload class. Their result contains the common storage kind
-plus payload-specific capacity and layout facts:
+functions, one per data class. Their result contains the common storage kind
+plus data-specific capacity and layout facts:
 
 ```cpp
 SampleConnectionStoragePlan
@@ -403,7 +403,7 @@ choose_event_connection_storage_plan(
 ```
 
 The storage chooser should enumerate legal fixed-capacity candidates and compare
-their copy work for the complete producer group. Storage lifetime/residence is
+their copy work for the complete producer group. Storage lifetime/placement is
 one axis; conversion, merge, delay, and aliasing are separate operation axes.
 The former `direct`/`transient_sequence`/`compact_persistent_carry`/
 `persistent_ring`/`feedback_ring` enums conflated those axes and have been
@@ -415,7 +415,7 @@ so root-boundary handling is not a port-storage implementation kind.
 
 ### Sequential port storage plans
 
-There are three useful physical storage plans for an event stream or a sample
+There are three useful storage plans for an event stream or a sample
 channel group:
 
 | Storage plan | Invocation-local storage | `NodeStorage` | Copies caused by retention |
@@ -424,7 +424,7 @@ channel group:
 | transient with persistent carry | One fixed-capacity working buffer in the generated root stack frame. | Exactly the history/latency tail that must cross root calls. | Restore the retained tail into the working buffer and commit the next retained tail back out. |
 | full persistent | None is required merely to reconstruct the stream. | One fixed-capacity buffer covering the complete simultaneously-live window. | No root-boundary reconstruction copies; producer and compatible consumers address the persistent buffer directly. |
 
-A shared physical-planning vocabulary can therefore begin with:
+A shared storage-planning vocabulary can therefore begin with:
 
 ```cpp
 enum class SequentialBufferStorageKind {
@@ -434,7 +434,7 @@ enum class SequentialBufferStorageKind {
 };
 ```
 
-Sample and event plans then add their payload-specific capacity/layout facts and
+Sample and event plans then add their data-specific capacity/layout facts and
 explicit operations. `direct`, `converted`, `merged`, and `feedback` describe
 how representations are related or scheduled; they are not values of this enum.
 
@@ -473,7 +473,7 @@ part of representation sharing: two otherwise identical conversions do not
 share a derived buffer when one is required after every producer slice and the
 other is required once at SCC exit. Execution planning consumes these scopes
 directly; it must not inspect downstream bindings and infer placement after
-physical storage has already been chosen.
+storage has already been chosen.
 
 This gives the event pipeline a fixed order of decisions:
 
@@ -519,29 +519,29 @@ without changing graph semantics or LLVM lowering.
 
 ### Current implementation status
 
-The storage-model and physical-residence refactors have landed:
+The storage-model and storage-placement refactors have landed:
 
-- exact source and target endpoint-atom inference now runs after latency
-  compensation and before physical producer grouping. Sample channels are
+- exact source and target port-atom inference now runs after latency
+  compensation and before storage producer grouping. Sample channels are
   partitioned by complete connection/contribution/timing incidence; event ports
   remain whole-port atoms. Disconnected authored input and output elements are
   retained too, so intrinsic retention/requestability and target identity do not
   depend on current fan-in/fan-out. Each atom retains its joined
-  current-Tick, capture, persisted-page, prepared-window, and transaction-local
-  addressability capabilities. Port-granular coverage endpoints remain separate
+  current-Tick, capture, persisted-page, materialized-window, and transaction-local
+  addressability capabilities. Port-granular coverage ports remain separate
   from these storage atoms. Background connection records retain their exact
-  source/target atom ordinals, and existing node-facing Tick producer groups
-  record the atoms they physically coalesce, while background
+  source/target atom indices, and existing node-facing Tick producer groups
+  record the atoms they coalesce, while background
   page/materialization realization remains executor work;
-- immutable indexed physical planning now converts those requirements into
-  canonical persisted-page bindings, non-owning current-Tick views, prepared
+- immutable storage planning now converts those requirements into
+  canonical persisted-page bindings, non-owning current-Tick views, materialized
   sequential/addressable windows, and transaction-local addressable
   representations. Direct sample channels and single-source exact-type events
   retain views; conversion and fan-in produce typed materialization templates.
   Equivalent derived templates share only when source atoms, selected input
-  residences, transform, timing, target subset, history, and output residence
-  match. A prepared addressable result also subsumes an otherwise-identical
-  prepared sequential result, independent of configured connection order.
+  placements, transform, timing, target subset, history, and output placement
+  match. A materialized addressable result also subsumes an otherwise-identical
+  materialized sequential result, independent of configured connection order.
   Runtime range/page-version selection remains executor state;
 - sample and event producer groups now select the shared three-kind storage
   model, while event invocation aggregation is a separate operation fact;
@@ -576,7 +576,7 @@ The storage-model and physical-residence refactors have landed:
   persistent regions, so telemetry survives even when the producer sequence is
   transient;
 - reflected sample/event bindings now contain already-resolved representation
-  pointers. The generated root resolves stack versus `NodeStorage` residence
+  pointers. The generated root resolves stack versus `NodeStorage` placement
   while emitting straight-line LLVM; node wrappers do not branch on a storage
   kind or reconstruct an address from one universal storage base;
 - detached sample and event feedback now derive the exact retained delayed
@@ -585,8 +585,8 @@ The storage-model and physical-residence refactors have landed:
   feedback storage remains a fixed persistent ring, and zero-capacity event
   feedback can remain transient. Event capacities are rate-times-live-span rather
   than `source_capacity * (loop_extra_latency + 1)`;
-- event lowering now performs a physical-operation costing pass before final
-  residence realization. Shared conversion/materialization writes are counted
+- event lowering now performs a storage-operation costing pass before final
+  storage realization. Shared conversion/materialization writes are counted
   once per emitted operation, full-`NodeStorage` candidates include the ring
   reads those operations perform, and identity fanout adds no copy. Each shared
   delayed feedback stream accounts once for producer-to-feedback writes, exact
@@ -596,9 +596,9 @@ The storage-model and physical-residence refactors have landed:
 - event fan-in whose producers span execution regions is staged into one
   canonical aggregate. Because execution order need not match semantic source
   order, only these canonical staged aggregates carry a fixed-capacity parallel
-  source-ordinal array. Merge, compact-carry, and persistent-ring operations
+  source-index array. Merge, compact-carry, and persistent-ring operations
   preserve that compiler-private metadata; `InputPort` and `OutputPort` still
-  expose only the ordinary `TimedEvent` payload buffer and require no storage
+  expose only the ordinary `TimedEvent` data buffer and require no storage
   dispatch.
 
 The remaining cost-model work is primarily alias-versus-materialize comparison,
@@ -631,14 +631,14 @@ After implementation selection, pass-local materializations should undergo a
 separate liveness/scratch-allocation pass.
 
 If transient A is dead before transient B becomes live, they may share the same
-scratch slot. This is analogous to register allocation at block-buffer
+scratch allocation. This is analogous to register allocation at block-buffer
 granularity.
 
 A useful pure interface is conceptually:
 
 ```cpp
 ScratchAllocationPlan
- assign_scratch_slots(span<TransientStorageRequirement const>);
+ assign_scratch_entries(span<TransientStorageRequirement const>);
 ```
 
 The word "scratch" describes lifetime, not a second persistent runtime storage
@@ -646,7 +646,7 @@ object. A temporary may disappear into SSA/registers or occupy a statically
 sized range in the generated root stack frame. If the fixed stack budget makes
 that plan unsuitable, the storage chooser may instead select a full-buffer
 `NodeStorage` representation; it must not silently put nominally transient
-storage into persistent state after physical planning.
+storage into persistent state after storage planning.
 
 The important properties are:
 
@@ -656,13 +656,13 @@ The important properties are:
   intervals do not overlap;
 - a full-buffer `NodeStorage` choice is explicit and participates in ordinary
   generation migration only when its contents are semantically retained; and
-- the compiler may order stack slots and persistent regions for hot-path
+- the compiler may order stack regions and persistent regions for hot-path
   locality.
 
 
 ## Event conversions are directional semantic conversions
 
-Event conversion planning must fail when producing the target payload would
+Event conversion planning must fail when producing the target data would
 require inventing information. The built-in conversion graph is therefore
 directional rather than a best-effort complete graph.
 
@@ -681,7 +681,7 @@ channel, velocity, and related MIDI details cannot be chosen objectively.
 Conversely, information-rich event types may collapse into `Trigger`, and any
 event type may be discarded into `Empty`.
 
-This rule also removes the old conversions which synthesized a second event at
+This rule also removes the old conversions which generated a second event at
 `t + 1`; current built-in conversions never invent a later timestamp. Tick-window
 validation nevertheless checks converted events at the point they are
 emitted, so future conversion additions cannot silently escape the legal
@@ -720,7 +720,7 @@ contract.
 ## Sequential timing is independent of output production and retention
 
 Input access, output production and output retention are independent; sample/event
-payload properties remain a separate axis. The **target** declaration shape is:
+data properties remain a separate axis. The **target** declaration shape is:
 
 ```cpp
 struct SequentialInputConfig { std::size_t history = 0; };
@@ -739,11 +739,11 @@ using OutputProductionConfig =
 enum class OutputRetention { ephemeral, persisted };
 
 struct InputConfig {
-    // Name/identity and sample/event payload properties omitted.
+    // Name/identity and sample/event data properties omitted.
     InputAccessConfig access{SequentialInputConfig{}};
 };
 struct OutputConfig {
-    // Name/identity and sample/event payload properties omitted.
+    // Name/identity and sample/event data properties omitted.
     OutputProductionConfig production{TickOutputConfig{}};
     OutputRetention retention = OutputRetention::ephemeral;
 };
@@ -755,19 +755,19 @@ has the existing history and latency authoring contract. A random-access input
 can be consumed in either execution callback. A tick-produced output can satisfy
 random-access demand through finalized persisted data or contextually replayable
 computation; a tock-produced output can feed a sequential input if its data is
-prepared off the audio thread. Production does not select the consumer's access.
+materialized off the audio thread. Production does not select the consumer's access.
 
-`ephemeral` permits transaction-local prepared or page-backed materialization but
+`ephemeral` permits transaction-local materialized or page-backed materialization but
 makes no lasting retention promise. `persisted` retains **all generated/finalized
 covered data**: there is no automatic eviction for memory pressure, cache size,
 age, invalidation, or lack of current readers. Coverage removal is the only semantic
-reason to stop retaining that data; superseded physical versions can be reclaimed
+reason to stop retaining that data; superseded storage versions can be reclaimed
 after readers unpin them. Memory growth is the graph author's retention choice.
 
-`InputConfig` / `OutputConfig` independently carry sample/event payload properties
+`InputConfig` / `OutputConfig` independently carry sample/event data properties
 and the above access/production/retention contracts. Static concrete node types
 have constexpr port schemas. Port history and latency are not duplicated in
-sample or event payload properties. The same facts survive `ConfiguredGraph`
+sample or event data properties. The same facts survive `ConfiguredGraph`
 reflection and serialization. Generic input/output mode-conversion helpers may
 not invent a production callback or input access from the opposite declaration.
 
@@ -795,9 +795,9 @@ sample positions, the planner starts from
 ceil(max_events_per_index * W)
 ```
 
-event slots. Fractional values therefore let sparse producers request smaller
+event entries. Fractional values therefore let sparse producers request smaller
 static buffers: for example, `0.24` over a 64-sample representation requests 16
-event slots. The declaration constrains total capacity for the represented
+event entries. The declaration constrains total capacity for the represented
 window, not the distribution of timestamps inside it: all 16 events may occur at
 one legal sample position. The value must be finite and nonnegative. `0.0`
 declares that the producer emits no events.
@@ -807,17 +807,17 @@ implementation-defined behavior. A particular implementation may drop excess
 events and count them, but callers must not depend on that policy. It must never
 grow a buffer or allocate memory on the audio thread.
 
-This sizing rate belongs to the event **output payload properties**, not to
+This sizing rate belongs to the event **output data properties**, not to
 `TickOutputConfig`: history/latency define *when* an output may author data,
 while `max_events_per_index` lets GraphJit determine how much static event
 storage to reserve for the selected temporal representation.
 
 ## Random-access ports use explicit sparse coverage
 
-`TockOutputConfig` publishes exact finite `IndexedCoverage`; random-access demand
+`TockOutputConfig` publishes exact finite `Coverage`; random-access demand
 may also use finalized published `tick/persisted` data or a contextually replayable
 tick output. Outside coverage, a random-access node read is invalid. Coverage and
-exact semantic changed regions remain distinct from aligned physical page domains.
+exact semantic changed regions remain distinct from aligned page domains.
 
 A persisted candidate page is computed for its complete covered domain before the
 candidate publishes. Tick/persisted and Tock/persisted outputs use the same canonical
@@ -825,8 +825,8 @@ persisted-page store; only their production/finalization paths differ. Invalidat
 never deletes the existing readable published page. An ephemeral Tock output directly
 feeding a background random-access input uses a transaction-local addressable
 materialization. If the same ephemeral result must be read by Random Access during
-Tick execution, background work must prepare an immutable addressable window before
-the callback; that preparation is not persisted output data.
+Tick execution, background work must materialize an immutable addressable window before
+the callback; that materialization is not persisted output data.
 
 **The only implicit-storage connection that is forbidden** is an unreproducible
 tick/ephemeral source directly feeding random-access demand, whether the input is
@@ -860,7 +860,7 @@ record carries at least:
 CaptureSequence
 OutputPortId
 GlobalBlockPosition
-payload block
+data block
 ```
 
 `CaptureSequence` is monotonically increasing insertion order in the executor's
@@ -892,17 +892,17 @@ positions. Captures published after the snapshot cutoff are excluded from the
 running pass and belong to a later pass.
 
 The selected records are coalesced into exact changed coverage keyed by output port
-and seed the normal forward-coverage propagation machinery. Reverse planning and
+and start the normal forward-coverage propagation machinery. Reverse planning and
 `tock_coverage()` then run normally for all affected nodes and page domains. The
 background evaluation transaction builds candidate persisted pages and atomically
 publishes one new page version. Capture insertion itself is **not** page
 publication and does not advance the page version.
 
 The canonical persisted-page store owns the published representation. A candidate
-may copy from capture blocks or, when physical layout/ownership permits, adopt their
-payload without changing the page-store abstraction. If a candidate copies, the
+may copy from capture blocks or, when storage layout/ownership permits, adopt their
+data without changing the page-store abstraction. If a candidate copies, the
 capture block becomes reclaimable once no background ownership remains; if the page
-store adopts the payload, ownership transfers and that physical block is no longer a
+store adopts the data, ownership transfers and that storage block is no longer a
 free capture block until the published page version itself can release it. In either
 case, a block that was visible during the current audio callback cannot return to the
 audio-thread free pool until a callback boundary. If work is cancelled or rejected
@@ -917,11 +917,11 @@ same-Tick producer dependency plus a lookup branch between recent blocks and
 published pages (or an ordered two-source merge for events). It must not be enabled
 implicitly until those visibility/version rules are implemented and tested.
 
-Changing the root block size is a quiescent physical-layout transition, not a
+Changing the root block size is a quiescent storage-layout transition, not a
 semantic invalidation. Persisted output values are losslessly
 repartitioned as needed, a replacement GraphJit generation receives the new
 canonical layout, and publication switches only after migration completes.
-Semantic versioning and physical layout generation remain distinct.
+Semantic versioning and storage layout generation remain distinct.
 
 Persistence does not alter `tick_block()`'s legal history/latency writes: only
 finalized positions acquire the retention obligation. Those finalized published
@@ -929,9 +929,9 @@ positions may be read by random-access inputs **directly**, without forcing a
 recording bridge or a tock implementation. An explicit recorder remains necessary
 for an unreproducible ephemeral tick source.
 
-Persistent stored sample payloads may be dense or coverage-packed. Stored event
-payloads are packed ordered events; event fan-in order is deterministic by
-absolute sample index, stable source/connection ordinal, then producer-local
+Persistent stored sample data may be dense or coverage-packed. Stored event
+data are packed ordered events; event fan-in order is deterministic by
+absolute sample index, stable source/connection index, then producer-local
 order. Combined live event-buffer capacities must account for all incoming
 `max_events_per_index` bounds.
 
@@ -962,7 +962,7 @@ latency/history/feedback event stream
 A representation's temporal span and the producer sizing rate determine its
 static event capacity. For a representation covering `W` sample positions from
 a producer with `D = max_events_per_index`, GraphJIT starts from
-`ceil(D * W)` event slots. The current bounded-sequence representation rounds
+`ceil(D * W)` event entries. The current bounded-sequence representation rounds
 that count upward to a power of two because `EventSharedPortData` uses a ring
 mask. Every Tick event representation must have such a finite compile-time
 capacity. Failure to represent the calculated capacity is a graph-compilation
@@ -973,7 +973,7 @@ The storage chooser's **current** event count and an SCC feedback buffer's
 the maximum for one generated-root block and is compared with the state retained
 between root calls when choosing transient, carry, or full storage. A sliced SCC
 may author across a larger combined history/latency horizon during that root
-call; that authored bound sizes the physical feedback working buffer and its
+call; that authored bound sizes the storage feedback working buffer and its
 append work. Using the authored bound as the chooser's current footprint would
 make large source latency incorrectly render compact carry eligible even when
 the retained state is larger than one root block.
@@ -993,9 +993,9 @@ The span depends on the selected storage plan:
   simultaneously-live interval and source rate, not by multiplying a source
   invocation buffer by a guessed number of outstanding callbacks.
 
-Fan-in sums the separately calculated source maxima before physical rounding;
+Fan-in sums the separately calculated source maxima before storage rounding;
 fanout does not multiply capacity. A non-expanding converted branch never needs
-more event slots than the source events visible to that operation, although it
+more event entries than the source events visible to that operation, although it
 may conservatively inherit the source representation's capacity. These formulas
 do not constrain timestamp distribution within the representation: every event
 covered by the declared maximum may legally share one timestamp.
@@ -1022,7 +1022,7 @@ separate SCC capability. Implicit event
 conversions are required to be
 **non-expanding**: each source event produces zero or one target event, timestamps
 are preserved, and the conversion may only preserve or discard information. Any
-transformation that can synthesize multiple events belongs in an explicit node,
+transformation that can generate multiple events belongs in an explicit node,
 whose own output declares its resulting sizing rate.
 
 Retained canonical event storage and transient conversion are composable rather
@@ -1043,7 +1043,7 @@ still share that one derived representation.
 
 ### Event work placement and avoidable-work rules
 
-Physical lowering schedules event work at the narrowest lifetime that is still
+Storage lowering schedules event work at the narrowest lifetime that is still
 semantically correct:
 
 - an ordinary producer materialization runs once after that producer;
@@ -1156,7 +1156,7 @@ At minimum cover:
 
 ## Graph-revision transition planning precedes optimization
 
-A new logical graph revision may have two physical realizations:
+A new logical graph revision may have two compiled realizations:
 
 ```text
 old executable
@@ -1237,6 +1237,6 @@ specialized whole-project LLVM realization(s)
 LLVM optimization / ORC
 ```
 
-`ConfiguredGraph` remains free of physical storage choices. The first place
+`ConfiguredGraph` remains free of storage choices. The first place
 those choices become concrete is the compiler plan used to generate the whole
 project kernel.

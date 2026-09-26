@@ -1699,19 +1699,19 @@ std::expected<void, std::string> populate_background_topology(
             });
         if (!has_background_delivery && !target_replay) continue;
 
-        bool prepared_target = std::ranges::any_of(
+        bool tick_sequential_target = std::ranges::any_of(
             connection.source_channel_timings,
             [](SampleSourceChannelTimingPlan const& source) {
                 return source.delivery
                     == PlannedDeliveryMechanism::tock_to_sequential;
             });
-        if (prepared_target
+        if (tick_sequential_target
             && is_internal_bundle(target_bundle, connections.boundary_bundle)) {
-            auto prepared = ensure_port(
+            auto ensured_port = ensure_port(
                 connection.target_port,
                 PortDirection::input,
                 PortRoles{.tick_sequential_input = true});
-            if (!prepared) return std::unexpected(std::move(prepared.error()));
+            if (!ensured_port) return std::unexpected(std::move(ensured_port.error()));
         }
 
         BackgroundConnectionPlan background{
@@ -1831,12 +1831,12 @@ std::expected<void, std::string> populate_background_topology(
                     == PlannedDeliveryMechanism::tock_to_sequential
                 && is_internal_bundle(
                     target.target.bundle, connections.boundary_bundle)) {
-                auto prepared = ensure_port(
+                auto ensured_port = ensure_port(
                     target_configured_port,
                     PortDirection::input,
                     PortRoles{.tick_sequential_input = true});
-                if (!prepared) {
-                    return std::unexpected(std::move(prepared.error()));
+                if (!ensured_port) {
+                    return std::unexpected(std::move(ensured_port.error()));
                 }
             }
 
@@ -2630,7 +2630,7 @@ void join_capabilities(
 void remove_subsumed_capabilities(
     PortStorageRequirements& capabilities) noexcept
 {
-    // One prepared immutable addressable window supplies ordinary sequential
+    // One materialized immutable addressable window supplies ordinary sequential
     // slices for the same atom/range. Keep the incidence facts separately, but
     // do not ask storage planning for a redundant sequential-only data.
     if (capabilities.tick_random_access) {
@@ -2664,7 +2664,7 @@ PortStorageRequirements storage_capabilities_for(
         if (retention == OutputRetention::ephemeral) {
             // RandomAccessInputConfig does not yet say which legal callback
             // reads it. Until callback-use facts are reflected, join both the
-            // Tick-time prepared and background-transaction ports.
+            // Tick-time materialized and background-transaction ports.
             result.tick_random_access = true;
             result.background_random_access = true;
         }
@@ -3347,7 +3347,7 @@ void plan_sample_groups(
     // Tick storage may still coalesce the atoms of one authored output
     // port because OutputPort writes that port as one operation; all incidence
     // and capability distinctions remain retained in BackgroundEvaluationPlan for derived
-    // preparation/page ports.
+    // materialization/page ports.
     std::vector<NodeBundlePortId> connected_source_ports;
     for (auto const& atom : plan.background.sample_source_subsets) {
         if (!atom.connection_indices.empty()) {
@@ -3433,7 +3433,7 @@ void plan_sample_groups(
             if (!saw_group_realtime_channel) continue;
             group.has_realtime_connections = true;
             // Only Tick -> Sequential contributions enter realtime storage
-            // planning. A mixed composition may also have background-prepared
+            // planning. A mixed composition may also have background-materialized
             // source channels, but those are not represented by this buffer.
             external = external || connection.external_boundary;
             retained = std::max(retained, connection_retained);

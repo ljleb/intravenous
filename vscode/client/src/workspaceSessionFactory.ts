@@ -22,7 +22,6 @@ export class WorkspaceSessionFactory {
     create(
         workspaceFolder: vscode.WorkspaceFolder,
         outputChannel: vscode.OutputChannel,
-        laneTopologyDiagnostics: vscode.OutputChannel,
         provider: LiveGraphProviderLike,
         modulesProvider: ModulesViewProviderLike,
         highlighter: NodeSpanHighlighter,
@@ -30,7 +29,6 @@ export class WorkspaceSessionFactory {
         return new WorkspaceSession(
             workspaceFolder,
             outputChannel,
-            laneTopologyDiagnostics,
             provider,
             modulesProvider,
             highlighter,

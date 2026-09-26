@@ -70,7 +70,7 @@ struct PackageImportPlan {
     // One group per compile-local package module. All selected callback and
     // retained-global roots must be known before that module is consumed once.
     std::vector<PackageImportGroup> packages{};
-    // Background by analyzed concrete primitive. Several primitives may share one
+    // One entry per analyzed concrete primitive. Several primitives may share one
     // imported callback when they select the same package-local implementation.
     std::vector<PrimitiveCallbackPlan> primitive_callbacks{};
 };
@@ -110,7 +110,7 @@ struct PrimitiveSampleInputChannelBindingPlan {
 
 struct PrimitiveSampleInputBindingPlan {
     // Canonical target-channel order. Each semantic channel may resolve to a
-    // different storage storage/capacity/timing. Materialized inputs
+    // different storage/capacity/timing. Materialized inputs
     // simply bind every channel to the corresponding channel of one target
     // storage.
     std::vector<PrimitiveSampleInputChannelBindingPlan> channels{};
@@ -127,7 +127,7 @@ struct PrimitiveSampleOutputBindingPlan {
 };
 
 struct PrimitiveSamplePortPlan {
-    // Planning remains background by declared storage sample-port index.
+    // Entry positions correspond to declared storage sample-port indices.
     // Lowering compacts realtime outputs into the tick ABI; background outputs
     // instead receive bindings from the background executor.
     std::vector<PrimitiveSampleInputBindingPlan> inputs{};
@@ -136,7 +136,7 @@ struct PrimitiveSamplePortPlan {
 
 struct SamplePortBindingPlan {
     SampleStoragePlan storage{};
-    // Background by analyzed concrete primitive.
+    // One entry per analyzed concrete primitive.
     std::vector<PrimitiveSamplePortPlan> primitives{};
 
     [[nodiscard]] bool empty() const noexcept
@@ -205,7 +205,7 @@ struct PrimitiveEventInputBindingPlan {
 };
 
 struct PrimitiveEventOutputBindingPlan {
-    // Planning remains background by declared storage event-port index. Only
+    // Entry positions correspond to declared storage event-port indices. Only
     // realtime entries are emitted into ReflectedNodeTickContext.
     bool realtime = true;
     std::optional<std::size_t> storage{};
@@ -329,9 +329,10 @@ struct PrimitiveEventPortPlan {
 };
 
 struct EventPortBindingPlan {
-    // Background by ConnectionAnalysisPlan::event_producer_groups. These are the
-    // final lowering decisions after concrete producer buffers and operations
-    // are known; connection analysis carries only the temporal requirements.
+    // Entry positions correspond to
+    // ConnectionAnalysisPlan::event_producer_groups. These are the final
+    // lowering decisions after concrete producer buffers and operations are known;
+    // connection analysis carries only the temporal requirements.
     std::vector<std::optional<EventConnectionStoragePlan>>
         producer_group_storage_plans{};
     std::vector<std::optional<std::size_t>> producer_home_source_indices{};
@@ -346,7 +347,7 @@ struct EventPortBindingPlan {
     std::vector<EventTransientAllocationPlan> transient_allocations{};
     std::size_t transient_arena_size = 0;
     std::size_t transient_arena_alignment = 1;
-    // Background by analyzed concrete primitive.
+    // One entry per analyzed concrete primitive.
     std::vector<PrimitiveEventPortPlan> primitives{};
 };
 

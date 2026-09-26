@@ -201,7 +201,7 @@ namespace iv {
 
         static constexpr std::array<Edge, 6> edges() noexcept
         {
-            // Only conversions with objective payload semantics belong here.
+            // Only conversions with objective data semantics belong here.
             // Trigger and Empty are sink-like event types: information-rich
             // types may collapse into them, but neither may invent information
             // required by MIDI/Boundary.
@@ -456,7 +456,7 @@ namespace iv {
 
     // Static event-buffer sizing rule. For a representation whose relevant
     // temporal span is W samples, reserve ceil(max_events_per_index * W)
-    // event slots before any storage power-of-two sequence rounding. This is
+    // event entries before any storage power-of-two sequence rounding. This is
     // sizing metadata, not a runtime producer quota. Runtime writers are bounded
     // only by the storage representation capacity; overflow clipping is not a
     // semantic guarantee.
@@ -1653,7 +1653,7 @@ namespace iv {
     struct EventOutputProperties {
         EventTypeId type {};
         // Static storage-sizing rate. For a representation spanning W samples,
-        // GraphJIT reserves ceil(max_events_per_index * W) event slots. This
+        // GraphJIT reserves ceil(max_events_per_index * W) event entries. This
         // does not constrain how events are distributed among sample timestamps.
         double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
     };
@@ -1757,7 +1757,7 @@ namespace iv {
         return 0;
     }
 
-    // Authored declarations keep payload kind and temporal/access semantics
+    // Authored declarations keep data kind and temporal/access semantics
     // orthogonal. RandomAccess inputs also expose their ordinary current-block
     // typed wrappers in tick()/tick_block().
     struct InputConfig {

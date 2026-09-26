@@ -16,7 +16,7 @@ struct InvalidReplayWithRandomAccess {
     void tick(iv::TickSampleContext<InvalidReplayWithRandomAccess> const&) const {}
 };
 
-// An authored block callback cannot be substituted by synthesized pointwise
+// An authored block callback cannot be substituted by generated pointwise
 // replay even if the type also happens to provide tick().
 struct InvalidReplayWithBlock {
     static constexpr bool intrinsically_replayable = true;

@@ -393,7 +393,7 @@ namespace iv {
         static_assert(voice_count > 0, "iv::polyphonic requires at least one voice");
 
         auto const midi = g.event_input<"midi">(EventTypeId::midi);
-        auto process_lane = [&]<size_t VoiceIndex>() {
+        auto process_voice = [&]<size_t VoiceIndex>() {
             auto voice = g.subgraph([&](auto& s){
                 auto const voice_midi = s.template event_input<"midi">(EventTypeId::midi);
                 auto midi_driver = details::configure_concrete_node<
@@ -408,7 +408,7 @@ namespace iv {
         };
 
         [&]<size_t... VoiceIndices>(std::index_sequence<VoiceIndices...>) {
-            (process_lane.template operator()<VoiceIndices>(), ...);
+            (process_voice.template operator()<VoiceIndices>(), ...);
         }(std::make_index_sequence<voice_count>{});
     }
 }

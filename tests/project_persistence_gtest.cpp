@@ -148,7 +148,6 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
     EXPECT_EQ(commands[2].args["display_name"], "B");
 
     for (auto const &command : commands) {
-        EXPECT_FALSE(command.args.contains("lane_id"));
         EXPECT_FALSE(command.args.contains("graph_input"));
         EXPECT_FALSE(command.args.contains("compiled_sample_cache_chunk_size_multiplier"));
     }

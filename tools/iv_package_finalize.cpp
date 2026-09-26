@@ -335,9 +335,9 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
             .state_size = constant_size(record->getOperand(4), "state size"),
             .state_alignment = constant_size(record->getOperand(5), "state alignment"),
             .background_state_size = constant_size(
-                record->getOperand(6), "indexed state size"),
+                record->getOperand(6), "background state size"),
             .background_state_alignment = constant_size(
-                record->getOperand(7), "indexed state alignment"),
+                record->getOperand(7), "background state alignment"),
             .initializer = record,
         });
     }
@@ -431,10 +431,6 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         if (!parsed) fail("invalid metadata JSON in '" + entry.path().string() + "': " + error_string(parsed.takeError()));
         auto* object = parsed->getAsObject();
         if (!object) fail("metadata root is not an object in '" + entry.path().string() + "'");
-        auto version = object->getInteger("version");
-        if (!version || *version != 1) {
-            fail("unsupported compiler metadata version in '" + entry.path().string() + "'");
-        }
         auto* states = object->getArray("states");
         if (!states) {
             fail("metadata has no state array in '" + entry.path().string() + "'");
@@ -1271,12 +1267,12 @@ void inject_package_configuration_metadata(
     }
     std::vector<Constant*> globals;
     globals.reserve(retained_globals.size());
-    for (std::size_t ordinal = 0; ordinal < retained_globals.size(); ++ordinal) {
+    for (std::size_t index = 0; index < retained_globals.size(); ++index) {
         globals.push_back(ConstantStruct::get(
             retained_global_type,
-            ConstantExpr::getPointerCast(retained_globals[ordinal].global, pointer_type),
-            ConstantInt::get(size_type, retained_globals[ordinal].size),
-            ConstantInt::get(size_type, ordinal)));
+            ConstantExpr::getPointerCast(retained_globals[index].global, pointer_type),
+            ConstantInt::get(size_type, retained_globals[index].size),
+            ConstantInt::get(size_type, index)));
     }
     if (globals.empty()) {
         emit_view_accessor(

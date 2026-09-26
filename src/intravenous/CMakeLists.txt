@@ -160,9 +160,6 @@ function(iv_add_host_runtime_objects target)
         intravenous_runtime_project_graph_events
         intravenous_runtime_package_pipeline_events
         intravenous_runtime_iv_module_source_introspection_events
-        intravenous_runtime_lane_filters_events
-        intravenous_runtime_lane_views_events
-        intravenous_runtime_lanes_visualization_events
         intravenous_runtime_runtime_project_events
         intravenous_runtime_project_persistence_events
         intravenous_runtime_socket_rpc_events
@@ -359,18 +356,6 @@ iv_add_linker_event_object(
     runtime/iv_module_source_introspection_linker_events.cpp
 )
 iv_add_linker_event_object(
-    intravenous_runtime_lane_filters_events
-    runtime/lane_filters_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_lane_views_events
-    runtime/lane_views_events.cpp
-)
-iv_add_linker_event_object(
-    intravenous_runtime_lanes_visualization_events
-    runtime/lanes_visualization_events.cpp
-)
-iv_add_linker_event_object(
     intravenous_runtime_runtime_project_events
     runtime/runtime_project_linker_events.cpp
 )
@@ -412,14 +397,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/package_jit.cpp
     runtime/package_watcher.cpp
     runtime/package_watcher_service.cpp
-    runtime/lane_filters.cpp
-    runtime/lane_filters_lane_views_bridge.cpp
-    runtime/lane_views_lanes_visualization_bridge.cpp
-    runtime/lane_views.cpp
-    runtime/lanes_visualization.cpp
-    runtime/lane_view_service.cpp
-    runtime/lane_query_schema_service.cpp
-    runtime/lane_query_schema_events.cpp
     runtime/iv_module_source_introspection.cpp
     runtime/iv_module_source_introspection_events.cpp
     runtime/project_persistence.cpp
@@ -431,9 +408,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/project_persistence_node_instances_bridge.cpp
     runtime/project_persistence_project_graph_bridge.cpp
     runtime/project_persistence_package_jit_bridge.cpp
-    runtime/socket_rpc_lane_views_bridge.cpp
-    runtime/socket_rpc_lane_query_schema_bridge.cpp
-    runtime/socket_rpc_lane_query_completion_bridge.cpp
     runtime/socket_rpc_system_audio_devices_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
     runtime/socket_rpc_node_instances_bridge.cpp
@@ -441,18 +415,12 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_package_definitions_bridge.cpp
     runtime/socket_rpc_project_autosave_bridge.cpp
     runtime/socket_rpc_project_persistence_bridge.cpp
-    runtime/lanes_visualization_socket_rpc_notification_bridge.cpp
     runtime/socket_rpc_json_serialization.cpp
     runtime/socket_rpc_requests.cpp
     runtime/socket_rpc_response_builders.cpp
     runtime/socket_rpc_server.cpp
     runtime/startup_config.cpp
     runtime/uuid.cpp
-    query/lane_query_engine.cpp
-    query/lane_query_completion.cpp
-    query/lane_query_parser.cpp
-    query/lane_query_program.cpp
-    query/lane_query_tokenizer.cpp
 )
 iv_configure_intravenous_target(intravenous_tooling_runtime_objects PUBLIC)
 target_compile_definitions(intravenous_tooling_runtime_objects PRIVATE

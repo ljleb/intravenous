@@ -82,48 +82,6 @@ std::vector<std::string> parse_string_array_param(Json const &params, std::strin
     return values;
 }
 
-uint64_t parse_uint64_param(Json const &params, std::string const &key) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || !value_it->is_number_integer()) {
-        throw std::runtime_error("JSON-RPC request is missing integer param '" + key + "'");
-    }
-    auto const value = value_it->get<int64_t>();
-    if (value < 0) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
-    }
-    return static_cast<uint64_t>(value);
-}
-
-std::optional<uint64_t> parse_optional_uint64_param(Json const &params, std::string const &key) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || value_it->is_null()) {
-        return std::nullopt;
-    }
-    if (!value_it->is_number_integer()) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be a non-negative integer");
-    }
-    auto const value = value_it->get<int64_t>();
-    if (value < 0) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
-    }
-    return static_cast<uint64_t>(value);
-}
-
-size_t parse_optional_size_param(Json const &params, std::string const &key, size_t fallback) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || value_it->is_null()) {
-        return fallback;
-    }
-    if (!value_it->is_number_integer()) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be a non-negative integer");
-    }
-    auto const value = value_it->get<int64_t>();
-    if (value < 0) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
-    }
-    return static_cast<size_t>(value);
-}
-
 uint32_t parse_uint32_value(Json const &value, std::string const &context) {
     if (!value.is_number_integer()) {
         throw std::runtime_error(context);
@@ -201,46 +159,6 @@ SourceRangeMatchMode parse_match_mode(Json const &params) {
     throw std::runtime_error("graph.queryBySpans match must be 'union' or 'intersection'");
 }
 
-LaneQueryFilter parse_lane_query_filter(Json const &params) {
-    auto const filter_it = params.find("filter");
-    if (filter_it == params.end() || !filter_it->is_object()) {
-        throw std::runtime_error("lane requests require a filter object");
-    }
-    auto const query_it = filter_it->find("query");
-    if (query_it != filter_it->end()) {
-        if (!query_it->is_string()) {
-            throw std::runtime_error("lane filter.query must be a string");
-        }
-        return LaneQueryFilter{.source = query_it->get<std::string>()};
-    }
-    auto const kind_it = filter_it->find("kind");
-    if (kind_it == filter_it->end() || !kind_it->is_string()) {
-        throw std::runtime_error("lane filter must provide string query or kind");
-    }
-    auto const kind = kind_it->get<std::string>();
-    if (kind == "graphInputs") {
-        return LaneQueryFilter{.source = "dsp_graph.graph_input"};
-    }
-    return LaneQueryFilter{.source = kind};
-}
-
-LaneQuery parse_lane_query(Json const &params) {
-    return LaneQuery{.filter = parse_lane_query_filter(params)};
-}
-
-LaneViewRequest parse_lane_view_request(Json const &params) {
-    return LaneViewRequest{
-        .view_id = parse_optional_nullable_string_param(params, "viewId").has_value()
-            ? InternedString::from_string(*parse_optional_nullable_string_param(params, "viewId"))
-            : InternedString{},
-        .query = parse_lane_query(params),
-        .start_index = parse_optional_size_param(params, "startIndex", 0),
-        .visible_lane_count = parse_optional_size_param(params, "visibleLaneCount", 0),
-        .first_sample_index = parse_optional_size_param(params, "firstSampleIndex", 0),
-        .last_sample_index = parse_optional_size_param(params, "lastSampleIndex", 0),
-        .display_sample_count = parse_optional_size_param(params, "displaySampleCount", 0),
-    };
-}
 } // namespace
 
 ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
@@ -326,27 +244,6 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     }
     if (method == "project.disableAutosave") {
         return {.request_id = request_id, .payload = DisableProjectAutosaveRequest{}};
-    }
-    if (method == "timeline.openLaneView" || method == "timeline.updateLaneView") {
-        auto request_payload = parse_lane_view_request(params);
-        if (method == "timeline.openLaneView") {
-            return {.request_id = request_id, .payload = OpenLaneViewRpcRequest{
-                .request = std::move(request_payload)}};
-        }
-        return {.request_id = request_id, .payload = UpdateLaneViewRpcRequest{
-            .request = std::move(request_payload)}};
-    }
-    if (method == "timeline.getLaneQuerySchema") {
-        return {.request_id = request_id, .payload = GetLaneQuerySchemaRequest{}};
-    }
-    if (method == "timeline.completeLaneQuery") {
-        return {.request_id = request_id, .payload = CompleteLaneQueryRequest{
-            .source = parse_string_param(params, "source"),
-            .cursor_offset = static_cast<size_t>(parse_uint64_param(params, "cursorOffset")),
-            .schema_revision = parse_optional_uint64_param(params, "schemaRevision")}};
-    }
-    if (method == "timeline.closeLaneView") {
-        return {.request_id = request_id, .payload = parse_string_param(params, "viewId")};
     }
     if (method == "server.shutdown") {
         return {.request_id = request_id, .payload = ServerShutdownRequest{}};

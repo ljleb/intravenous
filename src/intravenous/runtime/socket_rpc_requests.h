@@ -1,6 +1,5 @@
 #pragma once
 
-#include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 
 #include <filesystem>
@@ -46,17 +45,6 @@ struct SetAudioDevicesRequest {
     std::optional<std::string> input_device_id {};
 };
 
-// Retained but intentionally disconnected while the canonical project graph
-// replaces the deleted timeline-lane execution source.
-struct OpenLaneViewRpcRequest { LaneViewRequest request{}; };
-struct UpdateLaneViewRpcRequest { LaneViewRequest request{}; };
-struct GetLaneQuerySchemaRequest {};
-struct CompleteLaneQueryRequest {
-    std::string source {};
-    size_t cursor_offset = 0;
-    std::optional<std::uint64_t> schema_revision {};
-};
-
 struct SaveProjectRequest {};
 struct EnableProjectAutosaveRequest {};
 struct DisableProjectAutosaveRequest {};
@@ -76,16 +64,11 @@ using SocketRpcRequestPayload = std::variant<
     UpdateIvModuleInstancesRequest,
     GetAudioDevicesRequest,
     SetAudioDevicesRequest,
-    OpenLaneViewRpcRequest,
-    UpdateLaneViewRpcRequest,
-    GetLaneQuerySchemaRequest,
-    CompleteLaneQueryRequest,
     SaveProjectRequest,
     EnableProjectAutosaveRequest,
     DisableProjectAutosaveRequest,
     ServerShutdownRequest,
-    UnsupportedSocketRpcRequest,
-    std::string>;
+    UnsupportedSocketRpcRequest>;
 
 struct ParsedSocketRpcRequest {
     int request_id = 0;

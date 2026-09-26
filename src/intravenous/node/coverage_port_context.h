@@ -2,7 +2,7 @@
 
 // Public, execution-independent background sample/event port and callback API.
 // The executor owns coverage, requests, result storage, and cache pages; these
-// views only expose the bindings selected for one node invocation.
+// views only expose the storage selected for one node invocation.
 
 #include <intravenous/coverage.h>
 #include <intravenous/node/static_port_access.h>
@@ -57,7 +57,7 @@ struct RandomAccessSampleInputPort {
         IV_ASSERT(coverage().contains(index),
             "background sample input read lies outside published coverage");
         IV_ASSERT(read_sample != nullptr,
-            "background sample input has no read binding");
+            "background sample input has no readable storage");
         return read_sample(data, index, channel);
     }
 };
@@ -78,7 +78,7 @@ struct TockSampleOutputPort {
         IV_ASSERT(requested_coverage().contains(index),
             "background sample output write lies outside requested coverage");
         IV_ASSERT(write_sample != nullptr,
-            "background sample output has no write binding");
+            "background sample output has no writable storage");
         write_sample(data, index, channel, value);
     }
 };
@@ -107,7 +107,7 @@ struct RandomAccessEventInputPort {
             "background event input read lies outside published coverage");
         if (region.empty()) return;
         IV_ASSERT(for_each_event != nullptr,
-            "background event input has no segmented read binding");
+            "background event input has no readable segmented storage");
         using Visitor = std::remove_reference_t<Fn>;
         for_each_event(
             data,
@@ -142,7 +142,7 @@ struct TockEventOutputPort {
         IV_ASSERT(requested_coverage().contains(event.time),
             "background event output write lies outside requested coverage");
         IV_ASSERT(write_event != nullptr,
-            "background event output has no write binding");
+            "background event output has no writable storage");
         // The callback contract requires nondecreasing timestamps for each
         // output invocation. The concrete sink may validate that in debug
         // builds without imposing a release-time sorting pass here.

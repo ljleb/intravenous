@@ -202,10 +202,10 @@ namespace iv {
                     to_sample(r[3]),
                 });
 
-                auto const first_lane = (group == first_group) ? (start & 3u) : 0u;
-                auto const last_lane  = (group == last_group)  ? ((end - 1) & 3u) : 3u;
+                auto const first_offset = (group == first_group) ? (start & 3u) : 0u;
+                auto const last_offset  = (group == last_group)  ? ((end - 1) & 3u) : 3u;
 
-                std::span<Sample const> span{tmp.data() + first_lane, last_lane - first_lane + 1};
+                std::span<Sample const> span{tmp.data() + first_offset, last_offset - first_offset + 1};
                 ctx.outputs[0].push_block(span);
             }
         }

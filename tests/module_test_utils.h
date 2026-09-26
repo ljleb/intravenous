@@ -65,7 +65,7 @@ namespace iv::test {
 
     inline void load_test_default_package_catalog(iv::ModuleLoader& loader)
     {
-        // Direct-loader tests have no PackageWatcherService. Seed the same
+        // Direct-loader tests have no PackageWatcherService. Initialize the same
         // catalog state it would provide from the package staged in the active
         // CMake build tree, never from the checkout's source directory.
         auto defaults = loader.load_packages({

@@ -28,7 +28,7 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionRequiresBindi
     iv::NodeDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
 
-    definitions.seed_loaded_definition(make_loaded_definition(workspace));
+    definitions.initialize_loaded_definition(make_loaded_definition(workspace));
     auto const result = introspection.query_active_regions(
         std::filesystem::weakly_canonical(workspace / "module.cpp"));
     EXPECT_TRUE(result.source_spans.empty());
@@ -49,7 +49,7 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionForwardsWhenB
     auto loaded = iv::test::load_runtime_iv_module_definition(
         startup,
         std::filesystem::weakly_canonical(workspace));
-    definitions.seed_loaded_definition(iv::PackageModuleDefinition{
+    definitions.initialize_loaded_definition(iv::PackageModuleDefinition{
         .package_id = loaded.package_id,
         .definition_id = loaded.definition_id,
         .package_root = loaded.package_root,
@@ -101,7 +101,7 @@ TEST(InstanceDefinitionBridges, InstanceCreatedAfterDefinitionPublicationRealize
         iv::project_graph_graph_connections_bridge::bind(
             project_graph, graph_connections);
 
-    definitions.seed_loaded_definition(
+    definitions.initialize_loaded_definition(
         make_loaded_definition(package_root, std::string(module_id)));
     EXPECT_TRUE(instances.list_instances().empty());
 

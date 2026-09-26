@@ -280,7 +280,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         }
     }
 
-    auto declared_sample_storage = declare_sample_storage_storage(
+    auto declared_sample_storage = declare_sample_storage(
         layout_builder, sample_ports.storage);
     if (!declared_sample_storage) {
         return std::unexpected(std::move(declared_sample_storage.error()));
@@ -393,7 +393,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             "GraphJit lowering does not yet support declaration-owned auxiliary storage regions");
     }
 
-    auto finalized_sample_storage = finalize_sample_storage_storage(
+    auto finalized_sample_storage = finalize_sample_storage(
         node_layout, sample_ports.storage);
     if (!finalized_sample_storage) {
         return std::unexpected(std::move(finalized_sample_storage.error()));
@@ -414,7 +414,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 || region.alignment != storage.alignment
                 || region.migration_identity != storage.migration_identity
                 || region.raw_initialize_fn != initialize_event_raw_region
-                || !region.raw_initialize_payload.empty()) {
+                || !region.raw_initialize_data.empty()) {
                 return std::unexpected(
                     "GraphJit persistent event storage disagrees with finalized NodeLayout");
             }
@@ -468,7 +468,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 || overflow.alignment != alignof(std::uint64_t)
                 || !overflow.migration_identity.empty()
                 || overflow.raw_initialize_fn != initialize_event_raw_region
-                || !overflow.raw_initialize_payload.empty()) {
+                || !overflow.raw_initialize_data.empty()) {
                 return std::unexpected(
                     "GraphJit event producer telemetry disagrees with finalized NodeLayout");
             }
@@ -1025,7 +1025,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 
         // Validate every actual producer port independently. A composed input
         // can reference several producer groups even though it realizes one
-        // consumer-side storage storage.
+        // consumer-side storage.
         std::vector<NodeBundlePortId> source_ports_seen;
         for (std::size_t channel_index = 0;
              channel_index < connection.source_channel_timings.size();
@@ -1316,7 +1316,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         if (source.group_index >= plan.storage.producer_groups.size()
             || !plan.storage.producer_groups[source.group_index]) {
             return std::unexpected(
-                "GraphJit sample source lost its producer storage storage");
+                "GraphJit sample source lost its producer storage");
         }
         auto const output =
             plan.storage.producer_groups[source.group_index]
@@ -1324,7 +1324,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         if (output == no_sample_representation
             || output >= plan.storage.representations.size()) {
             return std::unexpected(
-                "GraphJit sample source references an invalid storage storage");
+                "GraphJit sample source references an invalid storage");
         }
         auto& source_binding =
             plan.primitives[source.source_primitive].outputs[source.source_port];
@@ -1350,7 +1350,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             || target.connection_index
                 >= plan.storage.connection_channel_bindings.size()) {
             return std::unexpected(
-                "GraphJit sample target lost its connection storage binding");
+                "GraphJit sample target lost its connection storage");
         }
 
         auto& target_binding =
@@ -1369,14 +1369,14 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 *plan.storage.connection_channel_bindings[target.connection_index];
             if (channel_bindings.size() != target_channel_count) {
                 return std::unexpected(
-                    "GraphJit sample target channel binding count disagrees with its target layout");
+                    "GraphJit sample target storage channel count disagrees with its target layout");
             }
             target_binding.channels.reserve(channel_bindings.size());
             for (auto const& channel : channel_bindings) {
                 if (channel.representation == no_sample_representation
                     || channel.representation >= plan.storage.representations.size()) {
                     return std::unexpected(
-                        "GraphJit sample target channel references an invalid storage storage");
+                        "GraphJit sample target channel references an invalid storage");
                 }
                 auto const& storage =
                     plan.storage.representations[channel.representation];
@@ -1384,7 +1384,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                         >= channel_count(storage.channel_layout)
                     || channel.frame_delay >= storage.frame_capacity) {
                     return std::unexpected(
-                        "GraphJit sample target channel exceeds its storage storage");
+                        "GraphJit sample target channel exceeds its storage");
                 }
                 target_binding.channels.push_back(
                     PrimitiveSampleInputChannelBindingPlan{
@@ -1398,13 +1398,13 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 
         if (!plan.storage.connection_representations[target.connection_index]) {
             return std::unexpected(
-                "GraphJit sample target lost its connection storage storage");
+                "GraphJit sample target lost its connection storage");
         }
         auto const input_representation =
             *plan.storage.connection_representations[target.connection_index];
         if (input_representation >= plan.storage.representations.size()) {
             return std::unexpected(
-                "GraphJit sample target references an invalid storage storage");
+                "GraphJit sample target references an invalid storage");
         }
         auto const& storage =
             plan.storage.representations[input_representation];
@@ -1474,7 +1474,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         auto& binding = plan.primitives[disconnected.primitive]
             .outputs[disconnected.port];
         IV_ASSERT(binding.realtime,
-            "realtime sample binding disagrees with its port declaration");
+            "Tick sample storage disagrees with its port declaration");
         binding.storage = storage;
         binding.history = port_history(disconnected.config);
         binding.latency = tick_latency(disconnected.config);
@@ -4049,7 +4049,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             auto const config = input.graph.node_bundles
                 .resolve_event_output(port_id).config;
             IV_ASSERT(is_tick(config.production),
-                "realtime event binding disagrees with its port declaration");
+                "Tick event storage disagrees with its port declaration");
             auto window_samples = input.specialization.block_size;
             auto const history = port_history(config);
             auto const latency = tick_latency(config);

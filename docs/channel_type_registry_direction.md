@@ -6,8 +6,8 @@ Channel types have one canonical declaration.  That declaration defines their
 named members and is also the closed registry from which static and runtime
 channel information is derived.
 
-The system must support both static configured DSP syntax and runtime lane,
-conversion, persistence, and RPC state.  Static code therefore uses a channel
+The system must support both static configured DSP syntax and runtime
+conversion, persistence, device, and RPC state.  Static code therefore uses a channel
 descriptor type while runtime state uses its stable `ChannelTypeId`.
 
 ## Canonical registry
@@ -54,8 +54,8 @@ explicitly named output families in the same `outputs(...)` call.
 
 ## Runtime and conversion boundary
 
-`ChannelLayout` continues to carry `ChannelTypeId` because lanes, persistence,
-RPC, devices, and runtime-discovered nodes are dynamically shaped.  The ID is
+`ChannelLayout` continues to carry `ChannelTypeId` because persistence, RPC,
+devices, and runtime-discovered nodes are dynamically shaped.  The ID is
 derived from the canonical registry and maps back to a descriptor through the
 closed registry.
 

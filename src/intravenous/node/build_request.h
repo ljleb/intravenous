@@ -224,10 +224,10 @@ IV_FORCEINLINE void with_reflected_sample_ports(
     constexpr auto output_count = reflected_sample_output_count_v<Node>;
     IV_ASSERT(
         ctx.sample_input_bindings.size() == input_count,
-        "reflected sample input binding count does not match node declaration");
+        "reflected sample input storage count does not match node declaration");
     IV_ASSERT(
         ctx.sample_output_bindings.size() == output_count,
-        "reflected sample output binding count does not match node declaration");
+        "reflected sample output storage count does not match node declaration");
 
     auto inputs = reflected_sample_inputs<Node>(
         ctx, index, std::make_index_sequence<input_count>{});
@@ -369,10 +369,10 @@ IV_FORCEINLINE void with_reflected_event_ports(
     constexpr auto output_count = reflected_event_output_count_v<Node>;
     IV_ASSERT(
         ctx.event_input_bindings.size() == input_count,
-        "reflected event input binding count does not match node declaration");
+        "reflected event input storage count does not match node declaration");
     IV_ASSERT(
         ctx.event_output_bindings.size() == output_count,
-        "reflected event output binding count does not match node declaration");
+        "reflected event output storage count does not match node declaration");
 
     ReflectedEventInputPorts<input_count> inputs;
     ReflectedEventOutputPorts<output_count> outputs;

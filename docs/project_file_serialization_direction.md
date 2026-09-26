@@ -31,14 +31,14 @@ through the persistence collection protocol.
 Do **not** persist derived graph/execution state such as:
 
 - `NodeInstances` configured cache entries;
-- compiled configuration-expression thunks/globals;
+- compiled configuration-expression code/retained globals;
 - definition snapshots or package provider callbacks;
 - `GraphBuilder`/`BuilderSession` objects;
 - local-to-parent embedding maps;
 - concrete builder-local node/port/channel handles;
 - resolved connection channel ids;
 - `GraphJit` compiled kernels/ORC resources or `GraphExecutor` pending/active runtime state;
-- volatile physical audio-device objects/bindings.
+- volatile hardware audio-device objects/bindings.
 
 ## Node configuration expressions
 

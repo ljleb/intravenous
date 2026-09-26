@@ -21,8 +21,6 @@
 #include <intravenous/runtime/package_watcher_node_instances_bridge.h>
 #include <intravenous/runtime/package_watcher_service.h>
 #include <intravenous/runtime/package_watcher_service_bridge.h>
-#include <intravenous/runtime/lanes_visualization.h>
-#include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/project_autosave.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_node_instances_bridge.h>
@@ -180,9 +178,6 @@ int run_server_mode(int argc, char** argv)
         },
         startup.output_device_id,
         startup.input_device_id);
-    LanesVisualization lanes_visualization(
-        std::chrono::milliseconds(33),
-        startup.execution.block_size);
     ProjectPersistence project_persistence(startup.workspace_root, startup);
     ProjectAutosave project_autosave;
     SocketRpcServer server(options.workspace_root, options.rpc_fd);
@@ -241,8 +236,7 @@ int run_server_mode(int argc, char** argv)
     auto persistence_autosave_scope =
         project_persistence_project_autosave_bridge::bind(project_persistence, project_autosave);
 
-    // RPC bridges. Lane filters/query/views remain compiled but intentionally
-    // disconnected until a replacement canonical project graph supplies them.
+    // RPC bridges.
     auto rpc_audio_scope =
         socket_rpc_system_audio_devices_bridge::bind(server, system_audio_devices);
     auto rpc_project_graph_scope =
@@ -253,8 +247,6 @@ int run_server_mode(int argc, char** argv)
         socket_rpc_package_definitions_bridge::bind(server, package_definitions);
     auto rpc_introspection_scope =
         socket_rpc_iv_module_source_introspection_bridge::bind(server, introspection);
-    auto visualization_rpc_scope =
-        lanes_visualization_socket_rpc_notification_bridge::bind(lanes_visualization, server);
     auto rpc_persistence_scope =
         socket_rpc_project_persistence_bridge::bind(server, project_persistence);
     auto rpc_autosave_scope =

@@ -13,7 +13,7 @@ namespace iv {
     struct TickContext {
         std::span<InputPort> inputs = {};
         // Output spans contain only realtime-declared ports, in declaration
-        // order within each payload kind. Background outputs belong to tock.
+        // order within each data kind. Background outputs belong to tock.
         std::span<OutputPort> outputs = {};
         std::span<EventInputPort> event_inputs = {};
         std::span<EventOutputPort> event_outputs = {};
@@ -486,7 +486,7 @@ namespace iv {
     // Sequential sample callbacks use invocation-local port facades. A tick()
     // callback owns exactly one sample: after it returns, direct output writes
     // are committed and every input cursor advances by one. do_tick_block()
-    // synthesizes block execution for tick()-only nodes by repeating that exact
+    // generates block execution for tick()-only nodes by repeating that exact
     // transition for each absolute sample index.
     //
     // A native tick_block() callback instead receives facades anchored at the
@@ -551,8 +551,8 @@ namespace iv {
 
     // skip_block() follows the same block anchoring/advancement contract. A
     // custom skip_block owns its output semantics; when absent, the runtime
-    // synthesizes one block of silence for every sample output. Inputs always
-    // advance by block_size after the skip callback/synthesis completes.
+    // generates one block of silence for every sample output. Inputs always
+    // advance by block_size after the skip callback/generated block completes.
     template<typename Node>
     IV_FORCEINLINE void do_skip_block(Node const& node, SkipBlockContext<Node> const& ctx)
     {

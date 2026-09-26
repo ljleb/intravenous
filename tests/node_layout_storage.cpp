@@ -488,13 +488,13 @@ int main()
         // generation swap; shape changes run the new initializer.
         auto fill_raw_region = +[](
             std::span<std::byte> storage,
-            std::span<std::byte const> payload) {
+            std::span<std::byte const> data) {
             iv::test::require(
-                payload.size() == 1,
-                "raw-region initializer should receive its declared payload");
-            std::fill(storage.begin(), storage.end(), payload.front());
+                data.size() == 1,
+                "raw-region initializer should receive its declared data");
+            std::fill(storage.begin(), storage.end(), data.front());
         };
-        auto payload = [](std::byte value) {
+        auto initialize_data = [](std::byte value) {
             return std::vector<std::byte>{value};
         };
 
@@ -504,7 +504,7 @@ int main()
             4,
             "graphjit.test.initialized",
             fill_raw_region,
-            payload(std::byte{0x11}));
+            initialize_data(std::byte{0x11}));
         auto previous_layout = std::move(previous_builder).build();
         auto resources = make_resources();
         auto previous = previous_layout.create_storage(resources);
@@ -525,7 +525,7 @@ int main()
             4,
             "graphjit.test.initialized",
             fill_raw_region,
-            payload(std::byte{0x22}));
+            initialize_data(std::byte{0x22}));
         auto current_layout = std::move(current_builder).build();
         auto current = current_layout.create_storage(resources);
         current.initialize(&previous);
@@ -541,7 +541,7 @@ int main()
             4,
             "graphjit.test.initialized",
             fill_raw_region,
-            payload(std::byte{0x33}));
+            initialize_data(std::byte{0x33}));
         auto reshaped_layout = std::move(reshaped_builder).build();
         auto reshaped = reshaped_layout.create_storage(resources);
         reshaped.initialize(&current);
@@ -581,11 +581,11 @@ int main()
     }
 
     {
-        // The prepared migration path used for safe-point generation swaps must
+        // The migration path used for safe-point generation swaps must
         // preserve the same compiler-owned persistent raw storage contract.
         iv::NodeLayoutBuilder previous_builder(8);
         auto previous_region = previous_builder.declare_raw_region(
-            8, 4, "graphjit.test.prepared");
+            8, 4, "graphjit.test.migration");
         auto previous_layout = std::move(previous_builder).build();
         auto resources = make_resources();
         auto previous = previous_layout.create_storage(resources);
@@ -597,15 +597,15 @@ int main()
 
         iv::NodeLayoutBuilder current_builder(8);
         auto current_region = current_builder.declare_raw_region(
-            8, 4, "graphjit.test.prepared");
+            8, 4, "graphjit.test.migration");
         auto current_layout = std::move(current_builder).build();
         auto current = current_layout.create_storage(resources);
-        auto migration = current.prepare_migration_from(previous);
+        auto migration = current.migration_from(previous);
         migration.commit();
         for (auto const byte : current.region_bytes(current_region)) {
             iv::test::require(
                 byte == std::byte{0x7c},
-                "prepared migration should preserve persistent raw storage");
+                "migration should preserve persistent raw storage");
         }
     }
 
@@ -932,7 +932,7 @@ int main()
             iv::test::require(
                 reloaded.can_move_from(original, 0, 0),
                 "same reflected TockState definition should remain movable across package generations");
-            auto migration = reloaded.prepare_migration_from(original);
+            auto migration = reloaded.migration_from(original);
             migration.commit();
             auto& reloaded_background =
                 *static_cast<BackgroundLifecycleNode::TockState*>(

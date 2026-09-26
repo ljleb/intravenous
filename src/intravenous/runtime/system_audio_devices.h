@@ -30,7 +30,7 @@ struct SystemAudioDevicesBackend {
 
 // Owns only system audio-device state and lifetime. Graph routing and execution
 // attach to this module through future focused bridges; they are deliberately
-// not modeled as device-owned lanes.
+// not modeled as device-owned graph objects.
 class SystemAudioDevices {
     struct ActiveOutputDevice {
         AudioDeviceDescriptor descriptor {};

@@ -16,7 +16,7 @@ Three axes describe an interaction between two units of the application:
 3. **Dependency flow** — which unit knows about the other.
 
 The bridged-module architecture deliberately separates the first axis from the
-third. Bridges make dependency flow static and explicit (both endpoints are
+third. Bridges make dependency flow static and explicit (both participants are
 named in one declaration), while control flow is carried dynamically by events.
 Data flow rides along the same edges as control flow.
 
@@ -241,7 +241,7 @@ leave `D` off the stack by the time `C` raises into it; the visited set still
 contains it, so the violation is caught.
 
 The context travels via the invocation mechanism: `IV_INVOKE_LINKER_EVENT` and
-its variants seed or inherit the context around subscriber dispatch, and
+its variants initialize or inherit the context around subscriber dispatch, and
 `IV_INVOKE_LINKER_EVENT_SOURCE` marks a member as a propagation root. A
 thread-local current context is sufficient for synchronous propagation and
 adds no cost in release builds, where all of this compiles out.
@@ -256,22 +256,22 @@ Recording the causal edge that led to each visit makes the failure
 self-explanatory — not "module entered twice" but the two concrete paths:
 
 ```
-invalid event propagation: module Timeline reached twice
+invalid event propagation: module ProjectGraph reached twice
 
 root:
-    graph_changed
+    source_changed
 
 first path:
-    graph_changed
-      -> Foo::handle_graph_changed
-      -> timeline_changed
-      -> Timeline::handle_timeline_changed
+    source_changed
+      -> PackageDefinitions::handle_source_changed
+      -> definitions_changed
+      -> ProjectGraph::handle_definitions_changed
 
 second path:
-    graph_changed
-      -> Bar::handle_graph_changed
-      -> refresh_requested
-      -> Timeline::handle_refresh_requested
+    source_changed
+      -> NodeDefinitions::handle_source_changed
+      -> nodes_changed
+      -> ProjectGraph::handle_nodes_changed
 ```
 
 Each path is exactly the subscriber -> call chain -> raise sequence that
@@ -338,7 +338,7 @@ parameter; that would infect every module API with an execution concern.
 
 `IV_DECLARE_LINKER_EVENT`, `IV_DEFINE_LINKER_EVENT`, and the linker-section
 representation are unchanged. The section still holds subscriber function
-pointers; the templated bridge thunk already knows the concrete subscriber
+pointers; the templated bridge function already knows the concrete subscriber
 type at exactly the point where module identity is needed, so there is no
 reason to widen the section's ABI with metadata.
 
@@ -411,23 +411,22 @@ On a violation, the first visit's retained path snapshot plus the current path
 yield a full two-path report:
 
 ```
-event propagation re-entered module Timeline
+event propagation re-entered module ProjectGraph
 
 source:
-    iv_project_loaded_event
-    project_persistence.cpp:143
+    project mutation source
 
 first entry:
-    iv_project_loaded_event
-      -> Graph::handle_project_loaded
-      -> iv_timeline_changed_event
-      -> Timeline::handle_timeline_changed
+    source event
+      -> ProjectGraph::handle_first_change
+      -> derived event A
+      -> ConsumerA::handle_change
 
 second entry:
-    iv_project_loaded_event
-      -> GraphInputLanes::handle_project_loaded
-      -> iv_lane_batch_changed_event
-      -> Timeline::handle_lane_batch_changed
+    source event
+      -> ConsumerB::handle_change
+      -> derived event B
+      -> ProjectGraph::handle_second_change
 ```
 
 The runtime checker therefore doubles as an architecture debugger: every

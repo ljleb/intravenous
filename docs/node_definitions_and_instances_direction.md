@@ -84,7 +84,8 @@ implemented architecture.
 The **C++ configuration-expression compiler has not landed yet**. The new
 configuration core currently accepts already-typed erased arguments synchronously.
 The next checkpoint is to compile the durable project argument-list source into an
-owned typed thunk/tuple and feed that result into this same value-level cache path.
+owned typed argument tuple plus its generated operations and feed that result into
+this same value-level cache path.
 
 ## Definitions are providers, not configured instances
 
@@ -186,7 +187,7 @@ must stay alive as long as the configured graph that can reference it.
 There are two distinct reusable products:
 
 1. expression compilation: `(definition version, C++ argument-list source)` ->
-   typed owned argument tuple/thunk;
+   typed owned argument tuple and generated operations;
 2. node instance configuration: `(definition version, typed argument values)` ->
    cached `NodeInstance`.
 

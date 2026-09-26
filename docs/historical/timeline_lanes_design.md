@@ -2,7 +2,7 @@
 
 _Status: behavioral and product-semantics inventory. The canonical ownership and
 execution model in this document is superseded by
-[unified_graph_direction.md](../unified_graph_direction.md). Compiled DSP-port
+[unified_graph_direction.md](./unified_graph_direction.md). Compiled DSP-port
 semantics are superseded more specifically by
 [coverage_and_background_evaluation.md](../coverage_and_background_evaluation.md). In particular, `Timeline`,
 `LaneGraph`, lane execution, timeline-owned compiled resources/caches,

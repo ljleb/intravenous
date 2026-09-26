@@ -535,7 +535,7 @@ TEST_F(
     ASSERT_EQ(demand_only.output_requirements.size(), 3u);
 
     background_observation = {};
-    auto const prepared_input = executor.propagate_coverage(
+    auto const propagation_result = executor.propagate_coverage(
         iv::CoveragePropagationRequest{
             .input_demands = {
                 iv::InputCoverageRequest{
@@ -545,11 +545,11 @@ TEST_F(
             },
         });
     EXPECT_EQ(background_observation.sink_reverse_calls, 0u);
-    ASSERT_EQ(prepared_input.input_requirements.size(), 1u);
-    EXPECT_EQ(prepared_input.input_requirements[0].port, 2u);
-    ASSERT_EQ(prepared_input.output_requirements.size(), 2u);
-    EXPECT_EQ(prepared_input.output_requirements[0].port, 0u);
-    EXPECT_EQ(prepared_input.output_requirements[1].port, 1u);
+    ASSERT_EQ(propagation_result.input_requirements.size(), 1u);
+    EXPECT_EQ(propagation_result.input_requirements[0].port, 2u);
+    ASSERT_EQ(propagation_result.output_requirements.size(), 2u);
+    EXPECT_EQ(propagation_result.output_requirements[0].port, 0u);
+    EXPECT_EQ(propagation_result.output_requirements[1].port, 1u);
 }
 
 TEST_F(GraphExecutorFixture, FailedBackgroundPropagationDoesNotCommitCoverage)

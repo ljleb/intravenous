@@ -37,7 +37,7 @@ Json parse_json_line(std::string_view line)
     return Json::parse(line);
 }
 
-struct SeededIvModuleSourceIntrospectionOwner {
+struct InitializedIvModuleSourceIntrospectionOwner {
     NodeInstances instances;
     NodeDefinitions definitions;
     GraphConnections graph_connections;
@@ -55,7 +55,7 @@ struct SeededIvModuleSourceIntrospectionOwner {
     node_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
 
-    SeededIvModuleSourceIntrospectionOwner(
+    InitializedIvModuleSourceIntrospectionOwner(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots)
@@ -75,7 +75,7 @@ struct SeededIvModuleSourceIntrospectionOwner {
     {
     }
 
-    ~SeededIvModuleSourceIntrospectionOwner() = default;
+    ~InitializedIvModuleSourceIntrospectionOwner() = default;
 
     void initialize()
     {
@@ -87,7 +87,7 @@ struct SeededIvModuleSourceIntrospectionOwner {
             definition.module_id,
             module_root,
             "instance:1");
-        definitions.seed_loaded_definition(std::move(definition));
+        definitions.initialize_loaded_definition(std::move(definition));
     }
 
     void shutdown()
@@ -122,7 +122,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, UnboundQueryEventLeavesBuilderU
 TEST(SocketRpcIvModuleSourceIntrospectionBridge, BoundQueryEventPopulatesBuilderFromOwners)
 {
     auto const workspace = make_project_workspace();
-    SeededIvModuleSourceIntrospectionOwner owner(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionOwner owner(workspace, iv::test::repo_root(), {});
     owner.initialize();
     SocketRpcServer server(workspace, -1);
     auto socket_introspection_scope =

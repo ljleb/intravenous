@@ -48,7 +48,7 @@ public:
 
     // Convenience entry point retained for focused module/bridge tests. It
     // exercises the same accepted-revision publication path as PackageDefinitions.
-    void seed_loaded_definition(PackageModuleDefinition loaded_definition);
+    void initialize_loaded_definition(PackageModuleDefinition loaded_definition);
 
     [[nodiscard]] std::shared_ptr<NodeDefinitionsSnapshot const> snapshot() const;
     [[nodiscard]] std::vector<ModuleNodeDefinition> loaded_module_definitions() const;

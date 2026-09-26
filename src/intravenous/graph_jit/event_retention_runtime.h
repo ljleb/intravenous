@@ -32,7 +32,7 @@ inline constexpr char event_feedback_append_sequence_ring_source_symbol[] =
 #endif
 
 // Raw bounded-sequence helpers used by generated project code. An ordinary
-// persistent carry stores TimedEvent payloads plus its count word; staged
+// persistent carry stores TimedEvent data plus its count word; staged
 // multi-region fan-in additionally stores one compiler-private source index
 // per event. No EventPort or compatibility runtime objects cross invocations.
 extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT std::size_t
@@ -54,7 +54,7 @@ iv_graph_jit_commit_event_carry(
     std::size_t carry_capacity) noexcept;
 
 // Staged fan-in carry preserves the compiler-private semantic source index
-// stored beside each event. The payload array remains the ordinary TimedEvent
+// stored beside each event. The event array remains the ordinary TimedEvent
 // sequence consumed by authored ports.
 extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT std::size_t
 iv_graph_jit_restore_ordered_event_carry(
@@ -80,7 +80,7 @@ iv_graph_jit_commit_ordered_event_carry(
 
 // Advance only the persistent ring's oldest retained index. Producer and
 // consumers continue to share the same TimedEvent storage directly; no retained
-// payload bytes are copied at the root-call boundary.
+// event bytes are copied at the root-call boundary.
 extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT std::size_t
 iv_graph_jit_prune_event_persistent_ring(
     void const* ring_events,

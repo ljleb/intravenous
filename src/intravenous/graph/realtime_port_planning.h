@@ -6,7 +6,7 @@
 
 namespace iv {
 
-// A realtime sample channel group or event stream has only three storage
+// A Tick/Sequential sample channel group or event stream has only three
 // storage plans. Conversion, fan-in, fanout, feedback, and scheduling are
 // operations over these plans rather than additional storage kinds.
 enum class RealtimeBufferStorageKind {
@@ -21,7 +21,7 @@ enum class RealtimeBufferStorageKind {
 // equality. Candidate-specific copy counts can move the crossover earlier;
 // correctness never depends on the weights.
 struct RealtimeStorageCostModel {
-    // Hard limit for the generated root's packed realtime stack buffers. A
+    // Hard limit for the generated root's packed Tick stack buffers. A
     // single candidate larger than this limit is necessarily illegal; GraphJit
     // also checks the final packed sample+event stack and re-plans storage when
     // several individually-legal buffers exceed the limit together.
@@ -33,8 +33,8 @@ struct RealtimeStorageCostModel {
     std::size_t persistent_footprint_byte_weight = 2;
 };
 
-// Operation work that is known before storage residence is selected. Counts
-// are payload values rather than bytes so sample channels and event sequences
+// Operation work that is known before storage placement is selected. Counts
+// are values rather than bytes so sample channels and event sequences
 // can share the same policy. Invariant work is reported for every candidate;
 // candidate-specific work lets topology planning account for producer-home
 // fan-in, conversion/fanout materialization, and similar alternatives without

@@ -45,8 +45,8 @@ must not inspect a bundle kind or call `single_concrete_node()`. The erased
 bundle API supplies counts, name lookup, layouts, lowering to concrete ports,
 topology/concrete-member traversal, import/remap, and annotation storage.
 
-All node refs support ordinal and named sample/event input wiring, sample/event
-connection state, ordinal and named output lookup, event-output access, TTL,
+All node refs support index and named sample/event input wiring, sample/event
+connection state, index and named output lookup, event-output access, TTL,
 source annotation, and diagnostics. A subgraph bundle supports the same common
 operations.
 
@@ -74,7 +74,7 @@ ref.
 
 GraphBuilder lowers bundle ports to concrete ports only when creating concrete
 edges, detach nodes, public outputs, or execution metadata. Native/tiled
-boundaries use pack/unpack adapters. Matching tiled endpoints may lower to
+boundaries use pack/unpack adapters. Matching tiled ports may lower to
 matching mono edges only when their channel types, not merely their widths,
 match.
 

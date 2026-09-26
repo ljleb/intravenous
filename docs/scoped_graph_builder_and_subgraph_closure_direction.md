@@ -22,7 +22,7 @@ The central model is:
 > nested scopes. `ConfiguredGraph` is a completely closed reusable graph value.
 
 The purpose of the change is not to force every construction path through one
-physical representation. The purpose is to give every source-level construction
+storage representation. The purpose is to give every source-level construction
 path the same graph semantics while preserving direct/efficient implementations
 for live scopes and frozen graphs.
 
@@ -348,10 +348,10 @@ same session owner. Connections are ordinary resolved same-session graph edges.
 There are no:
 
 ```text
-foreign endpoint records
+foreign port records
 parent-builder pointers in ConfiguredGraph
 deferred bindings
-external slot objects
+external objects
 "resolve this when embedded into A" states
 ```
 
@@ -361,7 +361,7 @@ explicit instance key.
 
 A B scope containing a connection to an A-local node is valid live graph state,
 but B is not independently snapshotable as a `ConfiguredGraph`; it has a free
-graph capture. A larger enclosing scope that contains both endpoints may still be
+graph capture. A larger enclosing scope that contains both ports may still be
 self-contained and snapshotable.
 
 ## ConfiguredGraph remains absolutely closed
@@ -417,7 +417,7 @@ This operation is only viable when the represented scope is self-contained.
 At minimum, the closedness analysis must reject a snapshot when any semantic
 reference escapes the scope subtree, including:
 
-- sample/event connection endpoints in an ancestor/outside scope;
+- sample/event connection ports in an ancestor/outside scope;
 - public output expressions that reference outside bundles;
 - detach/feedback expressions that reference outside the subtree;
 - virtual/introspection membership that cannot be represented locally;
@@ -631,17 +631,17 @@ authored module/project instance
 /
 annotated construction site
 /
-invocation/member ordinal
+invocation/member index
 /
 nested annotated path
 ```
 
-Ordinal identity is correct for genuinely positional structures such as
+Index identity is correct for genuinely positional structures such as
 `voice[0]`, `voice[1]`, and `voice[2]`.
 
 There is an unavoidable limitation: if a future abstraction represents
 reorderable semantic entities, removing/reordering entries cannot preserve entity
-identity from ordinals alone. That particular abstraction may expose explicit
+identity from indices alone. That particular abstraction may expose explicit
 stable member identity. Such keys must not become mandatory for ordinary
 subgraph construction.
 

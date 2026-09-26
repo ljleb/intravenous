@@ -14,7 +14,7 @@ function sampleNode(): VirtualNode {
         packageIdentity: "module@Oscillator",
         memberCount: 2,
         sampleInputs: [{
-            ordinal: 1,
+            index: 1,
             name: "frequency",
             connectivity: "disconnected",
             defaultValue: 0.5,
@@ -22,29 +22,29 @@ function sampleNode(): VirtualNode {
             stateValue: "overridden",
         }],
         sampleOutputs: [{
-            ordinal: 2,
+            index: 2,
             name: "out",
             connectivity: "connected",
             stateValue: "disconnected",
         }],
         eventInputs: [{
-            ordinal: 3,
+            index: 3,
             name: "gate",
             connectivity: "mixed",
             stateValue: "default",
         }],
         eventOutputs: [{
-            ordinal: 4,
+            index: 4,
             name: "trig",
             connectivity: "connected",
             stateValue: "disconnected",
         }],
         members: [{
-            ordinal: 7,
+            index: 7,
             backingNodeId: "backing-1",
             kind: "Oscillator",
             sampleInputs: [{
-                ordinal: 1,
+                index: 1,
                 name: "frequency",
                 connectivity: "disconnected",
                 defaultValue: 0.5,
@@ -53,19 +53,19 @@ function sampleNode(): VirtualNode {
                 stateValue: "virtualFollow",
             }],
             sampleOutputs: [{
-                ordinal: 2,
+                index: 2,
                 name: "out",
                 connectivity: "connected",
                 stateValue: "disconnected",
             }],
             eventInputs: [{
-                ordinal: 3,
+                index: 3,
                 name: "gate",
                 connectivity: "mixed",
                 stateValue: "virtualFollow",
             }],
             eventOutputs: [{
-                ordinal: 4,
+                index: 4,
                 name: "trig",
                 connectivity: "connected",
                 stateValue: "disconnected",
@@ -84,6 +84,13 @@ test("serializeLiveGraphNodes exposes port state as read-only introspection", ()
     const virtualEventInput = node.groups[2].ports[0];
     const virtualEventOutput = node.groups[3].ports[0];
     const memberSampleInput = node.members[0].groups[0].ports[0];
+
+    assert.equal(virtualSampleInput.index, 1);
+    assert.equal(virtualSampleOutput.index, 2);
+    assert.equal(virtualEventInput.index, 3);
+    assert.equal(virtualEventOutput.index, 4);
+    assert.equal(node.members[0].index, 7);
+    assert.equal(memberSampleInput.index, 1);
 
     assert.equal(virtualSampleInput.stateFamily, "sampleInput");
     assert.equal(virtualSampleInput.stateSummary, "knob value");
@@ -113,23 +120,23 @@ test("serializeLiveGraphNodes treats default-connected concrete ports as connect
         id: "node-1",
         kind: "Module",
         sampleOutputs: [{
-            ordinal: 2,
+            index: 2,
             name: "mix",
             connectivity: "connected",
-            stateValue: "timelineLane",
+            stateValue: "disconnected",
         }],
         members: [{
-            ordinal: 1,
+            index: 1,
             backingNodeId: "backing-1",
             kind: "Member",
             sampleInputs: [{
-                ordinal: 3,
+                index: 3,
                 name: "in",
                 connectivity: "connected",
                 stateValue: "disconnected",
             }],
             sampleOutputs: [{
-                ordinal: 2,
+                index: 2,
                 name: "mix",
                 connectivity: "connected",
                 stateValue: "virtual",

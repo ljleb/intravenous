@@ -3,8 +3,8 @@
 _Status: current project-graph architecture and implementation direction._
 
 This document is the authoritative application-module design for the unified
-project graph after the lane/timeline/task-runner deletion checkpoint. Where it
-conflicts with older lane-oriented or iv-module-specific notes, this document
+project graph after deletion of the legacy execution stack. Where it conflicts
+with older execution-stack or iv-module-specific notes, this document
 wins.
 
 Related documents:
@@ -18,7 +18,7 @@ Related documents:
 - [graph_jit_direction.md](./graph_jit_direction.md)
 - [sequential_port_storage_planning.md](./sequential_port_storage_planning.md)
 - [startup_realization_order.md](./startup_realization_order.md)
-- [unified_graph_direction.md](./unified_graph_direction.md)
+- [unified_graph_direction.md](./historical/unified_graph_direction.md)
 - [event_flows/README.md](./event_flows/README.md)
 
 ## Terminology
@@ -69,7 +69,7 @@ The core package/project-graph modules are:
 | `GraphJit` | synchronously lower, optimize, and ORC-JIT one complete root `ConfiguredGraph` into an immutable `CompiledGraph` generation |
 | `GraphExecutor` | own active/pending compiled generations, mutable node storage, execution requests, state migration, and safe-boundary activation |
 | `IvModuleSourceIntrospection` | derived source/logical-node read model for module nodes only |
-| `SystemAudioDevices` | own system-audio enumeration, stable logical device bindings, physical-device lifetime, buffering, and synchronization |
+| `SystemAudioDevices` | own system-audio enumeration, stable logical device bindings, hardware-device lifetime, buffering, and synchronization |
 | `ProjectPersistence` | load/save normalized persistent state without becoming the canonical owner of instance/connection intent |
 | `ProjectAutosave` | coalesce configured-state mutations and request persistence |
 | `SocketRpcServer` | transport JSON-RPC requests/notifications without becoming the owner of project state |
@@ -290,9 +290,9 @@ templates, lambdas, and other syntax. The whole argument-list source is handed
 to Clang.
 
 The argument-list source is compiled in provider/callee translation-unit
-context so the actual demanded C++ argument types are known. A generated thunk
-can materialize typed globals/owned values and invoke the existing erased
-configuration ABI.
+context so the actual demanded C++ argument types are known. Generated code can
+materialize typed globals/owned values and invoke the existing erased configuration
+ABI.
 
 Each registered configuration signature should expose a generated typed
 operation table for owned erased argument tuples, approximately:
@@ -308,7 +308,7 @@ hash
 Those operations are generated where the real C++ types are known. Do not use
 `memcmp` as semantic argument equality.
 
-The C++ source string can key the expression-thunk compilation cache. The
+The C++ source string can key the configuration-expression compilation cache. The
 semantic node-instance cache should use provider version plus typed argument
 values where equality/hash support is available. If an argument type cannot
 provide safe value comparison, sharing may be disabled for that invocation;
@@ -410,7 +410,7 @@ has been embedded**. This avoids transient failures caused by resolving a
 connection before its target instance exists in the current root transaction.
 
 Persistent connection references use `ProjectNodePortMatcher`, not raw
-builder-local `NodeRef`s and not a newly invented "endpoint" vocabulary.
+builder-local `NodeRef`s without introducing a parallel generic port-address vocabulary.
 
 A matcher is set-valued. It selects a set of matching node ports through:
 
@@ -489,22 +489,20 @@ graph-JIT generation boundary merely to hide avoidable compiler work.
 The executable project itself masquerades as an ordinary zero-input/zero-output
 root node. Its generated declaration operation populates one `NodeLayoutBuilder`;
 the resulting canonical `NodeLayout` covers normal `State`, optional tock-only
-non-semantic `IndexedState`, and root/compiler-owned persistent or bounded reusable
+non-semantic `TockState`, and root/compiler-owned persistent or bounded reusable
 regions. There is no parallel graph-kernel storage arena.
 
 The root has no Tock output ports and therefore no project-wide
 `tock_coverage()`. Whole-project lowering partitions the background evaluation DAG into weakly connected
 planning components, precomputes forward-change/reverse-demand/evaluation order,
-and emits specialized component executors plus immutable endpoint metadata.
+and emits specialized component executors plus immutable port metadata.
 
 The node port schema separates input access
 (`SequentialInputConfig`/`RandomAccessInputConfig`), output production
 (`TickOutputConfig`/`TockOutputConfig`), and `OutputRetention`. All concrete node
 port schemas are static constexpr, including internal builder-created nodes; the
-number and connectivity of their instances remain dynamic graph data. The checked-
-in source has already removed `IndexedProducer` and separately represents output
-retention. Older design revisions used intermediate `Realtime*`/`Indexed*`
-port-config names; the current source uses the independent final schema above.
+number and connectivity of their instances remain dynamic graph data. The checked-in source uses the independent access, production, and retention
+schema above directly.
 
 The existing node traits generate `tick_block()` from `tick()` when no native block
 callback exists. A new explicit replayability type trait validates a restricted
@@ -527,7 +525,7 @@ individual channel capabilities and adds no implicit recorder.
 sequential inputs read an already published stale page as-is, or substitute their
 own `neutral_value` when the required page is missing, without waiting. Persisted outputs never automatically evict generated/finalized covered data; the
 author accepts potentially unbounded memory use. Coverage removal is the only
-semantic reason to stop retaining it, while reader-pinned old physical versions
+semantic reason to stop retaining it, while reader-pinned old storage versions
 live until safe reclamation.
 
 The recording bridge remains the explicit solution for unreproducible sequential
@@ -536,8 +534,8 @@ pass consumes a fixed capture-sequence prefix through F/R/evaluation and publish
 one complete successor. Capture insertion is not page publication.
 
 Persistent page width may continue to follow the fixed whole-graph root block
-quantum as a physical layout choice. Changing root block size is a quiescent
-physical-layout migration, not a semantic invalidation merely because the page
+quantum as a storage layout choice. Changing root block size is a quiescent
+storage-layout migration, not a semantic invalidation merely because the page
 partition changed.
 
 Static whole-project validation still computes semantic SCCs and rejects a
@@ -564,13 +562,13 @@ The initial runtime substrate is in place: a compiled generation is staged into
 executor-owned `NodeStorage` without reading mutable active state, and an explicit
 quiescent whole-root-boundary operation migrates the final active state and publishes
 it. `tick_block()` dispatches only the already-active generation and never performs
-activation, allocation, or lifecycle work. Project-transaction wiring and indexed
-page/payload realization remain the next layer. The executor now also owns the
-reusable indexed propagation workspace for the active realization: it binds the
-compiler-planned endpoint accumulators into `IndexedBatchFrame`, executes exact
+activation, allocation, or lifecycle work. Project-transaction wiring and background
+page/data realization remain the next layer. The executor now also owns the
+reusable background-evaluation propagation workspace for the active realization: it binds the
+compiler-planned port accumulators into `BackgroundEvaluationCall`, executes exact
 generated forward/reverse traversals once per implicated node, and advances the
 propagated coverage baseline only after successful propagation. That checkpoint returns materialization
-requirements; it does not yet run Tock/replay payload evaluation or publish pages.
+requirements; it does not yet run Tock/replay data evaluation or publish pages.
 
 `GraphExecutor` keeps at least:
 
@@ -578,9 +576,9 @@ requirements; it does not yet run Tock/replay payload evaluation or publish page
   pending generation;
 - one canonical `NodeStorage` for each retained executable generation;
 - ordinary lifecycle/migration state for `State` and optional tock-only
-  `IndexedState`;
+  `TockState`;
 - stable canonical persisted-page stores/immutable roots for identifiable
-  Tick/persisted and Tock/persisted outputs, with per-generation endpoint bindings;
+  Tick/persisted and Tock/persisted outputs, with per-generation port mappings;
 - reusable background-evaluation transaction workspace for reverse/forward planning and
   transaction-local `tock/ephemeral` materialization;
 - semantic versions plus monotonically advancing immutable page versions
@@ -595,22 +593,22 @@ requirements; it does not yet run Tock/replay payload evaluation or publish page
 
 Dynamically sized persisted output data is deliberately not part of fixed
 `NodeStorage`. Stable persisted outputs are not owned by one JIT generation merely
-because endpoint ordinals are generation-local: compatible generations rebind stable
+because port indices are generation-local: compatible generations rebind stable
 virtual-node/member/output identities to the same executor-owned canonical page store
-without copying payloads. Ephemeral outputs own no persisted payload.
+without copying data. Ephemeral outputs own no persisted data.
 
 Tick/persisted production reaches that same page store through capture/finalization
 staging rather than a Tock callback. Explicit recorder bridges may share the capture
 pool but retain their authored recording semantics. Capture records are
 pre-publication/background inputs, not a second retained-data representation. A page
-candidate may copy or adopt compatible capture payloads, but Random Access and
+candidate may copy or adopt compatible capture data, but Random Access and
 persisted Sequential playback use the canonical published page abstraction.
 
 Executable-generation reconciliation treats genuinely new semantic nodes as node
 creation events. Outputs participating in background coverage propagation establish
-exact coverage through authored or compiler-synthesized forward-coverage semantics;
+exact coverage through authored or compiler-generated forward-coverage semantics;
 Tock/persisted candidates become publishable only after full materialization.
-A fixed Tick-capture snapshot can seed explicit recorder output changes and can fill
+A fixed Tick-capture snapshot can establish explicit recorder output changes and fill
 Tick/persisted candidate pages. The page version advances when the background
 evaluation/publication transaction commits; capture insertion and JIT compilation
 alone are not page publication or semantic invalidation events.
@@ -619,13 +617,13 @@ Changing the connection set of a random-access input conservatively marks that w
 logical input changed over `old_input_coverage | new_input_coverage`; ordinary
 forward propagation determines downstream effects. Reverse coverage planning is
 value-blind and may conservatively request a larger input region when dependency
-addressing depends on input payload values.
+addressing depends on input data values.
 
 Receiving a new `CompiledGraph` does not mutate an in-progress audio pass.
 The audio thread pins one published page view at the callback boundary, plays present
 pages even when out of date, and substitutes the consuming Sequential input's
 `neutral_value` for missing pages. Tick-time Random Access uses the same selected
-immutable published/prepared snapshot in the preliminary implementation. It never
+immutable published snapshot available at callback entry in the preliminary implementation. It never
 invokes Tock, allocates on a page miss, or waits for replacement. Pending page
 candidates and newly sealed Tick-capture blocks do not become visible mid-callback.
 A background pass uses only the capture-sequence prefix fixed at its start; later
@@ -633,7 +631,7 @@ captures cannot enter that pass.
 
 Persisted output data remains logically retained throughout generated coverage:
 there is no eviction for memory pressure, invalidation or lack of current readers.
-Old immutable physical versions are released only when their reader pins disappear;
+Old immutable storage versions are released only when their reader pins disappear;
 coverage removal is the only semantic reason to stop retaining the data.
 
 Background evaluation uses a coherent `(semantic_version, page_version)` view.
@@ -649,7 +647,7 @@ they are interpreted at the new project rate unless an explicit sampler/resample
 node preserves original timing.
 
 The mechanism intentionally preserves the useful part of the deleted
-`TasksRunner` update model without preserving task-graph or lane semantics.
+legacy execution update model without preserving its task-graph semantics.
 
 If synchronous `GraphJit` compilation fails, `ProjectGraph` retains the desired
 revision and diagnostics but does not invoke `GraphExecutor` with a partial
@@ -671,7 +669,7 @@ value object identifying the logical device, for example:
 state. Code outside `SystemAudioDevices` does not special-case it.
 
 `SystemAudioDevices` must return a stable logical binding for every syntactically
-valid requested device id even when no physical device currently resolves to
+valid requested device id even when no hardware device currently resolves to
 that id.
 
 When unavailable:
@@ -680,12 +678,12 @@ When unavailable:
 - an output-device binding accepts/discards provided blocks.
 
 The same logical binding may transparently begin or stop communicating with a
-physical device as hardware availability changes. Generated nodes therefore do
-not hold a fragile reference directly to a volatile physical device.
+hardware device as hardware availability changes. Generated nodes therefore do
+not hold a fragile reference directly to a volatile hardware device.
 
 A node may resolve its logical binding in `Node::initialize()` directly or via
 an appropriate linker-set query keyed by the stable id value object. The
-binding contract itself must tolerate physical-device disappearance at any
+binding contract itself must tolerate hardware-device disappearance at any
 point during graph execution.
 
 Initially, users create/manage system audio device nodes manually through the
@@ -713,13 +711,13 @@ to reconstruct `ProjectGraph`, including:
 Do not persist:
 
 - `NodeInstances` cache entries;
-- compiled expression thunks;
+- compiled configuration-expression code and retained values;
 - embedding maps;
 - builder-local handles;
 - resolved concrete connection ids;
 - `GraphJit` compiled generations/ORC resources;
 - `GraphExecutor` runtime storage or execution caches;
-- volatile physical audio-device objects.
+- volatile hardware audio-device objects.
 
 Project replay may produce unresolved node instances/connections until package
 loading completes. That is a valid initialized state.
@@ -768,8 +766,8 @@ The implementation checkpoints now stand as follows:
    configuration, batched diagnostics, and reusable frozen-graph value caching.
    Cache invalidation is deliberately whole-snapshot for now.
 4. **Pending independent NodeInstances checkpoint:** compile persisted C++
-   configuration argument-list source into owned typed expression thunks/tuples
-   and feed them into the existing `NodeInstances` value-level cache path.
+   configuration argument-list source into owned typed argument tuples plus the
+   generated operations needed by the existing `NodeInstances` value-level cache path.
 5. **Landed:** `ProjectGraph` is the root-build transaction coordinator without
    duplicating the desired instance/connection sets.
 6. **Landed (semantic connection core):** `GraphConnections` owns desired
@@ -777,11 +775,10 @@ The implementation checkpoints now stand as follows:
    `ProjectNodePortMatcher`s against the complete placement map, applies
    sample/event connections, and preserves dangling matchers with diagnostics.
    Structured persistence and JSON-RPC adapters remain follow-up transport work.
-7. **Landed (fixed state + existing `IndexedPlan` foundation):** canonical
-   `NodeLayout`/`NodeStorage` supports non-semantic tock-only `IndexedState`
-   and compiler-owned raw aligned regions. The current source has removed
-   `IndexedProducer` and recorder-staging planning, independently represents output
-   retention, and retains stable `IndexedPlan` topology metadata. The final
+7. **Landed (fixed state + existing `BackgroundEvaluationPlan` foundation):** canonical
+   `NodeLayout`/`NodeStorage` supports non-semantic tock-only `TockState`
+   and compiler-owned raw aligned regions. The current source independently represents
+   output retention and retains stable `BackgroundEvaluationPlan` topology metadata. The final
    access/production schema names, replayability trait, background-only tock,
    background evaluation DAG, and new capture/publication execution are
    **target work, not landed**.

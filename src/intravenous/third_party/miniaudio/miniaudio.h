@@ -40,10 +40,10 @@ maintained after initialization of the corresponding object.
 ------------------
 The low level API gives you access to the raw audio data of an audio device. It supports playback,
 capture, full-duplex and loopback (WASAPI only). You can enumerate over devices to determine which
-storage device(s) you want to connect to.
+physical device(s) you want to connect to.
 
-The low level API uses the concept of a "device" as the abstraction for storage devices. The idea
-is that you choose a storage device to emit or capture audio from, and then move data to/from the
+The low level API uses the concept of a "device" as the abstraction for physical devices. The idea
+is that you choose a physical device to emit or capture audio from, and then move data to/from the
 device when miniaudio tells you to. Data is delivered to and from devices asynchronously via a
 callback which you specify when initializing the device.
 
@@ -190,8 +190,8 @@ use different formats between playback and capture in a full-duplex configuratio
 convert the data yourself. There are functions available to help you do this which will be
 explained later.
 
-The example above did not specify a storage device to connect to which means it will use the
-operating system's default device. If you have multiple storage devices connected and you want to
+The example above did not specify a physical device to connect to which means it will use the
+operating system's default device. If you have multiple physical devices connected and you want to
 use a specific one you will need to specify the device ID in the configuration, like so:
 
     ```c
@@ -7242,7 +7242,7 @@ Initialization of the context is quite simple. You need to do any necessary init
 callbacks defined in this structure.
 
 Once the context has been initialized you can initialize a device. Before doing so, however, the application may want to know which
-storage devices are available. This is where `onContextEnumerateDevices()` comes in. This is fairly simple. For each device, fire the
+physical devices are available. This is where `onContextEnumerateDevices()` comes in. This is fairly simple. For each device, fire the
 given callback with, at a minimum, the basic information filled out in `ma_device_info`. When the callback returns `MA_FALSE`, enumeration
 needs to stop and the `onContextEnumerateDevices()` function returns with a success code.
 
@@ -8619,7 +8619,7 @@ MA_API ma_device_config ma_device_config_init(ma_device_type deviceType);
 /*
 Initializes a device.
 
-A device represents a storage audio device. The idea is you send or receive audio data from the device to either play it back through a speaker, or capture it
+A device represents a physical audio device. The idea is you send or receive audio data from the device to either play it back through a speaker, or capture it
 from a microphone. Whether or not you should send or receive data from the device (or both) depends on the type of device you are initializing which can be
 playback, capture, full-duplex or loopback. (Note that loopback mode is only supported on select backends.) Sending and receiving audio data to and from the
 device is done via a callback which is fired by miniaudio at periodic time intervals.
@@ -26424,7 +26424,7 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
     void* pMappedDeviceBufferPlayback;
     DWORD prevReadCursorInBytesCapture = 0;
     DWORD prevPlayCursorInBytesPlayback = 0;
-    ma_bool32 storagePlayCursorLoopFlagPlayback = 0;
+    ma_bool32 physicalPlayCursorLoopFlagPlayback = 0;
     DWORD virtualWriteCursorInBytesPlayback = 0;
     ma_bool32 virtualWriteCursorLoopFlagPlayback = 0;
     ma_bool32 isPlaybackDeviceStarted = MA_FALSE;
@@ -26448,15 +26448,15 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
         {
             case ma_device_type_duplex:
             {
-                DWORD storageCaptureCursorInBytes;
-                DWORD storageReadCursorInBytes;
-                hr = ma_IDirectSoundCaptureBuffer_GetCurrentPosition((ma_IDirectSoundCaptureBuffer*)pDevice->dsound.pCaptureBuffer, &storageCaptureCursorInBytes, &storageReadCursorInBytes);
+                DWORD physicalCaptureCursorInBytes;
+                DWORD physicalReadCursorInBytes;
+                hr = ma_IDirectSoundCaptureBuffer_GetCurrentPosition((ma_IDirectSoundCaptureBuffer*)pDevice->dsound.pCaptureBuffer, &physicalCaptureCursorInBytes, &physicalReadCursorInBytes);
                 if (FAILED(hr)) {
                     return ma_result_from_HRESULT(hr);
                 }
 
                 /* If nothing is available we just sleep for a bit and return from this iteration. */
-                if (storageReadCursorInBytes == prevReadCursorInBytesCapture) {
+                if (physicalReadCursorInBytes == prevReadCursorInBytesCapture) {
                     ma_sleep(waitTimeInMilliseconds);
                     continue; /* Nothing is available in the capture buffer. */
                 }
@@ -26465,10 +26465,10 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
                 The current position has moved. We need to map all of the captured samples and write them to the playback device, making sure
                 we don't return until every frame has been copied over.
                 */
-                if (prevReadCursorInBytesCapture < storageReadCursorInBytes) {
+                if (prevReadCursorInBytesCapture < physicalReadCursorInBytes) {
                     /* The capture position has not looped. This is the simple case. */
                     lockOffsetInBytesCapture = prevReadCursorInBytesCapture;
-                    lockSizeInBytesCapture   = (storageReadCursorInBytes - prevReadCursorInBytesCapture);
+                    lockSizeInBytesCapture   = (physicalReadCursorInBytes - prevReadCursorInBytesCapture);
                 } else {
                     /*
                     The capture position has looped. This is the more complex case. Map to the end of the buffer. If this does not return anything,
@@ -26481,7 +26481,7 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
                     } else {
                         /* Lock starting from the start of the buffer. */
                         lockOffsetInBytesCapture = 0;
-                        lockSizeInBytesCapture   = storageReadCursorInBytes;
+                        lockSizeInBytesCapture   = physicalReadCursorInBytes;
                     }
                 }
 
@@ -26524,39 +26524,39 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
                     /* At this point we have input and output data in client format. All we need to do now is convert it to the output device format. This may take a few passes. */
                     for (;;) {
                         ma_uint32 framesWrittenThisIteration;
-                        DWORD storagePlayCursorInBytes;
-                        DWORD storageWriteCursorInBytes;
+                        DWORD physicalPlayCursorInBytes;
+                        DWORD physicalWriteCursorInBytes;
                         DWORD availableBytesPlayback;
                         DWORD silentPaddingInBytes = 0; /* <-- Must be initialized to 0. */
 
-                        /* We need the storage play and write cursors. */
-                        if (FAILED(ma_IDirectSoundBuffer_GetCurrentPosition((ma_IDirectSoundBuffer*)pDevice->dsound.pPlaybackBuffer, &storagePlayCursorInBytes, &storageWriteCursorInBytes))) {
+                        /* We need the physical play and write cursors. */
+                        if (FAILED(ma_IDirectSoundBuffer_GetCurrentPosition((ma_IDirectSoundBuffer*)pDevice->dsound.pPlaybackBuffer, &physicalPlayCursorInBytes, &physicalWriteCursorInBytes))) {
                             break;
                         }
 
-                        if (storagePlayCursorInBytes < prevPlayCursorInBytesPlayback) {
-                            storagePlayCursorLoopFlagPlayback = !storagePlayCursorLoopFlagPlayback;
+                        if (physicalPlayCursorInBytes < prevPlayCursorInBytesPlayback) {
+                            physicalPlayCursorLoopFlagPlayback = !physicalPlayCursorLoopFlagPlayback;
                         }
-                        prevPlayCursorInBytesPlayback  = storagePlayCursorInBytes;
+                        prevPlayCursorInBytesPlayback  = physicalPlayCursorInBytes;
 
                         /* If there's any bytes available for writing we can do that now. The space between the virtual cursor position and play cursor. */
-                        if (storagePlayCursorLoopFlagPlayback == virtualWriteCursorLoopFlagPlayback) {
-                            /* Same loop iteration. The available bytes wraps all the way around from the virtual write cursor to the storage play cursor. */
-                            if (storagePlayCursorInBytes <= virtualWriteCursorInBytesPlayback) {
+                        if (physicalPlayCursorLoopFlagPlayback == virtualWriteCursorLoopFlagPlayback) {
+                            /* Same loop iteration. The available bytes wraps all the way around from the virtual write cursor to the physical play cursor. */
+                            if (physicalPlayCursorInBytes <= virtualWriteCursorInBytesPlayback) {
                                 availableBytesPlayback  = (pDevice->playback.internalPeriodSizeInFrames*pDevice->playback.internalPeriods*bpfDevicePlayback) - virtualWriteCursorInBytesPlayback;
-                                availableBytesPlayback += storagePlayCursorInBytes;    /* Wrap around. */
+                                availableBytesPlayback += physicalPlayCursorInBytes;    /* Wrap around. */
                             } else {
                                 /* This is an error. */
-                                ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_WARNING, "[DirectSound] (Duplex/Playback): Play cursor has moved in front of the write cursor (same loop iteration). storagePlayCursorInBytes=%ld, virtualWriteCursorInBytes=%ld.\n", storagePlayCursorInBytes, virtualWriteCursorInBytesPlayback);
+                                ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_WARNING, "[DirectSound] (Duplex/Playback): Play cursor has moved in front of the write cursor (same loop iteration). physicalPlayCursorInBytes=%ld, virtualWriteCursorInBytes=%ld.\n", physicalPlayCursorInBytes, virtualWriteCursorInBytesPlayback);
                                 availableBytesPlayback = 0;
                             }
                         } else {
-                            /* Different loop iterations. The available bytes only goes from the virtual write cursor to the storage play cursor. */
-                            if (storagePlayCursorInBytes >= virtualWriteCursorInBytesPlayback) {
-                                availableBytesPlayback = storagePlayCursorInBytes - virtualWriteCursorInBytesPlayback;
+                            /* Different loop iterations. The available bytes only goes from the virtual write cursor to the physical play cursor. */
+                            if (physicalPlayCursorInBytes >= virtualWriteCursorInBytesPlayback) {
+                                availableBytesPlayback = physicalPlayCursorInBytes - virtualWriteCursorInBytesPlayback;
                             } else {
                                 /* This is an error. */
-                                ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_WARNING, "[DirectSound] (Duplex/Playback): Write cursor has moved behind the play cursor (different loop iterations). storagePlayCursorInBytes=%ld, virtualWriteCursorInBytes=%ld.\n", storagePlayCursorInBytes, virtualWriteCursorInBytesPlayback);
+                                ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_WARNING, "[DirectSound] (Duplex/Playback): Write cursor has moved behind the play cursor (different loop iterations). physicalPlayCursorInBytes=%ld, virtualWriteCursorInBytes=%ld.\n", physicalPlayCursorInBytes, virtualWriteCursorInBytesPlayback);
                                 availableBytesPlayback = 0;
                             }
                         }
@@ -26579,14 +26579,14 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
                         }
 
 
-                        /* Getting here means there room available somewhere. We limit this to either the end of the buffer or the storage play cursor, whichever is closest. */
+                        /* Getting here means there room available somewhere. We limit this to either the end of the buffer or the physical play cursor, whichever is closest. */
                         lockOffsetInBytesPlayback = virtualWriteCursorInBytesPlayback;
-                        if (storagePlayCursorLoopFlagPlayback == virtualWriteCursorLoopFlagPlayback) {
+                        if (physicalPlayCursorLoopFlagPlayback == virtualWriteCursorLoopFlagPlayback) {
                             /* Same loop iteration. Go up to the end of the buffer. */
                             lockSizeInBytesPlayback = (pDevice->playback.internalPeriodSizeInFrames*pDevice->playback.internalPeriods*bpfDevicePlayback) - virtualWriteCursorInBytesPlayback;
                         } else {
-                            /* Different loop iterations. Go up to the storage play cursor. */
-                            lockSizeInBytesPlayback = storagePlayCursorInBytes - virtualWriteCursorInBytesPlayback;
+                            /* Different loop iterations. Go up to the physical play cursor. */
+                            lockSizeInBytesPlayback = physicalPlayCursorInBytes - virtualWriteCursorInBytesPlayback;
                         }
 
                         hr = ma_IDirectSoundBuffer_Lock((ma_IDirectSoundBuffer*)pDevice->dsound.pPlaybackBuffer, lockOffsetInBytesPlayback, lockSizeInBytesPlayback, &pMappedDeviceBufferPlayback, &mappedSizeInBytesPlayback, NULL, NULL, 0);
@@ -26684,24 +26684,24 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
 
             case ma_device_type_capture:
             {
-                DWORD storageCaptureCursorInBytes;
-                DWORD storageReadCursorInBytes;
-                hr = ma_IDirectSoundCaptureBuffer_GetCurrentPosition((ma_IDirectSoundCaptureBuffer*)pDevice->dsound.pCaptureBuffer, &storageCaptureCursorInBytes, &storageReadCursorInBytes);
+                DWORD physicalCaptureCursorInBytes;
+                DWORD physicalReadCursorInBytes;
+                hr = ma_IDirectSoundCaptureBuffer_GetCurrentPosition((ma_IDirectSoundCaptureBuffer*)pDevice->dsound.pCaptureBuffer, &physicalCaptureCursorInBytes, &physicalReadCursorInBytes);
                 if (FAILED(hr)) {
                     return MA_ERROR;
                 }
 
                 /* If the previous capture position is the same as the current position we need to wait a bit longer. */
-                if (prevReadCursorInBytesCapture == storageReadCursorInBytes) {
+                if (prevReadCursorInBytesCapture == physicalReadCursorInBytes) {
                     ma_sleep(waitTimeInMilliseconds);
                     continue;
                 }
 
                 /* Getting here means we have capture data available. */
-                if (prevReadCursorInBytesCapture < storageReadCursorInBytes) {
+                if (prevReadCursorInBytesCapture < physicalReadCursorInBytes) {
                     /* The capture position has not looped. This is the simple case. */
                     lockOffsetInBytesCapture = prevReadCursorInBytesCapture;
-                    lockSizeInBytesCapture   = (storageReadCursorInBytes - prevReadCursorInBytesCapture);
+                    lockSizeInBytesCapture   = (physicalReadCursorInBytes - prevReadCursorInBytesCapture);
                 } else {
                     /*
                     The capture position has looped. This is the more complex case. Map to the end of the buffer. If this does not return anything,
@@ -26714,7 +26714,7 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
                     } else {
                         /* Lock starting from the start of the buffer. */
                         lockOffsetInBytesCapture = 0;
-                        lockSizeInBytesCapture   = storageReadCursorInBytes;
+                        lockSizeInBytesCapture   = physicalReadCursorInBytes;
                     }
                 }
 
@@ -26752,9 +26752,9 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
             case ma_device_type_playback:
             {
                 DWORD availableBytesPlayback;
-                DWORD storagePlayCursorInBytes;
-                DWORD storageWriteCursorInBytes;
-                hr = ma_IDirectSoundBuffer_GetCurrentPosition((ma_IDirectSoundBuffer*)pDevice->dsound.pPlaybackBuffer, &storagePlayCursorInBytes, &storageWriteCursorInBytes);
+                DWORD physicalPlayCursorInBytes;
+                DWORD physicalWriteCursorInBytes;
+                hr = ma_IDirectSoundBuffer_GetCurrentPosition((ma_IDirectSoundBuffer*)pDevice->dsound.pPlaybackBuffer, &physicalPlayCursorInBytes, &physicalWriteCursorInBytes);
                 if (FAILED(hr)) {
                     break;
                 }
@@ -26773,29 +26773,29 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
                     continue;
                 }
 
-                if (storagePlayCursorInBytes < prevPlayCursorInBytesPlayback) {
-                    storagePlayCursorLoopFlagPlayback = !storagePlayCursorLoopFlagPlayback;
+                if (physicalPlayCursorInBytes < prevPlayCursorInBytesPlayback) {
+                    physicalPlayCursorLoopFlagPlayback = !physicalPlayCursorLoopFlagPlayback;
                 }
-                prevPlayCursorInBytesPlayback  = storagePlayCursorInBytes;
+                prevPlayCursorInBytesPlayback  = physicalPlayCursorInBytes;
 
                 /* If there's any bytes available for writing we can do that now. The space between the virtual cursor position and play cursor. */
-                if (storagePlayCursorLoopFlagPlayback == virtualWriteCursorLoopFlagPlayback) {
-                    /* Same loop iteration. The available bytes wraps all the way around from the virtual write cursor to the storage play cursor. */
-                    if (storagePlayCursorInBytes <= virtualWriteCursorInBytesPlayback) {
+                if (physicalPlayCursorLoopFlagPlayback == virtualWriteCursorLoopFlagPlayback) {
+                    /* Same loop iteration. The available bytes wraps all the way around from the virtual write cursor to the physical play cursor. */
+                    if (physicalPlayCursorInBytes <= virtualWriteCursorInBytesPlayback) {
                         availableBytesPlayback  = (pDevice->playback.internalPeriodSizeInFrames*pDevice->playback.internalPeriods*bpfDevicePlayback) - virtualWriteCursorInBytesPlayback;
-                        availableBytesPlayback += storagePlayCursorInBytes;    /* Wrap around. */
+                        availableBytesPlayback += physicalPlayCursorInBytes;    /* Wrap around. */
                     } else {
                         /* This is an error. */
-                        ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_WARNING, "[DirectSound] (Playback): Play cursor has moved in front of the write cursor (same loop iterations). storagePlayCursorInBytes=%ld, virtualWriteCursorInBytes=%ld.\n", storagePlayCursorInBytes, virtualWriteCursorInBytesPlayback);
+                        ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_WARNING, "[DirectSound] (Playback): Play cursor has moved in front of the write cursor (same loop iterations). physicalPlayCursorInBytes=%ld, virtualWriteCursorInBytes=%ld.\n", physicalPlayCursorInBytes, virtualWriteCursorInBytesPlayback);
                         availableBytesPlayback = 0;
                     }
                 } else {
-                    /* Different loop iterations. The available bytes only goes from the virtual write cursor to the storage play cursor. */
-                    if (storagePlayCursorInBytes >= virtualWriteCursorInBytesPlayback) {
-                        availableBytesPlayback = storagePlayCursorInBytes - virtualWriteCursorInBytesPlayback;
+                    /* Different loop iterations. The available bytes only goes from the virtual write cursor to the physical play cursor. */
+                    if (physicalPlayCursorInBytes >= virtualWriteCursorInBytesPlayback) {
+                        availableBytesPlayback = physicalPlayCursorInBytes - virtualWriteCursorInBytesPlayback;
                     } else {
                         /* This is an error. */
-                        ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_WARNING, "[DirectSound] (Playback): Write cursor has moved behind the play cursor (different loop iterations). storagePlayCursorInBytes=%ld, virtualWriteCursorInBytes=%ld.\n", storagePlayCursorInBytes, virtualWriteCursorInBytesPlayback);
+                        ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_WARNING, "[DirectSound] (Playback): Write cursor has moved behind the play cursor (different loop iterations). physicalPlayCursorInBytes=%ld, virtualWriteCursorInBytes=%ld.\n", physicalPlayCursorInBytes, virtualWriteCursorInBytesPlayback);
                         availableBytesPlayback = 0;
                     }
                 }
@@ -26816,14 +26816,14 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
                     }
                 }
 
-                /* Getting here means there room available somewhere. We limit this to either the end of the buffer or the storage play cursor, whichever is closest. */
+                /* Getting here means there room available somewhere. We limit this to either the end of the buffer or the physical play cursor, whichever is closest. */
                 lockOffsetInBytesPlayback = virtualWriteCursorInBytesPlayback;
-                if (storagePlayCursorLoopFlagPlayback == virtualWriteCursorLoopFlagPlayback) {
+                if (physicalPlayCursorLoopFlagPlayback == virtualWriteCursorLoopFlagPlayback) {
                     /* Same loop iteration. Go up to the end of the buffer. */
                     lockSizeInBytesPlayback = (pDevice->playback.internalPeriodSizeInFrames*pDevice->playback.internalPeriods*bpfDevicePlayback) - virtualWriteCursorInBytesPlayback;
                 } else {
-                    /* Different loop iterations. Go up to the storage play cursor. */
-                    lockSizeInBytesPlayback = storagePlayCursorInBytes - virtualWriteCursorInBytesPlayback;
+                    /* Different loop iterations. Go up to the physical play cursor. */
+                    lockSizeInBytesPlayback = physicalPlayCursorInBytes - virtualWriteCursorInBytesPlayback;
                 }
 
                 hr = ma_IDirectSoundBuffer_Lock((ma_IDirectSoundBuffer*)pDevice->dsound.pPlaybackBuffer, lockOffsetInBytesPlayback, lockSizeInBytesPlayback, &pMappedDeviceBufferPlayback, &mappedSizeInBytesPlayback, NULL, NULL, 0);
@@ -26887,30 +26887,30 @@ static ma_result ma_device_data_loop__dsound(ma_device* pDevice)
         if (isPlaybackDeviceStarted) {
             for (;;) {
                 DWORD availableBytesPlayback = 0;
-                DWORD storagePlayCursorInBytes;
-                DWORD storageWriteCursorInBytes;
-                hr = ma_IDirectSoundBuffer_GetCurrentPosition((ma_IDirectSoundBuffer*)pDevice->dsound.pPlaybackBuffer, &storagePlayCursorInBytes, &storageWriteCursorInBytes);
+                DWORD physicalPlayCursorInBytes;
+                DWORD physicalWriteCursorInBytes;
+                hr = ma_IDirectSoundBuffer_GetCurrentPosition((ma_IDirectSoundBuffer*)pDevice->dsound.pPlaybackBuffer, &physicalPlayCursorInBytes, &physicalWriteCursorInBytes);
                 if (FAILED(hr)) {
                     break;
                 }
 
-                if (storagePlayCursorInBytes < prevPlayCursorInBytesPlayback) {
-                    storagePlayCursorLoopFlagPlayback = !storagePlayCursorLoopFlagPlayback;
+                if (physicalPlayCursorInBytes < prevPlayCursorInBytesPlayback) {
+                    physicalPlayCursorLoopFlagPlayback = !physicalPlayCursorLoopFlagPlayback;
                 }
-                prevPlayCursorInBytesPlayback  = storagePlayCursorInBytes;
+                prevPlayCursorInBytesPlayback  = physicalPlayCursorInBytes;
 
-                if (storagePlayCursorLoopFlagPlayback == virtualWriteCursorLoopFlagPlayback) {
-                    /* Same loop iteration. The available bytes wraps all the way around from the virtual write cursor to the storage play cursor. */
-                    if (storagePlayCursorInBytes <= virtualWriteCursorInBytesPlayback) {
+                if (physicalPlayCursorLoopFlagPlayback == virtualWriteCursorLoopFlagPlayback) {
+                    /* Same loop iteration. The available bytes wraps all the way around from the virtual write cursor to the physical play cursor. */
+                    if (physicalPlayCursorInBytes <= virtualWriteCursorInBytesPlayback) {
                         availableBytesPlayback  = (pDevice->playback.internalPeriodSizeInFrames*pDevice->playback.internalPeriods*bpfDevicePlayback) - virtualWriteCursorInBytesPlayback;
-                        availableBytesPlayback += storagePlayCursorInBytes;    /* Wrap around. */
+                        availableBytesPlayback += physicalPlayCursorInBytes;    /* Wrap around. */
                     } else {
                         break;
                     }
                 } else {
-                    /* Different loop iterations. The available bytes only goes from the virtual write cursor to the storage play cursor. */
-                    if (storagePlayCursorInBytes >= virtualWriteCursorInBytesPlayback) {
-                        availableBytesPlayback = storagePlayCursorInBytes - virtualWriteCursorInBytesPlayback;
+                    /* Different loop iterations. The available bytes only goes from the virtual write cursor to the physical play cursor. */
+                    if (physicalPlayCursorInBytes >= virtualWriteCursorInBytesPlayback) {
+                        availableBytesPlayback = physicalPlayCursorInBytes - virtualWriteCursorInBytesPlayback;
                     } else {
                         break;
                     }
@@ -32816,7 +32816,7 @@ typedef JackShutdownCallback        ma_JackShutdownCallback;
 #define ma_JackNoStartServer        JackNoStartServer
 #define ma_JackPortIsInput          JackPortIsInput
 #define ma_JackPortIsOutput         JackPortIsOutput
-#define ma_JackPortIsStorage       JackPortIsStorage
+#define ma_JackPortIsPhysical       JackPortIsPhysical
 #else
 typedef ma_uint32               ma_jack_nframes_t;
 typedef int                     ma_jack_options_t;
@@ -32831,7 +32831,7 @@ typedef void (* ma_JackShutdownCallback)  (void* arg);
 #define ma_JackNoStartServer       1
 #define ma_JackPortIsInput         1
 #define ma_JackPortIsOutput        2
-#define ma_JackPortIsStorage      4
+#define ma_JackPortIsPhysical      4
 #endif
 
 typedef ma_jack_client_t* (* ma_jack_client_open_proc)             (const char* client_name, ma_jack_options_t options, ma_jack_status_t* status, ...);
@@ -32946,10 +32946,10 @@ static ma_result ma_context_get_device_info__jack(ma_context* pContext, ma_devic
     pDeviceInfo->nativeDataFormats[0].sampleRate = ((ma_jack_get_sample_rate_proc)pContext->jack.jack_get_sample_rate)((ma_jack_client_t*)pClient);
     pDeviceInfo->nativeDataFormats[0].channels   = 0;
 
-    ppPorts = ((ma_jack_get_ports_proc)pContext->jack.jack_get_ports)((ma_jack_client_t*)pClient, NULL, MA_JACK_DEFAULT_AUDIO_TYPE, ma_JackPortIsStorage | ((deviceType == ma_device_type_playback) ? ma_JackPortIsInput : ma_JackPortIsOutput));
+    ppPorts = ((ma_jack_get_ports_proc)pContext->jack.jack_get_ports)((ma_jack_client_t*)pClient, NULL, MA_JACK_DEFAULT_AUDIO_TYPE, ma_JackPortIsPhysical | ((deviceType == ma_device_type_playback) ? ma_JackPortIsInput : ma_JackPortIsOutput));
     if (ppPorts == NULL) {
         ((ma_jack_client_close_proc)pContext->jack.jack_client_close)((ma_jack_client_t*)pClient);
-        ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_ERROR, "[JACK] Failed to query storage ports.");
+        ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_ERROR, "[JACK] Failed to query physical ports.");
         return MA_FAILED_TO_OPEN_BACKEND_DEVICE;
     }
 
@@ -33149,9 +33149,9 @@ static ma_result ma_device_init__jack(ma_device* pDevice, const ma_device_config
         pDescriptorCapture->sampleRate = ((ma_jack_get_sample_rate_proc)pDevice->pContext->jack.jack_get_sample_rate)((ma_jack_client_t*)pDevice->jack.pClient);
         ma_channel_map_init_standard(ma_standard_channel_map_alsa, pDescriptorCapture->channelMap, ma_countof(pDescriptorCapture->channelMap), pDescriptorCapture->channels);
 
-        ppPorts = ((ma_jack_get_ports_proc)pDevice->pContext->jack.jack_get_ports)((ma_jack_client_t*)pDevice->jack.pClient, NULL, MA_JACK_DEFAULT_AUDIO_TYPE, ma_JackPortIsStorage | ma_JackPortIsOutput);
+        ppPorts = ((ma_jack_get_ports_proc)pDevice->pContext->jack.jack_get_ports)((ma_jack_client_t*)pDevice->jack.pClient, NULL, MA_JACK_DEFAULT_AUDIO_TYPE, ma_JackPortIsPhysical | ma_JackPortIsOutput);
         if (ppPorts == NULL) {
-            ma_log_post(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "[JACK] Failed to query storage ports.");
+            ma_log_post(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "[JACK] Failed to query physical ports.");
             return MA_FAILED_TO_OPEN_BACKEND_DEVICE;
         }
 
@@ -33200,9 +33200,9 @@ static ma_result ma_device_init__jack(ma_device* pDevice, const ma_device_config
         pDescriptorPlayback->sampleRate = ((ma_jack_get_sample_rate_proc)pDevice->pContext->jack.jack_get_sample_rate)((ma_jack_client_t*)pDevice->jack.pClient);
         ma_channel_map_init_standard(ma_standard_channel_map_alsa, pDescriptorPlayback->channelMap, ma_countof(pDescriptorPlayback->channelMap), pDescriptorPlayback->channels);
 
-        ppPorts = ((ma_jack_get_ports_proc)pDevice->pContext->jack.jack_get_ports)((ma_jack_client_t*)pDevice->jack.pClient, NULL, MA_JACK_DEFAULT_AUDIO_TYPE, ma_JackPortIsStorage | ma_JackPortIsInput);
+        ppPorts = ((ma_jack_get_ports_proc)pDevice->pContext->jack.jack_get_ports)((ma_jack_client_t*)pDevice->jack.pClient, NULL, MA_JACK_DEFAULT_AUDIO_TYPE, ma_JackPortIsPhysical | ma_JackPortIsInput);
         if (ppPorts == NULL) {
-            ma_log_post(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "[JACK] Failed to query storage ports.");
+            ma_log_post(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "[JACK] Failed to query physical ports.");
             return MA_FAILED_TO_OPEN_BACKEND_DEVICE;
         }
 
@@ -33260,10 +33260,10 @@ static ma_result ma_device_start__jack(ma_device* pDevice)
     }
 
     if (pDevice->type == ma_device_type_capture || pDevice->type == ma_device_type_duplex) {
-        const char** ppServerPorts = ((ma_jack_get_ports_proc)pContext->jack.jack_get_ports)((ma_jack_client_t*)pDevice->jack.pClient, NULL, MA_JACK_DEFAULT_AUDIO_TYPE, ma_JackPortIsStorage | ma_JackPortIsOutput);
+        const char** ppServerPorts = ((ma_jack_get_ports_proc)pContext->jack.jack_get_ports)((ma_jack_client_t*)pDevice->jack.pClient, NULL, MA_JACK_DEFAULT_AUDIO_TYPE, ma_JackPortIsPhysical | ma_JackPortIsOutput);
         if (ppServerPorts == NULL) {
             ((ma_jack_deactivate_proc)pContext->jack.jack_deactivate)((ma_jack_client_t*)pDevice->jack.pClient);
-            ma_log_post(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "[JACK] Failed to retrieve storage ports.");
+            ma_log_post(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "[JACK] Failed to retrieve physical ports.");
             return MA_ERROR;
         }
 
@@ -33284,10 +33284,10 @@ static ma_result ma_device_start__jack(ma_device* pDevice)
     }
 
     if (pDevice->type == ma_device_type_playback || pDevice->type == ma_device_type_duplex) {
-        const char** ppServerPorts = ((ma_jack_get_ports_proc)pContext->jack.jack_get_ports)((ma_jack_client_t*)pDevice->jack.pClient, NULL, MA_JACK_DEFAULT_AUDIO_TYPE, ma_JackPortIsStorage | ma_JackPortIsInput);
+        const char** ppServerPorts = ((ma_jack_get_ports_proc)pContext->jack.jack_get_ports)((ma_jack_client_t*)pDevice->jack.pClient, NULL, MA_JACK_DEFAULT_AUDIO_TYPE, ma_JackPortIsPhysical | ma_JackPortIsInput);
         if (ppServerPorts == NULL) {
             ((ma_jack_deactivate_proc)pContext->jack.jack_deactivate)((ma_jack_client_t*)pDevice->jack.pClient);
-            ma_log_post(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "[JACK] Failed to retrieve storage ports.");
+            ma_log_post(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "[JACK] Failed to retrieve physical ports.");
             return MA_ERROR;
         }
 
@@ -34064,10 +34064,10 @@ static ma_result ma_get_AudioObject_stream_descriptions(ma_context* pContext, Au
     MA_ASSERT(ppDescriptions != NULL);
 
     /*
-    TODO: Experiment with kAudioStreamPropertyAvailableStorageFormats instead of (or in addition to) kAudioStreamPropertyAvailableVirtualFormats. My
+    TODO: Experiment with kAudioStreamPropertyAvailablePhysicalFormats instead of (or in addition to) kAudioStreamPropertyAvailableVirtualFormats. My
           MacBook Pro uses s24/32 format, however, which miniaudio does not currently support.
     */
-    propAddress.mSelector = kAudioStreamPropertyAvailableVirtualFormats; /*kAudioStreamPropertyAvailableStorageFormats;*/
+    propAddress.mSelector = kAudioStreamPropertyAvailableVirtualFormats; /*kAudioStreamPropertyAvailablePhysicalFormats;*/
     propAddress.mScope    = (deviceType == ma_device_type_playback) ? kAudioObjectPropertyScopeOutput : kAudioObjectPropertyScopeInput;
     propAddress.mElement  = AUDIO_OBJECT_PROPERTY_ELEMENT;
 
@@ -42843,7 +42843,7 @@ static ma_thread_result MA_THREADCALL ma_worker_thread(void* pData)
         /*
         After the device has stopped, make sure an event is posted. Don't post a stopped event if
         stopping failed. This can happen on some backends when the underlying stream has been
-        stopped due to the device being storagely unplugged or disabled via an OS setting.
+        stopped due to the device being physically unplugged or disabled via an OS setting.
         */
         if (stopResult == MA_SUCCESS) {
             ma_device__on_notification_stopped(pDevice);
@@ -89308,13 +89308,13 @@ typedef struct
     ma_uint32 pageDataSize;
     ma_uint8 pageData[MA_DR_FLAC_OGG_MAX_PAGE_SIZE];
 } ma_dr_flac_oggbs;
-static size_t ma_dr_flac_oggbs__read_storage(ma_dr_flac_oggbs* oggbs, void* bufferOut, size_t bytesToRead)
+static size_t ma_dr_flac_oggbs__read_physical(ma_dr_flac_oggbs* oggbs, void* bufferOut, size_t bytesToRead)
 {
     size_t bytesActuallyRead = oggbs->onRead(oggbs->pUserData, bufferOut, bytesToRead);
     oggbs->currentBytePos += bytesActuallyRead;
     return bytesActuallyRead;
 }
-static ma_bool32 ma_dr_flac_oggbs__seek_storage(ma_dr_flac_oggbs* oggbs, ma_uint64 offset, ma_dr_flac_seek_origin origin)
+static ma_bool32 ma_dr_flac_oggbs__seek_physical(ma_dr_flac_oggbs* oggbs, ma_uint64 offset, ma_dr_flac_seek_origin origin)
 {
     if (origin == MA_DR_FLAC_SEEK_SET) {
         if (offset <= 0x7FFFFFFF) {
@@ -89328,7 +89328,7 @@ static ma_bool32 ma_dr_flac_oggbs__seek_storage(ma_dr_flac_oggbs* oggbs, ma_uint
                 return MA_FALSE;
             }
             oggbs->currentBytePos = offset;
-            return ma_dr_flac_oggbs__seek_storage(oggbs, offset - 0x7FFFFFFF, MA_DR_FLAC_SEEK_CUR);
+            return ma_dr_flac_oggbs__seek_physical(oggbs, offset - 0x7FFFFFFF, MA_DR_FLAC_SEEK_CUR);
         }
     } else {
         while (offset > 0x7FFFFFFF) {
@@ -89364,12 +89364,12 @@ static ma_bool32 ma_dr_flac_oggbs__goto_next_page(ma_dr_flac_oggbs* oggbs, ma_dr
             continue;
         }
         if (header.serialNumber != oggbs->serialNumber) {
-            if (pageBodySize > 0 && !ma_dr_flac_oggbs__seek_storage(oggbs, pageBodySize, MA_DR_FLAC_SEEK_CUR)) {
+            if (pageBodySize > 0 && !ma_dr_flac_oggbs__seek_physical(oggbs, pageBodySize, MA_DR_FLAC_SEEK_CUR)) {
                 return MA_FALSE;
             }
             continue;
         }
-        if (ma_dr_flac_oggbs__read_storage(oggbs, oggbs->pageData, pageBodySize) != pageBodySize) {
+        if (ma_dr_flac_oggbs__read_physical(oggbs, oggbs->pageData, pageBodySize) != pageBodySize) {
             return MA_FALSE;
         }
         oggbs->pageDataSize = pageBodySize;
@@ -89426,7 +89426,7 @@ static ma_bool32 ma_dr_flac_oggbs__seek_to_next_packet(ma_dr_flac_oggbs* oggbs)
             }
             bytesToEndOfPacketOrPage += segmentSize;
         }
-        ma_dr_flac_oggbs__seek_storage(oggbs, bytesToEndOfPacketOrPage, MA_DR_FLAC_SEEK_CUR);
+        ma_dr_flac_oggbs__seek_physical(oggbs, bytesToEndOfPacketOrPage, MA_DR_FLAC_SEEK_CUR);
         oggbs->bytesRemainingInPage -= bytesToEndOfPacketOrPage;
         if (atEndOfPage) {
             if (!ma_dr_flac_oggbs__goto_next_page(oggbs)) {
@@ -89480,7 +89480,7 @@ static ma_bool32 ma_dr_flac__on_seek_ogg(void* pUserData, int offset, ma_dr_flac
     MA_DR_FLAC_ASSERT(oggbs != NULL);
     MA_DR_FLAC_ASSERT(offset >= 0);
     if (origin == MA_DR_FLAC_SEEK_SET) {
-        if (!ma_dr_flac_oggbs__seek_storage(oggbs, (int)oggbs->firstBytePos, MA_DR_FLAC_SEEK_SET)) {
+        if (!ma_dr_flac_oggbs__seek_physical(oggbs, (int)oggbs->firstBytePos, MA_DR_FLAC_SEEK_SET)) {
             return MA_FALSE;
         }
         if (!ma_dr_flac_oggbs__goto_next_page(oggbs, ma_dr_flac_ogg_fail_on_crc_mismatch)) {
@@ -89533,7 +89533,7 @@ static ma_bool32 ma_dr_flac_ogg__seek_to_pcm_frame(ma_dr_flac* pFlac, ma_uint64 
     runningGranulePosition = 0;
     for (;;) {
         if (!ma_dr_flac_oggbs__goto_next_page(oggbs, ma_dr_flac_ogg_recover_on_crc_mismatch)) {
-            ma_dr_flac_oggbs__seek_storage(oggbs, originalBytePos, MA_DR_FLAC_SEEK_SET);
+            ma_dr_flac_oggbs__seek_physical(oggbs, originalBytePos, MA_DR_FLAC_SEEK_SET);
             return MA_FALSE;
         }
         runningFrameBytePos = oggbs->currentBytePos - ma_dr_flac_ogg__get_page_header_size(&oggbs->currentPageHeader) - oggbs->pageDataSize;
@@ -89552,7 +89552,7 @@ static ma_bool32 ma_dr_flac_ogg__seek_to_pcm_frame(ma_dr_flac* pFlac, ma_uint64 
             }
         }
     }
-    if (!ma_dr_flac_oggbs__seek_storage(oggbs, runningFrameBytePos, MA_DR_FLAC_SEEK_SET)) {
+    if (!ma_dr_flac_oggbs__seek_physical(oggbs, runningFrameBytePos, MA_DR_FLAC_SEEK_SET)) {
         return MA_FALSE;
     }
     if (!ma_dr_flac_oggbs__goto_next_page(oggbs, ma_dr_flac_ogg_recover_on_crc_mismatch)) {

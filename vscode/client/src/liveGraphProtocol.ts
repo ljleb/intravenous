@@ -13,7 +13,7 @@ export type LiveGraphPortStateAction = {
 export type SerializedLiveGraphPort = {
     name: string;
     connectivity: string;
-    ordinal: number;
+    index: number;
     defaultValue: number;
     minValue: number | null;
     maxValue: number | null;
@@ -36,7 +36,7 @@ export type SerializedLiveGraphGroup = {
 };
 
 export type SerializedLiveGraphMember = {
-    ordinal: number;
+    index: number;
     backingNodeId: string;
     kind: string;
     description: string;

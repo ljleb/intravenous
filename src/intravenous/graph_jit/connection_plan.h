@@ -69,11 +69,11 @@ struct SccRegionPlan {
 struct SchedulePlan {
     std::vector<SccRegionPlan> regions{};
     std::vector<std::size_t> region_order{};
-    // Background by configured NodeBundleHandle. Boundary/non-concrete bundles
-    // have no region.
+    // Entry positions correspond to configured NodeBundleHandle values.
+    // Boundary/non-concrete bundles have no region.
     std::vector<std::optional<std::size_t>> bundle_to_region{};
-    // Background by configured NodeBundleHandle. Values are positions in the
-    // flattened provisional execution schedule.
+    // Entry positions correspond to configured NodeBundleHandle values. Values
+    // are positions in the flattened provisional execution schedule.
     std::vector<std::optional<std::size_t>> bundle_execution_position{};
 };
 

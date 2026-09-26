@@ -33,7 +33,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const session = sessionFactory.create(
         workspaceFolder,
         outputChannel,
-        outputChannel,
         provider,
         modulesProvider,
         highlighter,

@@ -5,8 +5,8 @@ first recursive `ProjectNodePortMatcher`/`GraphConnections` semantic layer are
 implemented. Structured persistence/wire adapters and richer compound-path
 coverage remain follow-up work._
 
-This document supplements [graph_builder.md](./graph_builder.md),
-[virtual_nodes_channel_aware_graph_direction.md](./virtual_nodes_channel_aware_graph_direction.md),
+This document supplements [graph_builder.md](./historical/graph_builder.md),
+[virtual_nodes_channel_aware_graph_direction.md](./historical/virtual_nodes_channel_aware_graph_direction.md),
 and [project_graph_application_architecture.md](./project_graph_application_architecture.md).
 
 The implemented live-child/frozen-child importer described here is the current
@@ -37,7 +37,7 @@ node-bundle mapping.
 `GraphConnections` now consumes these preserved identities through structured
 project matchers. The current path vocabulary has separate selectors for virtual
 node identity, ordered virtual members, tiled children, and nested subgraph
-scopes; the port matcher separately selects by name/ordinal and optional sample
+scopes; the port matcher separately selects by name/index and optional sample
 channel. Matchers are resolved against a frozen view of the complete freshly
 embedded root before project connections are applied.
 
@@ -131,7 +131,7 @@ source/type identity is the same.
 ## Direct-member order is stable identity
 
 A virtual node can represent several direct members. Once project persistence
-can select a member by ordinal, that order is externally observable stable
+can select a member by index, that order is externally observable stable
 identity.
 
 Reload/reconfiguration may replace the concrete implementation represented by a
@@ -173,7 +173,7 @@ on the current matched node and selects a port channel.
 ## `ProjectNodePortMatcher`
 
 Persistent whole-project connections use `ProjectNodePortMatcher` as the named
-concept. Do not introduce a parallel generic term such as "endpoint" for the
+concept. Do not introduce a parallel generic port-address term for the
 same role.
 
 A matcher has three conceptual fields:

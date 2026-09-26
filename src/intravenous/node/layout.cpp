@@ -49,7 +49,7 @@ namespace iv {
         size_t alignment,
         std::string migration_identity,
         NodeLayout::Region::RawInitializeFn initialize_fn,
-        std::vector<std::byte> initialize_payload)
+        std::vector<std::byte> initialize_data)
     {
         if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
             throw std::invalid_argument(
@@ -63,10 +63,10 @@ namespace iv {
         region.alignment = alignment;
         region.migration_identity = std::move(migration_identity);
         region.raw_initialize_fn = initialize_fn;
-        region.raw_initialize_payload = std::move(initialize_payload);
-        if (!region.raw_initialize_fn && !region.raw_initialize_payload.empty()) {
+        region.raw_initialize_data = std::move(initialize_data);
+        if (!region.raw_initialize_fn && !region.raw_initialize_data.empty()) {
             throw std::invalid_argument(
-                "node layout raw-region initialize payload requires a callback");
+                "node layout raw-region initialize data requires a callback");
         }
 
         _storage_alignment = std::max(_storage_alignment, alignment);
@@ -528,9 +528,9 @@ namespace iv {
             auto export_it = std::find_if(
                 storage.layout->exported_arrays.begin(),
                 storage.layout->exported_arrays.end(),
-                [&](auto const& export_endpoint) {
-                    return export_endpoint.id == id &&
-                        export_endpoint.element_type == element_type;
+                [&](auto const& export_array) {
+                    return export_array.id == id &&
+                        export_array.element_type == element_type;
                 });
             if (export_it == storage.layout->exported_arrays.end() ||
                 !export_it->read_span_fn) {
@@ -953,7 +953,7 @@ namespace iv {
             auto bytes = storage.buffer();
             region.raw_initialize_fn(
                 bytes.subspan(region.storage_offset, region.size),
-                region.raw_initialize_payload);
+                region.raw_initialize_data);
         }
     }
 
@@ -982,13 +982,13 @@ namespace iv {
 
     void patch_node_storage_imports(NodeStorage& storage)
     {
-        for (auto const& import_endpoint : storage.layout->imported_arrays) {
+        for (auto const& import_array : storage.layout->imported_arrays) {
             auto export_it = std::find_if(
                 storage.layout->exported_arrays.begin(),
                 storage.layout->exported_arrays.end(),
-                [&](auto const& export_endpoint) {
-                    return export_endpoint.id == import_endpoint.id &&
-                        export_endpoint.element_type == import_endpoint.element_type;
+                [&](auto const& export_array) {
+                    return export_array.id == import_array.id &&
+                        export_array.element_type == import_array.element_type;
                 });
 
             void* data = nullptr;
@@ -1001,21 +1001,21 @@ namespace iv {
                 export_it->read_span_fn(
                     export_state, export_it->state_field_offset, data, count);
             }
-            if (import_endpoint.assign_span_fn) {
-                void* import_state = import_endpoint.background_state_field
-                    ? storage.background_state_ptr(import_endpoint.owner_node)
-                    : storage.state_ptr(import_endpoint.owner_node);
-                import_endpoint.assign_span_fn(
+            if (import_array.assign_span_fn) {
+                void* import_state = import_array.background_state_field
+                    ? storage.background_state_ptr(import_array.owner_node)
+                    : storage.state_ptr(import_array.owner_node);
+                import_array.assign_span_fn(
                     import_state,
-                    import_endpoint.state_field_offset,
+                    import_array.state_field_offset,
                     data,
                     count);
             }
         }
     }
 
-    NodeStorage::PreparedMigration
-    NodeStorage::prepare_migration_from(NodeStorage& previous)
+    NodeStorage::Migration
+    NodeStorage::migration_from(NodeStorage& previous)
     {
         if (!layout || !resources || !previous.layout || !previous.resources) {
             throw std::logic_error("node storage migration requires two valid storages");
@@ -1026,15 +1026,15 @@ namespace iv {
             throw std::logic_error("node storage migration target must be uninitialized");
         }
 
-        PreparedMigration prepared;
-        prepared.current = this;
-        prepared.previous = &previous;
-        prepared.previous_node_for_current.assign(
-            layout->nodes.size(), PreparedMigration::no_node);
-        prepared.previous_nodes_consumed.assign(
+        Migration migration;
+        migration.current = this;
+        migration.previous = &previous;
+        migration.previous_node_for_current.assign(
+            layout->nodes.size(), Migration::no_node);
+        migration.previous_nodes_consumed.assign(
             previous.layout->nodes.size(), false);
-        prepared.deferred_initialize_nodes.reserve(layout->nodes.size());
-        prepared.previous_release_nodes.reserve(previous.layout->nodes.size());
+        migration.deferred_initialize_nodes.reserve(layout->nodes.size());
+        migration.previous_release_nodes.reserve(previous.layout->nodes.size());
         constructed_nodes.reserve(layout->nodes.size());
         constructed_background_states.reserve(layout->nodes.size());
         initialized_nodes.reserve(layout->nodes.size());
@@ -1073,14 +1073,14 @@ namespace iv {
                 !can_move_from(previous, node, previous_node)) {
                 continue;
             }
-            prepared.previous_node_for_current[node] = previous_node;
-            prepared.previous_nodes_consumed[previous_node] = true;
+            migration.previous_node_for_current[node] = previous_node;
+            migration.previous_nodes_consumed[previous_node] = true;
         }
 
         std::vector<bool> defer_initialize(layout->nodes.size(), false);
         for (size_t node = 0; node < layout->nodes.size(); ++node) {
             defer_initialize[node] =
-                prepared.previous_node_for_current[node] != PreparedMigration::no_node ||
+                migration.previous_node_for_current[node] != Migration::no_node ||
                 identity_collision[node];
         }
         for (auto const& import : layout->imported_arrays)
@@ -1110,12 +1110,12 @@ namespace iv {
         patch_node_storage_regions(*this, [](size_t) { return true; });
 
         for (auto const node : layout->initialize_order) {
-            if (prepared.previous_node_for_current[node] !=
-                PreparedMigration::no_node) {
+            if (migration.previous_node_for_current[node] !=
+                Migration::no_node) {
                 continue;
             }
             if (defer_initialize[node]) {
-                prepared.deferred_initialize_nodes.push_back(node);
+                migration.deferred_initialize_nodes.push_back(node);
                 continue;
             }
             auto const& record = layout->nodes[node];
@@ -1128,15 +1128,15 @@ namespace iv {
         for (auto it = previous.initialized_nodes.rbegin();
              it != previous.initialized_nodes.rend();
              ++it) {
-            if (*it >= prepared.previous_nodes_consumed.size() ||
-                !prepared.previous_nodes_consumed[*it]) {
-                prepared.previous_release_nodes.push_back(*it);
+            if (*it >= migration.previous_nodes_consumed.size() ||
+                !migration.previous_nodes_consumed[*it]) {
+                migration.previous_release_nodes.push_back(*it);
             }
         }
-        return prepared;
+        return migration;
     }
 
-    void NodeStorage::PreparedMigration::commit()
+    void NodeStorage::Migration::commit()
     {
         if (committed || !current || !previous) {
             throw std::logic_error("invalid or already committed node storage migration");

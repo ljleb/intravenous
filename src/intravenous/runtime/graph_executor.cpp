@@ -623,7 +623,7 @@ bool GraphExecutor::activate_pending()
     auto& next = *realizations_[*pending_];
     if (!next.initialized) {
         if (active_) {
-            auto migration = next.storage.prepare_migration_from(
+            auto migration = next.storage.migration_from(
                 active_realization().storage);
             migration.commit();
         } else {

@@ -1616,7 +1616,7 @@ TEST(GraphJitConnectionPlan, SharesEquivalentBackgroundEventMaterializations)
     }
 }
 
-TEST(GraphJitConnectionPlan, PreparedAddressableEventMaterializationSubsumesSequential)
+TEST(GraphJitConnectionPlan, AddressableEventMaterializationSubsumesSequential)
 {
     using namespace iv;
 
@@ -1637,11 +1637,11 @@ TEST(GraphJitConnectionPlan, PreparedAddressableEventMaterializationSubsumesSequ
     ASSERT_EQ(storage.event_materializations.size(), 2u);
     ASSERT_EQ(storage.connections[0].event_materializations.size(), 1u);
     ASSERT_EQ(storage.connections[1].event_materializations.size(), 2u);
-    auto const prepared = storage.connections[0].event_materializations.front();
+    auto const materialization = storage.connections[0].event_materializations.front();
     EXPECT_TRUE(std::ranges::contains(
-        storage.connections[1].event_materializations, prepared));
+        storage.connections[1].event_materializations, materialization));
     EXPECT_EQ(
-        storage.event_materializations[prepared].storage,
+        storage.event_materializations[materialization].storage,
         graph_jit::PortStorageKind::tick_random_access);
 }
 
@@ -1718,14 +1718,14 @@ TEST(GraphJitConnectionPlan, TockToSequentialUsesPreparedBackgroundDelivery)
     EXPECT_FALSE(source_subset->storage.tick_random_access);
 
     ASSERT_EQ(plan->background.tick_sequential_inputs.size(), 1u);
-    auto const& prepared = plan->background.ports[
+    auto const& port = plan->background.ports[
         plan->background.tick_sequential_inputs.front()];
-    EXPECT_TRUE(prepared.tick_sequential_input);
-    EXPECT_FALSE(prepared.random_access_input);
-    EXPECT_FLOAT_EQ(static_cast<float>(prepared.sample_neutral_value), 0.375f);
+    EXPECT_TRUE(port.tick_sequential_input);
+    EXPECT_FALSE(port.random_access_input);
+    EXPECT_FLOAT_EQ(static_cast<float>(port.sample_neutral_value), 0.375f);
 }
 
-TEST(GraphJitConnectionPlan, PreparedAddressableAtomSubsumesSequentialWindow)
+TEST(GraphJitConnectionPlan, AddressableAtomSubsumesSequentialWindow)
 {
     using namespace iv;
 
@@ -1819,7 +1819,7 @@ TEST(GraphJitConnectionPlan, SharesEquivalentBackgroundSampleMaterializations)
     EXPECT_EQ(materialization.source_channels.size(), 2u);
 }
 
-TEST(GraphJitConnectionPlan, PreparedAddressableSampleMaterializationSubsumesSequential)
+TEST(GraphJitConnectionPlan, AddressableSampleMaterializationSubsumesSequential)
 {
     using namespace iv;
 
@@ -1840,11 +1840,11 @@ TEST(GraphJitConnectionPlan, PreparedAddressableSampleMaterializationSubsumesSeq
     ASSERT_EQ(storage.sample_materializations.size(), 2u);
     ASSERT_EQ(storage.connections[0].sample_materializations.size(), 1u);
     ASSERT_EQ(storage.connections[1].sample_materializations.size(), 2u);
-    auto const prepared = storage.connections[0].sample_materializations.front();
+    auto const materialization = storage.connections[0].sample_materializations.front();
     EXPECT_TRUE(std::ranges::contains(
-        storage.connections[1].sample_materializations, prepared));
+        storage.connections[1].sample_materializations, materialization));
     EXPECT_EQ(
-        storage.sample_materializations[prepared].storage,
+        storage.sample_materializations[materialization].storage,
         graph_jit::PortStorageKind::tick_random_access);
 }
 

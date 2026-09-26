@@ -1,12 +1,9 @@
 #pragma once
 
 
-#include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
-#include <intravenous/query/lane_query_schema.h>
-#include <intravenous/query/lane_query_completion.h>
 #include <intravenous/devices/audio_device.h>
 
 #include <optional>
@@ -180,61 +177,6 @@ namespace iv {
 
     public:
         void succeed(AudioDevicesSnapshot value);
-        void fail(std::string message);
-        void fail(int code, std::string message);
-
-        [[nodiscard]] bool has_response() const noexcept
-        {
-            return result.has_value() || !error_message.empty();
-        }
-
-        [[nodiscard]] std::string build(int request_id) const;
-    };
-
-    class SocketRpcLaneViewResultBuilder {
-        int error_code = -32000;
-        std::string error_message;
-        std::optional<LaneViewResult> result;
-
-    public:
-        void succeed(LaneViewResult value);
-        void fail(std::string message);
-        void fail(int code, std::string message);
-
-        [[nodiscard]] bool has_response() const noexcept
-        {
-            return result.has_value() || !error_message.empty();
-        }
-
-        [[nodiscard]] std::string build(int request_id) const;
-    };
-
-    class SocketRpcLaneQuerySchemaResultBuilder {
-        int error_code = -32000;
-        std::string error_message;
-        std::optional<query::LaneQuerySchema> result;
-
-    public:
-        void succeed(query::LaneQuerySchema value);
-        void fail(std::string message);
-        void fail(int code, std::string message);
-
-        [[nodiscard]] bool has_response() const noexcept
-        {
-            return result.has_value() || !error_message.empty();
-        }
-
-        [[nodiscard]] std::string build(int request_id) const;
-    };
-
-    class SocketRpcLaneQueryCompletionResultBuilder {
-        int error_code = -32000;
-        std::string error_message;
-        std::optional<query::LaneQueryCompletionResult> result;
-        std::uint64_t schema_revision = 0;
-
-    public:
-        void succeed(query::LaneQueryCompletionResult value, std::uint64_t revision);
         void fail(std::string message);
         void fail(int code, std::string message);
 

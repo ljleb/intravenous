@@ -301,16 +301,16 @@ TEST(NodeDefinitions, WithinPackageDuplicateDefinitionIdIsRejectedAtNamespaceBou
     EXPECT_TRUE(result.publication_messages_by_package_id.contains(package_id));
 }
 
-TEST(NodeDefinitions, SeedLoadedDefinitionUsesAcceptedRevisionPublicationPath)
+TEST(NodeDefinitions, InitializeLoadedDefinitionUsesAcceptedRevisionPublicationPath)
 {
-    auto const workspace = fresh_module_fixture_workspace("node_definitions_seed");
+    auto const workspace = fresh_module_fixture_workspace("node_definitions_initialize");
     iv::NodeDefinitions definitions;
-    auto definition = make_loaded_definition(workspace, "iv.test.seeded");
-    definitions.seed_loaded_definition(std::move(definition));
+    auto definition = make_loaded_definition(workspace, "iv.test.initialized");
+    definitions.initialize_loaded_definition(std::move(definition));
 
     auto const loaded = definitions.loaded_module_definitions();
     ASSERT_EQ(loaded.size(), 1u);
-    EXPECT_EQ(loaded.front().definition_id, "iv.test.seeded");
+    EXPECT_EQ(loaded.front().definition_id, "iv.test.initialized");
 }
 
 TEST(NodeDefinitions, NullPackageSnapshotIsRejectedWithoutMutatingPublishedNamespace)
